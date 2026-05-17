@@ -5,9 +5,9 @@ import copy
 
 from opencollab.core.agent import Agent
 from opencollab.core.env import Environment, LocalEnvironment
-from opencollab.core.llm import LLMClient, LLMResponse
+from opencollab.core.llm import LLMClient
 from opencollab.core.session.compactor import DEFAULT_COMPACTION_THRESHOLD, ContextCompactor
-from opencollab.core.session.events import EventBus, EventSink, SessionEvent
+from opencollab.core.session.events import EventBus, EventSink
 from opencollab.core.session.runner import SessionRunner
 from opencollab.core.session.state import SessionPhase, SessionState
 from opencollab.core.session.storage import SessionStore
@@ -197,52 +197,3 @@ class Session:
         session.messages = session.store.load_messages(path, agent.system_prompt)
         return session
 
-    # Compatibility helpers for tests and older internal callers.
-    async def _advance(self, cancel_event: asyncio.Event | None = None) -> None:
-        await self.runner._advance(cancel_event)
-
-    async def _step(self) -> None:
-        self.state.set_phase(SessionPhase.CALLING_LLM)
-        await self.runner._run_llm_call()
-        await self.runner._handle_pending_response()
-        if self.phase == SessionPhase.EXECUTING_TOOLS:
-            await self.runner._execute_pending_tools()
-        if self.phase == SessionPhase.AUTOSAVING:
-            await self.runner._autosave_pending_step()
-
-    def _should_compact(self) -> bool:
-        return self.compactor.should_compact()
-
-    async def _compact(self) -> None:
-        result = await self.compactor.compact(apply=False)
-        result.apply_to(self.state)
-        if result.did_compact:
-            self._auto_save()
-
-    async def _process_tool_calls(self, tool_calls: list[dict]) -> None:
-        result = await self.tool_processor.process(tool_calls)
-        result.apply_to(self.state)
-
-    def _build_tool_schemas(self) -> list[dict] | None:
-        return self.runner._build_tool_schemas()
-
-    async def _call_llm(self, tools: list[dict] | None) -> LLMResponse:
-        return await self.runner._call_llm(tools)
-
-    def _record_llm_trace(self, response: LLMResponse, latency: float) -> None:
-        self.runner._record_llm_trace(response, latency)
-
-    def _append_assistant_message(self, response: LLMResponse) -> None:
-        self.runner._append_assistant_message(response)
-
-    async def _handle_assistant_response(self, response: LLMResponse) -> None:
-        if response.content:
-            await self.event_bus.emit(SessionEvent(type="text_delta", data={"content": response.content}))
-        if response.tool_calls:
-            result = await self.tool_processor.process(response.tool_calls)
-            result.apply_to(self.state)
-        else:
-            self.state.mark_done()
-
-    async def _finish_step(self, latency: float) -> None:
-        await self.runner._finish_step(latency)
