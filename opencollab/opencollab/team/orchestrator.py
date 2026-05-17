@@ -231,6 +231,11 @@ class Team:
             GrepTool(ic),
         ]
 
+    @property
+    def used_tokens(self) -> int:
+        """Total tokens spent across the Lead session and all delegated teammates."""
+        return self.lead_session.used_tokens + self._used_tokens
+
     async def run(self, user_message: str) -> str:
         """Send a user message to the Lead and run the team loop."""
         await self.lead_session.add_user_message(user_message)

@@ -3,7 +3,8 @@
 Ref:
 - kimi-cli: Typer app with callback, async main, session management
 - opencode: bun run dev with agent mode selection
-- Design doc: cli/main.py as the interface layer
+- Design doc: cli/main.py as the interface layer — parses args and drives the
+  REPL only; all wiring lives in opencollab.bootstrap.
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import sys
 import uuid
 from typing import Any, Optional
 
@@ -48,7 +48,6 @@ async def _read_line(prompt_text: str) -> str:
 
 
 def _safe_suspend_live(tui: Any) -> bool:
-    """Suspend Live rendering if supported by the current TUI implementation."""
     suspend = getattr(tui, "suspend_live", None)
     if callable(suspend):
         return bool(suspend())
@@ -56,7 +55,6 @@ def _safe_suspend_live(tui: Any) -> bool:
 
 
 def _safe_resume_live(tui: Any, was_suspended: bool) -> None:
-    """Resume Live rendering if supported by the current TUI implementation."""
     resume = getattr(tui, "resume_live", None)
     if callable(resume):
         resume(was_suspended)
@@ -123,11 +121,8 @@ def chat(
         _print_missing_key_hint(cfg["provider"])
         raise typer.Exit(code=1)
 
-    asyncio.run(_chat(
-        model=cfg["model"], provider=cfg["provider"], api_key=cfg["api_key"],
-        base_url=cfg["base_url"], workspace=workspace, budget=cfg["budget"],
-        session_file=session_file, trace=trace, yolo=yolo,
-    ))
+    asyncio.run(_chat(workspace=workspace, cfg=cfg, session_file=session_file,
+                      trace=trace, yolo=yolo))
 
 
 @app.command()
@@ -149,12 +144,10 @@ def team(
         raise typer.Exit(code=1)
 
     # Team mode gets higher default budget
-    team_budget = cfg["budget"] if budget is not None else max(cfg["budget"], 500_000)
-    asyncio.run(_team(
-        model=cfg["model"], provider=cfg["provider"], api_key=cfg["api_key"],
-        base_url=cfg["base_url"], workspace=workspace, budget=team_budget,
-        trace=trace, yolo=yolo, use_worktrees=not no_worktrees,
-    ))
+    if budget is None:
+        cfg["budget"] = max(cfg["budget"], 500_000)
+    asyncio.run(_team(workspace=workspace, cfg=cfg, trace=trace, yolo=yolo,
+                      use_worktrees=not no_worktrees))
 
 
 @app.command(name="eval")
@@ -183,108 +176,67 @@ def eval_cmd(
 # ---------------------------------------------------------------------------
 
 
-async def _chat(
-    model: str, provider: str, api_key: str | None, base_url: str | None,
-    workspace: str, budget: int, session_file: str | None,
-    trace: bool, yolo: bool,
-):
-    from opencollab.core.agent import Agent
-    from opencollab.core.session import Session
-    from opencollab.core.env import LocalEnvironment
-    from opencollab.core.tracer import Tracer
-    from opencollab.core.context import get_repo_map
-    from opencollab.tools.bash import BashTool
-    from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
-    from opencollab.tools.human import AskUserTool
-    from opencollab.tools.safety import SandboxInterceptor
+async def _read_command(tui: Any) -> str | None:
+    """Prompt for a user line, returning None on EOF/interrupt."""
+    was_suspended = _safe_suspend_live(tui)
+    try:
+        return await _read_line("> ")
+    except (EOFError, KeyboardInterrupt):
+        return None
+    finally:
+        _safe_resume_live(tui, was_suspended)
+
+
+async def _repl_loop(tui: Any, handle_turn) -> None:
+    """Shared REPL: read line, dispatch built-in slash commands, run a turn."""
+    while True:
+        line = await _read_command(tui)
+        if line is None:
+            break
+        line = line.strip()
+        if not line:
+            continue
+        if line.lower() in ("exit", "quit", "/exit", "/quit"):
+            break
+        result = await handle_turn(line)
+        if result is False:
+            break
+
+
+async def _chat(workspace: str, cfg: dict, session_file: str | None,
+                 trace: bool, yolo: bool):
+    from opencollab.bootstrap import build_chat_session, build_runtime_context
     from opencollab.cli.tui import TUI
-    from opencollab.tui.session_adapter import TuiEventSink, TuiPermissionPolicy
-
-    workspace = os.path.abspath(workspace)
-    interceptor = SandboxInterceptor(workspace)
-    env = LocalEnvironment(workspace)
-    tracer = Tracer(run_id=str(uuid.uuid4())[:8]) if trace else None
-
-    # Human-in-the-loop confirmation (disabled in yolo mode)
-    permission_policy = None if yolo else TuiPermissionPolicy(_confirm_prompt)
-
-    # Repo map for project topology (机制一)
-    repo_map = get_repo_map(workspace)
-
-    agent = Agent(
-        name="assistant",
-        system_prompt=(
-            "You are a skilled software developer. Use the provided tools to help the user "
-            "with coding tasks. Read files before modifying them. Verify your changes."
-        ),
-        tools=[
-            BashTool(interceptor),
-            FileReadTool(interceptor),
-            FileWriteTool(interceptor),
-            GrepTool(interceptor),
-            AskUserTool(),
-        ],
-        model=model,
-        provider=provider,
-        api_key=api_key,
-        base_url=base_url,
-    )
+    from opencollab.tui.session_adapter import TuiEventSink
 
     tui = TUI(console)
-    event_sink = TuiEventSink(tui)
     tui.print_welcome()
+    ctx = build_runtime_context(
+        workspace, cfg, trace=trace, yolo=yolo,
+        event_sink=TuiEventSink(tui), confirm_fn=_confirm_prompt,
+    )
 
-    # Auto-save path (机制四 — session hydration)
-    session_id = uuid.uuid4().hex[:8]
-    auto_save_dir = os.path.join(workspace, ".opencollab", "sessions")
-    auto_save_path = os.path.join(auto_save_dir, f"{session_id}.jsonl")
-
-    # Create or restore session
     if session_file and os.path.exists(session_file):
-        session = Session.load(session_file, agent, env=env, tracer=tracer,
-                               max_budget_tokens=budget, event_sink=event_sink,
-                               permission_policy=permission_policy, repo_map=repo_map,
-                               auto_save_path=auto_save_path)
+        session = build_chat_session(ctx, session_file=session_file)
         console.print(f"[dim]Restored session from {session_file}[/dim]")
     else:
-        session = Session(
-            agent=agent, env=env, tracer=tracer,
-            max_budget_tokens=budget, event_sink=event_sink,
-            permission_policy=permission_policy, repo_map=repo_map,
-            auto_save_path=auto_save_path,
-        )
-        session.save(auto_save_path)
-        console.print(f"[dim]Session auto-saving to {auto_save_path}[/dim]")
+        session = build_chat_session(ctx)
+        if session._auto_save_path:
+            console.print(f"[dim]Session auto-saving to {session._auto_save_path}[/dim]")
 
-    # REPL loop
     cancel_event = asyncio.Event()
 
-    while True:
-        was_suspended = _safe_suspend_live(tui)
-        try:
-            user_input = await _read_line("> ")
-        except (EOFError, KeyboardInterrupt):
-            break
-        finally:
-            _safe_resume_live(tui, was_suspended)
-
-        user_input = user_input.strip()
-        if not user_input:
-            continue
-        if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
-            break
-        if user_input.lower() == "/save":
+    async def turn(line: str) -> None:
+        if line.lower() == "/save":
             path = f"session-{uuid.uuid4().hex[:8]}.jsonl"
             session.save(path)
             console.print(f"[dim]Session saved to {path}[/dim]")
-            continue
-
+            return
         cancel_event.clear()
         tui.reset()
         tui.start_live()
-
         try:
-            await session.add_user_message(user_input)
+            await session.add_user_message(line)
             await session.run_loop(cancel_event=cancel_event)
         except KeyboardInterrupt:
             cancel_event.set()
@@ -292,87 +244,51 @@ async def _chat(
             tui.stop_live()
             tui.print_stats(session.used_tokens, session.step_count)
 
-    if tracer:
-        tracer.close()
-        console.print(f"[dim]Trajectory saved to {tracer.path}[/dim]")
+    await _repl_loop(tui, turn)
 
+    if ctx.tracer:
+        ctx.tracer.close()
+        console.print(f"[dim]Trajectory saved to {ctx.tracer.path}[/dim]")
     console.print("[dim]Goodbye.[/dim]")
 
 
-async def _team(
-    model: str, provider: str, api_key: str | None, base_url: str | None,
-    workspace: str, budget: int, trace: bool, yolo: bool,
-    use_worktrees: bool,
-):
-    from opencollab.team.orchestrator import Team
-    from opencollab.core.tracer import Tracer
-    from opencollab.core.context import get_repo_map
-    from opencollab.tools.human import AskUserTool
+async def _team(workspace: str, cfg: dict, trace: bool, yolo: bool,
+                 use_worktrees: bool):
+    from opencollab.bootstrap import build_runtime_context, build_team
     from opencollab.cli.tui import TUI
-    from opencollab.tui.session_adapter import TuiEventSink, TuiPermissionPolicy
-
-    workspace = os.path.abspath(workspace)
-    tracer = Tracer(run_id=f"team-{uuid.uuid4().hex[:8]}") if trace else None
-    permission_policy = None if yolo else TuiPermissionPolicy(_confirm_prompt)
-    repo_map = get_repo_map(workspace)
+    from opencollab.tui.session_adapter import TuiEventSink
 
     tui = TUI(console)
-    event_sink = TuiEventSink(tui)
     tui.print_welcome()
     console.print("[bold blue]Team mode[/bold blue] — Lead (Planner) + Specialists (Coder + Tester)\n")
 
-    team_instance = Team(
-        workspace=workspace,
-        model=model,
-        provider=provider,
-        api_key=api_key,
-        base_url=base_url,
-        max_budget_tokens=budget,
-        tracer=tracer,
-        event_sink=event_sink,
-        permission_policy=permission_policy,
-        use_worktrees=use_worktrees,
-        repo_map=repo_map,
+    ctx = build_runtime_context(
+        workspace, cfg, trace=trace, yolo=yolo,
+        event_sink=TuiEventSink(tui), confirm_fn=_confirm_prompt,
+        run_id_prefix="team-",
     )
-
-    # Interactive mode: give Lead the ask_user tool (not added in Team.__init__
-    # to keep headless eval clean — ref: SWE-bench regression root cause)
-    team_instance.lead_agent.tools.append(AskUserTool())
-
+    team_instance = build_team(ctx, use_worktrees=use_worktrees, interactive=True)
     cancel_event = asyncio.Event()
 
-    while True:
-        was_suspended = _safe_suspend_live(tui)
-        try:
-            user_input = await _read_line("> ")
-        except (EOFError, KeyboardInterrupt):
-            break
-        finally:
-            _safe_resume_live(tui, was_suspended)
-
-        user_input = user_input.strip()
-        if not user_input:
-            continue
-        if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
-            break
-
+    async def turn(line: str) -> None:
         tui.reset()
         tui.start_live()
-
         try:
-            result = await team_instance.run(user_input)
+            await team_instance.run(line)
         except KeyboardInterrupt:
             cancel_event.set()
         finally:
             tui.stop_live()
             tui.print_stats(
-                team_instance.lead_session.used_tokens + team_instance._used_tokens,
+                team_instance.used_tokens,
                 team_instance.lead_session.step_count,
             )
 
+    await _repl_loop(tui, turn)
+
     await team_instance.cleanup()
-    if tracer:
-        tracer.close()
+    if ctx.tracer:
+        ctx.tracer.close()
     console.print("[dim]Goodbye.[/dim]")
 
 
@@ -384,7 +300,6 @@ async def _eval(
 ):
     from opencollab.harness.evaluator import EvalTask, run_eval_batch, save_results
 
-    # Load tasks from JSONL
     tasks = []
     with open(tasks_file) as f:
         for line in f:
@@ -413,11 +328,9 @@ async def _eval(
         output_dir=output_dir,
     )
 
-    # Save results
     results_path = os.path.join(output_dir, "results.jsonl")
     save_results(results, results_path)
 
-    # Print summary
     passed = sum(1 for r in results if r.success)
     console.print(f"\n[bold]Results: {passed}/{len(results)} passed[/bold]")
     console.print(f"Results saved to {results_path}")

@@ -1,0 +1,65 @@
+"""Runtime composition context — shared wiring for chat/team factories.
+
+Holds the resolved configuration plus the long-lived collaborators (tracer,
+interceptor, repo map, UI hooks). Does NOT carry an Environment: env lifetime
+is per-Session / per-delegation / per-task, so factories construct it inline.
+"""
+
+from __future__ import annotations
+
+import os
+import uuid
+from dataclasses import dataclass
+from typing import Awaitable, Callable
+
+from opencollab.core.context import get_repo_map
+from opencollab.core.session import EventSink, PermissionPolicy
+from opencollab.core.tracer import Tracer
+from opencollab.tools.safety import SandboxInterceptor
+from opencollab.tui.session_adapter import TuiPermissionPolicy
+
+
+@dataclass
+class RuntimeContext:
+    workspace: str
+    config: dict
+    tracer: Tracer | None
+    repo_map: str | None
+    interceptor: SandboxInterceptor
+    event_sink: EventSink | None
+    permission_policy: PermissionPolicy | None
+
+
+def build_runtime_context(
+    workspace: str,
+    cli_overrides: dict,
+    *,
+    trace: bool,
+    yolo: bool,
+    event_sink: EventSink | None = None,
+    confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
+    run_id_prefix: str = "",
+) -> RuntimeContext:
+    abs_workspace = os.path.abspath(workspace)
+    interceptor = SandboxInterceptor(abs_workspace)
+    tracer = (
+        Tracer(run_id=f"{run_id_prefix}{uuid.uuid4().hex[:8]}") if trace else None
+    )
+    repo_map = get_repo_map(abs_workspace)
+
+    if yolo:
+        permission_policy: PermissionPolicy | None = None
+    elif confirm_fn is not None:
+        permission_policy = TuiPermissionPolicy(confirm_fn)
+    else:
+        permission_policy = None
+
+    return RuntimeContext(
+        workspace=abs_workspace,
+        config=dict(cli_overrides),
+        tracer=tracer,
+        repo_map=repo_map,
+        interceptor=interceptor,
+        event_sink=event_sink,
+        permission_policy=permission_policy,
+    )
