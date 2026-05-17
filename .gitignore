@@ -6,6 +6,7 @@ self-collaboration_paper_tex/
 .env
 configs/.env
 .opencollab/
+.claude/
 logs/
 __pycache__/
 *.pyc
