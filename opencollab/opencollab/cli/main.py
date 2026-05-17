@@ -221,8 +221,8 @@ async def _chat(workspace: str, cfg: dict, session_file: str | None,
         console.print(f"[dim]Restored session from {session_file}[/dim]")
     else:
         session = build_chat_session(ctx)
-        if session._auto_save_path:
-            console.print(f"[dim]Session auto-saving to {session._auto_save_path}[/dim]")
+        if session.auto_save_path:
+            console.print(f"[dim]Session auto-saving to {session.auto_save_path}[/dim]")
 
     cancel_event = asyncio.Event()
 

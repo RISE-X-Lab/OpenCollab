@@ -153,8 +153,6 @@ class Team:
         lead_prompt: str | None = None,
         max_budget_tokens: int = 500_000,
         tracer: Tracer | None = None,
-        on_event: Callable[[SessionEvent], Awaitable[None] | None] | None = None,
-        confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
         event_sink: EventSink | None = None,
         permission_policy: PermissionPolicy | None = None,
         use_worktrees: bool = True,
@@ -168,9 +166,7 @@ class Team:
         self.api_key = api_key
         self.base_url = base_url
         self.tracer = tracer
-        self.event_bus = EventBus(event_sink if event_sink is not None else on_event)
-        self.on_event = on_event
-        self.confirm_fn = confirm_fn
+        self.event_bus = EventBus(event_sink)
         self.permission_policy = permission_policy
         self.use_worktrees = use_worktrees
         self.repo_map = repo_map
@@ -203,7 +199,6 @@ class Team:
             "tracer": tracer,
             "max_budget_tokens": max_budget_tokens,
             "event_sink": self.event_bus,
-            "confirm_fn": confirm_fn,
             "permission_policy": permission_policy,
             "repo_map": repo_map,
         }
@@ -300,7 +295,6 @@ class Team:
             max_budget_tokens=teammate_budget,
             max_steps=50,
             event_sink=self.event_bus,
-            confirm_fn=self.confirm_fn,
             permission_policy=self.permission_policy,
             repo_map=self.repo_map,
         )

@@ -2,18 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import copy
-from importlib import import_module
-from typing import Awaitable, Callable
 
 from opencollab.core.agent import Agent
 from opencollab.core.env import Environment, LocalEnvironment
-from opencollab.core.llm import LLMResponse
+from opencollab.core.llm import LLMClient, LLMResponse
 from opencollab.core.session.compactor import DEFAULT_COMPACTION_THRESHOLD, ContextCompactor
-from opencollab.core.session.events import EventBus, EventCallback, EventSink, SessionEvent
+from opencollab.core.session.events import EventBus, EventSink, SessionEvent
 from opencollab.core.session.runner import SessionRunner
 from opencollab.core.session.state import SessionPhase, SessionState
 from opencollab.core.session.storage import SessionStore
-from opencollab.core.session.tools import CallbackPermissionPolicy, PermissionPolicy, ToolCallProcessor
+from opencollab.core.session.tools import PermissionPolicy, ToolCallProcessor
 from opencollab.core.tracer import Tracer
 
 
@@ -36,15 +34,11 @@ class Session:
         max_budget_tokens: int = 200_000,
         max_steps: int = 100,
         compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
-        on_event: EventCallback | None = None,
-        confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
         repo_map: str | None = None,
         auto_save_path: str | None = None,
         event_sink: EventSink | None = None,
-        event_bus: EventBus | None = None,
         permission_policy: PermissionPolicy | None = None,
         llm=None,
-        llm_client=None,
         store=None,
     ):
         self.agent = agent
@@ -53,13 +47,8 @@ class Session:
         self.max_budget_tokens = max_budget_tokens
         self.max_steps = max_steps
         self.compaction_threshold = compaction_threshold
-        self.event_bus = event_bus if event_bus is not None else EventBus(event_sink if event_sink is not None else on_event)
-        if event_bus is not None and (event_sink is not None or on_event is not None):
-            self.event_bus.set_target(event_sink if event_sink is not None else on_event)
-        self._confirm_fn = confirm_fn
-        self._permission_policy = permission_policy or (
-            CallbackPermissionPolicy(confirm_fn) if confirm_fn is not None else None
-        )
+        self.event_bus = EventBus(event_sink)
+        self._permission_policy = permission_policy
         self._auto_save_path = auto_save_path
         self.store = store if store is not None else SessionStore()
 
@@ -68,12 +57,10 @@ class Session:
             system_content += f"\n\nProject Structure:\n{repo_map}"
         self.state = SessionState(messages=[{"role": "system", "content": system_content}])
 
-        injected_llm = llm if llm is not None else llm_client
-        if injected_llm is not None:
-            self._llm = injected_llm
+        if llm is not None:
+            self._llm = llm
         else:
-            llm_cls = getattr(import_module("opencollab.core.session"), "LLMClient")
-            self._llm = llm_cls(
+            self._llm = LLMClient(
                 model=agent.model,
                 api_key=agent.api_key,
                 base_url=agent.base_url,
@@ -112,23 +99,6 @@ class Session:
         )
 
     @property
-    def on_event(self) -> EventCallback | None:
-        return self.event_bus.on_event
-
-    @on_event.setter
-    def on_event(self, value: EventCallback | None) -> None:
-        self.event_bus.on_event = value
-
-    @property
-    def confirm_fn(self) -> Callable[[str], Awaitable[bool]] | None:
-        return self._confirm_fn
-
-    @confirm_fn.setter
-    def confirm_fn(self, value: Callable[[str], Awaitable[bool]] | None) -> None:
-        self._confirm_fn = value
-        self.permission_policy = CallbackPermissionPolicy(value) if value is not None else None
-
-    @property
     def permission_policy(self) -> PermissionPolicy | None:
         return self._permission_policy
 
@@ -137,6 +107,10 @@ class Session:
         self._permission_policy = value
         if hasattr(self, "tool_processor"):
             self.tool_processor.permission_policy = value
+
+    @property
+    def auto_save_path(self) -> str | None:
+        return self._auto_save_path
 
     @property
     def messages(self) -> list[dict]:
@@ -202,8 +176,6 @@ class Session:
             max_budget_tokens=self.max_budget_tokens,
             max_steps=self.max_steps,
             compaction_threshold=self.compaction_threshold,
-            on_event=self.on_event,
-            confirm_fn=self.confirm_fn,
             event_sink=self.event_bus.sink,
             permission_policy=self.permission_policy,
         )
