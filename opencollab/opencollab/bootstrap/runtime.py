@@ -10,13 +10,11 @@ from __future__ import annotations
 import os
 import uuid
 from dataclasses import dataclass
-from typing import Awaitable, Callable
 
 from opencollab.core.context import get_repo_map
 from opencollab.core.session import EventSink, PermissionPolicy
 from opencollab.core.tracer import Tracer
 from opencollab.tools.safety import SandboxInterceptor
-from opencollab.tui.session_adapter import TuiPermissionPolicy
 
 
 @dataclass
@@ -35,9 +33,8 @@ def build_runtime_context(
     cli_overrides: dict,
     *,
     trace: bool,
-    yolo: bool,
     event_sink: EventSink | None = None,
-    confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
+    permission_policy: PermissionPolicy | None = None,
     run_id_prefix: str = "",
 ) -> RuntimeContext:
     abs_workspace = os.path.abspath(workspace)
@@ -46,13 +43,6 @@ def build_runtime_context(
         Tracer(run_id=f"{run_id_prefix}{uuid.uuid4().hex[:8]}") if trace else None
     )
     repo_map = get_repo_map(abs_workspace)
-
-    if yolo:
-        permission_policy: PermissionPolicy | None = None
-    elif confirm_fn is not None:
-        permission_policy = TuiPermissionPolicy(confirm_fn)
-    else:
-        permission_policy = None
 
     return RuntimeContext(
         workspace=abs_workspace,

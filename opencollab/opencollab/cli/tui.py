@@ -38,14 +38,6 @@ class TUI:
         self._step = 0
         self._live: Live | None = None
         self._live_paused = False
-        TUI._active_instance = self
-
-    _active_instance: "TUI | None" = None
-
-    @classmethod
-    def get_active(cls) -> "TUI | None":
-        """Return the currently active TUI instance, if any."""
-        return cls._active_instance
 
     def event_handler(self, event: SessionEvent) -> None:
         """Synchronous event handler — called by Session.on_event."""

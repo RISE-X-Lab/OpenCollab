@@ -29,7 +29,6 @@ def test_build_chat_session_uses_repo_map_and_tools(tmp_path):
         str(workspace),
         _cfg(),
         trace=False,
-        yolo=True,
     )
     session = build_chat_session(ctx)
 
@@ -48,14 +47,14 @@ def test_build_runtime_context_resolves_workspace_and_tracer(tmp_path, monkeypat
     monkeypatch.chdir(tmp_path)
 
     ctx_no_trace = build_runtime_context(
-        "ws", _cfg(), trace=False, yolo=True,
+        "ws", _cfg(), trace=False,
     )
     assert ctx_no_trace.tracer is None
     assert os.path.isabs(ctx_no_trace.workspace)
     assert ctx_no_trace.workspace == str(workspace.resolve())
 
     ctx_trace = build_runtime_context(
-        "ws", _cfg(), trace=True, yolo=True, run_id_prefix="bootstrap-",
+        "ws", _cfg(), trace=True, run_id_prefix="bootstrap-",
     )
     try:
         assert ctx_trace.tracer is not None

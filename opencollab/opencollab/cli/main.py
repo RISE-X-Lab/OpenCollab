@@ -47,19 +47,6 @@ async def _read_line(prompt_text: str) -> str:
         return await loop.run_in_executor(None, lambda: console.input(prompt_text))
 
 
-def _safe_suspend_live(tui: Any) -> bool:
-    suspend = getattr(tui, "suspend_live", None)
-    if callable(suspend):
-        return bool(suspend())
-    return False
-
-
-def _safe_resume_live(tui: Any, was_suspended: bool) -> None:
-    resume = getattr(tui, "resume_live", None)
-    if callable(resume):
-        resume(was_suspended)
-
-
 def _safe_int(value: Any, default: int) -> int:
     try:
         return int(value) if value else default
@@ -176,15 +163,15 @@ def eval_cmd(
 # ---------------------------------------------------------------------------
 
 
-async def _read_command(tui: Any) -> str | None:
+async def _read_command(tui) -> str | None:
     """Prompt for a user line, returning None on EOF/interrupt."""
-    was_suspended = _safe_suspend_live(tui)
+    was_suspended = tui.suspend_live()
     try:
         return await _read_line("> ")
     except (EOFError, KeyboardInterrupt):
         return None
     finally:
-        _safe_resume_live(tui, was_suspended)
+        tui.resume_live(was_suspended)
 
 
 async def _repl_loop(tui: Any, handle_turn) -> None:
@@ -207,13 +194,19 @@ async def _chat(workspace: str, cfg: dict, session_file: str | None,
                  trace: bool, yolo: bool):
     from opencollab.bootstrap import build_chat_session, build_runtime_context
     from opencollab.cli.tui import TUI
-    from opencollab.tui.session_adapter import TuiEventSink
+    from opencollab.tui.session_adapter import TuiEventSink, TuiPermissionPolicy
 
     tui = TUI(console)
     tui.print_welcome()
+
+    permission_policy = None
+    if not yolo:
+        permission_policy = TuiPermissionPolicy(render=tui, read_line=_read_line)
+
     ctx = build_runtime_context(
-        workspace, cfg, trace=trace, yolo=yolo,
-        event_sink=TuiEventSink(tui), confirm_fn=_confirm_prompt,
+        workspace, cfg, trace=trace,
+        event_sink=TuiEventSink(tui),
+        permission_policy=permission_policy,
     )
 
     if session_file and os.path.exists(session_file):
@@ -256,15 +249,20 @@ async def _team(workspace: str, cfg: dict, trace: bool, yolo: bool,
                  use_worktrees: bool):
     from opencollab.bootstrap import build_runtime_context, build_team
     from opencollab.cli.tui import TUI
-    from opencollab.tui.session_adapter import TuiEventSink
+    from opencollab.tui.session_adapter import TuiEventSink, TuiPermissionPolicy
 
     tui = TUI(console)
     tui.print_welcome()
     console.print("[bold blue]Team mode[/bold blue] — Lead (Planner) + Specialists (Coder + Tester)\n")
 
+    permission_policy = None
+    if not yolo:
+        permission_policy = TuiPermissionPolicy(render=tui, read_line=_read_line)
+
     ctx = build_runtime_context(
-        workspace, cfg, trace=trace, yolo=yolo,
-        event_sink=TuiEventSink(tui), confirm_fn=_confirm_prompt,
+        workspace, cfg, trace=trace,
+        event_sink=TuiEventSink(tui),
+        permission_policy=permission_policy,
         run_id_prefix="team-",
     )
     team_instance = build_team(ctx, use_worktrees=use_worktrees, interactive=True)
@@ -338,22 +336,6 @@ async def _eval(
     for r in results:
         status = "[green]PASS[/green]" if r.success else "[red]FAIL[/red]"
         console.print(f"  {r.task_id}: {status} ({r.tokens_used:,} tokens, {r.duration:.1f}s)")
-
-
-async def _confirm_prompt(message: str) -> bool:
-    """Ask the user for confirmation (human-in-the-loop)."""
-    from opencollab.cli.tui import TUI
-
-    active_tui = TUI.get_active()
-    was_suspended = _safe_suspend_live(active_tui) if active_tui else False
-    try:
-        response = await _read_line(f"{message} [y/N] ")
-        return response.strip().lower() in ("y", "yes")
-    except (EOFError, KeyboardInterrupt):
-        return False
-    finally:
-        if active_tui:
-            _safe_resume_live(active_tui, was_suspended)
 
 
 def main():
