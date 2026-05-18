@@ -36,14 +36,12 @@ class ContextCompactor:
         event_bus: EventBus,
         tracer: Any = None,
         compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
-        auto_save=None,
     ):
         self.state = state
         self.llm = llm
         self.event_bus = event_bus
         self.tracer = tracer
         self.compaction_threshold = compaction_threshold
-        self.auto_save = auto_save
 
     def should_compact(self) -> bool:
         # Auto-compact if context is too large (ref: opencode isOverflow)
@@ -77,8 +75,6 @@ class ContextCompactor:
             )
         if apply:
             result.apply_to(self.state)
-        if apply and self.auto_save:
-            self.auto_save()
         return result
 
     def _split_messages_for_compaction(self) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:

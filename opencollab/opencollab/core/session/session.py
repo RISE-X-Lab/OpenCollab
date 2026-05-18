@@ -6,8 +6,9 @@ import copy
 from opencollab.core.agent import Agent
 from opencollab.core.env import Environment, LocalEnvironment
 from opencollab.core.llm import LLMClient
+from opencollab.core.session.autosave import AutoSaveSubscriber
 from opencollab.core.session.compactor import DEFAULT_COMPACTION_THRESHOLD, ContextCompactor
-from opencollab.core.session.events import EventBus, EventSink
+from opencollab.core.session.events import EventBus, EventSink, SessionEvent
 from opencollab.core.session.runner import SessionRunner
 from opencollab.core.session.state import SessionPhase, SessionState
 from opencollab.core.session.storage import SessionStore
@@ -51,6 +52,8 @@ class Session:
         self._permission_policy = permission_policy
         self._auto_save_path = auto_save_path
         self.store = store if store is not None else SessionStore()
+        if auto_save_path:
+            self.event_bus.subscribe(AutoSaveSubscriber(self._auto_save))
 
         system_content = agent.system_prompt
         if repo_map:
@@ -83,7 +86,6 @@ class Session:
             event_bus=self.event_bus,
             tracer=self.tracer,
             compaction_threshold=self.compaction_threshold,
-            auto_save=self._auto_save,
         )
         self.runner = SessionRunner(
             agent=self.agent,
@@ -95,7 +97,6 @@ class Session:
             tracer=self.tracer,
             max_budget_tokens=self.max_budget_tokens,
             max_steps=self.max_steps,
-            auto_save=self._auto_save,
         )
 
     @property
@@ -166,9 +167,17 @@ class Session:
     async def add_user_message(self, content: str) -> None:
         self.state.append_message({"role": "user", "content": content})
         self.state.reset_for_user_turn()
-        self._auto_save()
+        await self.event_bus.emit(SessionEvent(type="user_message_appended"))
 
     def snapshot(self) -> Session:
+        # Reach into _targets to skip the internal AutoSaveSubscriber — the
+        # snapshot intentionally does not inherit auto-save (no auto_save_path
+        # is passed below, so no new subscriber is created either).
+        external_sink: EventSink | None = None
+        for target in self.event_bus._targets:
+            if not isinstance(target, AutoSaveSubscriber):
+                external_sink = target  # type: ignore[assignment]
+                break
         new = Session(
             agent=self.agent,
             env=self.env,
@@ -176,7 +185,7 @@ class Session:
             max_budget_tokens=self.max_budget_tokens,
             max_steps=self.max_steps,
             compaction_threshold=self.compaction_threshold,
-            event_sink=self.event_bus.sink,
+            event_sink=external_sink,
             permission_policy=self.permission_policy,
         )
         new.messages = copy.deepcopy(self.messages)

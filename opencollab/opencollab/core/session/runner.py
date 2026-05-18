@@ -24,7 +24,6 @@ class SessionRunner:
         tracer: Any = None,
         max_budget_tokens: int = 200_000,
         max_steps: int = 100,
-        auto_save=None,
     ):
         self.agent = agent
         self.state = state
@@ -35,7 +34,6 @@ class SessionRunner:
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
         self.max_steps = max_steps
-        self.auto_save = auto_save
         self._pending_response: LLMResponse | None = None
         self._pending_latency: float = 0.0
 
@@ -111,8 +109,13 @@ class SessionRunner:
     async def _run_compaction(self) -> None:
         result = await self.compactor.compact(apply=False)
         result.apply_to(self.state)
-        if result.did_compact and self.auto_save:
-            self.auto_save()
+        if result.did_compact:
+            await self.event_bus.emit(
+                SessionEvent(
+                    type="compaction_applied",
+                    data={"tokens_after": self.state.used_tokens},
+                )
+            )
         self.state.set_phase(SessionPhase.CALLING_LLM)
 
     async def _run_llm_call(self) -> None:
@@ -208,8 +211,7 @@ class SessionRunner:
         self.state.append_message(assistant_msg)
 
     async def _finish_step(self, latency: float) -> None:
+        # AutoSaveSubscriber listens for step_end on the bus.
         await self.event_bus.emit(
             SessionEvent(type="step_end", data={"step": self.state.step_count, "latency": latency})
         )
-        if self.auto_save:
-            self.auto_save()

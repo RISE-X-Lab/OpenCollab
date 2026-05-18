@@ -25,7 +25,7 @@ from opencollab.core.session import SessionEvent
 class TUI:
     """Terminal UI that renders SessionEvents in real-time.
 
-    Consumes the event stream from Session (via on_event callback)
+    Consumes the event stream from Session (subscribed to its event bus)
     and renders streaming text, tool execution spinners, and status updates.
     """
 
@@ -40,7 +40,7 @@ class TUI:
         self._live_paused = False
 
     def event_handler(self, event: SessionEvent) -> None:
-        """Synchronous event handler — called by Session.on_event."""
+        """Synchronous event handler — subscribed to the Session event bus."""
         etype = event.type
 
         if etype == "text_delta":

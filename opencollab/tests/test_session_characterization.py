@@ -159,8 +159,8 @@ def test_event_bus_accepts_sync_and_async_callbacks():
 
     bus = EventBus(sync_callback)
     run(bus.emit(SessionEvent(type="sync_event")))
-    bus.on_event = async_callback
-    run(bus.emit(SessionEvent(type="async_event")))
+    bus2 = EventBus(async_callback)
+    run(bus2.emit(SessionEvent(type="async_event")))
 
     assert events == [("sync", "sync_event"), ("async", "async_event")]
 
