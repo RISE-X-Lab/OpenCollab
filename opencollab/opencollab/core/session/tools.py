@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-import hashlib
-import json
-import time
 from typing import Any, Awaitable, Callable, Protocol
 
 from opencollab.application.ports import SafetyPolicyPort
 from opencollab.application.tool_dispatch import execute_tool_with_runtime
+from opencollab.application.tool_execution import (
+    MAX_SIMILAR_CALLS,
+    MAX_TOOL_OUTPUT_CHARS,
+    ToolExecutionEventFactory,
+    ToolExecutionUseCase,
+)
 from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.core.session.events import EventBus, SessionEvent
 from opencollab.domain.session import SessionState
 from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, ToolProcessingResult
-
-# Loop detection (ref: opencode doom_loop detection — 3 identical calls)
-MAX_SIMILAR_CALLS = 3
-# Output truncation for tool results (ref: openclaw truncateOversizedToolResults)
-MAX_TOOL_OUTPUT_CHARS = 16_000
 
 
 class PermissionPolicy(Protocol):
@@ -53,122 +51,57 @@ class ToolCallProcessor:
         self.safety_policy = safety_policy if safety_policy is not None else interceptor
         # Compatibility alias for older tests/call sites; new code should use safety_policy.
         self.interceptor = self.safety_policy
-
-    async def process(self, tool_calls: list[dict]) -> ToolProcessingResult:
-        result = ToolProcessingResult()
-        recent_call_hashes = list(self.state.recent_call_hashes)
-
-        for tc in tool_calls:
-            func = tc["function"]
-            tool_name = func["name"]
-            tool_id = tc["id"]
-
-            try:
-                args = self._parse_tool_args(func)
-            except json.JSONDecodeError:
-                result.messages_to_append.append({
-                    "role": "tool",
-                    "tool_call_id": tool_id,
-                    "content": f"Error: invalid JSON arguments: {func['arguments'][:200]}",
-                })
-                continue
-
-            call_hash = self._tool_call_hash(tool_name, args)
-            result.recent_hash_updates.append(call_hash)
-            recent_call_hashes.append(call_hash)
-            if len(recent_call_hashes) > MAX_CALL_HASH_WINDOW:
-                recent_call_hashes = recent_call_hashes[-MAX_CALL_HASH_WINDOW:]
-
-            recent_same = self._count_recent_similar_calls(recent_call_hashes, call_hash)
-            if recent_same >= MAX_SIMILAR_CALLS:
-                warning = (
-                    f"[Loop detected: tool '{tool_name}' called {recent_same} times with identical arguments. "
-                    f"You are stuck in a loop. Try a completely different approach or ask for help.]"
-                )
-                result.messages_to_append.append({"role": "tool", "tool_call_id": tool_id, "content": warning})
-                result.loop_detections.append({"tool": tool_name, "count": recent_same})
-                await self.event_bus.emit(
-                    SessionEvent(type="loop_detected", data={"tool": tool_name, "count": recent_same})
-                )
-                continue
-
-            tool = self._find_tool(tool_name)
-            if not tool:
-                result.messages_to_append.append({
-                    "role": "tool",
-                    "tool_call_id": tool_id,
-                    "content": f"Error: unknown tool '{tool_name}'. Available: {[t.name for t in self.agent.tools]}",
-                })
-                continue
-
-            await self.event_bus.emit(SessionEvent(type="tool_start", data={"tool": tool_name, "args": args}))
-
-            tool_output, tool_latency = await self._execute_tool(tool, args)
-            tool_output = self._truncate_tool_result(tool_output)
-
-            if self.tracer:
-                # Cap result in trace to 4k to keep trajectory files manageable
-                trace_result = (
-                    tool_output
-                    if len(tool_output) <= 4096
-                    else tool_output[:2048] + "\n...[truncated]...\n" + tool_output[-2048:]
-                )
-                self.tracer.log_step(
-                    step_type="tool_exec",
-                    payload={
-                        "tool": tool_name,
-                        "args": args,
-                        "result_len": len(tool_output),
-                        "result": trace_result,
-                    },
-                    tokens=0,
-                    latency=tool_latency,
-                )
-
-            result.messages_to_append.append(self._tool_result_message(tool_id, tool_output))
-            await self.event_bus.emit(SessionEvent(type="tool_end", data={"tool": tool_name, "latency": tool_latency}))
-
-        return result
-
-    def _parse_tool_args(self, func: dict) -> dict:
-        args_str = func["arguments"]
-        return json.loads(args_str) if args_str else {}
-
-    def _tool_call_hash(self, tool_name: str, args: dict) -> str:
-        return hashlib.md5(json.dumps({"name": tool_name, "args": args}, sort_keys=True).encode()).hexdigest()
-
-    def _count_recent_similar_calls(self, recent_call_hashes: list[str], call_hash: str) -> int:
-        # Check for repeated identical calls (ref: opencode doom_loop)
-        return sum(1 for h in recent_call_hashes[-MAX_SIMILAR_CALLS * 2 :] if h == call_hash)
-
-    def _find_tool(self, tool_name: str):
-        return self.agent.find_tool(tool_name)
-
-    async def _execute_tool(self, tool, args: dict) -> tuple[str, float]:
-        start = time.monotonic()
-        runtime = self._tool_runtime()
-        try:
-            result = await execute_tool_with_runtime(tool, args, runtime)
-        except PermissionError as e:
-            result = f"Permission denied: {e}"
-        except Exception as e:
-            result = f"Tool execution error: {type(e).__name__}: {e}"
-
-        return result, time.monotonic() - start
-
-    def _tool_runtime(self) -> ToolRuntime:
-        return ToolRuntime(
+        self._tool_execution = ToolExecutionUseCase(
+            agent=self.agent,
             environment=self.env,
-            safety_policy=self.safety_policy,
+            state=self.state,
+            event_publisher=self.event_bus,
+            event_factory=self._event_factory(),
+            tracer=self.tracer,
             permission_policy=self.permission_policy,
+            safety_policy=self.safety_policy,
+            dispatch_tool=execute_tool_with_runtime,
         )
 
+    async def process(self, tool_calls: list[dict]) -> ToolProcessingResult:
+        return await self._tool_execution.process(tool_calls)
+
+    def _parse_tool_args(self, func: dict) -> dict:
+        return self._tool_execution.parse_tool_args(func)
+
+    def _tool_call_hash(self, tool_name: str, args: dict) -> str:
+        return self._tool_execution.tool_call_hash(tool_name, args)
+
+    def _count_recent_similar_calls(self, recent_call_hashes: list[str], call_hash: str) -> int:
+        return self._tool_execution.count_recent_similar_calls(recent_call_hashes, call_hash)
+
+    def _find_tool(self, tool_name: str):
+        return self._tool_execution.find_tool(tool_name)
+
+    async def _execute_tool(self, tool, args: dict) -> tuple[str, float]:
+        return await self._tool_execution.execute_tool(tool, args)
+
+    def _tool_runtime(self) -> ToolRuntime:
+        return self._tool_execution.tool_runtime()
+
     def _truncate_tool_result(self, result: str) -> str:
-        if len(result) > MAX_TOOL_OUTPUT_CHARS:
-            return result[:MAX_TOOL_OUTPUT_CHARS // 2] + \
-                f"\n\n... [{len(result) - MAX_TOOL_OUTPUT_CHARS} chars truncated] ...\n\n" + \
-                result[-MAX_TOOL_OUTPUT_CHARS // 2:]
-        return result
+        return self._tool_execution.truncate_tool_result(result)
 
     def _tool_result_message(self, tool_id: str, result: str) -> dict[str, str]:
-        return {"role": "tool", "tool_call_id": tool_id, "content": result}
+        return self._tool_execution.tool_result_message(tool_id, result)
+
+    def _event_factory(self) -> ToolExecutionEventFactory:
+        return ToolExecutionEventFactory(
+            loop_detected=lambda tool, count: SessionEvent(
+                type="loop_detected",
+                data={"tool": tool, "count": count},
+            ),
+            tool_start=lambda tool, args: SessionEvent(
+                type="tool_start",
+                data={"tool": tool, "args": args},
+            ),
+            tool_end=lambda tool, latency: SessionEvent(
+                type="tool_end",
+                data={"tool": tool, "latency": latency},
+            ),
+        )

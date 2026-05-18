@@ -6,7 +6,6 @@ import pytest
 from opencollab.application.ports import ToolPort
 from opencollab.core.env import LocalEnvironment
 from opencollab.core.session import session as session_mod
-from opencollab.core.session import tools as tools_mod
 from opencollab.core.session.events import EventBus
 from opencollab.core.session.state import SessionState
 from opencollab.core.session.tools import ToolCallProcessor
@@ -201,7 +200,7 @@ def test_tool_call_processor_falls_back_to_legacy_execute(tmp_path):
     }]
 
 
-def test_tool_call_processor_delegates_runtime_dispatch(monkeypatch, tmp_path):
+def test_tool_call_processor_delegates_runtime_dispatch(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     env = LocalEnvironment(str(ws))
@@ -222,7 +221,7 @@ def test_tool_call_processor_delegates_runtime_dispatch(monkeypatch, tmp_path):
         calls.append((dispatch_tool, args, runtime))
         return "dispatched"
 
-    monkeypatch.setattr(tools_mod, "execute_tool_with_runtime", fake_dispatch)
+    proc._tool_execution.dispatch_tool = fake_dispatch
 
     result, _latency = asyncio.run(proc._execute_tool(tool, {"value": 1}))
 
@@ -239,10 +238,33 @@ def test_tool_call_processor_delegates_runtime_dispatch(monkeypatch, tmp_path):
 def test_tool_call_processor_does_not_expand_legacy_runtime_arguments():
     source = inspect.getsource(ToolCallProcessor._execute_tool)
 
-    assert "execute_tool_with_runtime" in source
+    assert "execute_tool(" in source
     assert "getattr(tool" not in source
     assert "confirm_fn=runtime.confirm_fn()" not in source
     assert "interceptor=runtime.safety_policy" not in source
+
+
+def test_tool_call_processor_process_delegates_to_application_use_case(monkeypatch, tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    proc = ToolCallProcessor(
+        agent=FakeAgent(),
+        env=LocalEnvironment(str(ws)),
+        state=SessionState(messages=[]),
+        event_bus=EventBus(None),
+    )
+    calls = []
+
+    async def fake_process(tool_calls):
+        calls.append(tool_calls)
+        return "processed"
+
+    monkeypatch.setattr(proc._tool_execution, "process", fake_process)
+
+    result = asyncio.run(proc.process([{"id": "call-1"}]))
+
+    assert result == "processed"
+    assert calls == [[{"id": "call-1"}]]
 
 
 def test_tool_port_describes_runtime_dispatch_not_legacy_execute():

@@ -43,6 +43,11 @@ class PermissionPort(Protocol):
         ...
 
 
+class EventPublisherPort(Protocol):
+    async def emit(self, event: Any) -> None:
+        ...
+
+
 class ToolPort(Protocol):
     name: str
     description: str
