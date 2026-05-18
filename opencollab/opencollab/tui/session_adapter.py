@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
-from opencollab.core.session import EventSink, PermissionPolicy, SessionEvent
+from opencollab.application.events import SessionRuntimeEvent, TeamEvent
+# Transitional: EventSink + PermissionPolicy stay sourced from core.session
+# as compatibility re-exports until REM-03/REM-04 narrow the ports further.
+from opencollab.core.session import EventSink, PermissionPolicy
 
 
 class SuspendableRender(Protocol):
@@ -14,10 +17,17 @@ class SuspendableRender(Protocol):
 
 
 class TuiEventSink(EventSink):
+    """Bus subscriber that accepts both runtime and team event families.
+
+    The dispatch lives inside the TUI itself (see ``cli.tui.TUI.event_handler``);
+    this sink is the bridge from the async event bus to the synchronous
+    TUI handler.
+    """
+
     def __init__(self, tui):
         self.tui = tui
 
-    async def emit(self, event: SessionEvent) -> None:
+    async def emit(self, event: Any) -> None:
         result = self.tui.event_handler(event)
         if asyncio.iscoroutine(result):
             await result

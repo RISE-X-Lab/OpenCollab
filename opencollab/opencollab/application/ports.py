@@ -62,3 +62,33 @@ class ToolPort(Protocol):
         runtime: "ToolRuntime",
     ) -> str:
         ...
+
+
+class TeammateSessionPort(Protocol):
+    """Subset of Session the team orchestrator drives a teammate through."""
+
+    used_tokens: int
+
+    async def add_user_message(self, content: str) -> None:
+        ...
+
+    async def run_loop(self) -> str:
+        ...
+
+
+class SessionFactoryPort(Protocol):
+    """Factory the team layer uses to build a teammate session.
+
+    Bootstrap binds this to the concrete teammate-session builder so the
+    team layer does not import ``opencollab.core.session.Session``.
+    """
+
+    def build_teammate_session(
+        self,
+        *,
+        role: str,
+        env: Any,
+        budget: int,
+        max_steps: int = 50,
+    ) -> TeammateSessionPort:
+        ...

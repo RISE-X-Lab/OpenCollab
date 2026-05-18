@@ -19,14 +19,17 @@ from rich.spinner import Spinner
 from rich.text import Text
 from rich.table import Table
 
-from opencollab.core.session import SessionEvent
+from opencollab.application.events import SessionRuntimeEvent, TeamEvent
 
 
 class TUI:
-    """Terminal UI that renders SessionEvents in real-time.
+    """Terminal UI that renders runtime + team events in real-time.
 
     Consumes the event stream from Session (subscribed to its event bus)
     and renders streaming text, tool execution spinners, and status updates.
+    The single ``event_handler`` accepts both ``SessionRuntimeEvent`` and
+    ``TeamEvent`` and dispatches to the appropriate handler so that team
+    delegation/review lifecycle no longer overloads session tool events.
     """
 
     def __init__(self, console: Console | None = None):
@@ -39,8 +42,19 @@ class TUI:
         self._live: Live | None = None
         self._live_paused = False
 
-    def event_handler(self, event: SessionEvent) -> None:
-        """Synchronous event handler — subscribed to the Session event bus."""
+    def event_handler(self, event: Any) -> None:
+        """Synchronous event handler — subscribed to the Session event bus.
+
+        Dispatches by the event class so session-runtime and team-orchestration
+        events stay in separate, narrow handlers without losing the single
+        bus fan-out the runtime currently relies on.
+        """
+        if isinstance(event, TeamEvent):
+            self._handle_team_event(event)
+            return
+        self._handle_session_event(event)
+
+    def _handle_session_event(self, event: Any) -> None:
         etype = event.type
 
         if etype == "text_delta":
@@ -60,11 +74,7 @@ class TUI:
             self._active_tools[label] = event.data
             preview = self._args_preview(args)
             self._append_activity(f"[cyan]{label} started[/cyan]{preview}")
-            if tool == "delegate" and role:
-                task = event.data.get("task", "")
-                suffix = f" - {task}" if task else ""
-                self._emit_status(f"[cyan]Teammate {role} started[/cyan]{suffix}")
-            elif tool == "delegate_task" and role:
+            if tool == "delegate_task" and role:
                 self._emit_status(f"[cyan]Lead delegated to {role}[/cyan]")
             self._refresh()
 
@@ -75,8 +85,6 @@ class TUI:
             self._active_tools.pop(label, None)
             latency = event.data.get("latency", 0.0)
             self._append_activity(f"[green]{label} finished[/green] ({latency:.1f}s)")
-            if tool == "delegate" and role:
-                self._emit_status(f"[green]Teammate {role} finished[/green] ({latency:.1f}s)")
             self._refresh()
 
         elif etype == "step_start":
@@ -98,6 +106,41 @@ class TUI:
         elif etype == "error":
             reason = event.data.get("reason", "unknown")
             self._emit_status(f"[red]Error: {reason}[/red]")
+
+    def _handle_team_event(self, event: TeamEvent) -> None:
+        etype = event.type
+
+        if etype == "delegation_started":
+            self._clear_thinking_status()
+            role = event.data.get("role", "")
+            task = event.data.get("task", "")
+            label = f"{role}:delegate" if role else "delegate"
+            self._active_tools[label] = dict(event.data)
+            self._append_activity(f"[cyan]{label} started[/cyan]")
+            if role:
+                suffix = f" - {task}" if task else ""
+                self._emit_status(f"[cyan]Teammate {role} started[/cyan]{suffix}")
+            self._refresh()
+
+        elif etype == "delegation_completed":
+            role = event.data.get("role", "")
+            label = f"{role}:delegate" if role else "delegate"
+            self._active_tools.pop(label, None)
+            latency = event.data.get("latency", 0.0)
+            self._append_activity(f"[green]{label} finished[/green] ({latency:.1f}s)")
+            if role:
+                self._emit_status(f"[green]Teammate {role} finished[/green] ({latency:.1f}s)")
+            self._refresh()
+
+        elif etype == "review_started":
+            self._clear_thinking_status()
+            self._active_tools["review_loop"] = dict(event.data)
+            self._append_activity("[cyan]review_loop started[/cyan]")
+            self._refresh()
+
+        elif etype == "review_completed":
+            self._active_tools.pop("review_loop", None)
+            self._refresh()
 
     def _emit_status(self, message: str) -> None:
         """Route status lines to Live when active; print directly otherwise."""

@@ -1,4 +1,10 @@
-"""Construct a teammate Session given a role, environment, and shared config.
+"""Construct teammate (and lead) Sessions for the Team layer.
+
+Default implementation of ``application.ports.SessionFactoryPort``. The
+team orchestrator uses a factory injected at construction time so it does
+not import ``opencollab.core.session.Session`` directly; this module is
+the documented transitional default that still touches the concrete
+``Session`` class — bootstrap binds it to the port.
 
 Centralizes the per-teammate Agent + Session wiring and the budget split
 (reserve some headroom for the Lead's follow-up turns).
@@ -7,10 +13,14 @@ Centralizes the per-teammate Agent + Session wiring and the budget split
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 from opencollab.application.ports import SafetyPolicyFactory
 from opencollab.core.agent import Agent
 from opencollab.core.env import Environment
+# Transitional: this module is the documented default implementation of
+# SessionFactoryPort. Concrete Session/EventBus/PermissionPolicy types are
+# imported here so the team orchestrator does not need to.
 from opencollab.core.session import EventBus, PermissionPolicy, Session
 from opencollab.core.tracer import Tracer
 from opencollab.team.prompts import get_role_prompt
@@ -90,3 +100,59 @@ def build_teammate_session(
         safety_policy=safety_policy,
         repo_map=cfg.repo_map,
     )
+
+
+class DefaultSessionFactory:
+    """Default ``SessionFactoryPort`` implementation used by ``Team``.
+
+    Holds the shared ``TeammateConfig`` so the team orchestrator can build
+    teammate sessions by role/env/budget without re-supplying LLM config.
+    Also exposes ``build_lead_session`` so the orchestrator can construct
+    the Lead session without importing ``Session`` directly.
+    """
+
+    def __init__(self, cfg: TeammateConfig):
+        self._cfg = cfg
+
+    def build_teammate_session(
+        self,
+        *,
+        role: str,
+        env: Any,
+        budget: int,
+        max_steps: int = 50,
+    ) -> Session:
+        return build_teammate_session(
+            role=role,
+            env=env,
+            cfg=self._cfg,
+            budget=budget,
+            max_steps=max_steps,
+        )
+
+    def build_lead_session(
+        self,
+        *,
+        agent: Agent,
+        env: Environment,
+        tracer: Tracer | None,
+        max_budget_tokens: int,
+        event_sink: Any,
+        permission_policy: PermissionPolicy | None,
+        safety_policy: Any,
+        repo_map: str | None,
+        max_steps: int | None = None,
+    ) -> Session:
+        kwargs: dict[str, Any] = dict(
+            agent=agent,
+            env=env,
+            tracer=tracer,
+            max_budget_tokens=max_budget_tokens,
+            event_sink=event_sink,
+            permission_policy=permission_policy,
+            safety_policy=safety_policy,
+            repo_map=repo_map,
+        )
+        if max_steps is not None:
+            kwargs["max_steps"] = max_steps
+        return Session(**kwargs)

@@ -17,11 +17,18 @@ Ref:
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Awaitable
+from typing import Any, Awaitable, Callable
 
-from opencollab.application.ports import SafetyPolicyFactory, SafetyPolicyPort
+from opencollab.application.events import TeamEvent
+from opencollab.application.ports import (
+    SafetyPolicyFactory,
+    SafetyPolicyPort,
+    SessionFactoryPort,
+)
 from opencollab.core.agent import Agent
-from opencollab.core.session import EventBus, EventSink, PermissionPolicy, Session, SessionEvent
+# Transitional: EventBus / EventSink / PermissionPolicy stay sourced from
+# core.session as compatibility re-exports (see core/session/events.py).
+from opencollab.core.session import EventBus, EventSink, PermissionPolicy
 from opencollab.core.env import Environment, LocalEnvironment, WorktreeEnvironment
 from opencollab.core.tracer import Tracer
 from opencollab.tools.base import Tool
@@ -29,8 +36,8 @@ from opencollab.tools.bash import BashTool
 from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.team.prompts import LEAD_SYSTEM_PROMPT
 from opencollab.team.teammate_factory import (
+    DefaultSessionFactory,
     TeammateConfig,
-    build_teammate_session,
     split_budget,
 )
 from opencollab.team.worktree_pool import WorktreePool
@@ -166,6 +173,7 @@ class Team:
         lead_env: Environment | None = None,
         lead_max_steps: int | None = None,
         safety_policy_factory: SafetyPolicyFactory | None = None,
+        session_factory: SessionFactoryPort | None = None,
     ):
         self.workspace = workspace
         self.model = model
@@ -180,6 +188,23 @@ class Team:
         self._total_budget = max_budget_tokens
         self._used_tokens = 0
         self._worktree_pool = WorktreePool(workspace, use_worktrees=use_worktrees)
+
+        self._teammate_cfg = TeammateConfig(
+            model=model,
+            provider=provider,
+            api_key=api_key,
+            base_url=base_url,
+            tracer=tracer,
+            event_bus=self.event_bus,
+            permission_policy=permission_policy,
+            safety_policy_factory=safety_policy_factory,
+            repo_map=repo_map,
+        )
+        self._session_factory: SessionFactoryPort = (
+            session_factory
+            if session_factory is not None
+            else DefaultSessionFactory(self._teammate_cfg)
+        )
 
         # Build Lead agent with delegation tools
         delegate_tool = DelegateTaskTool(self)
@@ -204,19 +229,17 @@ class Team:
             base_url=base_url,
         )
 
-        lead_session_kwargs = {
-            "agent": self.lead_agent,
-            "env": lead_runtime_env,
-            "tracer": tracer,
-            "max_budget_tokens": max_budget_tokens,
-            "event_sink": self.event_bus,
-            "permission_policy": permission_policy,
-            "safety_policy": lead_safety_policy,
-            "repo_map": repo_map,
-        }
-        if lead_max_steps is not None:
-            lead_session_kwargs["max_steps"] = lead_max_steps
-        self.lead_session = Session(**lead_session_kwargs)
+        self.lead_session = self._session_factory.build_lead_session(
+            agent=self.lead_agent,
+            env=lead_runtime_env,
+            tracer=tracer,
+            max_budget_tokens=max_budget_tokens,
+            event_sink=self.event_bus,
+            permission_policy=permission_policy,
+            safety_policy=lead_safety_policy,
+            repo_map=repo_map,
+            max_steps=lead_max_steps,
+        )
 
     def _make_basic_tools(self) -> list[Tool]:
         """Standard tool set for the Lead.
@@ -241,26 +264,15 @@ class Team:
     async def delegate(self, role: str, task: str, context: str = "") -> str:
         """Spawn an isolated teammate to execute a task. Return its summary."""
         start = time.monotonic()
-        await self.event_bus.emit(SessionEvent(
-            type="tool_start",
+        await self.event_bus.emit(TeamEvent(
+            type="delegation_started",
             data={"tool": "delegate", "role": role, "task": task[:100]},
         ))
 
         env = await self._worktree_pool.acquire(role)
-        teammate_cfg = TeammateConfig(
-            model=self.model,
-            provider=self.provider,
-            api_key=self.api_key,
-            base_url=self.base_url,
-            tracer=self.tracer,
-            event_bus=self.event_bus,
-            permission_policy=self.permission_policy,
-            safety_policy_factory=self.safety_policy_factory,
-            repo_map=self.repo_map,
-        )
         budget = split_budget(self._total_budget, self._used_tokens)
-        teammate_session = build_teammate_session(
-            role=role, env=env, cfg=teammate_cfg, budget=budget,
+        teammate_session = self._session_factory.build_teammate_session(
+            role=role, env=env, budget=budget,
         )
 
         task_message = f"Context:\n{context}\n\nTask:\n{task}" if context else task
@@ -276,9 +288,14 @@ class Team:
                 tokens=teammate_session.used_tokens,
                 latency=latency,
             )
-        await self.event_bus.emit(SessionEvent(
-            type="tool_end",
-            data={"tool": "delegate", "role": role, "latency": latency},
+        await self.event_bus.emit(TeamEvent(
+            type="delegation_completed",
+            data={
+                "tool": "delegate",
+                "role": role,
+                "latency": latency,
+                "result_len": len(result),
+            },
         ))
 
         return await self._append_worktree_diff(env, result)
@@ -310,9 +327,13 @@ class Team:
         last_result = ""
 
         for iteration in range(1, max_iterations + 1):
-            await self.event_bus.emit(SessionEvent(
-                type="tool_start",
-                data={"tool": "review_loop", "iteration": iteration, "max": max_iterations},
+            await self.event_bus.emit(TeamEvent(
+                type="review_started",
+                data={
+                    "tool": "review_loop",
+                    "iteration": iteration,
+                    "max": max_iterations,
+                },
             ))
 
             # Step 1: Coder implements
@@ -333,7 +354,19 @@ class Team:
             review_result = await self.delegate("reviewer", review_prompt)
 
             # Check for structured verdict (line must start with "VERDICT: PASS")
-            if any(line.strip().upper() == "VERDICT: PASS" for line in review_result.splitlines()):
+            passed = any(
+                line.strip().upper() == "VERDICT: PASS"
+                for line in review_result.splitlines()
+            )
+            await self.event_bus.emit(TeamEvent(
+                type="review_completed",
+                data={
+                    "tool": "review_loop",
+                    "iteration": iteration,
+                    "verdict": "PASS" if passed else "FAIL",
+                },
+            ))
+            if passed:
                 return (
                     f"[Self-Collaboration: PASSED after {iteration} iteration(s)]\n\n"
                     f"{code_result}"

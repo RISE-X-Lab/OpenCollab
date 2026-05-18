@@ -1,23 +1,37 @@
+"""Session event sink/bus.
+
+The event value type now lives in ``opencollab.application.events``. This
+module re-exports it as ``SessionEvent`` for backward compatibility — every
+existing ``from opencollab.core.session import SessionEvent`` import keeps
+resolving to the same dataclass.
+
+The bus accepts either ``SessionRuntimeEvent`` or ``TeamEvent`` (both are
+duck-compatible: they carry ``type`` and ``data`` attributes), so team
+orchestration and the session run loop share one fan-out channel during
+the Step12 migration.
+"""
+
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
-
-@dataclass
-class SessionEvent:
-    """Lightweight event emitted by Session-compatible loops."""
-
-    type: str
-    data: dict[str, Any] = field(default_factory=dict)
+from opencollab.application.events import SessionRuntimeEvent as _SessionRuntimeEvent
+from opencollab.application.events import TeamEvent as _TeamEvent
 
 
-EventCallback = Callable[[SessionEvent], Awaitable[None] | None]
+# Backward-compatible alias. Production code should prefer SessionRuntimeEvent
+# from opencollab.application.events for new call sites.
+SessionEvent = _SessionRuntimeEvent
+SessionRuntimeEvent = _SessionRuntimeEvent
+TeamEvent = _TeamEvent
+
+
+EventCallback = Callable[[Any], Awaitable[None] | None]
 
 
 class EventSink(Protocol):
-    async def emit(self, event: SessionEvent) -> None:
+    async def emit(self, event: Any) -> None:
         ...
 
 
@@ -37,7 +51,7 @@ class EventBus:
         """First subscribed target (for snapshot/build code that needs one)."""
         return self._targets[0] if self._targets else None
 
-    async def emit(self, event: SessionEvent) -> None:
+    async def emit(self, event: Any) -> None:
         for target in self._targets:
             try:
                 if hasattr(target, "emit"):
@@ -49,3 +63,13 @@ class EventBus:
             except Exception:
                 # Subscriber failure must not break siblings or the loop.
                 continue
+
+
+__all__ = [
+    "EventBus",
+    "EventCallback",
+    "EventSink",
+    "SessionEvent",
+    "SessionRuntimeEvent",
+    "TeamEvent",
+]
