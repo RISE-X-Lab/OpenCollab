@@ -1,0 +1,238 @@
+@startuml opencollab_module_map_v2
+title OpenCollab - Module Dependency Map v2 (after decoupling steps)
+
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam defaultFontName Helvetica
+
+' ============================================================
+' Layers
+' ============================================================
+
+package "UI / CLI layer" as UI #LightBlue {
+  [cli.main\n(Typer entry,\nREPL loop)] as CLIMain
+  [cli.tui\n(Rich Live,\nevent rendering)] as TUI
+  [tui.session_adapter\n(TuiEventSink,\nTuiPermissionPolicy)] as TuiAdapter
+}
+
+package "Composition layer" as BOOT #AliceBlue {
+  [bootstrap.runtime\n(RuntimeContext,\nbuild_runtime_context)] as Runtime
+  [bootstrap.session_factory\n(build_chat_session,\nbuild_team)] as SessionFactory
+  [bootstrap.tool_factory\n(build_default_tools)] as ToolFactory
+}
+
+package "Multi-agent layer" as TEAM #LightYellow {
+  [team.orchestrator\n(Team,\ndelegation tools)] as Team
+  [team.teammate_factory\n(TeammateConfig,\nteammate Session builder)] as TeammateFactory
+  [team.worktree_pool\n(WorktreePool)] as WorktreePool
+  [team.prompts\n(lead + role prompts)] as TeamPrompts
+}
+
+package "Headless evaluator" as HARNESS #LightYellow {
+  [harness.evaluator\n(EvalTask, EvalResult,\nrun_eval_task/batch)] as Eval
+}
+
+package "Core domain - Session runtime" as CORESESSION #LightGreen {
+  [core.session.session\n(Session facade)] as Session
+  [core.session.runner\n(SessionRunner,\nphase state machine)] as Runner
+  [core.session.state\n(SessionState,\nSessionPhase)] as State
+  [core.session.tools\n(ToolCallProcessor,\nPermissionPolicy)] as ToolProc
+  [core.session.compactor\n(ContextCompactor)] as Compactor
+  [core.session.events\n(EventBus, EventSink,\nSessionEvent)] as Events
+  [core.session.autosave\n(AutoSaveSubscriber)] as AutoSave
+  [core.session.storage\n(SessionStore JSONL)] as Store
+}
+
+package "Core domain - config" as COREDOMAIN #LightGreen {
+  [core.agent\n(Agent dataclass -\nstateless config)] as Agent
+}
+
+package "Adapters / Infra" as INFRA #Pink {
+  [core.llm\n(LLMClient, provider SDKs)] as LLM
+  [core.env\n(Environment, Local,\nWorktree, Docker)] as Env
+  [core.tracer\n(JSONL Tracer)] as Tracer
+  [core.config\n(Pydantic config,\n.env loader)] as Config
+  [core.context\n(get_repo_map)] as Context
+}
+
+package "Tools (adapters around Env)" as TOOLS #Pink {
+  [tools.base\n(Tool base)] as ToolBase
+  [tools.bash] as Bash
+  [tools.fs\n(read/write/grep)] as FS
+  [tools.safety\n(SandboxInterceptor)] as Safety
+  [tools.human\n(AskUserTool)] as Human
+  [tools.mcp] as MCP
+}
+
+' ============================================================
+' Entry / composition dependencies
+' ============================================================
+
+CLIMain --> Config         : load defaults
+CLIMain --> TUI            : print / Live
+CLIMain --> TuiAdapter     : wraps TUI
+CLIMain --> Runtime        : build context
+CLIMain --> SessionFactory : chat / team wiring
+CLIMain --> Eval           : eval mode
+
+Runtime --> Context        : get_repo_map
+Runtime --> Tracer         : optional --trace
+Runtime --> Events         : EventSink type
+Runtime --> ToolProc       : PermissionPolicy type
+
+SessionFactory --> Runtime : RuntimeContext
+SessionFactory --> ToolFactory
+SessionFactory --> Agent
+SessionFactory --> Env     : LocalEnvironment
+SessionFactory --> Session : create / load
+SessionFactory --> Team    : team mode
+SessionFactory --> Human   : interactive tool
+
+ToolFactory --> ToolBase
+ToolFactory --> Bash
+ToolFactory --> FS
+ToolFactory --> Human
+
+TuiAdapter --> Events      : implements EventSink
+TuiAdapter --> ToolProc    : implements PermissionPolicy
+TuiAdapter ..> TUI         : forwards / suspends render
+
+' ============================================================
+' Team dependencies
+' ============================================================
+
+Team --> Agent
+Team --> Session           : lead Session
+Team --> Events            : shared EventBus
+Team --> Env               : Local / Worktree types
+Team --> Tracer
+Team --> Bash
+Team --> FS
+Team --> TeamPrompts
+Team --> TeammateFactory
+Team --> WorktreePool
+
+TeammateFactory --> Agent
+TeammateFactory --> Session
+TeammateFactory --> Env
+TeammateFactory --> Events
+TeammateFactory --> ToolProc : PermissionPolicy type
+TeammateFactory --> Tracer
+TeammateFactory --> Bash
+TeammateFactory --> FS
+TeammateFactory --> TeamPrompts
+
+WorktreePool --> Env       : LocalEnvironment /\nWorktreeEnvironment
+
+' ============================================================
+' Harness dependencies
+' ============================================================
+
+Eval --> Agent
+Eval --> Session
+Eval --> Env               : DockerEnvironment /\nLocalEnvironment
+Eval --> Tracer
+Eval --> Bash
+Eval --> FS
+
+' ============================================================
+' Session package dependencies
+' ============================================================
+
+Session --> Runner
+Session --> State
+Session --> ToolProc
+Session --> Compactor
+Session --> Events
+Session --> AutoSave
+Session --> Store
+Session --> Agent
+Session --> Env
+Session --> LLM
+Session --> Tracer
+
+Runner --> State
+Runner --> ToolProc
+Runner --> Compactor
+Runner --> Events
+Runner --> LLM
+Runner --> Tracer
+
+ToolProc --> State
+ToolProc --> Events
+ToolProc --> Agent
+ToolProc --> Env
+ToolProc --> Safety
+ToolProc --> Tracer
+
+Compactor --> State
+Compactor --> Events
+Compactor --> LLM
+Compactor --> Tracer
+
+AutoSave --> Events        : implements EventSink
+AutoSave ..> Session       : save_fn callback
+Store ..> State            : load/save messages
+
+' ============================================================
+' Tool adapter dependencies
+' ============================================================
+
+ToolBase <|-- Bash
+ToolBase <|-- FS
+ToolBase <|-- Human
+ToolBase <|-- MCP
+
+Bash --> Safety
+Bash --> Env
+FS --> Safety
+FS --> Env
+Human --> Safety           : signature type only
+MCP --> Safety             : signature type only
+
+Agent --> ToolBase         : owns Tool instances
+
+' Team delegation tools are Tool subclasses defined in team.orchestrator.
+ToolBase <|-- Team         : DelegateTaskTool /\nDelegateWithReviewTool
+
+' ============================================================
+' Updated hotspot notes
+' ============================================================
+
+note right of CLIMain
+  v2: CLI no longer builds Agent,
+  tools, Env, Session, Team, or tracer.
+  It still owns command parsing, config
+  resolution, and the REPL loop.
+end note
+
+note right of Runtime
+  New composition boundary.
+  Holds config, repo_map, tracer,
+  EventSink, and PermissionPolicy.
+  Does not own Environment or Safety.
+end note
+
+note right of Session
+  Public facade over SessionState
+  and runtime collaborators.
+  AutoSave is now an EventSink
+  subscriber, not runner plumbing.
+end note
+
+note right of Team
+  Team is split into orchestrator,
+  teammate_factory, and worktree_pool.
+  Remaining coupling: delegation progress
+  still uses SessionEvent names.
+end note
+
+note right of TUI
+  No class-level active singleton.
+  UI dependency is explicit through
+  TuiEventSink / TuiPermissionPolicy.
+end note
+
+@enduml
