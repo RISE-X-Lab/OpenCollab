@@ -50,7 +50,7 @@ class FileReadTool(Tool):
     ) -> str:
         runtime = tool_runtime_from_legacy(
             env=env,
-            interceptor=interceptor,
+            safety_policy=interceptor,
             confirm_fn=confirm_fn,
         )
         return await self.execute_with_runtime(params, runtime)
@@ -144,7 +144,7 @@ class FileWriteTool(Tool):
     ) -> str:
         runtime = tool_runtime_from_legacy(
             env=env,
-            interceptor=interceptor,
+            safety_policy=interceptor,
             confirm_fn=confirm_fn,
         )
         return await self.execute_with_runtime(params, runtime)
@@ -241,7 +241,7 @@ class GrepTool(Tool):
     ) -> str:
         runtime = tool_runtime_from_legacy(
             env=env,
-            interceptor=interceptor,
+            safety_policy=interceptor,
             confirm_fn=confirm_fn,
         )
         return await self.execute_with_runtime(params, runtime)

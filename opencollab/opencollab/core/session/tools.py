@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
 from opencollab.application.ports import SafetyPolicyPort
+from opencollab.application.tool_dispatch import execute_tool_with_runtime
 from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.core.session.events import EventBus, SessionEvent
 from opencollab.core.session.state import SessionState
@@ -65,6 +66,7 @@ class ToolCallProcessor:
         self.tracer = tracer
         self.permission_policy = permission_policy
         self.safety_policy = safety_policy if safety_policy is not None else interceptor
+        # Compatibility alias for older tests/call sites; new code should use safety_policy.
         self.interceptor = self.safety_policy
 
     async def process(self, tool_calls: list[dict]) -> ToolProcessingResult:
@@ -161,16 +163,7 @@ class ToolCallProcessor:
         start = time.monotonic()
         runtime = self._tool_runtime()
         try:
-            execute_with_runtime = getattr(tool, "execute_with_runtime", None)
-            if execute_with_runtime is not None:
-                result = await execute_with_runtime(args, runtime)
-            else:
-                result = await tool.execute(
-                    args,
-                    env=runtime.environment,
-                    interceptor=runtime.safety_policy,
-                    confirm_fn=runtime.confirm_fn(),
-                )
+            result = await execute_tool_with_runtime(tool, args, runtime)
         except PermissionError as e:
             result = f"Permission denied: {e}"
         except Exception as e:

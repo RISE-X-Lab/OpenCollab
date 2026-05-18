@@ -148,7 +148,7 @@ def test_tool_runtime_from_legacy_wraps_confirm_callback():
     safety = SpySafetyPolicy()
     runtime = tool_runtime_from_legacy(
         env=env,
-        interceptor=safety,
+        safety_policy=safety,
         confirm_fn=confirm,
     )
 
@@ -156,6 +156,18 @@ def test_tool_runtime_from_legacy_wraps_confirm_callback():
     assert runtime.safety_policy is safety
     assert runtime.confirm_fn() is not None
     assert run(runtime.confirm_fn()("Proceed?")) is True
+
+
+def test_tool_runtime_from_legacy_keeps_interceptor_alias():
+    safety = SpySafetyPolicy()
+
+    runtime = tool_runtime_from_legacy(
+        env=None,
+        interceptor=safety,
+        confirm_fn=None,
+    )
+
+    assert runtime.safety_policy is safety
 
 
 def test_file_read_uses_safety_policy_path_before_read(tmp_path):

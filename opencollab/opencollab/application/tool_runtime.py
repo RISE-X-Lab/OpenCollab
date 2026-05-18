@@ -29,11 +29,12 @@ class CallbackPermissionPort:
 def tool_runtime_from_legacy(
     *,
     env: EnvironmentPort | None,
-    interceptor: SafetyPolicyPort | None,
-    confirm_fn: Callable[[str], Awaitable[bool]] | None,
+    safety_policy: SafetyPolicyPort | None = None,
+    confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
+    interceptor: SafetyPolicyPort | None = None,
 ) -> ToolRuntime:
     return ToolRuntime(
         environment=env,
-        safety_policy=interceptor,
+        safety_policy=safety_policy if safety_policy is not None else interceptor,
         permission_policy=CallbackPermissionPort(confirm_fn) if confirm_fn else None,
     )

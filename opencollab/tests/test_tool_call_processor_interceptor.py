@@ -6,6 +6,7 @@ import pytest
 from opencollab.application.ports import ToolPort
 from opencollab.core.env import LocalEnvironment
 from opencollab.core.session import session as session_mod
+from opencollab.core.session import tools as tools_mod
 from opencollab.core.session.events import EventBus
 from opencollab.core.session.state import SessionState
 from opencollab.core.session.tools import ToolCallProcessor
@@ -198,6 +199,50 @@ def test_tool_call_processor_falls_back_to_legacy_execute(tmp_path):
         "interceptor": safety_policy,
         "confirm_fn": permission_policy.confirm,
     }]
+
+
+def test_tool_call_processor_delegates_runtime_dispatch(monkeypatch, tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    env = LocalEnvironment(str(ws))
+    safety_policy = SandboxInterceptor(str(ws))
+    permission_policy = FakePermissionPolicy()
+    proc = ToolCallProcessor(
+        agent=FakeAgent(),
+        env=env,
+        state=SessionState(messages=[]),
+        event_bus=EventBus(None),
+        safety_policy=safety_policy,
+        permission_policy=permission_policy,
+    )
+    tool = RuntimeAwareTool()
+    calls = []
+
+    async def fake_dispatch(dispatch_tool, args, runtime):
+        calls.append((dispatch_tool, args, runtime))
+        return "dispatched"
+
+    monkeypatch.setattr(tools_mod, "execute_tool_with_runtime", fake_dispatch)
+
+    result, _latency = asyncio.run(proc._execute_tool(tool, {"value": 1}))
+
+    assert result == "dispatched"
+    assert len(calls) == 1
+    dispatch_tool, args, runtime = calls[0]
+    assert dispatch_tool is tool
+    assert args == {"value": 1}
+    assert runtime.environment is env
+    assert runtime.safety_policy is safety_policy
+    assert runtime.permission_policy is permission_policy
+
+
+def test_tool_call_processor_does_not_expand_legacy_runtime_arguments():
+    source = inspect.getsource(ToolCallProcessor._execute_tool)
+
+    assert "execute_tool_with_runtime" in source
+    assert "getattr(tool" not in source
+    assert "confirm_fn=runtime.confirm_fn()" not in source
+    assert "interceptor=runtime.safety_policy" not in source
 
 
 def test_tool_port_describes_runtime_dispatch_not_legacy_execute():
