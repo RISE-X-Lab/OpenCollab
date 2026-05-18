@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any, Callable, Awaitable
 
 from opencollab.application.ports import EnvironmentPort, SafetyPolicyPort
+from opencollab.application.tool_runtime import CallbackPermissionPort, ToolRuntime
 from opencollab.tools.base import Tool
 
 # Max chars to keep from stdout/stderr (ref: user feedback blind spot #1)
@@ -53,15 +54,29 @@ class BashTool(Tool):
         interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
+        runtime = ToolRuntime(
+            environment=env,
+            safety_policy=interceptor,
+            permission_policy=CallbackPermissionPort(confirm_fn) if confirm_fn else None,
+        )
+        return await self.execute_with_runtime(params, runtime)
+
+    async def execute_with_runtime(
+        self,
+        params: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
         cmd = params["command"]
         timeout = params.get("timeout", 120.0)
+        env = runtime.environment
+        safety_policy = runtime.safety_policy
 
         if not env:
             return "Error: no execution environment available."
 
         # Safety checks
-        if interceptor:
-            await interceptor.check_cmd_interactive(cmd, confirm_fn)
+        if safety_policy:
+            await safety_policy.check_cmd_interactive(cmd, runtime.confirm_fn())
 
         result = await env.exec_cmd(cmd, timeout=timeout)
 

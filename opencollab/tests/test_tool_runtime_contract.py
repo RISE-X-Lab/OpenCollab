@@ -4,8 +4,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.core.env import LocalEnvironment
 from opencollab.tools.bash import BashTool
+from opencollab.tools.base import Tool
 from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.tools.human import AskUserTool
 from opencollab.tools.safety import SandboxInterceptor
@@ -55,8 +57,24 @@ class FakePermissionPolicy:
         return True
 
 
+class LegacyEchoTool(Tool):
+    async def execute(self, params, env=None, interceptor=None, confirm_fn=None):
+        if interceptor:
+            await interceptor.check_cmd_interactive(params["command"], confirm_fn)
+        result = await env.exec_cmd(params["command"])
+        return result.stdout
+
+
 def test_bash_tool_without_env_returns_existing_error():
     result = run(BashTool().execute({"command": "pwd"}))
+
+    assert result == "Error: no execution environment available."
+
+
+def test_bash_tool_execute_with_runtime_without_env_returns_existing_error():
+    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+
+    result = run(BashTool().execute_with_runtime({"command": "pwd"}, runtime))
 
     assert result == "Error: no execution environment available."
 
@@ -72,12 +90,36 @@ def test_bash_tool_checks_safety_policy_before_executing():
     assert "stdout:\nok" in result
 
 
+def test_bash_tool_execute_with_runtime_passes_permission_confirm_fn():
+    env = FakeEnv(stdout="ok\n")
+    safety = SpySafetyPolicy()
+    permission_policy = FakePermissionPolicy()
+    runtime = ToolRuntime(environment=env, safety_policy=safety, permission_policy=permission_policy)
+
+    result = run(BashTool().execute_with_runtime({"command": "echo ok"}, runtime))
+
+    assert safety.cmd_calls == [("echo ok", permission_policy.confirm)]
+    assert env.exec_calls == [("echo ok", 120.0)]
+    assert "stdout:\nok" in result
+
+
 def test_bash_tool_preserves_sandbox_blocked_command_behavior(tmp_path):
     env = FakeEnv()
     sandbox = SandboxInterceptor(str(tmp_path))
 
     with pytest.raises(PermissionError):
         run(BashTool().execute({"command": "rm -rf /"}, env=env, interceptor=sandbox))
+
+    assert env.exec_calls == []
+
+
+def test_bash_tool_execute_with_runtime_preserves_blocked_command_behavior(tmp_path):
+    env = FakeEnv()
+    sandbox = SandboxInterceptor(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=sandbox, permission_policy=None)
+
+    with pytest.raises(PermissionError):
+        run(BashTool().execute_with_runtime({"command": "rm -rf /"}, runtime))
 
     assert env.exec_calls == []
 
@@ -176,8 +218,6 @@ def test_ask_user_tool_preserves_non_interactive_fallback():
 
 
 def test_tool_runtime_confirm_fn_exposes_permission_confirm():
-    from opencollab.application.tool_runtime import ToolRuntime
-
     permission_policy = FakePermissionPolicy()
     with_permission = ToolRuntime(environment=None, safety_policy=None, permission_policy=permission_policy)
     without_permission = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
@@ -187,18 +227,25 @@ def test_tool_runtime_confirm_fn_exposes_permission_confirm():
 
 
 def test_base_tool_execute_with_runtime_preserves_legacy_tool_behavior():
-    from opencollab.application.tool_runtime import ToolRuntime
-
     env = FakeEnv(stdout="ok\n")
     safety = SpySafetyPolicy()
     permission_policy = FakePermissionPolicy()
     runtime = ToolRuntime(environment=env, safety_policy=safety, permission_policy=permission_policy)
 
-    result = run(BashTool().execute_with_runtime({"command": "echo ok"}, runtime))
+    result = run(LegacyEchoTool().execute_with_runtime({"command": "echo ok"}, runtime))
 
     assert safety.cmd_calls == [("echo ok", permission_policy.confirm)]
     assert env.exec_calls == [("echo ok", 120.0)]
-    assert "stdout:\nok" in result
+    assert result == "ok\n"
+
+
+def test_bash_tool_does_not_import_inner_layers():
+    package_root = Path(__file__).resolve().parents[1]
+    source = (package_root / "opencollab/tools/bash.py").read_text(encoding="utf-8")
+
+    assert "opencollab.core.session" not in source
+    assert "opencollab.bootstrap" not in source
+    assert "opencollab.tools.safety" not in source
 
 
 def test_tool_modules_do_not_type_against_concrete_sandbox():
