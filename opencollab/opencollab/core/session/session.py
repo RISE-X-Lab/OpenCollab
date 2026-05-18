@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 
+from opencollab.application.ports import SafetyPolicyPort
 from opencollab.core.agent import Agent
 from opencollab.core.env import Environment, LocalEnvironment
 from opencollab.core.llm import LLMClient
@@ -39,6 +40,7 @@ class Session:
         auto_save_path: str | None = None,
         event_sink: EventSink | None = None,
         permission_policy: PermissionPolicy | None = None,
+        safety_policy: SafetyPolicyPort | None = None,
         llm=None,
         store=None,
     ):
@@ -50,6 +52,7 @@ class Session:
         self.compaction_threshold = compaction_threshold
         self.event_bus = EventBus(event_sink)
         self._permission_policy = permission_policy
+        self._safety_policy = safety_policy
         self._auto_save_path = auto_save_path
         self.store = store if store is not None else SessionStore()
         if auto_save_path:
@@ -72,6 +75,12 @@ class Session:
         self._build_runtime()
 
     def _build_runtime(self) -> None:
+        safety_policy = self._safety_policy
+        if safety_policy is None:
+            from opencollab.bootstrap.safety import build_workspace_safety_policy
+
+            safety_policy = build_workspace_safety_policy(self.env)
+        self._safety_policy = safety_policy
         self.tool_processor = ToolCallProcessor(
             agent=self.agent,
             env=self.env,
@@ -79,6 +88,7 @@ class Session:
             event_bus=self.event_bus,
             tracer=self.tracer,
             permission_policy=self.permission_policy,
+            safety_policy=safety_policy,
         )
         self.compactor = ContextCompactor(
             state=self.state,
@@ -205,4 +215,3 @@ class Session:
         session = cls(agent=agent, **kwargs)
         session.messages = session.store.load_messages(path, agent.system_prompt)
         return session
-

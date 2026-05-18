@@ -6,9 +6,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
+from opencollab.application.ports import SafetyPolicyPort
 from opencollab.core.session.events import EventBus, SessionEvent
 from opencollab.core.session.state import SessionState
-from opencollab.tools.safety import SandboxInterceptor
 
 # Loop detection (ref: opencode doom_loop detection — 3 identical calls)
 MAX_SIMILAR_CALLS = 3
@@ -54,7 +54,8 @@ class ToolCallProcessor:
         event_bus: EventBus,
         tracer: Any = None,
         permission_policy: PermissionPolicy | None = None,
-        interceptor: SandboxInterceptor | None = None,
+        safety_policy: SafetyPolicyPort | None = None,
+        interceptor: SafetyPolicyPort | None = None,
     ):
         self.agent = agent
         self.env = env
@@ -62,10 +63,8 @@ class ToolCallProcessor:
         self.event_bus = event_bus
         self.tracer = tracer
         self.permission_policy = permission_policy
-        # Derive from env.workspace if not provided. Tests can inject a fake.
-        if interceptor is None and env is not None and getattr(env, "workspace", None):
-            interceptor = SandboxInterceptor(env.workspace)
-        self.interceptor = interceptor
+        self.safety_policy = safety_policy if safety_policy is not None else interceptor
+        self.interceptor = self.safety_policy
 
     async def process(self, tool_calls: list[dict]) -> ToolProcessingResult:
         result = ToolProcessingResult()
@@ -163,7 +162,7 @@ class ToolCallProcessor:
             result = await tool.execute(
                 args,
                 env=self.env,
-                interceptor=self.interceptor,
+                interceptor=self.safety_policy,
                 confirm_fn=self._tool_confirm_fn(),
             )
         except PermissionError as e:
