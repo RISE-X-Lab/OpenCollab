@@ -59,9 +59,11 @@ def build_teammate_session(
 ) -> Session:
     """Build the teammate Agent + Session bundle.
 
-    Tools are stateless; ToolCallProcessor derives a worktree-rooted
-    SandboxInterceptor from env.workspace (step 5).
+    Tools are stateless; safety policy wiring is derived from the teammate
+    environment and passed into the Session.
     """
+    from opencollab.bootstrap.safety import build_workspace_safety_policy
+
     agent = Agent(
         name=role,
         system_prompt=get_role_prompt(role),
@@ -79,5 +81,6 @@ def build_teammate_session(
         max_steps=max_steps,
         event_sink=cfg.event_bus,
         permission_policy=cfg.permission_policy,
+        safety_policy=build_workspace_safety_policy(env),
         repo_map=cfg.repo_map,
     )

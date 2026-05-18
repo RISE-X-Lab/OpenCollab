@@ -1,7 +1,9 @@
+import inspect
+
 import pytest
 
 from opencollab.core.env import LocalEnvironment
-from opencollab.core.session import Session
+from opencollab.core.session import session as session_mod
 from opencollab.core.session.events import EventBus
 from opencollab.core.session.state import SessionState
 from opencollab.core.session.tools import ToolCallProcessor
@@ -23,22 +25,31 @@ class FakeAgent:
         return []
 
 
-def test_session_derives_interceptor_from_env(tmp_path):
+def test_session_accepts_explicit_safety_policy(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     env = LocalEnvironment(str(ws))
-    session = Session(
-        agent=FakeAgent(),
-        env=env,
-        llm=object(),
-    )
+    safety_policy = SandboxInterceptor(str(ws))
+    session = session_mod.Session(agent=FakeAgent(), env=env, safety_policy=safety_policy, llm=object())
     proc = session.tool_processor
-    assert isinstance(proc.interceptor, SandboxInterceptor)
+    assert proc.interceptor is safety_policy
     assert proc.safety_policy is proc.interceptor
     # Path inside workspace resolves; path outside raises.
     assert proc.interceptor.check_path("inside.txt").startswith(str(ws.resolve()))
     with pytest.raises(PermissionError):
         proc.interceptor.check_path("/etc/passwd")
+
+
+def test_snapshot_preserves_explicit_safety_policy(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    env = LocalEnvironment(str(ws))
+    safety_policy = SandboxInterceptor(str(ws))
+    session = session_mod.Session(agent=FakeAgent(), env=env, safety_policy=safety_policy, llm=object())
+
+    snap = session.snapshot()
+
+    assert snap.tool_processor.safety_policy is safety_policy
 
 
 def test_tool_call_processor_accepts_explicit_interceptor(tmp_path):
@@ -77,3 +88,9 @@ def test_core_session_tools_does_not_import_concrete_sandbox():
     import opencollab.core.session.tools as tools_mod
 
     assert not hasattr(tools_mod, "SandboxInterceptor")
+
+
+def test_core_session_session_does_not_import_bootstrap_safety():
+    source = inspect.getsource(session_mod.Session._build_runtime)
+
+    assert "opencollab.bootstrap.safety" not in source

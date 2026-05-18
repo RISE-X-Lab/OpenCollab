@@ -6,6 +6,7 @@ from opencollab.bootstrap import (
     build_chat_session,
     build_runtime_context,
 )
+from opencollab.tools.safety import SandboxInterceptor
 
 
 def _cfg(**overrides):
@@ -38,6 +39,25 @@ def test_build_chat_session_uses_repo_map_and_tools(tmp_path):
 
     tool_names = {t.name for t in session.agent.tools}
     assert tool_names == {"bash", "file_read", "file_write", "grep", "ask_user"}
+
+
+def test_build_chat_session_wires_workspace_safety_policy(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    ctx = build_runtime_context(
+        str(workspace),
+        _cfg(),
+        trace=False,
+    )
+    session = build_chat_session(ctx, auto_save=False)
+
+    policy = session.tool_processor.safety_policy
+    assert isinstance(policy, SandboxInterceptor)
+    assert policy.root == str(workspace.resolve())
+    assert policy.check_path("inside.txt").startswith(str(workspace.resolve()))
+    with pytest.raises(PermissionError):
+        policy.check_path("/etc/passwd")
 
 
 def test_build_runtime_context_resolves_workspace_and_tracer(tmp_path, monkeypatch):

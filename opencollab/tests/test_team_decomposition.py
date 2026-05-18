@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from opencollab.team.teammate_factory import split_budget
+from opencollab.core.env import LocalEnvironment
+from opencollab.core.session.events import EventBus
+from opencollab.team.teammate_factory import TeammateConfig, build_teammate_session, split_budget
+from opencollab.tools.safety import SandboxInterceptor
 
 
 # split_budget arithmetic — used to be inline in Team.delegate, hard to test.
@@ -32,3 +35,30 @@ def test_split_budget_small_total_still_floors_at_10k():
     # reserve = min(max(10_000, 7_500), max(0, 20_000)) = 10_000
     # teammate = max(10_000, 20_000) = 20_000
     assert split_budget(total=30_000, used=0) == 20_000
+
+
+def test_build_teammate_session_wires_environment_safety_policy(tmp_path, monkeypatch):
+    from opencollab.core.session import session as session_module
+
+    class FakeLLMClient:
+        pass
+
+    monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
+
+    env = LocalEnvironment(str(tmp_path))
+    cfg = TeammateConfig(
+        model="fake-model",
+        provider="fake-provider",
+        api_key="fake-key",
+        base_url=None,
+        tracer=None,
+        event_bus=EventBus(None),
+        permission_policy=None,
+        repo_map=None,
+    )
+
+    session = build_teammate_session(role="coder", env=env, cfg=cfg, budget=50_000)
+
+    policy = session.tool_processor.safety_policy
+    assert isinstance(policy, SandboxInterceptor)
+    assert policy.root == str(tmp_path.resolve())

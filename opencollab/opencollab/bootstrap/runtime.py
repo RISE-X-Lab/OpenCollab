@@ -1,9 +1,8 @@
 """Runtime composition context — shared wiring for chat/team factories.
 
 Holds the resolved configuration plus the long-lived collaborators (tracer,
-repo map, UI hooks). Does NOT carry an Environment or SandboxInterceptor:
-env lifetime is per-Session / per-delegation / per-task, and the interceptor
-is derived from env.workspace inside ToolCallProcessor.
+repo map, UI hooks). Does NOT carry an Environment or safety policy: env and
+safety-policy lifetime is per-Session / per-delegation / per-task.
 """
 
 from __future__ import annotations

@@ -746,6 +746,26 @@ def test_team_lead_session_runtime_uses_constructor_env_and_max_steps(monkeypatc
     assert team.lead_session.runner.max_steps == lead_max_steps
 
 
+def test_team_lead_session_gets_workspace_safety_policy(tmp_path, monkeypatch):
+    from opencollab.core.session import session as session_module
+    from opencollab.team.orchestrator import Team
+    from opencollab.tools.safety import SandboxInterceptor
+
+    monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
+
+    team = Team(
+        workspace=str(tmp_path),
+        model="fake-model",
+        provider="fake-provider",
+        api_key="fake-key",
+        use_worktrees=False,
+    )
+
+    policy = team.lead_session.tool_processor.safety_policy
+    assert isinstance(policy, SandboxInterceptor)
+    assert policy.root == str(tmp_path.resolve())
+
+
 def test_save_and_load_round_trip_only_messages(tmp_path):
     agent = FakeAgent()
     session = Session(agent=agent, llm=FakeLLMClient())

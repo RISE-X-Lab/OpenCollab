@@ -6,6 +6,7 @@ import os
 import uuid
 
 from opencollab.bootstrap.runtime import RuntimeContext
+from opencollab.bootstrap.safety import build_workspace_safety_policy
 from opencollab.bootstrap.tool_factory import build_default_tools
 from opencollab.core.agent import Agent
 from opencollab.core.env import LocalEnvironment
@@ -44,6 +45,7 @@ def build_chat_session(
     )
 
     env = LocalEnvironment(ctx.workspace)
+    safety_policy = build_workspace_safety_policy(env)
 
     auto_save_path: str | None = None
     if auto_save:
@@ -57,6 +59,7 @@ def build_chat_session(
         max_budget_tokens=cfg["budget"],
         event_sink=ctx.event_sink,
         permission_policy=ctx.permission_policy,
+        safety_policy=safety_policy,
         repo_map=ctx.repo_map,
         auto_save_path=auto_save_path,
     )

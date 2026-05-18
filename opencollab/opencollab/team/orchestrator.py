@@ -187,6 +187,10 @@ class Team:
 
         # Lead also gets basic tools for quick tasks
         basic_tools = self._make_basic_tools()
+        lead_runtime_env = lead_env if lead_env is not None else LocalEnvironment(workspace)
+        from opencollab.bootstrap.safety import build_workspace_safety_policy
+
+        lead_safety_policy = build_workspace_safety_policy(lead_runtime_env)
 
         self.lead_agent = Agent(
             name="lead",
@@ -200,11 +204,12 @@ class Team:
 
         lead_session_kwargs = {
             "agent": self.lead_agent,
-            "env": lead_env if lead_env is not None else LocalEnvironment(workspace),
+            "env": lead_runtime_env,
             "tracer": tracer,
             "max_budget_tokens": max_budget_tokens,
             "event_sink": self.event_bus,
             "permission_policy": permission_policy,
+            "safety_policy": lead_safety_policy,
             "repo_map": repo_map,
         }
         if lead_max_steps is not None:
@@ -214,9 +219,9 @@ class Team:
     def _make_basic_tools(self) -> list[Tool]:
         """Standard tool set for the Lead.
 
-        Tools are stateless; the Lead session's ToolCallProcessor derives a
-        SandboxInterceptor from its env.workspace. Teammate tools are built
-        independently in teammate_factory.build_teammate_session.
+        Tools are stateless; the Lead session receives safety policy wiring
+        during Team construction. Teammate tools are built independently in
+        teammate_factory.build_teammate_session.
         """
         return [BashTool(), FileReadTool(), FileWriteTool(), GrepTool()]
 

@@ -1,7 +1,7 @@
 """Canonical default-tool bundle for agents.
 
-Tools are stateless; the session's ToolCallProcessor owns the SandboxInterceptor
-and passes it to each tool.execute() call.
+Tools are stateless; session/team composition passes safety policy into the
+ToolCallProcessor for each tool.execute() call.
 """
 
 from __future__ import annotations

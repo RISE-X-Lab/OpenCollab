@@ -75,12 +75,6 @@ class Session:
         self._build_runtime()
 
     def _build_runtime(self) -> None:
-        safety_policy = self._safety_policy
-        if safety_policy is None:
-            from opencollab.bootstrap.safety import build_workspace_safety_policy
-
-            safety_policy = build_workspace_safety_policy(self.env)
-        self._safety_policy = safety_policy
         self.tool_processor = ToolCallProcessor(
             agent=self.agent,
             env=self.env,
@@ -88,7 +82,7 @@ class Session:
             event_bus=self.event_bus,
             tracer=self.tracer,
             permission_policy=self.permission_policy,
-            safety_policy=safety_policy,
+            safety_policy=self._safety_policy,
         )
         self.compactor = ContextCompactor(
             state=self.state,
@@ -197,6 +191,7 @@ class Session:
             compaction_threshold=self.compaction_threshold,
             event_sink=external_sink,
             permission_policy=self.permission_policy,
+            safety_policy=self._safety_policy,
         )
         new.messages = copy.deepcopy(self.messages)
         new.used_tokens = self.used_tokens
