@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
+
+if TYPE_CHECKING:
+    from opencollab.application.tool_runtime import ToolRuntime
 
 
 class EnvironmentPort(Protocol):
@@ -48,11 +51,9 @@ class ToolPort(Protocol):
     def to_openai_schema(self) -> dict[str, Any]:
         ...
 
-    async def execute(
+    async def execute_with_runtime(
         self,
         params: dict[str, Any],
-        env: EnvironmentPort | None = None,
-        interceptor: SafetyPolicyPort | None = None,
-        confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
+        runtime: "ToolRuntime",
     ) -> str:
         ...

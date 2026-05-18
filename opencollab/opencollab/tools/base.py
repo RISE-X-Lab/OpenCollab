@@ -14,6 +14,7 @@ from __future__ import annotations
 from typing import Any, Callable, Awaitable
 
 from opencollab.application.ports import EnvironmentPort, SafetyPolicyPort
+from opencollab.application.tool_runtime import ToolRuntime
 
 
 class Tool:
@@ -49,3 +50,15 @@ class Tool:
     ) -> str:
         """Execute the tool with given parameters. Returns result as string."""
         raise NotImplementedError(f"Tool '{self.name}' must implement execute()")
+
+    async def execute_with_runtime(
+        self,
+        params: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
+        return await self.execute(
+            params,
+            env=runtime.environment,
+            interceptor=runtime.safety_policy,
+            confirm_fn=runtime.confirm_fn(),
+        )

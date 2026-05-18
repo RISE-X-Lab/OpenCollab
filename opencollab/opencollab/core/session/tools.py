@@ -161,12 +161,16 @@ class ToolCallProcessor:
         start = time.monotonic()
         runtime = self._tool_runtime()
         try:
-            result = await tool.execute(
-                args,
-                env=runtime.environment,
-                interceptor=runtime.safety_policy,
-                confirm_fn=runtime.permission_policy.confirm if runtime.permission_policy else None,
-            )
+            execute_with_runtime = getattr(tool, "execute_with_runtime", None)
+            if execute_with_runtime is not None:
+                result = await execute_with_runtime(args, runtime)
+            else:
+                result = await tool.execute(
+                    args,
+                    env=runtime.environment,
+                    interceptor=runtime.safety_policy,
+                    confirm_fn=runtime.confirm_fn(),
+                )
         except PermissionError as e:
             result = f"Permission denied: {e}"
         except Exception as e:
@@ -180,11 +184,6 @@ class ToolCallProcessor:
             safety_policy=self.safety_policy,
             permission_policy=self.permission_policy,
         )
-
-    def _tool_confirm_fn(self):
-        if self.permission_policy is None:
-            return None
-        return self.permission_policy.confirm
 
     def _truncate_tool_result(self, result: str) -> str:
         if len(result) > MAX_TOOL_OUTPUT_CHARS:

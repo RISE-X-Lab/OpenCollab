@@ -50,6 +50,11 @@ class SpySafetyPolicy:
         self.cmd_calls.append((cmd, confirm_fn))
 
 
+class FakePermissionPolicy:
+    async def confirm(self, prompt: str) -> bool:
+        return True
+
+
 def test_bash_tool_without_env_returns_existing_error():
     result = run(BashTool().execute({"command": "pwd"}))
 
@@ -168,6 +173,32 @@ def test_ask_user_tool_preserves_non_interactive_fallback():
     result = run(AskUserTool().execute({"question": "Proceed?"}, confirm_fn=None))
 
     assert result == "Running in non-interactive mode. Make your own best judgment and proceed."
+
+
+def test_tool_runtime_confirm_fn_exposes_permission_confirm():
+    from opencollab.application.tool_runtime import ToolRuntime
+
+    permission_policy = FakePermissionPolicy()
+    with_permission = ToolRuntime(environment=None, safety_policy=None, permission_policy=permission_policy)
+    without_permission = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+
+    assert with_permission.confirm_fn() == permission_policy.confirm
+    assert without_permission.confirm_fn() is None
+
+
+def test_base_tool_execute_with_runtime_preserves_legacy_tool_behavior():
+    from opencollab.application.tool_runtime import ToolRuntime
+
+    env = FakeEnv(stdout="ok\n")
+    safety = SpySafetyPolicy()
+    permission_policy = FakePermissionPolicy()
+    runtime = ToolRuntime(environment=env, safety_policy=safety, permission_policy=permission_policy)
+
+    result = run(BashTool().execute_with_runtime({"command": "echo ok"}, runtime))
+
+    assert safety.cmd_calls == [("echo ok", permission_policy.confirm)]
+    assert env.exec_calls == [("echo ok", 120.0)]
+    assert "stdout:\nok" in result
 
 
 def test_tool_modules_do_not_type_against_concrete_sandbox():
