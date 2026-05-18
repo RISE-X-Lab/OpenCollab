@@ -17,6 +17,7 @@ import logging
 from typing import Any, Callable, Awaitable
 
 from opencollab.application.ports import EnvironmentPort, SafetyPolicyPort
+from opencollab.application.tool_runtime import ToolRuntime, tool_runtime_from_legacy
 from opencollab.tools.base import Tool
 
 logger = logging.getLogger(__name__)
@@ -181,6 +182,18 @@ class MCPTool(Tool):
         env: EnvironmentPort | None = None,
         interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
+    ) -> str:
+        runtime = tool_runtime_from_legacy(
+            env=env,
+            interceptor=interceptor,
+            confirm_fn=confirm_fn,
+        )
+        return await self.execute_with_runtime(params, runtime)
+
+    async def execute_with_runtime(
+        self,
+        params: dict[str, Any],
+        runtime: ToolRuntime,
     ) -> str:
         try:
             resp = await self._conn.call_tool(self.name, params)

@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any, Callable, Awaitable
 
 from opencollab.application.ports import EnvironmentPort, SafetyPolicyPort
-from opencollab.application.tool_runtime import CallbackPermissionPort, ToolRuntime
+from opencollab.application.tool_runtime import ToolRuntime, tool_runtime_from_legacy
 from opencollab.tools.base import Tool
 
 # Max chars to keep from stdout/stderr (ref: user feedback blind spot #1)
@@ -54,10 +54,10 @@ class BashTool(Tool):
         interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
-        runtime = ToolRuntime(
-            environment=env,
-            safety_policy=interceptor,
-            permission_policy=CallbackPermissionPort(confirm_fn) if confirm_fn else None,
+        runtime = tool_runtime_from_legacy(
+            env=env,
+            interceptor=interceptor,
+            confirm_fn=confirm_fn,
         )
         return await self.execute_with_runtime(params, runtime)
 

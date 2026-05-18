@@ -19,6 +19,7 @@ from typing import Any, Callable, Awaitable
 from filelock import FileLock
 
 from opencollab.application.ports import EnvironmentPort, SafetyPolicyPort
+from opencollab.application.tool_runtime import ToolRuntime, tool_runtime_from_legacy
 from opencollab.tools.base import Tool
 
 
@@ -47,12 +48,26 @@ class FileReadTool(Tool):
         interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
+        runtime = tool_runtime_from_legacy(
+            env=env,
+            interceptor=interceptor,
+            confirm_fn=confirm_fn,
+        )
+        return await self.execute_with_runtime(params, runtime)
+
+    async def execute_with_runtime(
+        self,
+        params: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
         path = params["path"]
         offset = params.get("offset", 1)
         limit = params.get("limit", 500)
+        env = runtime.environment
+        safety_policy = runtime.safety_policy
 
-        if interceptor:
-            path = interceptor.check_path(path)
+        if safety_policy:
+            path = safety_policy.check_path(path)
 
         try:
             if env:
@@ -127,11 +142,25 @@ class FileWriteTool(Tool):
         interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
+        runtime = tool_runtime_from_legacy(
+            env=env,
+            interceptor=interceptor,
+            confirm_fn=confirm_fn,
+        )
+        return await self.execute_with_runtime(params, runtime)
+
+    async def execute_with_runtime(
+        self,
+        params: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
         path = params["path"]
         mode = params["mode"]
+        env = runtime.environment
+        safety_policy = runtime.safety_policy
 
-        if interceptor:
-            path = interceptor.check_path(path)
+        if safety_policy:
+            path = safety_policy.check_path(path)
 
         # File lock for concurrent safety (ref: design doc filelock)
         lock = FileLock(f"{path}.lock", timeout=10)
@@ -210,10 +239,23 @@ class GrepTool(Tool):
         interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
+        runtime = tool_runtime_from_legacy(
+            env=env,
+            interceptor=interceptor,
+            confirm_fn=confirm_fn,
+        )
+        return await self.execute_with_runtime(params, runtime)
+
+    async def execute_with_runtime(
+        self,
+        params: dict[str, Any],
+        runtime: ToolRuntime,
+    ) -> str:
         pattern = params["pattern"]
         search_path = params.get("path", ".")
         glob_pattern = params.get("glob")
         max_results = params.get("max_results", 50)
+        env = runtime.environment
 
         # Try using ripgrep if available (faster), fallback to Python
         if env:
