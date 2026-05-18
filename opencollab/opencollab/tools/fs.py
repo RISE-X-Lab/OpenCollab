@@ -14,27 +14,15 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, TYPE_CHECKING
 
 from filelock import FileLock
 
 from opencollab.tools.base import Tool
-from opencollab.tools.safety import SandboxInterceptor
 from opencollab.core.env import Environment
 
-
-def _resolve_env_scoped_path(path: str, env: Environment | None) -> str:
-    """Resolve path under env.workspace and reject workspace escapes."""
-    if not env:
-        return path
-
-    workspace = os.path.abspath(env.workspace)
-    resolved = path if os.path.isabs(path) else os.path.join(workspace, path)
-    resolved = os.path.abspath(resolved)
-
-    if resolved != workspace and not resolved.startswith(workspace + os.sep):
-        raise PermissionError(f"Path escapes workspace: {path}")
-    return resolved
+if TYPE_CHECKING:
+    from opencollab.tools.safety import SandboxInterceptor
 
 
 class FileReadTool(Tool):
@@ -55,23 +43,19 @@ class FileReadTool(Tool):
         "required": ["path"],
     }
 
-    def __init__(self, interceptor: SandboxInterceptor | None = None):
-        self._interceptor = interceptor
-
     async def execute(
         self,
         params: dict[str, Any],
         env: Environment | None = None,
+        interceptor: SandboxInterceptor | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         path = params["path"]
         offset = params.get("offset", 1)
         limit = params.get("limit", 500)
 
-        if self._interceptor:
-            path = self._interceptor.check_path(path)
-        elif env:
-            path = _resolve_env_scoped_path(path, env)
+        if interceptor:
+            path = interceptor.check_path(path)
 
         try:
             if env:
@@ -139,22 +123,18 @@ class FileWriteTool(Tool):
         "required": ["path", "mode"],
     }
 
-    def __init__(self, interceptor: SandboxInterceptor | None = None):
-        self._interceptor = interceptor
-
     async def execute(
         self,
         params: dict[str, Any],
         env: Environment | None = None,
+        interceptor: SandboxInterceptor | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         path = params["path"]
         mode = params["mode"]
 
-        if self._interceptor:
-            path = self._interceptor.check_path(path)
-        elif env:
-            path = _resolve_env_scoped_path(path, env)
+        if interceptor:
+            path = interceptor.check_path(path)
 
         # File lock for concurrent safety (ref: design doc filelock)
         lock = FileLock(f"{path}.lock", timeout=10)
@@ -226,13 +206,11 @@ class GrepTool(Tool):
         "required": ["pattern"],
     }
 
-    def __init__(self, interceptor: SandboxInterceptor | None = None):
-        self._interceptor = interceptor
-
     async def execute(
         self,
         params: dict[str, Any],
         env: Environment | None = None,
+        interceptor: SandboxInterceptor | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         pattern = params["pattern"]

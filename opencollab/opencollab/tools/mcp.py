@@ -14,10 +14,13 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, TYPE_CHECKING
 
 from opencollab.tools.base import Tool
 from opencollab.core.env import Environment
+
+if TYPE_CHECKING:
+    from opencollab.tools.safety import SandboxInterceptor
 
 logger = logging.getLogger(__name__)
 
@@ -179,6 +182,7 @@ class MCPTool(Tool):
         self,
         params: dict[str, Any],
         env: Environment | None = None,
+        interceptor: SandboxInterceptor | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         try:

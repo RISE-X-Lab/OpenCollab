@@ -1,8 +1,9 @@
 """Runtime composition context — shared wiring for chat/team factories.
 
 Holds the resolved configuration plus the long-lived collaborators (tracer,
-interceptor, repo map, UI hooks). Does NOT carry an Environment: env lifetime
-is per-Session / per-delegation / per-task, so factories construct it inline.
+repo map, UI hooks). Does NOT carry an Environment or SandboxInterceptor:
+env lifetime is per-Session / per-delegation / per-task, and the interceptor
+is derived from env.workspace inside ToolCallProcessor.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from dataclasses import dataclass
 from opencollab.core.context import get_repo_map
 from opencollab.core.session import EventSink, PermissionPolicy
 from opencollab.core.tracer import Tracer
-from opencollab.tools.safety import SandboxInterceptor
 
 
 @dataclass
@@ -23,7 +23,6 @@ class RuntimeContext:
     config: dict
     tracer: Tracer | None
     repo_map: str | None
-    interceptor: SandboxInterceptor
     event_sink: EventSink | None
     permission_policy: PermissionPolicy | None
 
@@ -38,7 +37,6 @@ def build_runtime_context(
     run_id_prefix: str = "",
 ) -> RuntimeContext:
     abs_workspace = os.path.abspath(workspace)
-    interceptor = SandboxInterceptor(abs_workspace)
     tracer = (
         Tracer(run_id=f"{run_id_prefix}{uuid.uuid4().hex[:8]}") if trace else None
     )
@@ -49,7 +47,6 @@ def build_runtime_context(
         config=dict(cli_overrides),
         tracer=tracer,
         repo_map=repo_map,
-        interceptor=interceptor,
         event_sink=event_sink,
         permission_policy=permission_policy,
     )

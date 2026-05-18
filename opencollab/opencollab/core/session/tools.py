@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable, Protocol
 
 from opencollab.core.session.events import EventBus, SessionEvent
 from opencollab.core.session.state import SessionState
+from opencollab.tools.safety import SandboxInterceptor
 
 # Loop detection (ref: opencode doom_loop detection — 3 identical calls)
 MAX_SIMILAR_CALLS = 3
@@ -53,6 +54,7 @@ class ToolCallProcessor:
         event_bus: EventBus,
         tracer: Any = None,
         permission_policy: PermissionPolicy | None = None,
+        interceptor: SandboxInterceptor | None = None,
     ):
         self.agent = agent
         self.env = env
@@ -60,6 +62,10 @@ class ToolCallProcessor:
         self.event_bus = event_bus
         self.tracer = tracer
         self.permission_policy = permission_policy
+        # Derive from env.workspace if not provided. Tests can inject a fake.
+        if interceptor is None and env is not None and getattr(env, "workspace", None):
+            interceptor = SandboxInterceptor(env.workspace)
+        self.interceptor = interceptor
 
     async def process(self, tool_calls: list[dict]) -> ToolProcessingResult:
         result = ToolProcessingResult()
@@ -154,7 +160,12 @@ class ToolCallProcessor:
     async def _execute_tool(self, tool, args: dict) -> tuple[str, float]:
         start = time.monotonic()
         try:
-            result = await tool.execute(args, env=self.env, confirm_fn=self._tool_confirm_fn())
+            result = await tool.execute(
+                args,
+                env=self.env,
+                interceptor=self.interceptor,
+                confirm_fn=self._tool_confirm_fn(),
+            )
         except PermissionError as e:
             result = f"Permission denied: {e}"
         except Exception as e:

@@ -19,7 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, TYPE_CHECKING
 
 from opencollab.core.agent import Agent
 from opencollab.core.session import EventBus, EventSink, PermissionPolicy, Session, SessionEvent
@@ -28,8 +28,10 @@ from opencollab.core.tracer import Tracer
 from opencollab.tools.base import Tool
 from opencollab.tools.bash import BashTool
 from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
-from opencollab.tools.safety import SandboxInterceptor
 from opencollab.team.prompts import get_role_prompt, LEAD_SYSTEM_PROMPT
+
+if TYPE_CHECKING:
+    from opencollab.tools.safety import SandboxInterceptor
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +73,7 @@ class DelegateTaskTool(Tool):
         self,
         params: dict[str, Any],
         env: Environment | None = None,
+        interceptor: SandboxInterceptor | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         role = params["role"]
@@ -117,6 +120,7 @@ class DelegateWithReviewTool(Tool):
         self,
         params: dict[str, Any],
         env: Environment | None = None,
+        interceptor: SandboxInterceptor | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         task = params["task"]
@@ -173,9 +177,6 @@ class Team:
         self._total_budget = max_budget_tokens
         self._used_tokens = 0
 
-        # Safety interceptor for the workspace
-        self._interceptor = SandboxInterceptor(workspace)
-
         # Build Lead agent with delegation tools
         delegate_tool = DelegateTaskTool(self)
         review_tool = DelegateWithReviewTool(self)
@@ -209,22 +210,15 @@ class Team:
         # Active teammate environments (for cleanup)
         self._teammate_envs: list[WorktreeEnvironment] = []
 
-    def _make_basic_tools(self, interceptor: SandboxInterceptor | None = None) -> list[Tool]:
-        """Create the standard tool set for agents.
+    def _make_basic_tools(self) -> list[Tool]:
+        """Standard tool set for Lead and teammates.
 
-        Args:
-            interceptor: Safety interceptor. If None, uses self._interceptor
-                         (main workspace). Teammates should pass a worktree-rooted
-                         interceptor to ensure path resolution stays within their
-                         isolated directory.
+        Tools are stateless; each session's ToolCallProcessor derives a
+        SandboxInterceptor from its own env.workspace, so teammates running
+        in a WorktreeEnvironment get path-jail isolation rooted at the
+        worktree automatically.
         """
-        ic = interceptor or self._interceptor
-        return [
-            BashTool(ic),
-            FileReadTool(ic),
-            FileWriteTool(ic),
-            GrepTool(ic),
-        ]
+        return [BashTool(), FileReadTool(), FileWriteTool(), GrepTool()]
 
     @property
     def used_tokens(self) -> int:
@@ -264,16 +258,12 @@ class Team:
         else:
             env = LocalEnvironment(self.workspace)
 
-        # Create per-teammate interceptor rooted at the teammate's workspace,
-        # NOT the main workspace. This ensures file tools resolve paths within
-        # the worktree directory, preserving physical isolation.
-        teammate_interceptor = SandboxInterceptor(env.workspace)
-
-        # Create teammate agent with worktree-rooted tools
+        # Tools are stateless; the teammate session's ToolCallProcessor
+        # derives a worktree-rooted SandboxInterceptor from env.workspace.
         teammate_agent = Agent(
             name=role,
             system_prompt=get_role_prompt(role),
-            tools=self._make_basic_tools(interceptor=teammate_interceptor),
+            tools=self._make_basic_tools(),
             model=self.model,
             provider=self.provider,
             api_key=self.api_key,

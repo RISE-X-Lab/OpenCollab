@@ -24,7 +24,6 @@ from opencollab.core.env import Environment, LocalEnvironment, DockerEnvironment
 from opencollab.core.tracer import Tracer
 from opencollab.tools.bash import BashTool
 from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
-from opencollab.tools.safety import SandboxInterceptor
 
 
 @dataclass
@@ -93,16 +92,10 @@ async def run_eval_task(
         else:
             env = LocalEnvironment(workspace=task.repo_path or ".")
 
-        interceptor = SandboxInterceptor(env.workspace) if isinstance(env, LocalEnvironment) else None
         agent = Agent(
             name="eval_agent",
             system_prompt=EVAL_AGENT_PROMPT,
-            tools=[
-                BashTool(interceptor),
-                FileReadTool(interceptor),
-                FileWriteTool(interceptor),
-                GrepTool(interceptor),
-            ],
+            tools=[BashTool(), FileReadTool(), FileWriteTool(), GrepTool()],
             model=model,
             provider=provider,
             api_key=api_key,

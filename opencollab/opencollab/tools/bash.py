@@ -9,11 +9,13 @@ Ref:
 
 from __future__ import annotations
 
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, TYPE_CHECKING
 
 from opencollab.tools.base import Tool
-from opencollab.tools.safety import SandboxInterceptor
 from opencollab.core.env import Environment
+
+if TYPE_CHECKING:
+    from opencollab.tools.safety import SandboxInterceptor
 
 # Max chars to keep from stdout/stderr (ref: user feedback blind spot #1)
 MAX_OUTPUT_CHARS = 8_000
@@ -47,13 +49,11 @@ class BashTool(Tool):
         "required": ["command"],
     }
 
-    def __init__(self, interceptor: SandboxInterceptor | None = None):
-        self._interceptor = interceptor
-
     async def execute(
         self,
         params: dict[str, Any],
         env: Environment | None = None,
+        interceptor: SandboxInterceptor | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         cmd = params["command"]
@@ -63,8 +63,8 @@ class BashTool(Tool):
             return "Error: no execution environment available."
 
         # Safety checks
-        if self._interceptor:
-            await self._interceptor.check_cmd_interactive(cmd, confirm_fn)
+        if interceptor:
+            await interceptor.check_cmd_interactive(cmd, confirm_fn)
 
         result = await env.exec_cmd(cmd, timeout=timeout)
 

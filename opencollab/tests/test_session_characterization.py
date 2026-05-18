@@ -95,8 +95,13 @@ class FakeTool:
             },
         }
 
-    async def execute(self, args, env=None, confirm_fn=None):
-        self.calls.append({"args": copy.deepcopy(args), "env": env, "confirm_fn": confirm_fn})
+    async def execute(self, args, env=None, interceptor=None, confirm_fn=None):
+        self.calls.append({
+            "args": copy.deepcopy(args),
+            "env": env,
+            "interceptor": interceptor,
+            "confirm_fn": confirm_fn,
+        })
         if self.exc:
             raise self.exc
         return self.result(args) if callable(self.result) else self.result

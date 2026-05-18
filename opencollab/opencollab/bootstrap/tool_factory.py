@@ -1,7 +1,7 @@
 """Canonical default-tool bundle for agents.
 
-Centralizing the tool list means the future interceptor unification (step 5)
-only has to touch this file.
+Tools are stateless; the session's ToolCallProcessor owns the SandboxInterceptor
+and passes it to each tool.execute() call.
 """
 
 from __future__ import annotations
@@ -10,20 +10,15 @@ from opencollab.tools.base import Tool
 from opencollab.tools.bash import BashTool
 from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.tools.human import AskUserTool
-from opencollab.tools.safety import SandboxInterceptor
 
 
-def build_default_tools(
-    interceptor: SandboxInterceptor,
-    *,
-    include_ask_user: bool = False,
-) -> list[Tool]:
+def build_default_tools(*, include_ask_user: bool = False) -> list[Tool]:
     """Canonical tool bundle: bash, file_read, file_write, grep, [ask_user]."""
     tools: list[Tool] = [
-        BashTool(interceptor),
-        FileReadTool(interceptor),
-        FileWriteTool(interceptor),
-        GrepTool(interceptor),
+        BashTool(),
+        FileReadTool(),
+        FileWriteTool(),
+        GrepTool(),
     ]
     if include_ask_user:
         tools.append(AskUserTool())

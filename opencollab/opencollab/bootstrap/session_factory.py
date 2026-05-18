@@ -36,7 +36,7 @@ def build_chat_session(
     agent = Agent(
         name="assistant",
         system_prompt=_CHAT_SYSTEM_PROMPT,
-        tools=build_default_tools(ctx.interceptor, include_ask_user=True),
+        tools=build_default_tools(include_ask_user=True),
         model=cfg["model"],
         provider=cfg["provider"],
         api_key=cfg["api_key"],

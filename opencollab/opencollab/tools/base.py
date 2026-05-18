@@ -15,6 +15,7 @@ from typing import Any, Callable, Awaitable, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from opencollab.core.env import Environment
+    from opencollab.tools.safety import SandboxInterceptor
 
 
 class Tool:
@@ -45,6 +46,7 @@ class Tool:
         self,
         params: dict[str, Any],
         env: Environment | None = None,
+        interceptor: SandboxInterceptor | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         """Execute the tool with given parameters. Returns result as string."""
