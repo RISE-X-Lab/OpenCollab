@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
+
+from opencollab.bootstrap.safety import build_workspace_safety_policy
 from opencollab.core.env import LocalEnvironment
 from opencollab.core.session.events import EventBus
+from opencollab.team import orchestrator as orchestrator_mod
 from opencollab.team.teammate_factory import TeammateConfig, build_teammate_session, split_budget
+from opencollab.team import teammate_factory as teammate_factory_mod
 from opencollab.tools.safety import SandboxInterceptor
 
 
@@ -55,6 +60,7 @@ def test_build_teammate_session_wires_environment_safety_policy(tmp_path, monkey
         event_bus=EventBus(None),
         permission_policy=None,
         repo_map=None,
+        safety_policy_factory=build_workspace_safety_policy,
     )
 
     session = build_teammate_session(role="coder", env=env, cfg=cfg, budget=50_000)
@@ -62,3 +68,36 @@ def test_build_teammate_session_wires_environment_safety_policy(tmp_path, monkey
     policy = session.tool_processor.safety_policy
     assert isinstance(policy, SandboxInterceptor)
     assert policy.root == str(tmp_path.resolve())
+
+
+def test_build_teammate_session_without_factory_does_not_build_safety_policy(tmp_path, monkeypatch):
+    from opencollab.core.session import session as session_module
+
+    class FakeLLMClient:
+        pass
+
+    monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
+
+    env = LocalEnvironment(str(tmp_path))
+    cfg = TeammateConfig(
+        model="fake-model",
+        provider="fake-provider",
+        api_key="fake-key",
+        base_url=None,
+        tracer=None,
+        event_bus=EventBus(None),
+        permission_policy=None,
+        repo_map=None,
+    )
+
+    session = build_teammate_session(role="coder", env=env, cfg=cfg, budget=50_000)
+
+    assert session.tool_processor.safety_policy is None
+
+
+def test_team_modules_do_not_import_bootstrap_safety():
+    team_source = inspect.getsource(orchestrator_mod)
+    teammate_source = inspect.getsource(teammate_factory_mod)
+
+    assert "opencollab.bootstrap.safety" not in team_source
+    assert "opencollab.bootstrap.safety" not in teammate_source

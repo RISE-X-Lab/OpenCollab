@@ -4,6 +4,7 @@ import pytest
 
 from opencollab.bootstrap import (
     build_chat_session,
+    build_team,
     build_runtime_context,
 )
 from opencollab.tools.safety import SandboxInterceptor
@@ -58,6 +59,22 @@ def test_build_chat_session_wires_workspace_safety_policy(tmp_path):
     assert policy.check_path("inside.txt").startswith(str(workspace.resolve()))
     with pytest.raises(PermissionError):
         policy.check_path("/etc/passwd")
+
+
+def test_build_team_wires_lead_safety_policy_from_bootstrap(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    ctx = build_runtime_context(
+        str(workspace),
+        _cfg(),
+        trace=False,
+    )
+    team = build_team(ctx, use_worktrees=False, interactive=False)
+
+    policy = team.lead_session.tool_processor.safety_policy
+    assert isinstance(policy, SandboxInterceptor)
+    assert policy.root == str(workspace.resolve())
 
 
 def test_build_runtime_context_resolves_workspace_and_tracer(tmp_path, monkeypatch):

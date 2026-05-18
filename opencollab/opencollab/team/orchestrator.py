@@ -17,8 +17,9 @@ Ref:
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Awaitable, TYPE_CHECKING
+from typing import Any, Callable, Awaitable
 
+from opencollab.application.ports import SafetyPolicyFactory, SafetyPolicyPort
 from opencollab.core.agent import Agent
 from opencollab.core.session import EventBus, EventSink, PermissionPolicy, Session, SessionEvent
 from opencollab.core.env import Environment, LocalEnvironment, WorktreeEnvironment
@@ -33,9 +34,6 @@ from opencollab.team.teammate_factory import (
     split_budget,
 )
 from opencollab.team.worktree_pool import WorktreePool
-
-if TYPE_CHECKING:
-    from opencollab.tools.safety import SandboxInterceptor
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +75,7 @@ class DelegateTaskTool(Tool):
         self,
         params: dict[str, Any],
         env: Environment | None = None,
-        interceptor: SandboxInterceptor | None = None,
+        interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         role = params["role"]
@@ -124,7 +122,7 @@ class DelegateWithReviewTool(Tool):
         self,
         params: dict[str, Any],
         env: Environment | None = None,
-        interceptor: SandboxInterceptor | None = None,
+        interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         task = params["task"]
@@ -167,6 +165,7 @@ class Team:
         repo_map: str | None = None,
         lead_env: Environment | None = None,
         lead_max_steps: int | None = None,
+        safety_policy_factory: SafetyPolicyFactory | None = None,
     ):
         self.workspace = workspace
         self.model = model
@@ -176,6 +175,7 @@ class Team:
         self.tracer = tracer
         self.event_bus = EventBus(event_sink)
         self.permission_policy = permission_policy
+        self.safety_policy_factory = safety_policy_factory
         self.repo_map = repo_map
         self._total_budget = max_budget_tokens
         self._used_tokens = 0
@@ -188,9 +188,11 @@ class Team:
         # Lead also gets basic tools for quick tasks
         basic_tools = self._make_basic_tools()
         lead_runtime_env = lead_env if lead_env is not None else LocalEnvironment(workspace)
-        from opencollab.bootstrap.safety import build_workspace_safety_policy
-
-        lead_safety_policy = build_workspace_safety_policy(lead_runtime_env)
+        lead_safety_policy = (
+            safety_policy_factory(lead_runtime_env)
+            if safety_policy_factory is not None
+            else None
+        )
 
         self.lead_agent = Agent(
             name="lead",
@@ -253,6 +255,7 @@ class Team:
             tracer=self.tracer,
             event_bus=self.event_bus,
             permission_policy=self.permission_policy,
+            safety_policy_factory=self.safety_policy_factory,
             repo_map=self.repo_map,
         )
         budget = split_budget(self._total_budget, self._used_tokens)

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 
 class SafetyPolicyPort(Protocol):
@@ -19,3 +19,6 @@ class SafetyPolicyPort(Protocol):
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> Awaitable[None]:
         ...
+
+
+SafetyPolicyFactory = Callable[[Any], SafetyPolicyPort | None]

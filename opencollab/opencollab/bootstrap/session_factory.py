@@ -97,6 +97,7 @@ def build_team(
         permission_policy=ctx.permission_policy,
         use_worktrees=use_worktrees,
         repo_map=ctx.repo_map,
+        safety_policy_factory=build_workspace_safety_policy,
     )
     if interactive:
         # Interactive mode: give Lead the ask_user tool (not added in Team.__init__

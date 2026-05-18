@@ -40,6 +40,16 @@ def test_session_accepts_explicit_safety_policy(tmp_path):
         proc.interceptor.check_path("/etc/passwd")
 
 
+def test_direct_session_does_not_derive_safety_policy_from_env(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    env = LocalEnvironment(str(ws))
+    session = session_mod.Session(agent=FakeAgent(), env=env, llm=object())
+
+    assert session.tool_processor.safety_policy is None
+    assert session.tool_processor.interceptor is None
+
+
 def test_snapshot_preserves_explicit_safety_policy(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()

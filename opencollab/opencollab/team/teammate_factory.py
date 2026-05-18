@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from opencollab.application.ports import SafetyPolicyFactory
 from opencollab.core.agent import Agent
 from opencollab.core.env import Environment
 from opencollab.core.session import EventBus, PermissionPolicy, Session
@@ -29,6 +30,7 @@ class TeammateConfig:
     event_bus: EventBus
     permission_policy: PermissionPolicy | None
     repo_map: str | None
+    safety_policy_factory: SafetyPolicyFactory | None = None
 
 
 def split_budget(total: int, used: int) -> int:
@@ -62,7 +64,11 @@ def build_teammate_session(
     Tools are stateless; safety policy wiring is derived from the teammate
     environment and passed into the Session.
     """
-    from opencollab.bootstrap.safety import build_workspace_safety_policy
+    safety_policy = (
+        cfg.safety_policy_factory(env)
+        if cfg.safety_policy_factory is not None
+        else None
+    )
 
     agent = Agent(
         name=role,
@@ -81,6 +87,6 @@ def build_teammate_session(
         max_steps=max_steps,
         event_sink=cfg.event_bus,
         permission_policy=cfg.permission_policy,
-        safety_policy=build_workspace_safety_policy(env),
+        safety_policy=safety_policy,
         repo_map=cfg.repo_map,
     )

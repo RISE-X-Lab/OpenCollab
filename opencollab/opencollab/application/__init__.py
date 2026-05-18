@@ -1,5 +1,5 @@
 """Application-layer contracts."""
 
-from opencollab.application.ports import SafetyPolicyPort
+from opencollab.application.ports import SafetyPolicyFactory, SafetyPolicyPort
 
-__all__ = ["SafetyPolicyPort"]
+__all__ = ["SafetyPolicyFactory", "SafetyPolicyPort"]
