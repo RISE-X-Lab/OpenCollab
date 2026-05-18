@@ -3,7 +3,6 @@ from opencollab.core.session.compactor import COMPACTION_KEEP_RECENT, DEFAULT_CO
 from opencollab.core.session.events import EventBus, EventCallback, EventSink, SessionEvent
 from opencollab.core.session.runner import SessionRunner
 from opencollab.core.session.session import BudgetExceededError, LoopDetectedError, Session
-from opencollab.core.session.state import SessionPhase, SessionState
 from opencollab.core.session.storage import SessionStore
 from opencollab.core.session.tools import (
     MAX_CALL_HASH_WINDOW,
@@ -14,6 +13,7 @@ from opencollab.core.session.tools import (
     ToolCallProcessor,
     ToolProcessingResult,
 )
+from opencollab.domain.session import SessionPhase, SessionState
 
 SessionMachine = SessionRunner
 

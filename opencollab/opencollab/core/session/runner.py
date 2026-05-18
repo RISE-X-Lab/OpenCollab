@@ -7,7 +7,7 @@ from typing import Any
 from opencollab.core.llm import LLMResponse
 from opencollab.core.session.compactor import ContextCompactor
 from opencollab.core.session.events import EventBus, SessionEvent
-from opencollab.core.session.state import SessionPhase, SessionState
+from opencollab.domain.session import SessionPhase, SessionState
 from opencollab.core.session.tools import ToolCallProcessor
 
 

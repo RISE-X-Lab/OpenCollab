@@ -3,19 +3,17 @@ from __future__ import annotations
 import hashlib
 import json
 import time
-from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
 from opencollab.application.ports import SafetyPolicyPort
 from opencollab.application.tool_dispatch import execute_tool_with_runtime
 from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.core.session.events import EventBus, SessionEvent
-from opencollab.core.session.state import SessionState
+from opencollab.domain.session import SessionState
+from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, ToolProcessingResult
 
 # Loop detection (ref: opencode doom_loop detection — 3 identical calls)
 MAX_SIMILAR_CALLS = 3
-MAX_CALL_HASH_WINDOW = 200
-
 # Output truncation for tool results (ref: openclaw truncateOversizedToolResults)
 MAX_TOOL_OUTPUT_CHARS = 16_000
 
@@ -31,19 +29,6 @@ class CallbackPermissionPolicy:
 
     async def confirm(self, prompt: str) -> bool:
         return await self._confirm_fn(prompt)
-
-
-@dataclass
-class ToolProcessingResult:
-    messages_to_append: list[dict[str, Any]] = field(default_factory=list)
-    recent_hash_updates: list[str] = field(default_factory=list)
-    loop_detections: list[dict[str, Any]] = field(default_factory=list)
-
-    def apply_to(self, state: SessionState) -> None:
-        for message in self.messages_to_append:
-            state.append_message(message)
-        for call_hash in self.recent_hash_updates:
-            state.remember_tool_call_hash(call_hash, max_window=MAX_CALL_HASH_WINDOW)
 
 
 class ToolCallProcessor:
