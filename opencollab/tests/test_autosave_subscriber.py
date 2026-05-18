@@ -12,7 +12,7 @@ from opencollab.core.session.events import EventBus, SessionEvent
 
 # Reuse the fakes from the characterization test file (same tests/ directory,
 # added to sys.path by pytest's rootdir discovery).
-from test_session_characterization import FakeAgent, FakeLLMClient
+from test_session_characterization import FakeAgent, FakeLLMClient, llm_response
 
 
 @pytest.mark.parametrize("trigger", sorted(SAVE_TRIGGERS))
@@ -99,3 +99,19 @@ def test_session_external_sink_and_autosave_coexist(tmp_path):
     asyncio.run(session.add_user_message("hi"))
     assert path.exists()
     assert "user_message_appended" in received
+
+
+def test_direct_compaction_apply_autosaves_compacted_messages(tmp_path):
+    path = tmp_path / "auto.jsonl"
+    session = Session(
+        agent=FakeAgent(),
+        llm=FakeLLMClient([llm_response(content="summary")]),
+        auto_save_path=str(path),
+    )
+    session.messages.extend(
+        {"role": "user", "content": f"message {idx}"} for idx in range(10)
+    )
+
+    asyncio.run(session.compactor.compact(apply=True))
+
+    assert "Context compacted" in path.read_text()

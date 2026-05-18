@@ -75,6 +75,13 @@ class ContextCompactor:
             )
         if apply:
             result.apply_to(self.state)
+            if result.did_compact:
+                await self.event_bus.emit(
+                    SessionEvent(
+                        type="compaction_applied",
+                        data={"tokens_after": self.state.used_tokens},
+                    )
+                )
         return result
 
     def _split_messages_for_compaction(self) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:

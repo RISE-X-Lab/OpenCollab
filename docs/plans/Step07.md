@@ -51,13 +51,15 @@ After this PR:
 - **`AutoSaveSubscriber`** (new file `core/session/autosave.py`) implements
   `EventSink` and persists on three event types: `user_message_appended`,
   `compaction_applied`, `step_end`.
-- **Two new events** are emitted by the runner/session:
+- **Two new events** are emitted by the runtime:
   `user_message_appended` (in `Session.add_user_message`) and
-  `compaction_applied` (in `SessionRunner._run_compaction`, only when the
-  compaction actually replaced messages).
+  `compaction_applied` (in `SessionRunner._run_compaction` for runner-owned
+  compaction, and in `ContextCompactor.compact(apply=True)` for direct
+  compatibility calls; only when compaction actually replaced messages).
 - **`auto_save` parameter is removed** from both `SessionRunner.__init__`
-  and `ContextCompactor.__init__`. `Session._auto_save()` private method is
-  deleted.
+  and `ContextCompactor.__init__`. `Session._auto_save()` private helper is
+  retained as the subscriber's save function, but no longer crosses runner or
+  compactor constructor boundaries.
 - **`Session.__init__` keeps `auto_save_path: str | None`** — it's still
   the user-facing knob. Internally it constructs an `AutoSaveSubscriber`
   and subscribes it to the bus alongside the (optional) external sink.
@@ -542,7 +544,8 @@ grep -rn "auto_save" opencollab/opencollab/core/session/
 # New events are emitted exactly where described.
 grep -n "user_message_appended\|compaction_applied" opencollab/opencollab/core/session/
 # Expected: session.py:add_user_message emits user_message_appended;
-# runner.py:_run_compaction emits compaction_applied.
+# runner.py:_run_compaction and compactor.py:compact(apply=True)
+# emit compaction_applied.
 
 # EventBus is multi-subscriber.
 grep -n "set_target\|on_event" opencollab/opencollab opencollab/tests
@@ -569,6 +572,8 @@ python -c "from opencollab.core.session import EventBus, EventSink, SessionEvent
       instead of calling `_auto_save()` directly.
 - [ ] `SessionRunner._run_compaction` emits a `compaction_applied` event
       when `result.did_compact`.
+- [ ] `ContextCompactor.compact(apply=True)` also emits
+      `compaction_applied` after direct compatibility-path compaction.
 - [ ] `SessionRunner._finish_step` no longer calls `self.auto_save()`;
       relies on the existing `step_end` emit.
 - [ ] `Session._auto_save()` private method still exists (it is the
@@ -579,7 +584,7 @@ python -c "from opencollab.core.session import EventBus, EventSink, SessionEvent
 - [ ] `tests/test_autosave_subscriber.py` added.
 - [ ] All existing tests pass.
       `cd opencollab && OPENAI_API_KEY=fake-test-key uv run pytest tests/ -q`
-      → 45 (after step 6) + 7 new = **52 passing**.
+      → **57 passing** after the direct-compaction autosave regression test.
 - [ ] Smoke test: `python -m opencollab chat`, type a message, verify
       `.opencollab/sessions/<id>.jsonl` exists and grows. Trigger a manual
       `/save` — works. Kill, restart with `--session .opencollab/sessions/<id>.jsonl`
