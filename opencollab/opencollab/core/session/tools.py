@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Protocol
 
 from opencollab.application.ports import SafetyPolicyPort
+from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.core.session.events import EventBus, SessionEvent
 from opencollab.core.session.state import SessionState
 
@@ -158,12 +159,13 @@ class ToolCallProcessor:
 
     async def _execute_tool(self, tool, args: dict) -> tuple[str, float]:
         start = time.monotonic()
+        runtime = self._tool_runtime()
         try:
             result = await tool.execute(
                 args,
-                env=self.env,
-                interceptor=self.safety_policy,
-                confirm_fn=self._tool_confirm_fn(),
+                env=runtime.environment,
+                interceptor=runtime.safety_policy,
+                confirm_fn=runtime.permission_policy.confirm if runtime.permission_policy else None,
             )
         except PermissionError as e:
             result = f"Permission denied: {e}"
@@ -171,6 +173,13 @@ class ToolCallProcessor:
             result = f"Tool execution error: {type(e).__name__}: {e}"
 
         return result, time.monotonic() - start
+
+    def _tool_runtime(self) -> ToolRuntime:
+        return ToolRuntime(
+            environment=self.env,
+            safety_policy=self.safety_policy,
+            permission_policy=self.permission_policy,
+        )
 
     def _tool_confirm_fn(self):
         if self.permission_policy is None:

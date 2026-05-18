@@ -14,15 +14,12 @@ from __future__ import annotations
 import os
 import re
 import shlex
-from typing import Any, Callable, Awaitable, TYPE_CHECKING
+from typing import Any, Callable, Awaitable
 
 from filelock import FileLock
 
+from opencollab.application.ports import EnvironmentPort, SafetyPolicyPort
 from opencollab.tools.base import Tool
-from opencollab.core.env import Environment
-
-if TYPE_CHECKING:
-    from opencollab.tools.safety import SandboxInterceptor
 
 
 class FileReadTool(Tool):
@@ -46,8 +43,8 @@ class FileReadTool(Tool):
     async def execute(
         self,
         params: dict[str, Any],
-        env: Environment | None = None,
-        interceptor: SandboxInterceptor | None = None,
+        env: EnvironmentPort | None = None,
+        interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         path = params["path"]
@@ -126,8 +123,8 @@ class FileWriteTool(Tool):
     async def execute(
         self,
         params: dict[str, Any],
-        env: Environment | None = None,
-        interceptor: SandboxInterceptor | None = None,
+        env: EnvironmentPort | None = None,
+        interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         path = params["path"]
@@ -209,8 +206,8 @@ class GrepTool(Tool):
     async def execute(
         self,
         params: dict[str, Any],
-        env: Environment | None = None,
-        interceptor: SandboxInterceptor | None = None,
+        env: EnvironmentPort | None = None,
+        interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         pattern = params["pattern"]

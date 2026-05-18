@@ -25,6 +25,11 @@ class FakeAgent:
         return []
 
 
+class FakePermissionPolicy:
+    async def confirm(self, prompt: str) -> bool:
+        return True
+
+
 def test_session_accepts_explicit_safety_policy(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -92,6 +97,28 @@ def test_tool_call_processor_accepts_explicit_safety_policy(tmp_path):
     )
     assert proc.safety_policy is custom
     assert proc.interceptor is custom
+
+
+def test_tool_call_processor_builds_application_tool_runtime(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    env = LocalEnvironment(str(ws))
+    safety_policy = SandboxInterceptor(str(ws))
+    permission_policy = FakePermissionPolicy()
+    proc = ToolCallProcessor(
+        agent=FakeAgent(),
+        env=env,
+        state=SessionState(messages=[]),
+        event_bus=EventBus(None),
+        safety_policy=safety_policy,
+        permission_policy=permission_policy,
+    )
+
+    runtime = proc._tool_runtime()
+
+    assert runtime.environment is env
+    assert runtime.safety_policy is safety_policy
+    assert runtime.permission_policy is permission_policy
 
 
 def test_core_session_tools_does_not_import_concrete_sandbox():

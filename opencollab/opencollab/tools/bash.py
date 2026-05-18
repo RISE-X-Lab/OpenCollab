@@ -9,13 +9,10 @@ Ref:
 
 from __future__ import annotations
 
-from typing import Any, Callable, Awaitable, TYPE_CHECKING
+from typing import Any, Callable, Awaitable
 
+from opencollab.application.ports import EnvironmentPort, SafetyPolicyPort
 from opencollab.tools.base import Tool
-from opencollab.core.env import Environment
-
-if TYPE_CHECKING:
-    from opencollab.tools.safety import SandboxInterceptor
 
 # Max chars to keep from stdout/stderr (ref: user feedback blind spot #1)
 MAX_OUTPUT_CHARS = 8_000
@@ -52,8 +49,8 @@ class BashTool(Tool):
     async def execute(
         self,
         params: dict[str, Any],
-        env: Environment | None = None,
-        interceptor: SandboxInterceptor | None = None,
+        env: EnvironmentPort | None = None,
+        interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         cmd = params["command"]

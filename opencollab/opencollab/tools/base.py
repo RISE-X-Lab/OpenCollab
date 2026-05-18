@@ -11,11 +11,9 @@ Ref:
 
 from __future__ import annotations
 
-from typing import Any, Callable, Awaitable, TYPE_CHECKING
+from typing import Any, Callable, Awaitable
 
-if TYPE_CHECKING:
-    from opencollab.core.env import Environment
-    from opencollab.tools.safety import SandboxInterceptor
+from opencollab.application.ports import EnvironmentPort, SafetyPolicyPort
 
 
 class Tool:
@@ -45,8 +43,8 @@ class Tool:
     async def execute(
         self,
         params: dict[str, Any],
-        env: Environment | None = None,
-        interceptor: SandboxInterceptor | None = None,
+        env: EnvironmentPort | None = None,
+        interceptor: SafetyPolicyPort | None = None,
         confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
     ) -> str:
         """Execute the tool with given parameters. Returns result as string."""
