@@ -14,7 +14,7 @@ from opencollab.core.session import Session
 from opencollab.core.session.autosave import AutoSaveSubscriber
 from opencollab.core.session.compactor import ContextCompactor
 from opencollab.core.session.runner import SessionRunner
-from opencollab.core.session.storage import SessionStore
+from opencollab.adapters.storage import SessionStore
 from opencollab.core.session.tools import ToolCallProcessor
 
 

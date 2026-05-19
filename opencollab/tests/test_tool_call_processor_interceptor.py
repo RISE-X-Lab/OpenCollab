@@ -6,12 +6,12 @@ import pkgutil
 import pytest
 
 from opencollab.application.ports import ToolPort
-from opencollab.core.env import LocalEnvironment
+from opencollab.adapters.env import LocalEnvironment
 from opencollab.core.session import session as session_mod
 from opencollab.core.session.events import EventBus
 from opencollab.core.session.state import SessionState
 from opencollab.core.session.tools import ToolCallProcessor
-from opencollab.tools.safety import SandboxInterceptor
+from opencollab.adapters.safety import SandboxInterceptor
 
 
 class FakeAgent:

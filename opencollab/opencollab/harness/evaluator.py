@@ -20,8 +20,8 @@ from typing import Any
 
 from opencollab.core.agent import Agent
 from opencollab.core.session import Session
-from opencollab.core.env import Environment, LocalEnvironment, DockerEnvironment
-from opencollab.core.tracer import Tracer
+from opencollab.adapters.env import Environment, LocalEnvironment, DockerEnvironment
+from opencollab.adapters.trace import Tracer
 from opencollab.tools.bash import BashTool
 from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
 

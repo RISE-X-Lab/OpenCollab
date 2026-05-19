@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 
-from opencollab.core.env import LocalEnvironment
+from opencollab.adapters.env import LocalEnvironment
 from opencollab.team.worktree_pool import WorktreePool
 
 

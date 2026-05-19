@@ -1,0 +1,1 @@
+"""Concrete interface adapters."""

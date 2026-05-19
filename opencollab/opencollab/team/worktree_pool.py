@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import uuid
 
-from opencollab.core.env import Environment, LocalEnvironment, WorktreeEnvironment
+from opencollab.adapters.env import Environment, LocalEnvironment, WorktreeEnvironment
 
 
 class WorktreePool:

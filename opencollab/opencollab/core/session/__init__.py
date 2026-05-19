@@ -1,9 +1,7 @@
-from opencollab.core.llm import LLMClient
 from opencollab.core.session.compactor import COMPACTION_KEEP_RECENT, DEFAULT_COMPACTION_THRESHOLD, CompactResult, ContextCompactor
 from opencollab.core.session.events import EventBus, EventCallback, EventSink, SessionEvent
 from opencollab.core.session.runner import SessionRunner
 from opencollab.core.session.session import BudgetExceededError, LoopDetectedError, Session
-from opencollab.core.session.storage import SessionStore
 from opencollab.core.session.tools import (
     MAX_CALL_HASH_WINDOW,
     MAX_SIMILAR_CALLS,
@@ -27,7 +25,6 @@ __all__ = [
     "EventBus",
     "EventCallback",
     "EventSink",
-    "LLMClient",
     "LoopDetectedError",
     "MAX_CALL_HASH_WINDOW",
     "MAX_SIMILAR_CALLS",
@@ -39,7 +36,6 @@ __all__ = [
     "SessionPhase",
     "SessionRunner",
     "SessionState",
-    "SessionStore",
     "ToolCallProcessor",
     "ToolProcessingResult",
 ]

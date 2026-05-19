@@ -24,8 +24,8 @@ from opencollab.application.ports import (
     TracePort,
 )
 from opencollab.core.agent import Agent
-from opencollab.core.env import Environment, LocalEnvironment
-from opencollab.core.llm import LLMClient
+from opencollab.adapters.env import Environment, LocalEnvironment
+from opencollab.adapters.llm import LLMClient
 from opencollab.core.session.autosave import AutoSaveSubscriber
 from opencollab.core.session.compactor import (
     DEFAULT_COMPACTION_THRESHOLD,
@@ -33,7 +33,7 @@ from opencollab.core.session.compactor import (
 )
 from opencollab.core.session.events import EventBus, EventSink
 from opencollab.core.session.runner import SessionRunner
-from opencollab.core.session.storage import SessionStore
+from opencollab.adapters.storage import SessionStore
 from opencollab.core.session.tools import ToolCallProcessor
 from opencollab.domain.session import SessionState
 

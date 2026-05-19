@@ -7,7 +7,7 @@ from opencollab.bootstrap import (
     build_team,
     build_runtime_context,
 )
-from opencollab.tools.safety import SandboxInterceptor
+from opencollab.adapters.safety import SandboxInterceptor
 
 
 def _cfg(**overrides):

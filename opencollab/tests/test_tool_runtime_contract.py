@@ -6,14 +6,14 @@ from types import SimpleNamespace
 import pytest
 
 from opencollab.application.tool_runtime import ToolRuntime
-from opencollab.core.env import LocalEnvironment
+from opencollab.adapters.env import LocalEnvironment
 from opencollab.tools.bash import BashTool
 from opencollab.tools.base import Tool
 from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.tools import human
 from opencollab.tools.human import AskUserTool
 from opencollab.tools.mcp import MCPTool
-from opencollab.tools.safety import SandboxInterceptor
+from opencollab.adapters.safety import SandboxInterceptor
 
 
 def run(coro):
@@ -438,5 +438,5 @@ def test_tool_modules_do_not_import_inner_layers_or_concrete_sandbox():
         source = path.read_text(encoding="utf-8")
         assert "opencollab.core.session" not in source
         assert "opencollab.bootstrap" not in source
-        assert "opencollab.tools.safety" not in source
+        assert "opencollab.adapters.safety" not in source
         assert "SandboxInterceptor" not in source

@@ -17,12 +17,12 @@ from typing import Any
 
 from opencollab.application.ports import SafetyPolicyFactory
 from opencollab.core.agent import Agent
-from opencollab.core.env import Environment
+from opencollab.adapters.env import Environment
 # Transitional: this module is the documented default implementation of
 # SessionFactoryPort. Concrete Session/EventBus/PermissionPolicy types are
 # imported here so the team orchestrator does not need to.
 from opencollab.core.session import EventBus, PermissionPolicy, Session
-from opencollab.core.tracer import Tracer
+from opencollab.adapters.trace import Tracer
 from opencollab.team.prompts import get_role_prompt
 from opencollab.tools.bash import BashTool
 from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool

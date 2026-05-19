@@ -6,12 +6,12 @@ from typing import TYPE_CHECKING
 
 from opencollab.application.ports import SafetyPolicyPort
 from opencollab.core.agent import Agent
-from opencollab.core.env import Environment
+from opencollab.adapters.env import Environment
 from opencollab.core.session.autosave import AutoSaveSubscriber
 from opencollab.core.session.compactor import DEFAULT_COMPACTION_THRESHOLD
 from opencollab.core.session.events import EventSink, SessionEvent
 from opencollab.core.session.tools import PermissionPolicy
-from opencollab.core.tracer import Tracer
+from opencollab.adapters.trace import Tracer
 from opencollab.domain.session import SessionPhase, SessionState
 
 if TYPE_CHECKING:

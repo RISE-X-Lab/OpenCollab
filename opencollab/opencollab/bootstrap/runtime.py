@@ -11,9 +11,9 @@ import os
 import uuid
 from dataclasses import dataclass
 
-from opencollab.core.context import get_repo_map
+from opencollab.adapters.repo_map import get_repo_map
 from opencollab.core.session import EventSink, PermissionPolicy
-from opencollab.core.tracer import Tracer
+from opencollab.adapters.trace import Tracer
 
 
 @dataclass

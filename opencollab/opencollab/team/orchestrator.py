@@ -29,8 +29,8 @@ from opencollab.core.agent import Agent
 # Transitional: EventBus / EventSink / PermissionPolicy stay sourced from
 # core.session as compatibility re-exports (see core/session/events.py).
 from opencollab.core.session import EventBus, EventSink, PermissionPolicy
-from opencollab.core.env import Environment, LocalEnvironment, WorktreeEnvironment
-from opencollab.core.tracer import Tracer
+from opencollab.adapters.env import Environment, LocalEnvironment, WorktreeEnvironment
+from opencollab.adapters.trace import Tracer
 from opencollab.tools.base import Tool
 from opencollab.tools.bash import BashTool
 from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool

@@ -6,15 +6,15 @@ import pytest
 from opencollab.core import session as session_mod
 from opencollab.core.events import EventBus as CompatEventBus
 from opencollab.core.events import SessionEvent as CompatSessionEvent
-from opencollab.core.llm import LLMResponse, Usage
+from opencollab.adapters.llm import LLMResponse, Usage
 from opencollab.core.session import (
     CallbackPermissionPolicy,
     EventBus,
     Session,
     SessionEvent,
     SessionPhase,
-    SessionStore,
 )
+from opencollab.adapters.storage import SessionStore
 
 
 def run(coro):
@@ -747,7 +747,7 @@ def test_team_lead_session_gets_workspace_safety_policy(tmp_path, monkeypatch):
     from opencollab.bootstrap.safety import build_workspace_safety_policy
     from opencollab.bootstrap import container as session_module
     from opencollab.team.orchestrator import Team
-    from opencollab.tools.safety import SandboxInterceptor
+    from opencollab.adapters.safety import SandboxInterceptor
 
     monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
 
