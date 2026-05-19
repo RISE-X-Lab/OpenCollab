@@ -15,7 +15,8 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from opencollab.core.session.events import EventSink, SessionEvent
+from opencollab.application.event_bus import EventSink
+from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 
 
 SAVE_TRIGGERS = frozenset({

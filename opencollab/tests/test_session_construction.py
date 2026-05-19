@@ -22,6 +22,15 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def test_event_bus_satisfies_event_publisher_port():
+    from opencollab.application.event_bus import EventBus
+    from opencollab.application.ports import EventPublisherPort
+
+    bus: EventPublisherPort = EventBus()
+    assert hasattr(bus, "emit")
+    assert callable(getattr(bus, "emit"))
+
+
 class _FakeAgent:
     def __init__(self):
         self.name = "fake-agent"

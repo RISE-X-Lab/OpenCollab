@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from opencollab.application.event_bus import EventBus
 from opencollab.application.session_run import SessionRunEventFactory, SessionRunUseCase
 from opencollab.core.session.compactor import ContextCompactor
-from opencollab.core.session.events import EventBus, SessionEvent
 from opencollab.core.session.tools import ToolCallProcessor
+from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionState
 
 

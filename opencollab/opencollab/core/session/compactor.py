@@ -8,8 +8,9 @@ from opencollab.application.compaction import (
     CompactionEventFactory,
     ContextCompactionUseCase,
 )
+from opencollab.application.event_bus import EventBus
 from opencollab.adapters.llm import estimate_messages_tokens
-from opencollab.core.session.events import EventBus, SessionEvent
+from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.compaction import CompactResult
 from opencollab.domain.session import SessionState
 

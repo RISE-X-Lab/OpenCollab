@@ -23,6 +23,7 @@ from opencollab.application.ports import (
     SessionStorePort,
     TracePort,
 )
+from opencollab.application.event_bus import EventBus, EventSink
 from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient
@@ -31,7 +32,6 @@ from opencollab.core.session.compactor import (
     DEFAULT_COMPACTION_THRESHOLD,
     ContextCompactor,
 )
-from opencollab.core.session.events import EventBus, EventSink
 from opencollab.core.session.runner import SessionRunner
 from opencollab.adapters.storage import SessionStore
 from opencollab.core.session.tools import ToolCallProcessor
