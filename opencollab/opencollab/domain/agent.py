@@ -7,7 +7,8 @@ Agent holds NO state. State lives in Session.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+
+from opencollab.domain.tools import ToolSpec
 
 
 @dataclass
@@ -28,7 +29,7 @@ class Agent:
 
     name: str
     system_prompt: str
-    tools: list[Any] = field(default_factory=list)
+    tools: list[ToolSpec] = field(default_factory=list)
     model: str = "gpt-4o"
     provider: str = "openai"
     api_key: str | None = None
@@ -40,7 +41,7 @@ class Agent:
         """Generate OpenAI-format tool schemas for LLM function calling."""
         return [t.to_openai_schema() for t in self.tools]
 
-    def find_tool(self, name: str) -> Any | None:
+    def find_tool(self, name: str) -> ToolSpec | None:
         """Case-insensitive tool lookup (ref: opencode's tool repair logic)."""
         for t in self.tools:
             if t.name.lower() == name.lower():
