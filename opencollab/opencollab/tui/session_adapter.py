@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable, Protocol
 
-from opencollab.application.events import SessionRuntimeEvent, TeamEvent
+from opencollab.domain.events import SessionRuntimeEvent, TeamEvent
 # Transitional: EventSink + PermissionPolicy stay sourced from core.session
 # as compatibility re-exports until REM-03/REM-04 narrow the ports further.
 from opencollab.core.session import EventSink, PermissionPolicy

@@ -19,7 +19,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from opencollab.application.events import TeamEvent
+from opencollab.domain.events import TeamEvent
 from opencollab.application.ports import (
     SafetyPolicyFactory,
     SessionFactoryPort,

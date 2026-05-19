@@ -19,7 +19,7 @@ from rich.spinner import Spinner
 from rich.text import Text
 from rich.table import Table
 
-from opencollab.application.events import SessionRuntimeEvent, TeamEvent
+from opencollab.domain.events import SessionRuntimeEvent, TeamEvent
 
 
 class TUI:

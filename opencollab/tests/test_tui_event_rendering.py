@@ -9,7 +9,7 @@ and TeamEvent keeps the user-visible output byte-equivalent.
 
 from __future__ import annotations
 
-from opencollab.application.events import SessionRuntimeEvent, TeamEvent
+from opencollab.domain.events import SessionRuntimeEvent, TeamEvent
 from opencollab.cli.tui import TUI
 
 
