@@ -1,69 +1,20 @@
-"""Session event sink/bus.
+"""Compatibility shim — runtime fan-out moved to application.event_bus.
 
-The event value type now lives in ``opencollab.domain.events``. This module
-re-exports it as ``SessionEvent`` for backward compatibility — every existing
-``from opencollab.core.session import SessionEvent`` import keeps resolving to
-the same dataclass.
+This module remains because:
+- ``core/events.py`` re-exports from here, and characterization tests pin
+  ``from opencollab.core.events import EventBus, SessionEvent`` identities.
+- Existing tests still import EventBus / SessionEvent from this location.
 
-The bus accepts either ``SessionRuntimeEvent`` or ``TeamEvent`` (both are
-duck-compatible: they carry ``type`` and ``data`` attributes), so team
-orchestration and the session run loop share one fan-out channel during
-the Step12 migration.
+New production code should import EventBus from
+``opencollab.application.event_bus`` and event value types from
+``opencollab.domain.events``.
 """
 
-from __future__ import annotations
+from opencollab.application.event_bus import EventBus, EventCallback, EventSink
+from opencollab.domain.events import SessionRuntimeEvent, TeamEvent
 
-import asyncio
-from typing import Any, Awaitable, Callable, Protocol
-
-from opencollab.domain.events import SessionRuntimeEvent as _SessionRuntimeEvent
-from opencollab.domain.events import TeamEvent as _TeamEvent
-
-
-# Backward-compatible alias. Production code should prefer SessionRuntimeEvent
-# from opencollab.domain.events for new call sites.
-SessionEvent = _SessionRuntimeEvent
-SessionRuntimeEvent = _SessionRuntimeEvent
-TeamEvent = _TeamEvent
-
-
-EventCallback = Callable[[Any], Awaitable[None] | None]
-
-
-class EventSink(Protocol):
-    async def emit(self, event: Any) -> None:
-        ...
-
-
-class EventBus:
-    """Fan-out broadcaster. Multiple subscribers; failures isolated per-sink."""
-
-    def __init__(self, target: EventSink | EventCallback | None = None):
-        self._targets: list[EventSink | EventCallback] = []
-        if target is not None:
-            self.subscribe(target)
-
-    def subscribe(self, target: EventSink | EventCallback) -> None:
-        self._targets.append(target)
-
-    @property
-    def sink(self) -> EventSink | EventCallback | None:
-        """First subscribed target (for snapshot/build code that needs one)."""
-        return self._targets[0] if self._targets else None
-
-    async def emit(self, event: Any) -> None:
-        for target in self._targets:
-            try:
-                if hasattr(target, "emit"):
-                    result = target.emit(event)  # type: ignore[union-attr]
-                else:
-                    result = target(event)  # type: ignore[operator]
-                if asyncio.iscoroutine(result):
-                    await result
-            except Exception:
-                # Subscriber failure must not break siblings or the loop.
-                continue
-
+# Legacy alias preserved for the v3 event split migration.
+SessionEvent = SessionRuntimeEvent
 
 __all__ = [
     "EventBus",

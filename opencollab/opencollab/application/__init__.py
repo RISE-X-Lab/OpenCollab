@@ -6,6 +6,7 @@ from opencollab.application.compaction import (
     CompactionEventFactory,
     ContextCompactionUseCase,
 )
+from opencollab.application.event_bus import EventBus, EventCallback, EventSink
 from opencollab.application.tool_dispatch import execute_tool_with_runtime
 from opencollab.application.ports import (
     EnvironmentPort,
@@ -31,7 +32,10 @@ __all__ = [
     "CompactionEventFactory",
     "ContextCompactionUseCase",
     "DEFAULT_COMPACTION_THRESHOLD",
+    "EventBus",
+    "EventCallback",
     "EventPublisherPort",
+    "EventSink",
     "PermissionPort",
     "SafetyPolicyFactory",
     "SafetyPolicyPort",
