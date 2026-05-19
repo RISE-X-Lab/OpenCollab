@@ -31,6 +31,13 @@ def test_event_bus_satisfies_event_publisher_port():
     assert callable(getattr(bus, "emit"))
 
 
+def test_permission_policy_alias_resolves_to_permission_port():
+    from opencollab.application.ports import PermissionPort
+    from opencollab.core.session.tools import PermissionPolicy
+
+    assert PermissionPolicy is PermissionPort
+
+
 class _FakeAgent:
     def __init__(self):
         self.name = "fake-agent"

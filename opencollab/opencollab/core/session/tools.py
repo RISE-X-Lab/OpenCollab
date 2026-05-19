@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable
 
 from opencollab.application.event_bus import EventBus
-from opencollab.application.ports import SafetyPolicyPort
+from opencollab.application.ports import PermissionPort, SafetyPolicyPort
 from opencollab.application.tool_dispatch import execute_tool_with_runtime
 from opencollab.application.tool_execution import (
     MAX_SIMILAR_CALLS,
@@ -17,9 +17,14 @@ from opencollab.domain.session import SessionState
 from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, ToolProcessingResult
 
 
-class PermissionPolicy(Protocol):
-    async def confirm(self, prompt: str) -> bool:
-        ...
+PermissionPolicy = PermissionPort
+"""Legacy alias for PermissionPort.
+
+Production code should import ``PermissionPort`` from
+``opencollab.application.ports``. This alias is kept so
+``from opencollab.core.session import PermissionPolicy`` continues to work for
+legacy callers and characterization tests.
+"""
 
 
 class CallbackPermissionPolicy:
