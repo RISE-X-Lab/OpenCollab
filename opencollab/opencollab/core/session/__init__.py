@@ -14,8 +14,6 @@ from opencollab.core.session.tools import (
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionPhase, SessionState
 
-SessionMachine = SessionRunner
-
 __all__ = [
     "BudgetExceededError",
     "CallbackPermissionPolicy",
@@ -33,7 +31,6 @@ __all__ = [
     "PermissionPolicy",
     "Session",
     "SessionEvent",
-    "SessionMachine",
     "SessionPhase",
     "SessionRunner",
     "SessionState",
