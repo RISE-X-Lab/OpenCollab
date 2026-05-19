@@ -95,12 +95,12 @@ class FakeTool:
             },
         }
 
-    async def execute(self, args, env=None, interceptor=None, confirm_fn=None):
+    async def execute_with_runtime(self, args, runtime):
         self.calls.append({
             "args": copy.deepcopy(args),
-            "env": env,
-            "interceptor": interceptor,
-            "confirm_fn": confirm_fn,
+            "env": runtime.environment,
+            "interceptor": runtime.safety_policy,
+            "confirm_fn": runtime.confirm_fn(),
         })
         if self.exc:
             raise self.exc

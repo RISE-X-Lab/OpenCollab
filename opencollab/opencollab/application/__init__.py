@@ -6,7 +6,7 @@ from opencollab.application.compaction import (
     CompactionEventFactory,
     ContextCompactionUseCase,
 )
-from opencollab.application.tool_dispatch import execute_legacy_tool, execute_tool_with_runtime
+from opencollab.application.tool_dispatch import execute_tool_with_runtime
 from opencollab.application.ports import (
     EnvironmentPort,
     EventPublisherPort,
@@ -35,6 +35,5 @@ __all__ = [
     "ToolRuntime",
     "ToolExecutionEventFactory",
     "ToolExecutionUseCase",
-    "execute_legacy_tool",
     "execute_tool_with_runtime",
 ]

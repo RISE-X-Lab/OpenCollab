@@ -72,22 +72,6 @@ class RuntimeNativeTool:
         return self.output
 
 
-class LegacyOnlyTool:
-    name = "legacy_tool"
-
-    def __init__(self):
-        self.legacy_calls = []
-
-    async def execute(self, args, env=None, interceptor=None, confirm_fn=None):
-        self.legacy_calls.append({
-            "args": args,
-            "env": env,
-            "interceptor": interceptor,
-            "confirm_fn": confirm_fn,
-        })
-        return "legacy result"
-
-
 def event_factory() -> ToolExecutionEventFactory:
     return ToolExecutionEventFactory(
         loop_detected=lambda tool, count: SimpleNamespace(
@@ -203,34 +187,6 @@ def test_tool_execution_use_case_executes_runtime_native_tool_and_events():
     assert publisher.events[0].data == {"tool": "fake_tool", "args": {"value": 1}}
     assert publisher.events[1].type == "tool_end"
     assert publisher.events[1].data["tool"] == "fake_tool"
-
-
-def test_tool_execution_use_case_preserves_legacy_tool_fallback():
-    tool = LegacyOnlyTool()
-    agent = FakeAgent(tools=[tool])
-    env = object()
-    safety_policy = FakeSafetyPolicy()
-    permission_policy = FakePermissionPolicy()
-    use_case, _publisher = build_use_case(
-        agent=agent,
-        environment=env,
-        safety_policy=safety_policy,
-        permission_policy=permission_policy,
-    )
-
-    result = run(use_case.process([tool_call(name="legacy_tool", arguments='{"value": 1}')]))
-
-    assert result.messages_to_append == [
-        {"role": "tool", "tool_call_id": "call-1", "content": "legacy result"}
-    ]
-    assert tool.legacy_calls == [
-        {
-            "args": {"value": 1},
-            "env": env,
-            "interceptor": safety_policy,
-            "confirm_fn": permission_policy.confirm,
-        }
-    ]
 
 
 def test_tool_execution_use_case_preserves_trace_payload_capping():

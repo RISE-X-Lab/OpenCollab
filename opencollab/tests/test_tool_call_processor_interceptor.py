@@ -41,20 +41,6 @@ class RuntimeAwareTool:
         return "runtime result"
 
 
-class LegacyOnlyTool:
-    def __init__(self):
-        self.legacy_calls = []
-
-    async def execute(self, args, env=None, interceptor=None, confirm_fn=None):
-        self.legacy_calls.append({
-            "args": args,
-            "env": env,
-            "interceptor": interceptor,
-            "confirm_fn": confirm_fn,
-        })
-        return "legacy result"
-
-
 def test_session_accepts_explicit_safety_policy(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -171,33 +157,6 @@ def test_tool_call_processor_prefers_execute_with_runtime(tmp_path):
     assert runtime.environment is env
     assert runtime.safety_policy is safety_policy
     assert runtime.permission_policy is permission_policy
-
-
-def test_tool_call_processor_falls_back_to_legacy_execute(tmp_path):
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    env = LocalEnvironment(str(ws))
-    safety_policy = SandboxInterceptor(str(ws))
-    permission_policy = FakePermissionPolicy()
-    proc = ToolCallProcessor(
-        agent=FakeAgent(),
-        env=env,
-        state=SessionState(messages=[]),
-        event_bus=EventBus(None),
-        safety_policy=safety_policy,
-        permission_policy=permission_policy,
-    )
-    tool = LegacyOnlyTool()
-
-    result, _latency = asyncio.run(proc._execute_tool(tool, {"value": 1}))
-
-    assert result == "legacy result"
-    assert tool.legacy_calls == [{
-        "args": {"value": 1},
-        "env": env,
-        "interceptor": safety_policy,
-        "confirm_fn": permission_policy.confirm,
-    }]
 
 
 def test_tool_call_processor_delegates_runtime_dispatch(tmp_path):

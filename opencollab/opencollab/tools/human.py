@@ -12,10 +12,9 @@ Ref:
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Callable, Awaitable
+from typing import Any
 
-from opencollab.application.ports import EnvironmentPort, SafetyPolicyPort
-from opencollab.application.tool_runtime import ToolRuntime, tool_runtime_from_legacy
+from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.tools.base import Tool
 
 
@@ -39,20 +38,6 @@ class AskUserTool(Tool):
         },
         "required": ["question"],
     }
-
-    async def execute(
-        self,
-        params: dict[str, Any],
-        env: EnvironmentPort | None = None,
-        interceptor: SafetyPolicyPort | None = None,
-        confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
-    ) -> str:
-        runtime = tool_runtime_from_legacy(
-            env=env,
-            safety_policy=interceptor,
-            confirm_fn=confirm_fn,
-        )
-        return await self.execute_with_runtime(params, runtime)
 
     async def execute_with_runtime(
         self,
