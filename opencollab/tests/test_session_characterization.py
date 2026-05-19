@@ -398,13 +398,10 @@ def test_run_loop_with_zero_max_steps_exits_without_llm_call():
     assert session.phase == SessionPhase.IDLE
 
 
-def test_handle_pending_response_without_llm_call_errors():
+def test_session_runner_facade_hides_private_response_handler():
     session = Session(agent=FakeAgent(), llm=FakeLLMClient())
 
-    with pytest.raises(RuntimeError, match="before calling LLM"):
-        run(session.runner._handle_pending_response())
-
-    assert session.phase == SessionPhase.ERROR
+    assert not hasattr(session.runner, "_handle_pending_response")
 
 
 def test_tool_calls_execute_append_tool_result_and_continue():

@@ -17,14 +17,14 @@ Ref:
 from __future__ import annotations
 
 import time
-from typing import Any, Awaitable, Callable
+from typing import Any
 
 from opencollab.application.events import TeamEvent
 from opencollab.application.ports import (
     SafetyPolicyFactory,
-    SafetyPolicyPort,
     SessionFactoryPort,
 )
+from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.core.agent import Agent
 # Transitional: EventBus / EventSink / PermissionPolicy stay sourced from
 # core.session as compatibility re-exports (see core/session/events.py).
@@ -78,12 +78,10 @@ class DelegateTaskTool(Tool):
     def __init__(self, team: Team):
         self._team = team
 
-    async def execute(
+    async def execute_with_runtime(
         self,
         params: dict[str, Any],
-        env: Environment | None = None,
-        interceptor: SafetyPolicyPort | None = None,
-        confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
+        runtime: ToolRuntime,
     ) -> str:
         role = params["role"]
         task = params["task"]
@@ -125,12 +123,10 @@ class DelegateWithReviewTool(Tool):
     def __init__(self, team: Team):
         self._team = team
 
-    async def execute(
+    async def execute_with_runtime(
         self,
         params: dict[str, Any],
-        env: Environment | None = None,
-        interceptor: SafetyPolicyPort | None = None,
-        confirm_fn: Callable[[str], Awaitable[bool]] | None = None,
+        runtime: ToolRuntime,
     ) -> str:
         task = params["task"]
         context = params.get("context", "")

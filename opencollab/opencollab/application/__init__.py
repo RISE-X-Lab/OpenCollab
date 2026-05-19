@@ -15,6 +15,10 @@ from opencollab.application.ports import (
     SafetyPolicyPort,
     ToolPort,
 )
+from opencollab.application.session_run import (
+    SessionRunEventFactory,
+    SessionRunUseCase,
+)
 from opencollab.application.tool_execution import (
     ToolExecutionEventFactory,
     ToolExecutionUseCase,
@@ -31,6 +35,8 @@ __all__ = [
     "PermissionPort",
     "SafetyPolicyFactory",
     "SafetyPolicyPort",
+    "SessionRunEventFactory",
+    "SessionRunUseCase",
     "ToolPort",
     "ToolRuntime",
     "ToolExecutionEventFactory",

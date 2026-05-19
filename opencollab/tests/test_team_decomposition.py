@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 
+from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.bootstrap.safety import build_workspace_safety_policy
 from opencollab.core.env import LocalEnvironment
 from opencollab.core.session.events import EventBus
@@ -11,6 +13,24 @@ from opencollab.team import orchestrator as orchestrator_mod
 from opencollab.team.teammate_factory import TeammateConfig, build_teammate_session, split_budget
 from opencollab.team import teammate_factory as teammate_factory_mod
 from opencollab.tools.safety import SandboxInterceptor
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+class FakeTeam:
+    def __init__(self):
+        self.delegate_calls = []
+        self.review_calls = []
+
+    async def delegate(self, role, task, context=""):
+        self.delegate_calls.append((role, task, context))
+        return f"delegated {role}: {task} [{context}]"
+
+    async def delegate_with_review(self, task, context="", max_iterations=3):
+        self.review_calls.append((task, context, max_iterations))
+        return f"reviewed {task} [{context}] x{max_iterations}"
 
 
 # split_budget arithmetic — used to be inline in Team.delegate, hard to test.
@@ -93,6 +113,40 @@ def test_build_teammate_session_without_factory_does_not_build_safety_policy(tmp
     session = build_teammate_session(role="coder", env=env, cfg=cfg, budget=50_000)
 
     assert session.tool_processor.safety_policy is None
+
+
+def test_delegate_task_tool_uses_runtime_native_execution():
+    team = FakeTeam()
+    tool = orchestrator_mod.DelegateTaskTool(team)
+    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+
+    result = run(
+        tool.execute_with_runtime(
+            {"role": "coder", "task": "implement", "context": "ctx"},
+            runtime,
+        )
+    )
+
+    assert result == "delegated coder: implement [ctx]"
+    assert team.delegate_calls == [("coder", "implement", "ctx")]
+    assert "execute" not in orchestrator_mod.DelegateTaskTool.__dict__
+
+
+def test_delegate_with_review_tool_uses_runtime_native_execution():
+    team = FakeTeam()
+    tool = orchestrator_mod.DelegateWithReviewTool(team)
+    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+
+    result = run(
+        tool.execute_with_runtime(
+            {"task": "change code", "context": "ctx", "max_iterations": 2},
+            runtime,
+        )
+    )
+
+    assert result == "reviewed change code [ctx] x2"
+    assert team.review_calls == [("change code", "ctx", 2)]
+    assert "execute" not in orchestrator_mod.DelegateWithReviewTool.__dict__
 
 
 def test_team_modules_do_not_import_bootstrap_safety():

@@ -1,5 +1,7 @@
 import asyncio
+import importlib
 import inspect
+import pkgutil
 
 import pytest
 
@@ -233,6 +235,26 @@ def test_tool_port_describes_runtime_dispatch_not_legacy_execute():
     assert "async def execute(" not in source
     assert "env:" not in source
     assert "interceptor:" not in source
+
+
+def test_no_concrete_tool_defines_legacy_execute():
+    from opencollab.tools.base import Tool
+
+    offenders: list[str] = []
+    for pkg_name in ("opencollab.tools", "opencollab.team"):
+        pkg = importlib.import_module(pkg_name)
+        for _, mod_name, _ in pkgutil.walk_packages(pkg.__path__, prefix=f"{pkg_name}."):
+            mod = importlib.import_module(mod_name)
+            for cls in vars(mod).values():
+                if (
+                    isinstance(cls, type)
+                    and issubclass(cls, Tool)
+                    and cls is not Tool
+                    and "execute" in cls.__dict__
+                ):
+                    offenders.append(f"{mod_name}.{cls.__name__}")
+
+    assert offenders == []
 
 
 def test_core_session_tools_does_not_import_concrete_sandbox():
