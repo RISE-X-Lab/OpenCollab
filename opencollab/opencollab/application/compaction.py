@@ -3,7 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from opencollab.application.ports import EventPublisherPort
+from opencollab.application.ports import (
+    EventPublisherPort,
+    LLMPort,
+    TokenEstimatorPort,
+    TracePort,
+)
 from opencollab.domain.compaction import CompactResult
 from opencollab.domain.session import SessionState
 
@@ -23,11 +28,11 @@ class ContextCompactionUseCase:
         self,
         *,
         state: SessionState,
-        llm: Any,
+        llm: LLMPort,
         event_publisher: EventPublisherPort,
         event_factory: CompactionEventFactory,
-        estimate_tokens: Callable[[list[dict[str, Any]]], int],
-        tracer: Any = None,
+        estimate_tokens: TokenEstimatorPort,
+        tracer: TracePort | None = None,
         compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
     ):
         self.state = state

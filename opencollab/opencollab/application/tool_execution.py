@@ -11,6 +11,7 @@ from opencollab.application.ports import (
     EventPublisherPort,
     PermissionPort,
     SafetyPolicyPort,
+    TracePort,
 )
 from opencollab.application.tool_dispatch import execute_tool_with_runtime
 from opencollab.application.tool_runtime import ToolRuntime
@@ -39,7 +40,7 @@ class ToolExecutionUseCase:
         state: SessionState,
         event_publisher: EventPublisherPort,
         event_factory: ToolExecutionEventFactory,
-        tracer: Any = None,
+        tracer: TracePort | None = None,
         permission_policy: PermissionPort | None = None,
         safety_policy: SafetyPolicyPort | None = None,
         dispatch_tool: Callable[[Any, dict[str, Any], ToolRuntime], Awaitable[str]] = execute_tool_with_runtime,

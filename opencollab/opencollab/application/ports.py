@@ -92,3 +92,68 @@ class SessionFactoryPort(Protocol):
         max_steps: int = 50,
     ) -> TeammateSessionPort:
         ...
+
+
+class LLMPort(Protocol):
+    """LLM client surface used by the session run loop and compaction."""
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        temperature: float = 0.0,
+    ) -> Any:
+        ...
+
+
+class SessionStorePort(Protocol):
+    """Message persistence surface (JSONL today)."""
+
+    def save(self, path: str, messages: list[dict[str, Any]]) -> None:
+        ...
+
+    def load_messages(
+        self,
+        path: str,
+        system_prompt: str,
+    ) -> list[dict[str, Any]]:
+        ...
+
+
+class TracePort(Protocol):
+    """Trajectory recorder surface."""
+
+    def log_step(
+        self,
+        *,
+        step_type: str,
+        payload: dict[str, Any],
+        tokens: int = 0,
+        latency: float = 0.0,
+    ) -> None:
+        ...
+
+
+class TokenEstimatorPort(Protocol):
+    """Callable that estimates a token cost for a messages list."""
+
+    def __call__(self, messages: list[dict[str, Any]]) -> int:
+        ...
+
+
+class RepoMapPort(Protocol):
+    """Renderer for the repository structure injected into the system prompt."""
+
+    def render(self) -> str:
+        ...
+
+
+class WorktreePoolPort(Protocol):
+    """Per-teammate worktree environment lifecycle."""
+
+    async def acquire(self, role: str) -> Any:
+        ...
+
+    async def release(self, env: Any) -> None:
+        ...

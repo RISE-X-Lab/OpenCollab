@@ -43,7 +43,7 @@ def test_split_budget_small_total_still_floors_at_10k():
 
 
 def test_build_teammate_session_wires_environment_safety_policy(tmp_path, monkeypatch):
-    from opencollab.core.session import session as session_module
+    from opencollab.bootstrap import container as session_module
 
     class FakeLLMClient:
         pass
@@ -71,7 +71,7 @@ def test_build_teammate_session_wires_environment_safety_policy(tmp_path, monkey
 
 
 def test_build_teammate_session_without_factory_does_not_build_safety_policy(tmp_path, monkeypatch):
-    from opencollab.core.session import session as session_module
+    from opencollab.bootstrap import container as session_module
 
     class FakeLLMClient:
         pass

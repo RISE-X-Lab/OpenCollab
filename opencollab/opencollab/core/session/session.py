@@ -2,19 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from typing import TYPE_CHECKING
 
 from opencollab.application.ports import SafetyPolicyPort
 from opencollab.core.agent import Agent
-from opencollab.core.env import Environment, LocalEnvironment
-from opencollab.core.llm import LLMClient
+from opencollab.core.env import Environment
 from opencollab.core.session.autosave import AutoSaveSubscriber
-from opencollab.core.session.compactor import DEFAULT_COMPACTION_THRESHOLD, ContextCompactor
-from opencollab.core.session.events import EventBus, EventSink, SessionEvent
-from opencollab.core.session.runner import SessionRunner
-from opencollab.domain.session import SessionPhase, SessionState
-from opencollab.core.session.storage import SessionStore
-from opencollab.core.session.tools import PermissionPolicy, ToolCallProcessor
+from opencollab.core.session.compactor import DEFAULT_COMPACTION_THRESHOLD
+from opencollab.core.session.events import EventSink, SessionEvent
+from opencollab.core.session.tools import PermissionPolicy
 from opencollab.core.tracer import Tracer
+from opencollab.domain.session import SessionPhase, SessionState
+
+if TYPE_CHECKING:
+    from opencollab.bootstrap.container import SessionRuntime
 
 
 class BudgetExceededError(Exception):
@@ -26,7 +27,15 @@ class LoopDetectedError(Exception):
 
 
 class Session:
-    """Public facade for a stateful agent session."""
+    """Public facade for a stateful agent session.
+
+    Construction of runtime collaborators (EventBus, SessionState,
+    LLMClient, SessionStore, AutoSaveSubscriber, ToolCallProcessor,
+    ContextCompactor, SessionRunner) lives in
+    ``opencollab.bootstrap.container.build_session_runtime``. The facade
+    either accepts a pre-built ``runtime`` or builds a default one via the
+    bootstrap factory.
+    """
 
     def __init__(
         self,
@@ -43,65 +52,54 @@ class Session:
         safety_policy: SafetyPolicyPort | None = None,
         llm=None,
         store=None,
+        runtime: "SessionRuntime | None" = None,
     ):
         self.agent = agent
-        self.env = env or LocalEnvironment()
+        self.env = env
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
         self.max_steps = max_steps
         self.compaction_threshold = compaction_threshold
-        self.event_bus = EventBus(event_sink)
         self._permission_policy = permission_policy
         self._safety_policy = safety_policy
         self._auto_save_path = auto_save_path
-        self.store = store if store is not None else SessionStore()
-        if auto_save_path:
-            self.event_bus.subscribe(AutoSaveSubscriber(self._auto_save))
+        self._repo_map = repo_map
 
-        system_content = agent.system_prompt
-        if repo_map:
-            system_content += f"\n\nProject Structure:\n{repo_map}"
-        self.state = SessionState(messages=[{"role": "system", "content": system_content}])
+        if runtime is None:
+            # Facade default-factory shim: bootstrap owns concrete construction.
+            from opencollab.bootstrap.container import build_session_runtime
 
-        if llm is not None:
-            self._llm = llm
-        else:
-            self._llm = LLMClient(
-                model=agent.model,
-                api_key=agent.api_key,
-                base_url=agent.base_url,
-                provider=agent.provider,
+            runtime = build_session_runtime(
+                agent=agent,
+                env=env,
+                tracer=tracer,
+                max_budget_tokens=max_budget_tokens,
+                max_steps=max_steps,
+                compaction_threshold=compaction_threshold,
+                repo_map=repo_map,
+                auto_save_path=auto_save_path,
+                event_sink=event_sink,
+                permission_policy=permission_policy,
+                safety_policy=safety_policy,
+                llm=llm,
+                store=store,
+                auto_save_callback=self._auto_save,
             )
-        self._build_runtime()
 
-    def _build_runtime(self) -> None:
-        self.tool_processor = ToolCallProcessor(
-            agent=self.agent,
-            env=self.env,
-            state=self.state,
-            event_bus=self.event_bus,
-            tracer=self.tracer,
-            permission_policy=self.permission_policy,
-            safety_policy=self._safety_policy,
-        )
-        self.compactor = ContextCompactor(
-            state=self.state,
-            llm=self._llm,
-            event_bus=self.event_bus,
-            tracer=self.tracer,
-            compaction_threshold=self.compaction_threshold,
-        )
-        self.runner = SessionRunner(
-            agent=self.agent,
-            state=self.state,
-            llm=self._llm,
-            event_bus=self.event_bus,
-            tool_processor=self.tool_processor,
-            compactor=self.compactor,
-            tracer=self.tracer,
-            max_budget_tokens=self.max_budget_tokens,
-            max_steps=self.max_steps,
-        )
+        # Adopt the runtime's collaborators as Session attributes so the
+        # public surface stays exactly what it used to be.
+        self.state = runtime.state
+        self.event_bus = runtime.event_bus
+        self._llm = runtime.llm
+        self.store = runtime.store
+        self.tool_processor = runtime.tool_processor
+        self.compactor = runtime.compactor
+        self.runner = runtime.runner
+        # The env attribute mirrors the runtime's tool_processor env so
+        # downstream readers (snapshot, characterization tests) still see
+        # the same Environment instance.
+        if env is None:
+            self.env = self.tool_processor.env
 
     @property
     def permission_policy(self) -> PermissionPolicy | None:
@@ -174,9 +172,8 @@ class Session:
         await self.event_bus.emit(SessionEvent(type="user_message_appended"))
 
     def snapshot(self) -> Session:
-        # Reach into _targets to skip the internal AutoSaveSubscriber — the
-        # snapshot intentionally does not inherit auto-save (no auto_save_path
-        # is passed below, so no new subscriber is created either).
+        # Snapshots intentionally drop the internal AutoSaveSubscriber but
+        # keep every external subscriber that was attached to the bus.
         external_sink: EventSink | None = None
         for target in self.event_bus._targets:
             if not isinstance(target, AutoSaveSubscriber):

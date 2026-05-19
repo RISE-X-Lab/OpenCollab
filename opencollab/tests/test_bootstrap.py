@@ -77,6 +77,42 @@ def test_build_team_wires_lead_safety_policy_from_bootstrap(tmp_path):
     assert policy.root == str(workspace.resolve())
 
 
+def test_build_chat_session_wires_event_sink_and_tracer_from_context(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    seen: list = []
+
+    async def sink(event):
+        seen.append(event)
+
+    ctx = build_runtime_context(
+        str(workspace),
+        _cfg(),
+        trace=False,
+        event_sink=sink,
+    )
+    session = build_chat_session(ctx)
+
+    assert session.tracer is ctx.tracer  # propagated (None when trace=False)
+    # The injected sink must be one of the bus subscribers.
+    assert sink in list(session.event_bus._targets)
+
+
+def test_build_chat_session_auto_save_path_lands_under_workspace(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    session = build_chat_session(ctx)
+
+    assert session.auto_save_path is not None
+    assert session.auto_save_path.startswith(
+        os.path.join(str(workspace.resolve()), ".opencollab", "sessions")
+    )
+    assert os.path.exists(session.auto_save_path)
+
+
 def test_build_runtime_context_resolves_workspace_and_tracer(tmp_path, monkeypatch):
     workspace = tmp_path / "ws"
     workspace.mkdir()

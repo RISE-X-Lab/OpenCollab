@@ -283,6 +283,6 @@ def test_core_session_tools_does_not_import_concrete_sandbox():
 
 
 def test_core_session_session_does_not_import_bootstrap_safety():
-    source = inspect.getsource(session_mod.Session._build_runtime)
+    source = inspect.getsource(session_mod)
 
     assert "opencollab.bootstrap.safety" not in source

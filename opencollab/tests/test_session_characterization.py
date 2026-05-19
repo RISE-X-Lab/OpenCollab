@@ -722,7 +722,7 @@ def test_session_runtime_config_desync_after_mutating_env_and_max_steps():
 
 
 def test_team_lead_session_runtime_uses_constructor_env_and_max_steps(monkeypatch):
-    from opencollab.core.session import session as session_module
+    from opencollab.bootstrap import container as session_module
     from opencollab.team.orchestrator import Team
 
     monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
@@ -748,7 +748,7 @@ def test_team_lead_session_runtime_uses_constructor_env_and_max_steps(monkeypatc
 
 def test_team_lead_session_gets_workspace_safety_policy(tmp_path, monkeypatch):
     from opencollab.bootstrap.safety import build_workspace_safety_policy
-    from opencollab.core.session import session as session_module
+    from opencollab.bootstrap import container as session_module
     from opencollab.team.orchestrator import Team
     from opencollab.tools.safety import SandboxInterceptor
 
@@ -769,7 +769,7 @@ def test_team_lead_session_gets_workspace_safety_policy(tmp_path, monkeypatch):
 
 
 def test_direct_team_without_safety_factory_does_not_build_safety_policy(tmp_path, monkeypatch):
-    from opencollab.core.session import session as session_module
+    from opencollab.bootstrap import container as session_module
     from opencollab.team.orchestrator import Team
 
     monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
