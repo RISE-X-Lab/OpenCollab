@@ -1,9 +1,9 @@
 """Session event sink/bus.
 
-The event value type now lives in ``opencollab.application.events``. This
-module re-exports it as ``SessionEvent`` for backward compatibility — every
-existing ``from opencollab.core.session import SessionEvent`` import keeps
-resolving to the same dataclass.
+The event value type now lives in ``opencollab.domain.events``. This module
+re-exports it as ``SessionEvent`` for backward compatibility — every existing
+``from opencollab.core.session import SessionEvent`` import keeps resolving to
+the same dataclass.
 
 The bus accepts either ``SessionRuntimeEvent`` or ``TeamEvent`` (both are
 duck-compatible: they carry ``type`` and ``data`` attributes), so team
@@ -16,12 +16,12 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable, Protocol
 
-from opencollab.application.events import SessionRuntimeEvent as _SessionRuntimeEvent
-from opencollab.application.events import TeamEvent as _TeamEvent
+from opencollab.domain.events import SessionRuntimeEvent as _SessionRuntimeEvent
+from opencollab.domain.events import TeamEvent as _TeamEvent
 
 
 # Backward-compatible alias. Production code should prefer SessionRuntimeEvent
-# from opencollab.application.events for new call sites.
+# from opencollab.domain.events for new call sites.
 SessionEvent = _SessionRuntimeEvent
 SessionRuntimeEvent = _SessionRuntimeEvent
 TeamEvent = _TeamEvent
