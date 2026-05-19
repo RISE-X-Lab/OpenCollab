@@ -79,7 +79,7 @@ def _print_missing_key_hint(provider: str | None) -> None:
 def _resolve_config(workspace: str, model: str | None, provider: str | None,
                      api_key: str | None, base_url: str | None, budget: int | None) -> dict:
     """Merge CLI args with .env defaults. CLI args take precedence."""
-    from opencollab.core.config import get_config
+    from opencollab.bootstrap.config import get_config
     cfg = get_config(workspace)
     return {
         "model": model or cfg["model"],
