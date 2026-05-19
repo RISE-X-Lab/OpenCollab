@@ -12,7 +12,8 @@ import uuid
 from dataclasses import dataclass
 
 from opencollab.adapters.repo_map import get_repo_map
-from opencollab.core.session import EventSink, PermissionPolicy
+from opencollab.application.event_bus import EventSink
+from opencollab.application.ports import PermissionPort
 from opencollab.adapters.trace import Tracer
 
 
@@ -23,7 +24,7 @@ class RuntimeContext:
     tracer: Tracer | None
     repo_map: str | None
     event_sink: EventSink | None
-    permission_policy: PermissionPolicy | None
+    permission_policy: PermissionPort | None
 
 
 def build_runtime_context(
@@ -32,7 +33,7 @@ def build_runtime_context(
     *,
     trace: bool,
     event_sink: EventSink | None = None,
-    permission_policy: PermissionPolicy | None = None,
+    permission_policy: PermissionPort | None = None,
     run_id_prefix: str = "",
 ) -> RuntimeContext:
     abs_workspace = os.path.abspath(workspace)

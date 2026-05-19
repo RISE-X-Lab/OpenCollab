@@ -5,12 +5,11 @@ import copy
 from typing import TYPE_CHECKING
 
 from opencollab.application.event_bus import EventSink
-from opencollab.application.ports import SafetyPolicyPort
+from opencollab.application.ports import PermissionPort, SafetyPolicyPort
 from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.core.session.compactor import DEFAULT_COMPACTION_THRESHOLD
-from opencollab.core.session.tools import PermissionPolicy
 from opencollab.adapters.trace import Tracer
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionPhase, SessionState
@@ -49,7 +48,7 @@ class Session:
         repo_map: str | None = None,
         auto_save_path: str | None = None,
         event_sink: EventSink | None = None,
-        permission_policy: PermissionPolicy | None = None,
+        permission_policy: PermissionPort | None = None,
         safety_policy: SafetyPolicyPort | None = None,
         llm=None,
         store=None,
@@ -103,11 +102,11 @@ class Session:
             self.env = self.tool_processor.env
 
     @property
-    def permission_policy(self) -> PermissionPolicy | None:
+    def permission_policy(self) -> PermissionPort | None:
         return self._permission_policy
 
     @permission_policy.setter
-    def permission_policy(self, value: PermissionPolicy | None) -> None:
+    def permission_policy(self, value: PermissionPort | None) -> None:
         self._permission_policy = value
         if hasattr(self, "tool_processor"):
             self.tool_processor.permission_policy = value

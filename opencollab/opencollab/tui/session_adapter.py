@@ -3,10 +3,9 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable, Protocol
 
+from opencollab.application.event_bus import EventSink
+from opencollab.application.ports import PermissionPort
 from opencollab.domain.events import SessionRuntimeEvent, TeamEvent
-# Transitional: EventSink + PermissionPolicy stay sourced from core.session
-# as compatibility re-exports until REM-03/REM-04 narrow the ports further.
-from opencollab.core.session import EventSink, PermissionPolicy
 
 
 class SuspendableRender(Protocol):
@@ -33,7 +32,7 @@ class TuiEventSink(EventSink):
             await result
 
 
-class TuiPermissionPolicy(PermissionPolicy):
+class TuiPermissionPolicy(PermissionPort):
     """Permission policy that pauses a live render around the y/N prompt."""
 
     def __init__(

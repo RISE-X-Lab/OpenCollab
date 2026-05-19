@@ -20,15 +20,14 @@ import time
 from typing import Any
 
 from opencollab.domain.events import TeamEvent
+from opencollab.application.event_bus import EventBus, EventSink
 from opencollab.application.ports import (
+    PermissionPort,
     SafetyPolicyFactory,
     SessionFactoryPort,
 )
 from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.domain.agent import Agent
-# Transitional: EventBus / EventSink / PermissionPolicy stay sourced from
-# core.session as compatibility re-exports (see core/session/events.py).
-from opencollab.core.session import EventBus, EventSink, PermissionPolicy
 from opencollab.adapters.env import Environment, LocalEnvironment, WorktreeEnvironment
 from opencollab.adapters.trace import Tracer
 from opencollab.tools.base import Tool
@@ -163,7 +162,7 @@ class Team:
         max_budget_tokens: int = 500_000,
         tracer: Tracer | None = None,
         event_sink: EventSink | None = None,
-        permission_policy: PermissionPolicy | None = None,
+        permission_policy: PermissionPort | None = None,
         use_worktrees: bool = True,
         repo_map: str | None = None,
         lead_env: Environment | None = None,

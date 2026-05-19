@@ -15,13 +15,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from opencollab.application.ports import SafetyPolicyFactory
+from opencollab.application.event_bus import EventBus
+from opencollab.application.ports import PermissionPort, SafetyPolicyFactory
 from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment
-# Transitional: this module is the documented default implementation of
-# SessionFactoryPort. Concrete Session/EventBus/PermissionPolicy types are
-# imported here so the team orchestrator does not need to.
-from opencollab.core.session import EventBus, PermissionPolicy, Session
+from opencollab.core.session import Session
 from opencollab.adapters.trace import Tracer
 from opencollab.team.prompts import get_role_prompt
 from opencollab.tools.bash import BashTool
@@ -38,7 +36,7 @@ class TeammateConfig:
     base_url: str | None
     tracer: Tracer | None
     event_bus: EventBus
-    permission_policy: PermissionPolicy | None
+    permission_policy: PermissionPort | None
     repo_map: str | None
     safety_policy_factory: SafetyPolicyFactory | None = None
 
@@ -138,7 +136,7 @@ class DefaultSessionFactory:
         tracer: Tracer | None,
         max_budget_tokens: int,
         event_sink: Any,
-        permission_policy: PermissionPolicy | None,
+        permission_policy: PermissionPort | None,
         safety_policy: Any,
         repo_map: str | None,
         max_steps: int | None = None,
