@@ -11,7 +11,7 @@ import asyncio
 import os
 
 from opencollab.core.session import Session
-from opencollab.core.session.autosave import AutoSaveSubscriber
+from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.core.session.compactor import ContextCompactor
 from opencollab.core.session.runner import SessionRunner
 from opencollab.adapters.storage import SessionStore

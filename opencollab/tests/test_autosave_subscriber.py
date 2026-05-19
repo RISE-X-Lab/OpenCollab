@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 from opencollab.core.session import Session
-from opencollab.core.session.autosave import AutoSaveSubscriber, SAVE_TRIGGERS
+from opencollab.application.autosave import AutoSaveSubscriber, SAVE_TRIGGERS
 from opencollab.core.session.events import EventBus, SessionEvent
 
 # Reuse the fakes from the characterization test file (same tests/ directory,

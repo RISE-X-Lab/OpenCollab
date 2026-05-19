@@ -8,7 +8,7 @@ from opencollab.application.event_bus import EventSink
 from opencollab.application.ports import SafetyPolicyPort
 from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment
-from opencollab.core.session.autosave import AutoSaveSubscriber
+from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.core.session.compactor import DEFAULT_COMPACTION_THRESHOLD
 from opencollab.core.session.tools import PermissionPolicy
 from opencollab.adapters.trace import Tracer

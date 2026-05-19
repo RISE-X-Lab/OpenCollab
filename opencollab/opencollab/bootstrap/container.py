@@ -27,7 +27,7 @@ from opencollab.application.event_bus import EventBus, EventSink
 from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient
-from opencollab.core.session.autosave import AutoSaveSubscriber
+from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.core.session.compactor import (
     DEFAULT_COMPACTION_THRESHOLD,
     ContextCompactor,
