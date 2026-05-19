@@ -8,7 +8,7 @@ import uuid
 from opencollab.bootstrap.runtime import RuntimeContext
 from opencollab.bootstrap.safety import build_workspace_safety_policy
 from opencollab.bootstrap.tool_factory import build_default_tools
-from opencollab.core.agent import Agent
+from opencollab.domain.agent import Agent
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.core.session import Session
 from opencollab.team.orchestrator import Team

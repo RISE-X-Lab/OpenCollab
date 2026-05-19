@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from opencollab.application.ports import SafetyPolicyFactory
-from opencollab.core.agent import Agent
+from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment
 # Transitional: this module is the documented default implementation of
 # SessionFactoryPort. Concrete Session/EventBus/PermissionPolicy types are

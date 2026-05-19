@@ -5,7 +5,7 @@ import copy
 from typing import TYPE_CHECKING
 
 from opencollab.application.ports import SafetyPolicyPort
-from opencollab.core.agent import Agent
+from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment
 from opencollab.core.session.autosave import AutoSaveSubscriber
 from opencollab.core.session.compactor import DEFAULT_COMPACTION_THRESHOLD

@@ -23,7 +23,7 @@ from opencollab.application.ports import (
     SessionStorePort,
     TracePort,
 )
-from opencollab.core.agent import Agent
+from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient
 from opencollab.core.session.autosave import AutoSaveSubscriber

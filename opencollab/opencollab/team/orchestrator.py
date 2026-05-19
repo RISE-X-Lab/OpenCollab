@@ -25,7 +25,7 @@ from opencollab.application.ports import (
     SessionFactoryPort,
 )
 from opencollab.application.tool_runtime import ToolRuntime
-from opencollab.core.agent import Agent
+from opencollab.domain.agent import Agent
 # Transitional: EventBus / EventSink / PermissionPolicy stay sourced from
 # core.session as compatibility re-exports (see core/session/events.py).
 from opencollab.core.session import EventBus, EventSink, PermissionPolicy
