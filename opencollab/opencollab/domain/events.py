@@ -13,10 +13,8 @@ Both are deliberately kept duck-compatible with the legacy
 adapter can continue to fan them out through one channel during the
 boundary migration.
 
-This module must not import from ``opencollab.application``,
-``opencollab.core``, ``opencollab.tools``, ``opencollab.bootstrap``,
-``opencollab.cli``, ``opencollab.tui``, or ``opencollab.team`` — the
-dependency rule keeps domain events at the center of the import graph.
+This module must not import from outer OpenCollab layers. The dependency
+rule keeps domain events at the center of the import graph.
 """
 
 from __future__ import annotations

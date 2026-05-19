@@ -12,9 +12,11 @@ from opencollab.domain import tools as domain_tools
 def test_domain_modules_do_not_import_outer_layers():
     package_root = Path(__file__).resolve().parents[1]
     domain_files = [
+        package_root / "opencollab/domain/agent.py",
         package_root / "opencollab/domain/session.py",
         package_root / "opencollab/domain/tools.py",
         package_root / "opencollab/domain/compaction.py",
+        package_root / "opencollab/domain/events.py",
     ]
     forbidden = [
         "opencollab.core",
@@ -45,3 +47,25 @@ def test_legacy_core_session_modules_reexport_domain_value_objects():
     assert core_tools.ToolProcessingResult is domain_tools.ToolProcessingResult
     assert core_tools.MAX_CALL_HASH_WINDOW == domain_tools.MAX_CALL_HASH_WINDOW
     assert core_compactor.CompactResult is domain_compaction.CompactResult
+
+
+def test_tool_base_satisfies_tool_spec():
+    from opencollab.domain.tools import ToolSpec
+    from opencollab.tools.base import Tool
+
+    instance: ToolSpec = Tool()
+    assert isinstance(instance.name, str)
+    assert isinstance(instance.description, str)
+    assert isinstance(instance.parameters, dict)
+    assert callable(instance.to_openai_schema)
+
+
+def test_tool_port_carries_tool_spec_schema_surface():
+    from opencollab.application.ports import ToolPort
+    from opencollab.domain.tools import ToolSpec
+
+    required_annotations = {"name", "description", "parameters"}
+    assert required_annotations.issubset(ToolSpec.__annotations__)
+    assert required_annotations.issubset(ToolPort.__annotations__)
+    assert callable(ToolSpec.__dict__["to_openai_schema"])
+    assert callable(ToolPort.__dict__["to_openai_schema"])
