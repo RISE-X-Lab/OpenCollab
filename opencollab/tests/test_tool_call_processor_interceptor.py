@@ -7,10 +7,10 @@ import pytest
 
 from opencollab.application.ports import ToolPort
 from opencollab.adapters.env import LocalEnvironment
-from opencollab.core.session import session as session_mod
-from opencollab.core.session.events import EventBus
-from opencollab.core.session.state import SessionState
-from opencollab.core.session.tools import ToolCallProcessor
+from opencollab.bootstrap import session as session_mod
+from opencollab.application.event_bus import EventBus
+from opencollab.domain.session import SessionState
+from opencollab.application.tool_processor import ToolCallProcessor
 from opencollab.adapters.safety import SandboxInterceptor
 
 
@@ -257,13 +257,13 @@ def test_no_concrete_tool_defines_legacy_execute():
     assert offenders == []
 
 
-def test_core_session_tools_does_not_import_concrete_sandbox():
-    import opencollab.core.session.tools as tools_mod
+def test_tool_processor_does_not_import_concrete_sandbox():
+    import opencollab.application.tool_processor as tools_mod
 
     assert not hasattr(tools_mod, "SandboxInterceptor")
 
 
-def test_core_session_session_does_not_import_bootstrap_safety():
+def test_bootstrap_session_does_not_import_bootstrap_safety():
     source = inspect.getsource(session_mod)
 
     assert "opencollab.bootstrap.safety" not in source

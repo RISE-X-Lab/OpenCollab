@@ -8,7 +8,7 @@ import inspect
 from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.bootstrap.safety import build_workspace_safety_policy
 from opencollab.adapters.env import LocalEnvironment
-from opencollab.core.session.events import EventBus
+from opencollab.application.event_bus import EventBus
 from opencollab.domain.team import split_budget
 from opencollab.application import team as orchestrator_mod
 from opencollab.tools import delegation as delegation_mod

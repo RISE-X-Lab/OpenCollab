@@ -10,12 +10,12 @@ from __future__ import annotations
 import asyncio
 import os
 
-from opencollab.core.session import Session
+from opencollab.bootstrap.session import Session
 from opencollab.application.autosave import AutoSaveSubscriber
-from opencollab.core.session.compactor import ContextCompactor
-from opencollab.core.session.runner import SessionRunner
+from opencollab.application.context_compactor import ContextCompactor
+from opencollab.application.session_runner import SessionRunner
 from opencollab.adapters.storage import SessionStore
-from opencollab.core.session.tools import ToolCallProcessor
+from opencollab.application.tool_processor import ToolCallProcessor
 
 
 def run(coro):
@@ -33,7 +33,7 @@ def test_event_bus_satisfies_event_publisher_port():
 
 def test_permission_policy_alias_resolves_to_permission_port():
     from opencollab.application.ports import PermissionPort
-    from opencollab.core.session.tools import PermissionPolicy
+    from opencollab.application.tool_processor import PermissionPolicy
 
     assert PermissionPolicy is PermissionPort
 
@@ -77,7 +77,7 @@ def test_session_builds_runtime_collaborators_eagerly():
 
 
 def test_session_event_bus_reaches_injected_sink():
-    from opencollab.core.session.events import SessionEvent
+    from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 
     seen: list = []
 

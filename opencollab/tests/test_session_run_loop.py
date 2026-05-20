@@ -4,8 +4,8 @@ import asyncio
 import copy
 from types import SimpleNamespace
 
-from opencollab.core.session.events import EventBus
-from opencollab.core.session.runner import SessionRunner
+from opencollab.application.event_bus import EventBus
+from opencollab.application.session_runner import SessionRunner
 from opencollab.domain.compaction import CompactResult
 from opencollab.domain.session import SessionPhase, SessionState
 from opencollab.domain.tools import ToolProcessingResult
