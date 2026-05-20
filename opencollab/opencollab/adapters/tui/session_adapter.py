@@ -3,8 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable, Protocol
 
-from opencollab.application.event_bus import EventSink
-from opencollab.application.ports import PermissionPort
+from opencollab.application.ports import EventPublisherPort, PermissionPort
 from opencollab.domain.events import SessionRuntimeEvent, TeamEvent
 
 
@@ -15,7 +14,7 @@ class SuspendableRender(Protocol):
     def resume_live(self, was_suspended: bool) -> None: ...
 
 
-class TuiEventSink(EventSink):
+class TuiEventSink(EventPublisherPort):
     """Bus subscriber that accepts both runtime and team event families.
 
     The dispatch lives inside the TUI itself (see ``adapters.tui.renderer.TUI.event_handler``);

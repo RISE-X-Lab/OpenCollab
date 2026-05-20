@@ -16,7 +16,7 @@ from opencollab.application.ports import (
 from opencollab.application.tool_dispatch import execute_tool_with_runtime
 from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.domain.session import SessionState
-from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, ToolProcessingResult
+from opencollab.domain.tools import LoopDetection, MAX_CALL_HASH_WINDOW, ToolProcessingResult
 
 # Loop detection (ref: opencode doom_loop detection — 3 identical calls)
 MAX_SIMILAR_CALLS = 3
@@ -87,7 +87,7 @@ class ToolExecutionUseCase:
                     f"You are stuck in a loop. Try a completely different approach or ask for help.]"
                 )
                 result.messages_to_append.append({"role": "tool", "tool_call_id": tool_id, "content": warning})
-                result.loop_detections.append({"tool": tool_name, "count": recent_same})
+                result.loop_detections.append(LoopDetection(tool=tool_name, count=recent_same))
                 await self.event_publisher.emit(self.event_factory.loop_detected(tool_name, recent_same))
                 continue
 

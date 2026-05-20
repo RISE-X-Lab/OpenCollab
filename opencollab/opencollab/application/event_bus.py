@@ -9,15 +9,18 @@ one bad sink cannot break siblings or the loop.
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable
+
+from opencollab.application.ports import EventPublisherPort
 
 
 EventCallback = Callable[[Any], Awaitable[None] | None]
 
-
-class EventSink(Protocol):
-    async def emit(self, event: Any) -> None:
-        ...
+# EventSink is the subscriber-side name for the same shape EventPublisherPort
+# describes (an object with ``async emit(event)``). Kept as an alias so older
+# call sites that import ``EventSink`` continue to work, while new code can
+# implement ``EventPublisherPort`` directly to match the target diagram.
+EventSink = EventPublisherPort
 
 
 class EventBus:

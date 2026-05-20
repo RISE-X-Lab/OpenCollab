@@ -8,6 +8,7 @@ from opencollab.application.tool_execution import (
     ToolExecutionUseCase,
 )
 from opencollab.domain.session import SessionState
+from opencollab.domain.tools import LoopDetection
 
 
 def run(coro):
@@ -152,7 +153,7 @@ def test_tool_execution_use_case_preserves_loop_detection_event():
 
     result = run(use_case.process([tool_call(arguments='{"value": 1}')]))
 
-    assert result.loop_detections == [{"tool": "fake_tool", "count": 3}]
+    assert result.loop_detections == [LoopDetection(tool="fake_tool", count=3)]
     assert "Loop detected" in result.messages_to_append[0]["content"]
     assert [(event.type, event.data) for event in publisher.events] == [
         ("loop_detected", {"tool": "fake_tool", "count": 3})

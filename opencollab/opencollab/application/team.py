@@ -30,7 +30,7 @@ from opencollab.application.ports import (
     WorktreePoolPort,
 )
 from opencollab.domain.agent import Agent
-from opencollab.domain.team import split_budget
+from opencollab.domain.team import DelegationTask, ReviewVerdict, split_budget
 from opencollab.domain.tools import ToolSpec
 from opencollab.application.team_prompts import LEAD_SYSTEM_PROMPT
 
@@ -146,8 +146,8 @@ class Team:
             role=role, env=env, budget=budget,
         )
 
-        task_message = f"Context:\n{context}\n\nTask:\n{task}" if context else task
-        await teammate_session.add_user_message(task_message)
+        delegation = DelegationTask(role=role, task=task, context=context)
+        await teammate_session.add_user_message(delegation.render())
         result = await teammate_session.run_loop()
 
         self._used_tokens += teammate_session.used_tokens
@@ -225,20 +225,16 @@ class Team:
             )
             review_result = await self.delegate("reviewer", review_prompt)
 
-            # Check for structured verdict (line must start with "VERDICT: PASS")
-            passed = any(
-                line.strip().upper() == "VERDICT: PASS"
-                for line in review_result.splitlines()
-            )
+            verdict = ReviewVerdict.parse(review_result)
             await self.event_bus.emit(TeamEvent(
                 type="review_completed",
                 data={
                     "tool": "review_loop",
                     "iteration": iteration,
-                    "verdict": "PASS" if passed else "FAIL",
+                    "verdict": "PASS" if verdict.passed else "FAIL",
                 },
             ))
-            if passed:
+            if verdict.passed:
                 return (
                     f"[Self-Collaboration: PASSED after {iteration} iteration(s)]\n\n"
                     f"{code_result}"

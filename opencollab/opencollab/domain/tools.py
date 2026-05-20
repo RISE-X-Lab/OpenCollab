@@ -24,11 +24,17 @@ class ToolSpec(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class LoopDetection:
+    tool: str
+    count: int
+
+
 @dataclass
 class ToolProcessingResult:
     messages_to_append: list[dict[str, Any]] = field(default_factory=list)
     recent_hash_updates: list[str] = field(default_factory=list)
-    loop_detections: list[dict[str, Any]] = field(default_factory=list)
+    loop_detections: list[LoopDetection] = field(default_factory=list)
 
     def apply_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         for message in self.messages_to_append:
@@ -38,6 +44,7 @@ class ToolProcessingResult:
 
 
 __all__ = [
+    "LoopDetection",
     "MAX_CALL_HASH_WINDOW",
     "ToolProcessingResult",
     "ToolSpec",
