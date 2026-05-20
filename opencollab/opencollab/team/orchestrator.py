@@ -39,7 +39,7 @@ from opencollab.team.teammate_factory import (
     TeammateConfig,
     split_budget,
 )
-from opencollab.team.worktree_pool import WorktreePool
+from opencollab.adapters.worktree_pool import WorktreePool
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ from __future__ import annotations
 import asyncio
 
 from opencollab.adapters.env import LocalEnvironment
-from opencollab.team.worktree_pool import WorktreePool
+from opencollab.adapters.worktree_pool import WorktreePool
 
 
 def test_pool_returns_local_env_when_worktrees_disabled(tmp_path):
