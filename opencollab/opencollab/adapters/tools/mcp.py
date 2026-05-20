@@ -17,7 +17,7 @@ import logging
 from typing import Any
 
 from opencollab.application.tool_runtime import ToolRuntime
-from opencollab.tools.base import Tool
+from opencollab.adapters.tools.base import Tool
 
 logger = logging.getLogger(__name__)
 

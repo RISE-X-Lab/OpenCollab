@@ -11,8 +11,8 @@ from opencollab.adapters.env import LocalEnvironment
 from opencollab.application.event_bus import EventBus
 from opencollab.domain.team import split_budget
 from opencollab.application import team as orchestrator_mod
-from opencollab.tools import delegation as delegation_mod
-from opencollab.tools.delegation import DelegateTaskTool, DelegateWithReviewTool
+from opencollab.adapters.tools import delegation as delegation_mod
+from opencollab.adapters.tools.delegation import DelegateTaskTool, DelegateWithReviewTool
 from opencollab.bootstrap.teammate_factory import TeammateConfig, build_teammate_session
 from opencollab.bootstrap import teammate_factory as teammate_factory_mod
 from opencollab.adapters.safety import SandboxInterceptor

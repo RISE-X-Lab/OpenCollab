@@ -15,7 +15,7 @@ import asyncio
 from typing import Any
 
 from opencollab.application.tool_runtime import ToolRuntime
-from opencollab.tools.base import Tool
+from opencollab.adapters.tools.base import Tool
 
 
 class AskUserTool(Tool):

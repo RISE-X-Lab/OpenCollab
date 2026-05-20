@@ -6,10 +6,10 @@ ToolCallProcessor for each tool.execute() call.
 
 from __future__ import annotations
 
-from opencollab.tools.base import Tool
-from opencollab.tools.bash import BashTool
-from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
-from opencollab.tools.human import AskUserTool
+from opencollab.adapters.tools.base import Tool
+from opencollab.adapters.tools.bash import BashTool
+from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
+from opencollab.adapters.tools.human import AskUserTool
 
 
 def build_default_tools(*, include_ask_user: bool = False) -> list[Tool]:

@@ -21,8 +21,8 @@ from opencollab.adapters.env import Environment
 from opencollab.bootstrap.session import Session
 from opencollab.adapters.trace import Tracer
 from opencollab.application.team_prompts import get_role_prompt
-from opencollab.tools.bash import BashTool
-from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
+from opencollab.adapters.tools.bash import BashTool
+from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 
 
 @dataclass

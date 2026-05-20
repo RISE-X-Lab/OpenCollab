@@ -238,10 +238,10 @@ def test_tool_port_describes_runtime_dispatch_not_legacy_execute():
 
 
 def test_no_concrete_tool_defines_legacy_execute():
-    from opencollab.tools.base import Tool
+    from opencollab.adapters.tools.base import Tool
 
     offenders: list[str] = []
-    for pkg_name in ("opencollab.tools",):
+    for pkg_name in ("opencollab.adapters.tools",):
         pkg = importlib.import_module(pkg_name)
         for _, mod_name, _ in pkgutil.walk_packages(pkg.__path__, prefix=f"{pkg_name}."):
             mod = importlib.import_module(mod_name)

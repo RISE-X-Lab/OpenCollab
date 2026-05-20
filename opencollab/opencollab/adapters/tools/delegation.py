@@ -6,7 +6,7 @@ from typing import Any
 
 from opencollab.application.ports import TeamDelegationPort
 from opencollab.application.tool_runtime import ToolRuntime
-from opencollab.tools.base import Tool
+from opencollab.adapters.tools.base import Tool
 
 
 class DelegateTaskTool(Tool):

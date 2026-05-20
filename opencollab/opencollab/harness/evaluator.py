@@ -22,8 +22,8 @@ from opencollab.domain.agent import Agent
 from opencollab.bootstrap.session import Session
 from opencollab.adapters.env import Environment, LocalEnvironment, DockerEnvironment
 from opencollab.adapters.trace import Tracer
-from opencollab.tools.bash import BashTool
-from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
+from opencollab.adapters.tools.bash import BashTool
+from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 
 
 @dataclass

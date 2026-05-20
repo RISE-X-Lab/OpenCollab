@@ -7,12 +7,12 @@ import pytest
 
 from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.adapters.env import LocalEnvironment
-from opencollab.tools.bash import BashTool
-from opencollab.tools.base import Tool
-from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
-from opencollab.tools import human
-from opencollab.tools.human import AskUserTool
-from opencollab.tools.mcp import MCPTool
+from opencollab.adapters.tools.bash import BashTool
+from opencollab.adapters.tools.base import Tool
+from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
+from opencollab.adapters.tools import human
+from opencollab.adapters.tools.human import AskUserTool
+from opencollab.adapters.tools.mcp import MCPTool
 from opencollab.adapters.safety import SandboxInterceptor
 
 
@@ -412,7 +412,7 @@ def test_base_tool_default_execute_with_runtime_raises_not_implemented():
 
 def test_no_concrete_tool_defines_legacy_execute():
     for name in ("bash", "fs", "human", "mcp"):
-        mod = __import__(f"opencollab.tools.{name}", fromlist=["_"])
+        mod = __import__(f"opencollab.adapters.tools.{name}", fromlist=["_"])
         for cls in vars(mod).values():
             if isinstance(cls, type) and issubclass(cls, Tool) and cls is not Tool:
                 assert "execute" not in cls.__dict__, (
@@ -427,11 +427,11 @@ def test_base_tool_does_not_define_legacy_execute():
 def test_tool_modules_do_not_import_inner_layers_or_concrete_sandbox():
     package_root = Path(__file__).resolve().parents[1]
     tool_files = [
-        package_root / "opencollab/tools/base.py",
-        package_root / "opencollab/tools/bash.py",
-        package_root / "opencollab/tools/fs.py",
-        package_root / "opencollab/tools/human.py",
-        package_root / "opencollab/tools/mcp.py",
+        package_root / "opencollab/adapters/tools/base.py",
+        package_root / "opencollab/adapters/tools/bash.py",
+        package_root / "opencollab/adapters/tools/fs.py",
+        package_root / "opencollab/adapters/tools/human.py",
+        package_root / "opencollab/adapters/tools/mcp.py",
     ]
 
     for path in tool_files:
