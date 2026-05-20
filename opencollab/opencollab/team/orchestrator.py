@@ -35,7 +35,7 @@ from opencollab.tools.base import Tool
 from opencollab.tools.bash import BashTool
 from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.team.prompts import LEAD_SYSTEM_PROMPT
-from opencollab.team.teammate_factory import (
+from opencollab.bootstrap.teammate_factory import (
     DefaultSessionFactory,
     TeammateConfig,
 )

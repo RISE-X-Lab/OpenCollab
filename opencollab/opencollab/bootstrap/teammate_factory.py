@@ -6,8 +6,7 @@ not import ``opencollab.core.session.Session`` directly; this module is
 the documented transitional default that still touches the concrete
 ``Session`` class — bootstrap binds it to the port.
 
-Centralizes the per-teammate Agent + Session wiring and the budget split
-(reserve some headroom for the Lead's follow-up turns).
+Centralizes the per-teammate Agent + Session wiring.
 """
 
 from __future__ import annotations
@@ -39,24 +38,6 @@ class TeammateConfig:
     permission_policy: PermissionPort | None
     repo_map: str | None
     safety_policy_factory: SafetyPolicyFactory | None = None
-
-
-def split_budget(total: int, used: int) -> int:
-    """How many tokens this teammate gets, reserving headroom for the Lead.
-
-    Same arithmetic as the previous inline version — extracted so it can be
-    unit-tested directly without spinning up a Team.
-
-    - Always leaves the teammate at least 10_000 tokens (a floor for any real
-      reasoning).
-    - Reserves min(25% of original total, remaining - 10_000) for the Lead.
-    """
-    remaining = max(10_000, total - used)
-    reserve_for_lead = min(
-        max(10_000, total // 4),
-        max(0, remaining - 10_000),
-    )
-    return max(10_000, remaining - reserve_for_lead)
 
 
 def build_teammate_session(

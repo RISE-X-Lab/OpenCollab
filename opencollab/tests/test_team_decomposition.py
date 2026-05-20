@@ -11,8 +11,8 @@ from opencollab.adapters.env import LocalEnvironment
 from opencollab.core.session.events import EventBus
 from opencollab.domain.team import split_budget
 from opencollab.team import orchestrator as orchestrator_mod
-from opencollab.team.teammate_factory import TeammateConfig, build_teammate_session
-from opencollab.team import teammate_factory as teammate_factory_mod
+from opencollab.bootstrap.teammate_factory import TeammateConfig, build_teammate_session
+from opencollab.bootstrap import teammate_factory as teammate_factory_mod
 from opencollab.adapters.safety import SandboxInterceptor
 
 
