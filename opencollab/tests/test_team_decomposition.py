@@ -11,6 +11,8 @@ from opencollab.adapters.env import LocalEnvironment
 from opencollab.core.session.events import EventBus
 from opencollab.domain.team import split_budget
 from opencollab.team import orchestrator as orchestrator_mod
+from opencollab.tools import delegation as delegation_mod
+from opencollab.tools.delegation import DelegateTaskTool, DelegateWithReviewTool
 from opencollab.bootstrap.teammate_factory import TeammateConfig, build_teammate_session
 from opencollab.bootstrap import teammate_factory as teammate_factory_mod
 from opencollab.adapters.safety import SandboxInterceptor
@@ -118,7 +120,7 @@ def test_build_teammate_session_without_factory_does_not_build_safety_policy(tmp
 
 def test_delegate_task_tool_uses_runtime_native_execution():
     team = FakeTeam()
-    tool = orchestrator_mod.DelegateTaskTool(team)
+    tool = DelegateTaskTool(team)
     runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
 
     result = run(
@@ -130,12 +132,12 @@ def test_delegate_task_tool_uses_runtime_native_execution():
 
     assert result == "delegated coder: implement [ctx]"
     assert team.delegate_calls == [("coder", "implement", "ctx")]
-    assert "execute" not in orchestrator_mod.DelegateTaskTool.__dict__
+    assert "execute" not in DelegateTaskTool.__dict__
 
 
 def test_delegate_with_review_tool_uses_runtime_native_execution():
     team = FakeTeam()
-    tool = orchestrator_mod.DelegateWithReviewTool(team)
+    tool = DelegateWithReviewTool(team)
     runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
 
     result = run(
@@ -147,12 +149,14 @@ def test_delegate_with_review_tool_uses_runtime_native_execution():
 
     assert result == "reviewed change code [ctx] x2"
     assert team.review_calls == [("change code", "ctx", 2)]
-    assert "execute" not in orchestrator_mod.DelegateWithReviewTool.__dict__
+    assert "execute" not in DelegateWithReviewTool.__dict__
 
 
 def test_team_modules_do_not_import_bootstrap_safety():
     team_source = inspect.getsource(orchestrator_mod)
     teammate_source = inspect.getsource(teammate_factory_mod)
+    delegation_source = inspect.getsource(delegation_mod)
 
     assert "opencollab.bootstrap.safety" not in team_source
     assert "opencollab.bootstrap.safety" not in teammate_source
+    assert "opencollab.bootstrap.safety" not in delegation_source

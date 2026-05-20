@@ -94,6 +94,19 @@ class SessionFactoryPort(Protocol):
         ...
 
 
+class TeamDelegationPort(Protocol):
+    async def delegate(self, role: str, task: str, context: str = "") -> str:
+        ...
+
+    async def delegate_with_review(
+        self,
+        task: str,
+        context: str = "",
+        max_iterations: int = 3,
+    ) -> str:
+        ...
+
+
 class LLMPort(Protocol):
     """LLM client surface used by the session run loop and compaction."""
 
