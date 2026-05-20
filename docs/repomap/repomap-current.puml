@@ -1,0 +1,250 @@
+@startuml opencollab_repomap_current
+title OpenCollab - Current Clean Architecture Dependency Map (2026-05-21)
+
+skinparam componentStyle rectangle
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam defaultFontName Helvetica
+
+' ============================================================
+' Snapshot of the actual repo, not the aspirational target.
+' Differences from repomap-target.puml are intentional:
+'   * Bootstrap is split across 8 files for concern isolation.
+'   * Several application-layer "Runner / Processor / Compactor"
+'     classes are thin facades that delegate to a *UseCase. Both
+'     are shown to reflect the in-flight migration documented in
+'     docs/plans/clean-architecture/REMAIN.md.
+'   * EventPublisherPort and EventSink are the same Protocol now
+'     (alias in application/event_bus.py); the TuiAdapter
+'     implements EventPublisherPort directly.
+'   * domain.team and domain.tools gained value types
+'     (DelegationTask, ReviewVerdict, LoopDetection).
+' ============================================================
+
+package "Frameworks / Drivers\n(no project policy)" as DRIVERS #FADBD8 {
+  [Typer + prompt_toolkit + Rich] as DriverCLI
+  [OpenAI Python SDK] as DriverLLM
+  [OS shell / filesystem] as DriverOS
+  [git worktree] as DriverGit
+  [JSONL files] as DriverStore
+  [MCP servers] as DriverMCP
+}
+
+package "Interface Adapters" as ADAPTERS #FDEBD0 {
+  [adapters.cli.main\nchat / team / eval commands] as CliAdapter
+  [adapters.tui\nTUI\nTuiEventSink\nTuiPermissionPolicy] as TuiAdapter
+  [adapters.llm\nLLMClient\nestimate_messages_tokens] as LLMAdapter
+  [adapters.env\nLocalEnvironment\nWorktreeEnvironment] as EnvAdapter
+  [adapters.worktree_pool\nWorktreePool] as WorktreeAdapter
+  [adapters.storage\nSessionStore] as StoreAdapter
+  [adapters.trace\nTracer] as TraceAdapter
+  [adapters.repo_map\nget_repo_map] as RepoMapAdapter
+  [adapters.safety\nSandboxInterceptor] as SafetyAdapter
+  [adapters.tools\nBash / FileRead / FileWrite / Grep\nAskUser / Mcp / Delegation] as ToolAdapters
+}
+
+package "Composition Root\n(bootstrap, 8 files)" as COMPOSITION #EBF5FB {
+  [bootstrap.container\nbuild_session_runtime] as Container
+  [bootstrap.session_factory\nbuild_chat_session / build_team] as SessionFactory
+  [bootstrap.session\nself-wiring Session facade] as BootSession
+  [bootstrap.tool_factory\nbuild_default_tools] as ToolFactory
+  [bootstrap.teammate_factory\nDefaultSessionFactory] as TeammateFactory
+  [bootstrap.runtime\nRuntimeContext] as Runtime
+  [bootstrap.safety\nbuild_workspace_safety_policy] as BootSafety
+  [bootstrap.config\nload config + env] as Config
+}
+
+package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
+  [app.session\nSession + SessionRuntime] as SessionFacade
+  [app.session_runner\nSessionRunner  >>  SessionRunUseCase] as SessionRunner
+  [app.context_compactor\nContextCompactor  >>  ContextCompactionUseCase] as Compactor
+  [app.tool_processor\nToolCallProcessor  >>  ToolExecutionUseCase\n+ ToolRuntime + execute_tool_with_runtime] as ToolExec
+  [app.team\nTeam (Lead + delegate / review)] as TeamUC
+  [app.autosave\nAutoSaveSubscriber] as Autosave
+  [app.event_bus\nEventBus (fan-out)] as EventBus
+
+  interface "LLMPort" as LLMPort
+  interface "EnvironmentPort" as EnvPort
+  interface "SessionStorePort" as StorePort
+  interface "TracePort" as TracePort
+  interface "EventPublisherPort\n(EventSink alias)" as EventPort
+  interface "PermissionPort" as PermissionPort
+  interface "SafetyPolicyPort" as SafetyPort
+  interface "RepoMapPort" as RepoMapPort
+  interface "WorktreePoolPort" as WorktreePort
+  interface "ToolPort" as ToolPort
+  interface "TokenEstimatorPort" as TokenPort
+  interface "SessionFactoryPort" as SessionFactoryPort
+  interface "TeamDelegationPort" as TeamDelegationPort
+}
+
+package "Domain Layer\n(policy + state, no I/O)" as DOMAIN #ABEBC6 {
+  [domain.session\nSessionState\nSessionPhase] as SessionDomain
+  [domain.agent\nAgent] as AgentDomain
+  [domain.tools\nToolSpec\nToolProcessingResult\nLoopDetection] as ToolDomain
+  [domain.team\nDelegationTask\nReviewVerdict\nsplit_budget] as TeamDomain
+  [domain.compaction\nCompactResult] as CompactionDomain
+  [domain.events\nDomainEvent\nSessionRuntimeEvent\nTeamEvent] as DomainEvents
+}
+
+' ============================================================
+' Drivers (outermost ring)
+' ============================================================
+CliAdapter --> DriverCLI
+TuiAdapter --> DriverCLI
+LLMAdapter --> DriverLLM
+EnvAdapter --> DriverOS
+WorktreeAdapter --> DriverGit
+StoreAdapter --> DriverStore
+TraceAdapter --> DriverStore
+ToolAdapters --> DriverOS
+ToolAdapters --> DriverMCP
+
+' ============================================================
+' Adapters implement application-owned ports
+' ============================================================
+LLMAdapter ..|> LLMPort
+LLMAdapter ..|> TokenPort
+EnvAdapter ..|> EnvPort
+StoreAdapter ..|> StorePort
+TraceAdapter ..|> TracePort
+TuiAdapter ..|> EventPort
+TuiAdapter ..|> PermissionPort
+RepoMapAdapter ..|> RepoMapPort
+SafetyAdapter ..|> SafetyPort
+WorktreeAdapter ..|> WorktreePort
+ToolAdapters ..|> ToolPort
+
+' ============================================================
+' Composition Root wiring (only place that knows concretes)
+' ============================================================
+Container --> Config
+Container --> LLMAdapter
+Container --> EnvAdapter
+Container --> StoreAdapter
+Container --> SessionFacade
+SessionFactory --> Container
+SessionFactory --> ToolFactory
+SessionFactory --> TeammateFactory
+SessionFactory --> BootSafety
+SessionFactory --> WorktreeAdapter
+SessionFactory --> TeamUC
+SessionFactory --> BootSession
+BootSession --> Container
+TeammateFactory --> Runtime
+TeammateFactory --> BootSession
+Runtime --> RepoMapAdapter
+Runtime --> TraceAdapter
+BootSafety --> SafetyAdapter
+ToolFactory --> ToolAdapters
+
+CliAdapter --> BootSession : invokes chat
+CliAdapter --> TeamUC : invokes team
+
+' ============================================================
+' Application internal wiring
+' ============================================================
+SessionFacade --> SessionRunner
+SessionFacade --> ToolExec
+SessionFacade --> Compactor
+SessionFacade --> EventBus
+SessionFacade --> Autosave
+SessionFacade --> StorePort
+SessionFacade --> SessionDomain
+SessionFacade --> AgentDomain
+
+EventBus ..|> EventPort
+
+SessionRunner --> EventBus
+SessionRunner --> ToolExec
+SessionRunner --> Compactor
+SessionRunner --> LLMPort
+SessionRunner --> TracePort
+SessionRunner --> SessionDomain
+SessionRunner --> DomainEvents
+
+Compactor --> EventBus
+Compactor --> LLMPort
+Compactor --> TokenPort
+Compactor --> TracePort
+Compactor --> CompactionDomain
+Compactor --> SessionDomain
+Compactor --> DomainEvents
+
+ToolExec --> EventBus
+ToolExec --> ToolPort
+ToolExec --> EnvPort
+ToolExec --> PermissionPort
+ToolExec --> SafetyPort
+ToolExec --> TracePort
+ToolExec --> AgentDomain
+ToolExec --> ToolDomain
+ToolExec --> SessionDomain
+ToolExec --> DomainEvents
+
+TeamUC --> EventBus
+TeamUC --> WorktreePort
+TeamUC --> SessionFactoryPort
+TeamUC --> TracePort
+TeamUC --> AgentDomain
+TeamUC --> TeamDomain
+TeamUC --> ToolDomain
+TeamUC --> DomainEvents
+
+Autosave --> EventBus
+Autosave --> StorePort
+Autosave --> DomainEvents
+
+' Tool adapters use the team port via the Delegation tool
+ToolAdapters --> TeamDelegationPort
+
+' ============================================================
+' Domain internal relationships
+' ============================================================
+AgentDomain --> ToolDomain : declares ToolSpec
+TeamDomain --> AgentDomain : role profiles
+SessionDomain --> DomainEvents
+ToolDomain --> DomainEvents
+TeamDomain --> DomainEvents
+CompactionDomain --> SessionDomain
+
+' ============================================================
+' Notes
+' ============================================================
+note right of APP
+  Use cases own orchestration.
+  *Runner / *Processor / Compactor
+  classes are facades held over from
+  the in-flight migration documented
+  in docs/plans/clean-architecture/
+  REMAIN.md. Inner *UseCase types
+  depend only on ports + domain.
+end note
+
+note right of COMPOSITION
+  8 bootstrap files: container,
+  session_factory, session,
+  tool_factory, teammate_factory,
+  runtime, safety, config.
+  bootstrap.session subclasses
+  application.session.Session to
+  add default-injection wiring.
+end note
+
+note bottom of EventPort
+  EventPublisherPort and EventSink are
+  the same Protocol after the recent
+  unification; TuiEventSink and
+  EventBus both implement it.
+end note
+
+note right of DOMAIN
+  No imports from app / adapters /
+  bootstrap / SDKs / filesystem.
+  domain.team gained DelegationTask
+  and ReviewVerdict; domain.tools
+  gained LoopDetection.
+end note
+
+@enduml
