@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from opencollab.adapters.env import LocalEnvironment
 from opencollab.domain.events import TeamEvent
 from opencollab.team.orchestrator import Team
 
@@ -82,6 +83,8 @@ def _build_team(monkeypatch, role_results: dict[str, list[str]]) -> tuple[Team, 
         api_key="fake-key",
         use_worktrees=False,
         event_sink=sink,
+        lead_env=LocalEnvironment("."),
+        lead_tools=[],
         session_factory=factory,
     )
     return team, captured

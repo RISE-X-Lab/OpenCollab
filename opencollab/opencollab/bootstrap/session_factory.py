@@ -101,6 +101,8 @@ def build_team(
             safety_policy_factory=build_workspace_safety_policy,
         )
     )
+    lead_env = LocalEnvironment(ctx.workspace)
+    lead_tools = build_default_tools(include_ask_user=False)
     team = Team(
         workspace=ctx.workspace,
         model=cfg["model"],
@@ -113,6 +115,8 @@ def build_team(
         permission_policy=ctx.permission_policy,
         use_worktrees=use_worktrees,
         repo_map=ctx.repo_map,
+        lead_env=lead_env,
+        lead_tools=lead_tools,
         safety_policy_factory=build_workspace_safety_policy,
         session_factory=session_factory,
     )

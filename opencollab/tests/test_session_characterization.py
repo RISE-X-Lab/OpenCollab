@@ -754,6 +754,7 @@ def test_team_lead_session_runtime_uses_constructor_env_and_max_steps(monkeypatc
         provider="fake-provider",
         api_key="fake-key",
         lead_env=lead_env,
+        lead_tools=[],
         lead_max_steps=lead_max_steps,
         use_worktrees=False,
         event_bus=event_bus,
@@ -771,6 +772,7 @@ def test_team_lead_session_gets_workspace_safety_policy(tmp_path, monkeypatch):
     from opencollab.bootstrap import container as session_module
     from opencollab.team.orchestrator import Team
     from opencollab.adapters.safety import SandboxInterceptor
+    from opencollab.adapters.env import LocalEnvironment
 
     monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
     event_bus, session_factory = fake_team_session_factory(
@@ -782,6 +784,8 @@ def test_team_lead_session_gets_workspace_safety_policy(tmp_path, monkeypatch):
         model="fake-model",
         provider="fake-provider",
         api_key="fake-key",
+        lead_env=LocalEnvironment(str(tmp_path)),
+        lead_tools=[],
         use_worktrees=False,
         safety_policy_factory=build_workspace_safety_policy,
         event_bus=event_bus,
@@ -795,6 +799,7 @@ def test_team_lead_session_gets_workspace_safety_policy(tmp_path, monkeypatch):
 
 def test_direct_team_without_safety_factory_does_not_build_safety_policy(tmp_path, monkeypatch):
     from opencollab.bootstrap import container as session_module
+    from opencollab.adapters.env import LocalEnvironment
     from opencollab.team.orchestrator import Team
 
     monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
@@ -805,6 +810,8 @@ def test_direct_team_without_safety_factory_does_not_build_safety_policy(tmp_pat
         model="fake-model",
         provider="fake-provider",
         api_key="fake-key",
+        lead_env=LocalEnvironment(str(tmp_path)),
+        lead_tools=[],
         use_worktrees=False,
         event_bus=event_bus,
         session_factory=session_factory,

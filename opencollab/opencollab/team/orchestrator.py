@@ -28,12 +28,10 @@ from opencollab.application.ports import (
 )
 from opencollab.domain.agent import Agent
 from opencollab.domain.team import split_budget
-from opencollab.adapters.env import Environment, LocalEnvironment, WorktreeEnvironment
+from opencollab.adapters.env import Environment, WorktreeEnvironment
 from opencollab.adapters.trace import Tracer
 from opencollab.tools.base import Tool
-from opencollab.tools.bash import BashTool
 from opencollab.tools.delegation import DelegateTaskTool, DelegateWithReviewTool
-from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.team.prompts import LEAD_SYSTEM_PROMPT
 from opencollab.adapters.worktree_pool import WorktreePool
 
@@ -67,12 +65,17 @@ class Team:
         use_worktrees: bool = True,
         repo_map: str | None = None,
         lead_env: Environment | None = None,
+        lead_tools: list[Tool] | None = None,
         lead_max_steps: int | None = None,
         safety_policy_factory: SafetyPolicyFactory | None = None,
         session_factory: SessionFactoryPort | None = None,
     ):
         if session_factory is None:
             raise ValueError("Team requires an injected session_factory")
+        if lead_env is None:
+            raise ValueError("Team requires an injected lead_env")
+        if lead_tools is None:
+            raise ValueError("Team requires injected lead_tools")
         self.workspace = workspace
         self.model = model
         self.provider = provider
@@ -92,11 +95,8 @@ class Team:
         delegate_tool = DelegateTaskTool(self)
         review_tool = DelegateWithReviewTool(self)
 
-        # Lead also gets basic tools for quick tasks
-        basic_tools = self._make_basic_tools()
-        lead_runtime_env = lead_env if lead_env is not None else LocalEnvironment(workspace)
         lead_safety_policy = (
-            safety_policy_factory(lead_runtime_env)
+            safety_policy_factory(lead_env)
             if safety_policy_factory is not None
             else None
         )
@@ -104,7 +104,7 @@ class Team:
         self.lead_agent = Agent(
             name="lead",
             system_prompt=lead_prompt or LEAD_SYSTEM_PROMPT,
-            tools=[delegate_tool, review_tool] + basic_tools,
+            tools=[delegate_tool, review_tool] + list(lead_tools),
             model=model,
             provider=provider,
             api_key=api_key,
@@ -113,7 +113,7 @@ class Team:
 
         self.lead_session = self._session_factory.build_lead_session(
             agent=self.lead_agent,
-            env=lead_runtime_env,
+            env=lead_env,
             tracer=tracer,
             max_budget_tokens=max_budget_tokens,
             event_sink=self.event_bus,
@@ -122,15 +122,6 @@ class Team:
             repo_map=repo_map,
             max_steps=lead_max_steps,
         )
-
-    def _make_basic_tools(self) -> list[Tool]:
-        """Standard tool set for the Lead.
-
-        Tools are stateless; the Lead session receives safety policy wiring
-        during Team construction. Teammate tools are built independently in
-        teammate_factory.build_teammate_session.
-        """
-        return [BashTool(), FileReadTool(), FileWriteTool(), GrepTool()]
 
     @property
     def used_tokens(self) -> int:
