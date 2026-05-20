@@ -11,8 +11,9 @@ import asyncio
 from typing import Any
 
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.domain.events import TeamEvent
-from opencollab.team.orchestrator import Team
+from opencollab.application.team import Team
 
 
 def run(coro):
@@ -85,6 +86,7 @@ def _build_team(monkeypatch, role_results: dict[str, list[str]]) -> tuple[Team, 
         event_sink=sink,
         lead_env=LocalEnvironment("."),
         lead_tools=[],
+        worktree_pool=WorktreePool(".", use_worktrees=False),
         session_factory=factory,
     )
     return team, captured

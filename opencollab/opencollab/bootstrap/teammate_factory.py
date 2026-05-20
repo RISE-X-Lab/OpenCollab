@@ -20,7 +20,7 @@ from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment
 from opencollab.core.session import Session
 from opencollab.adapters.trace import Tracer
-from opencollab.team.prompts import get_role_prompt
+from opencollab.application.team_prompts import get_role_prompt
 from opencollab.tools.bash import BashTool
 from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
 

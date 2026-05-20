@@ -14,7 +14,8 @@ from opencollab.domain.agent import Agent
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.core.session import Session
-from opencollab.team.orchestrator import Team
+from opencollab.application.team import Team
+from opencollab.tools.delegation import DelegateTaskTool, DelegateWithReviewTool
 from opencollab.tools.human import AskUserTool
 
 
@@ -123,6 +124,10 @@ def build_team(
         session_factory=session_factory,
         worktree_pool=worktree_pool,
     )
+    team.lead_agent.tools[0:0] = [
+        DelegateTaskTool(team),
+        DelegateWithReviewTool(team),
+    ]
     if interactive:
         # Interactive mode: give Lead the ask_user tool (not added in Team.__init__
         # to keep headless eval clean — ref: SWE-bench regression root cause)

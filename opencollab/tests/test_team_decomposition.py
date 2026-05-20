@@ -10,7 +10,7 @@ from opencollab.bootstrap.safety import build_workspace_safety_policy
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.core.session.events import EventBus
 from opencollab.domain.team import split_budget
-from opencollab.team import orchestrator as orchestrator_mod
+from opencollab.application import team as orchestrator_mod
 from opencollab.tools import delegation as delegation_mod
 from opencollab.tools.delegation import DelegateTaskTool, DelegateWithReviewTool
 from opencollab.bootstrap.teammate_factory import TeammateConfig, build_teammate_session
