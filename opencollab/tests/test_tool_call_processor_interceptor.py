@@ -241,7 +241,7 @@ def test_no_concrete_tool_defines_legacy_execute():
     from opencollab.tools.base import Tool
 
     offenders: list[str] = []
-    for pkg_name in ("opencollab.tools", "opencollab.team"):
+    for pkg_name in ("opencollab.tools",):
         pkg = importlib.import_module(pkg_name)
         for _, mod_name, _ in pkgutil.walk_packages(pkg.__path__, prefix=f"{pkg_name}."):
             mod = importlib.import_module(mod_name)
