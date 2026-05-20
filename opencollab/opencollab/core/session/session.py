@@ -15,7 +15,7 @@ from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionPhase, SessionState
 
 if TYPE_CHECKING:
-    from opencollab.bootstrap.container import SessionRuntime
+    from opencollab.application.session import SessionRuntime
 
 
 class BudgetExceededError(Exception):

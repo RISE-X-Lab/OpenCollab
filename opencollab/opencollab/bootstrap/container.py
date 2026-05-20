@@ -13,8 +13,7 @@ constructor's kwargs.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
 from opencollab.application.ports import (
     LLMPort,
@@ -24,6 +23,7 @@ from opencollab.application.ports import (
     TracePort,
 )
 from opencollab.application.event_bus import EventBus, EventSink
+from opencollab.application.session import SessionRuntime
 from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient, estimate_messages_tokens
@@ -36,25 +36,6 @@ from opencollab.application.session_runner import SessionRunner
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.tool_processor import ToolCallProcessor
 from opencollab.domain.session import SessionState
-
-
-@dataclass
-class SessionRuntime:
-    """Pre-built collaborators a ``Session`` facade keeps as attributes.
-
-    Not frozen: ``Session`` reassigns a few attributes during lifecycle
-    operations (e.g. setting permission policy propagates through the
-    tool processor); keeping this mutable keeps the facade simple.
-    """
-
-    state: SessionState
-    event_bus: EventBus
-    llm: LLMPort
-    store: SessionStorePort
-    tool_processor: ToolCallProcessor
-    compactor: ContextCompactor
-    runner: SessionRunner
-    auto_save_path: str | None
 
 
 def _build_initial_state(agent: Agent, repo_map: str | None) -> SessionState:
