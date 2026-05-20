@@ -53,7 +53,7 @@ def test_build_chat_session_wires_workspace_safety_policy(tmp_path):
     )
     session = build_chat_session(ctx, auto_save=False)
 
-    policy = session.tool_processor.safety_policy
+    policy = session.tool_execution.safety_policy
     assert isinstance(policy, SandboxInterceptor)
     assert policy.root == str(workspace.resolve())
     assert policy.check_path("inside.txt").startswith(str(workspace.resolve()))
@@ -72,7 +72,7 @@ def test_build_team_wires_lead_safety_policy_from_bootstrap(tmp_path):
     )
     team = build_team(ctx, use_worktrees=False, interactive=False)
 
-    policy = team.lead_session.tool_processor.safety_policy
+    policy = team.lead_session.tool_execution.safety_policy
     assert isinstance(policy, SandboxInterceptor)
     assert policy.root == str(workspace.resolve())
 

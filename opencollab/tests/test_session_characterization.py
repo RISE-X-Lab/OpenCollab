@@ -4,14 +4,15 @@ import copy
 import pytest
 
 from opencollab.adapters.llm import LLMResponse, Usage
-from opencollab.application.context_compactor import COMPACTION_KEEP_RECENT, CompactResult
+from opencollab.application.compaction import COMPACTION_KEEP_RECENT
+from opencollab.domain.compaction import CompactResult
 from opencollab.application.event_bus import EventBus
-from opencollab.application.tool_processor import (
+from opencollab.application.tool_execution import (
     CallbackPermissionPolicy,
     MAX_TOOL_OUTPUT_CHARS,
-    ToolProcessingResult,
 )
-from opencollab.bootstrap.session import Session
+from opencollab.domain.tools import ToolProcessingResult
+from opencollab.bootstrap import build_session as Session, snapshot_session, load_session
 from opencollab.adapters.storage import SessionStore
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionPhase
@@ -79,7 +80,7 @@ class FakeAgent:
 
 
 def fake_team_session_factory(*, safety_policy_factory=None, repo_map=None):
-    from opencollab.bootstrap.teammate_factory import DefaultSessionFactory, TeammateConfig
+    from opencollab.bootstrap.container import DefaultSessionFactory, TeammateConfig
 
     event_bus = EventBus()
     factory = DefaultSessionFactory(
@@ -241,7 +242,7 @@ def test_snapshot_preserves_historical_subset_only():
     session.phase = SessionPhase.DONE
     session._recent_call_hashes.append("hash-1")
 
-    snap = session.snapshot()
+    snap = snapshot_session(session)
 
     assert snap is not session
     assert snap.agent is agent
@@ -382,9 +383,9 @@ def test_session_event_sink_wires_through_to_runtime():
     session = Session(agent=FakeAgent(), llm=fake_llm, event_sink=sink)
 
     assert session.event_bus.sink is sink
-    assert session.runner.event_bus is session.event_bus
-    assert session.tool_processor.event_bus is session.event_bus
-    assert session.compactor.event_bus is session.event_bus
+    assert session.runner.event_publisher is session.event_bus
+    assert session.tool_execution.event_publisher is session.event_bus
+    assert session.compactor.event_publisher is session.event_bus
 
     result = run(session.run_loop())
 
@@ -473,7 +474,7 @@ def test_tool_processor_returns_result_before_state_application():
     session = Session(agent=FakeAgent(tools=[tool]), llm=FakeLLMClient())
     original_messages = copy.deepcopy(session.messages)
 
-    result = run(session.tool_processor.process([tool_call(arguments='{"value": 9}')]))
+    result = run(session.tool_execution.process([tool_call(arguments='{"value": 9}')]))
 
     assert isinstance(result, ToolProcessingResult)
     assert result.messages_to_append == [{"role": "tool", "tool_call_id": "call-1", "content": "echo 9"}]
@@ -733,7 +734,7 @@ def test_session_runtime_config_desync_after_mutating_env_and_max_steps():
     session.max_steps = new_max_steps
 
     assert session.env is new_env
-    assert session.tool_processor.env is old_env
+    assert session.tool_execution.environment is old_env
     assert session.runner.max_steps == old_max_steps
 
 
@@ -762,13 +763,13 @@ def test_team_lead_session_runtime_uses_constructor_env_and_max_steps(monkeypatc
     )
 
     assert team.lead_session.env is lead_env
-    assert team.lead_session.tool_processor.env is lead_env
+    assert team.lead_session.tool_execution.environment is lead_env
     assert team.lead_session.max_steps == lead_max_steps
     assert team.lead_session.runner.max_steps == lead_max_steps
 
 
 def test_team_lead_session_gets_workspace_safety_policy(tmp_path, monkeypatch):
-    from opencollab.bootstrap.safety import build_workspace_safety_policy
+    from opencollab.bootstrap.container import build_workspace_safety_policy
     from opencollab.bootstrap import container as session_module
     from opencollab.application.team import Team
     from opencollab.adapters.safety import SandboxInterceptor
@@ -793,7 +794,7 @@ def test_team_lead_session_gets_workspace_safety_policy(tmp_path, monkeypatch):
         session_factory=session_factory,
     )
 
-    policy = team.lead_session.tool_processor.safety_policy
+    policy = team.lead_session.tool_execution.safety_policy
     assert isinstance(policy, SandboxInterceptor)
     assert policy.root == str(tmp_path.resolve())
 
@@ -819,7 +820,7 @@ def test_direct_team_without_safety_factory_does_not_build_safety_policy(tmp_pat
         session_factory=session_factory,
     )
 
-    assert team.lead_session.tool_processor.safety_policy is None
+    assert team.lead_session.tool_execution.safety_policy is None
 
 
 def test_save_and_load_round_trip_only_messages(tmp_path):
@@ -835,7 +836,7 @@ def test_save_and_load_round_trip_only_messages(tmp_path):
     path = tmp_path / "session.jsonl"
 
     session.save(str(path))
-    loaded = Session.load(str(path), agent=agent, llm=FakeLLMClient())
+    loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
 
     assert loaded.messages == session.messages
     assert loaded.used_tokens == 0
@@ -863,7 +864,7 @@ def test_session_accepts_explicit_store():
     session.messages.append({"role": "user", "content": "hello"})
 
     session.save("fake-session.jsonl")
-    loaded = Session.load(
+    loaded = load_session(
         "fake-session.jsonl", agent=agent, llm=FakeLLMClient(), store=fake_store
     )
 

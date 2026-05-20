@@ -15,6 +15,7 @@ from opencollab.application.ports import (
 )
 from opencollab.application.tool_dispatch import execute_tool_with_runtime
 from opencollab.application.tool_runtime import ToolRuntime
+from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionState
 from opencollab.domain.tools import LoopDetection, MAX_CALL_HASH_WINDOW, ToolProcessingResult
 
@@ -31,6 +32,31 @@ class ToolExecutionEventFactory:
     tool_end: Callable[[str, float], Any]
 
 
+def default_tool_execution_event_factory() -> ToolExecutionEventFactory:
+    return ToolExecutionEventFactory(
+        loop_detected=lambda tool, count: SessionEvent(
+            type="loop_detected",
+            data={"tool": tool, "count": count},
+        ),
+        tool_start=lambda tool, args: SessionEvent(
+            type="tool_start",
+            data={"tool": tool, "args": args},
+        ),
+        tool_end=lambda tool, latency: SessionEvent(
+            type="tool_end",
+            data={"tool": tool, "latency": latency},
+        ),
+    )
+
+
+class CallbackPermissionPolicy:
+    def __init__(self, confirm_fn: Callable[[str], Awaitable[bool]]):
+        self._confirm_fn = confirm_fn
+
+    async def confirm(self, prompt: str) -> bool:
+        return await self._confirm_fn(prompt)
+
+
 class ToolExecutionUseCase:
     def __init__(
         self,
@@ -39,7 +65,7 @@ class ToolExecutionUseCase:
         environment: EnvironmentPort | None,
         state: SessionState,
         event_publisher: EventPublisherPort,
-        event_factory: ToolExecutionEventFactory,
+        event_factory: ToolExecutionEventFactory | None = None,
         tracer: TracePort | None = None,
         permission_policy: PermissionPort | None = None,
         safety_policy: SafetyPolicyPort | None = None,
@@ -49,7 +75,7 @@ class ToolExecutionUseCase:
         self.environment = environment
         self.state = state
         self.event_publisher = event_publisher
-        self.event_factory = event_factory
+        self.event_factory = event_factory or default_tool_execution_event_factory()
         self.tracer = tracer
         self.permission_policy = permission_policy
         self.safety_policy = safety_policy

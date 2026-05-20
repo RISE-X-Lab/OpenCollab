@@ -20,9 +20,10 @@ import time
 from typing import Any
 
 from opencollab.domain.events import TeamEvent
-from opencollab.application.event_bus import EventBus, EventSink
+from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import (
     EnvironmentPort,
+    EventPublisherPort,
     PermissionPort,
     SafetyPolicyFactory,
     SessionFactoryPort,
@@ -59,7 +60,7 @@ class Team:
         max_budget_tokens: int = 500_000,
         tracer: TracePort | None = None,
         event_bus: EventBus | None = None,
-        event_sink: EventSink | None = None,
+        event_sink: EventPublisherPort | None = None,
         permission_policy: PermissionPort | None = None,
         use_worktrees: bool = True,
         repo_map: str | None = None,

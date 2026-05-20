@@ -41,7 +41,7 @@ class _FakeLeadSession:
     def __init__(self):
         self.used_tokens = 0
         self.env = None
-        self.tool_processor = type("_TP", (), {"safety_policy": None, "env": None})()
+        self.tool_execution = type("_TP", (), {"safety_policy": None, "env": None})()
         self.runner = type("_R", (), {"max_steps": 100})()
         self.max_steps = 100
 

@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from opencollab.bootstrap.session import Session
+from opencollab.bootstrap import build_session as Session
 from opencollab.application.autosave import AutoSaveSubscriber, SAVE_TRIGGERS
 from opencollab.application.event_bus import EventBus
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent

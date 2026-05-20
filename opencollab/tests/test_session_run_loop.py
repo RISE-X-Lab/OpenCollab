@@ -5,7 +5,7 @@ import copy
 from types import SimpleNamespace
 
 from opencollab.application.event_bus import EventBus
-from opencollab.application.session_runner import SessionRunner
+from opencollab.application.session_run import SessionRunUseCase
 from opencollab.domain.compaction import CompactResult
 from opencollab.domain.session import SessionPhase, SessionState
 from opencollab.domain.tools import ToolProcessingResult
@@ -130,13 +130,13 @@ def build_runner(
     **kwargs,
 ):
     state = state if state is not None else SessionState(messages=[{"role": "system", "content": "sys"}])
-    return SessionRunner(
+    return SessionRunUseCase(
         agent=agent if agent is not None else FakeAgent(),
         state=state,
         llm=llm if llm is not None else FakeLLM([llm_response(content="done")]),
-        event_bus=event_bus if event_bus is not None else EventBus(None),
-        tool_processor=tool_execution if tool_execution is not None else FakeToolExecution(),
-        compactor=compactor if compactor is not None else FakeCompactor(state),
+        event_publisher=event_bus if event_bus is not None else EventBus(None),
+        tool_execution=tool_execution if tool_execution is not None else FakeToolExecution(),
+        compaction=compactor if compactor is not None else FakeCompactor(state),
         tracer=tracer,
         **kwargs,
     )

@@ -10,12 +10,12 @@ from __future__ import annotations
 import asyncio
 import os
 
-from opencollab.bootstrap.session import Session
+from opencollab.bootstrap import build_session as Session, snapshot_session, load_session
 from opencollab.application.autosave import AutoSaveSubscriber
-from opencollab.application.context_compactor import ContextCompactor
-from opencollab.application.session_runner import SessionRunner
+from opencollab.application.compaction import ContextCompactionUseCase
+from opencollab.application.session_run import SessionRunUseCase
 from opencollab.adapters.storage import SessionStore
-from opencollab.application.tool_processor import ToolCallProcessor
+from opencollab.application.tool_execution import ToolExecutionUseCase
 
 
 def run(coro):
@@ -29,13 +29,6 @@ def test_event_bus_satisfies_event_publisher_port():
     bus: EventPublisherPort = EventBus()
     assert hasattr(bus, "emit")
     assert callable(getattr(bus, "emit"))
-
-
-def test_permission_policy_alias_resolves_to_permission_port():
-    from opencollab.application.ports import PermissionPort
-    from opencollab.application.tool_processor import PermissionPolicy
-
-    assert PermissionPolicy is PermissionPort
 
 
 class _FakeAgent:
@@ -70,9 +63,9 @@ def _new_session(**overrides) -> Session:
 def test_session_builds_runtime_collaborators_eagerly():
     session = _new_session()
 
-    assert isinstance(session.tool_processor, ToolCallProcessor)
-    assert isinstance(session.compactor, ContextCompactor)
-    assert isinstance(session.runner, SessionRunner)
+    assert isinstance(session.tool_execution, ToolExecutionUseCase)
+    assert isinstance(session.compactor, ContextCompactionUseCase)
+    assert isinstance(session.runner, SessionRunUseCase)
     assert isinstance(session.store, SessionStore)
 
 
@@ -127,7 +120,7 @@ def test_session_snapshot_returns_independent_session_without_autosave(tmp_path)
     session.used_tokens = 42
     session.step_count = 3
 
-    snap = session.snapshot()
+    snap = snapshot_session(session)
 
     assert snap is not session
     assert snap.messages == session.messages
@@ -148,7 +141,7 @@ def test_session_snapshot_preserves_external_sink():
         seen.append(event)
 
     session = _new_session(event_sink=sink)
-    snap = session.snapshot()
+    snap = snapshot_session(session)
 
     # External sink reference still in the bus targets.
     targets = list(snap.event_bus._targets)
@@ -165,7 +158,7 @@ def test_session_load_returns_session_with_loaded_messages(tmp_path):
     ])
     session.save(str(path))
 
-    loaded = Session.load(str(path), agent=agent, llm=_FakeLLM())
+    loaded = load_session(str(path), agent=agent, llm=_FakeLLM())
 
     assert loaded.messages[0]["role"] == "system"
     assert loaded.messages[0]["content"] == agent.system_prompt
@@ -183,10 +176,10 @@ def test_session_with_repo_map_appends_project_structure_to_system_message():
 def test_session_permission_policy_setter_propagates_to_tool_processor():
     session = _new_session()
     assert session.permission_policy is None
-    assert session.tool_processor.permission_policy is None
+    assert session.tool_execution.permission_policy is None
 
     sentinel = object()
     session.permission_policy = sentinel  # type: ignore[assignment]
 
     assert session.permission_policy is sentinel
-    assert session.tool_processor.permission_policy is sentinel
+    assert session.tool_execution.permission_policy is sentinel

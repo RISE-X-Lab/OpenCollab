@@ -16,26 +16,20 @@ from opencollab.application.ports import EventPublisherPort
 
 EventCallback = Callable[[Any], Awaitable[None] | None]
 
-# EventSink is the subscriber-side name for the same shape EventPublisherPort
-# describes (an object with ``async emit(event)``). Kept as an alias so older
-# call sites that import ``EventSink`` continue to work, while new code can
-# implement ``EventPublisherPort`` directly to match the target diagram.
-EventSink = EventPublisherPort
-
 
 class EventBus:
     """Fan-out broadcaster. Multiple subscribers; failures isolated per-sink."""
 
-    def __init__(self, target: EventSink | EventCallback | None = None):
-        self._targets: list[EventSink | EventCallback] = []
+    def __init__(self, target: EventPublisherPort | EventCallback | None = None):
+        self._targets: list[EventPublisherPort | EventCallback] = []
         if target is not None:
             self.subscribe(target)
 
-    def subscribe(self, target: EventSink | EventCallback) -> None:
+    def subscribe(self, target: EventPublisherPort | EventCallback) -> None:
         self._targets.append(target)
 
     @property
-    def sink(self) -> EventSink | EventCallback | None:
+    def sink(self) -> EventPublisherPort | EventCallback | None:
         """First subscribed target (for snapshot/build code that needs one)."""
         return self._targets[0] if self._targets else None
 
@@ -53,4 +47,4 @@ class EventBus:
                 continue
 
 
-__all__ = ["EventBus", "EventCallback", "EventSink"]
+__all__ = ["EventBus", "EventCallback"]

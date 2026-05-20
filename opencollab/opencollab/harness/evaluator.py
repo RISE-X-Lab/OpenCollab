@@ -19,7 +19,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from opencollab.domain.agent import Agent
-from opencollab.bootstrap.session import Session
+from opencollab.application.session import Session
+from opencollab.bootstrap import build_session
 from opencollab.adapters.env import Environment, LocalEnvironment, DockerEnvironment
 from opencollab.adapters.trace import Tracer
 from opencollab.adapters.tools.bash import BashTool
@@ -102,7 +103,7 @@ async def run_eval_task(
             base_url=base_url,
         )
 
-        session = Session(
+        session = build_session(
             agent=agent,
             env=env,
             tracer=tracer,

@@ -23,6 +23,18 @@ class CompactionEventFactory:
     compaction_applied: Callable[[int], Any]
 
 
+def default_compaction_event_factory() -> CompactionEventFactory:
+    from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
+
+    return CompactionEventFactory(
+        compaction=lambda: SessionEvent(type="compaction", data={"reason": "context_overflow"}),
+        compaction_applied=lambda tokens_after: SessionEvent(
+            type="compaction_applied",
+            data={"tokens_after": tokens_after},
+        ),
+    )
+
+
 class ContextCompactionUseCase:
     def __init__(
         self,
@@ -30,7 +42,7 @@ class ContextCompactionUseCase:
         state: SessionState,
         llm: LLMPort,
         event_publisher: EventPublisherPort,
-        event_factory: CompactionEventFactory,
+        event_factory: CompactionEventFactory | None = None,
         estimate_tokens: TokenEstimatorPort,
         tracer: TracePort | None = None,
         compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
@@ -38,7 +50,7 @@ class ContextCompactionUseCase:
         self.state = state
         self.llm = llm
         self.event_publisher = event_publisher
-        self.event_factory = event_factory
+        self.event_factory = event_factory or default_compaction_event_factory()
         self.estimate_tokens = estimate_tokens
         self.tracer = tracer
         self.compaction_threshold = compaction_threshold

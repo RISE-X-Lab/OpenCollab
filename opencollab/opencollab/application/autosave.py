@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from opencollab.application.event_bus import EventSink
+from opencollab.application.ports import EventPublisherPort
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 
 
@@ -26,7 +26,7 @@ SAVE_TRIGGERS = frozenset({
 })
 
 
-class AutoSaveSubscriber(EventSink):
+class AutoSaveSubscriber(EventPublisherPort):
     def __init__(self, save_fn: Callable[[], None]):
         self._save = save_fn
 

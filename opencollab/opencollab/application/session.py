@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from opencollab.application.context_compactor import DEFAULT_COMPACTION_THRESHOLD
-from opencollab.application.context_compactor import ContextCompactor
+from opencollab.application.compaction import DEFAULT_COMPACTION_THRESHOLD
+from opencollab.application.compaction import ContextCompactionUseCase
 from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import (
     EnvironmentPort,
@@ -14,8 +14,8 @@ from opencollab.application.ports import (
     SessionStorePort,
     TracePort,
 )
-from opencollab.application.session_runner import SessionRunner
-from opencollab.application.tool_processor import ToolCallProcessor
+from opencollab.application.session_run import SessionRunUseCase
+from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import Agent
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionPhase
@@ -43,9 +43,9 @@ class SessionRuntime:
     event_bus: EventBus
     llm: LLMPort
     store: SessionStorePort
-    tool_processor: ToolCallProcessor
-    compactor: ContextCompactor
-    runner: SessionRunner
+    tool_execution: ToolExecutionUseCase
+    compactor: ContextCompactionUseCase
+    runner: SessionRunUseCase
     auto_save_path: str | None
 
 
@@ -87,14 +87,14 @@ class Session:
         self.event_bus = runtime.event_bus
         self._llm = runtime.llm
         self.store = runtime.store
-        self.tool_processor = runtime.tool_processor
+        self.tool_execution = runtime.tool_execution
         self.compactor = runtime.compactor
         self.runner = runtime.runner
-        # The env attribute mirrors the runtime's tool_processor env so
+        # The env attribute mirrors the runtime's tool_execution env so
         # downstream readers (snapshot, characterization tests) still see
         # the same Environment instance.
         if env is None:
-            self.env = self.tool_processor.env
+            self.env = self.tool_execution.environment
 
     @property
     def permission_policy(self) -> PermissionPort | None:
@@ -103,8 +103,8 @@ class Session:
     @permission_policy.setter
     def permission_policy(self, value: PermissionPort | None) -> None:
         self._permission_policy = value
-        if hasattr(self, "tool_processor"):
-            self.tool_processor.permission_policy = value
+        if hasattr(self, "tool_execution"):
+            self.tool_execution.permission_policy = value
 
     @property
     def auto_save_path(self) -> str | None:

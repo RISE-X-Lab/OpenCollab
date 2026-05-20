@@ -8,18 +8,21 @@ skinparam ArrowColor #555555
 skinparam defaultFontName Helvetica
 
 ' ============================================================
-' Snapshot of the actual repo, not the aspirational target.
-' Differences from repomap-target.puml are intentional:
-'   * Bootstrap is split across 8 files for concern isolation.
-'   * Several application-layer "Runner / Processor / Compactor"
-'     classes are thin facades that delegate to a *UseCase. Both
-'     are shown to reflect the in-flight migration documented in
-'     docs/plans/clean-architecture/REMAIN.md.
-'   * EventPublisherPort and EventSink are the same Protocol now
-'     (alias in application/event_bus.py); the TuiAdapter
-'     implements EventPublisherPort directly.
-'   * domain.team and domain.tools gained value types
-'     (DelegationTask, ReviewVerdict, LoopDetection).
+' Snapshot of the actual repo. Remaining differences from
+' repomap-target.puml are intentional and tracked:
+'   * adapters.llm is one LLMClient (not split OpenAI/Anthropic).
+'   * adapters.env keeps a separate WorktreePool adapter rather
+'     than folding worktree lifecycle into the env adapter.
+'   * TeamDelegationPort still mediates between the Delegation
+'     tool and the Team orchestrator.
+'   * app.session keeps a single Session facade rather than the
+'     RunSession/AddUserMessage/SnapshotSession split.
+' Closed since the prior snapshot:
+'   * Bootstrap collapsed from 8 files to 2 (container + config).
+'   * The *Runner / *Processor / Compactor facades were removed;
+'     the *UseCase classes are now the only orchestrators.
+'   * The EventSink alias was deleted; EventPublisherPort is the
+'     single name for the publish surface.
 ' ============================================================
 
 package "Frameworks / Drivers\n(no project policy)" as DRIVERS #FADBD8 {
@@ -44,22 +47,17 @@ package "Interface Adapters" as ADAPTERS #FDEBD0 {
   [adapters.tools\nBash / FileRead / FileWrite / Grep\nAskUser / Mcp / Delegation] as ToolAdapters
 }
 
-package "Composition Root\n(bootstrap, 8 files)" as COMPOSITION #EBF5FB {
-  [bootstrap.container\nbuild_session_runtime] as Container
-  [bootstrap.session_factory\nbuild_chat_session / build_team] as SessionFactory
-  [bootstrap.session\nself-wiring Session facade] as BootSession
-  [bootstrap.tool_factory\nbuild_default_tools] as ToolFactory
-  [bootstrap.teammate_factory\nDefaultSessionFactory] as TeammateFactory
-  [bootstrap.runtime\nRuntimeContext] as Runtime
-  [bootstrap.safety\nbuild_workspace_safety_policy] as BootSafety
+package "Composition Root\n(bootstrap, 2 files)" as COMPOSITION #EBF5FB {
+  [bootstrap.container\nbuild_runtime_context\nbuild_session_runtime\nbuild_session / snapshot_session / load_session\nbuild_chat_session / build_team\nbuild_teammate_session\nDefaultSessionFactory\nbuild_default_tools\nbuild_workspace_safety_policy] as Container
   [bootstrap.config\nload config + env] as Config
 }
 
 package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   [app.session\nSession + SessionRuntime] as SessionFacade
-  [app.session_runner\nSessionRunner  >>  SessionRunUseCase] as SessionRunner
-  [app.context_compactor\nContextCompactor  >>  ContextCompactionUseCase] as Compactor
-  [app.tool_processor\nToolCallProcessor  >>  ToolExecutionUseCase\n+ ToolRuntime + execute_tool_with_runtime] as ToolExec
+  [app.session_run\nSessionRunUseCase] as SessionRunner
+  [app.compaction\nContextCompactionUseCase] as Compactor
+  [app.tool_execution\nToolExecutionUseCase\nCallbackPermissionPolicy] as ToolExec
+  [app.tool_runtime / tool_dispatch\nToolRuntime + execute_tool_with_runtime] as ToolRuntime
   [app.team\nTeam (Lead + delegate / review)] as TeamUC
   [app.autosave\nAutoSaveSubscriber] as Autosave
   [app.event_bus\nEventBus (fan-out)] as EventBus
@@ -68,7 +66,7 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   interface "EnvironmentPort" as EnvPort
   interface "SessionStorePort" as StorePort
   interface "TracePort" as TracePort
-  interface "EventPublisherPort\n(EventSink alias)" as EventPort
+  interface "EventPublisherPort" as EventPort
   interface "PermissionPort" as PermissionPort
   interface "SafetyPolicyPort" as SafetyPort
   interface "RepoMapPort" as RepoMapPort
@@ -123,24 +121,15 @@ Container --> Config
 Container --> LLMAdapter
 Container --> EnvAdapter
 Container --> StoreAdapter
+Container --> WorktreeAdapter
+Container --> RepoMapAdapter
+Container --> TraceAdapter
+Container --> SafetyAdapter
+Container --> ToolAdapters
 Container --> SessionFacade
-SessionFactory --> Container
-SessionFactory --> ToolFactory
-SessionFactory --> TeammateFactory
-SessionFactory --> BootSafety
-SessionFactory --> WorktreeAdapter
-SessionFactory --> TeamUC
-SessionFactory --> BootSession
-BootSession --> Container
-TeammateFactory --> Runtime
-TeammateFactory --> BootSession
-Runtime --> RepoMapAdapter
-Runtime --> TraceAdapter
-BootSafety --> SafetyAdapter
-ToolFactory --> ToolAdapters
+Container --> TeamUC
 
-CliAdapter --> BootSession : invokes chat
-CliAdapter --> TeamUC : invokes team
+CliAdapter --> Container : invokes chat / team
 
 ' ============================================================
 ' Application internal wiring
@@ -156,7 +145,7 @@ SessionFacade --> AgentDomain
 
 EventBus ..|> EventPort
 
-SessionRunner --> EventBus
+SessionRunner --> EventPort
 SessionRunner --> ToolExec
 SessionRunner --> Compactor
 SessionRunner --> LLMPort
@@ -164,7 +153,7 @@ SessionRunner --> TracePort
 SessionRunner --> SessionDomain
 SessionRunner --> DomainEvents
 
-Compactor --> EventBus
+Compactor --> EventPort
 Compactor --> LLMPort
 Compactor --> TokenPort
 Compactor --> TracePort
@@ -172,7 +161,8 @@ Compactor --> CompactionDomain
 Compactor --> SessionDomain
 Compactor --> DomainEvents
 
-ToolExec --> EventBus
+ToolExec --> EventPort
+ToolExec --> ToolRuntime
 ToolExec --> ToolPort
 ToolExec --> EnvPort
 ToolExec --> PermissionPort
@@ -192,7 +182,7 @@ TeamUC --> TeamDomain
 TeamUC --> ToolDomain
 TeamUC --> DomainEvents
 
-Autosave --> EventBus
+Autosave --> EventPort
 Autosave --> StorePort
 Autosave --> DomainEvents
 
@@ -213,38 +203,35 @@ CompactionDomain --> SessionDomain
 ' Notes
 ' ============================================================
 note right of APP
-  Use cases own orchestration.
-  *Runner / *Processor / Compactor
-  classes are facades held over from
-  the in-flight migration documented
-  in docs/plans/clean-architecture/
-  REMAIN.md. Inner *UseCase types
-  depend only on ports + domain.
+  Use cases own orchestration directly.
+  SessionRunUseCase, ContextCompactionUseCase,
+  and ToolExecutionUseCase are the only run-loop /
+  compaction / tool-execution types now (the
+  former *Runner / *Processor / Compactor facades
+  were deleted). Each builds a default event factory
+  internally and depends only on ports + domain.
 end note
 
 note right of COMPOSITION
-  8 bootstrap files: container,
-  session_factory, session,
-  tool_factory, teammate_factory,
-  runtime, safety, config.
-  bootstrap.session subclasses
-  application.session.Session to
-  add default-injection wiring.
+  2 bootstrap files: container + config.
+  bootstrap.container is the single composition
+  root. build_session() is a free factory that
+  returns application.session.Session (no more
+  bootstrap-owned Session subclass); snapshot_session
+  and load_session are sibling free functions.
 end note
 
 note bottom of EventPort
-  EventPublisherPort and EventSink are
-  the same Protocol after the recent
-  unification; TuiEventSink and
-  EventBus both implement it.
+  EventPublisherPort is the single publish surface.
+  TuiEventSink, EventBus, and AutoSaveSubscriber
+  all implement it; the former EventSink alias is gone.
 end note
 
 note right of DOMAIN
   No imports from app / adapters /
   bootstrap / SDKs / filesystem.
-  domain.team gained DelegationTask
-  and ReviewVerdict; domain.tools
-  gained LoopDetection.
+  domain.team carries DelegationTask and
+  ReviewVerdict; domain.tools carries LoopDetection.
 end note
 
 @enduml

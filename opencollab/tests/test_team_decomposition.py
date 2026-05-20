@@ -6,15 +6,14 @@ import asyncio
 import inspect
 
 from opencollab.application.tool_runtime import ToolRuntime
-from opencollab.bootstrap.safety import build_workspace_safety_policy
+from opencollab.bootstrap.container import build_workspace_safety_policy
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.application.event_bus import EventBus
 from opencollab.domain.team import split_budget
 from opencollab.application import team as orchestrator_mod
 from opencollab.adapters.tools import delegation as delegation_mod
 from opencollab.adapters.tools.delegation import DelegateTaskTool, DelegateWithReviewTool
-from opencollab.bootstrap.teammate_factory import TeammateConfig, build_teammate_session
-from opencollab.bootstrap import teammate_factory as teammate_factory_mod
+from opencollab.bootstrap.container import TeammateConfig, build_teammate_session
 from opencollab.adapters.safety import SandboxInterceptor
 
 
@@ -88,7 +87,7 @@ def test_build_teammate_session_wires_environment_safety_policy(tmp_path, monkey
 
     session = build_teammate_session(role="coder", env=env, cfg=cfg, budget=50_000)
 
-    policy = session.tool_processor.safety_policy
+    policy = session.tool_execution.safety_policy
     assert isinstance(policy, SandboxInterceptor)
     assert policy.root == str(tmp_path.resolve())
 
@@ -115,7 +114,7 @@ def test_build_teammate_session_without_factory_does_not_build_safety_policy(tmp
 
     session = build_teammate_session(role="coder", env=env, cfg=cfg, budget=50_000)
 
-    assert session.tool_processor.safety_policy is None
+    assert session.tool_execution.safety_policy is None
 
 
 def test_delegate_task_tool_uses_runtime_native_execution():
@@ -154,9 +153,7 @@ def test_delegate_with_review_tool_uses_runtime_native_execution():
 
 def test_team_modules_do_not_import_bootstrap_safety():
     team_source = inspect.getsource(orchestrator_mod)
-    teammate_source = inspect.getsource(teammate_factory_mod)
     delegation_source = inspect.getsource(delegation_mod)
 
     assert "opencollab.bootstrap.safety" not in team_source
-    assert "opencollab.bootstrap.safety" not in teammate_source
     assert "opencollab.bootstrap.safety" not in delegation_source

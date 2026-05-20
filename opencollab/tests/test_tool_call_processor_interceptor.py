@@ -7,10 +7,10 @@ import pytest
 
 from opencollab.application.ports import ToolPort
 from opencollab.adapters.env import LocalEnvironment
-from opencollab.bootstrap import session as session_mod
+from opencollab.bootstrap import container as session_mod
 from opencollab.application.event_bus import EventBus
 from opencollab.domain.session import SessionState
-from opencollab.application.tool_processor import ToolCallProcessor
+from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.adapters.safety import SandboxInterceptor
 
 
@@ -48,24 +48,22 @@ def test_session_accepts_explicit_safety_policy(tmp_path):
     ws.mkdir()
     env = LocalEnvironment(str(ws))
     safety_policy = SandboxInterceptor(str(ws))
-    session = session_mod.Session(agent=FakeAgent(), env=env, safety_policy=safety_policy, llm=object())
-    proc = session.tool_processor
-    assert proc.interceptor is safety_policy
-    assert proc.safety_policy is proc.interceptor
+    session = session_mod.build_session(agent=FakeAgent(), env=env, safety_policy=safety_policy, llm=object())
+    proc = session.tool_execution
+    assert proc.safety_policy is safety_policy
     # Path inside workspace resolves; path outside raises.
-    assert proc.interceptor.check_path("inside.txt").startswith(str(ws.resolve()))
+    assert proc.safety_policy.check_path("inside.txt").startswith(str(ws.resolve()))
     with pytest.raises(PermissionError):
-        proc.interceptor.check_path("/etc/passwd")
+        proc.safety_policy.check_path("/etc/passwd")
 
 
 def test_direct_session_does_not_derive_safety_policy_from_env(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     env = LocalEnvironment(str(ws))
-    session = session_mod.Session(agent=FakeAgent(), env=env, llm=object())
+    session = session_mod.build_session(agent=FakeAgent(), env=env, llm=object())
 
-    assert session.tool_processor.safety_policy is None
-    assert session.tool_processor.interceptor is None
+    assert session.tool_execution.safety_policy is None
 
 
 def test_snapshot_preserves_explicit_safety_policy(tmp_path):
@@ -73,84 +71,67 @@ def test_snapshot_preserves_explicit_safety_policy(tmp_path):
     ws.mkdir()
     env = LocalEnvironment(str(ws))
     safety_policy = SandboxInterceptor(str(ws))
-    session = session_mod.Session(agent=FakeAgent(), env=env, safety_policy=safety_policy, llm=object())
+    session = session_mod.build_session(agent=FakeAgent(), env=env, safety_policy=safety_policy, llm=object())
 
-    snap = session.snapshot()
+    snap = session_mod.snapshot_session(session)
 
-    assert snap.tool_processor.safety_policy is safety_policy
+    assert snap.tool_execution.safety_policy is safety_policy
 
 
-def test_tool_call_processor_accepts_explicit_interceptor(tmp_path):
+def test_tool_execution_accepts_explicit_safety_policy(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     env = LocalEnvironment(str(ws))
     custom = SandboxInterceptor(str(ws))
-    proc = ToolCallProcessor(
+    proc = ToolExecutionUseCase(
         agent=FakeAgent(),
-        env=env,
+        environment=env,
         state=SessionState(messages=[]),
-        event_bus=EventBus(None),
-        interceptor=custom,
-    )
-    assert proc.interceptor is custom
-    assert proc.safety_policy is custom
-
-
-def test_tool_call_processor_accepts_explicit_safety_policy(tmp_path):
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    env = LocalEnvironment(str(ws))
-    custom = SandboxInterceptor(str(ws))
-    proc = ToolCallProcessor(
-        agent=FakeAgent(),
-        env=env,
-        state=SessionState(messages=[]),
-        event_bus=EventBus(None),
+        event_publisher=EventBus(None),
         safety_policy=custom,
     )
     assert proc.safety_policy is custom
-    assert proc.interceptor is custom
 
 
-def test_tool_call_processor_builds_application_tool_runtime(tmp_path):
+def test_tool_execution_builds_application_tool_runtime(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     env = LocalEnvironment(str(ws))
     safety_policy = SandboxInterceptor(str(ws))
     permission_policy = FakePermissionPolicy()
-    proc = ToolCallProcessor(
+    proc = ToolExecutionUseCase(
         agent=FakeAgent(),
-        env=env,
+        environment=env,
         state=SessionState(messages=[]),
-        event_bus=EventBus(None),
+        event_publisher=EventBus(None),
         safety_policy=safety_policy,
         permission_policy=permission_policy,
     )
 
-    runtime = proc._tool_runtime()
+    runtime = proc.tool_runtime()
 
     assert runtime.environment is env
     assert runtime.safety_policy is safety_policy
     assert runtime.permission_policy is permission_policy
 
 
-def test_tool_call_processor_prefers_execute_with_runtime(tmp_path):
+def test_tool_execution_prefers_execute_with_runtime(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     env = LocalEnvironment(str(ws))
     safety_policy = SandboxInterceptor(str(ws))
     permission_policy = FakePermissionPolicy()
-    proc = ToolCallProcessor(
+    proc = ToolExecutionUseCase(
         agent=FakeAgent(),
-        env=env,
+        environment=env,
         state=SessionState(messages=[]),
-        event_bus=EventBus(None),
+        event_publisher=EventBus(None),
         safety_policy=safety_policy,
         permission_policy=permission_policy,
     )
     tool = RuntimeAwareTool()
 
-    result, _latency = asyncio.run(proc._execute_tool(tool, {"value": 1}))
+    result, _latency = asyncio.run(proc.execute_tool(tool, {"value": 1}))
 
     assert result == "runtime result"
     assert len(tool.runtime_calls) == 1
@@ -161,17 +142,17 @@ def test_tool_call_processor_prefers_execute_with_runtime(tmp_path):
     assert runtime.permission_policy is permission_policy
 
 
-def test_tool_call_processor_delegates_runtime_dispatch(tmp_path):
+def test_tool_execution_delegates_runtime_dispatch(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     env = LocalEnvironment(str(ws))
     safety_policy = SandboxInterceptor(str(ws))
     permission_policy = FakePermissionPolicy()
-    proc = ToolCallProcessor(
+    proc = ToolExecutionUseCase(
         agent=FakeAgent(),
-        env=env,
+        environment=env,
         state=SessionState(messages=[]),
-        event_bus=EventBus(None),
+        event_publisher=EventBus(None),
         safety_policy=safety_policy,
         permission_policy=permission_policy,
     )
@@ -182,9 +163,9 @@ def test_tool_call_processor_delegates_runtime_dispatch(tmp_path):
         calls.append((dispatch_tool, args, runtime))
         return "dispatched"
 
-    proc._tool_execution.dispatch_tool = fake_dispatch
+    proc.dispatch_tool = fake_dispatch
 
-    result, _latency = asyncio.run(proc._execute_tool(tool, {"value": 1}))
+    result, _latency = asyncio.run(proc.execute_tool(tool, {"value": 1}))
 
     assert result == "dispatched"
     assert len(calls) == 1
@@ -196,36 +177,13 @@ def test_tool_call_processor_delegates_runtime_dispatch(tmp_path):
     assert runtime.permission_policy is permission_policy
 
 
-def test_tool_call_processor_does_not_expand_legacy_runtime_arguments():
-    source = inspect.getsource(ToolCallProcessor._execute_tool)
+def test_tool_execution_does_not_expand_legacy_runtime_arguments():
+    source = inspect.getsource(ToolExecutionUseCase.execute_tool)
 
-    assert "execute_tool(" in source
+    assert "execute_tool(" in source or "dispatch_tool(" in source
     assert "getattr(tool" not in source
     assert "confirm_fn=runtime.confirm_fn()" not in source
     assert "interceptor=runtime.safety_policy" not in source
-
-
-def test_tool_call_processor_process_delegates_to_application_use_case(monkeypatch, tmp_path):
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    proc = ToolCallProcessor(
-        agent=FakeAgent(),
-        env=LocalEnvironment(str(ws)),
-        state=SessionState(messages=[]),
-        event_bus=EventBus(None),
-    )
-    calls = []
-
-    async def fake_process(tool_calls):
-        calls.append(tool_calls)
-        return "processed"
-
-    monkeypatch.setattr(proc._tool_execution, "process", fake_process)
-
-    result = asyncio.run(proc.process([{"id": "call-1"}]))
-
-    assert result == "processed"
-    assert calls == [[{"id": "call-1"}]]
 
 
 def test_tool_port_describes_runtime_dispatch_not_legacy_execute():
@@ -257,13 +215,13 @@ def test_no_concrete_tool_defines_legacy_execute():
     assert offenders == []
 
 
-def test_tool_processor_does_not_import_concrete_sandbox():
-    import opencollab.application.tool_processor as tools_mod
+def test_tool_execution_does_not_import_concrete_sandbox():
+    import opencollab.application.tool_execution as tools_mod
 
     assert not hasattr(tools_mod, "SandboxInterceptor")
 
 
-def test_bootstrap_session_does_not_import_bootstrap_safety():
+def test_container_does_not_reference_deleted_bootstrap_safety_module():
     source = inspect.getsource(session_mod)
 
     assert "opencollab.bootstrap.safety" not in source
