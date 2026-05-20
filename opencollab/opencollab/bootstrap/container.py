@@ -26,15 +26,15 @@ from opencollab.application.ports import (
 from opencollab.application.event_bus import EventBus, EventSink
 from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment, LocalEnvironment
-from opencollab.adapters.llm import LLMClient
+from opencollab.adapters.llm import LLMClient, estimate_messages_tokens
 from opencollab.application.autosave import AutoSaveSubscriber
-from opencollab.core.session.compactor import (
+from opencollab.application.context_compactor import (
     DEFAULT_COMPACTION_THRESHOLD,
     ContextCompactor,
 )
-from opencollab.core.session.runner import SessionRunner
+from opencollab.application.session_runner import SessionRunner
 from opencollab.adapters.storage import SessionStore
-from opencollab.core.session.tools import ToolCallProcessor
+from opencollab.application.tool_processor import ToolCallProcessor
 from opencollab.domain.session import SessionState
 
 
@@ -121,6 +121,7 @@ def build_session_runtime(
         state=state,
         llm=resolved_llm,
         event_bus=event_bus,
+        estimate_tokens=estimate_messages_tokens,
         tracer=tracer,
         compaction_threshold=compaction_threshold,
     )

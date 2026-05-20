@@ -9,7 +9,7 @@ from opencollab.application.ports import PermissionPort, SafetyPolicyPort
 from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment
 from opencollab.application.autosave import AutoSaveSubscriber
-from opencollab.core.session.compactor import DEFAULT_COMPACTION_THRESHOLD
+from opencollab.application.context_compactor import DEFAULT_COMPACTION_THRESHOLD
 from opencollab.adapters.trace import Tracer
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionPhase, SessionState

@@ -1,8 +1,13 @@
 from opencollab.application.event_bus import EventBus, EventCallback, EventSink
-from opencollab.core.session.compactor import COMPACTION_KEEP_RECENT, DEFAULT_COMPACTION_THRESHOLD, CompactResult, ContextCompactor
-from opencollab.core.session.runner import SessionRunner
+from opencollab.application.context_compactor import (
+    COMPACTION_KEEP_RECENT,
+    DEFAULT_COMPACTION_THRESHOLD,
+    CompactResult,
+    ContextCompactor,
+)
+from opencollab.application.session_runner import SessionRunner
 from opencollab.core.session.session import BudgetExceededError, LoopDetectedError, Session
-from opencollab.core.session.tools import (
+from opencollab.application.tool_processor import (
     MAX_CALL_HASH_WINDOW,
     MAX_SIMILAR_CALLS,
     MAX_TOOL_OUTPUT_CHARS,
