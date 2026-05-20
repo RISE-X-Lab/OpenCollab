@@ -24,7 +24,7 @@ def test_domain_modules_do_not_import_outer_layers():
         "opencollab.tools",
         "opencollab.bootstrap",
         "opencollab.cli",
-        "opencollab.tui",
+        "opencollab.adapters",
         "opencollab.team",
     ]
 

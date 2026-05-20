@@ -66,7 +66,7 @@ def _missing_api_key(provider: str | None, api_key: str | None) -> bool:
 
 
 def _print_missing_key_hint(provider: str | None) -> None:
-    from opencollab.cli.tui import TUI
+    from opencollab.adapters.tui import TUI
 
     tui = TUI(console)
     tui.print_welcome()
@@ -193,8 +193,7 @@ async def _repl_loop(tui: Any, handle_turn) -> None:
 async def _chat(workspace: str, cfg: dict, session_file: str | None,
                  trace: bool, yolo: bool):
     from opencollab.bootstrap import build_chat_session, build_runtime_context
-    from opencollab.cli.tui import TUI
-    from opencollab.tui.session_adapter import TuiEventSink, TuiPermissionPolicy
+    from opencollab.adapters.tui import TUI, TuiEventSink, TuiPermissionPolicy
 
     tui = TUI(console)
     tui.print_welcome()
@@ -248,8 +247,7 @@ async def _chat(workspace: str, cfg: dict, session_file: str | None,
 async def _team(workspace: str, cfg: dict, trace: bool, yolo: bool,
                  use_worktrees: bool):
     from opencollab.bootstrap import build_runtime_context, build_team
-    from opencollab.cli.tui import TUI
-    from opencollab.tui.session_adapter import TuiEventSink, TuiPermissionPolicy
+    from opencollab.adapters.tui import TUI, TuiEventSink, TuiPermissionPolicy
 
     tui = TUI(console)
     tui.print_welcome()

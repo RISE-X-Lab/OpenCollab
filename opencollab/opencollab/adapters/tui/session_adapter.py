@@ -18,7 +18,7 @@ class SuspendableRender(Protocol):
 class TuiEventSink(EventSink):
     """Bus subscriber that accepts both runtime and team event families.
 
-    The dispatch lives inside the TUI itself (see ``cli.tui.TUI.event_handler``);
+    The dispatch lives inside the TUI itself (see ``adapters.tui.renderer.TUI.event_handler``);
     this sink is the bridge from the async event bus to the synchronous
     TUI handler.
     """

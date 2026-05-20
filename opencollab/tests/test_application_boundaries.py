@@ -2,7 +2,7 @@
 
 Locks the Clean Architecture dependency rule: neither layer may import
 from ``opencollab.core``, ``opencollab.tools``, ``opencollab.bootstrap``,
-``opencollab.cli``, ``opencollab.tui``, or ``opencollab.team``.
+``opencollab.cli``, ``opencollab.adapters``, or ``opencollab.team``.
 
 A docstring or comment that mentions one of those names is fine — only
 ``import`` and ``from ... import`` statements are forbidden.
@@ -15,7 +15,7 @@ import re
 
 
 FORBIDDEN = re.compile(
-    r"^\s*(?:from|import)\s+opencollab\.(?:core|tools|bootstrap|cli|tui|team)\b",
+    r"^\s*(?:from|import)\s+opencollab\.(?:core|tools|bootstrap|cli|adapters|team)\b",
     re.MULTILINE,
 )
 

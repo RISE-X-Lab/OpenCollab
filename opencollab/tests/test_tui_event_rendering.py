@@ -1,6 +1,6 @@
 """Characterization tests for TUI event rendering.
 
-Drives ``cli.tui.TUI.event_handler`` with synthetic session-runtime and
+Drives ``adapters.tui.renderer.TUI.event_handler`` with synthetic session-runtime and
 team-orchestration events and snapshots the resulting display-state
 mutations (``_active_tools``, ``_status_lines``, ``_step``). Locks the
 rendered behavior so the Step12 dispatch split between SessionRuntimeEvent
@@ -10,7 +10,7 @@ and TeamEvent keeps the user-visible output byte-equivalent.
 from __future__ import annotations
 
 from opencollab.domain.events import SessionRuntimeEvent, TeamEvent
-from opencollab.cli.tui import TUI
+from opencollab.adapters.tui import TUI
 
 
 def _make_tui() -> TUI:

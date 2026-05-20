@@ -1,6 +1,6 @@
 import asyncio
 
-from opencollab.tui.session_adapter import TuiPermissionPolicy
+from opencollab.adapters.tui import TuiPermissionPolicy
 
 
 def run(coro):
