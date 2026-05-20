@@ -21,9 +21,7 @@ PermissionPolicy = PermissionPort
 """Legacy alias for PermissionPort.
 
 Production code should import ``PermissionPort`` from
-``opencollab.application.ports``. This alias is kept so
-``from opencollab.core.session import PermissionPolicy`` continues to work for
-legacy callers and characterization tests.
+``opencollab.application.ports``.
 """
 
 
