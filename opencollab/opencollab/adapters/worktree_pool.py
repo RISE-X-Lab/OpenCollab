@@ -35,7 +35,7 @@ class WorktreePool:
         self._envs.append(env)
         return env
 
-    async def cleanup(self) -> None:
+    async def release(self) -> None:
         """Tear down every worktree this pool has handed out."""
         for env in self._envs:
             try:
@@ -43,3 +43,7 @@ class WorktreePool:
             except Exception:
                 pass
         self._envs.clear()
+
+    async def cleanup(self) -> None:
+        """Compatibility alias for older callers."""
+        await self.release()

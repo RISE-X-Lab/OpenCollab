@@ -12,6 +12,7 @@ from opencollab.bootstrap.teammate_factory import DefaultSessionFactory, Teammat
 from opencollab.bootstrap.tool_factory import build_default_tools
 from opencollab.domain.agent import Agent
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.core.session import Session
 from opencollab.team.orchestrator import Team
 from opencollab.tools.human import AskUserTool
@@ -103,6 +104,7 @@ def build_team(
     )
     lead_env = LocalEnvironment(ctx.workspace)
     lead_tools = build_default_tools(include_ask_user=False)
+    worktree_pool = WorktreePool(ctx.workspace, use_worktrees=use_worktrees)
     team = Team(
         workspace=ctx.workspace,
         model=cfg["model"],
@@ -119,6 +121,7 @@ def build_team(
         lead_tools=lead_tools,
         safety_policy_factory=build_workspace_safety_policy,
         session_factory=session_factory,
+        worktree_pool=worktree_pool,
     )
     if interactive:
         # Interactive mode: give Lead the ask_user tool (not added in Team.__init__

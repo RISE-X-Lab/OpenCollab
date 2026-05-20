@@ -25,6 +25,7 @@ from opencollab.application.ports import (
     PermissionPort,
     SafetyPolicyFactory,
     SessionFactoryPort,
+    WorktreePoolPort,
 )
 from opencollab.domain.agent import Agent
 from opencollab.domain.team import split_budget
@@ -69,6 +70,7 @@ class Team:
         lead_max_steps: int | None = None,
         safety_policy_factory: SafetyPolicyFactory | None = None,
         session_factory: SessionFactoryPort | None = None,
+        worktree_pool: WorktreePoolPort | None = None,
     ):
         if session_factory is None:
             raise ValueError("Team requires an injected session_factory")
@@ -88,7 +90,11 @@ class Team:
         self.repo_map = repo_map
         self._total_budget = max_budget_tokens
         self._used_tokens = 0
-        self._worktree_pool = WorktreePool(workspace, use_worktrees=use_worktrees)
+        self._worktree_pool: WorktreePoolPort = (
+            worktree_pool
+            if worktree_pool is not None
+            else WorktreePool(workspace, use_worktrees=use_worktrees)
+        )
         self._session_factory = session_factory
 
         # Build Lead agent with delegation tools
@@ -261,4 +267,4 @@ class Team:
 
     async def cleanup(self) -> None:
         """Clean up all worktree environments."""
-        await self._worktree_pool.cleanup()
+        await self._worktree_pool.release()

@@ -168,5 +168,5 @@ class WorktreePoolPort(Protocol):
     async def acquire(self, role: str) -> Any:
         ...
 
-    async def release(self, env: Any) -> None:
+    async def release(self) -> None:
         ...

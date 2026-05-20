@@ -20,5 +20,10 @@ def test_pool_returns_local_env_when_worktrees_disabled(tmp_path):
     # No tracking — LocalEnvironments don't need cleanup
     assert pool._envs == []
 
-    # cleanup() is a no-op; should not raise
+    # release() is a no-op; should not raise
+    asyncio.run(pool.release())
+
+
+def test_pool_keeps_cleanup_alias_for_legacy_callers(tmp_path):
+    pool = WorktreePool(str(tmp_path), use_worktrees=False)
     asyncio.run(pool.cleanup())
