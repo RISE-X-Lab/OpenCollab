@@ -9,8 +9,9 @@ from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.bootstrap.safety import build_workspace_safety_policy
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.core.session.events import EventBus
+from opencollab.domain.team import split_budget
 from opencollab.team import orchestrator as orchestrator_mod
-from opencollab.team.teammate_factory import TeammateConfig, build_teammate_session, split_budget
+from opencollab.team.teammate_factory import TeammateConfig, build_teammate_session
 from opencollab.team import teammate_factory as teammate_factory_mod
 from opencollab.adapters.safety import SandboxInterceptor
 

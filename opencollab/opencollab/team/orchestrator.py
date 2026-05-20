@@ -28,6 +28,7 @@ from opencollab.application.ports import (
 )
 from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.domain.agent import Agent
+from opencollab.domain.team import split_budget
 from opencollab.adapters.env import Environment, LocalEnvironment, WorktreeEnvironment
 from opencollab.adapters.trace import Tracer
 from opencollab.tools.base import Tool
@@ -37,7 +38,6 @@ from opencollab.team.prompts import LEAD_SYSTEM_PROMPT
 from opencollab.team.teammate_factory import (
     DefaultSessionFactory,
     TeammateConfig,
-    split_budget,
 )
 from opencollab.adapters.worktree_pool import WorktreePool
 
