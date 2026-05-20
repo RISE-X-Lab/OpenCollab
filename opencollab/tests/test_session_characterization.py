@@ -3,18 +3,18 @@ import copy
 
 import pytest
 
-from opencollab.core import session as session_mod
-from opencollab.core.events import EventBus as CompatEventBus
-from opencollab.core.events import SessionEvent as CompatSessionEvent
 from opencollab.adapters.llm import LLMResponse, Usage
-from opencollab.core.session import (
+from opencollab.application.context_compactor import COMPACTION_KEEP_RECENT, CompactResult
+from opencollab.application.event_bus import EventBus
+from opencollab.application.tool_processor import (
     CallbackPermissionPolicy,
-    EventBus,
-    Session,
-    SessionEvent,
-    SessionPhase,
+    MAX_TOOL_OUTPUT_CHARS,
+    ToolProcessingResult,
 )
+from opencollab.bootstrap.session import Session
 from opencollab.adapters.storage import SessionStore
+from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
+from opencollab.domain.session import SessionPhase
 
 
 def run(coro):
@@ -157,13 +157,6 @@ def event_collector():
         events.append(event)
 
     return events, on_event
-
-
-def test_session_package_and_compat_event_imports_are_preserved():
-    assert Session is session_mod.Session
-    assert SessionEvent is session_mod.SessionEvent
-    assert CompatEventBus is EventBus
-    assert CompatSessionEvent is SessionEvent
 
 
 def test_event_bus_accepts_sink_and_swallows_sink_exception():
@@ -316,7 +309,7 @@ def test_compaction_trigger_summarizes_older_messages_then_runs_step():
         event_sink=EventBus(on_event),
     )
     session.messages.extend({"role": "user", "content": f"message {idx}"} for idx in range(10))
-    original_recent = copy.deepcopy(session.messages[-session_mod.COMPACTION_KEEP_RECENT:])
+    original_recent = copy.deepcopy(session.messages[-COMPACTION_KEEP_RECENT:])
 
     result = run(session.run_loop())
 
@@ -482,7 +475,7 @@ def test_tool_processor_returns_result_before_state_application():
 
     result = run(session.tool_processor.process([tool_call(arguments='{"value": 9}')]))
 
-    assert isinstance(result, session_mod.ToolProcessingResult)
+    assert isinstance(result, ToolProcessingResult)
     assert result.messages_to_append == [{"role": "tool", "tool_call_id": "call-1", "content": "echo 9"}]
     assert len(result.recent_hash_updates) == 1
     assert session.messages == original_messages
@@ -621,9 +614,9 @@ def test_loop_detection_skips_third_identical_tool_call():
 
 def test_tool_output_is_truncated_before_appending_to_messages():
     long_result = (
-        "a" * (session_mod.MAX_TOOL_OUTPUT_CHARS // 2)
+        "a" * (MAX_TOOL_OUTPUT_CHARS // 2)
         + "b" * 123
-        + "c" * (session_mod.MAX_TOOL_OUTPUT_CHARS // 2)
+        + "c" * (MAX_TOOL_OUTPUT_CHARS // 2)
     )
     tool = FakeTool(result=long_result)
     fake_llm = FakeLLMClient([
@@ -637,9 +630,9 @@ def test_tool_output_is_truncated_before_appending_to_messages():
     assert result == "after truncation"
     tool_output = session.messages[2]["content"]
     assert tool_output != long_result
-    assert tool_output.startswith("a" * (session_mod.MAX_TOOL_OUTPUT_CHARS // 2))
+    assert tool_output.startswith("a" * (MAX_TOOL_OUTPUT_CHARS // 2))
     assert "\n\n... [123 chars truncated] ...\n\n" in tool_output
-    assert tool_output.endswith("c" * (session_mod.MAX_TOOL_OUTPUT_CHARS // 2))
+    assert tool_output.endswith("c" * (MAX_TOOL_OUTPUT_CHARS // 2))
 
 
 def test_event_callback_exception_is_swallowed():
@@ -706,7 +699,7 @@ def test_context_compactor_can_return_result_before_state_application():
 
     result = run(session.compactor.compact(apply=False))
 
-    assert isinstance(result, session_mod.CompactResult)
+    assert isinstance(result, CompactResult)
     assert result.did_compact is True
     assert result.compacted_count == 2
     assert result.summary_len == len("compact summary")
