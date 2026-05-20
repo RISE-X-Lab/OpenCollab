@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from opencollab.domain.agent import Agent
-from opencollab.core.session import Session
+from opencollab.bootstrap.session import Session
 from opencollab.adapters.env import Environment, LocalEnvironment, DockerEnvironment
 from opencollab.adapters.trace import Tracer
 from opencollab.tools.bash import BashTool

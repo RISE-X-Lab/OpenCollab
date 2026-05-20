@@ -1,4 +1,5 @@
 from opencollab.application.event_bus import EventBus, EventCallback, EventSink
+from opencollab.application.session import BudgetExceededError, LoopDetectedError
 from opencollab.application.context_compactor import (
     COMPACTION_KEEP_RECENT,
     DEFAULT_COMPACTION_THRESHOLD,
@@ -6,7 +7,8 @@ from opencollab.application.context_compactor import (
     ContextCompactor,
 )
 from opencollab.application.session_runner import SessionRunner
-from opencollab.core.session.session import BudgetExceededError, LoopDetectedError, Session
+from opencollab.bootstrap import session as session
+from opencollab.bootstrap.session import Session
 from opencollab.application.tool_processor import (
     MAX_CALL_HASH_WINDOW,
     MAX_SIMILAR_CALLS,

@@ -18,7 +18,7 @@ from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import PermissionPort, SafetyPolicyFactory
 from opencollab.domain.agent import Agent
 from opencollab.adapters.env import Environment
-from opencollab.core.session import Session
+from opencollab.bootstrap.session import Session
 from opencollab.adapters.trace import Tracer
 from opencollab.application.team_prompts import get_role_prompt
 from opencollab.tools.bash import BashTool

@@ -4,11 +4,10 @@ Owns the concrete construction order of every collaborator a ``Session``
 needs: ``EventBus``, ``SessionState``, ``SessionStore``, ``AutoSaveSubscriber``,
 ``LLMClient``, ``ToolCallProcessor``, ``ContextCompactor``, ``SessionRunner``.
 
-The ``Session`` facade (``core.session.session.Session``) delegates here
-when it isn't handed an already-built ``SessionRuntime`` bundle; bootstrap
-factories may build the bundle explicitly when they want to swap a
-collaborator (LLM, store, ...) without going through the Session
-constructor's kwargs.
+The bootstrap ``Session`` facade delegates here when it isn't handed an
+already-built ``SessionRuntime`` bundle; bootstrap factories may build the
+bundle explicitly when they want to swap a collaborator (LLM, store, ...)
+without going through the Session constructor's kwargs.
 """
 
 from __future__ import annotations

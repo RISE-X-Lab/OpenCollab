@@ -13,7 +13,7 @@ from opencollab.bootstrap.tool_factory import build_default_tools
 from opencollab.domain.agent import Agent
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.worktree_pool import WorktreePool
-from opencollab.core.session import Session
+from opencollab.bootstrap.session import Session
 from opencollab.application.team import Team
 from opencollab.tools.delegation import DelegateTaskTool, DelegateWithReviewTool
 from opencollab.tools.human import AskUserTool
