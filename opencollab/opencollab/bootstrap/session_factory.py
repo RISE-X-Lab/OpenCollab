@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import uuid
 
+from opencollab.application.event_bus import EventBus
 from opencollab.bootstrap.runtime import RuntimeContext
 from opencollab.bootstrap.safety import build_workspace_safety_policy
+from opencollab.bootstrap.teammate_factory import DefaultSessionFactory, TeammateConfig
 from opencollab.bootstrap.tool_factory import build_default_tools
 from opencollab.domain.agent import Agent
 from opencollab.adapters.env import LocalEnvironment
@@ -85,6 +87,20 @@ def build_team(
     (keeps headless eval clean — ref: SWE-bench regression root cause).
     """
     cfg = ctx.config
+    event_bus = EventBus(ctx.event_sink)
+    session_factory = DefaultSessionFactory(
+        TeammateConfig(
+            model=cfg["model"],
+            provider=cfg["provider"],
+            api_key=cfg["api_key"],
+            base_url=cfg["base_url"],
+            tracer=ctx.tracer,
+            event_bus=event_bus,
+            permission_policy=ctx.permission_policy,
+            repo_map=ctx.repo_map,
+            safety_policy_factory=build_workspace_safety_policy,
+        )
+    )
     team = Team(
         workspace=ctx.workspace,
         model=cfg["model"],
@@ -93,11 +109,12 @@ def build_team(
         base_url=cfg["base_url"],
         max_budget_tokens=cfg["budget"],
         tracer=ctx.tracer,
-        event_sink=ctx.event_sink,
+        event_bus=event_bus,
         permission_policy=ctx.permission_policy,
         use_worktrees=use_worktrees,
         repo_map=ctx.repo_map,
         safety_policy_factory=build_workspace_safety_policy,
+        session_factory=session_factory,
     )
     if interactive:
         # Interactive mode: give Lead the ask_user tool (not added in Team.__init__

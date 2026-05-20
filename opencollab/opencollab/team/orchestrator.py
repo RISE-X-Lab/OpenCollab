@@ -35,10 +35,6 @@ from opencollab.tools.base import Tool
 from opencollab.tools.bash import BashTool
 from opencollab.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.team.prompts import LEAD_SYSTEM_PROMPT
-from opencollab.bootstrap.teammate_factory import (
-    DefaultSessionFactory,
-    TeammateConfig,
-)
 from opencollab.adapters.worktree_pool import WorktreePool
 
 
@@ -161,6 +157,7 @@ class Team:
         lead_prompt: str | None = None,
         max_budget_tokens: int = 500_000,
         tracer: Tracer | None = None,
+        event_bus: EventBus | None = None,
         event_sink: EventSink | None = None,
         permission_policy: PermissionPort | None = None,
         use_worktrees: bool = True,
@@ -170,36 +167,22 @@ class Team:
         safety_policy_factory: SafetyPolicyFactory | None = None,
         session_factory: SessionFactoryPort | None = None,
     ):
+        if session_factory is None:
+            raise ValueError("Team requires an injected session_factory")
         self.workspace = workspace
         self.model = model
         self.provider = provider
         self.api_key = api_key
         self.base_url = base_url
         self.tracer = tracer
-        self.event_bus = EventBus(event_sink)
+        self.event_bus = event_bus if event_bus is not None else EventBus(event_sink)
         self.permission_policy = permission_policy
         self.safety_policy_factory = safety_policy_factory
         self.repo_map = repo_map
         self._total_budget = max_budget_tokens
         self._used_tokens = 0
         self._worktree_pool = WorktreePool(workspace, use_worktrees=use_worktrees)
-
-        self._teammate_cfg = TeammateConfig(
-            model=model,
-            provider=provider,
-            api_key=api_key,
-            base_url=base_url,
-            tracer=tracer,
-            event_bus=self.event_bus,
-            permission_policy=permission_policy,
-            safety_policy_factory=safety_policy_factory,
-            repo_map=repo_map,
-        )
-        self._session_factory: SessionFactoryPort = (
-            session_factory
-            if session_factory is not None
-            else DefaultSessionFactory(self._teammate_cfg)
-        )
+        self._session_factory = session_factory
 
         # Build Lead agent with delegation tools
         delegate_tool = DelegateTaskTool(self)
