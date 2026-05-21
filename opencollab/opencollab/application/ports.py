@@ -64,23 +64,13 @@ class ToolPort(Protocol):
         ...
 
 
-class TeammateSessionPort(Protocol):
-    """Subset of Session the team orchestrator drives a teammate through."""
-
-    used_tokens: int
-
-    async def add_user_message(self, content: str) -> None:
-        ...
-
-    async def run_loop(self) -> str:
-        ...
-
-
 class SessionFactoryPort(Protocol):
     """Factory the scheduler uses to build a teammate session.
 
     Bootstrap binds this to the concrete teammate-session builder so the
     scheduler layer does not import ``opencollab.core.session.Session``.
+    The returned session is driven through ``add_user_message`` /
+    ``run_loop`` and read via ``used_tokens``.
     """
 
     def build_teammate_session(
@@ -91,7 +81,7 @@ class SessionFactoryPort(Protocol):
         budget: int,
         max_steps: int = 50,
         aid: int = -1,
-    ) -> TeammateSessionPort:
+    ) -> Any:
         ...
 
 
@@ -160,11 +150,8 @@ class TracePort(Protocol):
         ...
 
 
-class TokenEstimatorPort(Protocol):
-    """Callable that estimates a token cost for a messages list."""
-
-    def __call__(self, messages: list[dict[str, Any]]) -> int:
-        ...
+# Callable that estimates a token cost for a messages list.
+TokenEstimatorPort = Callable[[list[dict[str, Any]]], int]
 
 
 class WorktreePoolPort(Protocol):

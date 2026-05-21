@@ -16,6 +16,9 @@ skinparam defaultFontName Helvetica
 '   * app.session keeps a single Session facade rather than the
 '     RunSession/AddUserMessage/SnapshotSession split.
 ' Closed since the prior snapshot:
+'   * TokenEstimatorPort collapsed from a Protocol into a plain
+'     Callable type alias; TeammateSessionPort (doc-only, zero
+'     external refs) removed — build_teammate_session returns Any.
 '   * Team -> Scheduler: the privileged "Lead wraps workers"
 '     model is gone. Scheduler owns all Session processes; the
 '     lead is just agent 0 (aid=0) in a ProcessTable of SCBs.
@@ -72,7 +75,6 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   interface "SafetyPolicyPort" as SafetyPort
   interface "WorktreePoolPort" as WorktreePort
   interface "ToolPort" as ToolPort
-  interface "TokenEstimatorPort" as TokenPort
   interface "SessionFactoryPort" as SessionFactoryPort
   interface "SchedulerPort" as SchedulerPort
 }
@@ -154,7 +156,6 @@ SessionRunner --> DomainEvents
 
 Compactor --> EventPort
 Compactor --> LLMPort
-Compactor --> TokenPort
 Compactor --> TracePort
 Compactor --> CompactionDomain
 Compactor --> SessionDomain
