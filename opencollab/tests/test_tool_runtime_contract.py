@@ -12,7 +12,6 @@ from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.tools.human import AskUserTool
-from opencollab.adapters.tools.mcp import MCPTool
 from opencollab.application.tool_runtime import ToolRuntime
 
 
@@ -58,19 +57,6 @@ class SpySafetyPolicy:
 class FakePermissionPolicy:
     async def confirm(self, prompt: str) -> bool:
         return True
-
-
-class FakeMCPConnection:
-    def __init__(self, response=None, exc: Exception | None = None):
-        self.response = response
-        self.exc = exc
-        self.calls = []
-
-    async def call_tool(self, name: str, arguments: dict):
-        self.calls.append((name, arguments))
-        if self.exc:
-            raise self.exc
-        return self.response
 
 
 # ---------------------------------------------------------------------------
@@ -343,53 +329,6 @@ def test_ask_user_tool_uses_prompt_when_permission_exists(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# MCPTool
-# ---------------------------------------------------------------------------
-
-
-def test_mcp_tool_returns_text_content():
-    conn = FakeMCPConnection(
-        {
-            "result": {
-                "content": [
-                    {"type": "text", "text": "alpha"},
-                    {"type": "text", "text": "beta"},
-                ]
-            }
-        }
-    )
-    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
-    tool = MCPTool("lookup", "Lookup", {"type": "object"}, conn)
-
-    result = run(tool.execute_with_runtime({"q": "x"}, runtime))
-
-    assert conn.calls == [("lookup", {"q": "x"})]
-    assert result == "alpha\nbeta"
-
-
-def test_mcp_tool_preserves_error_response():
-    conn = FakeMCPConnection({"error": {"code": -1, "message": "nope"}})
-    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
-    tool = MCPTool("lookup", "Lookup", {"type": "object"}, conn)
-
-    result = run(tool.execute_with_runtime({"q": "x"}, runtime))
-
-    assert conn.calls == [("lookup", {"q": "x"})]
-    assert result == "MCP error: {'code': -1, 'message': 'nope'}"
-
-
-def test_mcp_tool_preserves_exception_response():
-    conn = FakeMCPConnection(exc=RuntimeError("boom"))
-    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
-    tool = MCPTool("lookup", "Lookup", {"type": "object"}, conn)
-
-    result = run(tool.execute_with_runtime({"q": "x"}, runtime))
-
-    assert conn.calls == [("lookup", {"q": "x"})]
-    assert result == "MCP tool execution error: RuntimeError: boom"
-
-
-# ---------------------------------------------------------------------------
 # Tool contract guards
 # ---------------------------------------------------------------------------
 
@@ -400,7 +339,6 @@ def test_built_in_tools_have_native_execute_with_runtime_methods():
     assert FileWriteTool.execute_with_runtime is not Tool.execute_with_runtime
     assert GrepTool.execute_with_runtime is not Tool.execute_with_runtime
     assert AskUserTool.execute_with_runtime is not Tool.execute_with_runtime
-    assert MCPTool.execute_with_runtime is not Tool.execute_with_runtime
 
 
 def test_base_tool_default_execute_with_runtime_raises_not_implemented():
@@ -411,7 +349,7 @@ def test_base_tool_default_execute_with_runtime_raises_not_implemented():
 
 
 def test_no_concrete_tool_defines_legacy_execute():
-    for name in ("bash", "fs", "human", "mcp"):
+    for name in ("bash", "fs", "human"):
         mod = __import__(f"opencollab.adapters.tools.{name}", fromlist=["_"])
         for cls in vars(mod).values():
             if isinstance(cls, type) and issubclass(cls, Tool) and cls is not Tool:
@@ -431,7 +369,6 @@ def test_tool_modules_do_not_import_inner_layers_or_concrete_sandbox():
         package_root / "opencollab/adapters/tools/bash.py",
         package_root / "opencollab/adapters/tools/fs.py",
         package_root / "opencollab/adapters/tools/human.py",
-        package_root / "opencollab/adapters/tools/mcp.py",
     ]
 
     for path in tool_files:

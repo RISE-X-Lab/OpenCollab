@@ -33,7 +33,6 @@ package "Frameworks / Drivers\n(no project policy)" as DRIVERS #FADBD8 {
   [OS shell / filesystem] as DriverOS
   [git worktree] as DriverGit
   [JSONL files] as DriverStore
-  [MCP servers] as DriverMCP
   [asyncio] as DriverAsync
 }
 
@@ -47,7 +46,7 @@ package "Interface Adapters" as ADAPTERS #FDEBD0 {
   [adapters.trace\nTracer] as TraceAdapter
   [adapters.repo_map\nget_repo_map] as RepoMapAdapter
   [adapters.safety\nSandboxInterceptor] as SafetyAdapter
-  [adapters.tools\nBash / FileRead / FileWrite / Grep\nAskUser / Mcp / Spawn] as ToolAdapters
+  [adapters.tools\nBash / FileRead / FileWrite / Grep\nAskUser / Spawn] as ToolAdapters
 }
 
 package "Composition Root\n(bootstrap, 2 files)" as COMPOSITION #EBF5FB {
@@ -100,7 +99,6 @@ WorktreeAdapter --> DriverGit
 StoreAdapter --> DriverStore
 TraceAdapter --> DriverStore
 ToolAdapters --> DriverOS
-ToolAdapters --> DriverMCP
 SchedulerUC --> DriverAsync
 
 ' ============================================================
@@ -202,7 +200,7 @@ SchedulerDomain --> SessionDomain : SCB holds SessionState
 SessionDomain --> DomainEvents
 ToolDomain --> DomainEvents
 CompactionDomain --> SessionDomain
-
+  
 ' ============================================================
 ' Notes
 ' ============================================================
