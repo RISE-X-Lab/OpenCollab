@@ -10,6 +10,7 @@ class ToolRuntime:
     environment: EnvironmentPort | None
     safety_policy: SafetyPolicyPort | None
     permission_policy: PermissionPort | None
+    aid: int = -1
 
     def confirm_fn(self):
         if self.permission_policy is None:

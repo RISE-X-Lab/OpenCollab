@@ -157,7 +157,7 @@ def test_run_loop_budget_exceeded_emits_error_and_sets_phase():
         "role": "system",
         "content": "[Budget exceeded: 10 tokens used. Session stopped.]",
     }
-    assert events == [("error", {"reason": "budget_exceeded"})]
+    assert events == [("error", {"reason": "budget_exceeded", "aid": -1})]
 
 
 def test_run_loop_cancel_event_appends_interrupt_and_sets_phase():
@@ -174,7 +174,7 @@ def test_run_loop_cancel_event_appends_interrupt_and_sets_phase():
     assert llm.calls == []
     assert state.phase is SessionPhase.CANCELLED
     assert state.messages[-1] == {"role": "system", "content": "[Session interrupted by user]"}
-    assert events == [("error", {"reason": "cancelled"})]
+    assert events == [("error", {"reason": "cancelled", "aid": -1})]
 
 
 def test_run_loop_compaction_applies_result_before_llm_call():
@@ -197,7 +197,7 @@ def test_run_loop_compaction_applies_result_before_llm_call():
     assert compactor.compact_calls == [False]
     assert llm.calls[0]["messages"] == compacted_messages
     assert state.used_tokens == 7
-    assert ("compaction_applied", {"tokens_after": 3}) in events
+    assert ("compaction_applied", {"tokens_after": 3, "aid": -1}) in events
 
 
 def test_run_loop_llm_step_events_trace_and_message_shape():
@@ -238,7 +238,7 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
         "text_delta",
         "step_end",
     ]
-    assert events[0] == ("step_start", {"step": 1})
+    assert events[0] == ("step_start", {"step": 1, "aid": -1})
     assert events[2][1]["step"] == 1
     assert events[2][1]["latency"] == tracer.steps[0]["latency"]
     assert tracer.steps[0] == {

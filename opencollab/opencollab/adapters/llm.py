@@ -6,11 +6,11 @@ and Anthropic natively. No custom message format — uses standard dicts.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import random
 import time
-import asyncio
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 

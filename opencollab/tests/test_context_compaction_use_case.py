@@ -3,7 +3,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from opencollab.application.compaction import (
-    COMPACTION_KEEP_RECENT,
     CompactionEventFactory,
     ContextCompactionUseCase,
 )

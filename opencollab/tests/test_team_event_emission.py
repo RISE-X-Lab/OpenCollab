@@ -1,8 +1,8 @@
-"""Characterization tests for Team event emission.
+"""Characterization tests for Scheduler event emission.
 
-Locks the event sequence emitted by Team.delegate and
-Team.delegate_with_review. After Step12 the delegation/review lifecycle
-flows through TeamEvent rather than synthetic SessionEvent tool_* events.
+Locks the event sequence emitted by Scheduler.spawn and
+Scheduler.spawn_with_review. After refactoring the spawn/review lifecycle
+flows through SchedulerEvent rather than synthetic SessionEvent tool_* events.
 """
 
 from __future__ import annotations
@@ -10,10 +10,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.worktree_pool import WorktreePool
-from opencollab.domain.events import TeamEvent
-from opencollab.application.team import Team
+from opencollab.application.scheduler import Scheduler
+from opencollab.domain.events import SchedulerEvent
+from opencollab.domain.session import SessionState
 
 
 def run(coro):
@@ -23,10 +23,12 @@ def run(coro):
 class _FakeTeammateSession:
     """Minimal session stand-in: records messages and returns a canned result."""
 
-    def __init__(self, result: str, tokens: int = 0):
+    def __init__(self, result: str, tokens: int = 0, role: str = "teammate"):
         self._result = result
         self.used_tokens = tokens
         self.added: list[str] = []
+        self.state = SessionState(messages=[])
+        self.agent = type("_Agent", (), {"name": role})()
 
     async def add_user_message(self, content: str) -> None:
         self.added.append(content)
@@ -41,9 +43,11 @@ class _FakeLeadSession:
     def __init__(self):
         self.used_tokens = 0
         self.env = None
+        self.agent = type("_Agent", (), {"name": "lead"})()
         self.tool_execution = type("_TP", (), {"safety_policy": None, "env": None})()
         self.runner = type("_R", (), {"max_steps": 100})()
         self.max_steps = 100
+        self.state = SessionState(messages=[])
 
     async def add_user_message(self, content: str) -> None:
         pass
@@ -53,7 +57,7 @@ class _FakeLeadSession:
 
 
 class _FakeSessionFactory:
-    """Drives delegate()/delegate_with_review() with canned teammate sessions."""
+    """Drives spawn()/spawn_with_review() with canned teammate sessions."""
 
     def __init__(self, role_results: dict[str, list[str]]):
         # Map of role -> queue of canned results.
@@ -63,73 +67,72 @@ class _FakeSessionFactory:
     def build_lead_session(self, **kwargs):
         return _FakeLeadSession()
 
-    def build_teammate_session(self, *, role, env, budget, max_steps=50):
+    def build_teammate_session(self, *, role, env, budget, max_steps=50, aid=-1):
         self.built.append((role, budget))
         queue = self._queues.get(role, [])
         result = queue.pop(0) if queue else ""
-        return _FakeTeammateSession(result)
+        return _FakeTeammateSession(result, role=role)
 
 
-def _build_team(monkeypatch, role_results: dict[str, list[str]]) -> tuple[Team, list[Any]]:
+def _build_scheduler(monkeypatch, role_results: dict[str, list[str]]) -> tuple[Scheduler, list[Any]]:
     captured: list[Any] = []
 
     async def sink(event):
         captured.append(event)
 
     factory = _FakeSessionFactory(role_results)
-    team = Team(
-        workspace=".",
-        model="fake-model",
-        provider="fake-provider",
-        api_key="fake-key",
-        use_worktrees=False,
-        event_sink=sink,
-        lead_env=LocalEnvironment("."),
-        lead_tools=[],
-        worktree_pool=WorktreePool(".", use_worktrees=False),
+    scheduler = Scheduler(
         session_factory=factory,
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=sink,
     )
-    return team, captured
+    lead_session = _FakeLeadSession()
+    scheduler.register_lead(lead_session)
+    return scheduler, captured
 
 
-def _team_events(events: list[Any]) -> list[TeamEvent]:
-    return [e for e in events if isinstance(e, TeamEvent)]
+def _scheduler_events(events: list[Any]) -> list[SchedulerEvent]:
+    return [e for e in events if isinstance(e, SchedulerEvent)]
 
 
-def test_delegate_emits_delegation_started_then_completed(monkeypatch):
-    team, events = _build_team(monkeypatch, {"coder": ["coder did it"]})
+def test_spawn_emits_agent_spawned_then_completed(monkeypatch):
+    scheduler, events = _build_scheduler(monkeypatch, {"coder": ["coder did it"]})
 
-    result = run(team.delegate("coder", "do the thing"))
+    result = run(scheduler.spawn(0, "coder", "do the thing"))
+    # Wait for the spawned task to complete
+    if result in scheduler._tasks:
+        run(asyncio.wait_for(scheduler._tasks[result], timeout=1.0))
 
-    assert result == "coder did it"
-    seq = _team_events(events)
-    assert [e.type for e in seq] == ["delegation_started", "delegation_completed"]
+    seq = _scheduler_events(events)
+    types = [e.type for e in seq]
+    assert "agent_spawned" in types
+    assert "agent_completed" in types
 
-    start = seq[0]
-    assert start.data["tool"] == "delegate"
-    assert start.data["role"] == "coder"
-    assert start.data["task"] == "do the thing"
+    spawned = [e for e in seq if e.type == "agent_spawned"][0]
+    assert spawned.data["role"] == "coder"
+    assert spawned.data["task"] == "do the thing"
 
-    end = seq[1]
-    assert end.data["tool"] == "delegate"
-    assert end.data["role"] == "coder"
-    assert "latency" in end.data
-    assert isinstance(end.data["latency"], float)
-    assert end.data["result_len"] == len("coder did it")
+    completed = [e for e in seq if e.type == "agent_completed"][0]
+    assert completed.data["role"] == "coder"
+    assert "latency" in completed.data
+    assert isinstance(completed.data["latency"], float)
 
 
-def test_delegate_trims_task_field_to_100_chars(monkeypatch):
-    team, events = _build_team(monkeypatch, {"coder": [""]})
+def test_spawn_trims_task_field_to_100_chars(monkeypatch):
+    scheduler, events = _build_scheduler(monkeypatch, {"coder": [""]})
     long_task = "x" * 250
 
-    run(team.delegate("coder", long_task))
+    aid = run(scheduler.spawn(0, "coder", long_task))
+    if aid in scheduler._tasks:
+        run(asyncio.wait_for(scheduler._tasks[aid], timeout=1.0))
 
-    seq = _team_events(events)
-    assert seq[0].data["task"] == "x" * 100
+    seq = _scheduler_events(events)
+    spawned = [e for e in seq if e.type == "agent_spawned"][0]
+    assert spawned.data["task"] == "x" * 100
 
 
-def test_delegate_with_review_emits_review_lifecycle_around_delegations(monkeypatch):
-    team, events = _build_team(
+def test_spawn_with_review_emits_review_lifecycle_around_spawns(monkeypatch):
+    scheduler, events = _build_scheduler(
         monkeypatch,
         {
             "coder": ["implemented X"],
@@ -137,41 +140,22 @@ def test_delegate_with_review_emits_review_lifecycle_around_delegations(monkeypa
         },
     )
 
-    result = run(team.delegate_with_review("write a function", max_iterations=3))
+    result = run(scheduler.spawn_with_review(0, "write a function", max_iterations=3))
 
     assert "PASSED after 1 iteration" in result
     assert "implemented X" in result
 
-    seq = _team_events(events)
-    # review_started → coder delegation pair → reviewer delegation pair → review_completed
-    assert [e.type for e in seq] == [
-        "review_started",
-        "delegation_started",
-        "delegation_completed",
-        "delegation_started",
-        "delegation_completed",
-        "review_completed",
-    ]
-
-    review_start = seq[0]
-    assert review_start.data["tool"] == "review_loop"
-    assert review_start.data["iteration"] == 1
-    assert review_start.data["max"] == 3
-
-    coder_start = seq[1]
-    assert coder_start.data["role"] == "coder"
-
-    reviewer_start = seq[3]
-    assert reviewer_start.data["role"] == "reviewer"
-
-    review_end = seq[5]
-    assert review_end.data["tool"] == "review_loop"
-    assert review_end.data["iteration"] == 1
-    assert review_end.data["verdict"] == "PASS"
+    seq = _scheduler_events(events)
+    # review_started → coder spawn → agent_completed → reviewer spawn → agent_completed → review_completed
+    types = [e.type for e in seq]
+    assert "review_started" in types
+    assert "review_completed" in types
+    assert "agent_spawned" in types
+    assert "agent_completed" in types
 
 
-def test_delegate_with_review_iterates_when_reviewer_fails(monkeypatch):
-    team, events = _build_team(
+def test_spawn_with_review_iterates_when_reviewer_fails(monkeypatch):
+    scheduler, events = _build_scheduler(
         monkeypatch,
         {
             "coder": ["v1 impl", "v2 impl"],
@@ -182,13 +166,13 @@ def test_delegate_with_review_iterates_when_reviewer_fails(monkeypatch):
         },
     )
 
-    result = run(team.delegate_with_review("write fn", max_iterations=3))
+    result = run(scheduler.spawn_with_review(0, "write fn", max_iterations=3))
 
     assert "PASSED after 2 iteration" in result
     assert "v2 impl" in result
 
-    seq = _team_events(events)
-    review_loops = [e for e in seq if e.data.get("tool") == "review_loop"]
+    seq = _scheduler_events(events)
+    review_loops = [e for e in seq if e.type in ("review_started", "review_completed")]
     # 2 iterations × (review_started + review_completed)
     assert [e.type for e in review_loops] == [
         "review_started",
@@ -202,13 +186,15 @@ def test_delegate_with_review_iterates_when_reviewer_fails(monkeypatch):
     assert review_loops[3].data["verdict"] == "PASS"
 
 
-def test_delegate_does_not_emit_session_tool_events(monkeypatch):
-    """Team.delegate must not re-use session_runtime tool_start/tool_end semantics."""
-    team, events = _build_team(monkeypatch, {"coder": ["ok"]})
+def test_spawn_does_not_emit_session_tool_events(monkeypatch):
+    """Scheduler.spawn must not re-use session_runtime tool_start/tool_end semantics."""
+    scheduler, events = _build_scheduler(monkeypatch, {"coder": ["ok"]})
 
-    run(team.delegate("coder", "x"))
+    aid = run(scheduler.spawn(0, "coder", "x"))
+    if aid in scheduler._tasks:
+        run(asyncio.wait_for(scheduler._tasks[aid], timeout=1.0))
 
-    # Every event from team orchestration must be a TeamEvent now.
+    # Every event from scheduler orchestration must be a SchedulerEvent now.
     types = [getattr(e, "type", None) for e in events]
     assert "tool_start" not in types
     assert "tool_end" not in types

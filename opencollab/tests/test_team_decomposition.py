@@ -1,37 +1,36 @@
-"""Unit tests for the extracted Team submodules."""
+"""Unit tests for the extracted Scheduler submodules."""
 
 from __future__ import annotations
 
 import asyncio
 import inspect
 
-from opencollab.application.tool_runtime import ToolRuntime
-from opencollab.bootstrap.container import build_workspace_safety_policy
 from opencollab.adapters.env import LocalEnvironment
-from opencollab.application.event_bus import EventBus
-from opencollab.domain.team import split_budget
-from opencollab.application import team as orchestrator_mod
-from opencollab.adapters.tools import delegation as delegation_mod
-from opencollab.adapters.tools.delegation import DelegateTaskTool, DelegateWithReviewTool
-from opencollab.bootstrap.container import TeammateConfig, build_teammate_session
 from opencollab.adapters.safety import SandboxInterceptor
+from opencollab.adapters.tools import spawn as spawn_mod
+from opencollab.adapters.tools.spawn import SpawnAgentTool, SpawnWithReviewTool
+from opencollab.application import scheduler as scheduler_mod
+from opencollab.application.event_bus import EventBus
+from opencollab.application.tool_runtime import ToolRuntime
+from opencollab.bootstrap.container import TeammateConfig, build_teammate_session, build_workspace_safety_policy
+from opencollab.domain.scheduler import split_budget
 
 
 def run(coro):
     return asyncio.run(coro)
 
 
-class FakeTeam:
+class FakeScheduler:
     def __init__(self):
-        self.delegate_calls = []
+        self.spawn_calls = []
         self.review_calls = []
 
-    async def delegate(self, role, task, context=""):
-        self.delegate_calls.append((role, task, context))
-        return f"delegated {role}: {task} [{context}]"
+    async def spawn(self, parent_aid, role, task, context=""):
+        self.spawn_calls.append((parent_aid, role, task, context))
+        return 42  # return a fake aid
 
-    async def delegate_with_review(self, task, context="", max_iterations=3):
-        self.review_calls.append((task, context, max_iterations))
+    async def spawn_with_review(self, parent_aid, task, context="", max_iterations=3):
+        self.review_calls.append((parent_aid, task, context, max_iterations))
         return f"reviewed {task} [{context}] x{max_iterations}"
 
 
@@ -117,10 +116,10 @@ def test_build_teammate_session_without_factory_does_not_build_safety_policy(tmp
     assert session.tool_execution.safety_policy is None
 
 
-def test_delegate_task_tool_uses_runtime_native_execution():
-    team = FakeTeam()
-    tool = DelegateTaskTool(team)
-    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+def test_spawn_agent_tool_uses_runtime_native_execution():
+    scheduler = FakeScheduler()
+    tool = SpawnAgentTool(scheduler)
+    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None, aid=0)
 
     result = run(
         tool.execute_with_runtime(
@@ -129,15 +128,15 @@ def test_delegate_task_tool_uses_runtime_native_execution():
         )
     )
 
-    assert result == "delegated coder: implement [ctx]"
-    assert team.delegate_calls == [("coder", "implement", "ctx")]
-    assert "execute" not in DelegateTaskTool.__dict__
+    assert "Spawned agent 42 (coder)" in result
+    assert scheduler.spawn_calls == [(0, "coder", "implement", "ctx")]
+    assert "execute" not in SpawnAgentTool.__dict__
 
 
-def test_delegate_with_review_tool_uses_runtime_native_execution():
-    team = FakeTeam()
-    tool = DelegateWithReviewTool(team)
-    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+def test_spawn_with_review_tool_uses_runtime_native_execution():
+    scheduler = FakeScheduler()
+    tool = SpawnWithReviewTool(scheduler)
+    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None, aid=0)
 
     result = run(
         tool.execute_with_runtime(
@@ -147,13 +146,13 @@ def test_delegate_with_review_tool_uses_runtime_native_execution():
     )
 
     assert result == "reviewed change code [ctx] x2"
-    assert team.review_calls == [("change code", "ctx", 2)]
-    assert "execute" not in DelegateWithReviewTool.__dict__
+    assert scheduler.review_calls == [(0, "change code", "ctx", 2)]
+    assert "execute" not in SpawnWithReviewTool.__dict__
 
 
-def test_team_modules_do_not_import_bootstrap_safety():
-    team_source = inspect.getsource(orchestrator_mod)
-    delegation_source = inspect.getsource(delegation_mod)
+def test_scheduler_modules_do_not_import_bootstrap_safety():
+    scheduler_source = inspect.getsource(scheduler_mod)
+    spawn_source = inspect.getsource(spawn_mod)
 
-    assert "opencollab.bootstrap.safety" not in team_source
-    assert "opencollab.bootstrap.safety" not in delegation_source
+    assert "opencollab.bootstrap.safety" not in scheduler_source
+    assert "opencollab.bootstrap.safety" not in spawn_source

@@ -18,8 +18,8 @@ from typing import Any
 
 from filelock import FileLock
 
-from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.adapters.tools.base import Tool
+from opencollab.application.tool_runtime import ToolRuntime
 
 
 class FileReadTool(Tool):

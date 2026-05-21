@@ -17,7 +17,7 @@ from opencollab.application.tool_dispatch import execute_tool_with_runtime
 from opencollab.application.tool_runtime import ToolRuntime
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionState
-from opencollab.domain.tools import LoopDetection, MAX_CALL_HASH_WINDOW, ToolProcessingResult
+from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, LoopDetection, ToolProcessingResult
 
 # Loop detection (ref: opencode doom_loop detection — 3 identical calls)
 MAX_SIMILAR_CALLS = 3
@@ -32,19 +32,19 @@ class ToolExecutionEventFactory:
     tool_end: Callable[[str, float], Any]
 
 
-def default_tool_execution_event_factory() -> ToolExecutionEventFactory:
+def default_tool_execution_event_factory(aid: int = -1) -> ToolExecutionEventFactory:
     return ToolExecutionEventFactory(
         loop_detected=lambda tool, count: SessionEvent(
             type="loop_detected",
-            data={"tool": tool, "count": count},
+            data={"tool": tool, "count": count, "aid": aid},
         ),
         tool_start=lambda tool, args: SessionEvent(
             type="tool_start",
-            data={"tool": tool, "args": args},
+            data={"tool": tool, "args": args, "aid": aid},
         ),
         tool_end=lambda tool, latency: SessionEvent(
             type="tool_end",
-            data={"tool": tool, "latency": latency},
+            data={"tool": tool, "latency": latency, "aid": aid},
         ),
     )
 
@@ -75,7 +75,7 @@ class ToolExecutionUseCase:
         self.environment = environment
         self.state = state
         self.event_publisher = event_publisher
-        self.event_factory = event_factory or default_tool_execution_event_factory()
+        self.event_factory = event_factory or default_tool_execution_event_factory(state.aid)
         self.tracer = tracer
         self.permission_policy = permission_policy
         self.safety_policy = safety_policy
@@ -175,6 +175,7 @@ class ToolExecutionUseCase:
             environment=self.environment,
             safety_policy=self.safety_policy,
             permission_policy=self.permission_policy,
+            aid=self.state.aid,
         )
 
     def truncate_tool_result(self, result: str) -> str:

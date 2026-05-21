@@ -1,21 +1,20 @@
 import asyncio
 import copy
 
-import pytest
-
 from opencollab.adapters.llm import LLMResponse, Usage
+from opencollab.adapters.storage import SessionStore
 from opencollab.application.compaction import COMPACTION_KEEP_RECENT
-from opencollab.domain.compaction import CompactResult
 from opencollab.application.event_bus import EventBus
 from opencollab.application.tool_execution import (
-    CallbackPermissionPolicy,
     MAX_TOOL_OUTPUT_CHARS,
+    CallbackPermissionPolicy,
 )
-from opencollab.domain.tools import ToolProcessingResult
-from opencollab.bootstrap import build_session as Session, snapshot_session, load_session
-from opencollab.adapters.storage import SessionStore
+from opencollab.bootstrap import build_session as Session
+from opencollab.bootstrap import load_session, snapshot_session
+from opencollab.domain.compaction import CompactResult
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionPhase
+from opencollab.domain.tools import ToolProcessingResult
 
 
 def run(coro):
@@ -269,7 +268,7 @@ def test_run_loop_cancellation_appends_interruption_and_emits_error():
     assert fake_llm.calls == []
     assert session.messages[-1] == {"role": "system", "content": "[Session interrupted by user]"}
     assert session.is_done is False
-    assert [(event.type, event.data) for event in events] == [("error", {"reason": "cancelled"})]
+    assert [(event.type, event.data) for event in events] == [("error", {"reason": "cancelled", "aid": -1})]
 
 
 def test_budget_exceeded_stops_before_llm_call_and_emits_error():
@@ -292,7 +291,7 @@ def test_budget_exceeded_stops_before_llm_call_and_emits_error():
         "role": "system",
         "content": "[Budget exceeded: 10 tokens used. Session stopped.]",
     }
-    assert [(event.type, event.data) for event in events] == [("error", {"reason": "budget_exceeded"})]
+    assert [(event.type, event.data) for event in events] == [("error", {"reason": "budget_exceeded", "aid": -1})]
 
 
 def test_compaction_trigger_summarizes_older_messages_then_runs_step():
@@ -609,7 +608,7 @@ def test_loop_detection_skips_third_identical_tool_call():
         ),
     }]
     assert [(event.type, event.data) for event in events if event.type == "loop_detected"] == [
-        ("loop_detected", {"tool": "fake_tool", "count": 3})
+        ("loop_detected", {"tool": "fake_tool", "count": 3, "aid": -1})
     ]
 
 
@@ -738,9 +737,9 @@ def test_session_runtime_config_desync_after_mutating_env_and_max_steps():
     assert session.runner.max_steps == old_max_steps
 
 
-def test_team_lead_session_runtime_uses_constructor_env_and_max_steps(monkeypatch):
+def test_scheduler_lead_session_runtime_uses_constructor_env_and_max_steps(monkeypatch):
+    from opencollab.application.scheduler import Scheduler
     from opencollab.bootstrap import container as session_module
-    from opencollab.application.team import Team
 
     monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
 
@@ -748,79 +747,93 @@ def test_team_lead_session_runtime_uses_constructor_env_and_max_steps(monkeypatc
     lead_max_steps = 7
     event_bus, session_factory = fake_team_session_factory()
 
-    team = Team(
-        workspace=".",
-        model="fake-model",
-        provider="fake-provider",
-        api_key="fake-key",
-        lead_env=lead_env,
-        lead_tools=[],
-        lead_max_steps=lead_max_steps,
-        use_worktrees=False,
-        event_bus=event_bus,
-        worktree_pool=fake_worktree_pool(),
-        session_factory=session_factory,
+    lead_session = session_factory.build_lead_session(
+        agent=FakeAgent(),
+        env=lead_env,
+        tracer=None,
+        max_budget_tokens=100_000,
+        event_sink=event_bus,
+        permission_policy=None,
+        safety_policy=None,
+        repo_map=None,
+        max_steps=lead_max_steps,
     )
 
-    assert team.lead_session.env is lead_env
-    assert team.lead_session.tool_execution.environment is lead_env
-    assert team.lead_session.max_steps == lead_max_steps
-    assert team.lead_session.runner.max_steps == lead_max_steps
+    scheduler = Scheduler(
+        session_factory=session_factory,
+        worktree_pool=fake_worktree_pool(),
+        event_sink=event_bus,
+    )
+    scheduler.register_lead(lead_session)
+
+    assert scheduler._lead_session.env is lead_env
+    assert scheduler._lead_session.tool_execution.environment is lead_env
+    assert scheduler._lead_session.max_steps == lead_max_steps
+    assert scheduler._lead_session.runner.max_steps == lead_max_steps
 
 
-def test_team_lead_session_gets_workspace_safety_policy(tmp_path, monkeypatch):
-    from opencollab.bootstrap.container import build_workspace_safety_policy
-    from opencollab.bootstrap import container as session_module
-    from opencollab.application.team import Team
-    from opencollab.adapters.safety import SandboxInterceptor
+def test_scheduler_lead_session_gets_workspace_safety_policy(tmp_path, monkeypatch):
     from opencollab.adapters.env import LocalEnvironment
+    from opencollab.adapters.safety import SandboxInterceptor
+    from opencollab.application.scheduler import Scheduler
+    from opencollab.bootstrap import container as session_module
+    from opencollab.bootstrap.container import build_workspace_safety_policy
 
     monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
     event_bus, session_factory = fake_team_session_factory(
         safety_policy_factory=build_workspace_safety_policy,
     )
 
-    team = Team(
-        workspace=str(tmp_path),
-        model="fake-model",
-        provider="fake-provider",
-        api_key="fake-key",
-        lead_env=LocalEnvironment(str(tmp_path)),
-        lead_tools=[],
-        use_worktrees=False,
-        safety_policy_factory=build_workspace_safety_policy,
-        event_bus=event_bus,
-        worktree_pool=fake_worktree_pool(),
-        session_factory=session_factory,
+    lead_session = session_factory.build_lead_session(
+        agent=FakeAgent(),
+        env=LocalEnvironment(str(tmp_path)),
+        tracer=None,
+        max_budget_tokens=100_000,
+        event_sink=event_bus,
+        permission_policy=None,
+        safety_policy=build_workspace_safety_policy(LocalEnvironment(str(tmp_path))),
+        repo_map=None,
     )
 
-    policy = team.lead_session.tool_execution.safety_policy
+    scheduler = Scheduler(
+        session_factory=session_factory,
+        worktree_pool=fake_worktree_pool(),
+        event_sink=event_bus,
+    )
+    scheduler.register_lead(lead_session)
+
+    policy = scheduler._lead_session.tool_execution.safety_policy
     assert isinstance(policy, SandboxInterceptor)
     assert policy.root == str(tmp_path.resolve())
 
 
-def test_direct_team_without_safety_factory_does_not_build_safety_policy(tmp_path, monkeypatch):
-    from opencollab.bootstrap import container as session_module
+def test_direct_scheduler_without_safety_factory_does_not_build_safety_policy(tmp_path, monkeypatch):
     from opencollab.adapters.env import LocalEnvironment
-    from opencollab.application.team import Team
+    from opencollab.application.scheduler import Scheduler
+    from opencollab.bootstrap import container as session_module
 
     monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
     event_bus, session_factory = fake_team_session_factory()
 
-    team = Team(
-        workspace=str(tmp_path),
-        model="fake-model",
-        provider="fake-provider",
-        api_key="fake-key",
-        lead_env=LocalEnvironment(str(tmp_path)),
-        lead_tools=[],
-        use_worktrees=False,
-        event_bus=event_bus,
-        worktree_pool=fake_worktree_pool(),
-        session_factory=session_factory,
+    lead_session = session_factory.build_lead_session(
+        agent=FakeAgent(),
+        env=LocalEnvironment(str(tmp_path)),
+        tracer=None,
+        max_budget_tokens=100_000,
+        event_sink=event_bus,
+        permission_policy=None,
+        safety_policy=None,
+        repo_map=None,
     )
 
-    assert team.lead_session.tool_execution.safety_policy is None
+    scheduler = Scheduler(
+        session_factory=session_factory,
+        worktree_pool=fake_worktree_pool(),
+        event_sink=event_bus,
+    )
+    scheduler.register_lead(lead_session)
+
+    assert scheduler._lead_session.tool_execution.safety_policy is None
 
 
 def test_save_and_load_round_trip_only_messages(tmp_path):

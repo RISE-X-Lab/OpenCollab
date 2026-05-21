@@ -10,12 +10,13 @@ from __future__ import annotations
 import asyncio
 import os
 
-from opencollab.bootstrap import build_session as Session, snapshot_session, load_session
+from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.compaction import ContextCompactionUseCase
 from opencollab.application.session_run import SessionRunUseCase
-from opencollab.adapters.storage import SessionStore
 from opencollab.application.tool_execution import ToolExecutionUseCase
+from opencollab.bootstrap import build_session as Session
+from opencollab.bootstrap import load_session, snapshot_session
 
 
 def run(coro):

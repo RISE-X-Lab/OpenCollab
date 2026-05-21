@@ -8,28 +8,25 @@ Ref:
 
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.spinner import Spinner
 from rich.text import Text
-from rich.table import Table
 
-from opencollab.domain.events import SessionRuntimeEvent, TeamEvent
+from opencollab.domain.events import SchedulerEvent
 
 
 class TUI:
-    """Terminal UI that renders runtime + team events in real-time.
+    """Terminal UI that renders runtime + scheduler events in real-time.
 
     Consumes the event stream from Session (subscribed to its event bus)
     and renders streaming text, tool execution spinners, and status updates.
     The single ``event_handler`` accepts both ``SessionRuntimeEvent`` and
-    ``TeamEvent`` and dispatches to the appropriate handler so that team
-    delegation/review lifecycle no longer overloads session tool events.
+    ``SchedulerEvent`` and dispatches to the appropriate handler so that the
+    spawn/review lifecycle no longer overloads session tool events.
     """
 
     def __init__(self, console: Console | None = None):
@@ -45,17 +42,19 @@ class TUI:
     def event_handler(self, event: Any) -> None:
         """Synchronous event handler — subscribed to the Session event bus.
 
-        Dispatches by the event class so session-runtime and team-orchestration
+        Dispatches by the event class so session-runtime and scheduler-orchestration
         events stay in separate, narrow handlers without losing the single
         bus fan-out the runtime currently relies on.
         """
-        if isinstance(event, TeamEvent):
-            self._handle_team_event(event)
+        if isinstance(event, SchedulerEvent):
+            self._handle_scheduler_event(event)
             return
         self._handle_session_event(event)
 
     def _handle_session_event(self, event: Any) -> None:
         etype = event.type
+        aid = event.data.get("aid", -1)
+        agent_label = "Lead" if aid == 0 else f"A{aid}"
 
         if etype == "text_delta":
             self._clear_thinking_status()
@@ -68,20 +67,19 @@ class TUI:
             tool = event.data.get("tool", "?")
             role = event.data.get("role", "")
             args = event.data.get("args", {})
-            if not role and tool in ("delegate_task", "delegate_with_review") and isinstance(args, dict):
+            if not role and tool in ("spawn_agent", "spawn_with_review") and isinstance(args, dict):
                 role = str(args.get("role", ""))
-            label = f"{role}:{tool}" if role else tool
+            label = f"{agent_label}:{tool}"
             self._active_tools[label] = event.data
             preview = self._args_preview(args)
             self._append_activity(f"[cyan]{label} started[/cyan]{preview}")
-            if tool == "delegate_task" and role:
-                self._emit_status(f"[cyan]Lead delegated to {role}[/cyan]")
+            if tool == "spawn_agent" and role:
+                self._emit_status(f"[cyan]{agent_label} spawned {role}[/cyan]")
             self._refresh()
 
         elif etype == "tool_end":
             tool = event.data.get("tool", "?")
-            role = event.data.get("role", "")
-            label = f"{role}:{tool}" if role else tool
+            label = f"{agent_label}:{tool}"
             self._active_tools.pop(label, None)
             latency = event.data.get("latency", 0.0)
             self._append_activity(f"[green]{label} finished[/green] ({latency:.1f}s)")
@@ -90,7 +88,7 @@ class TUI:
         elif etype == "step_start":
             self._step = event.data.get("step", 0)
             self._clear_thinking_status()
-            self._emit_status(f"[dim]Lead thinking... step {self._step}[/dim]")
+            self._emit_status(f"[dim]{agent_label} thinking... step {self._step}[/dim]")
 
         elif etype == "compaction":
             self._emit_status("[dim]Context compacted[/dim]")
@@ -107,29 +105,41 @@ class TUI:
             reason = event.data.get("reason", "unknown")
             self._emit_status(f"[red]Error: {reason}[/red]")
 
-    def _handle_team_event(self, event: TeamEvent) -> None:
+    def _handle_scheduler_event(self, event: SchedulerEvent) -> None:
         etype = event.type
+        aid = event.data.get("aid", -1)
+        role = event.data.get("role", "")
+        agent_label = f"A{aid}" if aid != 0 else "Lead"
 
-        if etype == "delegation_started":
+        if etype == "agent_spawned":
             self._clear_thinking_status()
-            role = event.data.get("role", "")
-            task = event.data.get("task", "")
-            label = f"{role}:delegate" if role else "delegate"
+            label = f"{agent_label}:spawn"
             self._active_tools[label] = dict(event.data)
             self._append_activity(f"[cyan]{label} started[/cyan]")
             if role:
-                suffix = f" - {task}" if task else ""
-                self._emit_status(f"[cyan]Teammate {role} started[/cyan]{suffix}")
+                self._emit_status(f"[cyan]Agent {agent_label} ({role}) spawned[/cyan]")
             self._refresh()
 
-        elif etype == "delegation_completed":
-            role = event.data.get("role", "")
-            label = f"{role}:delegate" if role else "delegate"
+        elif etype == "agent_completed":
+            label = f"{agent_label}:spawn"
             self._active_tools.pop(label, None)
             latency = event.data.get("latency", 0.0)
             self._append_activity(f"[green]{label} finished[/green] ({latency:.1f}s)")
             if role:
-                self._emit_status(f"[green]Teammate {role} finished[/green] ({latency:.1f}s)")
+                self._emit_status(f"[green]Agent {agent_label} ({role}) completed[/green] ({latency:.1f}s)")
+            self._refresh()
+
+        elif etype == "agent_failed":
+            label = f"{agent_label}:spawn"
+            self._active_tools.pop(label, None)
+            error = event.data.get("error", "unknown")
+            self._append_activity(f"[red]{label} failed[/red]: {error}")
+            self._refresh()
+
+        elif etype == "agent_cancelled":
+            label = f"{agent_label}:spawn"
+            self._active_tools.pop(label, None)
+            self._append_activity(f"[yellow]{label} cancelled[/yellow]")
             self._refresh()
 
         elif etype == "review_started":
@@ -182,9 +192,9 @@ class TUI:
         return ""
 
     def _clear_thinking_status(self) -> None:
-        """Remove transient lead-thinking hint before adding fresher progress."""
+        """Remove transient thinking hints before adding fresher progress."""
         self._status_lines = [
-            s for s in self._status_lines if not s.plain.startswith("Lead thinking...")
+            s for s in self._status_lines if "thinking..." not in s.plain.lower()
         ]
 
     def _refresh(self) -> None:

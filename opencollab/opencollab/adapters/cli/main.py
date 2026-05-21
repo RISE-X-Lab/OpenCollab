@@ -1,4 +1,9 @@
-"""CLI entry point — Typer-based with three modes: chat, team, eval.
+"""CLI entry point — Typer-based.
+
+Two surfaces:
+- the default (no subcommand): one unified interactive agent. Agent 0 is the
+  first session and can spawn child agents via the Scheduler.
+- ``eval``: headless batch evaluation for benchmarks (SWE-bench, etc.).
 
 Ref:
 - kimi-cli: Typer app with callback, async main, session management
@@ -90,51 +95,34 @@ def _resolve_config(workspace: str, model: str | None, provider: str | None,
     }
 
 
-@app.command()
-def chat(
-    model: Optional[str] = typer.Option(None, "--model", "-m", help="LLM model (default from config)"),
-    provider: Optional[str] = typer.Option(None, "--provider", "-p", help="LLM provider (default from config or openai)"),
-    api_key: Optional[str] = typer.Option(None, "--api-key", help="API key (default from config)"),
-    base_url: Optional[str] = typer.Option(None, "--base-url", help="API base URL (default from config)"),
-    workspace: str = typer.Option(".", "--workspace", "-w", help="Working directory"),
-    budget: Optional[int] = typer.Option(None, "--budget", help="Max token budget (default from config or 200000)"),
-    session_file: Optional[str] = typer.Option(None, "--session", "-s", help="Resume from session JSONL"),
-    trace: bool = typer.Option(False, "--trace", help="Enable trajectory recording"),
-    yolo: bool = typer.Option(False, "--yolo", help="Auto-approve risky commands"),
-):
-    """Interactive single-agent chat mode (default)."""
-    cfg = _resolve_config(workspace, model, provider, api_key, base_url, budget)
-    if _missing_api_key(cfg["provider"], cfg["api_key"]):
-        _print_missing_key_hint(cfg["provider"])
-        raise typer.Exit(code=1)
-
-    asyncio.run(_chat(workspace=workspace, cfg=cfg, session_file=session_file,
-                      trace=trace, yolo=yolo))
-
-
-@app.command()
-def team(
+@app.callback(invoke_without_command=True)
+def main_callback(
+    ctx: typer.Context,
     model: Optional[str] = typer.Option(None, "--model", "-m", help="LLM model (default from config)"),
     provider: Optional[str] = typer.Option(None, "--provider", "-p", help="LLM provider (default from config or openai)"),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="API key (default from config)"),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="API base URL (default from config)"),
     workspace: str = typer.Option(".", "--workspace", "-w", help="Working directory"),
     budget: Optional[int] = typer.Option(None, "--budget", help="Max token budget (default from config or 500000)"),
+    session_file: Optional[str] = typer.Option(None, "--session", "-s", help="Resume from session JSONL"),
     trace: bool = typer.Option(False, "--trace", help="Enable trajectory recording"),
     yolo: bool = typer.Option(False, "--yolo", help="Auto-approve risky commands"),
     no_worktrees: bool = typer.Option(False, "--no-worktrees", help="Disable git worktree isolation"),
 ):
-    """Multi-agent team mode with Lead + Teammates."""
+    """Interactive agent. Agent 0 works directly and can spawn child agents."""
+    if ctx.invoked_subcommand is not None:
+        return
+
     cfg = _resolve_config(workspace, model, provider, api_key, base_url, budget)
     if _missing_api_key(cfg["provider"], cfg["api_key"]):
         _print_missing_key_hint(cfg["provider"])
         raise typer.Exit(code=1)
 
-    # Team mode gets higher default budget
+    # Agent 0 can spawn, so default to the higher budget.
     if budget is None:
         cfg["budget"] = max(cfg["budget"], 500_000)
-    asyncio.run(_team(workspace=workspace, cfg=cfg, trace=trace, yolo=yolo,
-                      use_worktrees=not no_worktrees))
+    asyncio.run(_run(workspace=workspace, cfg=cfg, session_file=session_file,
+                     trace=trace, yolo=yolo, use_worktrees=not no_worktrees))
 
 
 @app.command(name="eval")
@@ -190,10 +178,10 @@ async def _repl_loop(tui: Any, handle_turn) -> None:
             break
 
 
-async def _chat(workspace: str, cfg: dict, session_file: str | None,
-                 trace: bool, yolo: bool):
-    from opencollab.bootstrap import build_chat_session, build_runtime_context
+async def _run(workspace: str, cfg: dict, session_file: str | None,
+               trace: bool, yolo: bool, use_worktrees: bool):
     from opencollab.adapters.tui import TUI, TuiEventSink, TuiPermissionPolicy
+    from opencollab.bootstrap import build_runtime_context, build_scheduler
 
     tui = TUI(console)
     tui.print_welcome()
@@ -206,85 +194,43 @@ async def _chat(workspace: str, cfg: dict, session_file: str | None,
         workspace, cfg, trace=trace,
         event_sink=TuiEventSink(tui),
         permission_policy=permission_policy,
+        run_id_prefix="scheduler-",
     )
-
+    scheduler = build_scheduler(
+        ctx, use_worktrees=use_worktrees, interactive=True,
+        session_file=session_file, auto_save=True,
+    )
+    lead = scheduler.lead_session
     if session_file and os.path.exists(session_file):
-        session = build_chat_session(ctx, session_file=session_file)
         console.print(f"[dim]Restored session from {session_file}[/dim]")
-    else:
-        session = build_chat_session(ctx)
-        if session.auto_save_path:
-            console.print(f"[dim]Session auto-saving to {session.auto_save_path}[/dim]")
+    elif lead.auto_save_path:
+        console.print(f"[dim]Session auto-saving to {lead.auto_save_path}[/dim]")
 
     cancel_event = asyncio.Event()
 
     async def turn(line: str) -> None:
         if line.lower() == "/save":
             path = f"session-{uuid.uuid4().hex[:8]}.jsonl"
-            session.save(path)
+            lead.save(path)
             console.print(f"[dim]Session saved to {path}[/dim]")
             return
         cancel_event.clear()
         tui.reset()
         tui.start_live()
         try:
-            await session.add_user_message(line)
-            await session.run_loop(cancel_event=cancel_event)
+            await scheduler.run(line)
         except KeyboardInterrupt:
             cancel_event.set()
         finally:
             tui.stop_live()
-            tui.print_stats(session.used_tokens, session.step_count)
+            tui.print_stats(scheduler.used_tokens, lead.step_count)
 
     await _repl_loop(tui, turn)
 
+    await scheduler.cleanup()
     if ctx.tracer:
         ctx.tracer.close()
         console.print(f"[dim]Trajectory saved to {ctx.tracer.path}[/dim]")
-    console.print("[dim]Goodbye.[/dim]")
-
-
-async def _team(workspace: str, cfg: dict, trace: bool, yolo: bool,
-                 use_worktrees: bool):
-    from opencollab.bootstrap import build_runtime_context, build_team
-    from opencollab.adapters.tui import TUI, TuiEventSink, TuiPermissionPolicy
-
-    tui = TUI(console)
-    tui.print_welcome()
-    console.print("[bold blue]Team mode[/bold blue] — Lead (Planner) + Specialists (Coder + Tester)\n")
-
-    permission_policy = None
-    if not yolo:
-        permission_policy = TuiPermissionPolicy(render=tui, read_line=_read_line)
-
-    ctx = build_runtime_context(
-        workspace, cfg, trace=trace,
-        event_sink=TuiEventSink(tui),
-        permission_policy=permission_policy,
-        run_id_prefix="team-",
-    )
-    team_instance = build_team(ctx, use_worktrees=use_worktrees, interactive=True)
-    cancel_event = asyncio.Event()
-
-    async def turn(line: str) -> None:
-        tui.reset()
-        tui.start_live()
-        try:
-            await team_instance.run(line)
-        except KeyboardInterrupt:
-            cancel_event.set()
-        finally:
-            tui.stop_live()
-            tui.print_stats(
-                team_instance.used_tokens,
-                team_instance.lead_session.step_count,
-            )
-
-    await _repl_loop(tui, turn)
-
-    await team_instance.cleanup()
-    if ctx.tracer:
-        ctx.tracer.close()
     console.print("[dim]Goodbye.[/dim]")
 
 

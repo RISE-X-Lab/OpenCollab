@@ -2,12 +2,12 @@ import os
 
 import pytest
 
-from opencollab.bootstrap import (
-    build_chat_session,
-    build_team,
-    build_runtime_context,
-)
 from opencollab.adapters.safety import SandboxInterceptor
+from opencollab.application.team_prompts import LEAD_SYSTEM_PROMPT
+from opencollab.bootstrap import (
+    build_runtime_context,
+    build_scheduler,
+)
 
 
 def _cfg(**overrides):
@@ -22,38 +22,57 @@ def _cfg(**overrides):
     return base
 
 
-def test_build_chat_session_uses_repo_map_and_tools(tmp_path):
+def test_lead_prompt_references_spawn_tools_not_delegate():
+    # Guard against the prompt/tool mismatch: agent 0 is given spawn_agent /
+    # spawn_with_review, so its prompt must name those, not the removed
+    # delegate_task / delegate_with_review.
+    assert "spawn_agent" in LEAD_SYSTEM_PROMPT
+    assert "spawn_with_review" in LEAD_SYSTEM_PROMPT
+    assert "delegate_task" not in LEAD_SYSTEM_PROMPT
+    assert "delegate_with_review" not in LEAD_SYSTEM_PROMPT
+
+
+def test_build_scheduler_lead_has_repo_map_and_spawn_tools(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / "README.md").write_text("hi")
 
-    ctx = build_runtime_context(
-        str(workspace),
-        _cfg(),
-        trace=False,
-    )
-    session = build_chat_session(ctx)
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    scheduler = build_scheduler(ctx, use_worktrees=False, interactive=True)
+    lead = scheduler.lead_session
 
-    system_message = session.messages[0]
+    assert lead.tracer is ctx.tracer  # propagated (None when trace=False)
+    system_message = lead.messages[0]
     assert system_message["role"] == "system"
     assert "Project Structure:" in system_message["content"]
 
-    tool_names = {t.name for t in session.agent.tools}
-    assert tool_names == {"bash", "file_read", "file_write", "grep", "ask_user"}
+    tool_names = {t.name for t in lead.agent.tools}
+    assert tool_names == {
+        "bash", "file_read", "file_write", "grep",
+        "spawn_agent", "spawn_with_review", "ask_user",
+    }
 
 
-def test_build_chat_session_wires_workspace_safety_policy(tmp_path):
+def test_build_scheduler_lead_omits_ask_user_when_headless(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
 
-    ctx = build_runtime_context(
-        str(workspace),
-        _cfg(),
-        trace=False,
-    )
-    session = build_chat_session(ctx, auto_save=False)
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    scheduler = build_scheduler(ctx, use_worktrees=False, interactive=False)
 
-    policy = session.tool_execution.safety_policy
+    tool_names = {t.name for t in scheduler.lead_session.agent.tools}
+    assert "ask_user" not in tool_names
+    assert {"spawn_agent", "spawn_with_review"} <= tool_names
+
+
+def test_build_scheduler_wires_lead_safety_policy_from_bootstrap(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    scheduler = build_scheduler(ctx, use_worktrees=False, interactive=False)
+
+    policy = scheduler.lead_session.tool_execution.safety_policy
     assert isinstance(policy, SandboxInterceptor)
     assert policy.root == str(workspace.resolve())
     assert policy.check_path("inside.txt").startswith(str(workspace.resolve()))
@@ -61,56 +80,19 @@ def test_build_chat_session_wires_workspace_safety_policy(tmp_path):
         policy.check_path("/etc/passwd")
 
 
-def test_build_team_wires_lead_safety_policy_from_bootstrap(tmp_path):
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-
-    ctx = build_runtime_context(
-        str(workspace),
-        _cfg(),
-        trace=False,
-    )
-    team = build_team(ctx, use_worktrees=False, interactive=False)
-
-    policy = team.lead_session.tool_execution.safety_policy
-    assert isinstance(policy, SandboxInterceptor)
-    assert policy.root == str(workspace.resolve())
-
-
-def test_build_chat_session_wires_event_sink_and_tracer_from_context(tmp_path):
-    workspace = tmp_path / "ws"
-    workspace.mkdir()
-
-    seen: list = []
-
-    async def sink(event):
-        seen.append(event)
-
-    ctx = build_runtime_context(
-        str(workspace),
-        _cfg(),
-        trace=False,
-        event_sink=sink,
-    )
-    session = build_chat_session(ctx)
-
-    assert session.tracer is ctx.tracer  # propagated (None when trace=False)
-    # The injected sink must be one of the bus subscribers.
-    assert sink in list(session.event_bus._targets)
-
-
-def test_build_chat_session_auto_save_path_lands_under_workspace(tmp_path):
+def test_build_scheduler_lead_auto_save_path_lands_under_workspace(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
 
     ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
-    session = build_chat_session(ctx)
+    scheduler = build_scheduler(ctx, use_worktrees=False, interactive=False)
+    lead = scheduler.lead_session
 
-    assert session.auto_save_path is not None
-    assert session.auto_save_path.startswith(
+    assert lead.auto_save_path is not None
+    assert lead.auto_save_path.startswith(
         os.path.join(str(workspace.resolve()), ".opencollab", "sessions")
     )
-    assert os.path.exists(session.auto_save_path)
+    assert os.path.exists(lead.auto_save_path)
 
 
 def test_build_runtime_context_resolves_workspace_and_tracer(tmp_path, monkeypatch):

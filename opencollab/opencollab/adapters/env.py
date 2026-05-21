@@ -17,9 +17,8 @@ import asyncio
 import os
 import shlex
 import shutil
-import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

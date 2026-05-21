@@ -3,8 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
-from opencollab.application.compaction import DEFAULT_COMPACTION_THRESHOLD
-from opencollab.application.compaction import ContextCompactionUseCase
+from opencollab.application.compaction import DEFAULT_COMPACTION_THRESHOLD, ContextCompactionUseCase
 from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import (
     EnvironmentPort,
@@ -18,8 +17,7 @@ from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import Agent
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
-from opencollab.domain.session import SessionPhase
-from opencollab.domain.session import SessionState
+from opencollab.domain.session import SessionPhase, SessionState
 
 
 class BudgetExceededError(Exception):

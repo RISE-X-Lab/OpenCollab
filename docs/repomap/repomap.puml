@@ -1,5 +1,5 @@
 @startuml opencollab_repomap_current
-title OpenCollab - Current Clean Architecture Dependency Map (2026-05-21)
+title OpenCollab - Current Clean Architecture Dependency Map (2026-05-22)
 
 skinparam componentStyle rectangle
 skinparam packageStyle rectangle
@@ -9,33 +9,36 @@ skinparam defaultFontName Helvetica
 
 ' ============================================================
 ' Snapshot of the actual repo. Remaining differences from
-' repomap-target.puml are intentional and tracked:
+' the target model are intentional and tracked:
 '   * adapters.llm is one LLMClient (not split OpenAI/Anthropic).
 '   * adapters.env keeps a separate WorktreePool adapter rather
 '     than folding worktree lifecycle into the env adapter.
-'   * TeamDelegationPort still mediates between the Delegation
-'     tool and the Team orchestrator.
 '   * app.session keeps a single Session facade rather than the
 '     RunSession/AddUserMessage/SnapshotSession split.
 ' Closed since the prior snapshot:
-'   * Bootstrap collapsed from 8 files to 2 (container + config).
-'   * The *Runner / *Processor / Compactor facades were removed;
-'     the *UseCase classes are now the only orchestrators.
-'   * The EventSink alias was deleted; EventPublisherPort is the
-'     single name for the publish surface.
+'   * Team -> Scheduler: the privileged "Lead wraps workers"
+'     model is gone. Scheduler owns all Session processes; the
+'     lead is just agent 0 (aid=0) in a ProcessTable of SCBs.
+'   * The two interactive CLI modes (chat, team) collapsed into
+'     one default entry; build_chat_session was removed.
+'   * delegate_task / delegate_with_review -> spawn_agent /
+'     spawn_with_review (children run in parallel via asyncio).
+'   * The TeamEvent / TeamDelegationPort / build_team back-compat
+'     aliases were deleted.
 ' ============================================================
 
 package "Frameworks / Drivers\n(no project policy)" as DRIVERS #FADBD8 {
   [Typer + prompt_toolkit + Rich] as DriverCLI
-  [OpenAI Python SDK] as DriverLLM
+  [OpenAI / Anthropic SDK] as DriverLLM
   [OS shell / filesystem] as DriverOS
   [git worktree] as DriverGit
   [JSONL files] as DriverStore
   [MCP servers] as DriverMCP
+  [asyncio] as DriverAsync
 }
 
 package "Interface Adapters" as ADAPTERS #FDEBD0 {
-  [adapters.cli.main\nchat / team / eval commands] as CliAdapter
+  [adapters.cli.main\ndefault agent + eval commands] as CliAdapter
   [adapters.tui\nTUI\nTuiEventSink\nTuiPermissionPolicy] as TuiAdapter
   [adapters.llm\nLLMClient\nestimate_messages_tokens] as LLMAdapter
   [adapters.env\nLocalEnvironment\nWorktreeEnvironment] as EnvAdapter
@@ -44,11 +47,11 @@ package "Interface Adapters" as ADAPTERS #FDEBD0 {
   [adapters.trace\nTracer] as TraceAdapter
   [adapters.repo_map\nget_repo_map] as RepoMapAdapter
   [adapters.safety\nSandboxInterceptor] as SafetyAdapter
-  [adapters.tools\nBash / FileRead / FileWrite / Grep\nAskUser / Mcp / Delegation] as ToolAdapters
+  [adapters.tools\nBash / FileRead / FileWrite / Grep\nAskUser / Mcp / Spawn] as ToolAdapters
 }
 
 package "Composition Root\n(bootstrap, 2 files)" as COMPOSITION #EBF5FB {
-  [bootstrap.container\nbuild_runtime_context\nbuild_session_runtime\nbuild_session / snapshot_session / load_session\nbuild_chat_session / build_team\nbuild_teammate_session\nDefaultSessionFactory\nbuild_default_tools\nbuild_workspace_safety_policy] as Container
+  [bootstrap.container\nbuild_runtime_context\nbuild_session_runtime\nbuild_session / snapshot_session / load_session\nbuild_scheduler\nbuild_teammate_session\nDefaultSessionFactory\nbuild_default_tools\nbuild_workspace_safety_policy] as Container
   [bootstrap.config\nload config + env] as Config
 }
 
@@ -58,7 +61,7 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   [app.compaction\nContextCompactionUseCase] as Compactor
   [app.tool_execution\nToolExecutionUseCase\nCallbackPermissionPolicy] as ToolExec
   [app.tool_runtime / tool_dispatch\nToolRuntime + execute_tool_with_runtime] as ToolRuntime
-  [app.team\nTeam (Lead + delegate / review)] as TeamUC
+  [app.scheduler\nScheduler (agent 0 + spawn,\nparallel via asyncio.create_task)] as SchedulerUC
   [app.autosave\nAutoSaveSubscriber] as Autosave
   [app.event_bus\nEventBus (fan-out)] as EventBus
 
@@ -74,16 +77,16 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   interface "ToolPort" as ToolPort
   interface "TokenEstimatorPort" as TokenPort
   interface "SessionFactoryPort" as SessionFactoryPort
-  interface "TeamDelegationPort" as TeamDelegationPort
+  interface "SchedulerPort" as SchedulerPort
 }
 
 package "Domain Layer\n(policy + state, no I/O)" as DOMAIN #ABEBC6 {
-  [domain.session\nSessionState\nSessionPhase] as SessionDomain
+  [domain.session\nSessionState (aid)\nSessionPhase (+ SCHEDULED)] as SessionDomain
   [domain.agent\nAgent] as AgentDomain
   [domain.tools\nToolSpec\nToolProcessingResult\nLoopDetection] as ToolDomain
-  [domain.team\nDelegationTask\nReviewVerdict\nsplit_budget] as TeamDomain
+  [domain.scheduler\nProcessTable / SessionControlBlock\nDelegationTask / ReviewVerdict / split_budget] as SchedulerDomain
   [domain.compaction\nCompactResult] as CompactionDomain
-  [domain.events\nDomainEvent\nSessionRuntimeEvent\nTeamEvent] as DomainEvents
+  [domain.events\nDomainEvent\nSessionRuntimeEvent\nSchedulerEvent] as DomainEvents
 }
 
 ' ============================================================
@@ -98,6 +101,7 @@ StoreAdapter --> DriverStore
 TraceAdapter --> DriverStore
 ToolAdapters --> DriverOS
 ToolAdapters --> DriverMCP
+SchedulerUC --> DriverAsync
 
 ' ============================================================
 ' Adapters implement application-owned ports
@@ -113,6 +117,7 @@ RepoMapAdapter ..|> RepoMapPort
 SafetyAdapter ..|> SafetyPort
 WorktreeAdapter ..|> WorktreePort
 ToolAdapters ..|> ToolPort
+SchedulerUC ..|> SchedulerPort
 
 ' ============================================================
 ' Composition Root wiring (only place that knows concretes)
@@ -127,9 +132,9 @@ Container --> TraceAdapter
 Container --> SafetyAdapter
 Container --> ToolAdapters
 Container --> SessionFacade
-Container --> TeamUC
+Container --> SchedulerUC
 
-CliAdapter --> Container : invokes chat / team
+CliAdapter --> Container : invokes build_scheduler
 
 ' ============================================================
 ' Application internal wiring
@@ -173,30 +178,29 @@ ToolExec --> ToolDomain
 ToolExec --> SessionDomain
 ToolExec --> DomainEvents
 
-TeamUC --> EventBus
-TeamUC --> WorktreePort
-TeamUC --> SessionFactoryPort
-TeamUC --> TracePort
-TeamUC --> AgentDomain
-TeamUC --> TeamDomain
-TeamUC --> ToolDomain
-TeamUC --> DomainEvents
+SchedulerUC --> EventBus
+SchedulerUC --> WorktreePort
+SchedulerUC --> SessionFactoryPort
+SchedulerUC --> TracePort
+SchedulerUC --> SchedulerDomain
+SchedulerUC --> SessionDomain
+SchedulerUC --> DomainEvents
 
 Autosave --> EventPort
 Autosave --> StorePort
 Autosave --> DomainEvents
 
-' Tool adapters use the team port via the Delegation tool
-ToolAdapters --> TeamDelegationPort
+' Spawn tools drive the scheduler via the port
+ToolAdapters --> SchedulerPort
 
 ' ============================================================
 ' Domain internal relationships
 ' ============================================================
 AgentDomain --> ToolDomain : declares ToolSpec
-TeamDomain --> AgentDomain : role profiles
+SchedulerDomain --> AgentDomain : SCB holds Agent
+SchedulerDomain --> SessionDomain : SCB holds SessionState
 SessionDomain --> DomainEvents
 ToolDomain --> DomainEvents
-TeamDomain --> DomainEvents
 CompactionDomain --> SessionDomain
 
 ' ============================================================
@@ -206,32 +210,35 @@ note right of APP
   Use cases own orchestration directly.
   SessionRunUseCase, ContextCompactionUseCase,
   and ToolExecutionUseCase are the only run-loop /
-  compaction / tool-execution types now (the
-  former *Runner / *Processor / Compactor facades
-  were deleted). Each builds a default event factory
-  internally and depends only on ports + domain.
+  compaction / tool-execution types. Scheduler owns
+  all Session processes: agent 0 (aid=0) plus children
+  spawned in parallel via asyncio.create_task, tracked
+  in a ProcessTable of SessionControlBlocks.
 end note
 
 note right of COMPOSITION
   2 bootstrap files: container + config.
   bootstrap.container is the single composition
-  root. build_session() is a free factory that
-  returns application.session.Session (no more
-  bootstrap-owned Session subclass); snapshot_session
-  and load_session are sibling free functions.
+  root. build_scheduler() builds agent 0 (the lead)
+  with spawn tools plus the Scheduler; build_session()
+  is the free factory returning application.session.Session;
+  snapshot_session and load_session are sibling functions.
 end note
 
 note bottom of EventPort
   EventPublisherPort is the single publish surface.
-  TuiEventSink, EventBus, and AutoSaveSubscriber
-  all implement it; the former EventSink alias is gone.
+  TuiEventSink, EventBus, and AutoSaveSubscriber all
+  implement it. Every event carries an aid so the TUI
+  can route, filter, and group per-agent output.
 end note
 
 note right of DOMAIN
   No imports from app / adapters /
   bootstrap / SDKs / filesystem.
-  domain.team carries DelegationTask and
-  ReviewVerdict; domain.tools carries LoopDetection.
+  domain.scheduler carries ProcessTable +
+  SessionControlBlock (aid / parent_aid / agent / state)
+  plus DelegationTask and ReviewVerdict; domain.tools
+  carries LoopDetection.
 end note
 
 @enduml

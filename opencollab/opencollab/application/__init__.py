@@ -1,6 +1,6 @@
 """Application-layer contracts."""
 
-from opencollab.application.autosave import AutoSaveSubscriber, SAVE_TRIGGERS
+from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber
 from opencollab.application.compaction import (
     COMPACTION_KEEP_RECENT,
     DEFAULT_COMPACTION_THRESHOLD,
@@ -8,7 +8,6 @@ from opencollab.application.compaction import (
     ContextCompactionUseCase,
 )
 from opencollab.application.event_bus import EventBus, EventCallback
-from opencollab.application.tool_dispatch import execute_tool_with_runtime
 from opencollab.application.ports import (
     EnvironmentPort,
     EventPublisherPort,
@@ -21,6 +20,7 @@ from opencollab.application.session_run import (
     SessionRunEventFactory,
     SessionRunUseCase,
 )
+from opencollab.application.tool_dispatch import execute_tool_with_runtime
 from opencollab.application.tool_execution import (
     ToolExecutionEventFactory,
     ToolExecutionUseCase,

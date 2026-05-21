@@ -4,7 +4,6 @@ import asyncio
 from typing import Any, Awaitable, Callable, Protocol
 
 from opencollab.application.ports import EventPublisherPort, PermissionPort
-from opencollab.domain.events import SessionRuntimeEvent, TeamEvent
 
 
 class SuspendableRender(Protocol):

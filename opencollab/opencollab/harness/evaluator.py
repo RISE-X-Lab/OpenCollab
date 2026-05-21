@@ -15,16 +15,15 @@ import asyncio
 import json
 import os
 import time
-from dataclasses import dataclass, field
-from typing import Any
+from dataclasses import dataclass
 
-from opencollab.domain.agent import Agent
-from opencollab.application.session import Session
-from opencollab.bootstrap import build_session
-from opencollab.adapters.env import Environment, LocalEnvironment, DockerEnvironment
-from opencollab.adapters.trace import Tracer
+from opencollab.adapters.env import DockerEnvironment, Environment, LocalEnvironment
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
+from opencollab.adapters.trace import Tracer
+from opencollab.application.session import Session
+from opencollab.bootstrap import build_session
+from opencollab.domain.agent import Agent
 
 
 @dataclass

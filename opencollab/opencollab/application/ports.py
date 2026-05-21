@@ -77,10 +77,10 @@ class TeammateSessionPort(Protocol):
 
 
 class SessionFactoryPort(Protocol):
-    """Factory the team layer uses to build a teammate session.
+    """Factory the scheduler uses to build a teammate session.
 
     Bootstrap binds this to the concrete teammate-session builder so the
-    team layer does not import ``opencollab.core.session.Session``.
+    scheduler layer does not import ``opencollab.core.session.Session``.
     """
 
     def build_teammate_session(
@@ -90,20 +90,32 @@ class SessionFactoryPort(Protocol):
         env: Any,
         budget: int,
         max_steps: int = 50,
+        aid: int = -1,
     ) -> TeammateSessionPort:
         ...
 
 
-class TeamDelegationPort(Protocol):
-    async def delegate(self, role: str, task: str, context: str = "") -> str:
+class SchedulerPort(Protocol):
+    """Port for the scheduler — called by tools to spawn agents."""
+
+    async def spawn(
+        self,
+        parent_aid: int,
+        role: str,
+        task: str,
+        context: str = "",
+    ) -> int:
+        """Non-blocking spawn. Returns aid immediately."""
         ...
 
-    async def delegate_with_review(
+    async def spawn_with_review(
         self,
+        parent_aid: int,
         task: str,
         context: str = "",
         max_iterations: int = 3,
     ) -> str:
+        """Blocking review loop. Returns final result."""
         ...
 
 

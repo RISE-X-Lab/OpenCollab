@@ -13,7 +13,6 @@ from typing import Any, Awaitable, Callable
 
 from opencollab.application.ports import EventPublisherPort
 
-
 EventCallback = Callable[[Any], Awaitable[None] | None]
 
 

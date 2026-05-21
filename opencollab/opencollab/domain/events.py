@@ -5,13 +5,11 @@ Two distinct event families flow through the runtime:
 - ``SessionRuntimeEvent``: emitted by the session run loop and its
   collaborators (text deltas, step boundaries, tool start/end as called by
   the session, compaction, loop detection, budget warnings, errors).
-- ``TeamEvent``: emitted by team orchestration (delegation lifecycle,
-  review loop iterations).
+- ``SchedulerEvent``: emitted by scheduler orchestration (agent lifecycle,
+  spawn, review loop iterations).
 
-Both are deliberately kept duck-compatible with the legacy
-``(type, data)`` shape so the event bus, autosave subscriber, and TUI
-adapter can continue to fan them out through one channel during the
-boundary migration.
+Both share the ``(type, data)`` shape so the event bus, autosave subscriber,
+and TUI adapter fan them out through one channel.
 
 This module must not import from outer OpenCollab layers. The dependency
 rule keeps domain events at the center of the import graph.
@@ -53,19 +51,19 @@ class SessionRuntimeEvent:
     data: dict[str, Any] = field(default_factory=dict)
 
 
-TeamEventType = Literal[
-    "delegation_started",
-    "delegation_completed",
-    "teammate_run_started",
-    "teammate_run_completed",
+SchedulerEventType = Literal[
+    "agent_spawned",
+    "agent_completed",
+    "agent_failed",
+    "agent_cancelled",
     "review_started",
     "review_completed",
 ]
 
 
 @dataclass
-class TeamEvent:
-    """Event emitted by team orchestration (delegation, review loop)."""
+class SchedulerEvent:
+    """Event emitted by scheduler orchestration (spawn, review loop)."""
 
     type: str
     data: dict[str, Any] = field(default_factory=dict)
@@ -75,6 +73,6 @@ __all__ = [
     "DomainEvent",
     "SessionEventType",
     "SessionRuntimeEvent",
-    "TeamEventType",
-    "TeamEvent",
+    "SchedulerEventType",
+    "SchedulerEvent",
 ]

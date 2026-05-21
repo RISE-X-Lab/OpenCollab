@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Callable, Awaitable
+from typing import Awaitable, Callable
 
 # Commands that warrant human confirmation (not outright blocked)
 RISKY_PATTERNS = [

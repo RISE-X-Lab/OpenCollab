@@ -17,8 +17,9 @@ Contents (top to bottom):
   ``Session`` factories. Replaced the deleted ``bootstrap.session.Session``
   subclass that used to inherit from ``application.session.Session``.
 - ``TeammateConfig`` + ``build_teammate_session`` +
-  ``DefaultSessionFactory``: teammate-session wiring for the team layer.
-- ``build_chat_session`` / ``build_team``: high-level CLI entry points.
+  ``DefaultSessionFactory``: teammate-session wiring for spawned agents.
+- ``build_scheduler``: the high-level CLI entry point — builds agent 0 (the
+  lead) plus the Scheduler that runs and spawns child agents.
 """
 
 from __future__ import annotations
@@ -36,9 +37,9 @@ from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
-from opencollab.adapters.tools.delegation import DelegateTaskTool, DelegateWithReviewTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.tools.human import AskUserTool
+from opencollab.adapters.tools.spawn import SpawnAgentTool, SpawnWithReviewTool
 from opencollab.adapters.trace import Tracer
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.autosave import AutoSaveSubscriber
@@ -51,24 +52,18 @@ from opencollab.application.ports import (
     EventPublisherPort,
     LLMPort,
     PermissionPort,
-    SafetyPolicyPort,
     SafetyPolicyFactory,
+    SafetyPolicyPort,
     SessionStorePort,
     TracePort,
 )
+from opencollab.application.scheduler import Scheduler
 from opencollab.application.session import Session, SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
-from opencollab.application.team import Team
-from opencollab.application.team_prompts import get_role_prompt
+from opencollab.application.team_prompts import LEAD_SYSTEM_PROMPT, get_role_prompt
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionState
-
-
-_CHAT_SYSTEM_PROMPT = (
-    "You are a skilled software developer. Use the provided tools to help the user "
-    "with coding tasks. Read files before modifying them. Verify your changes."
-)
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +158,7 @@ def build_session_runtime(
     llm: LLMPort | None = None,
     store: SessionStorePort | None = None,
     auto_save_callback: Callable[[], None] | None = None,
+    aid: int = -1,
 ) -> SessionRuntime:
     """Build a ``SessionRuntime`` with the same construction order
     ``Session.__init__`` used to perform inline.
@@ -179,6 +175,7 @@ def build_session_runtime(
         event_bus.subscribe(AutoSaveSubscriber(auto_save_callback))
 
     state = _build_initial_state(agent, repo_map)
+    state.aid = aid
 
     resolved_llm: LLMPort
     if llm is not None:
@@ -252,6 +249,7 @@ def build_session(
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
     store: SessionStorePort | None = None,
+    aid: int = -1,
 ) -> Session:
     """Self-wiring ``Session`` factory.
 
@@ -277,6 +275,7 @@ def build_session(
         llm=llm,
         store=store,
         auto_save_callback=session._auto_save,
+        aid=aid,
     )
     Session.__init__(
         session,
@@ -362,6 +361,7 @@ def build_teammate_session(
     cfg: TeammateConfig,
     budget: int,
     max_steps: int = 50,
+    aid: int = -1,
 ) -> Session:
     """Build the teammate Agent + Session bundle.
 
@@ -393,6 +393,7 @@ def build_teammate_session(
         permission_policy=cfg.permission_policy,
         safety_policy=safety_policy,
         repo_map=cfg.repo_map,
+        aid=aid,
     )
 
 
@@ -415,6 +416,7 @@ class DefaultSessionFactory:
         env: Any,
         budget: int,
         max_steps: int = 50,
+        aid: int = -1,
     ) -> Session:
         return build_teammate_session(
             role=role,
@@ -422,6 +424,7 @@ class DefaultSessionFactory:
             cfg=self._cfg,
             budget=budget,
             max_steps=max_steps,
+            aid=aid,
         )
 
     def build_lead_session(
@@ -436,6 +439,7 @@ class DefaultSessionFactory:
         safety_policy: Any,
         repo_map: str | None,
         max_steps: int | None = None,
+        auto_save_path: str | None = None,
     ) -> Session:
         kwargs: dict[str, Any] = dict(
             agent=agent,
@@ -446,6 +450,7 @@ class DefaultSessionFactory:
             permission_policy=permission_policy,
             safety_policy=safety_policy,
             repo_map=repo_map,
+            auto_save_path=auto_save_path,
         )
         if max_steps is not None:
             kwargs["max_steps"] = max_steps
@@ -453,72 +458,28 @@ class DefaultSessionFactory:
 
 
 # ---------------------------------------------------------------------------
-# Chat + team factories (CLI entry points call these)
+# Scheduler factory (the CLI entry point)
 # ---------------------------------------------------------------------------
 
 
-def build_chat_session(
-    ctx: RuntimeContext,
-    *,
-    session_file: str | None = None,
-    auto_save: bool = True,
-) -> Session:
-    """Build the single-agent chat Session.
-
-    Constructs LocalEnvironment(ctx.workspace) internally. If session_file is
-    provided and exists, replays its message history; otherwise creates a
-    fresh Session and immediately writes the auto-save JSONL.
-    """
-    cfg = ctx.config
-    agent = Agent(
-        name="assistant",
-        system_prompt=_CHAT_SYSTEM_PROMPT,
-        tools=build_default_tools(include_ask_user=True),
-        model=cfg["model"],
-        provider=cfg["provider"],
-        api_key=cfg["api_key"],
-        base_url=cfg["base_url"],
-    )
-
-    env = LocalEnvironment(ctx.workspace)
-    safety_policy = build_workspace_safety_policy(env)
-
-    auto_save_path: str | None = None
-    if auto_save:
-        session_id = uuid.uuid4().hex[:8]
-        auto_save_dir = os.path.join(ctx.workspace, ".opencollab", "sessions")
-        auto_save_path = os.path.join(auto_save_dir, f"{session_id}.jsonl")
-
-    common_kwargs = dict(
-        env=env,
-        tracer=ctx.tracer,
-        max_budget_tokens=cfg["budget"],
-        event_sink=ctx.event_sink,
-        permission_policy=ctx.permission_policy,
-        safety_policy=safety_policy,
-        repo_map=ctx.repo_map,
-        auto_save_path=auto_save_path,
-    )
-
-    if session_file and os.path.exists(session_file):
-        return load_session(session_file, agent, **common_kwargs)
-
-    session = build_session(agent=agent, **common_kwargs)
-    if auto_save_path:
-        session.save(auto_save_path)
-    return session
-
-
-def build_team(
+def build_scheduler(
     ctx: RuntimeContext,
     *,
     use_worktrees: bool,
     interactive: bool,
-) -> Team:
-    """Build the multi-agent Team.
+    session_file: str | None = None,
+    auto_save: bool = True,
+) -> Scheduler:
+    """Build the Scheduler with agent 0 (the lead) registered.
 
-    interactive=True appends AskUserTool to team.lead_agent.tools post-construction
+    Agent 0 is the single interactive entry: it has the direct tools plus
+    ``spawn_agent`` / ``spawn_with_review``, and can spawn child agents.
+
+    interactive=True appends AskUserTool to lead_agent.tools post-construction
     (keeps headless eval clean — ref: SWE-bench regression root cause).
+
+    ``session_file`` resumes agent 0's message history; ``auto_save`` writes a
+    JSONL transcript under ``<workspace>/.opencollab/sessions``.
     """
     cfg = ctx.config
     event_bus = EventBus(ctx.event_sink)
@@ -538,33 +499,61 @@ def build_team(
     lead_env = LocalEnvironment(ctx.workspace)
     lead_tools = build_default_tools(include_ask_user=False)
     worktree_pool = WorktreePool(ctx.workspace, use_worktrees=use_worktrees)
-    team = Team(
-        workspace=ctx.workspace,
+
+    lead_agent = Agent(
+        name="lead",
+        system_prompt=LEAD_SYSTEM_PROMPT,
+        tools=list(lead_tools),
         model=cfg["model"],
         provider=cfg["provider"],
         api_key=cfg["api_key"],
         base_url=cfg["base_url"],
-        max_budget_tokens=cfg["budget"],
+    )
+
+    auto_save_path: str | None = None
+    if auto_save:
+        session_id = uuid.uuid4().hex[:8]
+        auto_save_dir = os.path.join(ctx.workspace, ".opencollab", "sessions")
+        auto_save_path = os.path.join(auto_save_dir, f"{session_id}.jsonl")
+
+    lead_session = session_factory.build_lead_session(
+        agent=lead_agent,
+        env=lead_env,
         tracer=ctx.tracer,
-        event_bus=event_bus,
+        max_budget_tokens=cfg["budget"],
+        event_sink=event_bus,
         permission_policy=ctx.permission_policy,
-        use_worktrees=use_worktrees,
+        safety_policy=build_workspace_safety_policy(lead_env),
         repo_map=ctx.repo_map,
-        lead_env=lead_env,
-        lead_tools=lead_tools,
-        safety_policy_factory=build_workspace_safety_policy,
+        auto_save_path=auto_save_path,
+    )
+
+    if session_file and os.path.exists(session_file):
+        lead_session.messages = lead_session.store.load_messages(
+            session_file, lead_agent.system_prompt
+        )
+    elif auto_save_path:
+        lead_session.save(auto_save_path)
+
+    scheduler = Scheduler(
         session_factory=session_factory,
         worktree_pool=worktree_pool,
+        event_sink=event_bus,
+        tracer=ctx.tracer,
+        max_budget_tokens=cfg["budget"],
+        permission_policy=ctx.permission_policy,
     )
-    team.lead_agent.tools[0:0] = [
-        DelegateTaskTool(team),
-        DelegateWithReviewTool(team),
+    scheduler.register_lead(lead_session)
+
+    lead_agent.tools[0:0] = [
+        SpawnAgentTool(scheduler),
+        SpawnWithReviewTool(scheduler),
     ]
     if interactive:
-        # Interactive mode: give Lead the ask_user tool (not added in Team.__init__
+        # Interactive mode: give Lead the ask_user tool (not added in Scheduler
         # to keep headless eval clean — ref: SWE-bench regression root cause)
-        team.lead_agent.tools.append(AskUserTool())
-    return team
+        lead_agent.tools.append(AskUserTool())
+    return scheduler
 
 
 __all__ = [
@@ -572,12 +561,11 @@ __all__ = [
     "RuntimeContext",
     "SessionRuntime",
     "TeammateConfig",
-    "build_chat_session",
     "build_default_tools",
     "build_runtime_context",
     "build_session",
     "build_session_runtime",
-    "build_team",
+    "build_scheduler",
     "build_teammate_session",
     "build_workspace_safety_policy",
     "load_session",

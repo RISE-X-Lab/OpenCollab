@@ -2,12 +2,18 @@
 
 from opencollab.domain.agent import Agent
 from opencollab.domain.compaction import CompactResult
-from opencollab.domain.events import DomainEvent, SessionRuntimeEvent, TeamEvent
+from opencollab.domain.events import DomainEvent, SchedulerEvent, SessionRuntimeEvent
+from opencollab.domain.scheduler import (
+    DelegationTask,
+    ProcessTable,
+    ReviewVerdict,
+    SessionControlBlock,
+    split_budget,
+)
 from opencollab.domain.session import SessionPhase, SessionState
-from opencollab.domain.team import DelegationTask, ReviewVerdict, split_budget
 from opencollab.domain.tools import (
-    LoopDetection,
     MAX_CALL_HASH_WINDOW,
+    LoopDetection,
     ToolProcessingResult,
     ToolSpec,
 )
@@ -19,12 +25,14 @@ __all__ = [
     "DomainEvent",
     "LoopDetection",
     "MAX_CALL_HASH_WINDOW",
+    "ProcessTable",
     "ReviewVerdict",
+    "SchedulerEvent",
+    "SessionControlBlock",
     "SessionPhase",
     "SessionRuntimeEvent",
     "SessionState",
     "split_budget",
-    "TeamEvent",
     "ToolProcessingResult",
     "ToolSpec",
 ]

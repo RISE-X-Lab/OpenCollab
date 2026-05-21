@@ -27,8 +27,8 @@ def test_domain_modules_do_not_import_outer_layers():
 
 
 def test_tool_base_satisfies_tool_spec():
-    from opencollab.domain.tools import ToolSpec
     from opencollab.adapters.tools.base import Tool
+    from opencollab.domain.tools import ToolSpec
 
     instance: ToolSpec = Tool()
     assert isinstance(instance.name, str)

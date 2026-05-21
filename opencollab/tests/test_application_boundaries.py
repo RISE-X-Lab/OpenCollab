@@ -13,7 +13,6 @@ from __future__ import annotations
 import pathlib
 import re
 
-
 FORBIDDEN = re.compile(
     r"^\s*(?:from|import)\s+opencollab\.(?:core|tools|bootstrap|cli|adapters|team)\b",
     re.MULTILINE,

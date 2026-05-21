@@ -13,12 +13,16 @@ EXAMPLE_CONFIG="$CONFIG_DIR/.env.example"
 usage() {
     cat <<'EOF'
 Usage:
-  scripts/start_opencollab.sh [team|chat] [extra opencollab args...]
+  scripts/start_opencollab.sh [extra opencollab args...]
+
+The unified interactive agent (agent 0, which can spawn child agents) starts
+by default. Pass `eval <tasks.jsonl>` for headless evaluation.
 
 Examples:
   scripts/start_opencollab.sh
-  scripts/start_opencollab.sh team --trace
-  scripts/start_opencollab.sh chat --yolo
+  scripts/start_opencollab.sh --trace
+  scripts/start_opencollab.sh --yolo --no-worktrees
+  scripts/start_opencollab.sh eval tasks.jsonl
 
 Configuration:
   Copy configs/.env.example to configs/.env and set OPENCOLLAB_API_KEY.
@@ -83,28 +87,16 @@ ensure_venv() {
 }
 
 main() {
-    local mode="${1:-chat}"
-    if [ "$mode" = "-h" ] || [ "$mode" = "--help" ] || [ "$mode" = "help" ]; then
+    if [ "${1:-}" = "help" ]; then
         usage
         exit 0
     fi
-
-    case "$mode" in
-        team|chat)
-            shift || true
-            ;;
-        *)
-            echo "Unknown mode: $mode"
-            usage
-            exit 1
-            ;;
-    esac
 
     ensure_config
     ensure_venv
 
     cd "$REPO_ROOT"
-    exec "$VENV_DIR/bin/opencollab" "$mode" --workspace "$REPO_ROOT" "$@"
+    exec "$VENV_DIR/bin/opencollab" --workspace "$REPO_ROOT" "$@"
 }
 
 main "$@"

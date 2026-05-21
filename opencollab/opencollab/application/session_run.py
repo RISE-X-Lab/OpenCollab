@@ -20,26 +20,29 @@ class SessionRunEventFactory:
     compaction_applied: Callable[[int], Any]
 
 
-def default_session_run_event_factory() -> SessionRunEventFactory:
+def default_session_run_event_factory(aid: int = -1) -> SessionRunEventFactory:
     from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 
     return SessionRunEventFactory(
-        step_start=lambda step: SessionEvent(type="step_start", data={"step": step}),
+        step_start=lambda step: SessionEvent(
+            type="step_start",
+            data={"step": step, "aid": aid},
+        ),
         step_end=lambda step, latency: SessionEvent(
             type="step_end",
-            data={"step": step, "latency": latency},
+            data={"step": step, "latency": latency, "aid": aid},
         ),
         text_delta=lambda content: SessionEvent(
             type="text_delta",
-            data={"content": content},
+            data={"content": content, "aid": aid},
         ),
         error=lambda reason: SessionEvent(
             type="error",
-            data={"reason": reason},
+            data={"reason": reason, "aid": aid},
         ),
         compaction_applied=lambda tokens_after: SessionEvent(
             type="compaction_applied",
-            data={"tokens_after": tokens_after},
+            data={"tokens_after": tokens_after, "aid": aid},
         ),
     )
 
@@ -69,7 +72,7 @@ class SessionRunUseCase:
         self.state = state
         self.llm = llm
         self.event_publisher = event_publisher
-        self.event_factory = event_factory or default_session_run_event_factory()
+        self.event_factory = event_factory or default_session_run_event_factory(state.aid)
         self.tool_execution = tool_execution
         self.compaction = compaction
         self.tracer = tracer

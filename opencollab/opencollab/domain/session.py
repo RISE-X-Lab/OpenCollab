@@ -6,6 +6,7 @@ from typing import Any
 
 
 class SessionPhase(Enum):
+    SCHEDULED = "scheduled"
     IDLE = "idle"
     PRECHECK = "precheck"
     COMPACTING = "compacting"
@@ -27,6 +28,7 @@ class SessionState:
     is_done: bool = False
     recent_call_hashes: list[str] = field(default_factory=list)
     phase: SessionPhase = SessionPhase.IDLE
+    aid: int = -1
 
     def append_message(self, message: dict[str, Any]) -> None:
         self.messages.append(message)
