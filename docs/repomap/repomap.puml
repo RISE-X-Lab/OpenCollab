@@ -44,7 +44,6 @@ package "Interface Adapters" as ADAPTERS #FDEBD0 {
   [adapters.worktree_pool\nWorktreePool] as WorktreeAdapter
   [adapters.storage\nSessionStore] as StoreAdapter
   [adapters.trace\nTracer] as TraceAdapter
-  [adapters.repo_map\nget_repo_map] as RepoMapAdapter
   [adapters.safety\nSandboxInterceptor] as SafetyAdapter
   [adapters.tools\nBash / FileRead / FileWrite / Grep\nAskUser / Spawn] as ToolAdapters
 }
@@ -71,7 +70,6 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   interface "EventPublisherPort" as EventPort
   interface "PermissionPort" as PermissionPort
   interface "SafetyPolicyPort" as SafetyPort
-  interface "RepoMapPort" as RepoMapPort
   interface "WorktreePoolPort" as WorktreePort
   interface "ToolPort" as ToolPort
   interface "TokenEstimatorPort" as TokenPort
@@ -111,7 +109,6 @@ StoreAdapter ..|> StorePort
 TraceAdapter ..|> TracePort
 TuiAdapter ..|> EventPort
 TuiAdapter ..|> PermissionPort
-RepoMapAdapter ..|> RepoMapPort
 SafetyAdapter ..|> SafetyPort
 WorktreeAdapter ..|> WorktreePort
 ToolAdapters ..|> ToolPort
@@ -125,7 +122,6 @@ Container --> LLMAdapter
 Container --> EnvAdapter
 Container --> StoreAdapter
 Container --> WorktreeAdapter
-Container --> RepoMapAdapter
 Container --> TraceAdapter
 Container --> SafetyAdapter
 Container --> ToolAdapters

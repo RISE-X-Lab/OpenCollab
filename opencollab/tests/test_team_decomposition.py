@@ -80,7 +80,6 @@ def test_build_teammate_session_wires_environment_safety_policy(tmp_path, monkey
         tracer=None,
         event_bus=EventBus(None),
         permission_policy=None,
-        repo_map=None,
         safety_policy_factory=build_workspace_safety_policy,
     )
 
@@ -108,7 +107,6 @@ def test_build_teammate_session_without_factory_does_not_build_safety_policy(tmp
         tracer=None,
         event_bus=EventBus(None),
         permission_policy=None,
-        repo_map=None,
     )
 
     session = build_teammate_session(role="coder", env=env, cfg=cfg, budget=50_000)

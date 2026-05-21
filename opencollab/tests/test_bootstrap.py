@@ -32,7 +32,7 @@ def test_lead_prompt_references_spawn_tools_not_delegate():
     assert "delegate_with_review" not in LEAD_SYSTEM_PROMPT
 
 
-def test_build_scheduler_lead_has_repo_map_and_spawn_tools(tmp_path):
+def test_build_scheduler_lead_has_spawn_tools(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
     (workspace / "README.md").write_text("hi")
@@ -44,7 +44,6 @@ def test_build_scheduler_lead_has_repo_map_and_spawn_tools(tmp_path):
     assert lead.tracer is ctx.tracer  # propagated (None when trace=False)
     system_message = lead.messages[0]
     assert system_message["role"] == "system"
-    assert "Project Structure:" in system_message["content"]
 
     tool_names = {t.name for t in lead.agent.tools}
     assert tool_names == {

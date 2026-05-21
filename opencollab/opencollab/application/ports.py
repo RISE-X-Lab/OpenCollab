@@ -167,13 +167,6 @@ class TokenEstimatorPort(Protocol):
         ...
 
 
-class RepoMapPort(Protocol):
-    """Renderer for the repository structure injected into the system prompt."""
-
-    def render(self) -> str:
-        ...
-
-
 class WorktreePoolPort(Protocol):
     """Per-teammate worktree environment lifecycle."""
 

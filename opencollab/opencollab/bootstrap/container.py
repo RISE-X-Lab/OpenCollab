@@ -6,7 +6,7 @@ their session/team objects through the factory functions exposed here.
 
 Contents (top to bottom):
 - ``RuntimeContext`` + ``build_runtime_context``: per-invocation context
-  (workspace, config, tracer, repo map, UI hooks).
+  (workspace, config, tracer, UI hooks).
 - ``build_workspace_safety_policy``: derives a sandbox interceptor from
   an Environment instance.
 - ``build_default_tools``: canonical agent tool bundle.
@@ -32,7 +32,6 @@ from typing import Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient, estimate_messages_tokens
-from opencollab.adapters.repo_map import get_repo_map
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.tools.base import Tool
@@ -76,7 +75,6 @@ class RuntimeContext:
     workspace: str
     config: dict
     tracer: Tracer | None
-    repo_map: str | None
     event_sink: EventPublisherPort | None
     permission_policy: PermissionPort | None
 
@@ -94,13 +92,11 @@ def build_runtime_context(
     tracer = (
         Tracer(run_id=f"{run_id_prefix}{uuid.uuid4().hex[:8]}") if trace else None
     )
-    repo_map = get_repo_map(abs_workspace)
 
     return RuntimeContext(
         workspace=abs_workspace,
         config=dict(cli_overrides),
         tracer=tracer,
-        repo_map=repo_map,
         event_sink=event_sink,
         permission_policy=permission_policy,
     )
@@ -135,11 +131,8 @@ def build_default_tools(*, include_ask_user: bool = False) -> list[Tool]:
 # ---------------------------------------------------------------------------
 
 
-def _build_initial_state(agent: Agent, repo_map: str | None) -> SessionState:
-    system_content = agent.system_prompt
-    if repo_map:
-        system_content += f"\n\nProject Structure:\n{repo_map}"
-    return SessionState(messages=[{"role": "system", "content": system_content}])
+def _build_initial_state(agent: Agent) -> SessionState:
+    return SessionState(messages=[{"role": "system", "content": agent.system_prompt}])
 
 
 def build_session_runtime(
@@ -150,7 +143,6 @@ def build_session_runtime(
     max_budget_tokens: int = 200_000,
     max_steps: int = 100,
     compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
-    repo_map: str | None = None,
     auto_save_path: str | None = None,
     event_sink: EventPublisherPort | None = None,
     permission_policy: PermissionPort | None = None,
@@ -174,7 +166,7 @@ def build_session_runtime(
     if auto_save_path and auto_save_callback is not None:
         event_bus.subscribe(AutoSaveSubscriber(auto_save_callback))
 
-    state = _build_initial_state(agent, repo_map)
+    state = _build_initial_state(agent)
     state.aid = aid
 
     resolved_llm: LLMPort
@@ -242,7 +234,6 @@ def build_session(
     max_budget_tokens: int = 200_000,
     max_steps: int = 100,
     compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
-    repo_map: str | None = None,
     auto_save_path: str | None = None,
     event_sink: EventPublisherPort | None = None,
     permission_policy: PermissionPort | None = None,
@@ -267,7 +258,6 @@ def build_session(
         max_budget_tokens=max_budget_tokens,
         max_steps=max_steps,
         compaction_threshold=compaction_threshold,
-        repo_map=repo_map,
         auto_save_path=auto_save_path,
         event_sink=event_sink,
         permission_policy=permission_policy,
@@ -290,7 +280,6 @@ def build_session(
         permission_policy=permission_policy,
         safety_policy=safety_policy,
     )
-    session._repo_map = repo_map
     return session
 
 
@@ -350,7 +339,6 @@ class TeammateConfig:
     tracer: Tracer | None
     event_bus: EventBus
     permission_policy: PermissionPort | None
-    repo_map: str | None
     safety_policy_factory: SafetyPolicyFactory | None = None
 
 
@@ -392,7 +380,6 @@ def build_teammate_session(
         event_sink=cfg.event_bus,
         permission_policy=cfg.permission_policy,
         safety_policy=safety_policy,
-        repo_map=cfg.repo_map,
         aid=aid,
     )
 
@@ -437,7 +424,6 @@ class DefaultSessionFactory:
         event_sink: Any,
         permission_policy: PermissionPort | None,
         safety_policy: Any,
-        repo_map: str | None,
         max_steps: int | None = None,
         auto_save_path: str | None = None,
     ) -> Session:
@@ -449,7 +435,6 @@ class DefaultSessionFactory:
             event_sink=event_sink,
             permission_policy=permission_policy,
             safety_policy=safety_policy,
-            repo_map=repo_map,
             auto_save_path=auto_save_path,
         )
         if max_steps is not None:
@@ -492,7 +477,6 @@ def build_scheduler(
             tracer=ctx.tracer,
             event_bus=event_bus,
             permission_policy=ctx.permission_policy,
-            repo_map=ctx.repo_map,
             safety_policy_factory=build_workspace_safety_policy,
         )
     )
@@ -524,7 +508,6 @@ def build_scheduler(
         event_sink=event_bus,
         permission_policy=ctx.permission_policy,
         safety_policy=build_workspace_safety_policy(lead_env),
-        repo_map=ctx.repo_map,
         auto_save_path=auto_save_path,
     )
 

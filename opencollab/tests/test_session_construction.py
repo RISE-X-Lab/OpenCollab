@@ -167,13 +167,6 @@ def test_session_load_returns_session_with_loaded_messages(tmp_path):
     assert {"role": "assistant", "content": "world"} in loaded.messages
 
 
-def test_session_with_repo_map_appends_project_structure_to_system_message():
-    session = _new_session(repo_map="src/\n  app.py")
-    sys_msg = session.messages[0]
-    assert "Project Structure:" in sys_msg["content"]
-    assert "src/" in sys_msg["content"]
-
-
 def test_session_permission_policy_setter_propagates_to_tool_processor():
     session = _new_session()
     assert session.permission_policy is None

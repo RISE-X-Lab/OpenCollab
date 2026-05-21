@@ -78,7 +78,7 @@ class FakeAgent:
         return None
 
 
-def fake_team_session_factory(*, safety_policy_factory=None, repo_map=None):
+def fake_team_session_factory(*, safety_policy_factory=None):
     from opencollab.bootstrap.container import DefaultSessionFactory, TeammateConfig
 
     event_bus = EventBus()
@@ -91,7 +91,6 @@ def fake_team_session_factory(*, safety_policy_factory=None, repo_map=None):
             tracer=None,
             event_bus=event_bus,
             permission_policy=None,
-            repo_map=repo_map,
             safety_policy_factory=safety_policy_factory,
         )
     )
@@ -755,7 +754,6 @@ def test_scheduler_lead_session_runtime_uses_constructor_env_and_max_steps(monke
         event_sink=event_bus,
         permission_policy=None,
         safety_policy=None,
-        repo_map=None,
         max_steps=lead_max_steps,
     )
 
@@ -792,7 +790,6 @@ def test_scheduler_lead_session_gets_workspace_safety_policy(tmp_path, monkeypat
         event_sink=event_bus,
         permission_policy=None,
         safety_policy=build_workspace_safety_policy(LocalEnvironment(str(tmp_path))),
-        repo_map=None,
     )
 
     scheduler = Scheduler(
@@ -823,7 +820,6 @@ def test_direct_scheduler_without_safety_factory_does_not_build_safety_policy(tm
         event_sink=event_bus,
         permission_policy=None,
         safety_policy=None,
-        repo_map=None,
     )
 
     scheduler = Scheduler(
