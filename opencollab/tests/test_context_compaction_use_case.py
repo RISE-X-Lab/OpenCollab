@@ -2,10 +2,8 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
-from opencollab.application.compaction import (
-    CompactionEventFactory,
-    ContextCompactionUseCase,
-)
+from opencollab.application.compaction import ContextCompactionUseCase
+from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.domain.compaction import CompactResult
 from opencollab.domain.session import SessionState
 
@@ -49,8 +47,15 @@ class FakeTracer:
         self.steps.append(kwargs)
 
 
-def event_factory() -> CompactionEventFactory:
-    return CompactionEventFactory(
+def event_factory() -> SessionEventFactory:
+    factory = default_session_event_factory(aid=-1)
+    # Override compaction events with SimpleNamespace shape that the existing
+    # assertions expect (no aid in data).
+    return SessionEventFactory(
+        step_start=factory.step_start,
+        step_end=factory.step_end,
+        text_delta=factory.text_delta,
+        error=factory.error,
         compaction=lambda: SimpleNamespace(
             type="compaction",
             data={"reason": "context_overflow"},
@@ -59,6 +64,9 @@ def event_factory() -> CompactionEventFactory:
             type="compaction_applied",
             data={"tokens_after": tokens_after},
         ),
+        loop_detected=factory.loop_detected,
+        tool_start=factory.tool_start,
+        tool_end=factory.tool_end,
     )
 
 

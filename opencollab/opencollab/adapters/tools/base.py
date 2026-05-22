@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from opencollab.application.tool_runtime import ToolRuntime
+from opencollab.application.tool_execution import ToolRuntime
 
 
 class Tool:

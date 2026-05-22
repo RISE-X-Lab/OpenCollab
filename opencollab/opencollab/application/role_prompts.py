@@ -1,13 +1,9 @@
-"""System prompts for team roles.
+"""System prompts keyed by spawn role.
 
-First Principle: Self-Collaboration lives in prompts, NOT in framework code.
-The Lead's system prompt embeds the collaboration rules. Role behavior is
-configured via prompt templates, not hardcoded classes.
-
-Ref:
-- Design doc: LEAD_SYSTEM_PROMPT with Critical Collaboration Rules
-- Self-Collaboration paper: Analyst → Coder → Reviewer pattern
-- claude_code_agen_team.md: Lead coordinates, teammates execute independently
+First principle: collaboration patterns live in prompts, not framework code.
+The lead's prompt embeds the rules for *when* to spawn; each role prompt
+defines *how* that role behaves. ``get_role_prompt`` is a tiny registry that
+falls back to ``DEFAULT_ROLE_PROMPT`` for unknown roles.
 """
 
 LEAD_SYSTEM_PROMPT = """\
@@ -97,7 +93,7 @@ ROLE_PROMPTS: dict[str, str] = {
     "reviewer": REVIEWER_SYSTEM_PROMPT,
 }
 
-DEFAULT_TEAMMATE_PROMPT = """\
+DEFAULT_ROLE_PROMPT = """\
 You are a specialist agent. Complete the assigned task using the provided tools.
 Be thorough but efficient. When done, provide a clear summary of what you did.
 """
@@ -105,4 +101,4 @@ Be thorough but efficient. When done, provide a clear summary of what you did.
 
 def get_role_prompt(role: str) -> str:
     """Get the system prompt for a role, or default if unknown."""
-    return ROLE_PROMPTS.get(role.lower(), DEFAULT_TEAMMATE_PROMPT)
+    return ROLE_PROMPTS.get(role.lower(), DEFAULT_ROLE_PROMPT)

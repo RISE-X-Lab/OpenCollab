@@ -4,10 +4,10 @@ from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber
 from opencollab.application.compaction import (
     COMPACTION_KEEP_RECENT,
     DEFAULT_COMPACTION_THRESHOLD,
-    CompactionEventFactory,
     ContextCompactionUseCase,
 )
 from opencollab.application.event_bus import EventBus, EventCallback
+from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
     EnvironmentPort,
     EventPublisherPort,
@@ -16,22 +16,13 @@ from opencollab.application.ports import (
     SafetyPolicyPort,
     ToolPort,
 )
-from opencollab.application.session_run import (
-    SessionRunEventFactory,
-    SessionRunUseCase,
-)
-from opencollab.application.tool_dispatch import execute_tool_with_runtime
-from opencollab.application.tool_execution import (
-    ToolExecutionEventFactory,
-    ToolExecutionUseCase,
-)
-from opencollab.application.tool_runtime import ToolRuntime
+from opencollab.application.session_run import SessionRunUseCase
+from opencollab.application.tool_execution import ToolExecutionUseCase, ToolRuntime
 
 __all__ = [
     "AutoSaveSubscriber",
     "EnvironmentPort",
     "COMPACTION_KEEP_RECENT",
-    "CompactionEventFactory",
     "ContextCompactionUseCase",
     "DEFAULT_COMPACTION_THRESHOLD",
     "EventBus",
@@ -41,11 +32,10 @@ __all__ = [
     "SafetyPolicyFactory",
     "SafetyPolicyPort",
     "SAVE_TRIGGERS",
-    "SessionRunEventFactory",
+    "SessionEventFactory",
     "SessionRunUseCase",
     "ToolPort",
     "ToolRuntime",
-    "ToolExecutionEventFactory",
     "ToolExecutionUseCase",
-    "execute_tool_with_runtime",
+    "default_session_event_factory",
 ]

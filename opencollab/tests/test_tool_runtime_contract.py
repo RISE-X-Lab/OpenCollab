@@ -12,7 +12,7 @@ from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.tools.human import AskUserTool
-from opencollab.application.tool_runtime import ToolRuntime
+from opencollab.application.tool_execution import ToolRuntime
 
 
 def run(coro):

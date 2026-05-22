@@ -18,7 +18,7 @@ from opencollab.domain.session import SessionState
 
 
 def split_budget(total: int, used: int) -> int:
-    """How many tokens a teammate gets, reserving headroom for the Lead."""
+    """How many tokens a spawned agent gets, reserving headroom for the Lead."""
     remaining = max(10_000, total - used)
     reserve_for_lead = min(
         max(10_000, total // 4),
@@ -29,7 +29,7 @@ def split_budget(total: int, used: int) -> int:
 
 @dataclass(frozen=True)
 class DelegationTask:
-    """A task the Lead hands to a teammate, with optional preamble context."""
+    """A task the Lead hands to a spawned agent, with optional preamble context."""
 
     role: str
     task: str

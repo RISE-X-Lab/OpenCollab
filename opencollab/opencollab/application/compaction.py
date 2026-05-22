@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
+from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
     EventPublisherPort,
     LLMPort,
@@ -17,24 +17,6 @@ DEFAULT_COMPACTION_THRESHOLD = 64_000  # tokens - trigger compaction
 COMPACTION_KEEP_RECENT = 8  # keep last N messages un-summarized
 
 
-@dataclass(frozen=True)
-class CompactionEventFactory:
-    compaction: Callable[[], Any]
-    compaction_applied: Callable[[int], Any]
-
-
-def default_compaction_event_factory() -> CompactionEventFactory:
-    from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
-
-    return CompactionEventFactory(
-        compaction=lambda: SessionEvent(type="compaction", data={"reason": "context_overflow"}),
-        compaction_applied=lambda tokens_after: SessionEvent(
-            type="compaction_applied",
-            data={"tokens_after": tokens_after},
-        ),
-    )
-
-
 class ContextCompactionUseCase:
     def __init__(
         self,
@@ -42,7 +24,7 @@ class ContextCompactionUseCase:
         state: SessionState,
         llm: LLMPort,
         event_publisher: EventPublisherPort,
-        event_factory: CompactionEventFactory | None = None,
+        event_factory: SessionEventFactory | None = None,
         estimate_tokens: TokenEstimatorPort,
         tracer: TracePort | None = None,
         compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
@@ -50,7 +32,7 @@ class ContextCompactionUseCase:
         self.state = state
         self.llm = llm
         self.event_publisher = event_publisher
-        self.event_factory = event_factory or default_compaction_event_factory()
+        self.event_factory = event_factory or default_session_event_factory(state.aid)
         self.estimate_tokens = estimate_tokens
         self.tracer = tracer
         self.compaction_threshold = compaction_threshold

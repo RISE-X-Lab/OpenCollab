@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
 if TYPE_CHECKING:
-    from opencollab.application.tool_runtime import ToolRuntime
+    from opencollab.application.tool_execution import ToolRuntime
 
 
 class EnvironmentPort(Protocol):
@@ -65,15 +65,15 @@ class ToolPort(Protocol):
 
 
 class SessionFactoryPort(Protocol):
-    """Factory the scheduler uses to build a teammate session.
+    """Factory the scheduler uses to build a session for a spawned agent.
 
-    Bootstrap binds this to the concrete teammate-session builder so the
-    scheduler layer does not import ``opencollab.core.session.Session``.
+    Bootstrap binds this to the concrete spawn-session builder so the
+    scheduler layer does not import ``opencollab.application.session.Session``.
     The returned session is driven through ``add_user_message`` /
     ``run_loop`` and read via ``used_tokens``.
     """
 
-    def build_teammate_session(
+    def build_spawn_session(
         self,
         *,
         role: str,
@@ -155,7 +155,7 @@ TokenEstimatorPort = Callable[[list[dict[str, Any]]], int]
 
 
 class WorktreePoolPort(Protocol):
-    """Per-teammate worktree environment lifecycle."""
+    """Per-spawn worktree environment lifecycle."""
 
     async def acquire(self, role: str) -> Any:
         ...

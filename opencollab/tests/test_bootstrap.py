@@ -3,7 +3,7 @@ import os
 import pytest
 
 from opencollab.adapters.safety import SandboxInterceptor
-from opencollab.application.team_prompts import LEAD_SYSTEM_PROMPT
+from opencollab.application.role_prompts import LEAD_SYSTEM_PROMPT
 from opencollab.bootstrap import (
     build_runtime_context,
     build_scheduler,

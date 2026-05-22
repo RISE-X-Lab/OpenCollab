@@ -16,18 +16,20 @@ skinparam defaultFontName Helvetica
 '   * app.session keeps a single Session facade rather than the
 '     RunSession/AddUserMessage/SnapshotSession split.
 ' Closed since the prior snapshot:
-'   * TokenEstimatorPort collapsed from a Protocol into a plain
-'     Callable type alias; TeammateSessionPort (doc-only, zero
-'     external refs) removed — build_teammate_session returns Any.
-'   * Team -> Scheduler: the privileged "Lead wraps workers"
-'     model is gone. Scheduler owns all Session processes; the
-'     lead is just agent 0 (aid=0) in a ProcessTable of SCBs.
-'   * The two interactive CLI modes (chat, team) collapsed into
-'     one default entry; build_chat_session was removed.
-'   * delegate_task / delegate_with_review -> spawn_agent /
-'     spawn_with_review (children run in parallel via asyncio).
-'   * The TeamEvent / TeamDelegationPort / build_team back-compat
-'     aliases were deleted.
+'   * The three per-use-case event factories
+'     (SessionRunEventFactory / ToolExecutionEventFactory /
+'     CompactionEventFactory) collapsed into one
+'     app.events.SessionEventFactory. Duplicated
+'     "compaction_applied" definition gone.
+'   * app.tool_dispatch and app.tool_runtime both deleted.
+'     The 1-line dispatch indirection is inlined into
+'     ToolExecutionUseCase; ToolRuntime now lives in
+'     app.tool_execution and every importer points there.
+'   * app.team_prompts -> app.role_prompts. Teammate/Team
+'     vocabulary in bootstrap renamed: TeammateConfig ->
+'     SpawnConfig, build_teammate_session -> build_spawn_session,
+'     SessionFactoryPort.build_teammate_session ->
+'     build_spawn_session.
 ' ============================================================
 
 package "Frameworks / Drivers\n(no project policy)" as DRIVERS #FADBD8 {
@@ -52,7 +54,7 @@ package "Interface Adapters" as ADAPTERS #FDEBD0 {
 }
 
 package "Composition Root\n(bootstrap, 2 files)" as COMPOSITION #EBF5FB {
-  [bootstrap.container\nbuild_runtime_context\nbuild_session_runtime\nbuild_session / snapshot_session / load_session\nbuild_scheduler\nbuild_teammate_session\nDefaultSessionFactory\nbuild_default_tools\nbuild_workspace_safety_policy] as Container
+  [bootstrap.container\nbuild_runtime_context\nbuild_session_runtime\nbuild_session / snapshot_session / load_session\nbuild_scheduler\nbuild_spawn_session\nDefaultSessionFactory + SpawnConfig\nbuild_default_tools\nbuild_workspace_safety_policy] as Container
   [bootstrap.config\nload config + env] as Config
 }
 
@@ -60,11 +62,12 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   [app.session\nSession + SessionRuntime] as SessionFacade
   [app.session_run\nSessionRunUseCase] as SessionRunner
   [app.compaction\nContextCompactionUseCase] as Compactor
-  [app.tool_execution\nToolExecutionUseCase\nCallbackPermissionPolicy] as ToolExec
-  [app.tool_runtime / tool_dispatch\nToolRuntime + execute_tool_with_runtime] as ToolRuntime
+  [app.tool_execution\nToolExecutionUseCase + ToolRuntime\nCallbackPermissionPolicy] as ToolExec
   [app.scheduler\nScheduler (agent 0 + spawn,\nparallel via asyncio.create_task)] as SchedulerUC
   [app.autosave\nAutoSaveSubscriber] as Autosave
   [app.event_bus\nEventBus (fan-out)] as EventBus
+  [app.events\nSessionEventFactory\n(one builder, all run-loop events)] as EventsModule
+  [app.role_prompts\nLEAD_SYSTEM_PROMPT\nget_role_prompt] as RolePrompts
 
   interface "LLMPort" as LLMPort
   interface "EnvironmentPort" as EnvPort
@@ -105,7 +108,6 @@ SchedulerUC --> DriverAsync
 ' Adapters implement application-owned ports
 ' ============================================================
 LLMAdapter ..|> LLMPort
-LLMAdapter ..|> TokenPort
 EnvAdapter ..|> EnvPort
 StoreAdapter ..|> StorePort
 TraceAdapter ..|> TracePort
@@ -129,6 +131,7 @@ Container --> SafetyAdapter
 Container --> ToolAdapters
 Container --> SessionFacade
 Container --> SchedulerUC
+Container --> RolePrompts
 
 CliAdapter --> Container : invokes build_scheduler
 
@@ -152,6 +155,7 @@ SessionRunner --> Compactor
 SessionRunner --> LLMPort
 SessionRunner --> TracePort
 SessionRunner --> SessionDomain
+SessionRunner --> EventsModule
 SessionRunner --> DomainEvents
 
 Compactor --> EventPort
@@ -159,10 +163,10 @@ Compactor --> LLMPort
 Compactor --> TracePort
 Compactor --> CompactionDomain
 Compactor --> SessionDomain
+Compactor --> EventsModule
 Compactor --> DomainEvents
 
 ToolExec --> EventPort
-ToolExec --> ToolRuntime
 ToolExec --> ToolPort
 ToolExec --> EnvPort
 ToolExec --> PermissionPort
@@ -171,7 +175,10 @@ ToolExec --> TracePort
 ToolExec --> AgentDomain
 ToolExec --> ToolDomain
 ToolExec --> SessionDomain
+ToolExec --> EventsModule
 ToolExec --> DomainEvents
+
+EventsModule --> DomainEvents
 
 SchedulerUC --> EventBus
 SchedulerUC --> WorktreePort
@@ -218,6 +225,8 @@ note right of COMPOSITION
   with spawn tools plus the Scheduler; build_session()
   is the free factory returning application.session.Session;
   snapshot_session and load_session are sibling functions.
+  SpawnConfig + build_spawn_session wire sessions for
+  agents the scheduler spawns at runtime.
 end note
 
 note bottom of EventPort
@@ -225,6 +234,8 @@ note bottom of EventPort
   TuiEventSink, EventBus, and AutoSaveSubscriber all
   implement it. Every event carries an aid so the TUI
   can route, filter, and group per-agent output.
+  app.events.SessionEventFactory is the one place
+  every run-loop / tool / compaction event is built.
 end note
 
 note right of DOMAIN

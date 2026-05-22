@@ -2,13 +2,13 @@
 
 First Principle: All side effects go through Environment.
 - LocalEnvironment: direct OS execution (daily dev)
-- WorktreeEnvironment: isolated git worktree per teammate (parallel agents)
+- WorktreeEnvironment: isolated git worktree per spawned agent (parallel agents)
 - DockerEnvironment: container sandbox (eval / SWE-bench)
 
 Ref:
 - Design doc: Environment base class with exec_cmd/read_file/write_file
 - openclaw: sandbox.ts workspaceDir + readonlyRoots
-- User feedback: parallel teammates MUST use separate physical workspaces (git worktree)
+- User feedback: parallel spawned agents MUST use separate physical workspaces (git worktree)
 """
 
 from __future__ import annotations
@@ -84,13 +84,14 @@ class LocalEnvironment(Environment):
 
 
 class WorktreeEnvironment(Environment):
-    """Isolated git worktree — for parallel teammate execution.
+    """Isolated git worktree — for parallel spawned-agent execution.
 
-    Each teammate gets a separate physical copy of the repo via `git worktree add`.
-    After task completion, changes are collected as a diff patch.
+    Each spawned agent gets a separate physical copy of the repo via
+    `git worktree add`. After task completion, changes are collected as a
+    diff patch.
 
-    This solves the concurrency problem: teammates cannot corrupt each other's
-    git state, env variables, or file locks.
+    This solves the concurrency problem: spawned agents cannot corrupt each
+    other's git state, env variables, or file locks.
 
     Ref: User feedback on blind spot #2 — parallel delegation must use
     separate physical workspaces, not just file locks.

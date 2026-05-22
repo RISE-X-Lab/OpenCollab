@@ -67,7 +67,7 @@ class _FakeSessionFactory:
     def build_lead_session(self, **kwargs):
         return _FakeLeadSession()
 
-    def build_teammate_session(self, *, role, env, budget, max_steps=50, aid=-1):
+    def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1):
         self.built.append((role, budget))
         queue = self._queues.get(role, [])
         result = queue.pop(0) if queue else ""

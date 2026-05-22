@@ -142,45 +142,10 @@ def test_tool_execution_prefers_execute_with_runtime(tmp_path):
     assert runtime.permission_policy is permission_policy
 
 
-def test_tool_execution_delegates_runtime_dispatch(tmp_path):
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    env = LocalEnvironment(str(ws))
-    safety_policy = SandboxInterceptor(str(ws))
-    permission_policy = FakePermissionPolicy()
-    proc = ToolExecutionUseCase(
-        agent=FakeAgent(),
-        environment=env,
-        state=SessionState(messages=[]),
-        event_publisher=EventBus(None),
-        safety_policy=safety_policy,
-        permission_policy=permission_policy,
-    )
-    tool = RuntimeAwareTool()
-    calls = []
-
-    async def fake_dispatch(dispatch_tool, args, runtime):
-        calls.append((dispatch_tool, args, runtime))
-        return "dispatched"
-
-    proc.dispatch_tool = fake_dispatch
-
-    result, _latency = asyncio.run(proc.execute_tool(tool, {"value": 1}))
-
-    assert result == "dispatched"
-    assert len(calls) == 1
-    dispatch_tool, args, runtime = calls[0]
-    assert dispatch_tool is tool
-    assert args == {"value": 1}
-    assert runtime.environment is env
-    assert runtime.safety_policy is safety_policy
-    assert runtime.permission_policy is permission_policy
-
-
 def test_tool_execution_does_not_expand_legacy_runtime_arguments():
     source = inspect.getsource(ToolExecutionUseCase.execute_tool)
 
-    assert "execute_tool(" in source or "dispatch_tool(" in source
+    assert "execute_with_runtime(" in source
     assert "getattr(tool" not in source
     assert "confirm_fn=runtime.confirm_fn()" not in source
     assert "interceptor=runtime.safety_policy" not in source

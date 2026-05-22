@@ -79,11 +79,11 @@ class FakeAgent:
 
 
 def fake_team_session_factory(*, safety_policy_factory=None):
-    from opencollab.bootstrap.container import DefaultSessionFactory, TeammateConfig
+    from opencollab.bootstrap.container import DefaultSessionFactory, SpawnConfig
 
     event_bus = EventBus()
     factory = DefaultSessionFactory(
-        TeammateConfig(
+        SpawnConfig(
             model="fake-model",
             provider="fake-provider",
             api_key="fake-key",
@@ -669,7 +669,7 @@ def test_context_compactor_with_insufficient_messages_only_emits_event():
     assert session.messages == original_messages
     assert session.used_tokens == 0
     assert [(event.type, event.data) for event in events] == [
-        ("compaction", {"reason": "context_overflow"})
+        ("compaction", {"reason": "context_overflow", "aid": -1})
     ]
 
 

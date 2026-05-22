@@ -2,9 +2,9 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 
+from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.tool_execution import (
     MAX_TOOL_OUTPUT_CHARS,
-    ToolExecutionEventFactory,
     ToolExecutionUseCase,
 )
 from opencollab.domain.session import SessionState
@@ -73,8 +73,17 @@ class RuntimeNativeTool:
         return self.output
 
 
-def event_factory() -> ToolExecutionEventFactory:
-    return ToolExecutionEventFactory(
+def event_factory() -> SessionEventFactory:
+    factory = default_session_event_factory(aid=-1)
+    # Wrap to use SimpleNamespace so tests that previously asserted on a
+    # plain object (no aid field) keep their assertion shapes.
+    return SessionEventFactory(
+        step_start=factory.step_start,
+        step_end=factory.step_end,
+        text_delta=factory.text_delta,
+        error=factory.error,
+        compaction=factory.compaction,
+        compaction_applied=factory.compaction_applied,
         loop_detected=lambda tool, count: SimpleNamespace(
             type="loop_detected",
             data={"tool": tool, "count": count},

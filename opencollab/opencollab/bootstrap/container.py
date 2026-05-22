@@ -1,8 +1,9 @@
 """Composition root for OpenCollab.
 
 Single file that knows how to wire every concrete adapter into the
-application use cases. CLI entry points (chat/team) and the harness build
-their session/team objects through the factory functions exposed here.
+application use cases. The CLI entry point (agent 0) and the eval harness
+build their session/scheduler objects through the factory functions exposed
+here.
 
 Contents (top to bottom):
 - ``RuntimeContext`` + ``build_runtime_context``: per-invocation context
@@ -16,8 +17,8 @@ Contents (top to bottom):
 - ``build_session`` / ``snapshot_session``: self-wiring application
   ``Session`` factories. Replaced the deleted ``bootstrap.session.Session``
   subclass that used to inherit from ``application.session.Session``.
-- ``TeammateConfig`` + ``build_teammate_session`` +
-  ``DefaultSessionFactory``: teammate-session wiring for spawned agents.
+- ``SpawnConfig`` + ``build_spawn_session`` +
+  ``DefaultSessionFactory``: spawn-session wiring used by the scheduler.
 - ``build_scheduler``: the high-level CLI entry point — builds agent 0 (the
   lead) plus the Scheduler that runs and spawns child agents.
 """
@@ -56,14 +57,13 @@ from opencollab.application.ports import (
     SessionStorePort,
     TracePort,
 )
+from opencollab.application.role_prompts import LEAD_SYSTEM_PROMPT, get_role_prompt
 from opencollab.application.scheduler import Scheduler
 from opencollab.application.session import Session, SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
-from opencollab.application.team_prompts import LEAD_SYSTEM_PROMPT, get_role_prompt
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionState
-
 
 # ---------------------------------------------------------------------------
 # Runtime context
@@ -324,13 +324,13 @@ def snapshot_session(session: Session) -> Session:
 
 
 # ---------------------------------------------------------------------------
-# Teammate session wiring
+# Spawn session wiring
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class TeammateConfig:
-    """Shared LLM/runtime config every teammate inherits from the Team."""
+class SpawnConfig:
+    """Shared LLM/runtime config inherited by every spawned agent session."""
 
     model: str
     provider: str
@@ -342,18 +342,18 @@ class TeammateConfig:
     safety_policy_factory: SafetyPolicyFactory | None = None
 
 
-def build_teammate_session(
+def build_spawn_session(
     *,
     role: str,
     env: Environment,
-    cfg: TeammateConfig,
+    cfg: SpawnConfig,
     budget: int,
     max_steps: int = 50,
     aid: int = -1,
 ) -> Session:
-    """Build the teammate Agent + Session bundle.
+    """Build the Agent + Session bundle for a spawned child agent.
 
-    Tools are stateless; safety policy wiring is derived from the teammate
+    Tools are stateless; the safety policy is derived from the child's
     environment and passed into the Session.
     """
     safety_policy = (
@@ -385,18 +385,18 @@ def build_teammate_session(
 
 
 class DefaultSessionFactory:
-    """Default ``SessionFactoryPort`` implementation used by ``Team``.
+    """Default ``SessionFactoryPort`` implementation used by the scheduler.
 
-    Holds the shared ``TeammateConfig`` so the team orchestrator can build
-    teammate sessions by role/env/budget without re-supplying LLM config.
-    Also exposes ``build_lead_session`` so the orchestrator can construct
-    the Lead session without importing ``Session`` directly.
+    Holds the shared ``SpawnConfig`` so the scheduler can build sessions for
+    spawned agents by role/env/budget without re-supplying LLM config. Also
+    exposes ``build_lead_session`` so agent 0 (the lead) can be constructed
+    without importing ``Session`` directly.
     """
 
-    def __init__(self, cfg: TeammateConfig):
+    def __init__(self, cfg: SpawnConfig):
         self._cfg = cfg
 
-    def build_teammate_session(
+    def build_spawn_session(
         self,
         *,
         role: str,
@@ -405,7 +405,7 @@ class DefaultSessionFactory:
         max_steps: int = 50,
         aid: int = -1,
     ) -> Session:
-        return build_teammate_session(
+        return build_spawn_session(
             role=role,
             env=env,
             cfg=self._cfg,
@@ -469,7 +469,7 @@ def build_scheduler(
     cfg = ctx.config
     event_bus = EventBus(ctx.event_sink)
     session_factory = DefaultSessionFactory(
-        TeammateConfig(
+        SpawnConfig(
             model=cfg["model"],
             provider=cfg["provider"],
             api_key=cfg["api_key"],
@@ -543,13 +543,13 @@ __all__ = [
     "DefaultSessionFactory",
     "RuntimeContext",
     "SessionRuntime",
-    "TeammateConfig",
+    "SpawnConfig",
     "build_default_tools",
     "build_runtime_context",
     "build_session",
     "build_session_runtime",
     "build_scheduler",
-    "build_teammate_session",
+    "build_spawn_session",
     "build_workspace_safety_policy",
     "load_session",
     "snapshot_session",

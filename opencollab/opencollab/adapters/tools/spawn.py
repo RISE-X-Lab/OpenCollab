@@ -6,7 +6,7 @@ from typing import Any
 
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.ports import SchedulerPort
-from opencollab.application.tool_runtime import ToolRuntime
+from opencollab.application.tool_execution import ToolRuntime
 
 
 class SpawnAgentTool(Tool):

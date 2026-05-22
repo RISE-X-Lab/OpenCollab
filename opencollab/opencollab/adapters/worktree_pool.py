@@ -1,8 +1,8 @@
-"""Lifecycle for per-teammate WorktreeEnvironments.
+"""Lifecycle for per-spawn WorktreeEnvironments.
 
-A teammate running in parallel needs its own physical workspace so it cannot
-corrupt a sibling's edits. WorktreePool encapsulates: create a worktree env
-for a given role, remember it for cleanup, tear them all down at the end.
+A spawned agent running in parallel needs its own physical workspace so it
+cannot corrupt a sibling's edits. WorktreePool encapsulates: create a worktree
+env for a given role, remember it for cleanup, tear them all down at the end.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ class WorktreePool:
         self._envs: list[WorktreeEnvironment] = []
 
     async def acquire(self, role: str) -> Environment:
-        """Create (and remember) an isolated env for a teammate of this role."""
+        """Create (and remember) an isolated env for a spawned agent of this role."""
         if not self._use_worktrees:
             return LocalEnvironment(self._workspace)
 

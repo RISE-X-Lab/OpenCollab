@@ -1,8 +1,16 @@
+"""Contract checks for inline tool dispatch in ToolExecutionUseCase.
+
+The old ``execute_tool_with_runtime`` indirection was removed; the use case
+now calls ``tool.execute_with_runtime(args, runtime)`` directly. These tests
+guard the runtime wiring (env / safety / permission policy passed to tools)
+and the layer boundary of ``tool_execution.py`` (the home of ``ToolRuntime``).
+"""
+
 import asyncio
 from pathlib import Path
 
-from opencollab.application.tool_dispatch import execute_tool_with_runtime
-from opencollab.application.tool_runtime import ToolRuntime
+from opencollab.application.tool_execution import ToolExecutionUseCase, ToolRuntime
+from opencollab.domain.session import SessionState
 
 
 def run(coro):
@@ -22,7 +30,25 @@ class FakePermissionPolicy:
         return True
 
 
+class FakeEventPublisher:
+    async def emit(self, event):
+        pass
+
+
+class FakeAgent:
+    def __init__(self, tools):
+        self.tools = tools
+
+    def find_tool(self, name):
+        for t in self.tools:
+            if t.name == name:
+                return t
+        return None
+
+
 class RuntimeNativeTool:
+    name = "fake_tool"
+
     def __init__(self):
         self.runtime_calls = []
 
@@ -31,42 +57,47 @@ class RuntimeNativeTool:
         return "runtime result"
 
 
-def test_execute_tool_with_runtime_calls_execute_with_runtime():
-    runtime = ToolRuntime(environment=FakeEnv(), safety_policy=FakeSafetyPolicy(), permission_policy=None)
+def _tool_call(args: str = "{}") -> dict:
+    return {"id": "c1", "function": {"name": "fake_tool", "arguments": args}}
+
+
+def test_use_case_invokes_tool_execute_with_runtime():
     tool = RuntimeNativeTool()
+    env = FakeEnv()
+    use_case = ToolExecutionUseCase(
+        agent=FakeAgent([tool]),
+        environment=env,
+        state=SessionState(messages=[]),
+        event_publisher=FakeEventPublisher(),
+        safety_policy=FakeSafetyPolicy(),
+        permission_policy=FakePermissionPolicy(),
+    )
 
-    result = run(execute_tool_with_runtime(tool, {"value": 1}, runtime))
+    result = run(use_case.process([_tool_call('{"value": 1}')]))
 
-    assert result == "runtime result"
-    assert tool.runtime_calls == [({"value": 1}, runtime)]
+    assert result.messages_to_append[0]["content"] == "runtime result"
+    params, runtime = tool.runtime_calls[0]
+    assert params == {"value": 1}
+    assert isinstance(runtime, ToolRuntime)
+    assert runtime.environment is env
 
 
-def test_execute_tool_with_runtime_passes_permission_policy_in_runtime():
-    permission_policy = FakePermissionPolicy()
+def test_runtime_exposes_confirm_fn_from_permission_policy():
+    permission = FakePermissionPolicy()
     runtime = ToolRuntime(
         environment=FakeEnv(),
         safety_policy=FakeSafetyPolicy(),
-        permission_policy=permission_policy,
+        permission_policy=permission,
     )
-    tool = RuntimeNativeTool()
 
-    run(execute_tool_with_runtime(tool, {"value": 1}, runtime))
-
-    _params, received_runtime = tool.runtime_calls[0]
-    assert received_runtime.permission_policy is permission_policy
-    assert received_runtime.confirm_fn() == permission_policy.confirm
+    assert runtime.confirm_fn() == permission.confirm
 
 
-def test_application_tool_runtime_modules_do_not_import_outer_layers():
+def test_tool_execution_module_does_not_import_outer_layers():
     package_root = Path(__file__).resolve().parents[1]
-    app_files = [
-        package_root / "opencollab/application/tool_dispatch.py",
-        package_root / "opencollab/application/tool_runtime.py",
-    ]
+    source = (package_root / "opencollab/application/tool_execution.py").read_text(encoding="utf-8")
 
-    for path in app_files:
-        source = path.read_text(encoding="utf-8")
-        assert "opencollab.core" not in source
-        assert "opencollab.tools" not in source
-        assert "opencollab.bootstrap" not in source
-        assert "opencollab.tui" not in source
+    assert "opencollab.core" not in source
+    assert "opencollab.tools" not in source
+    assert "opencollab.bootstrap" not in source
+    assert "opencollab.tui" not in source

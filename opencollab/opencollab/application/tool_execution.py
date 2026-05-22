@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
     EnvironmentPort,
     EventPublisherPort,
@@ -13,9 +14,6 @@ from opencollab.application.ports import (
     SafetyPolicyPort,
     TracePort,
 )
-from opencollab.application.tool_dispatch import execute_tool_with_runtime
-from opencollab.application.tool_runtime import ToolRuntime
-from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionState
 from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, LoopDetection, ToolProcessingResult
 
@@ -26,27 +24,16 @@ MAX_TOOL_OUTPUT_CHARS = 16_000
 
 
 @dataclass(frozen=True)
-class ToolExecutionEventFactory:
-    loop_detected: Callable[[str, int], Any]
-    tool_start: Callable[[str, dict[str, Any]], Any]
-    tool_end: Callable[[str, float], Any]
+class ToolRuntime:
+    environment: EnvironmentPort | None
+    safety_policy: SafetyPolicyPort | None
+    permission_policy: PermissionPort | None
+    aid: int = -1
 
-
-def default_tool_execution_event_factory(aid: int = -1) -> ToolExecutionEventFactory:
-    return ToolExecutionEventFactory(
-        loop_detected=lambda tool, count: SessionEvent(
-            type="loop_detected",
-            data={"tool": tool, "count": count, "aid": aid},
-        ),
-        tool_start=lambda tool, args: SessionEvent(
-            type="tool_start",
-            data={"tool": tool, "args": args, "aid": aid},
-        ),
-        tool_end=lambda tool, latency: SessionEvent(
-            type="tool_end",
-            data={"tool": tool, "latency": latency, "aid": aid},
-        ),
-    )
+    def confirm_fn(self):
+        if self.permission_policy is None:
+            return None
+        return self.permission_policy.confirm
 
 
 class CallbackPermissionPolicy:
@@ -65,21 +52,19 @@ class ToolExecutionUseCase:
         environment: EnvironmentPort | None,
         state: SessionState,
         event_publisher: EventPublisherPort,
-        event_factory: ToolExecutionEventFactory | None = None,
+        event_factory: SessionEventFactory | None = None,
         tracer: TracePort | None = None,
         permission_policy: PermissionPort | None = None,
         safety_policy: SafetyPolicyPort | None = None,
-        dispatch_tool: Callable[[Any, dict[str, Any], ToolRuntime], Awaitable[str]] = execute_tool_with_runtime,
     ):
         self.agent = agent
         self.environment = environment
         self.state = state
         self.event_publisher = event_publisher
-        self.event_factory = event_factory or default_tool_execution_event_factory(state.aid)
+        self.event_factory = event_factory or default_session_event_factory(state.aid)
         self.tracer = tracer
         self.permission_policy = permission_policy
         self.safety_policy = safety_policy
-        self.dispatch_tool = dispatch_tool
 
     async def process(self, tool_calls: list[dict]) -> ToolProcessingResult:
         result = ToolProcessingResult()
@@ -162,7 +147,7 @@ class ToolExecutionUseCase:
         start = time.monotonic()
         runtime = self.tool_runtime()
         try:
-            result = await self.dispatch_tool(tool, args, runtime)
+            result = await tool.execute_with_runtime(args, runtime)
         except PermissionError as e:
             result = f"Permission denied: {e}"
         except Exception as e:

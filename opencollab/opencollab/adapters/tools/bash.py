@@ -12,7 +12,7 @@ from __future__ import annotations
 from typing import Any
 
 from opencollab.adapters.tools.base import Tool
-from opencollab.application.tool_runtime import ToolRuntime
+from opencollab.application.tool_execution import ToolRuntime
 
 # Max chars to keep from stdout/stderr (ref: user feedback blind spot #1)
 MAX_OUTPUT_CHARS = 8_000

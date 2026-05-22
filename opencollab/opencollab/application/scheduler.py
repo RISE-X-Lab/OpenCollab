@@ -1,7 +1,6 @@
 """Scheduler — passive process tracker for multi-agent execution.
 
-Replaces the active Team orchestrator with a scheduler model:
-- SCBs track agent state in a ProcessTable
+Tracks every Session as a SessionControlBlock in a ProcessTable:
 - spawn() is non-blocking (returns aid immediately)
 - Agents run in parallel via asyncio.create_task
 - Results are delivered to parents via message injection into parent state
@@ -97,7 +96,7 @@ class Scheduler:
         budget = split_budget(self._max_budget_tokens, self.used_tokens)
 
         # Build session via factory
-        session = self._session_factory.build_teammate_session(
+        session = self._session_factory.build_spawn_session(
             role=role,
             env=env,
             budget=budget,
