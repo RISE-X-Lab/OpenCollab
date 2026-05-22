@@ -6,7 +6,7 @@ SessionControlBlock (SCB) is the analogue of an OS PCB:
 - agent: the Agent configuration (model, tools, prompt)
 - state: SessionState (messages, tokens, steps, phase)
 
-ProcessTable is the scheduler's registry of all SCBs.
+SessionTable is the scheduler's registry of all SCBs.
 """
 
 from __future__ import annotations
@@ -76,8 +76,8 @@ class SessionControlBlock:
 
 
 @dataclass
-class ProcessTable:
-    """The scheduler's registry of all agent processes."""
+class SessionTable:
+    """The scheduler's registry of all agent sessions."""
 
     entries: dict[int, SessionControlBlock] = field(default_factory=dict)
     _next_aid: int = field(default=0, repr=False)
@@ -101,24 +101,13 @@ class ProcessTable:
         return sum(scb.state.used_tokens for scb in self.entries.values())
 
     def all_done(self) -> bool:
-        from opencollab.domain.session import SessionPhase
-
-        return all(
-            scb.state.phase
-            in {
-                SessionPhase.DONE,
-                SessionPhase.CANCELLED,
-                SessionPhase.BUDGET_EXCEEDED,
-                SessionPhase.ERROR,
-            }
-            for scb in self.entries.values()
-        )
+        return all(scb.state.phase.is_terminal() for scb in self.entries.values())
 
 
 __all__ = [
     "DelegationTask",
-    "ProcessTable",
     "ReviewVerdict",
     "SessionControlBlock",
+    "SessionTable",
     "split_budget",
 ]

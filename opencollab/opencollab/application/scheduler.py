@@ -1,6 +1,6 @@
 """Scheduler — passive process tracker for multi-agent execution.
 
-Tracks every Session as a SessionControlBlock in a ProcessTable:
+Tracks every Session as a SessionControlBlock in a SessionTable:
 - spawn() is non-blocking (returns aid immediately)
 - Agents run in parallel via asyncio.create_task
 - Results are delivered to parents via message injection into parent state
@@ -22,7 +22,7 @@ from opencollab.application.ports import (
     WorktreePoolPort,
 )
 from opencollab.domain.events import SchedulerEvent
-from opencollab.domain.scheduler import DelegationTask, ProcessTable, ReviewVerdict, SessionControlBlock, split_budget
+from opencollab.domain.scheduler import DelegationTask, ReviewVerdict, SessionControlBlock, SessionTable, split_budget
 from opencollab.domain.session import SessionPhase
 
 
@@ -44,7 +44,7 @@ class Scheduler:
     """Passive scheduler that tracks SCBs and runs agents in parallel.
 
     Design:
-    - ProcessTable holds all SCBs (pure data, no I/O)
+    - SessionTable holds all SCBs (pure data, no I/O)
     - spawn() creates a new SCB and schedules it for execution
     - run() drives the main loop, waiting for all agents to complete
     - Results are injected into parent sessions as system messages
@@ -67,7 +67,7 @@ class Scheduler:
         self._max_budget_tokens = max_budget_tokens
         self._permission_policy = permission_policy
 
-        self.table = ProcessTable()
+        self.table = SessionTable()
         self._tasks: dict[int, asyncio.Task] = {}
         self._lead_session: Any | None = None
 
@@ -142,6 +142,7 @@ class Scheduler:
         # Add task to session messages
         delegation = DelegationTask(role=role, task=task, context=context)
         await session.add_user_message(delegation.render())
+        session.state.set_phase(SessionPhase.SCHEDULED)
 
         # Create SCB
         scb = SessionControlBlock(
@@ -170,7 +171,6 @@ class Scheduler:
             return
 
         start = time.monotonic()
-        scb.state.set_phase(SessionPhase.IDLE)
 
         try:
             result = await session.run_loop()
@@ -237,12 +237,7 @@ class Scheduler:
             return
 
         # Only inject if parent is still running (not terminal)
-        if parent_scb.state.phase in {
-            SessionPhase.DONE,
-            SessionPhase.CANCELLED,
-            SessionPhase.BUDGET_EXCEEDED,
-            SessionPhase.ERROR,
-        }:
+        if parent_scb.state.phase.is_terminal():
             return
 
         parent_scb.state.append_message({
@@ -324,7 +319,7 @@ class Scheduler:
         """Self-Collaboration: Coder -> Reviewer loop.
 
         Runs sequentially within the scheduler but tracks each agent in the
-        ProcessTable for observability.
+        SessionTable for observability.
         """
         current_task = task
         last_result = ""

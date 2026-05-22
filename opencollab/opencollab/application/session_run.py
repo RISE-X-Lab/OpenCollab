@@ -47,12 +47,11 @@ class SessionRunUseCase:
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         try:
-            self.state.set_phase(SessionPhase.IDLE)
-            while (
-                not self.state.is_done
-                and not self.is_terminal_phase()
-                and self.state.step_count < self.max_steps
-            ):
+            # A completed turn (DONE) short-circuits to its last answer; an
+            # aborted turn (cancelled/budget/error) is reset so a re-run resumes.
+            if self.is_terminal_phase() and self.state.phase is not SessionPhase.DONE:
+                self.state.set_phase(SessionPhase.IDLE)
+            while not self.is_terminal_phase() and self.state.step_count < self.max_steps:
                 await self.advance(cancel_event)
 
         except asyncio.CancelledError:
@@ -69,15 +68,12 @@ class SessionRunUseCase:
         return ""
 
     def is_terminal_phase(self) -> bool:
-        return self.state.phase in {
-            SessionPhase.DONE,
-            SessionPhase.CANCELLED,
-            SessionPhase.BUDGET_EXCEEDED,
-            SessionPhase.ERROR,
-        }
+        return self.state.phase.is_terminal()
 
     async def advance(self, cancel_event: asyncio.Event | None = None) -> None:
         match self.state.phase:
+            case SessionPhase.SCHEDULED:
+                self.state.set_phase(SessionPhase.IDLE)
             case SessionPhase.IDLE:
                 self.state.set_phase(SessionPhase.PRECHECK)
             case SessionPhase.PRECHECK:
@@ -158,7 +154,6 @@ class SessionRunUseCase:
             self.state.set_phase(SessionPhase.EXECUTING_TOOLS)
             return
 
-        self.state.mark_done()
         await self.finish_step(self._pending_latency)
         self.clear_pending_step()
         self.state.set_phase(SessionPhase.DONE)
@@ -176,7 +171,7 @@ class SessionRunUseCase:
     async def autosave_pending_step(self) -> None:
         await self.finish_step(self._pending_latency)
         self.clear_pending_step()
-        self.state.set_phase(SessionPhase.DONE if self.state.is_done else SessionPhase.PRECHECK)
+        self.state.set_phase(SessionPhase.PRECHECK)
 
     def clear_pending_step(self) -> None:
         self._pending_response = None

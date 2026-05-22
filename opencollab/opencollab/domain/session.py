@@ -19,16 +19,32 @@ class SessionPhase(Enum):
     BUDGET_EXCEEDED = "budget_exceeded"
     ERROR = "error"
 
+    def is_terminal(self) -> bool:
+        return self in TERMINAL_PHASES
+
+
+TERMINAL_PHASES = frozenset(
+    {
+        SessionPhase.DONE,
+        SessionPhase.CANCELLED,
+        SessionPhase.BUDGET_EXCEEDED,
+        SessionPhase.ERROR,
+    }
+)
+
 
 @dataclass
 class SessionState:
     messages: list[dict[str, Any]]
     used_tokens: int = 0
     step_count: int = 0
-    is_done: bool = False
     recent_call_hashes: list[str] = field(default_factory=list)
     phase: SessionPhase = SessionPhase.IDLE
     aid: int = -1
+
+    @property
+    def is_done(self) -> bool:
+        return self.phase == SessionPhase.DONE
 
     def append_message(self, message: dict[str, Any]) -> None:
         self.messages.append(message)
@@ -50,7 +66,10 @@ class SessionState:
         self.step_count = step_count
 
     def mark_done(self, done: bool = True) -> None:
-        self.is_done = done
+        if done:
+            self.phase = SessionPhase.DONE
+        elif self.phase == SessionPhase.DONE:
+            self.phase = SessionPhase.IDLE
 
     def set_phase(self, phase: SessionPhase) -> None:
         self.phase = phase
