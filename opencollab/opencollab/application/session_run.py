@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from opencollab.application.compaction import ContextCompactionUseCase
@@ -9,6 +10,17 @@ from opencollab.application.events import SessionEventFactory, default_session_e
 from opencollab.application.ports import EventPublisherPort, LLMPort, TracePort
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.session import SessionPhase, SessionState
+
+
+@dataclass
+class PendingStep:
+    """The LLM response carried across HANDLING_RESPONSE → EXECUTING_TOOLS →
+    AUTOSAVING. Lives here, not in domain ``SessionState``: the response is an
+    adapter-shaped object and would breach the inward dependency rule.
+    """
+
+    response: Any
+    latency: float
 
 
 class SessionRunUseCase:
@@ -42,15 +54,14 @@ class SessionRunUseCase:
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
         self.max_steps = max_steps
-        self._pending_response: Any | None = None
-        self._pending_latency: float = 0.0
+        self._pending: PendingStep | None = None
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         try:
             # A completed turn (DONE) short-circuits to its last answer; an
             # aborted turn (cancelled/budget/error) is reset so a re-run resumes.
             if self.is_terminal_phase() and self.state.phase is not SessionPhase.DONE:
-                self.state.set_phase(SessionPhase.IDLE)
+                self.state.transition_to(SessionPhase.IDLE)
             while not self.is_terminal_phase() and self.state.step_count < self.max_steps:
                 await self.advance(cancel_event)
 
@@ -73,9 +84,9 @@ class SessionRunUseCase:
     async def advance(self, cancel_event: asyncio.Event | None = None) -> None:
         match self.state.phase:
             case SessionPhase.SCHEDULED:
-                self.state.set_phase(SessionPhase.IDLE)
+                self.state.transition_to(SessionPhase.IDLE)
             case SessionPhase.IDLE:
-                self.state.set_phase(SessionPhase.PRECHECK)
+                self.state.transition_to(SessionPhase.PRECHECK)
             case SessionPhase.PRECHECK:
                 await self.precheck(cancel_event)
             case SessionPhase.COMPACTING:
@@ -96,7 +107,7 @@ class SessionRunUseCase:
         if cancel_event and cancel_event.is_set():
             self.state.append_message({"role": "system", "content": "[Session interrupted by user]"})
             await self.event_publisher.emit(self.event_factory.error("cancelled"))
-            self.state.set_phase(SessionPhase.CANCELLED)
+            self.state.transition_to(SessionPhase.CANCELLED)
             return
 
         if self.state.used_tokens >= self.max_budget_tokens:
@@ -107,14 +118,14 @@ class SessionRunUseCase:
                 }
             )
             await self.event_publisher.emit(self.event_factory.error("budget_exceeded"))
-            self.state.set_phase(SessionPhase.BUDGET_EXCEEDED)
+            self.state.transition_to(SessionPhase.BUDGET_EXCEEDED)
             return
 
         if self.compaction.should_compact():
-            self.state.set_phase(SessionPhase.COMPACTING)
+            self.state.transition_to(SessionPhase.COMPACTING)
             return
 
-        self.state.set_phase(SessionPhase.CALLING_LLM)
+        self.state.transition_to(SessionPhase.CALLING_LLM)
 
     async def run_compaction(self) -> None:
         result = await self.compaction.compact(apply=False)
@@ -123,7 +134,7 @@ class SessionRunUseCase:
             await self.event_publisher.emit(
                 self.event_factory.compaction_applied(self.state.used_tokens)
             )
-        self.state.set_phase(SessionPhase.CALLING_LLM)
+        self.state.transition_to(SessionPhase.CALLING_LLM)
 
     async def run_llm_call(self) -> None:
         self.state.advance_step()
@@ -137,45 +148,46 @@ class SessionRunUseCase:
 
         self.record_llm_trace(response, latency)
         self.append_assistant_message(response)
-        self._pending_response = response
-        self._pending_latency = latency
-        self.state.set_phase(SessionPhase.HANDLING_RESPONSE)
+        self._pending = PendingStep(response=response, latency=latency)
+        self.state.transition_to(SessionPhase.HANDLING_RESPONSE)
 
     async def handle_pending_response(self) -> None:
-        response = self._pending_response
-        if response is None:
+        pending = self._pending
+        if pending is None:
             self.state.set_phase(SessionPhase.ERROR)
             raise RuntimeError("Cannot handle assistant response before calling LLM")
+        response = pending.response
 
         if response.content:
             await self.event_publisher.emit(self.event_factory.text_delta(response.content))
 
         if response.tool_calls:
-            self.state.set_phase(SessionPhase.EXECUTING_TOOLS)
+            self.state.transition_to(SessionPhase.EXECUTING_TOOLS)
             return
 
-        await self.finish_step(self._pending_latency)
+        await self.finish_step(pending.latency)
         self.clear_pending_step()
-        self.state.set_phase(SessionPhase.DONE)
+        self.state.transition_to(SessionPhase.DONE)
 
     async def execute_pending_tools(self) -> None:
-        response = self._pending_response
-        if response is None:
+        pending = self._pending
+        if pending is None:
             self.state.set_phase(SessionPhase.ERROR)
             raise RuntimeError("Cannot execute tools before calling LLM")
 
-        result = await self.tool_execution.process(response.tool_calls)
+        result = await self.tool_execution.process(pending.response.tool_calls)
         result.apply_to(self.state)
-        self.state.set_phase(SessionPhase.AUTOSAVING)
+        self.state.transition_to(SessionPhase.AUTOSAVING)
 
     async def autosave_pending_step(self) -> None:
-        await self.finish_step(self._pending_latency)
+        pending = self._pending
+        latency = pending.latency if pending is not None else 0.0
+        await self.finish_step(latency)
         self.clear_pending_step()
-        self.state.set_phase(SessionPhase.PRECHECK)
+        self.state.transition_to(SessionPhase.PRECHECK)
 
     def clear_pending_step(self) -> None:
-        self._pending_response = None
-        self._pending_latency = 0.0
+        self._pending = None
 
     def build_tool_schemas(self) -> list[dict] | None:
         return self.agent.tool_schemas() or None

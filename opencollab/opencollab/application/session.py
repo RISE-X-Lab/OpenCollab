@@ -144,7 +144,10 @@ class Session:
 
     @is_done.setter
     def is_done(self, value: bool) -> None:
-        self.state.mark_done(value)
+        if value:
+            self.state.mark_done()
+        else:
+            self.state.clear_done()
 
     @property
     def _recent_call_hashes(self) -> list[str]:
