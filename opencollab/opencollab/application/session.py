@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from opencollab.application.compaction import DEFAULT_COMPACTION_THRESHOLD, ContextCompactionUseCase
 from opencollab.application.event_bus import EventBus
@@ -18,6 +20,9 @@ from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import Agent
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionPhase, SessionState
+
+if TYPE_CHECKING:
+    from opencollab.application.scheduler import LaunchSpec
 
 
 class BudgetExceededError(Exception):
@@ -78,6 +83,7 @@ class Session:
         self._permission_policy = permission_policy
         self._safety_policy = safety_policy
         self._auto_save_path = auto_save_path
+        self._launch_applied = False
 
         # Adopt the runtime's collaborators as Session attributes so the
         # public surface stays exactly what it used to be.
@@ -163,6 +169,23 @@ class Session:
         self.state.append_message({"role": "user", "content": content})
         self.state.reset_for_user_turn()
         await self.event_bus.emit(SessionEvent(type="user_message_appended"))
+
+    def apply_launch(self, launch: "LaunchSpec") -> None:
+        """Apply launch-time persistence as a one-shot lifecycle step.
+
+        Resumes from ``launch.session_file`` if it exists, otherwise seeds the
+        auto-save file. Idempotent: a second call is a no-op, so live message
+        state is never clobbered by a re-resume and the seed file is not
+        re-truncated. The ongoing per-event ``AutoSaveSubscriber`` (wired at
+        construction) is a separate concern and unaffected.
+        """
+        if self._launch_applied:
+            return
+        self._launch_applied = True
+        if launch.session_file and os.path.exists(launch.session_file):
+            self.messages = self.store.load_messages(launch.session_file, self.agent.system_prompt)
+        elif launch.auto_save_path:
+            self.save(launch.auto_save_path)
 
     def save(self, path: str) -> None:
         self.store.save(path, self.messages)

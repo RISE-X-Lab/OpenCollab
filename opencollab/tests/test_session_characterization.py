@@ -78,7 +78,7 @@ class FakeAgent:
         return None
 
 
-def fake_team_session_factory(*, safety_policy_factory=None):
+def fake_team_session_factory(*, safety_policy_factory=None, lead_workspace=None, interactive=False):
     from opencollab.bootstrap.container import DefaultSessionFactory, SpawnConfig
 
     event_bus = EventBus()
@@ -92,7 +92,9 @@ def fake_team_session_factory(*, safety_policy_factory=None):
             event_bus=event_bus,
             permission_policy=None,
             safety_policy_factory=safety_policy_factory,
-        )
+        ),
+        lead_workspace=lead_workspace,
+        interactive=interactive,
     )
     return event_bus, factory
 
@@ -736,90 +738,62 @@ def test_session_runtime_config_desync_after_mutating_env_and_max_steps():
     assert session.runner.max_steps == old_max_steps
 
 
-def test_scheduler_lead_session_runtime_uses_constructor_env_and_max_steps(monkeypatch):
-    from opencollab.application.scheduler import Scheduler
-    from opencollab.bootstrap import container as session_module
+def test_scheduler_init_process_lead_uses_workspace_local_env(tmp_path, monkeypatch):
+    import os
 
-    monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
-
-    lead_env = object()
-    lead_max_steps = 7
-    event_bus, session_factory = fake_team_session_factory()
-
-    lead_session = session_factory.build_lead_session(
-        agent=FakeAgent(),
-        env=lead_env,
-        tracer=None,
-        max_budget_tokens=100_000,
-        event_sink=event_bus,
-        permission_policy=None,
-        safety_policy=None,
-        max_steps=lead_max_steps,
-    )
-
-    scheduler = Scheduler(
-        session_factory=session_factory,
-        worktree_pool=fake_worktree_pool(),
-        event_sink=event_bus,
-    )
-    scheduler.register_lead(lead_session)
-
-    assert scheduler._lead_session.env is lead_env
-    assert scheduler._lead_session.tool_execution.environment is lead_env
-    assert scheduler._lead_session.max_steps == lead_max_steps
-    assert scheduler._lead_session.runner.max_steps == lead_max_steps
-
-
-def test_scheduler_lead_session_gets_workspace_safety_policy(tmp_path, monkeypatch):
     from opencollab.adapters.env import LocalEnvironment
-    from opencollab.adapters.safety import SandboxInterceptor
-    from opencollab.application.scheduler import Scheduler
+    from opencollab.application.scheduler import LaunchSpec, Scheduler
     from opencollab.bootstrap import container as session_module
-    from opencollab.bootstrap.container import build_workspace_safety_policy
 
     monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
-    event_bus, session_factory = fake_team_session_factory(
-        safety_policy_factory=build_workspace_safety_policy,
-    )
-
-    lead_session = session_factory.build_lead_session(
-        agent=FakeAgent(),
-        env=LocalEnvironment(str(tmp_path)),
-        tracer=None,
-        max_budget_tokens=100_000,
-        event_sink=event_bus,
-        permission_policy=None,
-        safety_policy=build_workspace_safety_policy(LocalEnvironment(str(tmp_path))),
-    )
+    event_bus, session_factory = fake_team_session_factory(lead_workspace=str(tmp_path))
 
     scheduler = Scheduler(
         session_factory=session_factory,
         worktree_pool=fake_worktree_pool(),
         event_sink=event_bus,
     )
-    scheduler.register_lead(lead_session)
+    scheduler.create_init_process(LaunchSpec())
+
+    lead = scheduler._lead_session
+    assert isinstance(lead.env, LocalEnvironment)
+    assert lead.env.workspace == os.path.abspath(str(tmp_path))
+    assert lead.tool_execution.environment is lead.env
+    tool_names = {t.name for t in lead.agent.tools}
+    assert {"spawn_agent", "spawn_with_review"} <= tool_names
+
+
+def test_scheduler_init_process_lead_gets_workspace_safety_policy(tmp_path, monkeypatch):
+    from opencollab.adapters.safety import SandboxInterceptor
+    from opencollab.application.scheduler import LaunchSpec, Scheduler
+    from opencollab.bootstrap import container as session_module
+
+    monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
+    event_bus, session_factory = fake_team_session_factory(lead_workspace=str(tmp_path))
+
+    scheduler = Scheduler(
+        session_factory=session_factory,
+        worktree_pool=fake_worktree_pool(),
+        event_sink=event_bus,
+    )
+    scheduler.create_init_process(LaunchSpec())
 
     policy = scheduler._lead_session.tool_execution.safety_policy
     assert isinstance(policy, SandboxInterceptor)
     assert policy.root == str(tmp_path.resolve())
 
 
-def test_direct_scheduler_without_safety_factory_does_not_build_safety_policy(tmp_path, monkeypatch):
-    from opencollab.adapters.env import LocalEnvironment
-    from opencollab.application.scheduler import Scheduler
+def test_lead_safety_policy_is_independent_of_child_safety_factory(tmp_path, monkeypatch):
+    from opencollab.adapters.safety import SandboxInterceptor
+    from opencollab.application.scheduler import LaunchSpec, Scheduler
     from opencollab.bootstrap import container as session_module
 
+    # The child-session ``safety_policy_factory`` does not govern the lead: the
+    # lead always gets a workspace-rooted sandbox built from its local env.
     monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: FakeLLMClient())
-    event_bus, session_factory = fake_team_session_factory()
-
-    lead_session = session_factory.build_lead_session(
-        agent=FakeAgent(),
-        env=LocalEnvironment(str(tmp_path)),
-        tracer=None,
-        max_budget_tokens=100_000,
-        event_sink=event_bus,
-        permission_policy=None,
-        safety_policy=None,
+    event_bus, session_factory = fake_team_session_factory(
+        safety_policy_factory=None,
+        lead_workspace=str(tmp_path),
     )
 
     scheduler = Scheduler(
@@ -827,9 +801,11 @@ def test_direct_scheduler_without_safety_factory_does_not_build_safety_policy(tm
         worktree_pool=fake_worktree_pool(),
         event_sink=event_bus,
     )
-    scheduler.register_lead(lead_session)
+    scheduler.create_init_process(LaunchSpec())
 
-    assert scheduler._lead_session.tool_execution.safety_policy is None
+    policy = scheduler._lead_session.tool_execution.safety_policy
+    assert isinstance(policy, SandboxInterceptor)
+    assert policy.root == str(tmp_path.resolve())
 
 
 def test_save_and_load_round_trip_only_messages(tmp_path):

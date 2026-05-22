@@ -3,11 +3,11 @@ import os
 import pytest
 
 from opencollab.adapters.safety import SandboxInterceptor
-from opencollab.application.role_prompts import LEAD_SYSTEM_PROMPT
 from opencollab.bootstrap import (
     build_runtime_context,
     build_scheduler,
 )
+from opencollab.bootstrap.container import LEAD_SYSTEM_PROMPT
 
 
 def _cfg(**overrides):

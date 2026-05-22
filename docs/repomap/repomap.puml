@@ -16,6 +16,19 @@ skinparam defaultFontName Helvetica
 '   * app.session keeps a single Session facade rather than the
 '     RunSession/AddUserMessage/SnapshotSession split.
 ' Closed since the prior snapshot:
+'   * Agent 0 is now born inside the Scheduler. New
+'     Scheduler.create_init_process(LaunchSpec) builds the
+'     lead via SessionFactoryPort.create_lead_session and
+'     applies the launch spec; register_lead is the
+'     registration primitive it delegates to. The container
+'     no longer assembles + registers the lead or splices its
+'     spawn tools -- it only wires deps and passes a LaunchSpec
+'     (session_file + auto_save_path). LaunchSpec lives in
+'     app.scheduler; Session.apply_launch (idempotent
+'     resume/seed) owns the persistence detail.
+'   * app.role_prompts deleted. LEAD_SYSTEM_PROMPT, the role
+'     prompts, and get_role_prompt were inlined into
+'     bootstrap.container, its only consumer.
 '   * The three per-use-case event factories
 '     (SessionRunEventFactory / ToolExecutionEventFactory /
 '     CompactionEventFactory) collapsed into one
@@ -54,20 +67,19 @@ package "Interface Adapters" as ADAPTERS #FDEBD0 {
 }
 
 package "Composition Root\n(bootstrap, 2 files)" as COMPOSITION #EBF5FB {
-  [bootstrap.container\nbuild_runtime_context\nbuild_session_runtime\nbuild_session / snapshot_session / load_session\nbuild_scheduler\nbuild_spawn_session\nDefaultSessionFactory + SpawnConfig\nbuild_default_tools\nbuild_workspace_safety_policy] as Container
+  [bootstrap.container\nbuild_runtime_context\nbuild_session_runtime\nbuild_session / snapshot_session / load_session\nbuild_scheduler\nbuild_spawn_session\nDefaultSessionFactory (build_spawn_session +\ncreate_lead_session) + SpawnConfig\nbuild_default_tools\nbuild_workspace_safety_policy] as Container
   [bootstrap.config\nload config + env] as Config
 }
 
 package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
-  [app.session\nSession + SessionRuntime] as SessionFacade
+  [app.session\nSession + SessionRuntime\napply_launch (idempotent resume/seed)] as SessionFacade
   [app.session_run\nSessionRunUseCase] as SessionRunner
   [app.compaction\nContextCompactionUseCase] as Compactor
   [app.tool_execution\nToolExecutionUseCase + ToolRuntime\nCallbackPermissionPolicy] as ToolExec
-  [app.scheduler\nScheduler (agent 0 + spawn,\nparallel via asyncio.create_task)] as SchedulerUC
+  [app.scheduler\nScheduler\ncreate_init_process (agent 0) + spawn (children),\nparallel via asyncio.create_task\nLaunchSpec] as SchedulerUC
   [app.autosave\nAutoSaveSubscriber] as Autosave
   [app.event_bus\nEventBus (fan-out)] as EventBus
   [app.events\nSessionEventFactory\n(one builder, all run-loop events)] as EventsModule
-  [app.role_prompts\nLEAD_SYSTEM_PROMPT\nget_role_prompt] as RolePrompts
 
   interface "LLMPort" as LLMPort
   interface "EnvironmentPort" as EnvPort
@@ -131,7 +143,6 @@ Container --> SafetyAdapter
 Container --> ToolAdapters
 Container --> SessionFacade
 Container --> SchedulerUC
-Container --> RolePrompts
 
 CliAdapter --> Container : invokes build_scheduler
 
@@ -213,16 +224,22 @@ note right of APP
   SessionRunUseCase, ContextCompactionUseCase,
   and ToolExecutionUseCase are the only run-loop /
   compaction / tool-execution types. Scheduler owns
-  all Session processes: agent 0 (aid=0) plus children
-  spawned in parallel via asyncio.create_task, tracked
-  in a ProcessTable of SessionControlBlocks.
+  all Session processes: agent 0 (aid=0) created via
+  create_init_process (the OS-style init process) plus
+  children spawned by spawn(), all in parallel via
+  asyncio.create_task and tracked in a ProcessTable of
+  SessionControlBlocks. Both build through
+  SessionFactoryPort, so the scheduler never imports
+  Session or knows env/tool/prompt/store detail.
 end note
 
 note right of COMPOSITION
   2 bootstrap files: container + config.
   bootstrap.container is the single composition
-  root. build_scheduler() builds agent 0 (the lead)
-  with spawn tools plus the Scheduler; build_session()
+  root. build_scheduler() wires deps and hands the
+  Scheduler a LaunchSpec; the Scheduler builds agent 0
+  through DefaultSessionFactory.create_lead_session
+  (lead env + spawn tools + prompt). build_session()
   is the free factory returning application.session.Session;
   snapshot_session and load_session are sibling functions.
   SpawnConfig + build_spawn_session wire sessions for

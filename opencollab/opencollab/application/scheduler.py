@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from opencollab.application.ports import (
@@ -23,6 +24,20 @@ from opencollab.application.ports import (
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.scheduler import DelegationTask, ProcessTable, ReviewVerdict, SessionControlBlock, split_budget
 from opencollab.domain.session import SessionPhase
+
+
+@dataclass(frozen=True)
+class LaunchSpec:
+    """Launch-time persistence spec for a session process.
+
+    Carries *where* to restore from and *where* to checkpoint. The scheduler
+    sequences resume/seed as a launch lifecycle step (``create_init_process``
+    -> ``Session.apply_launch``); the Session/Store own *how*. Pure data — the
+    scheduler forwards it without interpreting the contents.
+    """
+
+    session_file: str | None = None
+    auto_save_path: str | None = None
 
 
 class Scheduler:
@@ -67,7 +82,12 @@ class Scheduler:
         return self._lead_session
 
     def register_lead(self, session: Any) -> int:
-        """Register the initial agent (aid=0)."""
+        """Register an already-built session as agent 0 (aid=0).
+
+        Low-level primitive: assigns aid, marks SCHEDULED, adds the SCB, and
+        stores the lead handle. ``create_init_process`` builds the session and
+        delegates here; tests can register a pre-built (or fake) lead directly.
+        """
         aid = self.table.allocate_aid()  # = 0
         session.state.aid = aid
         session.state.set_phase(SessionPhase.SCHEDULED)
@@ -80,6 +100,22 @@ class Scheduler:
         self.table.add(scb)
         self._lead_session = session
         return aid
+
+    def create_init_process(self, launch: LaunchSpec) -> int:
+        """Create and register agent 0 — the init process (aid=0).
+
+        The factory owns construction (env, tools, prompt, store); the
+        scheduler owns the launch lifecycle: build via the factory, apply the
+        launch spec (resume or seed), then register. The root-process mirror of
+        ``spawn``.
+        """
+        session = self._session_factory.create_lead_session(
+            scheduler=self,
+            launch=launch,
+            budget=self._max_budget_tokens,
+        )
+        session.apply_launch(launch)
+        return self.register_lead(session)
 
     async def spawn(
         self,
@@ -245,7 +281,7 @@ class Scheduler:
     async def run(self, user_message: str) -> str:
         """Send message to lead and run until all spawned agents finish."""
         if self._lead_session is None:
-            raise RuntimeError("Scheduler has no lead session. Call register_lead() first.")
+            raise RuntimeError("Scheduler has no lead session. Call create_init_process() first.")
 
         await self._lead_session.add_user_message(user_message)
         self._tasks[0] = asyncio.create_task(self._lead_session.run_loop())
@@ -354,4 +390,4 @@ class Scheduler:
         )
 
 
-__all__ = ["Scheduler"]
+__all__ = ["LaunchSpec", "Scheduler"]

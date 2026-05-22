@@ -65,12 +65,13 @@ class ToolPort(Protocol):
 
 
 class SessionFactoryPort(Protocol):
-    """Factory the scheduler uses to build a session for a spawned agent.
+    """Factory the scheduler uses to build sessions.
 
-    Bootstrap binds this to the concrete spawn-session builder so the
-    scheduler layer does not import ``opencollab.application.session.Session``.
-    The returned session is driven through ``add_user_message`` /
-    ``run_loop`` and read via ``used_tokens``.
+    Bootstrap binds this to the concrete builders so the scheduler layer does
+    not import ``opencollab.application.session.Session`` or know how a session
+    is wired (env, tools, prompt, store). The returned session is driven through
+    ``add_user_message`` / ``run_loop`` / ``apply_launch`` and read via
+    ``used_tokens``.
     """
 
     def build_spawn_session(
@@ -82,6 +83,24 @@ class SessionFactoryPort(Protocol):
         max_steps: int = 50,
         aid: int = -1,
     ) -> Any:
+        ...
+
+    def create_lead_session(
+        self,
+        *,
+        scheduler: Any,
+        launch: Any,
+        budget: int,
+        aid: int = 0,
+    ) -> Any:
+        """Build agent 0 (the lead / init process).
+
+        The factory owns all construction detail — local environment, tool
+        bundle (including the spawn tools bound to ``scheduler``), prompt, and
+        store. ``launch`` carries persistence locations; the factory uses only
+        ``launch.auto_save_path`` (subscriber wiring) and leaves resume/seed to
+        the scheduler via ``Session.apply_launch``.
+        """
         ...
 
 
