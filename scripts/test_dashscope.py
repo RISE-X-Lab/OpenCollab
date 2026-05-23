@@ -1,19 +1,24 @@
-import os
 from http import HTTPStatus
+from pathlib import Path
 
 import requests
 
+from opencollab.bootstrap.config import build_config, load_config_env
 
-BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
-MODEL_NAME = "glm-5.1"
+
+WORKSPACE = Path(__file__).resolve().parents[1]
+TEST_MODEL_NAME = "deepseek-v4-pro"
 
 
 def request_qwen36_plus(prompt):
-    api_key = os.getenv("DASHSCOPE_API_KEY")
+    config = build_config(str(WORKSPACE))
+    env_file = load_config_env(str(WORKSPACE))
+    api_key = env_file.get("DASHSCOPE_API_KEY") or env_file.get("OPENCOLLAB_API_KEY") or config.api_key
     if not api_key:
-        raise ValueError("Missing DASHSCOPE_API_KEY environment variable")
+        raise ValueError("Missing OPENCOLLAB_API_KEY or DASHSCOPE_API_KEY")
 
-    url = f"{BASE_URL}/chat/completions"
+    base_url = config.base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    url = f"{base_url.rstrip('/')}/chat/completions"
 
     if isinstance(prompt, list):
         messages = [{"role": "system", "content": "You are a helpful assistant."}]
@@ -28,7 +33,7 @@ def request_qwen36_plus(prompt):
         ]
 
     payload = {
-        "model": MODEL_NAME,
+        "model": TEST_MODEL_NAME,
         "messages": messages,
     }
 
