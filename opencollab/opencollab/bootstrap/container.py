@@ -10,17 +10,19 @@ Contents (top to bottom):
   (workspace, config, tracer, UI hooks).
 - ``build_workspace_safety_policy``: derives a sandbox interceptor from
   an Environment instance.
-- ``build_default_tools``: canonical agent tool bundle.
+- ``TOOL_REGISTRY`` + ``build_tools_for_role`` + ``build_default_tools``:
+  resolve tool *names* (from the team config) to concrete Tool instances.
 - ``build_session_runtime``: the actual collaborator construction order
   (event bus, state, store, autosave, LLM, tool execution, compactor,
   run-loop use case).
 - ``build_session`` / ``snapshot_session``: self-wiring application
-  ``Session`` factories. Replaced the deleted ``bootstrap.session.Session``
-  subclass that used to inherit from ``application.session.Session``.
-- ``SpawnConfig`` + ``build_spawn_session`` +
-  ``DefaultSessionFactory``: spawn-session wiring used by the scheduler.
-- ``build_scheduler``: the high-level CLI entry point — builds agent 0 (the
-  lead) plus the Scheduler that runs and spawns child agents.
+  ``Session`` factories.
+- ``ContextBuilder``: turns a role name into an ``Agent`` (topology-aware
+  system prompt + resolved tools), shared by the lead and spawned agents.
+- ``SpawnConfig`` + ``build_spawn_session`` + ``DefaultSessionFactory``:
+  spawn-session wiring used by the scheduler.
+- ``build_scheduler``: the high-level CLI entry point — loads the team config,
+  builds agent 0 (the lead), and the Scheduler that runs and spawns children.
 """
 
 from __future__ import annotations
@@ -39,6 +41,7 @@ from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.tools.human import AskUserTool
+from opencollab.adapters.tools.message import MessageAgentTool, TeamStatusTool
 from opencollab.adapters.tools.spawn import SpawnAgentTool, SpawnWithReviewTool
 from opencollab.adapters.trace import Tracer
 from opencollab.adapters.worktree_pool import WorktreePool
@@ -61,114 +64,9 @@ from opencollab.application.scheduler import LaunchSpec, Scheduler
 from opencollab.application.session import Session, SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.tool_execution import ToolExecutionUseCase
+from opencollab.bootstrap.team_config import RoleConfig, TeamConfig, default_team_config, load_team_config
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionState
-
-# ---------------------------------------------------------------------------
-# System prompts
-#
-# Collaboration patterns live in prompts, not framework code. The lead's prompt
-# embeds the rules for *when* to spawn; each role prompt defines *how* that role
-# behaves. ``get_role_prompt`` falls back to ``DEFAULT_ROLE_PROMPT`` for unknown
-# roles.
-# ---------------------------------------------------------------------------
-
-LEAD_SYSTEM_PROMPT = """\
-You are agent 0, the primary developer. You do the work directly and can spawn
-specialist agents to parallelize when it helps.
-
-You have direct tools — `bash`, `file_read`, `file_write`, `grep` — and two
-agent-spawning tools:
-- `spawn_agent`: Spawn a specialist agent to work on an independent sub-task. It
-  runs in parallel in an isolated git worktree and its result is injected back to
-  you when it completes. Use this for sub-tasks that can run concurrently.
-- `spawn_with_review`: Spawn a coding task with mandatory review — a Coder
-  implements, then a Reviewer verifies, retrying with feedback (up to 3 rounds).
-  Use this for complex or risky code changes.
-
-## How to work
-
-1. **Trivial / small tasks** (typos, simple fixes, single-file edits, exploration):
-   Just do them yourself with your direct tools. Don't spawn agents for these.
-
-2. **Complex features** — Apply the Self-Collaboration pattern:
-   a. Optionally spawn 'analyst' to break the request into a concrete plan.
-   b. Spawn 'coder' agents for the independent steps (or use spawn_with_review for
-      risky steps), letting independent work run in parallel.
-   c. Synthesize the results and respond to the user.
-
-3. **Debugging stuck loops**: If a task fails repeatedly, DO NOT retry the same
-   approach. Either spawn 'reviewer' to analyze the error with fresh eyes, or ask
-   the user for clarification.
-
-4. **Parallel independence**: When spawning multiple agents, ensure they don't
-   modify the same files. Each spawned agent works in an isolated worktree.
-
-5. **Context discipline**: Spawned agents return summaries, not raw logs — this
-   keeps your context clean for high-level reasoning.
-
-## Available Specialist Roles
-
-- `analyst`: Requirements analysis, architecture planning, task decomposition.
-- `coder`: Code implementation, bug fixes, file modifications.
-- `reviewer`: Code review, error analysis, quality verification.
-
-You can also spawn custom roles by specifying a name — the system will create a
-specialist with appropriate defaults.
-"""
-
-ANALYST_SYSTEM_PROMPT = """\
-You are an Analyst agent. Your job is to break down complex user requests into
-concrete, actionable implementation plans.
-
-Output a numbered step-by-step plan. For each step, specify:
-- What files need to be created or modified
-- What the expected behavior should be
-- Any dependencies between steps
-
-Be specific and technical. The plan will be given to a Coder agent to implement.
-Do NOT write code — only plan.
-"""
-
-CODER_SYSTEM_PROMPT = """\
-You are a Coder agent. You implement code changes based on task descriptions.
-
-Rules:
-- Use the provided tools (bash, file_read, file_write, grep) to explore and modify code.
-- Always read existing files before modifying them.
-- Write clean, minimal code — no unnecessary abstractions.
-- After making changes, verify them (run tests, check syntax, etc.).
-- If you're stuck after 3 attempts, STOP and explain what's blocking you.
-"""
-
-REVIEWER_SYSTEM_PROMPT = """\
-You are a Reviewer agent. You review code implementations for correctness.
-
-Your review process:
-1. Read the relevant files to understand the current state.
-2. Check for: logic errors, edge cases, security issues, missing error handling.
-3. If the implementation is correct, output exactly: PASS
-4. If there are issues, output detailed fix instructions.
-
-Be direct and specific. Don't suggest style changes — focus on correctness.
-"""
-
-ROLE_PROMPTS: dict[str, str] = {
-    "analyst": ANALYST_SYSTEM_PROMPT,
-    "coder": CODER_SYSTEM_PROMPT,
-    "reviewer": REVIEWER_SYSTEM_PROMPT,
-}
-
-DEFAULT_ROLE_PROMPT = """\
-You are a specialist agent. Complete the assigned task using the provided tools.
-Be thorough but efficient. When done, provide a clear summary of what you did.
-"""
-
-
-def get_role_prompt(role: str) -> str:
-    """Get the system prompt for a role, or default if unknown."""
-    return ROLE_PROMPTS.get(role.lower(), DEFAULT_ROLE_PROMPT)
-
 
 # ---------------------------------------------------------------------------
 # Runtime context
@@ -216,6 +114,58 @@ def build_workspace_safety_policy(env: Any) -> SafetyPolicyPort | None:
     if env is None or not getattr(env, "workspace", None):
         return None
     return SandboxInterceptor(env.workspace)
+
+
+# Tool name -> factory. Stateless tools need nothing; scheduler-bound tools take
+# the scheduler so an agent can spawn/message via the SchedulerPort.
+STATELESS_TOOL_FACTORIES: dict[str, Callable[[], Tool]] = {
+    "bash": BashTool,
+    "file_read": FileReadTool,
+    "file_write": FileWriteTool,
+    "grep": GrepTool,
+    "ask_user": AskUserTool,
+}
+SCHEDULER_TOOL_FACTORIES: dict[str, Callable[[Any], Tool]] = {
+    "spawn_agent": SpawnAgentTool,
+    "spawn_with_review": SpawnWithReviewTool,
+    "message_agent": MessageAgentTool,
+    "team_status": TeamStatusTool,
+}
+KNOWN_TOOL_NAMES: frozenset[str] = frozenset(STATELESS_TOOL_FACTORIES) | frozenset(SCHEDULER_TOOL_FACTORIES)
+# Tools that let a role act on teammates — used to decide whether to render the
+# topology-aware "Your team" prompt section.
+COORDINATION_TOOL_NAMES: frozenset[str] = frozenset(SCHEDULER_TOOL_FACTORIES)
+
+
+def build_tools_for_role(
+    tool_names: list[str],
+    *,
+    scheduler: Any = None,
+    interactive: bool = False,
+) -> list[Tool]:
+    """Resolve tool names to Tool instances.
+
+    ``ask_user`` is dropped in non-interactive (headless) mode. Scheduler-bound
+    tools require a ``scheduler``. Unknown names raise — fail fast at startup.
+    """
+    tools: list[Tool] = []
+    for name in tool_names:
+        if name == "ask_user" and not interactive:
+            continue
+        if name in STATELESS_TOOL_FACTORIES:
+            tools.append(STATELESS_TOOL_FACTORIES[name]())
+        elif name in SCHEDULER_TOOL_FACTORIES:
+            if scheduler is None:
+                raise ValueError(
+                    f"Tool '{name}' requires a scheduler but none was provided."
+                )
+            tools.append(SCHEDULER_TOOL_FACTORIES[name](scheduler))
+        else:
+            raise ValueError(
+                f"Unknown tool '{name}' in team config. "
+                f"Known tools: {sorted(KNOWN_TOOL_NAMES)}"
+            )
+    return tools
 
 
 def build_default_tools(*, include_ask_user: bool = False) -> list[Tool]:
@@ -349,8 +299,6 @@ def build_session(
 ) -> Session:
     """Self-wiring ``Session`` factory.
 
-    Replaces the old ``bootstrap.session.Session`` subclass that inherited
-    from ``application.session.Session`` purely to auto-build its runtime.
     Callers that want full control over collaborators can still build a
     ``SessionRuntime`` via ``build_session_runtime`` and pass it directly
     to ``application.session.Session``.
@@ -447,6 +395,68 @@ class SpawnConfig:
     safety_policy_factory: SafetyPolicyFactory | None = None
 
 
+class ContextBuilder:
+    """Turns a role name into a ready-to-run ``Agent``.
+
+    Owns the single role -> ``Agent`` assembly used for both the lead and
+    spawned agents: it composes the system prompt (the role's prompt plus an
+    auto-generated, topology-aware "Your team" section) and resolves the role's
+    tool *names* to concrete Tool instances via the registry. Tool descriptions
+    are NOT injected into the prompt — those already reach the LLM as
+    function-calling schemas.
+    """
+
+    def __init__(self, team_cfg: TeamConfig, cfg: SpawnConfig):
+        self._team = team_cfg
+        self._cfg = cfg
+
+    def build_agent(
+        self,
+        role_name: str,
+        *,
+        scheduler: Any = None,
+        interactive: bool = False,
+    ) -> Agent:
+        role = self._team.role_for(role_name)
+        system_prompt = self._compose_prompt(role_name, role)
+        tools = build_tools_for_role(
+            role.tools, scheduler=scheduler, interactive=interactive
+        )
+        cfg = self._cfg
+        return Agent(
+            name=role_name,
+            system_prompt=system_prompt,
+            tools=tools,
+            model=role.model or cfg.model,
+            provider=cfg.provider,
+            api_key=cfg.api_key,
+            base_url=cfg.base_url,
+        )
+
+    def _compose_prompt(self, role_name: str, role: RoleConfig) -> str:
+        section = self._team_section(role_name, role)
+        return f"{role.prompt}\n\n{section}" if section else role.prompt
+
+    def _team_section(self, role_name: str, role: RoleConfig) -> str:
+        topo = self._team.topology
+        # The permissive default carries generic guidance in the base prompt;
+        # the dynamic section only adds value for an explicit topology graph.
+        if topo.allow_all:
+            return ""
+        targets = sorted(topo.edges.get(role_name, frozenset()))
+        if not targets or not (set(role.tools) & COORDINATION_TOOL_NAMES):
+            return ""
+        lines = ["## Your team", "", "Roles you may spawn or message:"]
+        lines += [f"- {t}" for t in targets]
+        if {"team_status", "message_agent"} & set(role.tools):
+            lines += [
+                "",
+                "Use `team_status` to list live agents (with their ids) and "
+                "`message_agent` to send a message to one and get its reply.",
+            ]
+        return "\n".join(lines)
+
+
 def build_spawn_session(
     *,
     role: str,
@@ -455,27 +465,22 @@ def build_spawn_session(
     budget: int,
     max_steps: int = 50,
     aid: int = -1,
+    scheduler: Any = None,
+    team_cfg: TeamConfig | None = None,
 ) -> Session:
     """Build the Agent + Session bundle for a spawned child agent.
 
-    Tools are stateless; the safety policy is derived from the child's
-    environment and passed into the Session.
+    ``team_cfg`` defaults to the lead-only default team, so roles resolve to the
+    generic spec (base tools). The safety policy is derived from the child's
+    environment.
     """
     safety_policy = (
         cfg.safety_policy_factory(env)
         if cfg.safety_policy_factory is not None
         else None
     )
-
-    agent = Agent(
-        name=role,
-        system_prompt=get_role_prompt(role),
-        tools=[BashTool(), FileReadTool(), FileWriteTool(), GrepTool()],
-        model=cfg.model,
-        provider=cfg.provider,
-        api_key=cfg.api_key,
-        base_url=cfg.base_url,
-    )
+    builder = ContextBuilder(team_cfg or default_team_config(), cfg)
+    agent = builder.build_agent(role, scheduler=scheduler, interactive=False)
     return build_session(
         agent=agent,
         env=env,
@@ -492,21 +497,24 @@ def build_spawn_session(
 class DefaultSessionFactory:
     """Default ``SessionFactoryPort`` implementation used by the scheduler.
 
-    Holds the shared ``SpawnConfig`` (LLM config inherited by every session)
-    plus the lead-only composition bits (``lead_workspace`` for the local
-    environment and ``interactive`` for the ask-user tool). The scheduler asks
-    for sessions by role/env/budget or via ``create_lead_session`` without
-    knowing how any of them are wired.
+    Holds the shared ``SpawnConfig`` (LLM config inherited by every session),
+    the resolved ``TeamConfig`` (role prompts/tools + topology), and the
+    lead-only composition bits (``lead_workspace`` for the local environment and
+    ``interactive`` for the ask-user tool). All role -> Agent assembly is
+    delegated to a single ``ContextBuilder``.
     """
 
     def __init__(
         self,
         cfg: SpawnConfig,
         *,
+        team_cfg: TeamConfig | None = None,
         lead_workspace: str | None = None,
         interactive: bool = False,
     ):
         self._cfg = cfg
+        self._team = team_cfg or default_team_config()
+        self._context_builder = ContextBuilder(self._team, cfg)
         self._lead_workspace = lead_workspace
         self._interactive = interactive
 
@@ -518,13 +526,26 @@ class DefaultSessionFactory:
         budget: int,
         max_steps: int = 50,
         aid: int = -1,
+        scheduler: Any = None,
     ) -> Session:
-        return build_spawn_session(
-            role=role,
+        cfg = self._cfg
+        safety_policy = (
+            cfg.safety_policy_factory(env)
+            if cfg.safety_policy_factory is not None
+            else None
+        )
+        agent = self._context_builder.build_agent(
+            role, scheduler=scheduler, interactive=False
+        )
+        return build_session(
+            agent=agent,
             env=env,
-            cfg=self._cfg,
-            budget=budget,
+            tracer=cfg.tracer,
+            max_budget_tokens=budget,
             max_steps=max_steps,
+            event_sink=cfg.event_bus,
+            permission_policy=cfg.permission_policy,
+            safety_policy=safety_policy,
             aid=aid,
         )
 
@@ -536,29 +557,17 @@ class DefaultSessionFactory:
         budget: int,
         aid: int = 0,
     ) -> Session:
-        """Build agent 0 with its local env, full tool bundle, and prompt.
+        """Build agent 0 with its local env, lead-role tools, and prompt.
 
-        The spawn tools are bound to ``scheduler`` here, so the lead<->scheduler
-        cycle is resolved inside this single handshake (no post-construction
-        tool splicing in the caller). ``launch.auto_save_path`` wires the
-        auto-save subscriber; resume/seed is left to ``Session.apply_launch``.
+        The scheduler-bound tools are resolved against ``scheduler`` here, so the
+        lead<->scheduler cycle is closed inside this single handshake.
+        ``launch.auto_save_path`` wires the auto-save subscriber; resume/seed is
+        left to ``Session.apply_launch``.
         """
         cfg = self._cfg
         env = LocalEnvironment(self._lead_workspace)
-        tools = list(build_default_tools(include_ask_user=False))
-        tools[0:0] = [SpawnAgentTool(scheduler), SpawnWithReviewTool(scheduler)]
-        if self._interactive:
-            # Interactive mode only: ask_user stays off in headless eval
-            # (ref: SWE-bench regression root cause).
-            tools.append(AskUserTool())
-        agent = Agent(
-            name="lead",
-            system_prompt=LEAD_SYSTEM_PROMPT,
-            tools=tools,
-            model=cfg.model,
-            provider=cfg.provider,
-            api_key=cfg.api_key,
-            base_url=cfg.base_url,
+        agent = self._context_builder.build_agent(
+            "lead", scheduler=scheduler, interactive=self._interactive
         )
         return build_session(
             agent=agent,
@@ -588,13 +597,15 @@ def build_scheduler(
 ) -> Scheduler:
     """Build the Scheduler and let it create agent 0 (the init process).
 
-    The container wires dependencies and hands the scheduler a ``LaunchSpec``;
+    Loads the team config (roles/tools/topology) from the workspace, wires
+    dependencies, and hands the scheduler a ``LaunchSpec``;
     ``scheduler.create_init_process`` builds agent 0 (aid=0) through the factory
     and applies the launch spec. ``session_file`` resumes agent 0's history;
     ``auto_save`` writes a JSONL transcript under
     ``<workspace>/.opencollab/sessions``.
     """
     cfg = ctx.config
+    team_cfg = load_team_config(ctx.workspace)
     event_bus = EventBus(ctx.event_sink)
     session_factory = DefaultSessionFactory(
         SpawnConfig(
@@ -607,6 +618,7 @@ def build_scheduler(
             permission_policy=ctx.permission_policy,
             safety_policy_factory=build_workspace_safety_policy,
         ),
+        team_cfg=team_cfg,
         lead_workspace=ctx.workspace,
         interactive=interactive,
     )
@@ -619,6 +631,7 @@ def build_scheduler(
         tracer=ctx.tracer,
         max_budget_tokens=cfg["budget"],
         permission_policy=ctx.permission_policy,
+        topology=team_cfg.topology,
     )
 
     auto_save_path: str | None = None
@@ -634,6 +647,7 @@ def build_scheduler(
 
 
 __all__ = [
+    "ContextBuilder",
     "DefaultSessionFactory",
     "RuntimeContext",
     "SessionRuntime",
@@ -644,6 +658,7 @@ __all__ = [
     "build_session_runtime",
     "build_scheduler",
     "build_spawn_session",
+    "build_tools_for_role",
     "build_workspace_safety_policy",
     "load_session",
     "snapshot_session",

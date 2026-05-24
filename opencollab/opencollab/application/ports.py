@@ -82,6 +82,7 @@ class SessionFactoryPort(Protocol):
         budget: int,
         max_steps: int = 50,
         aid: int = -1,
+        scheduler: Any = None,
     ) -> Any:
         ...
 
@@ -125,6 +126,14 @@ class SchedulerPort(Protocol):
         max_iterations: int = 3,
     ) -> str:
         """Blocking review loop. Returns final result."""
+        ...
+
+    async def send_message(self, from_aid: int, to_aid: int, content: str) -> str:
+        """Synchronously deliver a message to an existing agent and return its reply."""
+        ...
+
+    def team_snapshot(self) -> list[dict[str, Any]]:
+        """Read-only roster: one dict per agent (aid, role, parent_aid, phase, busy)."""
         ...
 
 

@@ -42,14 +42,31 @@ def _get_prompt_session() -> Any:
     return _prompt_session
 
 
-async def _read_line(prompt_text: str) -> str:
-    """Read one input line; fall back to rich console input if needed."""
+async def _read_line(prompt_text: str, bottom_toolbar: Any = None) -> str:
+    """Read one input line; fall back to rich console input if needed.
+
+    ``bottom_toolbar`` (a callable returning text) renders a status line under
+    the input, à la a HUD — used to show the live team roster at the prompt.
+    """
     try:
         session = _get_prompt_session()
-        return await session.prompt_async(prompt_text)
+        return await session.prompt_async(prompt_text, bottom_toolbar=bottom_toolbar)
     except Exception:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: console.input(prompt_text))
+
+
+def _format_team_toolbar(snapshot: list[dict]) -> str:
+    """One-line team roster for the prompt bottom toolbar."""
+    if not snapshot:
+        return ""
+    parts = []
+    for entry in snapshot:
+        aid = entry.get("aid")
+        label = "Lead" if aid == 0 else f"A{aid} {entry.get('role', '?')}"
+        state = "busy" if entry.get("busy") else entry.get("phase", "?")
+        parts.append(f"{label}({state})")
+    return "Team: " + "  ".join(parts)
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -151,21 +168,21 @@ def eval_cmd(
 # ---------------------------------------------------------------------------
 
 
-async def _read_command(tui) -> str | None:
+async def _read_command(tui, bottom_toolbar: Any = None) -> str | None:
     """Prompt for a user line, returning None on EOF/interrupt."""
     was_suspended = tui.suspend_live()
     try:
-        return await _read_line("> ")
+        return await _read_line("> ", bottom_toolbar=bottom_toolbar)
     except (EOFError, KeyboardInterrupt):
         return None
     finally:
         tui.resume_live(was_suspended)
 
 
-async def _repl_loop(tui: Any, handle_turn) -> None:
+async def _repl_loop(tui: Any, handle_turn, bottom_toolbar: Any = None) -> None:
     """Shared REPL: read line, dispatch built-in slash commands, run a turn."""
     while True:
-        line = await _read_command(tui)
+        line = await _read_command(tui, bottom_toolbar=bottom_toolbar)
         if line is None:
             break
         line = line.strip()
@@ -225,7 +242,10 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
             tui.stop_live()
             tui.print_stats(scheduler.used_tokens, lead.step_count)
 
-    await _repl_loop(tui, turn)
+    def team_toolbar() -> str:
+        return _format_team_toolbar(scheduler.team_snapshot())
+
+    await _repl_loop(tui, turn, bottom_toolbar=team_toolbar)
 
     await scheduler.cleanup()
     if ctx.tracer:

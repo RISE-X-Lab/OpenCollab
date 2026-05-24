@@ -220,3 +220,51 @@ def test_scheduler_events_do_not_use_legacy_tool_start_dispatch():
     # status line is added by the session-runtime handler anymore.
     statuses = _status_plains(tui)
     assert not any("Teammate coder started" in s for s in statuses)
+
+
+# ---------------------------------------------------------------------------
+# Team roster + inter-agent messaging events
+# ---------------------------------------------------------------------------
+
+
+def test_roster_tracks_spawn_and_completion_state():
+    tui = _make_tui()
+    tui._live_paused = True
+
+    tui.event_handler(SchedulerEvent("agent_spawned", {"aid": 1, "parent_aid": 0, "role": "coder"}))
+    assert tui._roster[1] == {"role": "coder", "state": "running"}
+
+    tui.event_handler(SchedulerEvent("agent_completed", {"aid": 1, "role": "coder", "latency": 1.0}))
+    assert tui._roster[1]["state"] == "done"
+
+
+def test_team_panel_renders_when_roster_present():
+    tui = _make_tui()
+    tui._live_paused = True
+    assert tui._build_team_panel() is None
+
+    tui.event_handler(SchedulerEvent("agent_spawned", {"aid": 2, "parent_aid": 0, "role": "reviewer"}))
+    panel = tui._build_team_panel()
+    assert panel is not None
+    assert "A2" in panel.plain and "reviewer" in panel.plain
+
+
+def test_message_events_append_activity_lines():
+    tui = _make_tui()
+    tui._live_paused = True
+
+    tui.event_handler(SchedulerEvent("agent_message_sent", {"from_aid": 0, "to_aid": 2}))
+    tui.event_handler(SchedulerEvent("agent_message_delivered", {"to_aid": 2, "result_len": 10}))
+
+    timeline = "\n".join(
+        block.plain for block in tui._timeline_blocks if hasattr(block, "plain")
+    )
+    assert "A0 → A2 message" in timeline
+    assert "A2 replied" in timeline
+
+
+def test_reset_clears_roster():
+    tui = _make_tui()
+    tui.event_handler(SchedulerEvent("agent_spawned", {"aid": 1, "parent_aid": 0, "role": "coder"}))
+    tui.reset()
+    assert tui._roster == {}

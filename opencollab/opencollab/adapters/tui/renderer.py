@@ -35,6 +35,8 @@ class TUI:
         self._active_tools: dict[str, dict] = {}
         self._status_lines: list[Text] = []
         self._timeline_blocks: list[Any] = []
+        # aid -> {"role": str, "state": str} for the live team roster panel.
+        self._roster: dict[int, dict] = {}
         self._step = 0
         self._live: Live | None = None
         self._live_paused = False
@@ -115,6 +117,7 @@ class TUI:
             self._clear_thinking_status()
             label = f"{agent_label}:spawn"
             self._active_tools[label] = dict(event.data)
+            self._roster[aid] = {"role": role or "agent", "state": "running"}
             self._append_activity(f"[cyan]{label} started[/cyan]")
             if role:
                 self._emit_status(f"[cyan]Agent {agent_label} ({role}) spawned[/cyan]")
@@ -123,6 +126,7 @@ class TUI:
         elif etype == "agent_completed":
             label = f"{agent_label}:spawn"
             self._active_tools.pop(label, None)
+            self._mark_roster(aid, role, "done")
             latency = event.data.get("latency", 0.0)
             self._append_activity(f"[green]{label} finished[/green] ({latency:.1f}s)")
             if role:
@@ -132,6 +136,7 @@ class TUI:
         elif etype == "agent_failed":
             label = f"{agent_label}:spawn"
             self._active_tools.pop(label, None)
+            self._mark_roster(aid, role, "failed")
             error = event.data.get("error", "unknown")
             self._append_activity(f"[red]{label} failed[/red]: {error}")
             self._refresh()
@@ -139,7 +144,19 @@ class TUI:
         elif etype == "agent_cancelled":
             label = f"{agent_label}:spawn"
             self._active_tools.pop(label, None)
+            self._mark_roster(aid, role, "cancelled")
             self._append_activity(f"[yellow]{label} cancelled[/yellow]")
+            self._refresh()
+
+        elif etype == "agent_message_sent":
+            from_aid = event.data.get("from_aid", -1)
+            to_aid = event.data.get("to_aid", -1)
+            self._append_activity(f"[cyan]A{from_aid} → A{to_aid} message[/cyan]")
+            self._refresh()
+
+        elif etype == "agent_message_delivered":
+            to_aid = event.data.get("to_aid", -1)
+            self._append_activity(f"[green]A{to_aid} replied[/green]")
             self._refresh()
 
         elif etype == "review_started":
@@ -151,6 +168,12 @@ class TUI:
         elif etype == "review_completed":
             self._active_tools.pop("review_loop", None)
             self._refresh()
+
+    def _mark_roster(self, aid: int, role: str, state: str) -> None:
+        entry = self._roster.setdefault(aid, {"role": role or "agent", "state": state})
+        entry["state"] = state
+        if role:
+            entry["role"] = role
 
     def _emit_status(self, message: str) -> None:
         """Route status lines to Live when active; print directly otherwise."""
@@ -202,6 +225,27 @@ class TUI:
         if self._live and not self._live_paused:
             self._live.update(self._build_display())
 
+    _STATE_STYLES = {
+        "running": "yellow",
+        "done": "green",
+        "failed": "red",
+        "cancelled": "yellow",
+    }
+
+    def _build_team_panel(self) -> Any | None:
+        """Compact roster of spawned agents, or None when no team exists."""
+        if not self._roster:
+            return None
+        chips: list[tuple[str, str]] = []
+        for aid in sorted(self._roster):
+            entry = self._roster[aid]
+            style = self._STATE_STYLES.get(entry["state"], "dim")
+            if chips:
+                chips.append(("  ", ""))
+            chips.append((f"A{aid} {entry['role']} ", "bold"))
+            chips.append((f"[{entry['state']}]", style))
+        return Text.assemble(("Team: ", "bold cyan"), *chips)
+
     def _build_display(self) -> Any:
         """Build the Rich renderable for current state."""
         parts = []
@@ -241,6 +285,10 @@ class TUI:
         if self._status_lines:
             parts.extend(self._status_lines)
             parts.append(Text("", style=""))
+
+        team_panel = self._build_team_panel()
+        if team_panel is not None:
+            parts.append(team_panel)
 
         if not parts:
             return Text("Thinking...", style="dim")
@@ -309,4 +357,5 @@ class TUI:
         self._timeline_blocks.clear()
         self._active_tools.clear()
         self._status_lines.clear()
+        self._roster.clear()
         self._step = 0

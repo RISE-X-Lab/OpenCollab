@@ -7,7 +7,7 @@ from opencollab.bootstrap import (
     build_runtime_context,
     build_scheduler,
 )
-from opencollab.bootstrap.container import LEAD_SYSTEM_PROMPT
+from opencollab.bootstrap.team_config import DEFAULT_LEAD_PROMPT
 
 
 def _cfg(**overrides):
@@ -26,10 +26,10 @@ def test_lead_prompt_references_spawn_tools_not_delegate():
     # Guard against the prompt/tool mismatch: agent 0 is given spawn_agent /
     # spawn_with_review, so its prompt must name those, not the removed
     # delegate_task / delegate_with_review.
-    assert "spawn_agent" in LEAD_SYSTEM_PROMPT
-    assert "spawn_with_review" in LEAD_SYSTEM_PROMPT
-    assert "delegate_task" not in LEAD_SYSTEM_PROMPT
-    assert "delegate_with_review" not in LEAD_SYSTEM_PROMPT
+    assert "spawn_agent" in DEFAULT_LEAD_PROMPT
+    assert "spawn_with_review" in DEFAULT_LEAD_PROMPT
+    assert "delegate_task" not in DEFAULT_LEAD_PROMPT
+    assert "delegate_with_review" not in DEFAULT_LEAD_PROMPT
 
 
 def test_build_scheduler_lead_has_spawn_tools(tmp_path):
@@ -48,7 +48,7 @@ def test_build_scheduler_lead_has_spawn_tools(tmp_path):
     tool_names = {t.name for t in lead.agent.tools}
     assert tool_names == {
         "bash", "file_read", "file_write", "grep",
-        "spawn_agent", "spawn_with_review", "ask_user",
+        "spawn_agent", "spawn_with_review", "message_agent", "team_status", "ask_user",
     }
 
 

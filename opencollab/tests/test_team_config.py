@@ -1,0 +1,87 @@
+"""Unit tests for the YAML-backed team configuration loader."""
+
+from __future__ import annotations
+
+import pytest
+
+from opencollab.bootstrap.team_config import (
+    LEAD_TOOL_NAMES,
+    RoleConfig,
+    default_team_config,
+    load_team_config,
+)
+
+TEAM_YAML = """\
+roles:
+  lead:
+    model: gpt-4o-mini
+    tools: [bash, spawn_agent, message_agent]
+    prompt: |
+      Lead prompt.
+  coder:
+    tools: [bash, file_read, file_write, grep]
+    prompt_file: prompts/coder.md
+topology:
+  lead: [coder]
+  coder: [reviewer]
+"""
+
+
+def _write_team(tmp_path, monkeypatch, yaml_text=TEAM_YAML, coder_prompt="Coder prompt."):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "team.yaml").write_text(yaml_text)
+    prompts = configs / "prompts"
+    prompts.mkdir()
+    (prompts / "coder.md").write_text(coder_prompt)
+    monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(configs / "team.yaml"))
+
+
+def test_default_team_is_lead_only_with_allow_all(monkeypatch):
+    monkeypatch.delenv("OPENCOLLAB_TEAM_FILE", raising=False)
+    cfg = default_team_config()
+    assert set(cfg.roles) == {"lead"}
+    assert cfg.roles["lead"].tools == list(LEAD_TOOL_NAMES)
+    assert cfg.topology.allow_all is True
+    assert cfg.topology.allows("lead", "any-custom-role")
+
+
+def test_load_team_roundtrip_roles_and_topology(tmp_path, monkeypatch):
+    _write_team(tmp_path, monkeypatch)
+    cfg = load_team_config(str(tmp_path))
+
+    assert set(cfg.roles) == {"lead", "coder"}
+    assert cfg.roles["lead"].model == "gpt-4o-mini"
+    assert cfg.roles["lead"].tools == ["bash", "spawn_agent", "message_agent"]
+    assert cfg.topology.allow_all is False
+    assert cfg.topology.allows("lead", "coder")
+    assert cfg.topology.allows("coder", "reviewer")
+    assert not cfg.topology.allows("lead", "reviewer")
+
+
+def test_prompt_file_is_resolved_relative_to_team_file(tmp_path, monkeypatch):
+    _write_team(tmp_path, monkeypatch, coder_prompt="Resolved coder body.")
+    cfg = load_team_config(str(tmp_path))
+    assert cfg.roles["coder"].prompt == "Resolved coder body."
+
+
+def test_unknown_role_falls_back_to_generic_spec(tmp_path, monkeypatch):
+    _write_team(tmp_path, monkeypatch)
+    cfg = load_team_config(str(tmp_path))
+    fallback = cfg.role_for("totally-new-role")
+    assert isinstance(fallback, RoleConfig)
+    assert fallback.tools == ["bash", "file_read", "file_write", "grep"]
+
+
+def test_missing_prompt_and_prompt_file_raises(tmp_path, monkeypatch):
+    bad = """\
+roles:
+  coder:
+    tools: [bash]
+"""
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "team.yaml").write_text(bad)
+    monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(configs / "team.yaml"))
+    with pytest.raises(ValueError, match="prompt"):
+        load_team_config(str(tmp_path))

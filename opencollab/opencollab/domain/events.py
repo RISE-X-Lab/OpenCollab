@@ -56,6 +56,8 @@ SchedulerEventType = Literal[
     "agent_completed",
     "agent_failed",
     "agent_cancelled",
+    "agent_message_sent",
+    "agent_message_delivered",
     "review_started",
     "review_completed",
 ]

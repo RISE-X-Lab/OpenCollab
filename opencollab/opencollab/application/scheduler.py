@@ -24,6 +24,7 @@ from opencollab.application.ports import (
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.scheduler import DelegationTask, ReviewVerdict, SessionControlBlock, SessionTable, split_budget
 from opencollab.domain.session import SessionPhase
+from opencollab.domain.team import Topology
 
 
 @dataclass(frozen=True)
@@ -59,6 +60,7 @@ class Scheduler:
         tracer: TracePort | None = None,
         max_budget_tokens: int = 500_000,
         permission_policy: PermissionPort | None = None,
+        topology: Topology | None = None,
     ):
         self._session_factory = session_factory
         self._worktree_pool = worktree_pool
@@ -66,9 +68,12 @@ class Scheduler:
         self._tracer = tracer
         self._max_budget_tokens = max_budget_tokens
         self._permission_policy = permission_policy
+        self._topology = topology
 
         self.table = SessionTable()
         self._tasks: dict[int, asyncio.Task] = {}
+        self._sessions: dict[int, Any] = {}
+        self._locks: dict[int, asyncio.Lock] = {}
         self._lead_session: Any | None = None
 
     @property
@@ -98,6 +103,7 @@ class Scheduler:
             state=session.state,
         )
         self.table.add(scb)
+        self._sessions[aid] = session
         self._lead_session = session
         return aid
 
@@ -124,7 +130,13 @@ class Scheduler:
         task: str,
         context: str = "",
     ) -> int:
-        """Non-blocking spawn. Creates SCB, builds session, starts task. Returns aid."""
+        """Non-blocking spawn. Creates SCB, builds session, starts task. Returns aid.
+
+        Raises ``PermissionError`` if the team topology forbids ``parent_aid``'s
+        role from spawning ``role``; the tool executor turns that into a tool
+        result so the parent's run loop continues uninterrupted.
+        """
+        self._check_topology(parent_aid, role, verb="spawn")
         aid = self.table.allocate_aid()
 
         # Build environment
@@ -137,6 +149,7 @@ class Scheduler:
             env=env,
             budget=budget,
             aid=aid,
+            scheduler=self,
         )
 
         # Add task to session messages
@@ -152,6 +165,7 @@ class Scheduler:
             state=session.state,
         )
         self.table.add(scb)
+        self._sessions[aid] = session
 
         # Emit spawn event
         await self._emit_scheduler_event(
@@ -244,6 +258,84 @@ class Scheduler:
             "role": "system",
             "content": f"[Agent {child_aid} completed]\n{result}",
         })
+
+    def _role_of(self, aid: int) -> str:
+        scb = self.table.get(aid)
+        return scb.agent.name if scb is not None else "?"
+
+    def _check_topology(self, src_aid: int, dst_role: str, *, verb: str) -> None:
+        """Raise ``PermissionError`` if the topology forbids src → dst_role."""
+        if self._topology is None:
+            return
+        src_role = self._role_of(src_aid)
+        if not self._topology.allows(src_role, dst_role):
+            raise PermissionError(
+                f"Role '{src_role}' is not permitted to {verb} '{dst_role}' "
+                f"under the team topology."
+            )
+
+    async def send_message(self, from_aid: int, to_aid: int, content: str) -> str:
+        """Synchronously deliver a message to an existing agent; return its reply.
+
+        Re-activates the target's retained session: appends the message and runs
+        its loop (a DONE session resumes to IDLE first). If the target is still
+        running, its in-flight task is awaited before delivery. A per-target lock
+        serializes concurrent messages so one session is never driven twice at
+        once. Topology and existence are checked first and reported as a plain
+        result string so the caller's run loop continues uninterrupted.
+        """
+        if to_aid == from_aid:
+            return "Error: an agent cannot message itself."
+        target = self._sessions.get(to_aid)
+        if target is None:
+            return f"Error: no agent with aid {to_aid}."
+        if self._topology is not None and not self._topology.allows(
+            self._role_of(from_aid), self._role_of(to_aid)
+        ):
+            return (
+                f"Error: role '{self._role_of(from_aid)}' is not permitted to "
+                f"message '{self._role_of(to_aid)}' under the team topology."
+            )
+
+        lock = self._locks.setdefault(to_aid, asyncio.Lock())
+        async with lock:
+            in_flight = self._tasks.get(to_aid)
+            if in_flight is not None and not in_flight.done():
+                await in_flight
+
+            await self._emit_scheduler_event(
+                "agent_message_sent",
+                {"from_aid": from_aid, "to_aid": to_aid, "role": self._role_of(to_aid)},
+            )
+            await target.add_user_message(content)
+            result = await target.run_loop()
+
+            scb = self.table.get(to_aid)
+            if scb is not None:
+                scb.result = result
+
+            await self._emit_scheduler_event(
+                "agent_message_delivered",
+                {"from_aid": from_aid, "to_aid": to_aid, "result_len": len(result)},
+            )
+            return result
+
+    def team_snapshot(self) -> list[dict[str, Any]]:
+        """Read-only roster of every tracked agent, ordered by aid."""
+        snapshot: list[dict[str, Any]] = []
+        for aid in sorted(self.table.entries):
+            scb = self.table.entries[aid]
+            task = self._tasks.get(aid)
+            snapshot.append(
+                {
+                    "aid": aid,
+                    "role": scb.agent.name,
+                    "parent_aid": scb.parent_aid,
+                    "phase": scb.state.phase.value,
+                    "busy": task is not None and not task.done(),
+                }
+            )
+        return snapshot
 
     async def _append_worktree_diff(self, env: EnvironmentPort, result: str) -> str:
         """If env is a worktree, append its diff to the result."""
