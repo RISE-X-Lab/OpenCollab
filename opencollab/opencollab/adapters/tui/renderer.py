@@ -29,6 +29,13 @@ class TUI:
     spawn/review lifecycle no longer overloads session tool events.
     """
 
+    _STYLE_MUTED = "bright_black"
+    _STYLE_ACCENT = "cyan"
+    _STYLE_SUCCESS = "green"
+    _STYLE_WARNING = "yellow"
+    _STYLE_ERROR = "red"
+    _STYLE_HEADING = "bold cyan"
+
     def __init__(self, console: Console | None = None):
         self.console = console or Console()
         self._current_text = ""
@@ -74,9 +81,9 @@ class TUI:
             label = f"{agent_label}:{tool}"
             self._active_tools[label] = event.data
             preview = self._args_preview(args)
-            self._append_activity(f"[cyan]{label} started[/cyan]{preview}")
+            self._append_activity((f"{label} started", self._STYLE_ACCENT), (preview, self._STYLE_MUTED))
             if tool == "spawn_agent" and role:
-                self._emit_status(f"[cyan]{agent_label} spawned {role}[/cyan]")
+                self._emit_status(Text(f"{agent_label} spawned {role}", style=self._STYLE_ACCENT))
             self._refresh()
 
         elif etype == "tool_end":
@@ -84,28 +91,33 @@ class TUI:
             label = f"{agent_label}:{tool}"
             self._active_tools.pop(label, None)
             latency = event.data.get("latency", 0.0)
-            self._append_activity(f"[green]{label} finished[/green] ({latency:.1f}s)")
+            self._append_activity(
+                (f"{label} finished", self._STYLE_SUCCESS),
+                (f" ({latency:.1f}s)", self._STYLE_MUTED),
+            )
             self._refresh()
 
         elif etype == "step_start":
             self._step = event.data.get("step", 0)
             self._clear_thinking_status()
-            self._emit_status(f"[dim]{agent_label} thinking... step {self._step}[/dim]")
+            self._emit_status(Text(f"{agent_label} thinking... step {self._step}", style=self._STYLE_MUTED))
 
         elif etype == "compaction":
-            self._emit_status("[dim]Context compacted[/dim]")
+            self._emit_status(Text("Context compacted", style=self._STYLE_MUTED))
 
         elif etype == "loop_detected":
             tool = event.data.get("tool", "?")
             count = event.data.get("count", 0)
-            self._emit_status(f"[yellow]Loop detected: {tool} called {count}x with same args[/yellow]")
+            self._emit_status(
+                Text(f"Loop detected: {tool} called {count}x with same args", style=self._STYLE_WARNING)
+            )
 
         elif etype == "budget_warning":
-            self._emit_status("[yellow]Token budget running low[/yellow]")
+            self._emit_status(Text("Token budget running low", style=self._STYLE_WARNING))
 
         elif etype == "error":
             reason = event.data.get("reason", "unknown")
-            self._emit_status(f"[red]Error: {reason}[/red]")
+            self._emit_status(Text(f"Error: {reason}", style=self._STYLE_ERROR))
 
     def _handle_scheduler_event(self, event: SchedulerEvent) -> None:
         etype = event.type
@@ -118,9 +130,9 @@ class TUI:
             label = f"{agent_label}:spawn"
             self._active_tools[label] = dict(event.data)
             self._roster[aid] = {"role": role or "agent", "state": "running"}
-            self._append_activity(f"[cyan]{label} started[/cyan]")
+            self._append_activity((f"{label} started", self._STYLE_ACCENT))
             if role:
-                self._emit_status(f"[cyan]Agent {agent_label} ({role}) spawned[/cyan]")
+                self._emit_status(Text(f"Agent {agent_label} ({role}) spawned", style=self._STYLE_ACCENT))
             self._refresh()
 
         elif etype == "agent_completed":
@@ -128,9 +140,14 @@ class TUI:
             self._active_tools.pop(label, None)
             self._mark_roster(aid, role, "done")
             latency = event.data.get("latency", 0.0)
-            self._append_activity(f"[green]{label} finished[/green] ({latency:.1f}s)")
+            self._append_activity(
+                (f"{label} finished", self._STYLE_SUCCESS),
+                (f" ({latency:.1f}s)", self._STYLE_MUTED),
+            )
             if role:
-                self._emit_status(f"[green]Agent {agent_label} ({role}) completed[/green] ({latency:.1f}s)")
+                self._emit_status(
+                    Text(f"Agent {agent_label} ({role}) completed ({latency:.1f}s)", style=self._STYLE_SUCCESS)
+                )
             self._refresh()
 
         elif etype == "agent_failed":
@@ -138,31 +155,31 @@ class TUI:
             self._active_tools.pop(label, None)
             self._mark_roster(aid, role, "failed")
             error = event.data.get("error", "unknown")
-            self._append_activity(f"[red]{label} failed[/red]: {error}")
+            self._append_activity((f"{label} failed", self._STYLE_ERROR), (f": {error}", self._STYLE_MUTED))
             self._refresh()
 
         elif etype == "agent_cancelled":
             label = f"{agent_label}:spawn"
             self._active_tools.pop(label, None)
             self._mark_roster(aid, role, "cancelled")
-            self._append_activity(f"[yellow]{label} cancelled[/yellow]")
+            self._append_activity((f"{label} cancelled", self._STYLE_WARNING))
             self._refresh()
 
         elif etype == "agent_message_sent":
             from_aid = event.data.get("from_aid", -1)
             to_aid = event.data.get("to_aid", -1)
-            self._append_activity(f"[cyan]A{from_aid} → A{to_aid} message[/cyan]")
+            self._append_activity((f"A{from_aid} → A{to_aid} message", self._STYLE_ACCENT))
             self._refresh()
 
         elif etype == "agent_message_delivered":
             to_aid = event.data.get("to_aid", -1)
-            self._append_activity(f"[green]A{to_aid} replied[/green]")
+            self._append_activity((f"A{to_aid} replied", self._STYLE_SUCCESS))
             self._refresh()
 
         elif etype == "review_started":
             self._clear_thinking_status()
             self._active_tools["review_loop"] = dict(event.data)
-            self._append_activity("[cyan]review_loop started[/cyan]")
+            self._append_activity(("review_loop started", self._STYLE_ACCENT))
             self._refresh()
 
         elif etype == "review_completed":
@@ -175,18 +192,21 @@ class TUI:
         if role:
             entry["role"] = role
 
-    def _emit_status(self, message: str) -> None:
+    def _emit_status(self, message: Text | str) -> None:
         """Route status lines to Live when active; print directly otherwise."""
+        status = message if isinstance(message, Text) else Text.from_markup(message)
         if self._live or self._live_paused:
-            self._status_lines.append(Text.from_markup(message))
+            self._status_lines.append(status)
             self._refresh()
             return
-        self.console.print(message)
+        self.console.print(status)
 
-    def _append_activity(self, message: str) -> None:
+    def _append_activity(self, *segments: tuple[str, str]) -> None:
         """Insert one activity line at the current timeline position."""
         self._flush_current_text_to_timeline()
-        line = Text.from_markup(f"[dim]•[/dim] {message}")
+        styled_segments: list[tuple[str, str]] = [("• ", self._STYLE_MUTED)]
+        styled_segments.extend((text, style) for text, style in segments if text)
+        line = Text.assemble(*styled_segments)
         self._timeline_blocks.append(line)
         # Keep recent timeline blocks bounded.
         overflow = len(self._timeline_blocks) - 80
@@ -205,13 +225,13 @@ class TUI:
         if not isinstance(args, dict):
             return ""
         if "command" in args and isinstance(args["command"], str):
-            return f" [dim]{args['command'][:80]}[/dim]"
+            return f" {args['command'][:80]}"
         if "task" in args and isinstance(args["task"], str):
-            return f" [dim]{args['task'][:80]}[/dim]"
+            return f" {args['task'][:80]}"
         if "path" in args and isinstance(args["path"], str):
-            return f" [dim]{args['path'][:80]}[/dim]"
+            return f" {args['path'][:80]}"
         if "file_path" in args and isinstance(args["file_path"], str):
-            return f" [dim]{args['file_path'][:80]}[/dim]"
+            return f" {args['file_path'][:80]}"
         return ""
 
     def _clear_thinking_status(self) -> None:
@@ -226,10 +246,10 @@ class TUI:
             self._live.update(self._build_display())
 
     _STATE_STYLES = {
-        "running": "yellow",
-        "done": "green",
-        "failed": "red",
-        "cancelled": "yellow",
+        "running": _STYLE_WARNING,
+        "done": _STYLE_SUCCESS,
+        "failed": _STYLE_ERROR,
+        "cancelled": _STYLE_WARNING,
     }
 
     def _build_team_panel(self) -> Any | None:
@@ -239,12 +259,13 @@ class TUI:
         chips: list[tuple[str, str]] = []
         for aid in sorted(self._roster):
             entry = self._roster[aid]
-            style = self._STATE_STYLES.get(entry["state"], "dim")
+            style = self._STATE_STYLES.get(entry["state"], self._STYLE_MUTED)
             if chips:
-                chips.append(("  ", ""))
-            chips.append((f"A{aid} {entry['role']} ", "bold"))
+                chips.append(("  ", self._STYLE_MUTED))
+            chips.append((f"A{aid} ", "bold cyan"))
+            chips.append((f"{entry['role']} ", self._STYLE_MUTED))
             chips.append((f"[{entry['state']}]", style))
-        return Text.assemble(("Team: ", "bold cyan"), *chips)
+        return Text.assemble(("Team: ", self._STYLE_HEADING), *chips)
 
     def _build_display(self) -> Any:
         """Build the Rich renderable for current state."""
@@ -262,7 +283,7 @@ class TUI:
 
         # Active tool spinners
         if self._active_tools:
-            parts.append(Text("Running", style="bold cyan"))
+            parts.append(Text("Running", style=self._STYLE_HEADING))
             for label, data in self._active_tools.items():
                 args_preview = ""
                 if "args" in data:
@@ -275,9 +296,9 @@ class TUI:
                     args_preview = f" {data['task'][:60]}"
 
                 spinner_text = Text.assemble(
-                    ("  ", ""),
-                    (f"[{label}]", "bold cyan"),
-                    (args_preview, "dim"),
+                    ("  ", self._STYLE_MUTED),
+                    (f"[{label}]", self._STYLE_HEADING),
+                    (args_preview, self._STYLE_MUTED),
                 )
                 parts.append(spinner_text)
             parts.append(Text("", style=""))

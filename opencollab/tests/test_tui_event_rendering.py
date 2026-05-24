@@ -9,6 +9,9 @@ and SchedulerEvent keeps the user-visible output byte-equivalent.
 
 from __future__ import annotations
 
+from rich.console import Console
+from rich.text import Text
+
 from opencollab.adapters.tui import TUI
 from opencollab.domain.events import SchedulerEvent, SessionRuntimeEvent
 
@@ -19,6 +22,16 @@ def _make_tui() -> TUI:
 
 def _status_plains(tui: TUI) -> list[str]:
     return [line.plain for line in tui._status_lines]
+
+
+def _assert_visible_text_has_non_white_style(text: Text) -> None:
+    console = Console(color_system="truecolor")
+    for offset, char in enumerate(text.plain):
+        if char.isspace():
+            continue
+        style = text.get_style_at_offset(console, offset)
+        assert style.color is not None
+        assert style.color.name != "white"
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +274,40 @@ def test_message_events_append_activity_lines():
     )
     assert "A0 → A2 message" in timeline
     assert "A2 replied" in timeline
+
+
+def test_status_lines_use_explicit_non_white_styles():
+    tui = _make_tui()
+    tui._live_paused = True
+
+    tui.event_handler(SessionRuntimeEvent("step_start", {"step": 4, "aid": 0}))
+    tui.event_handler(SessionRuntimeEvent("budget_warning", {}))
+    tui.event_handler(SessionRuntimeEvent("error", {"reason": "boom", "aid": 0}))
+
+    for status in tui._status_lines:
+        _assert_visible_text_has_non_white_style(status)
+
+
+def test_status_chrome_renderables_avoid_default_text_color():
+    tui = _make_tui()
+    tui._live_paused = True
+
+    tui.event_handler(
+        SessionRuntimeEvent(
+            "tool_start",
+            {"tool": "bash", "args": {"command": "pytest -q"}, "aid": 0},
+        )
+    )
+    tui.event_handler(SchedulerEvent("agent_spawned", {"aid": 2, "parent_aid": 0, "role": "reviewer"}))
+
+    for block in tui._timeline_blocks:
+        if isinstance(block, Text):
+            _assert_visible_text_has_non_white_style(block)
+
+    display = tui._build_display()
+    for renderable in display.renderables:
+        if isinstance(renderable, Text):
+            _assert_visible_text_has_non_white_style(renderable)
 
 
 def test_reset_clears_roster():

@@ -18,9 +18,12 @@ import asyncio
 import json
 import os
 import uuid
+from html import escape
 from typing import Any, Optional
 
 import typer
+from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.styles import Style
 from rich.console import Console
 
 app = typer.Typer(
@@ -30,6 +33,10 @@ app = typer.Typer(
 )
 console = Console()
 _prompt_session: Any | None = None
+_PROMPT_STYLE = Style.from_dict({
+    "bottom-toolbar": "noreverse bg:default fg:ansibrightblack",
+    "bottom-toolbar.text": "noreverse bg:default fg:ansibrightblack",
+})
 
 
 def _get_prompt_session() -> Any:
@@ -38,7 +45,7 @@ def _get_prompt_session() -> Any:
     if _prompt_session is None:
         from prompt_toolkit import PromptSession
 
-        _prompt_session = PromptSession()
+        _prompt_session = PromptSession(style=_PROMPT_STYLE)
     return _prompt_session
 
 
@@ -56,7 +63,29 @@ async def _read_line(prompt_text: str, bottom_toolbar: Any = None) -> str:
         return await loop.run_in_executor(None, lambda: console.input(prompt_text))
 
 
-def _format_team_toolbar(snapshot: list[dict]) -> str:
+_TOOLBAR_MUTED = "ansibrightblack"
+_TOOLBAR_ACCENT = "ansicyan"
+_TOOLBAR_SUCCESS = "ansigreen"
+_TOOLBAR_WARNING = "ansiyellow"
+_TOOLBAR_ERROR = "ansired"
+
+_TOOLBAR_STATE_STYLES = {
+    "busy": _TOOLBAR_WARNING,
+    "running": _TOOLBAR_WARNING,
+    "scheduled": _TOOLBAR_MUTED,
+    "idle": _TOOLBAR_MUTED,
+    "done": _TOOLBAR_SUCCESS,
+    "completed": _TOOLBAR_SUCCESS,
+    "failed": _TOOLBAR_ERROR,
+    "cancelled": _TOOLBAR_WARNING,
+}
+
+
+def _toolbar_style(text: Any, color: str) -> str:
+    return f'<style fg="{color}">{escape(str(text))}</style>'
+
+
+def _format_team_toolbar(snapshot: list[dict]) -> HTML | str:
     """One-line team roster for the prompt bottom toolbar."""
     if not snapshot:
         return ""
@@ -65,8 +94,19 @@ def _format_team_toolbar(snapshot: list[dict]) -> str:
         aid = entry.get("aid")
         label = "Lead" if aid == 0 else f"A{aid} {entry.get('role', '?')}"
         state = "busy" if entry.get("busy") else entry.get("phase", "?")
-        parts.append(f"{label}({state})")
-    return "Team: " + "  ".join(parts)
+        state_style = _TOOLBAR_STATE_STYLES.get(str(state).lower(), _TOOLBAR_MUTED)
+        parts.append(
+            _toolbar_style(label, _TOOLBAR_MUTED)
+            + _toolbar_style("(", _TOOLBAR_MUTED)
+            + _toolbar_style(state, state_style)
+            + _toolbar_style(")", _TOOLBAR_MUTED)
+        )
+    separator = _toolbar_style("  ", _TOOLBAR_MUTED)
+    return HTML(
+        _toolbar_style("Team:", _TOOLBAR_ACCENT)
+        + _toolbar_style(" ", _TOOLBAR_MUTED)
+        + separator.join(parts)
+    )
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -116,7 +156,9 @@ def _resolve_config(workspace: str, model: str | None, provider: str | None,
 def main_callback(
     ctx: typer.Context,
     model: Optional[str] = typer.Option(None, "--model", "-m", help="LLM model (default from config)"),
-    provider: Optional[str] = typer.Option(None, "--provider", "-p", help="LLM provider (default from config or openai)"),
+    provider: Optional[str] = typer.Option(
+        None, "--provider", "-p", help="LLM provider (default from config or openai)"
+    ),
     api_key: Optional[str] = typer.Option(None, "--api-key", help="API key (default from config)"),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="API base URL (default from config)"),
     workspace: str = typer.Option(".", "--workspace", "-w", help="Working directory"),
