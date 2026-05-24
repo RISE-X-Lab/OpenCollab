@@ -248,7 +248,7 @@ def test_roster_tracks_spawn_and_completion_state():
     assert tui._roster[1] == {"role": "coder", "state": "running"}
 
     tui.event_handler(SchedulerEvent("agent_completed", {"aid": 1, "role": "coder", "latency": 1.0}))
-    assert tui._roster[1]["state"] == "done"
+    assert tui._roster[1]["state"] == "idle"
 
 
 def test_team_panel_renders_when_roster_present():

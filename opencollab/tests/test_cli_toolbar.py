@@ -30,6 +30,15 @@ def test_team_toolbar_escapes_role_text():
     assert ("fg:ansiyellow", "running") in fragments
 
 
+def test_team_toolbar_displays_completed_non_busy_agent_as_idle():
+    toolbar = _format_team_toolbar(
+        [{"aid": 1, "role": "coder", "phase": "done", "busy": False}]
+    )
+    plain, _ = _plain_and_fragments(toolbar)
+
+    assert plain == "Team: A1 coder(idle)"
+
+
 def test_prompt_toolbar_style_does_not_use_reverse_or_solid_background():
     for selector in ("class:bottom-toolbar", "class:bottom-toolbar.text"):
         attrs = _PROMPT_STYLE.get_attrs_for_style_str(selector)

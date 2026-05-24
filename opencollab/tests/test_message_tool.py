@@ -42,12 +42,15 @@ def test_team_status_tool_formats_roster():
         snapshot=[
             {"aid": 0, "role": "lead", "parent_aid": None, "phase": "idle", "busy": False},
             {"aid": 1, "role": "coder", "parent_aid": 0, "phase": "done", "busy": True},
+            {"aid": 2, "role": "reviewer", "parent_aid": 0, "phase": "done", "busy": False},
         ]
     )
     out = run(TeamStatusTool(sched).execute_with_runtime({}, _runtime()))
     assert "aid 0: lead (root)" in out
     assert "aid 1: coder (child of 0)" in out
+    assert "aid 2: reviewer (child of 0) — idle" in out
     assert "busy" in out
+    assert "done" not in out
 
 
 def test_team_status_tool_handles_empty_team():

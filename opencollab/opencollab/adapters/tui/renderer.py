@@ -138,7 +138,7 @@ class TUI:
         elif etype == "agent_completed":
             label = f"{agent_label}:spawn"
             self._active_tools.pop(label, None)
-            self._mark_roster(aid, role, "done")
+            self._mark_roster(aid, role, "idle")
             latency = event.data.get("latency", 0.0)
             self._append_activity(
                 (f"{label} finished", self._STYLE_SUCCESS),
@@ -247,6 +247,7 @@ class TUI:
 
     _STATE_STYLES = {
         "running": _STYLE_WARNING,
+        "idle": _STYLE_MUTED,
         "done": _STYLE_SUCCESS,
         "failed": _STYLE_ERROR,
         "cancelled": _STYLE_WARNING,

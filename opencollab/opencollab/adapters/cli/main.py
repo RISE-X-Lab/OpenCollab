@@ -85,6 +85,13 @@ def _toolbar_style(text: Any, color: str) -> str:
     return f'<style fg="{color}">{escape(str(text))}</style>'
 
 
+def _display_team_state(entry: dict) -> str:
+    if entry.get("busy"):
+        return "busy"
+    phase = entry.get("phase", "?")
+    return "idle" if phase == "done" else phase
+
+
 def _format_team_toolbar(snapshot: list[dict]) -> HTML | str:
     """One-line team roster for the prompt bottom toolbar."""
     if not snapshot:
@@ -93,7 +100,7 @@ def _format_team_toolbar(snapshot: list[dict]) -> HTML | str:
     for entry in snapshot:
         aid = entry.get("aid")
         label = "Lead" if aid == 0 else f"A{aid} {entry.get('role', '?')}"
-        state = "busy" if entry.get("busy") else entry.get("phase", "?")
+        state = _display_team_state(entry)
         state_style = _TOOLBAR_STATE_STYLES.get(str(state).lower(), _TOOLBAR_MUTED)
         parts.append(
             _toolbar_style(label, _TOOLBAR_MUTED)

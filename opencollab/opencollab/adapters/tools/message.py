@@ -52,12 +52,19 @@ class MessageAgentTool(Tool):
         return await self._scheduler.send_message(runtime.aid, to_aid, message)
 
 
+def _display_team_state(entry: dict[str, Any]) -> str:
+    if entry.get("busy"):
+        return "busy"
+    phase = entry.get("phase", "?")
+    return "idle" if phase == "done" else phase
+
+
 class TeamStatusTool(Tool):
-    """Report the current team roster (aids, roles, phases)."""
+    """Report the current team roster (aids, roles, display states)."""
 
     name = "team_status"
     description = (
-        "List the current team: each agent's aid, role, parent, phase, and "
+        "List the current team: each agent's aid, role, parent, state, and "
         "whether it is busy. Use this to discover which agents exist before "
         "messaging one."
     )
@@ -76,11 +83,11 @@ class TeamStatusTool(Tool):
             return "No agents in the team yet."
         lines = ["Team roster:"]
         for entry in roster:
-            busy = "busy" if entry.get("busy") else entry.get("phase", "?")
+            state = _display_team_state(entry)
             parent = entry.get("parent_aid")
             parent_str = "root" if parent is None else f"child of {parent}"
             lines.append(
-                f"- aid {entry['aid']}: {entry.get('role', '?')} ({parent_str}) — {busy}"
+                f"- aid {entry['aid']}: {entry.get('role', '?')} ({parent_str}) — {state}"
             )
         return "\n".join(lines)
 
