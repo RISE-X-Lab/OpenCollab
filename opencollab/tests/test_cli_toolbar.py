@@ -11,11 +11,12 @@ def _plain_and_fragments(toolbar):
     return plain, fragments
 
 
-def test_team_toolbar_styles_initial_lead_state():
+def test_team_toolbar_displays_scheduled_lead_as_idle_in_green():
     toolbar = _format_team_toolbar([{"aid": 0, "phase": "scheduled", "busy": False}])
     plain, fragments = _plain_and_fragments(toolbar)
 
-    assert plain == "Team: Lead(scheduled)"
+    assert plain == "Team: Lead(idle)"
+    assert ("fg:ansigreen", "idle") in fragments
     for style, text in fragments:
         if text.strip():
             assert style

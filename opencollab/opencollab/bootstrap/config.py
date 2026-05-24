@@ -10,6 +10,7 @@ Supported variables:
     OPENCOLLAB_API_KEY    — API key (also reads OPENAI_API_KEY / ANTHROPIC_API_KEY)
     OPENCOLLAB_BASE_URL   — API base URL (also reads OPENAI_BASE_URL)
     OPENCOLLAB_BUDGET     — default token budget
+    OPENCOLLAB_FILTER_MESSAGES — TUI: show only the selected agent's stream (bool)
     OPENCOLLAB_CONFIG_FILE — explicit path to an env file
 """
 
@@ -32,6 +33,7 @@ class OpenCollabConfig(BaseModel):
     api_key: str | None = None
     base_url: str | None = None
     budget: int = Field(default=200_000, ge=1)
+    filter_messages: bool = Field(default=False)
 
     @field_validator("model", "provider", mode="before")
     @classmethod
@@ -146,6 +148,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         "api_key": resolve("OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"),
         "base_url": resolve("OPENCOLLAB_BASE_URL", "OPENAI_BASE_URL"),
         "budget": resolve("OPENCOLLAB_BUDGET", default="200000"),
+        "filter_messages": resolve("OPENCOLLAB_FILTER_MESSAGES", default="false"),
     }
     if overrides:
         values.update({k: v for k, v in overrides.items() if v is not None})

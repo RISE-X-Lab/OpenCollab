@@ -9,6 +9,8 @@ and SchedulerEvent keeps the user-visible output byte-equivalent.
 
 from __future__ import annotations
 
+from io import StringIO
+
 from rich.console import Console
 from rich.text import Text
 
@@ -310,8 +312,73 @@ def test_status_chrome_renderables_avoid_default_text_color():
             _assert_visible_text_has_non_white_style(renderable)
 
 
+def test_live_display_tails_when_content_exceeds_terminal_height():
+    console = Console(file=StringIO(), width=40, height=4)
+    tui = TUI(console)
+    tui._live_paused = True
+    for index in range(8):
+        tui._status_lines.append(Text(f"status {index}", style="cyan"))
+
+    display = tui._build_live_display()
+    lines = console.render_lines(display, console.options, pad=False)
+    plain = "\n".join("".join(segment.text for segment in line) for line in lines)
+
+    assert len(lines) <= console.height
+    assert "status 7" in plain
+    assert "status 0" not in plain
+
+
 def test_reset_clears_roster():
     tui = _make_tui()
     tui.event_handler(SchedulerEvent("agent_spawned", {"aid": 1, "parent_aid": 0, "role": "coder"}))
     tui.reset()
     assert tui._roster == {}
+
+
+# ---------------------------------------------------------------------------
+# Per-agent message filtering
+# ---------------------------------------------------------------------------
+
+
+def test_filter_off_renders_every_agent_stream():
+    tui = TUI(filter_messages=False)
+    tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "lead ", "aid": 0}))
+    tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "child", "aid": 1}))
+    assert tui._current_text == "lead child"
+
+
+def test_filter_on_shows_only_selected_agent_defaulting_to_lead():
+    tui = TUI(filter_messages=True)
+    assert tui.selected_aid == 0
+    tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "lead ", "aid": 0}))
+    tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "child", "aid": 1}))
+    assert tui._current_text == "lead "
+
+
+def test_select_agent_switches_the_visible_stream():
+    tui = TUI(filter_messages=True)
+    tui.select_agent(1)
+    tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "lead ", "aid": 0}))
+    tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "child", "aid": 1}))
+    assert tui._current_text == "child"
+
+
+def test_filter_suppresses_other_agents_tool_activity():
+    tui = TUI(filter_messages=True)
+    tui.event_handler(
+        SessionRuntimeEvent("tool_start", {"tool": "bash", "args": {"command": "ls"}, "aid": 1})
+    )
+    assert tui._active_tools == {}
+
+
+def test_set_filter_toggles_at_runtime():
+    tui = TUI(filter_messages=False)
+    tui.set_filter(True)
+    tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "child", "aid": 1}))
+    assert tui._current_text == ""
+
+
+def test_filter_keeps_scheduler_roster_visible():
+    tui = TUI(filter_messages=True)
+    tui.event_handler(SchedulerEvent("agent_spawned", {"aid": 1, "parent_aid": 0, "role": "coder"}))
+    assert 1 in tui._roster

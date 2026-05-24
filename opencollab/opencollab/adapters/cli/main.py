@@ -72,8 +72,7 @@ _TOOLBAR_ERROR = "ansired"
 _TOOLBAR_STATE_STYLES = {
     "busy": _TOOLBAR_WARNING,
     "running": _TOOLBAR_WARNING,
-    "scheduled": _TOOLBAR_MUTED,
-    "idle": _TOOLBAR_MUTED,
+    "idle": _TOOLBAR_SUCCESS,
     "done": _TOOLBAR_SUCCESS,
     "completed": _TOOLBAR_SUCCESS,
     "failed": _TOOLBAR_ERROR,
@@ -89,7 +88,7 @@ def _display_team_state(entry: dict) -> str:
     if entry.get("busy"):
         return "busy"
     phase = entry.get("phase", "?")
-    return "idle" if phase == "done" else phase
+    return "idle" if phase in ("done", "scheduled") else phase
 
 
 def _format_team_toolbar(snapshot: list[dict]) -> HTML | str:
@@ -156,6 +155,7 @@ def _resolve_config(workspace: str, model: str | None, provider: str | None,
         "api_key": api_key or cfg["api_key"],
         "base_url": base_url or cfg["base_url"],
         "budget": budget if budget is not None else _safe_int(cfg["budget"], 200_000),
+        "filter_messages": bool(cfg["filter_messages"]),
     }
 
 
@@ -249,7 +249,7 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
     from opencollab.adapters.tui import TUI, TuiEventSink, TuiPermissionPolicy
     from opencollab.bootstrap import build_runtime_context, build_scheduler
 
-    tui = TUI(console)
+    tui = TUI(console, filter_messages=cfg["filter_messages"])
     tui.print_welcome()
 
     permission_policy = None

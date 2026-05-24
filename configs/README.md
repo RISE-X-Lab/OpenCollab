@@ -41,6 +41,17 @@ OPENCOLLAB_MODEL=glm-5.1
 OPENCOLLAB_API_KEY=<your-api-key>
 ```
 
+## Display
+
+`OPENCOLLAB_FILTER_MESSAGES` toggles per-agent message filtering in the TUI.
+When `false` (the default), every agent's stream is shown. When `true`, only the
+selected agent's stream is displayed — it defaults to the Lead (agent 0), and a
+future `/` picker will let you switch the focused agent at the prompt.
+
+```dotenv
+OPENCOLLAB_FILTER_MESSAGES=true
+```
+
 ## Team
 
 Define a multi-agent team — per-role prompts, model overrides, tool allowlists,

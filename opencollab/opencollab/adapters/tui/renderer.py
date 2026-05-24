@@ -14,9 +14,23 @@ from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.segment import Segment
 from rich.text import Text
 
 from opencollab.domain.events import SchedulerEvent
+
+
+class _LineViewport:
+    """A pre-rendered, bottom-aligned live viewport."""
+
+    def __init__(self, lines: list[list[Segment]]) -> None:
+        self.lines = lines
+
+    def __rich_console__(self, console: Console, options: Any) -> Any:
+        for index, line in enumerate(self.lines):
+            yield from line
+            if index < len(self.lines) - 1:
+                yield Segment.line()
 
 
 class TUI:
@@ -36,7 +50,7 @@ class TUI:
     _STYLE_ERROR = "red"
     _STYLE_HEADING = "bold cyan"
 
-    def __init__(self, console: Console | None = None):
+    def __init__(self, console: Console | None = None, *, filter_messages: bool = False):
         self.console = console or Console()
         self._current_text = ""
         self._active_tools: dict[str, dict] = {}
@@ -47,6 +61,34 @@ class TUI:
         self._step = 0
         self._live: Live | None = None
         self._live_paused = False
+        # When filtering is on, only the selected agent's per-session stream
+        # (text + tool activity) is rendered; team/scheduler events still show.
+        # Defaults to the Lead (aid 0); a future "/" picker switches it.
+        self._filter_messages = filter_messages
+        self._selected_aid = 0
+
+    def _agent_label(self, aid: int) -> str:
+        return "Lead" if aid == 0 else f"A{aid}"
+
+    def _is_visible(self, aid: int) -> bool:
+        """Whether an agent's session stream should render under the filter."""
+        if not self._filter_messages:
+            return True
+        return aid == self._selected_aid
+
+    def select_agent(self, aid: int) -> None:
+        """Focus the filtered message view on one agent (the "/" picker hook)."""
+        self._selected_aid = aid
+        self._refresh()
+
+    def set_filter(self, enabled: bool) -> None:
+        """Turn per-agent message filtering on or off at runtime."""
+        self._filter_messages = enabled
+        self._refresh()
+
+    @property
+    def selected_aid(self) -> int:
+        return self._selected_aid
 
     def event_handler(self, event: Any) -> None:
         """Synchronous event handler — subscribed to the Session event bus.
@@ -63,6 +105,8 @@ class TUI:
     def _handle_session_event(self, event: Any) -> None:
         etype = event.type
         aid = event.data.get("aid", -1)
+        if not self._is_visible(aid):
+            return
         agent_label = "Lead" if aid == 0 else f"A{aid}"
 
         if etype == "text_delta":
@@ -243,11 +287,11 @@ class TUI:
     def _refresh(self) -> None:
         """Re-render the current state."""
         if self._live and not self._live_paused:
-            self._live.update(self._build_display())
+            self._live.update(self._build_live_display())
 
     _STATE_STYLES = {
         "running": _STYLE_WARNING,
-        "idle": _STYLE_MUTED,
+        "idle": _STYLE_SUCCESS,
         "done": _STYLE_SUCCESS,
         "failed": _STYLE_ERROR,
         "cancelled": _STYLE_WARNING,
@@ -261,12 +305,18 @@ class TUI:
         for aid in sorted(self._roster):
             entry = self._roster[aid]
             style = self._STATE_STYLES.get(entry["state"], self._STYLE_MUTED)
+            focused = self._filter_messages and aid == self._selected_aid
             if chips:
                 chips.append(("  ", self._STYLE_MUTED))
-            chips.append((f"A{aid} ", "bold cyan"))
+            chips.append((f"{'▶ ' if focused else ''}A{aid} ", "bold cyan"))
             chips.append((f"{entry['role']} ", self._STYLE_MUTED))
             chips.append((f"[{entry['state']}]", style))
-        return Text.assemble(("Team: ", self._STYLE_HEADING), *chips)
+        header = (
+            f"Team (showing {self._agent_label(self._selected_aid)}): "
+            if self._filter_messages
+            else "Team: "
+        )
+        return Text.assemble((header, self._STYLE_HEADING), *chips)
 
     def _build_display(self) -> Any:
         """Build the Rich renderable for current state."""
@@ -318,14 +368,24 @@ class TUI:
         from rich.console import Group
         return Group(*parts)
 
+    def _build_live_display(self) -> Any:
+        """Build a terminal-height live frame focused on newest output."""
+        display = self._build_display()
+        max_height = max(1, self.console.height)
+        lines = self.console.render_lines(display, self.console.options, pad=False)
+        if len(lines) <= max_height:
+            return display
+        return _LineViewport(lines[-max_height:])
+
     def start_live(self) -> None:
         """Start the Live display context."""
         self._live_paused = False
         self._live = Live(
-            Text("Thinking...", style="dim"),
+            self._build_live_display(),
             console=self.console,
             refresh_per_second=10,
             transient=False,
+            vertical_overflow="crop",
         )
         self._live.start()
 
@@ -343,10 +403,11 @@ class TUI:
         if not was_suspended or not self._live_paused:
             return
         self._live = Live(
-            self._build_display(),
+            self._build_live_display(),
             console=self.console,
             refresh_per_second=10,
             transient=True,
+            vertical_overflow="crop",
         )
         self._live_paused = False
         self._live.start()
