@@ -57,11 +57,41 @@ def test_illegal_edges_raise(src: SessionPhase, dst: SessionPhase):
 
 
 def test_set_phase_is_unchecked_escape():
-    # set_phase is the out-of-band primitive used for the ERROR escape and
-    # process birth — it bypasses validation by design.
+    # set_phase is the out-of-band primitive used for process birth and
+    # snapshot/restore — it bypasses validation by design.
     s = state(SessionPhase.EXECUTING_TOOLS)
-    s.set_phase(SessionPhase.ERROR)
+    s.set_phase(SessionPhase.SCHEDULED)
+    assert s.phase is SessionPhase.SCHEDULED
+
+
+@pytest.mark.parametrize("src", list(SessionPhase))
+def test_fail_escapes_to_error_from_any_phase(src: SessionPhase):
+    s = state(src)
+    s.fail()
     assert s.phase is SessionPhase.ERROR
+
+
+@pytest.mark.parametrize("src", list(SessionPhase))
+def test_cancel_escapes_to_cancelled_from_any_phase(src: SessionPhase):
+    s = state(src)
+    s.cancel()
+    assert s.phase is SessionPhase.CANCELLED
+
+
+@pytest.mark.parametrize("src", sorted(TERMINAL_PHASES, key=lambda p: p.value))
+def test_resume_to_idle_from_each_terminal(src: SessionPhase):
+    s = state(src)
+    s.resume_to_idle()
+    assert s.phase is SessionPhase.IDLE
+
+
+@pytest.mark.parametrize(
+    "src", [p for p in SessionPhase if p not in TERMINAL_PHASES]
+)
+def test_resume_to_idle_is_noop_when_not_terminal(src: SessionPhase):
+    s = state(src)
+    s.resume_to_idle()
+    assert s.phase is src
 
 
 def test_mark_done_and_clear_done_roundtrip():

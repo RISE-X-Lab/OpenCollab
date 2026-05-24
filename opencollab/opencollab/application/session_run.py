@@ -59,9 +59,10 @@ class SessionRunUseCase:
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         try:
             # A completed turn (DONE) short-circuits to its last answer; an
-            # aborted turn (cancelled/budget/error) is reset so a re-run resumes.
-            if self.is_terminal_phase() and self.state.phase is not SessionPhase.DONE:
-                self.state.transition_to(SessionPhase.IDLE)
+            # aborted turn (cancelled/budget/error) resumes to IDLE so a bare
+            # re-run continues. resume_to_idle no-ops on non-terminal phases.
+            if self.state.phase is not SessionPhase.DONE:
+                self.state.resume_to_idle()
             while not self.is_terminal_phase() and self.state.step_count < self.max_steps:
                 await self.advance(cancel_event)
 
@@ -70,7 +71,7 @@ class SessionRunUseCase:
                 self.tracer.flush()
             raise
         except Exception:
-            self.state.set_phase(SessionPhase.ERROR)
+            self.state.fail()
             raise
 
         for msg in reversed(self.state.messages):
@@ -100,7 +101,7 @@ class SessionRunUseCase:
             case SessionPhase.AUTOSAVING:
                 await self.autosave_pending_step()
             case _:
-                self.state.set_phase(SessionPhase.ERROR)
+                self.state.fail()
                 raise RuntimeError(f"Cannot advance terminal phase: {self.state.phase.value}")
 
     async def precheck(self, cancel_event: asyncio.Event | None) -> None:
@@ -154,7 +155,7 @@ class SessionRunUseCase:
     async def handle_pending_response(self) -> None:
         pending = self._pending
         if pending is None:
-            self.state.set_phase(SessionPhase.ERROR)
+            self.state.fail()
             raise RuntimeError("Cannot handle assistant response before calling LLM")
         response = pending.response
 
@@ -172,7 +173,7 @@ class SessionRunUseCase:
     async def execute_pending_tools(self) -> None:
         pending = self._pending
         if pending is None:
-            self.state.set_phase(SessionPhase.ERROR)
+            self.state.fail()
             raise RuntimeError("Cannot execute tools before calling LLM")
 
         result = await self.tool_execution.process(pending.response.tool_calls)

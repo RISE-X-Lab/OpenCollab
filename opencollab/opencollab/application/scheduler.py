@@ -207,7 +207,7 @@ class Scheduler:
                 await self._inject_result(scb.parent_aid, aid, result)
 
         except asyncio.CancelledError:
-            scb.state.set_phase(SessionPhase.CANCELLED)
+            scb.state.cancel()
             await self._emit_scheduler_event(
                 "agent_cancelled",
                 {"aid": aid, "role": scb.agent.name},
@@ -215,7 +215,7 @@ class Scheduler:
             raise
 
         except Exception as exc:
-            scb.state.set_phase(SessionPhase.ERROR)
+            scb.state.fail()
             scb.result = f"Error: {exc}"
             await self._emit_scheduler_event(
                 "agent_failed",

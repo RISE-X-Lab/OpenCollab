@@ -34,11 +34,13 @@ TERMINAL_PHASES = frozenset(
 
 
 # The run-loop FSM topology — the single source of truth for which phase
-# transitions the loop may make. ``transition_to`` validates against this;
-# ``set_phase`` is the unchecked primitive for out-of-band sets (process
-# birth/enqueue by the Scheduler, the ERROR escape on exception, snapshot/
-# restore, and tests). Entering ERROR is deliberately *not* a normal edge — it
-# is an abnormal escape applied via ``set_phase`` from any phase.
+# transitions the loop may make. ``transition_to`` validates against this.
+# ``set_phase`` is the unchecked primitive reserved for process birth/enqueue
+# by the Scheduler, snapshot/restore, and tests. Two named escapes may fire
+# from any phase: ``fail`` -> ERROR and ``cancel`` -> CANCELLED. ERROR is only
+# ever reached that way (it has no inbound edge below); CANCELLED also has a
+# validated in-loop edge from PRECHECK, so the scheduler's out-of-band
+# ``cancel`` covers the case where an agent task is killed mid-loop.
 PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
     SessionPhase.SCHEDULED: frozenset({SessionPhase.IDLE}),
     SessionPhase.IDLE: frozenset({SessionPhase.PRECHECK}),
@@ -108,13 +110,13 @@ class SessionState:
         self.phase = SessionPhase.DONE
 
     def clear_done(self) -> None:
-        if self.phase == SessionPhase.DONE:
-            self.phase = SessionPhase.IDLE
+        self.resume_to_idle()
 
     def set_phase(self, phase: SessionPhase) -> None:
-        """Unchecked phase assignment for out-of-band sets (scheduler birth/
-        enqueue, the ERROR escape, snapshot/restore, tests). Run-loop edges
-        should go through ``transition_to`` so illegal transitions fail loudly.
+        """Unchecked phase assignment reserved for out-of-band sets: scheduler
+        process birth/enqueue, snapshot/restore, and tests. Run-loop edges go
+        through ``transition_to``; the abnormal terminal escapes go through
+        ``fail``/``cancel``. Prefer those over poking ``set_phase`` directly.
         """
         self.phase = phase
 
@@ -126,8 +128,29 @@ class SessionState:
             raise InvalidPhaseTransition(self.phase, phase)
         self.phase = phase
 
+    def fail(self) -> None:
+        """Abnormal escape to ERROR from any phase. ERROR has no inbound edge in
+        ``PHASE_TRANSITIONS`` by design — it is reachable only through this
+        escape (and snapshot/restore). Callers pair it with a raised exception.
+        """
+        self.phase = SessionPhase.ERROR
+
+    def cancel(self) -> None:
+        """Out-of-band escape to CANCELLED from any phase, used by the scheduler
+        when an agent task is killed mid-loop. The in-loop cancel uses the
+        validated PRECHECK -> CANCELLED edge via ``transition_to`` instead.
+        """
+        self.phase = SessionPhase.CANCELLED
+
+    def resume_to_idle(self) -> None:
+        """The single validated reset from a terminal phase back to IDLE for a
+        fresh turn or re-run. No-op when the phase is not terminal.
+        """
+        if self.phase.is_terminal():
+            self.transition_to(SessionPhase.IDLE)
+
     def reset_for_user_turn(self) -> None:
-        self.clear_done()
+        self.resume_to_idle()
         self.clear_recent_tool_hashes()
 
     def remember_tool_call_hash(self, call_hash: str, max_window: int | None = None) -> None:
