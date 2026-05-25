@@ -39,6 +39,15 @@ class ToolProcessingResult:
     def apply_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         for message in self.messages_to_append:
             state.append_message(message)
+        self.apply_hashes_to(state, max_window=max_window)
+
+    def apply_hashes_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
+        """Apply only the loop-detection hashes, not the result messages.
+
+        Used when a batch contains a deferred tool: immediate results are
+        buffered into the pending table (to keep the whole batch's tool-result
+        block contiguous on resume) while their call hashes still record now.
+        """
         for call_hash in self.recent_hash_updates:
             state.remember_tool_call_hash(call_hash, max_window=max_window)
 

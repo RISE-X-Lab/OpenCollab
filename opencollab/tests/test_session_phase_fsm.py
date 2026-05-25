@@ -45,6 +45,9 @@ def test_legal_edges_transition(src: SessionPhase, dst: SessionPhase):
         (SessionPhase.HANDLING_RESPONSE, SessionPhase.PRECHECK),
         (SessionPhase.DONE, SessionPhase.PRECHECK),
         (SessionPhase.SCHEDULED, SessionPhase.CALLING_LLM),
+        (SessionPhase.AWAITING_EVENTS, SessionPhase.DONE),
+        (SessionPhase.AWAITING_EVENTS, SessionPhase.AUTOSAVING),
+        (SessionPhase.EXECUTING_TOOLS, SessionPhase.PRECHECK),
     ],
 )
 def test_illegal_edges_raise(src: SessionPhase, dst: SessionPhase):
@@ -107,6 +110,14 @@ def test_mark_done_and_clear_done_roundtrip():
 def test_clear_done_is_noop_when_not_done():
     s = state(SessionPhase.PRECHECK)
     s.clear_done()
+    assert s.phase is SessionPhase.PRECHECK
+
+
+def test_awaiting_events_is_non_terminal_and_resumes_to_precheck():
+    assert SessionPhase.AWAITING_EVENTS not in TERMINAL_PHASES
+    s = state(SessionPhase.EXECUTING_TOOLS)
+    s.transition_to(SessionPhase.AWAITING_EVENTS)
+    s.transition_to(SessionPhase.PRECHECK)
     assert s.phase is SessionPhase.PRECHECK
 
 

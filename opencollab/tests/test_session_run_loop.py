@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from opencollab.application.event_bus import EventBus
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.domain.compaction import CompactResult
+from opencollab.domain.pending import RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
 from opencollab.domain.tools import ToolProcessingResult
 
@@ -88,6 +89,29 @@ class FakeToolExecution:
     async def process(self, tool_calls):
         self.calls.append(copy.deepcopy(tool_calls))
         return self.result
+
+
+class FakeToolExecutionDeferred:
+    """Tool executor that also handles deferrable tools via ``execute_deferred``.
+
+    ``deferred_outcomes`` maps a tool_call_id -> (ref, error): a non-None ref
+    means the tool deferred work (returns a child aid to await); a non-None
+    error means it resolved synchronously and fills its row at once.
+    """
+
+    def __init__(self, process_result=None, deferred_outcomes=None):
+        self.process_calls = []
+        self.deferred_calls = []
+        self.process_result = process_result if process_result is not None else ToolProcessingResult()
+        self.deferred_outcomes = deferred_outcomes or {}
+
+    async def process(self, tool_calls):
+        self.process_calls.append(copy.deepcopy(tool_calls))
+        return self.process_result
+
+    async def execute_deferred(self, tc):
+        self.deferred_calls.append(copy.deepcopy(tc))
+        return self.deferred_outcomes.get(tc["id"], (None, "no outcome"))
 
 
 class FakeTracer:
@@ -271,3 +295,105 @@ def test_run_loop_without_tool_calls_marks_done():
     assert state.used_tokens == 6
     assert state.messages[-1] == {"role": "assistant", "content": "plain"}
     assert [event_type for event_type, _data in events] == ["step_start", "text_delta", "step_end"]
+
+
+def test_deferred_spawn_suspends_then_resumes_after_fill():
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    llm = FakeLLM(
+        [
+            llm_response(
+                content="spawning",
+                tool_calls=[tool_call(call_id="s1", name="spawn_agent", arguments="{}")],
+                finish_reason="tool_calls",
+            ),
+            llm_response(content="done after child", total_tokens=4),
+        ]
+    )
+    te = FakeToolExecutionDeferred(deferred_outcomes={"s1": (7, None)})
+    runner = build_runner(state=state, llm=llm, tool_execution=te)
+
+    # First run: a deferred spawn suspends the session on AWAITING_EVENTS.
+    result = run(runner.run_loop())
+    assert state.phase is SessionPhase.AWAITING_EVENTS
+    assert result == "spawning"
+    assert len(llm.calls) == 1
+    row = state.pending_events.find_by_ref(7)
+    assert row.tool_call_id == "s1"
+    assert row.kind is RowKind.CHILD_AGENT
+    assert row.status is RowStatus.PENDING
+
+    # The scheduler fills the row when the child finishes, then re-activates.
+    state.pending_events.fill("s1", result="child result")
+    result2 = run(runner.run_loop())
+
+    assert result2 == "done after child"
+    assert state.phase is SessionPhase.DONE
+    assert state.pending_events.is_empty()
+    # The resumed LLM call saw the child result as a proper tool result.
+    second_call_msgs = llm.calls[1]["messages"]
+    assert {"role": "tool", "tool_call_id": "s1", "content": "child result"} in second_call_msgs
+
+
+def test_mixed_batch_buffers_immediate_and_resumes_in_order():
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    batch = [
+        tool_call(call_id="b1", name="fake_tool", arguments="{}"),
+        tool_call(call_id="s1", name="spawn_agent", arguments="{}"),
+    ]
+    llm = FakeLLM(
+        [
+            llm_response(content="mixed", tool_calls=batch, finish_reason="tool_calls"),
+            llm_response(content="final", total_tokens=4),
+        ]
+    )
+    te = FakeToolExecutionDeferred(
+        process_result=ToolProcessingResult(
+            messages_to_append=[{"role": "tool", "tool_call_id": "b1", "content": "bash ok"}]
+        ),
+        deferred_outcomes={"s1": (9, None)},
+    )
+    runner = build_runner(state=state, llm=llm, tool_execution=te)
+
+    run(runner.run_loop())
+    assert state.phase is SessionPhase.AWAITING_EVENTS
+    # process() ran only the immediate tool; the deferred one bypassed it.
+    assert te.process_calls == [[batch[0]]]
+    assert len(state.pending_events.rows) == 2
+    assert not state.pending_events.is_complete()  # deferred row still pending
+
+    state.pending_events.fill("s1", result="child done")
+    run(runner.run_loop())
+
+    # Tool-result block is contiguous and in original tool_calls order.
+    second_call_msgs = llm.calls[1]["messages"]
+    tool_msgs = [m for m in second_call_msgs if m.get("role") == "tool"]
+    assert tool_msgs == [
+        {"role": "tool", "tool_call_id": "b1", "content": "bash ok"},
+        {"role": "tool", "tool_call_id": "s1", "content": "child done"},
+    ]
+
+
+def test_deferred_rejected_synchronously_does_not_suspend():
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    llm = FakeLLM(
+        [
+            llm_response(
+                content="try spawn",
+                tool_calls=[tool_call(call_id="s1", name="spawn_agent", arguments="{}")],
+                finish_reason="tool_calls",
+            ),
+            llm_response(content="handled error", total_tokens=4),
+        ]
+    )
+    te = FakeToolExecutionDeferred(deferred_outcomes={"s1": (None, "Permission denied: nope")})
+    runner = build_runner(state=state, llm=llm, tool_execution=te)
+
+    result = run(runner.run_loop())
+
+    # No event will ever arrive, so the session must not suspend — it drains
+    # the synchronous error and finishes in one run.
+    assert result == "handled error"
+    assert state.phase is SessionPhase.DONE
+    assert state.pending_events.is_empty()
+    tool_msgs = [m for m in llm.calls[1]["messages"] if m.get("role") == "tool"]
+    assert tool_msgs == [{"role": "tool", "tool_call_id": "s1", "content": "Permission denied: nope"}]

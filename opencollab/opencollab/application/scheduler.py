@@ -9,6 +9,7 @@ Tracks every Session as a SessionControlBlock in a SessionTable:
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -22,9 +23,12 @@ from opencollab.application.ports import (
     WorktreePoolPort,
 )
 from opencollab.domain.events import SchedulerEvent
+from opencollab.domain.pending import PendingRowError, RowStatus
 from opencollab.domain.scheduler import DelegationTask, ReviewVerdict, SessionControlBlock, SessionTable, split_budget
 from opencollab.domain.session import SessionPhase
 from opencollab.domain.team import Topology
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -75,6 +79,10 @@ class Scheduler:
         self._sessions: dict[int, Any] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._lead_session: Any | None = None
+        # child aid -> (parent aid, tool_call_id) for deferred spawns: lets a
+        # child's completion fill the exact pending row that suspended its
+        # parent. Absent for legacy fire-and-forget spawns (tool_call_id=None).
+        self._spawn_origin: dict[int, tuple[int, str]] = {}
 
     @property
     def used_tokens(self) -> int:
@@ -129,8 +137,14 @@ class Scheduler:
         role: str,
         task: str,
         context: str = "",
+        tool_call_id: str | None = None,
     ) -> int:
         """Non-blocking spawn. Creates SCB, builds session, starts task. Returns aid.
+
+        When ``tool_call_id`` is given (a deferred ``spawn_agent`` tool call),
+        the (parent, tool_call_id) origin is recorded so the child's completion
+        fills the parent's pending row and re-activates it. Without it the spawn
+        is fire-and-forget (the result lives only in the child's SCB).
 
         Raises ``PermissionError`` if the team topology forbids ``parent_aid``'s
         role from spawning ``role``; the tool executor turns that into a tool
@@ -166,6 +180,8 @@ class Scheduler:
         )
         self.table.add(scb)
         self._sessions[aid] = session
+        if tool_call_id is not None:
+            self._spawn_origin[aid] = (parent_aid, tool_call_id)
 
         # Emit spawn event
         await self._emit_scheduler_event(
@@ -174,12 +190,20 @@ class Scheduler:
         )
 
         # Start async task
-        self._tasks[aid] = asyncio.create_task(self._run_agent(aid, session))
+        self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
 
         return aid
 
-    async def _run_agent(self, aid: int, session: Any) -> None:
-        """Execute a spawned agent to completion."""
+    async def _drive_agent(self, aid: int, session: Any) -> None:
+        """Run a session's loop once and finalize.
+
+        The loop returns either suspended on ``AWAITING_EVENTS`` (the session
+        spawned its own children — leave it; a child wake re-enters here later)
+        or terminal. On terminal completion it emits ``agent_completed`` and, if
+        the session was itself a deferred child, fills its parent's pending row
+        and re-activates the parent. Used for both the initial run and every
+        event-driven resume, at any depth of the delegation tree.
+        """
         scb = self.table.get(aid)
         if scb is None:
             return
@@ -188,38 +212,6 @@ class Scheduler:
 
         try:
             result = await session.run_loop()
-            scb.result = result
-
-            # Append worktree diff if available
-            env = getattr(session, "env", None)
-            if env is not None:
-                result = await self._append_worktree_diff(env, result)
-
-            latency = time.monotonic() - start
-
-            if self._tracer:
-                self._tracer.log_step(
-                    step_type="agent_completed",
-                    payload={"aid": aid, "role": scb.agent.name, "result_len": len(result)},
-                    tokens=session.used_tokens,
-                    latency=latency,
-                )
-
-            await self._emit_scheduler_event(
-                "agent_completed",
-                {
-                    "aid": aid,
-                    "parent_aid": scb.parent_aid,
-                    "role": scb.agent.name,
-                    "latency": latency,
-                    "result_len": len(result),
-                },
-            )
-
-            # Inject result into parent
-            if scb.parent_aid is not None:
-                await self._inject_result(scb.parent_aid, aid, result)
-
         except asyncio.CancelledError:
             scb.state.cancel()
             await self._emit_scheduler_event(
@@ -227,7 +219,6 @@ class Scheduler:
                 {"aid": aid, "role": scb.agent.name},
             )
             raise
-
         except Exception as exc:
             scb.state.fail()
             scb.result = f"Error: {exc}"
@@ -235,29 +226,96 @@ class Scheduler:
                 "agent_failed",
                 {"aid": aid, "role": scb.agent.name, "error": str(exc)},
             )
-            # Inject error as result so parent can handle it
-            if scb.parent_aid is not None:
-                await self._inject_result(scb.parent_aid, aid, f"Error: {exc}")
+            await self._deliver_to_parent(aid, f"Error: {exc}", RowStatus.FAILED)
+            return
 
-    async def _inject_result(
-        self,
-        parent_aid: int,
-        child_aid: int,
-        result: str,
-    ) -> None:
-        """Inject child result into parent's messages as a system message."""
+        scb.result = result
+
+        # Suspended on its own deferred work — not finished. A child's wake will
+        # re-enter _drive_agent and finalize once it reaches a terminal phase.
+        if scb.state.phase is SessionPhase.AWAITING_EVENTS:
+            return
+
+        # Append worktree diff if available (delivered to the parent / read by
+        # spawn_with_review; scb.result keeps the pre-diff run-loop result).
+        env = getattr(session, "env", None)
+        if env is not None:
+            result = await self._append_worktree_diff(env, result)
+
+        latency = time.monotonic() - start
+
+        if self._tracer:
+            self._tracer.log_step(
+                step_type="agent_completed",
+                payload={"aid": aid, "role": scb.agent.name, "result_len": len(result)},
+                tokens=session.used_tokens,
+                latency=latency,
+            )
+
+        await self._emit_scheduler_event(
+            "agent_completed",
+            {
+                "aid": aid,
+                "parent_aid": scb.parent_aid,
+                "role": scb.agent.name,
+                "latency": latency,
+                "result_len": len(result),
+            },
+        )
+
+        status = RowStatus.FAILED if scb.state.phase is SessionPhase.ERROR else RowStatus.DONE
+        await self._deliver_to_parent(aid, result, status)
+
+    async def _deliver_to_parent(self, child_aid: int, result: str, status: RowStatus) -> None:
+        """Route a finished child's result to the pending row that suspended its
+        parent, then re-activate the parent. No-op for fire-and-forget spawns.
+        """
+        origin = self._spawn_origin.pop(child_aid, None)
+        if origin is None:
+            return
+        parent_aid, tool_call_id = origin
+        try:
+            await self._wake(parent_aid, tool_call_id, result, status)
+        except PendingRowError as exc:
+            # A misrouted completion must surface loudly, never silently succeed.
+            logger.error("misrouted completion from child %s: %s", child_aid, exc)
+            await self._emit_scheduler_event(
+                "agent_failed",
+                {"aid": parent_aid, "role": self._role_of(parent_aid), "error": str(exc)},
+            )
+
+    async def _wake(self, parent_aid: int, tool_call_id: str, result: str, status: RowStatus) -> None:
+        """Fill the parent's pending row and, if that completes the batch while
+        the parent is suspended, create a resume task. Fill + completeness check
+        + task creation run under one per-parent lock so concurrent child
+        completions can never double-wake the parent. Raises ``PendingRowError``
+        on an unknown/already-filled tool_call_id.
+        """
         parent_scb = self.table.get(parent_aid)
-        if parent_scb is None:
+        parent_session = self._sessions.get(parent_aid)
+        if parent_scb is None or parent_session is None:
             return
 
-        # Only inject if parent is still running (not terminal)
-        if parent_scb.state.phase.is_terminal():
-            return
+        lock = self._locks.setdefault(parent_aid, asyncio.Lock())
+        async with lock:
+            table = parent_scb.state.pending_events
+            table.fill(tool_call_id, result=result, status=status)
+            in_flight = self._tasks.get(parent_aid)
+            should_resume = (
+                parent_scb.state.phase is SessionPhase.AWAITING_EVENTS
+                and table.is_complete()
+                and (in_flight is None or in_flight.done())
+            )
+            if should_resume:
+                self._tasks[parent_aid] = asyncio.create_task(
+                    self._drive_agent(parent_aid, parent_session)
+                )
 
-        parent_scb.state.append_message({
-            "role": "system",
-            "content": f"[Agent {child_aid} completed]\n{result}",
-        })
+        if should_resume:
+            await self._emit_scheduler_event(
+                "agent_resumed",
+                {"aid": parent_aid, "role": self._role_of(parent_aid)},
+            )
 
     def _role_of(self, aid: int) -> str:
         scb = self.table.get(aid)
@@ -302,6 +360,13 @@ class Scheduler:
             in_flight = self._tasks.get(to_aid)
             if in_flight is not None and not in_flight.done():
                 await in_flight
+
+            target_scb = self.table.get(to_aid)
+            if target_scb is not None and target_scb.state.phase is SessionPhase.AWAITING_EVENTS:
+                return (
+                    f"Error: agent {to_aid} is awaiting events (waiting on its own "
+                    f"delegated work) and cannot accept a message yet. Try again later."
+                )
 
             await self._emit_scheduler_event(
                 "agent_message_sent",
@@ -366,30 +431,51 @@ class Scheduler:
                 await result
 
     async def run(self, user_message: str) -> str:
-        """Send message to lead and run until all spawned agents finish."""
+        """Send message to lead and run until the whole team is quiescent.
+
+        A session that suspends on deferred work (``AWAITING_EVENTS``) returns
+        its task while its children run; a child's completion re-activates it
+        with a fresh task. So "all tasks done" is no longer the end — the team
+        is finished only when no task is running, no pending table is
+        outstanding, and every session is terminal or idle (``_quiescent``).
+        """
         if self._lead_session is None:
             raise RuntimeError("Scheduler has no lead session. Call create_init_process() first.")
 
         await self._lead_session.add_user_message(user_message)
-        self._tasks[0] = asyncio.create_task(self._lead_session.run_loop())
+        self._tasks[0] = asyncio.create_task(self._drive_agent(0, self._lead_session))
 
-        # Wait loop: handle dynamically spawned tasks
-        while self._tasks:
-            pending = {t for t in self._tasks.values() if not t.done()}
+        while True:
+            for done_aid in [a for a, t in self._tasks.items() if t.done()]:
+                del self._tasks[done_aid]
+            pending = list(self._tasks.values())
             if not pending:
-                break
-            done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
-            for task in done:
-                for aid, t in list(self._tasks.items()):
-                    if t is task:
-                        del self._tasks[aid]
-                        break
+                if self._quiescent():
+                    break
+                # All tasks drained but a wake's resume task may be mid-creation
+                # (or a pending table is still open) — yield and re-check rather
+                # than exit early. Non-empty pending tables keep us looping
+                # without busy-spinning.
+                await asyncio.sleep(0)
+                continue
+            await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
         # Return lead's last assistant message content
         for msg in reversed(self._lead_session.state.messages):
             if msg.get("role") == "assistant" and msg.get("content"):
                 return msg["content"]
         return ""
+
+    def _quiescent(self) -> bool:
+        """True when no session is mid-flight: none is awaiting events, none has
+        an outstanding pending table, and every phase is terminal or idle.
+        """
+        for scb in self.table.entries.values():
+            if not scb.state.pending_events.is_empty():
+                return False
+            if not (scb.state.phase.is_terminal() or scb.state.phase is SessionPhase.IDLE):
+                return False
+        return True
 
     async def cleanup(self) -> None:
         """Cancel pending tasks and clean up worktree environments."""

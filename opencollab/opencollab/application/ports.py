@@ -114,8 +114,13 @@ class SchedulerPort(Protocol):
         role: str,
         task: str,
         context: str = "",
+        tool_call_id: str | None = None,
     ) -> int:
-        """Non-blocking spawn. Returns aid immediately."""
+        """Non-blocking spawn. Returns aid immediately.
+
+        ``tool_call_id`` ties the child to the parent's pending row so its
+        completion re-activates the suspended parent; ``None`` is fire-and-forget.
+        """
         ...
 
     async def spawn_with_review(

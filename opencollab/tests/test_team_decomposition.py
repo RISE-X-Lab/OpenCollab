@@ -25,8 +25,8 @@ class FakeScheduler:
         self.spawn_calls = []
         self.review_calls = []
 
-    async def spawn(self, parent_aid, role, task, context=""):
-        self.spawn_calls.append((parent_aid, role, task, context))
+    async def spawn(self, parent_aid, role, task, context="", tool_call_id=None):
+        self.spawn_calls.append((parent_aid, role, task, context, tool_call_id))
         return 42  # return a fake aid
 
     async def spawn_with_review(self, parent_aid, task, context="", max_iterations=3):
@@ -117,7 +117,9 @@ def test_build_spawn_session_without_factory_does_not_build_safety_policy(tmp_pa
 def test_spawn_agent_tool_uses_runtime_native_execution():
     scheduler = FakeScheduler()
     tool = SpawnAgentTool(scheduler)
-    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None, aid=0)
+    runtime = ToolRuntime(
+        environment=None, safety_policy=None, permission_policy=None, aid=0, tool_call_id="call-7"
+    )
 
     result = run(
         tool.execute_with_runtime(
@@ -126,8 +128,10 @@ def test_spawn_agent_tool_uses_runtime_native_execution():
         )
     )
 
-    assert "Spawned agent 42 (coder)" in result
-    assert scheduler.spawn_calls == [(0, "coder", "implement", "ctx")]
+    # Returns the child aid (not a string) so the deferral path can register a
+    # pending row; the tool_call_id is threaded through for completion routing.
+    assert result == 42
+    assert scheduler.spawn_calls == [(0, "coder", "implement", "ctx", "call-7")]
     assert "execute" not in SpawnAgentTool.__dict__
 
 

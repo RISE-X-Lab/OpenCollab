@@ -56,7 +56,11 @@ def _display_team_state(entry: dict[str, Any]) -> str:
     if entry.get("busy"):
         return "busy"
     phase = entry.get("phase", "?")
-    return "idle" if phase == "done" else phase
+    if phase == "done":
+        return "idle"
+    if phase == "awaiting_events":
+        return "awaiting"
+    return phase
 
 
 class TeamStatusTool(Tool):

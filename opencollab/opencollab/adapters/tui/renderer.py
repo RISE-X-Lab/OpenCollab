@@ -179,6 +179,12 @@ class TUI:
                 self._emit_status(Text(f"Agent {agent_label} ({role}) spawned", style=self._STYLE_ACCENT))
             self._refresh()
 
+        elif etype == "agent_resumed":
+            # A parent that suspended on delegated work has been re-activated.
+            self._mark_roster(aid, role, "running")
+            self._append_activity((f"{agent_label} resumed", self._STYLE_ACCENT))
+            self._refresh()
+
         elif etype == "agent_completed":
             label = f"{agent_label}:spawn"
             self._active_tools.pop(label, None)

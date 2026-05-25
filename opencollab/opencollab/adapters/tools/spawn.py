@@ -18,8 +18,10 @@ class SpawnAgentTool(Tool):
 
     name = "spawn_agent"
     description = (
-        "Spawn a specialist agent to work on a task in parallel. "
-        "The agent runs independently and returns its result to you when complete. "
+        "Spawn a specialist agent to work on a task. You will pause until the "
+        "agent finishes, then its result is delivered straight back to you as "
+        "this tool call's result — so you can act on it in the same turn. Spawn "
+        "several at once to run them in parallel; you resume when all are done. "
         "Available roles: analyst, coder, reviewer, or any custom name."
     )
     parameters = {
@@ -48,13 +50,16 @@ class SpawnAgentTool(Tool):
         self,
         params: dict[str, Any],
         runtime: ToolRuntime,
-    ) -> str:
+    ) -> int:
         role = params["role"]
         task = params["task"]
         context = params.get("context", "")
         parent_aid = runtime.aid
-        aid = await self._scheduler.spawn(parent_aid, role, task, context)
-        return f"Spawned agent {aid} ({role}). Result will be delivered when complete."
+        # Return the child aid so the deferral path can register a pending row
+        # keyed by this tool call; the child's result fills it on completion.
+        return await self._scheduler.spawn(
+            parent_aid, role, task, context, tool_call_id=runtime.tool_call_id
+        )
 
 
 class SpawnWithReviewTool(Tool):

@@ -54,6 +54,7 @@ class SessionRuntimeEvent:
 SchedulerEventType = Literal[
     "agent_spawned",
     "agent_completed",
+    "agent_resumed",
     "agent_failed",
     "agent_cancelled",
     "agent_message_sent",

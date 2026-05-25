@@ -253,6 +253,19 @@ def test_roster_tracks_spawn_and_completion_state():
     assert tui._roster[1]["state"] == "idle"
 
 
+def test_agent_resumed_marks_roster_running_again():
+    tui = _make_tui()
+    tui._live_paused = True
+
+    tui.event_handler(SchedulerEvent("agent_spawned", {"aid": 1, "parent_aid": 0, "role": "manager"}))
+    tui.event_handler(SchedulerEvent("agent_completed", {"aid": 1, "role": "manager", "latency": 1.0}))
+    assert tui._roster[1]["state"] == "idle"
+
+    # The manager suspended on its own delegated work and was re-activated.
+    tui.event_handler(SchedulerEvent("agent_resumed", {"aid": 1, "role": "manager"}))
+    assert tui._roster[1]["state"] == "running"
+
+
 def test_team_panel_renders_when_roster_present():
     tui = _make_tui()
     tui._live_paused = True

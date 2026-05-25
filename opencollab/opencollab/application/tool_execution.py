@@ -29,6 +29,7 @@ class ToolRuntime:
     safety_policy: SafetyPolicyPort | None
     permission_policy: PermissionPort | None
     aid: int = -1
+    tool_call_id: str | None = None
 
     def confirm_fn(self):
         if self.permission_policy is None:
@@ -155,13 +156,52 @@ class ToolExecutionUseCase:
 
         return result, time.monotonic() - start
 
-    def tool_runtime(self) -> ToolRuntime:
+    def tool_runtime(self, tool_call_id: str | None = None) -> ToolRuntime:
         return ToolRuntime(
             environment=self.environment,
             safety_policy=self.safety_policy,
             permission_policy=self.permission_policy,
             aid=self.state.aid,
+            tool_call_id=tool_call_id,
         )
+
+    async def execute_deferred(self, tc: dict) -> tuple[int | None, str | None]:
+        """Drive a single deferrable tool (e.g. ``spawn_agent``).
+
+        Returns ``(ref, None)`` when the tool deferred work and handed back a
+        reference (a child aid) to await, or ``(None, error_text)`` when it
+        resolved synchronously (bad args, unknown tool, permission/topology
+        rejection, or a non-int return) and its row should fill at once. The
+        per-call ``tool_call_id`` is threaded into the runtime so the scheduler
+        can route the eventual completion back to the right pending row.
+
+        Deferred tools bypass ``process`` (and thus loop-detection hashing) by
+        design — a spawn is never a doom-loop the way a repeated read is.
+        """
+        func = tc["function"]
+        tool_name = func["name"]
+        try:
+            args = self.parse_tool_args(func)
+        except json.JSONDecodeError:
+            return None, f"Error: invalid JSON arguments: {func['arguments'][:200]}"
+
+        tool = self.find_tool(tool_name)
+        if not tool:
+            return None, f"Error: unknown tool '{tool_name}'."
+
+        await self.event_publisher.emit(self.event_factory.tool_start(tool_name, args))
+        runtime = self.tool_runtime(tool_call_id=tc["id"])
+        try:
+            ref = await tool.execute_with_runtime(args, runtime)
+        except PermissionError as e:
+            return None, f"Permission denied: {e}"
+        except Exception as e:
+            return None, f"Tool execution error: {type(e).__name__}: {e}"
+        await self.event_publisher.emit(self.event_factory.tool_end(tool_name, 0.0))
+
+        if isinstance(ref, int):
+            return ref, None
+        return None, str(ref)
 
     def truncate_tool_result(self, result: str) -> str:
         if len(result) > MAX_TOOL_OUTPUT_CHARS:

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from opencollab.domain.pending import PendingEventTable
+
 
 class SessionPhase(Enum):
     SCHEDULED = "scheduled"
@@ -13,6 +15,7 @@ class SessionPhase(Enum):
     CALLING_LLM = "calling_llm"
     HANDLING_RESPONSE = "handling_response"
     EXECUTING_TOOLS = "executing_tools"
+    AWAITING_EVENTS = "awaiting_events"
     AUTOSAVING = "autosaving"
     DONE = "done"
     CANCELLED = "cancelled"
@@ -41,6 +44,12 @@ TERMINAL_PHASES = frozenset(
 # ever reached that way (it has no inbound edge below); CANCELLED also has a
 # validated in-loop edge from PRECHECK, so the scheduler's out-of-band
 # ``cancel`` covers the case where an agent task is killed mid-loop.
+#
+# AWAITING_EVENTS is a non-terminal *suspend* state: the loop stops there (the
+# task returns) when a step deferred work (e.g. a spawned child) and the
+# scheduler re-activates the session, resuming at PRECHECK, once every pending
+# row is filled. EXECUTING_TOOLS branches to AUTOSAVING (all tools immediate) or
+# AWAITING_EVENTS (any deferred tool present).
 PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
     SessionPhase.SCHEDULED: frozenset({SessionPhase.IDLE}),
     SessionPhase.IDLE: frozenset({SessionPhase.PRECHECK}),
@@ -55,7 +64,10 @@ PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
     SessionPhase.COMPACTING: frozenset({SessionPhase.CALLING_LLM}),
     SessionPhase.CALLING_LLM: frozenset({SessionPhase.HANDLING_RESPONSE}),
     SessionPhase.HANDLING_RESPONSE: frozenset({SessionPhase.EXECUTING_TOOLS, SessionPhase.DONE}),
-    SessionPhase.EXECUTING_TOOLS: frozenset({SessionPhase.AUTOSAVING}),
+    SessionPhase.EXECUTING_TOOLS: frozenset(
+        {SessionPhase.AUTOSAVING, SessionPhase.AWAITING_EVENTS}
+    ),
+    SessionPhase.AWAITING_EVENTS: frozenset({SessionPhase.PRECHECK}),
     SessionPhase.AUTOSAVING: frozenset({SessionPhase.PRECHECK}),
     # Terminal phases resume back to IDLE for a fresh user turn or a re-run.
     SessionPhase.DONE: frozenset({SessionPhase.IDLE}),
@@ -82,6 +94,7 @@ class SessionState:
     recent_call_hashes: list[str] = field(default_factory=list)
     phase: SessionPhase = SessionPhase.IDLE
     aid: int = -1
+    pending_events: PendingEventTable = field(default_factory=PendingEventTable)
 
     @property
     def is_done(self) -> bool:

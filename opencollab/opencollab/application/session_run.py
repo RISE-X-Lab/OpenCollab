@@ -9,7 +9,10 @@ from opencollab.application.compaction import ContextCompactionUseCase
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import EventPublisherPort, LLMPort, TracePort
 from opencollab.application.tool_execution import ToolExecutionUseCase
+from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
+
+DEFAULT_DEFERRABLE_TOOLS = frozenset({"spawn_agent"})
 
 
 @dataclass
@@ -43,6 +46,7 @@ class SessionRunUseCase:
         tracer: TracePort | None = None,
         max_budget_tokens: int = 200_000,
         max_steps: int = 100,
+        deferrable_tool_names: frozenset[str] = DEFAULT_DEFERRABLE_TOOLS,
     ):
         self.agent = agent
         self.state = state
@@ -54,16 +58,20 @@ class SessionRunUseCase:
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
         self.max_steps = max_steps
+        self.deferrable_tool_names = deferrable_tool_names
         self._pending: PendingStep | None = None
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         try:
-            # A completed turn (DONE) short-circuits to its last answer; an
-            # aborted turn (cancelled/budget/error) resumes to IDLE so a bare
+            # A session suspended on deferred work resumes from its pending
+            # table; a completed turn (DONE) short-circuits to its last answer;
+            # an aborted turn (cancelled/budget/error) resumes to IDLE so a bare
             # re-run continues. resume_to_idle no-ops on non-terminal phases.
-            if self.state.phase is not SessionPhase.DONE:
+            if self.state.phase is SessionPhase.AWAITING_EVENTS:
+                self._resume_from_awaiting()
+            elif self.state.phase is not SessionPhase.DONE:
                 self.state.resume_to_idle()
-            while not self.is_terminal_phase() and self.state.step_count < self.max_steps:
+            while not self._should_suspend() and self.state.step_count < self.max_steps:
                 await self.advance(cancel_event)
 
         except asyncio.CancelledError:
@@ -82,6 +90,26 @@ class SessionRunUseCase:
     def is_terminal_phase(self) -> bool:
         return self.state.phase.is_terminal()
 
+    def _should_suspend(self) -> bool:
+        """The loop stops on a terminal phase (turn finished) OR on the
+        non-terminal AWAITING_EVENTS suspend state (turn paused on deferred
+        work; the scheduler re-activates it when the events arrive).
+        """
+        return self.is_terminal_phase() or self.state.phase is SessionPhase.AWAITING_EVENTS
+
+    def _resume_from_awaiting(self) -> None:
+        """Drain a complete pending table back into the message history as one
+        contiguous tool-result block, then resume at PRECHECK. Defensive no-op
+        if woken while still incomplete (the loop guard then stops at once).
+        """
+        table = self.state.pending_events
+        if not table.is_complete():
+            return
+        for message in table.ordered_results():
+            self.state.append_message(message)
+        table.clear()
+        self.state.transition_to(SessionPhase.PRECHECK)
+
     async def advance(self, cancel_event: asyncio.Event | None = None) -> None:
         match self.state.phase:
             case SessionPhase.SCHEDULED:
@@ -98,6 +126,10 @@ class SessionRunUseCase:
                 await self.handle_pending_response()
             case SessionPhase.EXECUTING_TOOLS:
                 await self.execute_pending_tools()
+            case SessionPhase.AWAITING_EVENTS:
+                # Never dispatched: the loop guard suspends before reaching here.
+                self.state.fail()
+                raise RuntimeError("advance() called while AWAITING_EVENTS")
             case SessionPhase.AUTOSAVING:
                 await self.autosave_pending_step()
             case _:
@@ -176,9 +208,92 @@ class SessionRunUseCase:
             self.state.fail()
             raise RuntimeError("Cannot execute tools before calling LLM")
 
-        result = await self.tool_execution.process(pending.response.tool_calls)
-        result.apply_to(self.state)
-        self.state.transition_to(SessionPhase.AUTOSAVING)
+        tool_calls = pending.response.tool_calls
+        immediate, deferred = self._split_tool_calls(tool_calls)
+
+        # Fast path, unchanged: every tool is synchronous — run them, append
+        # results, and autosave the step.
+        if not deferred:
+            result = await self.tool_execution.process(tool_calls)
+            result.apply_to(self.state)
+            self.state.transition_to(SessionPhase.AUTOSAVING)
+            return
+
+        # A deferred tool is present. Buffer the WHOLE batch into the pending
+        # table so the eventual tool-result block stays contiguous and in the
+        # original order, satisfying the LLM rule that every tool_call_id is
+        # answered before the next model call.
+        table = self.state.pending_events
+        order = {tc["id"]: i for i, tc in enumerate(tool_calls)}
+
+        if immediate:
+            proc = await self.tool_execution.process(immediate)
+            proc.apply_hashes_to(self.state)  # hashes now; messages buffered
+            for message in proc.messages_to_append:
+                tid = message["tool_call_id"]
+                table.add(
+                    PendingRow(
+                        tool_call_id=tid,
+                        kind=RowKind.IMMEDIATE,
+                        order=order[tid],
+                        status=RowStatus.DONE,
+                        result=message["content"],
+                    )
+                )
+
+        for tc in deferred:
+            tid = tc["id"]
+            ref, error = await self.tool_execution.execute_deferred(tc)
+            if ref is not None:
+                table.add(
+                    PendingRow(
+                        tool_call_id=tid,
+                        kind=RowKind.CHILD_AGENT,
+                        order=order[tid],
+                        ref=ref,
+                        status=RowStatus.PENDING,
+                    )
+                )
+            else:
+                table.add(
+                    PendingRow(
+                        tool_call_id=tid,
+                        kind=RowKind.CHILD_AGENT,
+                        order=order[tid],
+                        status=RowStatus.FAILED,
+                        result=error,
+                        error=error,
+                    )
+                )
+
+        if table.is_complete():
+            # Nothing is actually outstanding (e.g. all spawns were rejected
+            # synchronously) — drain now and autosave instead of suspending on
+            # an event that will never arrive.
+            for message in table.ordered_results():
+                self.state.append_message(message)
+            table.clear()
+            self.state.transition_to(SessionPhase.AUTOSAVING)
+            return
+
+        # Genuinely waiting on ≥1 child. Suspend WITHOUT finishing the step:
+        # emitting step_end here would autosave a half-open tool-call block (no
+        # results yet). The next AUTOSAVING after resume persists a consistent
+        # history. tool_start/tool_end + the scheduler's agent_spawned still
+        # provide observability of the spawn.
+        self.clear_pending_step()
+        self.state.transition_to(SessionPhase.AWAITING_EVENTS)
+
+    def _split_tool_calls(self, tool_calls: list[dict]) -> tuple[list[dict], list[dict]]:
+        immediate: list[dict] = []
+        deferred: list[dict] = []
+        for tc in tool_calls:
+            name = tc.get("function", {}).get("name")
+            if name in self.deferrable_tool_names:
+                deferred.append(tc)
+            else:
+                immediate.append(tc)
+        return immediate, deferred
 
     async def autosave_pending_step(self) -> None:
         pending = self._pending
