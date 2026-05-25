@@ -632,6 +632,7 @@ def build_scheduler(
         max_budget_tokens=cfg["budget"],
         permission_policy=ctx.permission_policy,
         topology=team_cfg.topology,
+        roles=tuple(team_cfg.roles),
     )
 
     auto_save_path: str | None = None

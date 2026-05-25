@@ -66,6 +66,15 @@ class TUI:
         # Defaults to the Lead (aid 0); a future "/" picker switches it.
         self._filter_messages = filter_messages
         self._selected_aid = 0
+        # Optional callable returning the full team roster (live agents +
+        # configured "available" roles). When set, the team panel renders from
+        # it so the roster stays visible during a turn, not only after a spawn.
+        self._team_provider: Any | None = None
+
+    def set_team_provider(self, provider: Any) -> None:
+        """Supply a callable returning the full team roster so the live display
+        shows the team continuously (matching the prompt's bottom toolbar)."""
+        self._team_provider = provider
 
     def _agent_label(self, aid: int) -> str:
         return "Lead" if aid == 0 else f"A{aid}"
@@ -303,20 +312,51 @@ class TUI:
         "cancelled": _STYLE_WARNING,
     }
 
+    @staticmethod
+    def _roster_state(entry: dict) -> str:
+        """Map a scheduler roster entry (phase/busy) to a panel state label."""
+        if entry.get("busy"):
+            return "running"
+        phase = entry.get("phase", "?")
+        return "idle" if phase in ("done", "scheduled", "completed") else phase
+
+    def _team_entries(self) -> list[tuple[int | None, str, str]]:
+        """(aid, role, state) tuples for the panel: the configured roster from
+        the provider when available, else the event-driven spawned roster."""
+        if self._team_provider is not None:
+            try:
+                roster = self._team_provider() or []
+            except Exception:
+                roster = []
+            if roster:
+                return [
+                    (e.get("aid"), e.get("role", "?"), self._roster_state(e))
+                    for e in roster
+                ]
+        return [
+            (aid, self._roster[aid]["role"], self._roster[aid]["state"])
+            for aid in sorted(self._roster)
+        ]
+
     def _build_team_panel(self) -> Any | None:
-        """Compact roster of spawned agents, or None when no team exists."""
-        if not self._roster:
+        """Compact team roster, or None when no team exists."""
+        entries = self._team_entries()
+        if not entries:
             return None
         chips: list[tuple[str, str]] = []
-        for aid in sorted(self._roster):
-            entry = self._roster[aid]
-            style = self._STATE_STYLES.get(entry["state"], self._STYLE_MUTED)
+        for aid, role, state in entries:
+            style = self._STATE_STYLES.get(state, self._STYLE_MUTED)
             focused = self._filter_messages and aid == self._selected_aid
             if chips:
                 chips.append(("  ", self._STYLE_MUTED))
-            chips.append((f"{'▶ ' if focused else ''}A{aid} ", "bold cyan"))
-            chips.append((f"{entry['role']} ", self._STYLE_MUTED))
-            chips.append((f"[{entry['state']}]", style))
+            if aid is None:
+                chips.append((f"{role} ", "bold cyan"))
+            elif aid == 0:
+                chips.append((f"{'▶ ' if focused else ''}Lead ", "bold cyan"))
+            else:
+                chips.append((f"{'▶ ' if focused else ''}A{aid} ", "bold cyan"))
+                chips.append((f"{role} ", self._STYLE_MUTED))
+            chips.append((f"[{state}]", style))
         header = (
             f"Team (showing {self._agent_label(self._selected_aid)}): "
             if self._filter_messages

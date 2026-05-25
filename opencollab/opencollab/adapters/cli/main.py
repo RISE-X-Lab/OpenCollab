@@ -98,7 +98,13 @@ def _format_team_toolbar(snapshot: list[dict]) -> HTML | str:
     parts = []
     for entry in snapshot:
         aid = entry.get("aid")
-        label = "Lead" if aid == 0 else f"A{aid} {entry.get('role', '?')}"
+        role = entry.get("role", "?")
+        if aid is None:
+            label = role  # configured role with no live agent yet
+        elif aid == 0:
+            label = "Lead"
+        else:
+            label = f"A{aid} {role}"
         state = _display_team_state(entry)
         state_style = _TOOLBAR_STATE_STYLES.get(str(state).lower(), _TOOLBAR_MUTED)
         parts.append(
@@ -266,6 +272,7 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
         ctx, use_worktrees=use_worktrees, interactive=True,
         session_file=session_file, auto_save=True,
     )
+    tui.set_team_provider(scheduler.team_roster)
     lead = scheduler.lead_session
     if session_file and os.path.exists(session_file):
         console.print(f"[dim]Restored session from {session_file}[/dim]")
@@ -292,7 +299,7 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
             tui.print_stats(scheduler.used_tokens, lead.step_count)
 
     def team_toolbar() -> str:
-        return _format_team_toolbar(scheduler.team_snapshot())
+        return _format_team_toolbar(scheduler.team_roster())
 
     await _repl_loop(tui, turn, bottom_toolbar=team_toolbar)
 

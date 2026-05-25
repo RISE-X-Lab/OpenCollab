@@ -277,6 +277,45 @@ def test_team_panel_renders_when_roster_present():
     assert "A2" in panel.plain and "reviewer" in panel.plain
 
 
+def test_team_provider_renders_configured_team_before_any_spawn():
+    tui = _make_tui()
+    tui.set_team_provider(lambda: [
+        {"aid": 0, "role": "lead", "phase": "scheduled", "busy": False},
+        {"aid": None, "role": "analyst", "phase": "available", "busy": False},
+        {"aid": None, "role": "coder", "phase": "available", "busy": False},
+    ])
+    panel = tui._build_team_panel()
+    assert panel is not None
+    # Lead shown by name (idle), unspawned roles shown as available.
+    assert panel.plain == "Team: Lead [idle]  analyst [available]  coder [available]"
+
+
+def test_team_provider_marks_busy_agent_running():
+    tui = _make_tui()
+    tui.set_team_provider(lambda: [
+        {"aid": 0, "role": "lead", "phase": "awaiting_events", "busy": True},
+        {"aid": 1, "role": "coder", "phase": "executing_tools", "busy": True},
+    ])
+    panel = tui._build_team_panel()
+    assert "Lead [running]" in panel.plain
+    assert "A1 coder [running]" in panel.plain
+
+
+def test_team_provider_failure_falls_back_to_event_roster():
+    tui = _make_tui()
+
+    def boom():
+        raise RuntimeError("dict changed size during iteration")
+
+    tui.set_team_provider(boom)
+    # No spawned agents and a failing provider -> no panel (no crash).
+    assert tui._build_team_panel() is None
+    # Once an agent spawns, the event-driven roster still renders.
+    tui.event_handler(SchedulerEvent("agent_spawned", {"aid": 1, "parent_aid": 0, "role": "coder"}))
+    panel = tui._build_team_panel()
+    assert panel is not None and "A1" in panel.plain
+
+
 def test_message_events_append_activity_lines():
     tui = _make_tui()
     tui._live_paused = True

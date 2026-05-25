@@ -65,6 +65,7 @@ class Scheduler:
         max_budget_tokens: int = 500_000,
         permission_policy: PermissionPort | None = None,
         topology: Topology | None = None,
+        roles: tuple[str, ...] = (),
     ):
         self._session_factory = session_factory
         self._worktree_pool = worktree_pool
@@ -73,6 +74,9 @@ class Scheduler:
         self._max_budget_tokens = max_budget_tokens
         self._permission_policy = permission_policy
         self._topology = topology
+        # Configured role names (from the team config), in declaration order.
+        # Used by ``team_roster`` to surface the team before anything spawns.
+        self._roles = roles
 
         self.table = SessionTable()
         self._tasks: dict[int, asyncio.Task] = {}
@@ -386,7 +390,7 @@ class Scheduler:
             return result
 
     def team_snapshot(self) -> list[dict[str, Any]]:
-        """Read-only roster of every tracked agent, ordered by aid."""
+        """Read-only roster of every tracked (live) agent, ordered by aid."""
         snapshot: list[dict[str, Any]] = []
         for aid in sorted(self.table.entries):
             scb = self.table.entries[aid]
@@ -401,6 +405,28 @@ class Scheduler:
                 }
             )
         return snapshot
+
+    def team_roster(self) -> list[dict[str, Any]]:
+        """Full configured team for the prompt toolbar: every live agent plus
+        each configured role that has no live agent yet (``aid=None``, phase
+        ``"available"``). Unlike ``team_snapshot`` (live agents only, used to
+        message teammates by aid), this surfaces the team the user defined in
+        the team config before anything has spawned.
+        """
+        live = self.team_snapshot()
+        live_roles = {entry["role"] for entry in live}
+        available = [
+            {
+                "aid": None,
+                "role": role,
+                "parent_aid": None,
+                "phase": "available",
+                "busy": False,
+            }
+            for role in self._roles
+            if role not in live_roles
+        ]
+        return live + available
 
     async def _append_worktree_diff(self, env: EnvironmentPort, result: str) -> str:
         """If env is a worktree, append its diff to the result."""
