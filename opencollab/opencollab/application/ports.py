@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 
+from opencollab.domain.hooks import HookOutcome
+
 if TYPE_CHECKING:
     from opencollab.application.tool_execution import ToolRuntime
 
@@ -45,6 +47,20 @@ class PermissionPort(Protocol):
 
 class EventPublisherPort(Protocol):
     async def emit(self, event: Any) -> None:
+        ...
+
+
+class HookPort(Protocol):
+    """Runs the hooks bound to a lifecycle event.
+
+    ``payload`` carries ``hook_event_name`` plus the originating event's data
+    (``aid`` and, for tool-scoped events, ``tool``/``args``). Phase-1
+    implementations observe only and return an allowing ``HookOutcome``; the
+    return type is fixed now so phase-2 blocking (PreToolUse deny) adds no
+    signature churn.
+    """
+
+    async def fire(self, event_name: str, payload: dict[str, Any]) -> HookOutcome:
         ...
 
 

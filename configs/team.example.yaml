@@ -74,3 +74,19 @@ topology:
   analyst: [coder]
   coder: [reviewer]
   reviewer: [coder]
+
+# Optional event-driven hooks. Each key is a CC-style lifecycle event
+# (PreToolUse, PostToolUse, SessionStart, Stop, SubagentStop, Notification) and
+# maps to a list of actions. Phase 1 supports `command` actions only: the
+# command runs with the event payload as JSON on stdin and the env vars
+# OPENCOLLAB_HOOK_EVENT / OPENCOLLAB_TOOL / OPENCOLLAB_AID set. `matcher` is a
+# tool-name glob and applies only to tool-scoped events (PreToolUse/PostToolUse).
+# Hooks are observe-only for now — they cannot block a tool.
+#
+# hooks:
+#   PostToolUse:
+#     - matcher: file_write       # omit to match every tool
+#       command: "ruff format ."
+#       timeout: 10
+#   Stop:
+#     - command: "notify-send 'OpenCollab: agent finished'"

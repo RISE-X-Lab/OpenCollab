@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
+from opencollab.adapters.hooks import ShellHookRunner
 from opencollab.adapters.llm import LLMClient, estimate_messages_tokens
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.storage import SessionStore
@@ -51,6 +52,7 @@ from opencollab.application.compaction import (
     ContextCompactionUseCase,
 )
 from opencollab.application.event_bus import EventBus
+from opencollab.application.hooks import HookEventSubscriber
 from opencollab.application.ports import (
     EventPublisherPort,
     LLMPort,
@@ -594,6 +596,7 @@ def build_scheduler(
     interactive: bool,
     session_file: str | None = None,
     auto_save: bool = True,
+    enable_hooks: bool = True,
 ) -> Scheduler:
     """Build the Scheduler and let it create agent 0 (the init process).
 
@@ -603,6 +606,11 @@ def build_scheduler(
     and applies the launch spec. ``session_file`` resumes agent 0's history;
     ``auto_save`` writes a JSONL transcript under
     ``<workspace>/.opencollab/sessions``.
+
+    When ``enable_hooks`` and the team config declares ``hooks``, a
+    ``HookEventSubscriber`` is attached to the team event bus so configured
+    shell commands fire on lifecycle events. Disable (e.g. under eval) to keep
+    runs free of hook side effects.
     """
     cfg = ctx.config
     team_cfg = load_team_config(ctx.workspace)
@@ -634,6 +642,13 @@ def build_scheduler(
         topology=team_cfg.topology,
         roles=tuple(team_cfg.roles),
     )
+
+    # Attach hooks after the scheduler exists so the runner can hold its handle
+    # (the coordination-ready seam for a future ``agent`` executor). Subscribing
+    # appends to the same bus, leaving the TUI sink at target[0] untouched.
+    if enable_hooks and team_cfg.hooks:
+        runner = ShellHookRunner(team_cfg.hooks, scheduler=scheduler)
+        event_bus.subscribe(HookEventSubscriber(runner))
 
     auto_save_path: str | None = None
     if auto_save:

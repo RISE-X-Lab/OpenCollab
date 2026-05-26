@@ -19,9 +19,10 @@ Source root: `opencollab/opencollab/`. Entry point: `python -m opencollab`
 - `team.py` — `Topology` (directed who-may-spawn/message-whom graph; `allows(src,dst)`, `allow_all`)
 - `compaction.py` — `CompactResult`
 - `events.py` — `DomainEvent`, `SessionRuntimeEvent`, `SchedulerEvent` (incl. `agent_message_sent/delivered`)
+- `hooks.py` — `HookSpec`, `HookOutcome`, `HOOK_EVENT_NAMES` (CC-style lifecycle vocab), pure `match_hooks` (event + tool-name glob)
 
 ### application/ — use cases + ports (orchestration, no concretes)
-- `ports.py` — all Protocol interfaces: `LLMPort`, `EnvironmentPort`, `SessionStorePort`, `TracePort`, `EventPublisherPort`, `PermissionPort`, `SafetyPolicyPort`, `WorktreePoolPort`, `ToolPort`, `SessionFactoryPort`, `SchedulerPort` (incl. `send_message`, `team_snapshot`)
+- `ports.py` — all Protocol interfaces: `LLMPort`, `EnvironmentPort`, `SessionStorePort`, `TracePort`, `EventPublisherPort`, `PermissionPort`, `SafetyPolicyPort`, `WorktreePoolPort`, `ToolPort`, `SessionFactoryPort`, `SchedulerPort` (incl. `send_message`, `team_snapshot`), `HookPort`
 - `session.py` — `Session` + `SessionRuntime` facade; `apply_launch` (idempotent resume/seed)
 - `session_run.py` — `SessionRunUseCase` (the run loop)
 - `compaction.py` — `ContextCompactionUseCase`
@@ -30,6 +31,7 @@ Source root: `opencollab/opencollab/`. Entry point: `python -m opencollab`
 - `events.py` — `SessionEventFactory` (single builder for all run-loop/tool/compaction events)
 - `event_bus.py` — `EventBus` (fan-out, implements `EventPublisherPort`)
 - `autosave.py` — `AutoSaveSubscriber`
+- `hooks.py` — `HookEventSubscriber` (EventBus sink: maps runtime/scheduler events → CC hook names, calls `HookPort`; observe-only)
 
 ### adapters/ — implement ports, talk to drivers
 - `cli/main.py` — Typer CLI: default agent + eval commands; invokes `build_scheduler`; prompt `bottom_toolbar` shows the live team (`team_snapshot`)
@@ -40,6 +42,7 @@ Source root: `opencollab/opencollab/`. Entry point: `python -m opencollab`
 - `storage.py` — `SessionStore` (JSONL)
 - `trace.py` — `Tracer`
 - `safety.py` — `SandboxInterceptor`
+- `hooks.py` — `ShellHookRunner` (implements `HookPort`; runs `command` actions via subprocess, JSON payload on stdin, timeout; holds a `scheduler` handle for a future `agent` executor)
 - `tools/` — `Bash`, `FileRead`/`FileWrite` (fs.py), `Grep`, `AskUser` (human.py), `Spawn` (spawn.py), `MessageAgent`/`TeamStatus` (message.py) — all scheduler tools drive `SchedulerPort`
 
 ### bootstrap/ — composition root (only layer that wires concretes)
@@ -61,5 +64,6 @@ Source root: `opencollab/opencollab/`. Entry point: `python -m opencollab`
 - New tool → `adapters/tools/`, register in `bootstrap/container.py:TOOL_REGISTRY`, then list its name in a role's `tools` in the team config.
 - New port/integration → define Protocol in `application/ports.py`, implement in `adapters/`, wire in `bootstrap/container.py`.
 - Team roles / per-role tools / topology → `configs/team.yaml` (schema in `bootstrap/team_config.py`); no code change needed.
+- Event-driven hooks → top-level `hooks:` block in `configs/team.yaml` (schema in `bootstrap/team_config.py`); wired in `bootstrap/container.py:build_scheduler` (`enable_hooks`). New hook action types → executor registry in `adapters/hooks.py`; new lifecycle events → `HOOK_EVENT_NAMES` + mapping in `application/hooks.py`.
 - Run-loop / scheduling behavior → `application/session_run.py`, `application/scheduler.py`.
 - New domain state/rules → `domain/`, keep it I/O-free.

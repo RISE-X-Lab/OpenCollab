@@ -27,6 +27,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from opencollab.domain.hooks import HOOK_EVENT_NAMES, HookSpec
 from opencollab.domain.team import Topology
 
 # Canonical tool bundles, referenced by name (see container.TOOL_REGISTRY).
@@ -101,6 +102,17 @@ class _RoleFileModel(BaseModel):
     tools: list[str] = Field(default_factory=list)
 
 
+class _HookActionFileModel(BaseModel):
+    """On-disk hook entry: one action bound to a lifecycle event."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    command: str = Field(min_length=1)
+    matcher: str | None = None
+    type: str = "command"
+    timeout: float = 30.0
+
+
 class _TeamFileModel(BaseModel):
     """Top-level team file schema."""
 
@@ -108,6 +120,7 @@ class _TeamFileModel(BaseModel):
 
     roles: dict[str, _RoleFileModel] = Field(default_factory=dict)
     topology: dict[str, list[str]] = Field(default_factory=dict)
+    hooks: dict[str, list[_HookActionFileModel]] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -116,6 +129,7 @@ class TeamConfig:
 
     roles: dict[str, RoleConfig] = field(default_factory=dict)
     topology: Topology = field(default_factory=Topology)
+    hooks: tuple[HookSpec, ...] = ()
 
     def role_for(self, name: str) -> RoleConfig:
         """Return the declared role, or a generic fallback for ad-hoc roles."""
@@ -165,6 +179,27 @@ def _resolve_prompt(entry: _RoleFileModel, base_dir: Path, role_name: str) -> st
     raise ValueError(f"Role '{role_name}': must set 'prompt' or 'prompt_file'.")
 
 
+def _build_hook_specs(hooks: dict[str, list[_HookActionFileModel]]) -> tuple[HookSpec, ...]:
+    specs: list[HookSpec] = []
+    for event_name, actions in hooks.items():
+        if event_name not in HOOK_EVENT_NAMES:
+            raise ValueError(
+                f"Unknown hook event '{event_name}'. "
+                f"Known events: {sorted(HOOK_EVENT_NAMES)}"
+            )
+        for action in actions:
+            specs.append(
+                HookSpec(
+                    event=event_name,
+                    action_type=action.type,
+                    command=action.command,
+                    matcher=action.matcher,
+                    timeout=action.timeout,
+                )
+            )
+    return tuple(specs)
+
+
 def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
     model = _TeamFileModel.model_validate(data or {})
     roles = {
@@ -176,7 +211,11 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
         for name, entry in model.roles.items()
     }
     edges = {src: frozenset(dsts) for src, dsts in model.topology.items()}
-    return TeamConfig(roles=roles, topology=Topology(edges=edges, allow_all=False))
+    return TeamConfig(
+        roles=roles,
+        topology=Topology(edges=edges, allow_all=False),
+        hooks=_build_hook_specs(model.hooks),
+    )
 
 
 def load_team_config(workspace: str | None = None) -> TeamConfig:
