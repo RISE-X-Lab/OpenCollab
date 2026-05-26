@@ -12,7 +12,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from opencollab.application.ports import (
     EnvironmentPort,
@@ -87,6 +87,22 @@ class Scheduler:
         # child's completion fill the exact pending row that suspended its
         # parent. Absent for legacy fire-and-forget spawns (tool_call_id=None).
         self._spawn_origin: dict[int, tuple[int, str]] = {}
+        # Optional bootstrap-injected callback that persists a team.json manifest
+        # from the current roster. Kept as a callback so the application layer
+        # stays free of filesystem I/O.
+        self._manifest_writer: Callable[[], None] | None = None
+
+    def set_manifest_writer(self, fn: Callable[[], None]) -> None:
+        """Inject the team-manifest persister (called on every roster change)."""
+        self._manifest_writer = fn
+
+    def _write_manifest(self) -> None:
+        if self._manifest_writer is None:
+            return
+        try:
+            self._manifest_writer()
+        except Exception as exc:  # best-effort, mirrors AutoSaveSubscriber
+            logger.debug("manifest write failed: %s", exc)
 
     @property
     def used_tokens(self) -> int:
@@ -117,6 +133,7 @@ class Scheduler:
         self.table.add(scb)
         self._sessions[aid] = session
         self._lead_session = session
+        self._write_manifest()
         return aid
 
     def create_init_process(self, launch: LaunchSpec) -> int:
@@ -196,6 +213,7 @@ class Scheduler:
         # Start async task
         self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
 
+        self._write_manifest()
         return aid
 
     async def _drive_agent(self, aid: int, session: Any) -> None:
@@ -485,6 +503,8 @@ class Scheduler:
                 await asyncio.sleep(0)
                 continue
             await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+
+        self._write_manifest()
 
         # Return lead's last assistant message content
         for msg in reversed(self._lead_session.state.messages):

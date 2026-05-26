@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
 from opencollab.domain.pending import PendingEventTable
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class SessionPhase(Enum):
@@ -95,6 +100,32 @@ class SessionState:
     phase: SessionPhase = SessionPhase.IDLE
     aid: int = -1
     pending_events: PendingEventTable = field(default_factory=PendingEventTable)
+    # Per-message creation timestamps (UTC ISO-8601), index-aligned with
+    # ``messages``. Kept as a sidecar so ``messages`` stays a clean,
+    # API-shaped list; merged into each message only when persisting.
+    message_timestamps: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self._align_timestamps()
+
+    def _align_timestamps(self) -> None:
+        if len(self.message_timestamps) < len(self.messages):
+            now = _now_iso()
+            self.message_timestamps += [now] * (
+                len(self.messages) - len(self.message_timestamps)
+            )
+
+    def enriched_messages(self) -> list[dict[str, Any]]:
+        """Messages with their creation ``timestamp`` merged in, for persistence.
+
+        Re-aligns first so messages appended by bypassing ``append_message``
+        (e.g. direct list mutation) still get a timestamp.
+        """
+        self._align_timestamps()
+        return [
+            {**msg, "timestamp": ts}
+            for msg, ts in zip(self.messages, self.message_timestamps)
+        ]
 
     @property
     def is_done(self) -> bool:
@@ -102,9 +133,24 @@ class SessionState:
 
     def append_message(self, message: dict[str, Any]) -> None:
         self.messages.append(message)
+        self.message_timestamps.append(_now_iso())
 
     def replace_messages(self, messages: list[dict[str, Any]]) -> None:
-        self.messages = messages
+        """Swap the conversation, re-deriving aligned timestamps.
+
+        Precedence per message: an embedded ``timestamp`` (e.g. a resumed
+        transcript) wins; else the prior timestamp of the same dict object
+        (preserved across compaction's slice-and-rebuild); else now.
+        """
+        prior = {id(m): ts for m, ts in zip(self.messages, self.message_timestamps)}
+        new_messages: list[dict[str, Any]] = []
+        new_timestamps: list[str] = []
+        for m in messages:
+            embedded = m.pop("timestamp", None) if isinstance(m, dict) else None
+            new_messages.append(m)
+            new_timestamps.append(embedded or prior.get(id(m)) or _now_iso())
+        self.messages = new_messages
+        self.message_timestamps = new_timestamps
 
     def add_used_tokens(self, tokens: int) -> None:
         self.used_tokens += tokens

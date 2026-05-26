@@ -8,6 +8,7 @@ and ``load`` before Step13 moves runtime construction into
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 
 from opencollab.adapters.storage import SessionStore
@@ -107,8 +108,9 @@ def test_session_user_message_appended_triggers_autosave(tmp_path):
 
     assert os.path.exists(path)
     with open(path) as f:
-        lines = f.readlines()
-    assert any('"role": "user"' in line and "hello" in line for line in lines)
+        saved = json.load(f)
+    user_msgs = [m for m in saved["messages"] if m["role"] == "user"]
+    assert any(m["content"] == "hello" and "timestamp" in m for m in user_msgs)
 
 
 def test_session_snapshot_returns_independent_session_without_autosave(tmp_path):

@@ -218,6 +218,14 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
     )
 
 
+def resolve_team_file(workspace: str | None = None) -> Path | None:
+    """Return the team file that ``load_team_config`` would read, or ``None``."""
+    for path in _candidate_team_paths(workspace):
+        if path.is_file():
+            return path.resolve()
+    return None
+
+
 def load_team_config(workspace: str | None = None) -> TeamConfig:
     """Load the team file from the resolved path, or the lead-only default."""
     for path in _candidate_team_paths(workspace):

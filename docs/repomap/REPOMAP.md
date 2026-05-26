@@ -39,7 +39,7 @@ Source root: `opencollab/opencollab/`. Entry point: `python -m opencollab`
 - `llm.py` — `LLMClient`, `estimate_messages_tokens` (OpenAI/Anthropic SDK)
 - `env.py` — `LocalEnvironment`, `WorktreeEnvironment`
 - `worktree_pool.py` — `WorktreePool` (git worktree)
-- `storage.py` — `SessionStore` (JSONL)
+- `storage.py` — `SessionStore` (structured per-agent JSON `{aid,role,model,messages}` + `save_manifest`; reads legacy JSONL too)
 - `trace.py` — `Tracer`
 - `safety.py` — `SandboxInterceptor`
 - `hooks.py` — `ShellHookRunner` (implements `HookPort`; runs `command` actions via subprocess, JSON payload on stdin, timeout; holds a `scheduler` handle for a future `agent` executor)

@@ -172,9 +172,15 @@ class LLMPort(Protocol):
 
 
 class SessionStorePort(Protocol):
-    """Message persistence surface (JSONL today)."""
+    """Message persistence surface (structured JSON per agent)."""
 
-    def save(self, path: str, messages: list[dict[str, Any]]) -> None:
+    def save(
+        self,
+        path: str,
+        messages: list[dict[str, Any]],
+        *,
+        meta: dict[str, Any] | None = None,
+    ) -> None:
         ...
 
     def load_messages(
@@ -182,6 +188,9 @@ class SessionStorePort(Protocol):
         path: str,
         system_prompt: str,
     ) -> list[dict[str, Any]]:
+        ...
+
+    def save_manifest(self, path: str, manifest: dict[str, Any]) -> None:
         ...
 
 

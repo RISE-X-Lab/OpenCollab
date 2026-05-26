@@ -31,6 +31,7 @@ import copy
 import os
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
@@ -66,7 +67,13 @@ from opencollab.application.scheduler import LaunchSpec, Scheduler
 from opencollab.application.session import Session, SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.tool_execution import ToolExecutionUseCase
-from opencollab.bootstrap.team_config import RoleConfig, TeamConfig, default_team_config, load_team_config
+from opencollab.bootstrap.team_config import (
+    RoleConfig,
+    TeamConfig,
+    default_team_config,
+    load_team_config,
+    resolve_team_file,
+)
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionState
 
@@ -383,6 +390,24 @@ def snapshot_session(session: Session) -> Session:
 # ---------------------------------------------------------------------------
 
 
+def agent_save_path(save_dir: str, aid: int, role: str) -> str:
+    """Per-agent transcript path within a run folder: ``agent_<aid>_<role>.json``."""
+    return os.path.join(save_dir, f"agent_{aid}_{role}.json")
+
+
+def make_run_dir(workspace: str) -> str:
+    """A timestamped run folder under ``<workspace>/.opencollab/sessions``.
+
+    A 4-char suffix is appended if a same-second folder already exists, so two
+    runs started within the same second do not collide.
+    """
+    base = os.path.join(workspace, ".opencollab", "sessions")
+    run_dir = os.path.join(base, datetime.now().strftime("%Y-%m-%dT%H-%M-%S"))
+    if os.path.exists(run_dir):
+        run_dir = f"{run_dir}-{uuid.uuid4().hex[:4]}"
+    return run_dir
+
+
 @dataclass
 class SpawnConfig:
     """Shared LLM/runtime config inherited by every spawned agent session."""
@@ -513,12 +538,16 @@ class DefaultSessionFactory:
         team_cfg: TeamConfig | None = None,
         lead_workspace: str | None = None,
         interactive: bool = False,
+        save_dir: str | None = None,
     ):
         self._cfg = cfg
         self._team = team_cfg or default_team_config()
         self._context_builder = ContextBuilder(self._team, cfg)
         self._lead_workspace = lead_workspace
         self._interactive = interactive
+        # Run folder where every agent's transcript is persisted. When set,
+        # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
+        self._save_dir = save_dir
 
     def build_spawn_session(
         self,
@@ -539,6 +568,11 @@ class DefaultSessionFactory:
         agent = self._context_builder.build_agent(
             role, scheduler=scheduler, interactive=False
         )
+        auto_save_path = (
+            agent_save_path(self._save_dir, aid, role)
+            if self._save_dir
+            else None
+        )
         return build_session(
             agent=agent,
             env=env,
@@ -548,6 +582,7 @@ class DefaultSessionFactory:
             event_sink=cfg.event_bus,
             permission_policy=cfg.permission_policy,
             safety_policy=safety_policy,
+            auto_save_path=auto_save_path,
             aid=aid,
         )
 
@@ -604,8 +639,9 @@ def build_scheduler(
     dependencies, and hands the scheduler a ``LaunchSpec``;
     ``scheduler.create_init_process`` builds agent 0 (aid=0) through the factory
     and applies the launch spec. ``session_file`` resumes agent 0's history;
-    ``auto_save`` writes a JSONL transcript under
-    ``<workspace>/.opencollab/sessions``.
+    ``auto_save`` writes a structured-JSON transcript per agent
+    (``agent_<aid>_<role>.json``) plus a ``team.json`` manifest under a
+    timestamped run folder in ``<workspace>/.opencollab/sessions``.
 
     When ``enable_hooks`` and the team config declares ``hooks``, a
     ``HookEventSubscriber`` is attached to the team event bus so configured
@@ -615,6 +651,12 @@ def build_scheduler(
     cfg = ctx.config
     team_cfg = load_team_config(ctx.workspace)
     event_bus = EventBus(ctx.event_sink)
+
+    # Per-run folder: every agent's transcript plus a team.json manifest land
+    # here. Known before the factory so spawned children inherit the same dir.
+    run_dir: str | None = make_run_dir(ctx.workspace) if auto_save else None
+    lead_save_path = agent_save_path(run_dir, 0, "lead") if run_dir else None
+
     session_factory = DefaultSessionFactory(
         SpawnConfig(
             model=cfg["model"],
@@ -629,6 +671,7 @@ def build_scheduler(
         team_cfg=team_cfg,
         lead_workspace=ctx.workspace,
         interactive=interactive,
+        save_dir=run_dir,
     )
     worktree_pool = WorktreePool(ctx.workspace, use_worktrees=use_worktrees)
 
@@ -650,14 +693,28 @@ def build_scheduler(
         runner = ShellHookRunner(team_cfg.hooks, scheduler=scheduler)
         event_bus.subscribe(HookEventSubscriber(runner))
 
-    auto_save_path: str | None = None
-    if auto_save:
-        session_id = uuid.uuid4().hex[:8]
-        auto_save_dir = os.path.join(ctx.workspace, ".opencollab", "sessions")
-        auto_save_path = os.path.join(auto_save_dir, f"{session_id}.jsonl")
+    # Persist a team.json manifest from the live roster on every roster change.
+    # Wired before create_init_process so agent 0 is captured on registration.
+    if run_dir is not None:
+        store = SessionStore()
+        manifest_path = os.path.join(run_dir, "team.json")
+        team_file = resolve_team_file(ctx.workspace)
+        run_id = os.path.basename(run_dir)
+        started_at = datetime.now(timezone.utc).isoformat()
+
+        def _write_manifest() -> None:
+            store.save_manifest(manifest_path, {
+                "run_id": run_id,
+                "started_at": started_at,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "team_file": str(team_file) if team_file else None,
+                "agents": scheduler.team_snapshot(),
+            })
+
+        scheduler.set_manifest_writer(_write_manifest)
 
     scheduler.create_init_process(
-        LaunchSpec(session_file=session_file, auto_save_path=auto_save_path)
+        LaunchSpec(session_file=session_file, auto_save_path=lead_save_path)
     )
     return scheduler
 
@@ -668,6 +725,8 @@ __all__ = [
     "RuntimeContext",
     "SessionRuntime",
     "SpawnConfig",
+    "agent_save_path",
+    "make_run_dir",
     "build_default_tools",
     "build_runtime_context",
     "build_session",

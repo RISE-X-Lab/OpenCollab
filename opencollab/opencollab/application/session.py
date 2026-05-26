@@ -191,7 +191,11 @@ class Session:
             self.save(launch.auto_save_path)
 
     def save(self, path: str) -> None:
-        self.store.save(path, self.messages)
+        self.store.save(path, self.state.enriched_messages(), meta={
+            "aid": self.state.aid,
+            "role": self.agent.name,
+            "model": getattr(self.agent, "model", None),
+        })
 
     def _auto_save(self) -> None:
         if self._auto_save_path:

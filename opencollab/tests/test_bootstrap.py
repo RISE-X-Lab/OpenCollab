@@ -1,3 +1,4 @@
+import json
 import os
 
 import pytest
@@ -92,6 +93,34 @@ def test_build_scheduler_lead_auto_save_path_lands_under_workspace(tmp_path):
         os.path.join(str(workspace.resolve()), ".opencollab", "sessions")
     )
     assert os.path.exists(lead.auto_save_path)
+
+
+def test_build_scheduler_writes_structured_lead_file_and_manifest(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    scheduler = build_scheduler(ctx, use_worktrees=False, interactive=False)
+    lead_path = scheduler.lead_session.auto_save_path
+
+    # Lead transcript: structured JSON with metadata + per-message timestamps.
+    assert os.path.basename(lead_path) == "agent_0_lead.json"
+    with open(lead_path) as f:
+        saved = json.load(f)
+    assert saved["aid"] == 0
+    assert saved["role"] == "lead"
+    assert saved["messages"] and all("timestamp" in m for m in saved["messages"])
+
+    # team.json manifest sits in the same run folder and lists agent 0.
+    run_dir = os.path.dirname(lead_path)
+    manifest_path = os.path.join(run_dir, "team.json")
+    assert os.path.exists(manifest_path)
+    with open(manifest_path) as f:
+        manifest = json.load(f)
+    agents = {a["aid"]: a for a in manifest["agents"]}
+    assert agents[0]["role"] == "lead"
+    assert agents[0]["parent_aid"] is None
+    assert "started_at" in manifest and "run_id" in manifest
 
 
 def test_build_runtime_context_resolves_workspace_and_tracer(tmp_path, monkeypatch):

@@ -211,8 +211,8 @@ def test_add_user_message_appends_resets_hashes_and_autosaves():
         def __init__(self):
             self.save_calls = []
 
-        def save(self, path, messages):
-            self.save_calls.append((path, copy.deepcopy(messages)))
+        def save(self, path, messages, *, meta=None):
+            self.save_calls.append((path, copy.deepcopy(messages), meta))
 
     store = FakeStore()
     session = Session(
@@ -229,7 +229,12 @@ def test_add_user_message_appends_resets_hashes_and_autosaves():
     assert session.messages[-1] == {"role": "user", "content": "hello"}
     assert session.is_done is False
     assert session._recent_call_hashes == []
-    assert store.save_calls == [("autosave.jsonl", session.messages)]
+    assert len(store.save_calls) == 1
+    saved_path, saved_messages, _ = store.save_calls[0]
+    assert saved_path == "autosave.jsonl"
+    assert saved_messages[-1]["role"] == "user"
+    assert saved_messages[-1]["content"] == "hello"
+    assert "timestamp" in saved_messages[-1]
 
 
 def test_snapshot_preserves_historical_subset_only():
@@ -836,8 +841,8 @@ def test_session_accepts_explicit_store():
             self.load_calls = []
             self.loaded_messages = [{"role": "system", "content": "loaded from fake store"}]
 
-        def save(self, path, messages):
-            self.save_calls.append((path, copy.deepcopy(messages)))
+        def save(self, path, messages, *, meta=None):
+            self.save_calls.append((path, copy.deepcopy(messages), meta))
 
         def load_messages(self, path, system_prompt):
             self.load_calls.append((path, system_prompt))
@@ -854,7 +859,11 @@ def test_session_accepts_explicit_store():
     )
 
     assert session.store is fake_store
-    assert fake_store.save_calls == [("fake-session.jsonl", session.messages)]
+    assert len(fake_store.save_calls) == 1
+    saved_path, saved_messages, _ = fake_store.save_calls[0]
+    assert saved_path == "fake-session.jsonl"
+    assert [m["role"] for m in saved_messages] == [m["role"] for m in session.messages]
+    assert saved_messages[-1]["content"] == "hello"
     assert loaded.store is fake_store
     assert fake_store.load_calls == [("fake-session.jsonl", agent.system_prompt)]
     assert loaded.messages == fake_store.loaded_messages
