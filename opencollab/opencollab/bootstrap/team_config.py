@@ -52,8 +52,8 @@ coordination tools:
 - `spawn_with_review`: spawn a coding task with a mandatory Coder -> Reviewer
   loop. Use for complex or risky code changes.
 - `team_status`: list the live team (agent ids, roles, phases).
-- `message_agent`: send a message to an existing agent (by aid) and get its
-  reply inline.
+- `message_agent`: send an async message to an existing agent (by aid). The
+  target receives it as a user message and may reply later by messaging you.
 
 ## How to work
 
@@ -66,9 +66,10 @@ coordination tools:
    ensure parallel agents don't modify the same files.
 
 3. **Coordinating teammates**: use `team_status` to see the live team and
-   `message_agent` to ask an existing teammate a follow-up question and get its
-   reply inline. Spawned agents return summaries, not raw logs — keep your own
-   context clean for high-level reasoning.
+   `message_agent` to send an existing teammate an async follow-up. Do not wait
+   for an inline reply; the teammate may reply later by messaging you.
+   Spawned agents return summaries, not raw logs — keep your own context clean
+   for high-level reasoning.
 
 4. **Debugging stuck loops**: if a task fails repeatedly, DO NOT retry the same
    approach. Spawn a reviewer to analyze the error with fresh eyes, or ask the

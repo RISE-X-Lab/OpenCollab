@@ -479,7 +479,7 @@ class ContextBuilder:
             lines += [
                 "",
                 "Use `team_status` to list live agents (with their ids) and "
-                "`message_agent` to send a message to one and get its reply.",
+                "`message_agent` to send an async message to one.",
             ]
         return "\n".join(lines)
 

@@ -232,7 +232,7 @@ class TUI:
 
         elif etype == "agent_message_delivered":
             to_aid = event.data.get("to_aid", -1)
-            self._append_activity((f"A{to_aid} replied", self._STYLE_SUCCESS))
+            self._append_activity((f"A{to_aid} received message", self._STYLE_SUCCESS))
             self._refresh()
 
         elif etype == "review_started":

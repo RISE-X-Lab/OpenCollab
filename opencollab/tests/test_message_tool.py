@@ -17,9 +17,9 @@ class FakeScheduler:
         self.sent = []
         self._snapshot = snapshot or []
 
-    async def send_message(self, from_aid, to_aid, content):
-        self.sent.append((from_aid, to_aid, content))
-        return f"reply from {to_aid}"
+    async def send_message(self, from_aid, to_aid, summary, content):
+        self.sent.append((from_aid, to_aid, summary, content))
+        return f"Message queued to aid {to_aid}."
 
     def team_snapshot(self):
         return self._snapshot
@@ -29,12 +29,17 @@ def _runtime(aid=0):
     return ToolRuntime(environment=None, safety_policy=None, permission_policy=None, aid=aid)
 
 
-def test_message_agent_tool_forwards_runtime_aid_and_returns_reply():
+def test_message_agent_tool_forwards_runtime_aid_and_returns_ack():
     sched = FakeScheduler()
     tool = MessageAgentTool(sched)
-    result = run(tool.execute_with_runtime({"to_aid": 2, "message": "hi there"}, _runtime(aid=0)))
-    assert result == "reply from 2"
-    assert sched.sent == [(0, 2, "hi there")]
+    result = run(
+        tool.execute_with_runtime(
+            {"to_aid": 2, "summary": "quick check", "content": "hi there"},
+            _runtime(aid=0),
+        )
+    )
+    assert result == "Message queued to aid 2."
+    assert sched.sent == [(0, 2, "quick check", "hi there")]
 
 
 def test_team_status_tool_formats_roster():

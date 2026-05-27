@@ -13,6 +13,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
+from xml.sax.saxutils import escape, quoteattr
 
 from opencollab.application.ports import (
     EnvironmentPort,
@@ -43,6 +44,15 @@ class LaunchSpec:
 
     session_file: str | None = None
     auto_save_path: str | None = None
+
+
+@dataclass(frozen=True)
+class QueuedTeammateMessage:
+    from_aid: int
+    to_aid: int
+    summary: str
+    content: str
+    xml: str
 
 
 class Scheduler:
@@ -87,6 +97,9 @@ class Scheduler:
         # child's completion fill the exact pending row that suspended its
         # parent. Absent for legacy fire-and-forget spawns (tool_call_id=None).
         self._spawn_origin: dict[int, tuple[int, str]] = {}
+        # aid -> queued teammate messages waiting to be appended as user
+        # messages once that session is not running or suspended on pending work.
+        self._message_inbox: dict[int, list[QueuedTeammateMessage]] = {}
         # Optional bootstrap-injected callback that persists a team.json manifest
         # from the current roster. Kept as a callback so the application layer
         # stays free of filesystem I/O.
@@ -249,6 +262,7 @@ class Scheduler:
                 {"aid": aid, "role": scb.agent.name, "error": str(exc)},
             )
             await self._deliver_to_parent(aid, f"Error: {exc}", RowStatus.FAILED)
+            await self._drain_message_inbox(aid, allow_current_task=True)
             return
 
         scb.result = result
@@ -287,6 +301,7 @@ class Scheduler:
 
         status = RowStatus.FAILED if scb.state.phase is SessionPhase.ERROR else RowStatus.DONE
         await self._deliver_to_parent(aid, result, status)
+        await self._drain_message_inbox(aid, allow_current_task=True)
 
     async def _deliver_to_parent(self, child_aid: int, result: str, status: RowStatus) -> None:
         """Route a finished child's result to the pending row that suspended its
@@ -354,15 +369,14 @@ class Scheduler:
                 f"under the team topology."
             )
 
-    async def send_message(self, from_aid: int, to_aid: int, content: str) -> str:
-        """Synchronously deliver a message to an existing agent; return its reply.
+    async def send_message(self, from_aid: int, to_aid: int, summary: str, content: str) -> str:
+        """Queue a teammate message for async delivery and return immediately.
 
-        Re-activates the target's retained session: appends the message and runs
-        its loop (a DONE session resumes to IDLE first). If the target is still
-        running, its in-flight task is awaited before delivery. A per-target lock
-        serializes concurrent messages so one session is never driven twice at
-        once. Topology and existence are checked first and reported as a plain
-        result string so the caller's run loop continues uninterrupted.
+        The recipient sees the message as a normal user turn with an XML
+        envelope. If the recipient is idle, it is scheduled in the background;
+        if it is running or awaiting delegated work, the message stays in an
+        out-of-history inbox until the session can safely accept another user
+        turn.
         """
         if to_aid == from_aid:
             return "Error: an agent cannot message itself."
@@ -379,33 +393,80 @@ class Scheduler:
 
         lock = self._locks.setdefault(to_aid, asyncio.Lock())
         async with lock:
-            in_flight = self._tasks.get(to_aid)
-            if in_flight is not None and not in_flight.done():
-                await in_flight
-
-            target_scb = self.table.get(to_aid)
-            if target_scb is not None and target_scb.state.phase is SessionPhase.AWAITING_EVENTS:
-                return (
-                    f"Error: agent {to_aid} is awaiting events (waiting on its own "
-                    f"delegated work) and cannot accept a message yet. Try again later."
-                )
-
+            message = QueuedTeammateMessage(
+                from_aid=from_aid,
+                to_aid=to_aid,
+                summary=summary,
+                content=content,
+                xml=self._format_teammate_message(from_aid, summary, content),
+            )
+            self._message_inbox.setdefault(to_aid, []).append(message)
             await self._emit_scheduler_event(
                 "agent_message_sent",
-                {"from_aid": from_aid, "to_aid": to_aid, "role": self._role_of(to_aid)},
+                {
+                    "from_aid": from_aid,
+                    "to_aid": to_aid,
+                    "role": self._role_of(to_aid),
+                    "summary": summary,
+                },
             )
-            await target.add_user_message(content)
-            result = await target.run_loop()
+            await self._drain_message_inbox_locked(to_aid)
+        return f"Message queued to aid {to_aid}."
 
-            scb = self.table.get(to_aid)
-            if scb is not None:
-                scb.result = result
+    @staticmethod
+    def _format_teammate_message(from_aid: int, summary: str, content: str) -> str:
+        sender = f"A{from_aid}"
+        return (
+            f"<teammate-message teammate_id={quoteattr(sender)} "
+            f"summary={quoteattr(summary)}>\n"
+            f"{escape(content)}\n"
+            "</teammate-message>"
+        )
 
+    async def _drain_message_inbox(self, aid: int, *, allow_current_task: bool = False) -> None:
+        lock = self._locks.setdefault(aid, asyncio.Lock())
+        async with lock:
+            await self._drain_message_inbox_locked(aid, allow_current_task=allow_current_task)
+
+    async def _drain_message_inbox_locked(
+        self,
+        aid: int,
+        *,
+        allow_current_task: bool = False,
+    ) -> None:
+        inbox = self._message_inbox.get(aid)
+        if not inbox:
+            return
+        session = self._sessions.get(aid)
+        scb = self.table.get(aid)
+        if session is None or scb is None:
+            return
+        task = self._tasks.get(aid)
+        current_task = asyncio.current_task()
+        if (
+            task is not None
+            and not task.done()
+            and not (allow_current_task and task is current_task)
+        ):
+            return
+        if scb.state.phase is SessionPhase.AWAITING_EVENTS or not scb.state.pending_events.is_empty():
+            return
+
+        messages = list(inbox)
+        inbox.clear()
+        for message in messages:
+            await session.add_user_message(message.xml)
             await self._emit_scheduler_event(
                 "agent_message_delivered",
-                {"from_aid": from_aid, "to_aid": to_aid, "result_len": len(result)},
+                {
+                    "from_aid": message.from_aid,
+                    "to_aid": message.to_aid,
+                    "summary": message.summary,
+                    "content_len": len(message.content),
+                },
             )
-            return result
+
+        self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
 
     def team_snapshot(self) -> list[dict[str, Any]]:
         """Read-only roster of every tracked (live) agent, ordered by aid."""
@@ -517,6 +578,8 @@ class Scheduler:
         an outstanding pending table, and every phase is terminal or idle.
         """
         for scb in self.table.entries.values():
+            if self._message_inbox.get(scb.aid):
+                return False
             if not scb.state.pending_events.is_empty():
                 return False
             if not (scb.state.phase.is_terminal() or scb.state.phase is SessionPhase.IDLE):

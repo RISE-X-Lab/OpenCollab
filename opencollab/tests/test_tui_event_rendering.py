@@ -327,7 +327,7 @@ def test_message_events_append_activity_lines():
         block.plain for block in tui._timeline_blocks if hasattr(block, "plain")
     )
     assert "A0 → A2 message" in timeline
-    assert "A2 replied" in timeline
+    assert "A2 received message" in timeline
 
 
 def test_status_lines_use_explicit_non_white_styles():

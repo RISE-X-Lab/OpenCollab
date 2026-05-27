@@ -231,7 +231,7 @@ def test_misrouted_completion_emits_failure_not_silent():
     assert len(event_types(events, "agent_failed")) == 1
 
 
-def test_send_message_rejected_when_target_awaiting_events():
+def test_send_message_queues_when_target_awaiting_events():
     lead = ScriptedSession("lead", [])
     scheduler, _ = build_scheduler(lead, [])
 
@@ -242,7 +242,51 @@ def test_send_message_rejected_when_target_awaiting_events():
     )
     scheduler._sessions[1] = target
 
-    result = run(scheduler.send_message(0, 1, "are you there?"))
+    result = run(scheduler.send_message(0, 1, "question", "are you there?"))
 
-    assert "awaiting events" in result
+    assert result == "Message queued to aid 1."
     assert target.added == []  # never delivered
+    assert scheduler._message_inbox[1][0].content == "are you there?"
+
+
+def test_queued_message_delivers_after_target_awaiting_events_resumes():
+    lead = ScriptedSession("lead", [])
+    scheduler, _ = build_scheduler(lead, [])
+
+    target = ScriptedSession(
+        "coder",
+        [
+            resume_done(lambda results: f"finished {results[0]}"),
+            terminal("message handled"),
+        ],
+    )
+    target.state.aid = 1
+    target.scheduler = scheduler
+    target.state.set_phase(SessionPhase.AWAITING_EVENTS)
+    target.state.pending_events.add(
+        PendingRow(tool_call_id="tc-1", kind=RowKind.CHILD_AGENT, order=0, ref=7)
+    )
+    scheduler.table.add(
+        SessionControlBlock(aid=1, parent_aid=0, agent=target.agent, state=target.state)
+    )
+    scheduler._sessions[1] = target
+
+    async def scenario():
+        await scheduler.send_message(0, 1, "follow up", "are you there?")
+        await scheduler._wake(1, "tc-1", "child done", RowStatus.DONE)
+        for _ in range(3):
+            task = scheduler._tasks.get(1)
+            if task is None:
+                break
+            await task
+            if scheduler._tasks.get(1) is task:
+                break
+
+    run(scenario())
+
+    assert target.added == [
+        '<teammate-message teammate_id="A0" summary="follow up">\n'
+        "are you there?\n"
+        "</teammate-message>"
+    ]
+    assert scheduler.table.get(1).result == "message handled"

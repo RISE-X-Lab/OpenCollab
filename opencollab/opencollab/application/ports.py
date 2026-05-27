@@ -149,8 +149,8 @@ class SchedulerPort(Protocol):
         """Blocking review loop. Returns final result."""
         ...
 
-    async def send_message(self, from_aid: int, to_aid: int, content: str) -> str:
-        """Synchronously deliver a message to an existing agent and return its reply."""
+    async def send_message(self, from_aid: int, to_aid: int, summary: str, content: str) -> str:
+        """Queue a teammate message for async delivery and return an acknowledgement."""
         ...
 
     def team_snapshot(self) -> list[dict[str, Any]]:

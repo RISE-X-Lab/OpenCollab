@@ -65,37 +65,73 @@ def _scheduler_events(events):
     return [e for e in events if isinstance(e, SchedulerEvent)]
 
 
-def test_send_message_reactivates_target_and_returns_reply():
-    teammate = FakeSession(["spawn result", "message reply"], role="coder")
+async def _wait_agent_idle(scheduler, aid: int) -> None:
+    for _ in range(5):
+        task = scheduler._tasks.get(aid)
+        if task is None:
+            return
+        await task
+        if scheduler._tasks.get(aid) is task and not scheduler._message_inbox.get(aid):
+            return
+
+
+def test_send_message_queues_xml_and_returns_ack():
+    teammate = FakeSession(["spawn result", "message result"], role="coder")
     scheduler, events = _build_scheduler(teammate)
 
     async def scenario():
         aid = await scheduler.spawn(0, "coder", "do the thing")
-        reply = await scheduler.send_message(0, aid, "follow-up question")
-        return aid, reply
+        ack = await scheduler.send_message(0, aid, "follow up", "check <this> & report")
+        await _wait_agent_idle(scheduler, aid)
+        return aid, ack
 
-    aid, reply = run(scenario())
+    aid, ack = run(scenario())
 
-    assert reply == "message reply"
-    assert "follow-up question" in teammate.added
-    assert scheduler.table.get(aid).result == "message reply"
+    assert ack == f"Message queued to aid {aid}."
+    assert teammate.added[-1] == (
+        '<teammate-message teammate_id="A0" summary="follow up">\n'
+        "check &lt;this&gt; &amp; report\n"
+        "</teammate-message>"
+    )
+    assert scheduler.table.get(aid).result == "message result"
 
     types = [e.type for e in _scheduler_events(events)]
     assert "agent_message_sent" in types
     assert "agent_message_delivered" in types
 
 
+def test_send_message_to_idle_target_schedules_background_run():
+    teammate = FakeSession(["message result"], role="coder")
+    scheduler, _ = _build_scheduler(teammate)
+    teammate.state.set_phase(SessionPhase.DONE)
+    scheduler.table.add(
+        SessionControlBlock(aid=1, parent_aid=0, agent=teammate.agent, state=teammate.state)
+    )
+    scheduler._sessions[1] = teammate
+
+    async def scenario():
+        ack = await scheduler.send_message(0, 1, "hello", "please review")
+        await scheduler._tasks[1]
+        return ack
+
+    ack = run(scenario())
+
+    assert ack == "Message queued to aid 1."
+    assert len(teammate.added) == 1
+    assert scheduler.table.get(1).result == "message result"
+
+
 def test_send_message_to_self_is_rejected():
     teammate = FakeSession([], role="coder")
     scheduler, _ = _build_scheduler(teammate)
-    result = run(scheduler.send_message(0, 0, "hi"))
+    result = run(scheduler.send_message(0, 0, "hi", "there"))
     assert "itself" in result
 
 
 def test_send_message_to_unknown_aid_is_rejected():
     teammate = FakeSession([], role="coder")
     scheduler, _ = _build_scheduler(teammate)
-    result = run(scheduler.send_message(0, 99, "hi"))
+    result = run(scheduler.send_message(0, 99, "hi", "there"))
     assert "no agent with aid 99" in result
 
 
@@ -121,7 +157,7 @@ def test_send_message_denied_by_topology_returns_error():
     )
     scheduler._sessions[2] = reviewer
 
-    result = run(scheduler.send_message(0, 2, "hello"))
+    result = run(scheduler.send_message(0, 2, "hello", "there"))
     assert "not permitted to message 'reviewer'" in result
     assert reviewer.added == []  # never delivered
 

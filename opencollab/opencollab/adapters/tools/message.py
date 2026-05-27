@@ -1,7 +1,6 @@
 """Inter-agent coordination tools bound to a scheduler port.
 
-- ``message_agent``: send a message to an existing agent and get its reply
-  synchronously (the scheduler re-activates the target's session).
+- ``message_agent``: queue an async message for an existing agent.
 - ``team_status``: read the live team roster so an agent can pick a target aid.
 """
 
@@ -15,13 +14,13 @@ from opencollab.application.tool_execution import ToolRuntime
 
 
 class MessageAgentTool(Tool):
-    """Send a message to an existing agent and return its reply inline."""
+    """Queue a message for an existing agent and return immediately."""
 
     name = "message_agent"
     description = (
-        "Send a message to an existing agent (by its aid) and get its reply. "
-        "The target resumes its session, processes your message, and returns its "
-        "response. Use team_status first to find the aid you want. You may only "
+        "Send an async message to an existing agent (by its aid). The target "
+        "will receive it as a user message and may reply later by messaging you "
+        "back. Use team_status first to find the aid you want. You may only "
         "message agents your role is allowed to reach."
     )
     parameters = {
@@ -31,12 +30,16 @@ class MessageAgentTool(Tool):
                 "type": "integer",
                 "description": "The agent id (aid) of the teammate to message.",
             },
-            "message": {
+            "summary": {
                 "type": "string",
-                "description": "The message / question to send to that agent.",
+                "description": "Brief summary of the message.",
+            },
+            "content": {
+                "type": "string",
+                "description": "Full message content to send to that agent.",
             },
         },
-        "required": ["to_aid", "message"],
+        "required": ["to_aid", "summary", "content"],
     }
 
     def __init__(self, scheduler: SchedulerPort):
@@ -48,8 +51,9 @@ class MessageAgentTool(Tool):
         runtime: ToolRuntime,
     ) -> str:
         to_aid = params["to_aid"]
-        message = params["message"]
-        return await self._scheduler.send_message(runtime.aid, to_aid, message)
+        summary = params["summary"]
+        content = params["content"]
+        return await self._scheduler.send_message(runtime.aid, to_aid, summary, content)
 
 
 def _display_team_state(entry: dict[str, Any]) -> str:
