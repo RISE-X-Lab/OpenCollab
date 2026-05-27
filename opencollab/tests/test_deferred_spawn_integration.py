@@ -27,11 +27,11 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def llm_response(content=None, tool_calls=None, total_tokens=5, finish_reason="stop"):
+def llm_response(content=None, tool_calls=None, total_tokens=5, input_tokens=1, finish_reason="stop"):
     return SimpleNamespace(
         content=content,
         tool_calls=tool_calls or [],
-        usage=SimpleNamespace(total_tokens=total_tokens),
+        usage=SimpleNamespace(total_tokens=total_tokens, input_tokens=input_tokens),
         finish_reason=finish_reason,
     )
 

@@ -117,6 +117,27 @@ def test_context_compaction_use_case_should_compact_uses_injected_token_estimato
     assert seen == [state.messages]
 
 
+def test_context_compaction_use_case_should_compact_prefers_real_context_tokens():
+    # When the provider's real context size is known, it wins over the estimate.
+    state = SessionState(messages=messages(1))
+    state.set_context_tokens(50)
+
+    over, _ = build_use_case(
+        state=state,
+        estimate_tokens=lambda _messages: 0,  # estimate would say "no"
+        compaction_threshold=10,
+    )
+    assert over.should_compact() is True
+
+    state.set_context_tokens(5)
+    under, _ = build_use_case(
+        state=state,
+        estimate_tokens=lambda _messages: 9999,  # estimate would say "yes"
+        compaction_threshold=10,
+    )
+    assert under.should_compact() is False
+
+
 def test_context_compaction_use_case_insufficient_messages_only_emits_compaction_event():
     state = SessionState(messages=messages(1))
     llm = FakeLLM()

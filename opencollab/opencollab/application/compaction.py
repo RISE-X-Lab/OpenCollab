@@ -38,9 +38,11 @@ class ContextCompactionUseCase:
         self.compaction_threshold = compaction_threshold
 
     def should_compact(self) -> bool:
-        # Auto-compact if context is too large (ref: opencode isOverflow)
-        estimated = self.estimate_tokens(self.state.messages)
-        return estimated > self.compaction_threshold
+        # Auto-compact if context is too large (ref: opencode isOverflow).
+        # Prefer the provider's real ``input_tokens`` from the last call; fall
+        # back to the estimate only before the first call records one.
+        size = self.state.context_tokens or self.estimate_tokens(self.state.messages)
+        return size > self.compaction_threshold
 
     async def compact(self, apply: bool = True) -> CompactResult:
         """Summarize older messages to reduce context size."""

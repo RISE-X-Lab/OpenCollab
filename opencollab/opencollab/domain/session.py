@@ -95,6 +95,9 @@ class InvalidPhaseTransition(Exception):
 class SessionState:
     messages: list[dict[str, Any]]
     used_tokens: int = 0
+    # Real size (provider ``input_tokens``) of the current context as of the
+    # last LLM call. 0 means "no real measurement yet — fall back to estimate".
+    context_tokens: int = 0
     step_count: int = 0
     recent_call_hashes: list[str] = field(default_factory=list)
     phase: SessionPhase = SessionPhase.IDLE
@@ -157,6 +160,9 @@ class SessionState:
 
     def set_used_tokens(self, tokens: int) -> None:
         self.used_tokens = tokens
+
+    def set_context_tokens(self, tokens: int) -> None:
+        self.context_tokens = tokens
 
     def advance_step(self) -> int:
         self.step_count += 1

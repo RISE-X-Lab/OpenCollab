@@ -30,7 +30,8 @@ class SessionRunUseCase:
     """Application use case for the session run loop.
 
     The LLM response is structural: it must expose ``content``,
-    ``tool_calls``, ``finish_reason``, and ``usage.total_tokens``.
+    ``tool_calls``, ``finish_reason``, ``usage.input_tokens``, and
+    ``usage.total_tokens``.
     """
 
     def __init__(
@@ -178,6 +179,7 @@ class SessionRunUseCase:
         response = await self.call_llm(tools)
         latency = time.monotonic() - start
         self.state.add_used_tokens(response.usage.total_tokens)
+        self.state.set_context_tokens(response.usage.input_tokens)
 
         self.record_llm_trace(response, latency)
         self.append_assistant_message(response)
