@@ -8,6 +8,7 @@ flows through SchedulerEvent rather than synthetic SessionEvent tool_* events.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 from opencollab.adapters.worktree_pool import WorktreePool
@@ -48,6 +49,11 @@ class _FakeLeadSession:
         self.runner = type("_R", (), {"max_steps": 100})()
         self.max_steps = 100
         self.state = SessionState(messages=[])
+        self.auto_save_path = None
+
+    def save(self, path: str) -> None:
+        with open(path, "w") as f:
+            json.dump({"messages": self.state.enriched_messages()}, f)
 
     async def add_user_message(self, content: str) -> None:
         pass
@@ -116,6 +122,48 @@ def test_spawn_emits_agent_spawned_then_completed(monkeypatch):
     assert completed.data["role"] == "coder"
     assert "latency" in completed.data
     assert isinstance(completed.data["latency"], float)
+
+
+def test_spawn_autosaves_parent_tool_call(monkeypatch, tmp_path):
+    scheduler, _ = _build_scheduler(monkeypatch, {"analyst": ["done"]})
+    lead = scheduler.lead_session
+    lead.auto_save_path = str(tmp_path / "agent_0_lead.json")
+    lead.state.append_message({"role": "user", "content": "fix it"})
+    lead.state.append_message(
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "spawn_agent",
+                        "arguments": '{"role": "analyst", "task": "investigate"}',
+                    },
+                }
+            ],
+        }
+    )
+
+    aid = run(scheduler.spawn(0, "analyst", "investigate"))
+    run(asyncio.wait_for(scheduler._tasks[aid], timeout=1.0))
+
+    with open(lead.auto_save_path) as f:
+        saved = json.load(f)
+    assert saved["messages"][-1]["tool_calls"][0]["function"]["name"] == "spawn_agent"
+
+
+def test_cleanup_autosaves_live_sessions(monkeypatch, tmp_path):
+    scheduler, _ = _build_scheduler(monkeypatch, {})
+    lead = scheduler.lead_session
+    lead.auto_save_path = str(tmp_path / "agent_0_lead.json")
+    lead.state.append_message({"role": "assistant", "content": "latest state"})
+
+    run(scheduler.cleanup())
+
+    with open(lead.auto_save_path) as f:
+        saved = json.load(f)
+    assert saved["messages"][-1]["content"] == "latest state"
 
 
 def test_spawn_trims_task_field_to_100_chars(monkeypatch):

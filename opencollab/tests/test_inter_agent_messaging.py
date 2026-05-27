@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import pytest
 
@@ -33,6 +34,19 @@ class FakeSession:
 
     async def run_loop(self) -> str:
         return self._results.pop(0) if self._results else ""
+
+
+class PersistingFakeSession(FakeSession):
+    def __init__(self, results, role, auto_save_path):
+        super().__init__(results, role)
+        self.auto_save_path = str(auto_save_path)
+
+    def save(self, path: str) -> None:
+        obj = {"messages": self.state.enriched_messages()}
+        if self.state.pending_user_messages:
+            obj["pending_messages"] = self.state.enriched_pending_user_messages()
+        with open(path, "w") as f:
+            json.dump(obj, f)
 
 
 class FakeFactory:
@@ -119,6 +133,30 @@ def test_send_message_to_idle_target_schedules_background_run():
     assert ack == "Message queued to aid 1."
     assert len(teammate.added) == 1
     assert scheduler.table.get(1).result == "message result"
+
+
+def test_send_message_to_busy_target_autosaves_pending_xml(tmp_path):
+    path = tmp_path / "agent_1_coder.json"
+    teammate = PersistingFakeSession([], role="coder", auto_save_path=path)
+    scheduler, _ = _build_scheduler(teammate)
+    teammate.state.set_phase(SessionPhase.AWAITING_EVENTS)
+    scheduler.table.add(
+        SessionControlBlock(aid=1, parent_aid=0, agent=teammate.agent, state=teammate.state)
+    )
+    scheduler._sessions[1] = teammate
+
+    result = run(scheduler.send_message(0, 1, "follow up", "check <this> & report"))
+
+    assert result == "Message queued to aid 1."
+    assert teammate.added == []
+    with open(path) as f:
+        saved = json.load(f)
+    assert saved["messages"] == []
+    assert saved["pending_messages"][0]["content"] == (
+        '<teammate-message teammate_id="A0" summary="follow up">\n'
+        "check &lt;this&gt; &amp; report\n"
+        "</teammate-message>"
+    )
 
 
 def test_send_message_to_self_is_rejected():

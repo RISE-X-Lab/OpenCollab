@@ -107,6 +107,11 @@ class SessionState:
     # ``messages``. Kept as a sidecar so ``messages`` stays a clean,
     # API-shaped list; merged into each message only when persisting.
     message_timestamps: list[str] = field(default_factory=list)
+    # User messages queued by the scheduler but not yet appended to
+    # ``messages`` because the session is mid-turn or awaiting tool results.
+    # These are persisted for observability/recovery without changing the
+    # provider-facing history until delivery is safe.
+    pending_user_messages: list[dict[str, Any]] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self._align_timestamps()
@@ -129,6 +134,18 @@ class SessionState:
             {**msg, "timestamp": ts}
             for msg, ts in zip(self.messages, self.message_timestamps)
         ]
+
+    def queue_pending_user_message(self, message: dict[str, Any]) -> None:
+        self.pending_user_messages.append({**message, "timestamp": _now_iso()})
+
+    def discard_pending_user_message(self, content: str) -> None:
+        for index, message in enumerate(self.pending_user_messages):
+            if message.get("content") == content:
+                del self.pending_user_messages[index]
+                return
+
+    def enriched_pending_user_messages(self) -> list[dict[str, Any]]:
+        return [dict(message) for message in self.pending_user_messages]
 
     @property
     def is_done(self) -> bool:

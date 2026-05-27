@@ -117,6 +117,23 @@ class Scheduler:
         except Exception as exc:  # best-effort, mirrors AutoSaveSubscriber
             logger.debug("manifest write failed: %s", exc)
 
+    def _autosave_session(self, aid: int) -> None:
+        session = self._sessions.get(aid)
+        if session is None:
+            return
+        save_path = getattr(session, "auto_save_path", None)
+        save = getattr(session, "save", None)
+        if not save_path or not callable(save):
+            return
+        try:
+            save(save_path)
+        except Exception as exc:  # best-effort, mirrors AutoSaveSubscriber
+            logger.debug("session auto-save failed for aid %s: %s", aid, exc)
+
+    def _autosave_all_sessions(self) -> None:
+        for aid in list(self._sessions):
+            self._autosave_session(aid)
+
     @property
     def used_tokens(self) -> int:
         """Total tokens across all agents."""
@@ -227,6 +244,7 @@ class Scheduler:
         self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
 
         self._write_manifest()
+        self._autosave_session(parent_aid)
         return aid
 
     async def _drive_agent(self, aid: int, session: Any) -> None:
@@ -401,6 +419,16 @@ class Scheduler:
                 xml=self._format_teammate_message(from_aid, summary, content),
             )
             self._message_inbox.setdefault(to_aid, []).append(message)
+            target.state.queue_pending_user_message(
+                {
+                    "role": "user",
+                    "content": message.xml,
+                    "from_aid": from_aid,
+                    "to_aid": to_aid,
+                    "summary": summary,
+                }
+            )
+            self._autosave_session(to_aid)
             await self._emit_scheduler_event(
                 "agent_message_sent",
                 {
@@ -455,6 +483,7 @@ class Scheduler:
         messages = list(inbox)
         inbox.clear()
         for message in messages:
+            session.state.discard_pending_user_message(message.xml)
             await session.add_user_message(message.xml)
             await self._emit_scheduler_event(
                 "agent_message_delivered",
@@ -465,6 +494,7 @@ class Scheduler:
                     "content_len": len(message.content),
                 },
             )
+        self._autosave_session(aid)
 
         self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
 
@@ -594,6 +624,8 @@ class Scheduler:
         if self._tasks:
             await asyncio.gather(*self._tasks.values(), return_exceptions=True)
         self._tasks.clear()
+        self._autosave_all_sessions()
+        self._write_manifest()
         await self._worktree_pool.release()
 
     async def spawn_with_review(
