@@ -61,8 +61,9 @@ class TUI:
         self._step = 0
         self._live: Live | None = None
         self._live_paused = False
-        # When filtering is on, only the selected agent's per-session stream
-        # (text + tool activity) is rendered; team/scheduler events still show.
+        # When filtering is on, only the selected agent's text stream is shown.
+        # Tool/status events stay visible for every agent so background work
+        # does not look frozen while a teammate is running.
         # Defaults to the Lead (aid 0); a future "/" picker switches it.
         self._filter_messages = filter_messages
         self._selected_aid = 0
@@ -114,11 +115,11 @@ class TUI:
     def _handle_session_event(self, event: Any) -> None:
         etype = event.type
         aid = event.data.get("aid", -1)
-        if not self._is_visible(aid):
-            return
         agent_label = "Lead" if aid == 0 else f"A{aid}"
 
         if etype == "text_delta":
+            if not self._is_visible(aid):
+                return
             self._clear_thinking_status()
             content = event.data.get("content", "")
             self._current_text += content

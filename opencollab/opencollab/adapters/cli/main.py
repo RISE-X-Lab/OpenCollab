@@ -139,14 +139,17 @@ def _missing_api_key(provider: str | None, api_key: str | None) -> bool:
     return not bool(os.environ.get(_required_env_key(provider)))
 
 
-def _print_missing_key_hint(provider: str | None) -> None:
+def _print_missing_key_hint(provider: str | None, base_url: str | None = None) -> None:
     from opencollab.adapters.tui import TUI
 
     tui = TUI(console)
     tui.print_welcome()
     env_key = _required_env_key(provider)
+    accepted = f"OPENCOLLAB_API_KEY or {env_key}"
+    if base_url and "dashscope" in base_url.lower() and env_key != "DASHSCOPE_API_KEY":
+        accepted += " or DASHSCOPE_API_KEY"
     console.print(
-        f"[red]Missing API key[/red]: pass [bold]--api-key[/bold] or set [bold]{env_key}[/bold]."
+        f"[red]Missing API key[/red]: pass [bold]--api-key[/bold] or set [bold]{accepted}[/bold]."
     )
 
 
@@ -187,7 +190,7 @@ def main_callback(
 
     cfg = _resolve_config(workspace, model, provider, api_key, base_url, budget)
     if _missing_api_key(cfg["provider"], cfg["api_key"]):
-        _print_missing_key_hint(cfg["provider"])
+        _print_missing_key_hint(cfg["provider"], cfg["base_url"])
         raise typer.Exit(code=1)
 
     # Agent 0 can spawn, so default to the higher budget.

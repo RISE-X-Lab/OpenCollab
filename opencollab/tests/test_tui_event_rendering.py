@@ -415,12 +415,12 @@ def test_select_agent_switches_the_visible_stream():
     assert tui._current_text == "child"
 
 
-def test_filter_suppresses_other_agents_tool_activity():
+def test_filter_keeps_other_agents_tool_activity_visible():
     tui = TUI(filter_messages=True)
     tui.event_handler(
         SessionRuntimeEvent("tool_start", {"tool": "bash", "args": {"command": "ls"}, "aid": 1})
     )
-    assert tui._active_tools == {}
+    assert "A1:bash" in tui._active_tools
 
 
 def test_set_filter_toggles_at_runtime():

@@ -55,6 +55,9 @@ Then it exits so you can add a real API key:
 OPENCOLLAB_API_KEY=<your-api-key>
 ```
 
+For DashScope-compatible mode, `DASHSCOPE_API_KEY` is also accepted and is
+preferred over generic API-key variables for DashScope base URLs.
+
 The API key can also come from the process environment:
 
 ```bash

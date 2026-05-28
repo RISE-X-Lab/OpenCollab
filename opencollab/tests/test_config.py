@@ -10,8 +10,14 @@ _FILTER_ENV = "OPENCOLLAB_FILTER_MESSAGES"
 
 
 @pytest.fixture(autouse=True)
-def _clear_filter_env(monkeypatch):
+def _isolate_config_env(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv(_FILTER_ENV, raising=False)
+    monkeypatch.delenv("OPENCOLLAB_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("OPENCOLLAB_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
 
 
 def test_filter_messages_defaults_off(monkeypatch):
@@ -35,3 +41,39 @@ def test_filter_messages_surfaces_in_get_config_dict(monkeypatch):
 
     monkeypatch.setenv(_FILTER_ENV, "true")
     assert get_config()["filter_messages"] is True
+
+
+def test_dashscope_api_key_is_supported_as_fallback(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")
+    assert build_config().api_key == "dashscope-key"
+
+
+def test_dashscope_base_url_prefers_dashscope_key(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    monkeypatch.setenv("OPENCOLLAB_API_KEY", "generic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")
+
+    assert build_config().api_key == "dashscope-key"
+
+
+def test_dashscope_file_key_beats_generic_export(monkeypatch, tmp_path):
+    cfg_file = tmp_path / "dashscope.env"
+    cfg_file.write_text(
+        "\n".join(
+            [
+                "OPENCOLLAB_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "DASHSCOPE_API_KEY=dashscope-key",
+            ]
+        )
+    )
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(cfg_file))
+    monkeypatch.setenv("OPENCOLLAB_API_KEY", "generic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    assert build_config().api_key == "dashscope-key"
+
+
+def test_config_repr_does_not_include_api_key(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_API_KEY", "secret-key")
+    assert "secret-key" not in repr(build_config())

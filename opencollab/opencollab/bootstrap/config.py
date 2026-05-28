@@ -7,7 +7,8 @@ not required.
 Supported variables:
     OPENCOLLAB_MODEL      — default LLM model (e.g., "claude-sonnet-4-20250514")
     OPENCOLLAB_PROVIDER   — LLM provider ("openai", "anthropic")
-    OPENCOLLAB_API_KEY    — API key (also reads OPENAI_API_KEY / ANTHROPIC_API_KEY)
+    OPENCOLLAB_API_KEY    — API key (also reads OPENAI_API_KEY /
+                            ANTHROPIC_API_KEY / DASHSCOPE_API_KEY)
     OPENCOLLAB_BASE_URL   — API base URL (also reads OPENAI_BASE_URL)
     OPENCOLLAB_BUDGET     — default token budget
     OPENCOLLAB_FILTER_MESSAGES — TUI: show only the selected agent's stream (bool)
@@ -30,7 +31,7 @@ class OpenCollabConfig(BaseModel):
 
     model: str = Field(default="gpt-4o", min_length=1)
     provider: str = Field(default="openai", min_length=1)
-    api_key: str | None = None
+    api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = None
     budget: int = Field(default=200_000, ge=1)
     filter_messages: bool = Field(default=False)
@@ -142,11 +143,49 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
                 return val
         return default
 
+    def resolve_ordered(*keys: str, default: str | None = None) -> str | None:
+        # For provider-specific secrets, key specificity matters more than
+        # source. This prevents a generic exported OPENAI_API_KEY from being sent
+        # to a provider-specific compatible endpoint such as DashScope.
+        for key in keys:
+            val = os.environ.get(key)
+            if val:
+                return val
+            val = dotenv.get(key)
+            if val:
+                return val
+        return default
+
+    provider_value = resolve("OPENCOLLAB_PROVIDER", default="openai")
+    base_url_value = resolve("OPENCOLLAB_BASE_URL", "OPENAI_BASE_URL")
+    base_url_lower = (base_url_value or "").lower()
+    if "dashscope" in base_url_lower or "aliyuncs" in base_url_lower:
+        api_key_value = resolve_ordered(
+            "DASHSCOPE_API_KEY",
+            "OPENCOLLAB_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+        )
+    elif (provider_value or "").lower() == "anthropic":
+        api_key_value = resolve_ordered(
+            "ANTHROPIC_API_KEY",
+            "OPENCOLLAB_API_KEY",
+            "OPENAI_API_KEY",
+            "DASHSCOPE_API_KEY",
+        )
+    else:
+        api_key_value = resolve_ordered(
+            "OPENCOLLAB_API_KEY",
+            "OPENAI_API_KEY",
+            "ANTHROPIC_API_KEY",
+            "DASHSCOPE_API_KEY",
+        )
+
     values: dict[str, Any] = {
         "model": resolve("OPENCOLLAB_MODEL", default="gpt-4o"),
-        "provider": resolve("OPENCOLLAB_PROVIDER", default="openai"),
-        "api_key": resolve("OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY"),
-        "base_url": resolve("OPENCOLLAB_BASE_URL", "OPENAI_BASE_URL"),
+        "provider": provider_value,
+        "api_key": api_key_value,
+        "base_url": base_url_value,
         "budget": resolve("OPENCOLLAB_BUDGET", default="200000"),
         "filter_messages": resolve("OPENCOLLAB_FILTER_MESSAGES", default="false"),
     }

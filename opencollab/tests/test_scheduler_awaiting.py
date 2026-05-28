@@ -290,3 +290,39 @@ def test_queued_message_delivers_after_target_awaiting_events_resumes():
         "</teammate-message>"
     ]
     assert scheduler.table.get(1).result == "message handled"
+
+
+def test_child_message_to_suspended_parent_does_not_stall_turn():
+    async def child_reports_progress(sess: ScriptedSession) -> str:
+        await sess.scheduler.send_message(
+            sess.state.aid,
+            0,
+            "progress",
+            "analysis started",
+        )
+        sess.state.set_phase(SessionPhase.DONE)
+        sess.state.append_message({"role": "assistant", "content": "child final"})
+        return "child final"
+
+    lead = ScriptedSession(
+        "lead",
+        [
+            suspend_spawning([("analyst", "investigate", "tc-1")]),
+            resume_done(lambda results: f"lead saw {results[0]}"),
+            terminal("progress message handled"),
+        ],
+    )
+    child = ScriptedSession("analyst", [child_reports_progress])
+    scheduler, events = build_scheduler(lead, [child])
+
+    result = run(asyncio.wait_for(scheduler.run("go"), timeout=1))
+
+    assert result == "progress message handled"
+    assert scheduler._message_inbox.get(0) == []
+    assert lead.added[-1] == (
+        '<teammate-message teammate_id="A1" summary="progress">\n'
+        "analysis started\n"
+        "</teammate-message>"
+    )
+    assert len(event_types(events, "agent_message_sent")) == 1
+    assert len(event_types(events, "agent_message_delivered")) == 1

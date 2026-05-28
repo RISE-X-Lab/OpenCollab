@@ -41,6 +41,9 @@ OPENCOLLAB_MODEL=glm-5.1
 OPENCOLLAB_API_KEY=<your-api-key>
 ```
 
+For DashScope-compatible mode, `DASHSCOPE_API_KEY` is also accepted and is
+preferred over generic API-key variables for DashScope base URLs.
+
 ## Display
 
 `OPENCOLLAB_FILTER_MESSAGES` toggles per-agent message filtering in the TUI.

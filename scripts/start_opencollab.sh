@@ -26,6 +26,7 @@ Examples:
 
 Configuration:
   Copy configs/.env.example to configs/.env and set OPENCOLLAB_API_KEY.
+  DashScope-compatible runs may set DASHSCOPE_API_KEY instead.
 EOF
 }
 
@@ -53,13 +54,16 @@ ensure_config() {
         exit 1
     fi
 
-    local key_value="${OPENCOLLAB_API_KEY:-}"
+    local key_value="${OPENCOLLAB_API_KEY:-${OPENAI_API_KEY:-${ANTHROPIC_API_KEY:-${DASHSCOPE_API_KEY:-}}}}"
+    local key_name
+    for key_name in OPENCOLLAB_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY DASHSCOPE_API_KEY; do
+        if [ -z "$key_value" ]; then
+            key_value="$(read_env_value "$key_name" "$CONFIG_FILE")"
+        fi
+    done
     if [ -z "$key_value" ]; then
-        key_value="$(read_env_value OPENCOLLAB_API_KEY "$CONFIG_FILE")"
-    fi
-    if [ -z "$key_value" ]; then
-        echo "Missing OPENCOLLAB_API_KEY."
-        echo "Set it in $CONFIG_FILE or export it in your shell."
+        echo "Missing API key."
+        echo "Set OPENCOLLAB_API_KEY in $CONFIG_FILE, or export OPENCOLLAB_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, or DASHSCOPE_API_KEY."
         exit 1
     fi
 }
