@@ -164,6 +164,7 @@ def _resolve_config(workspace: str, model: str | None, provider: str | None,
         "api_key": api_key or cfg["api_key"],
         "base_url": base_url or cfg["base_url"],
         "budget": budget if budget is not None else _safe_int(cfg["budget"], 200_000),
+        "llm_timeout": cfg["llm_timeout"],
         "filter_messages": bool(cfg["filter_messages"]),
     }
 
@@ -183,6 +184,8 @@ def main_callback(
     trace: bool = typer.Option(False, "--trace", help="Enable trajectory recording"),
     yolo: bool = typer.Option(False, "--yolo", help="Auto-approve risky commands"),
     no_worktrees: bool = typer.Option(False, "--no-worktrees", help="Disable git worktree isolation"),
+    prompt: Optional[str] = typer.Option(None, "--prompt", help="Run a single prompt and exit (no REPL)"),
+    prompt_file: Optional[str] = typer.Option(None, "--prompt-file", help="Read the one-shot prompt from a file"),
 ):
     """Interactive agent. Agent 0 works directly and can spawn child agents."""
     if ctx.invoked_subcommand is not None:
@@ -193,11 +196,31 @@ def main_callback(
         _print_missing_key_hint(cfg["provider"], cfg["base_url"])
         raise typer.Exit(code=1)
 
+    one_shot = _resolve_one_shot_prompt(prompt, prompt_file)
+
     # Agent 0 can spawn, so default to the higher budget.
     if budget is None:
         cfg["budget"] = max(cfg["budget"], 500_000)
     asyncio.run(_run(workspace=workspace, cfg=cfg, session_file=session_file,
-                     trace=trace, yolo=yolo, use_worktrees=not no_worktrees))
+                     trace=trace, yolo=yolo, use_worktrees=not no_worktrees,
+                     one_shot_prompt=one_shot))
+
+
+def _resolve_one_shot_prompt(prompt: str | None, prompt_file: str | None) -> str | None:
+    if prompt and prompt_file:
+        raise typer.BadParameter("--prompt and --prompt-file are mutually exclusive.")
+    if prompt_file:
+        try:
+            with open(prompt_file, "r", encoding="utf-8") as f:
+                text = f.read()
+        except OSError as exc:
+            raise typer.BadParameter(f"Cannot read --prompt-file: {exc}") from exc
+        if not text.strip():
+            raise typer.BadParameter(f"--prompt-file is empty: {prompt_file}")
+        return text
+    if prompt:
+        return prompt
+    return None
 
 
 @app.command(name="eval")
@@ -254,7 +277,8 @@ async def _repl_loop(tui: Any, handle_turn, bottom_toolbar: Any = None) -> None:
 
 
 async def _run(workspace: str, cfg: dict, session_file: str | None,
-               trace: bool, yolo: bool, use_worktrees: bool):
+               trace: bool, yolo: bool, use_worktrees: bool,
+               one_shot_prompt: str | None = None):
     from opencollab.adapters.tui import TUI, TuiEventSink, TuiPermissionPolicy
     from opencollab.bootstrap import build_runtime_context, build_scheduler
 
@@ -304,7 +328,10 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
     def team_toolbar() -> str:
         return _format_team_toolbar(scheduler.team_roster())
 
-    await _repl_loop(tui, turn, bottom_toolbar=team_toolbar)
+    if one_shot_prompt is not None:
+        await turn(one_shot_prompt)
+    else:
+        await _repl_loop(tui, turn, bottom_toolbar=team_toolbar)
 
     await scheduler.cleanup()
     if ctx.tracer:

@@ -16,6 +16,7 @@ def _cfg(model="default-model"):
         provider="openai",
         api_key="k",
         base_url=None,
+        llm_timeout=600.0,
         tracer=None,
         event_bus=EventBus(None),
         permission_policy=None,

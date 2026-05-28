@@ -30,6 +30,7 @@ export OPENCOLLAB_PROVIDER=openai
 export OPENCOLLAB_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 export OPENCOLLAB_MODEL=glm-5.1
 export OPENCOLLAB_API_KEY=<your-api-key>
+export OPENCOLLAB_LLM_TIMEOUT=600
 ```
 
 Equivalent `configs/.env` values:
@@ -39,6 +40,7 @@ OPENCOLLAB_PROVIDER=openai
 OPENCOLLAB_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 OPENCOLLAB_MODEL=glm-5.1
 OPENCOLLAB_API_KEY=<your-api-key>
+OPENCOLLAB_LLM_TIMEOUT=600
 ```
 
 For DashScope-compatible mode, `DASHSCOPE_API_KEY` is also accepted and is
@@ -77,7 +79,7 @@ plus a `topology` graph).
 ## Validation
 
 The final resolved configuration is validated by a Pydantic model. `budget`
-must be a positive integer; blank `api_key` and `base_url` values are treated as
-unset.
+must be a positive integer; `llm_timeout` must be a positive number of seconds;
+blank `api_key` and `base_url` values are treated as unset.
 
 Do not commit `configs/.env` or any file containing real API keys.

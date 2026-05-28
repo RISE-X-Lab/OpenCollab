@@ -11,6 +11,7 @@ Supported variables:
                             ANTHROPIC_API_KEY / DASHSCOPE_API_KEY)
     OPENCOLLAB_BASE_URL   — API base URL (also reads OPENAI_BASE_URL)
     OPENCOLLAB_BUDGET     — default token budget
+    OPENCOLLAB_LLM_TIMEOUT — provider request timeout in seconds
     OPENCOLLAB_FILTER_MESSAGES — TUI: show only the selected agent's stream (bool)
     OPENCOLLAB_CONFIG_FILE — explicit path to an env file
 """
@@ -34,6 +35,7 @@ class OpenCollabConfig(BaseModel):
     api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = None
     budget: int = Field(default=200_000, ge=1)
+    llm_timeout: float = Field(default=600.0, gt=0)
     filter_messages: bool = Field(default=False)
 
     @field_validator("model", "provider", mode="before")
@@ -187,6 +189,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         "api_key": api_key_value,
         "base_url": base_url_value,
         "budget": resolve("OPENCOLLAB_BUDGET", default="200000"),
+        "llm_timeout": resolve("OPENCOLLAB_LLM_TIMEOUT", default="600"),
         "filter_messages": resolve("OPENCOLLAB_FILTER_MESSAGES", default="false"),
     }
     if overrides:

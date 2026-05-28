@@ -88,6 +88,7 @@ def fake_team_session_factory(*, safety_policy_factory=None, lead_workspace=None
             provider="fake-provider",
             api_key="fake-key",
             base_url=None,
+            llm_timeout=600.0,
             tracer=None,
             event_bus=event_bus,
             permission_policy=None,

@@ -212,6 +212,7 @@ def build_session_runtime(
     permission_policy: PermissionPort | None = None,
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
+    llm_timeout: float = 600.0,
     store: SessionStorePort | None = None,
     auto_save_callback: Callable[[], None] | None = None,
     aid: int = -1,
@@ -242,6 +243,7 @@ def build_session_runtime(
             api_key=agent.api_key,
             base_url=agent.base_url,
             provider=agent.provider,
+            request_timeout=llm_timeout,
         )
 
     tool_execution = ToolExecutionUseCase(
@@ -303,6 +305,7 @@ def build_session(
     permission_policy: PermissionPort | None = None,
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
+    llm_timeout: float = 600.0,
     store: SessionStorePort | None = None,
     aid: int = -1,
 ) -> Session:
@@ -325,6 +328,7 @@ def build_session(
         permission_policy=permission_policy,
         safety_policy=safety_policy,
         llm=llm,
+        llm_timeout=llm_timeout,
         store=store,
         auto_save_callback=session._auto_save,
         aid=aid,
@@ -416,6 +420,7 @@ class SpawnConfig:
     provider: str
     api_key: str | None
     base_url: str | None
+    llm_timeout: float
     tracer: Tracer | None
     event_bus: EventBus
     permission_policy: PermissionPort | None
@@ -517,6 +522,7 @@ def build_spawn_session(
         event_sink=cfg.event_bus,
         permission_policy=cfg.permission_policy,
         safety_policy=safety_policy,
+        llm_timeout=cfg.llm_timeout,
         aid=aid,
     )
 
@@ -583,6 +589,7 @@ class DefaultSessionFactory:
             permission_policy=cfg.permission_policy,
             safety_policy=safety_policy,
             auto_save_path=auto_save_path,
+            llm_timeout=cfg.llm_timeout,
             aid=aid,
         )
 
@@ -615,6 +622,7 @@ class DefaultSessionFactory:
             permission_policy=cfg.permission_policy,
             safety_policy=build_workspace_safety_policy(env),
             auto_save_path=launch.auto_save_path,
+            llm_timeout=cfg.llm_timeout,
             aid=aid,
         )
 
@@ -663,6 +671,7 @@ def build_scheduler(
             provider=cfg["provider"],
             api_key=cfg["api_key"],
             base_url=cfg["base_url"],
+            llm_timeout=cfg.get("llm_timeout", 600.0),
             tracer=ctx.tracer,
             event_bus=event_bus,
             permission_policy=ctx.permission_policy,

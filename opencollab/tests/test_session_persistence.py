@@ -160,6 +160,7 @@ def _spawn_cfg() -> SpawnConfig:
         provider="openai",
         api_key="test-key",
         base_url=None,
+        llm_timeout=600.0,
         tracer=None,
         event_bus=EventBus(),
         permission_policy=None,

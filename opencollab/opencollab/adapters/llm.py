@@ -74,22 +74,26 @@ class LLMClient:
         base_url: str | None = None,
         provider: str = "openai",
         max_retries: int = 3,
+        request_timeout: float = 600.0,
     ):
         self.model = model
         self.provider = provider
         self.max_retries = max(0, max_retries)
+        self.request_timeout = request_timeout
 
         if provider == "anthropic":
             import anthropic
 
             self._anthropic = anthropic.AsyncAnthropic(
                 api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"),
+                timeout=request_timeout,
             )
             self._openai = None
         else:
             self._openai = openai.AsyncOpenAI(
                 api_key=api_key or os.environ.get("OPENAI_API_KEY"),
                 base_url=base_url or os.environ.get("OPENAI_BASE_URL"),
+                timeout=request_timeout,
             )
             self._anthropic = None
 
