@@ -169,6 +169,7 @@ with open(sys.argv[1], encoding="utf-8") as f:
 
 repo_name = instance.get("repo") or ""
 problem_statement = instance.get("problem_statement") or ""
+hints_text = (instance.get("hints_text") or "").strip()
 fail_to_pass = instance.get("FAIL_TO_PASS") or []
 if isinstance(fail_to_pass, str):
     try:
@@ -182,12 +183,27 @@ print(f"# Issue to fix in `{repo_name}`")
 print()
 print(problem_statement)
 print()
+if hints_text:
+    print("## Maintainer hints from the issue thread")
+    print()
+    print("These are real comments from project maintainers / triagers on the")
+    print("upstream issue. They often name the exact file or class to change.")
+    print("Read them carefully BEFORE searching the codebase.")
+    print()
+    print(hints_text)
+    print()
 print("## Tests that must pass after your fix")
 if fail_to_pass:
     for test_name in fail_to_pass:
         print(f"- {test_name}")
 else:
     print("- (project test suite)")
+print()
+print(
+    "Note: a FAIL_TO_PASS test that doesn't exist in the repo yet is normal — "
+    "the graders add it as part of the test patch. Do NOT spend time grepping "
+    "for the test definition; focus on the source fix."
+)
 print()
 print("Locate the root cause in the source, apply a minimal fix, and ensure the behavior described above is satisfied.")
 PY
@@ -222,6 +238,14 @@ PY
         -e OPENCOLLAB_CONFIG_FILE="$DEFAULT_ENV_FILE"
         -e TERM="${TERM:-xterm-256color}"
     )
+    # Forward proxy settings so openai/anthropic SDKs can reach the API
+    # even when the host's direct route is down.  With --network host the
+    # container shares the host network namespace, so 127.0.0.1 proxies work.
+    for _pv in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY; do
+        if [ -n "${!_pv:-}" ]; then
+            docker_args+=(-e "${_pv}=${!_pv}")
+        fi
+    done
     local mount_spec
     for mount_spec in "${extra_mounts[@]}"; do
         docker_args+=(-v "$(normalize_mount "$mount_spec")")
@@ -272,9 +296,17 @@ PY
     [ -n "$model" ] && inner+=" --model '$model'"
     inner+=" --prompt-file /tmp/oc_task.txt"
 
+    # Use -t (allocate TTY) only when our own stdout is a TTY — otherwise
+    # `docker exec -it` aborts with "the input device is not a TTY", which
+    # makes the team run uninvokable from background/CI contexts.
+    local docker_exec_flags="-i"
+    if [ -t 0 ] && [ -t 1 ]; then
+        docker_exec_flags="-it"
+    fi
+
     set +e
     timeout --foreground "$timeout" \
-        docker exec -it -w /testbed "$cid" bash -lc "$inner"
+        docker exec $docker_exec_flags -w /testbed "$cid" bash -lc "$inner"
     local rc=$?
     set -e
     if [ "$rc" -eq 124 ]; then
