@@ -72,7 +72,7 @@ class SessionRunUseCase:
                 self._resume_from_awaiting()
             elif self.state.phase is not SessionPhase.DONE:
                 self.state.resume_to_idle()
-            while not self._should_suspend() and self.state.step_count < self.max_steps:
+            while not self._should_suspend():
                 await self.advance(cancel_event)
 
         except asyncio.CancelledError:
@@ -152,6 +152,17 @@ class SessionRunUseCase:
                 }
             )
             await self.event_publisher.emit(self.event_factory.error("budget_exceeded"))
+            self.state.transition_to(SessionPhase.BUDGET_EXCEEDED)
+            return
+
+        if self.state.step_count >= self.max_steps:
+            self.state.append_message(
+                {
+                    "role": "system",
+                    "content": f"[Step limit reached: {self.state.step_count} steps. Session stopped.]",
+                }
+            )
+            await self.event_publisher.emit(self.event_factory.error("step_limit_exceeded"))
             self.state.transition_to(SessionPhase.BUDGET_EXCEEDED)
             return
 
