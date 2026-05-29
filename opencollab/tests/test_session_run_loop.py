@@ -177,11 +177,31 @@ def test_run_loop_budget_exceeded_emits_error_and_sets_phase():
     assert result == ""
     assert llm.calls == []
     assert state.phase is SessionPhase.BUDGET_EXCEEDED
+    assert state.terminal_reason == "budget exceeded: 10 tokens used"
     assert state.messages[-1] == {
         "role": "system",
         "content": "[Budget exceeded: 10 tokens used. Session stopped.]",
     }
     assert events == [("error", {"reason": "budget_exceeded", "aid": -1})]
+
+
+def test_run_loop_step_limit_exceeded_emits_error_and_sets_phase():
+    events, bus = collect_events()
+    state = SessionState(messages=[{"role": "system", "content": "sys"}], step_count=3)
+    llm = FakeLLM()
+    runner = build_runner(state=state, llm=llm, event_bus=bus, max_steps=3)
+
+    result = run(runner.run_loop())
+
+    assert result == ""
+    assert llm.calls == []
+    assert state.phase is SessionPhase.STEP_LIMIT_EXCEEDED
+    assert state.terminal_reason == "step limit reached: 3 steps"
+    assert state.messages[-1] == {
+        "role": "system",
+        "content": "[Step limit reached: 3 steps. Session stopped.]",
+    }
+    assert events == [("error", {"reason": "step_limit_exceeded", "aid": -1})]
 
 
 def test_run_loop_cancel_event_appends_interrupt_and_sets_phase():

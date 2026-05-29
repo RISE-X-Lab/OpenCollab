@@ -127,3 +127,34 @@ def test_reset_for_user_turn_clears_done_and_hashes():
     s.reset_for_user_turn()
     assert s.phase is SessionPhase.IDLE
     assert s.recent_call_hashes == []
+
+
+def test_reset_for_user_turn_preserves_step_count():
+    # step_count is a session-lifetime counter, not per-turn — see
+    # reset_for_user_turn. A multi-turn session keeps accumulating.
+    s = state(SessionPhase.DONE)
+    s.set_step_count(7)
+    s.reset_for_user_turn()
+    assert s.step_count == 7
+
+
+def test_fail_and_cancel_record_terminal_reason():
+    s = state(SessionPhase.CALLING_LLM)
+    s.fail(reason="ValueError: boom")
+    assert s.phase is SessionPhase.ERROR
+    assert s.terminal_reason == "ValueError: boom"
+
+    s2 = state(SessionPhase.EXECUTING_TOOLS)
+    s2.cancel()
+    assert s2.phase is SessionPhase.CANCELLED
+    assert s2.terminal_reason == "cancelled"
+
+
+def test_transition_to_records_terminal_reason_and_resume_clears_it():
+    s = state(SessionPhase.PRECHECK)
+    s.transition_to(SessionPhase.STEP_LIMIT_EXCEEDED, reason="step limit reached: 5 steps")
+    assert s.phase is SessionPhase.STEP_LIMIT_EXCEEDED
+    assert s.terminal_reason == "step limit reached: 5 steps"
+    s.resume_to_idle()
+    assert s.phase is SessionPhase.IDLE
+    assert s.terminal_reason is None

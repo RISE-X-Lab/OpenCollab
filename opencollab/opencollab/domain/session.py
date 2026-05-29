@@ -25,6 +25,7 @@ class SessionPhase(Enum):
     DONE = "done"
     CANCELLED = "cancelled"
     BUDGET_EXCEEDED = "budget_exceeded"
+    STEP_LIMIT_EXCEEDED = "step_limit_exceeded"
     ERROR = "error"
 
     def is_terminal(self) -> bool:
@@ -36,6 +37,7 @@ TERMINAL_PHASES = frozenset(
         SessionPhase.DONE,
         SessionPhase.CANCELLED,
         SessionPhase.BUDGET_EXCEEDED,
+        SessionPhase.STEP_LIMIT_EXCEEDED,
         SessionPhase.ERROR,
     }
 )
@@ -49,6 +51,12 @@ TERMINAL_PHASES = frozenset(
 # ever reached that way (it has no inbound edge below); CANCELLED also has a
 # validated in-loop edge from PRECHECK, so the scheduler's out-of-band
 # ``cancel`` covers the case where an agent task is killed mid-loop.
+#
+# BUDGET_EXCEEDED and STEP_LIMIT_EXCEEDED are distinct resource-cap terminals,
+# both reached from PRECHECK: the former when cumulative ``used_tokens`` hits
+# ``max_budget_tokens``, the latter when cumulative ``step_count`` hits
+# ``max_steps``. Both caps are session-lifetime (see ``reset_for_user_turn``).
+# ``terminal_reason`` carries the human-readable detail for every terminal phase.
 #
 # AWAITING_EVENTS is a non-terminal *suspend* state: the loop stops there (the
 # task returns) when a step deferred work (e.g. a spawned child) and the
@@ -64,6 +72,7 @@ PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
             SessionPhase.CALLING_LLM,
             SessionPhase.CANCELLED,
             SessionPhase.BUDGET_EXCEEDED,
+            SessionPhase.STEP_LIMIT_EXCEEDED,
         }
     ),
     SessionPhase.COMPACTING: frozenset({SessionPhase.CALLING_LLM}),
@@ -78,6 +87,7 @@ PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
     SessionPhase.DONE: frozenset({SessionPhase.IDLE}),
     SessionPhase.CANCELLED: frozenset({SessionPhase.IDLE}),
     SessionPhase.BUDGET_EXCEEDED: frozenset({SessionPhase.IDLE}),
+    SessionPhase.STEP_LIMIT_EXCEEDED: frozenset({SessionPhase.IDLE}),
     SessionPhase.ERROR: frozenset({SessionPhase.IDLE}),
 }
 
@@ -98,9 +108,17 @@ class SessionState:
     # Real size (provider ``input_tokens``) of the current context as of the
     # last LLM call. 0 means "no real measurement yet — fall back to estimate".
     context_tokens: int = 0
+    # Cumulative across the whole session lifetime, NOT per user turn. Compared
+    # against ``max_steps`` in PRECHECK; deliberately not reset by
+    # ``reset_for_user_turn`` (see that method), so ``max_steps`` is a
+    # lifetime cap mirroring the ``used_tokens`` budget.
     step_count: int = 0
     recent_call_hashes: list[str] = field(default_factory=list)
     phase: SessionPhase = SessionPhase.IDLE
+    # Human-readable detail for the current terminal phase (e.g. the exception
+    # for ERROR, the token/step counts for the resource caps). ``None`` while
+    # the session is non-terminal; cleared on resume to IDLE.
+    terminal_reason: str | None = None
     aid: int = -1
     pending_events: PendingEventTable = field(default_factory=PendingEventTable)
     # Per-message creation timestamps (UTC ISO-8601), index-aligned with
@@ -190,6 +208,7 @@ class SessionState:
 
     def mark_done(self) -> None:
         self.phase = SessionPhase.DONE
+        self.terminal_reason = "completed"
 
     def clear_done(self) -> None:
         self.resume_to_idle()
@@ -202,36 +221,52 @@ class SessionState:
         """
         self.phase = phase
 
-    def transition_to(self, phase: SessionPhase) -> None:
+    def transition_to(self, phase: SessionPhase, *, reason: str | None = None) -> None:
         """Validated run-loop transition. Raises ``InvalidPhaseTransition`` if
-        the edge is absent from ``PHASE_TRANSITIONS``.
+        the edge is absent from ``PHASE_TRANSITIONS``. ``reason`` records the
+        ``terminal_reason`` detail when crossing into a terminal phase.
         """
         if phase not in PHASE_TRANSITIONS.get(self.phase, frozenset()):
             raise InvalidPhaseTransition(self.phase, phase)
         self.phase = phase
+        if phase.is_terminal() and reason is not None:
+            self.terminal_reason = reason
 
-    def fail(self) -> None:
+    def fail(self, reason: str | None = None) -> None:
         """Abnormal escape to ERROR from any phase. ERROR has no inbound edge in
         ``PHASE_TRANSITIONS`` by design — it is reachable only through this
-        escape (and snapshot/restore). Callers pair it with a raised exception.
+        escape (and snapshot/restore). Callers pair it with a raised exception;
+        ``reason`` typically carries that exception's description.
         """
         self.phase = SessionPhase.ERROR
+        self.terminal_reason = reason or "error"
 
-    def cancel(self) -> None:
+    def cancel(self, reason: str | None = None) -> None:
         """Out-of-band escape to CANCELLED from any phase, used by the scheduler
         when an agent task is killed mid-loop. The in-loop cancel uses the
         validated PRECHECK -> CANCELLED edge via ``transition_to`` instead.
         """
         self.phase = SessionPhase.CANCELLED
+        self.terminal_reason = reason or "cancelled"
 
     def resume_to_idle(self) -> None:
         """The single validated reset from a terminal phase back to IDLE for a
-        fresh turn or re-run. No-op when the phase is not terminal.
+        fresh turn or re-run. No-op when the phase is not terminal. Clears the
+        terminal_reason so it never leaks into the next turn.
         """
         if self.phase.is_terminal():
             self.transition_to(SessionPhase.IDLE)
+            self.terminal_reason = None
 
     def reset_for_user_turn(self) -> None:
+        """Prepare an existing session to accept a new user turn.
+
+        Resets only *per-turn* state: the terminal phase (back to IDLE) and the
+        loop-detection hashes. ``step_count`` and ``used_tokens`` are
+        intentionally preserved — both ``max_steps`` and ``max_budget_tokens``
+        are session-lifetime caps, so a long-lived interactive/messaged session
+        keeps accumulating across turns rather than getting a fresh allowance.
+        """
         self.resume_to_idle()
         self.clear_recent_tool_hashes()
 
