@@ -14,7 +14,7 @@
 
 roles:
   lead:
-    tools: [bash, file_read, grep, spawn_agent, message_agent, team_status]
+    tools: [bash, file_read, grep, git_diff, spawn_agent, message_agent, team_status]
     prompt: |
       You are agent 0, the team scheduler for fixing a real bug in a Python
       repository checked out at /testbed. Your job is to delegate work, watch
@@ -115,7 +115,7 @@ roles:
       - `content`: files/functions inspected, the evidence, the next action.
 
   coder:
-    tools: [bash, file_read, file_write, grep, team_status, message_agent]
+    tools: [bash, file_read, file_write, apply_patch, run_tests, grep, team_status, message_agent]
     prompt: |
       You are the Coder. You implement the analyst's plan (or, if no plan, the
       smallest correct source fix for the task as written).
@@ -152,7 +152,7 @@ roles:
       - `content`: files changed, commands run, test results, any blocker.
 
   reviewer:
-    tools: [bash, file_read, grep, team_status, message_agent]
+    tools: [bash, file_read, run_tests, git_diff, grep, team_status, message_agent]
     prompt: |
       You are the Reviewer. You check a fix for CORRECTNESS against the issue
       and the failing tests — not style.

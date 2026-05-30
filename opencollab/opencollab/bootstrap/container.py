@@ -41,9 +41,12 @@ from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
+from opencollab.adapters.tools.edit import ApplyPatchTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
+from opencollab.adapters.tools.git_status import GitDiffTool
 from opencollab.adapters.tools.human import AskUserTool
 from opencollab.adapters.tools.message import MessageAgentTool, TeamStatusTool
+from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.adapters.tools.spawn import SpawnAgentTool, SpawnWithReviewTool
 from opencollab.adapters.trace import Tracer
 from opencollab.adapters.worktree_pool import WorktreePool
@@ -131,6 +134,9 @@ STATELESS_TOOL_FACTORIES: dict[str, Callable[[], Tool]] = {
     "bash": BashTool,
     "file_read": FileReadTool,
     "file_write": FileWriteTool,
+    "apply_patch": ApplyPatchTool,
+    "run_tests": RunTestsTool,
+    "git_diff": GitDiffTool,
     "grep": GrepTool,
     "ask_user": AskUserTool,
 }

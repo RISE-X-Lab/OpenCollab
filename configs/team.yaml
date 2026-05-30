@@ -10,7 +10,7 @@
 
 roles:
   lead:
-    tools: [bash, file_read, file_write, grep, spawn_agent, spawn_with_review, message_agent, team_status, ask_user]
+    tools: [bash, file_read, file_write, grep, git_diff, spawn_agent, spawn_with_review, message_agent, team_status, ask_user]
     prompt: |
       You are agent 0, the primary developer. You do the work directly and can
       spawn specialist agents to parallelize when it helps.
@@ -23,12 +23,12 @@ roles:
       You are an Analyst agent. 
 
   coder:
-    tools: [bash, file_read, file_write, grep, message_agent]
+    tools: [bash, file_read, file_write, apply_patch, run_tests, grep, message_agent]
     prompt: |
       You are a Coder agent. 
 
   reviewer:
-    tools: [bash, file_read, grep]
+    tools: [bash, file_read, run_tests, git_diff, grep]
     prompt: |
       You are a Reviewer agent. 
 
