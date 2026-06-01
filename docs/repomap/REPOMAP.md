@@ -11,7 +11,7 @@ Source root: `opencollab/opencollab/`. Entry point: `python -m opencollab`
 ## Layers (inner = no I/O)
 
 ### domain/ — policy + state, no imports from app/adapters/SDKs/fs
-- `session.py` — `SessionState` (carries `aid` + `pending_events`), `SessionPhase` (FSM, incl. SCHEDULED + non-terminal **AWAITING_EVENTS** suspend state)
+- `session.py` — `SessionState` (carries `aid` + `pending_events` + `terminal_reason`), `SessionPhase` (FSM, incl. SCHEDULED + non-terminal **AWAITING_EVENTS** suspend state + distinct BUDGET_EXCEEDED / STEP_LIMIT_EXCEEDED resource-cap terminals; both caps are session-lifetime, not per-turn — `reset_for_user_turn` preserves `step_count`/`used_tokens`)
 - `pending.py` — `PendingEventTable`/`PendingRow` (per-session table of a batch's tool_call_ids; deferred rows fill on a child/external completion, immediate rows fill inline; `RowKind`/`RowStatus`/`PendingRowError`)
 - `agent.py` — `Agent` (declares its `ToolSpec`s)
 - `tools.py` — `ToolSpec`, `ToolProcessingResult` (`apply_to`/`apply_hashes_to`), `LoopDetection`

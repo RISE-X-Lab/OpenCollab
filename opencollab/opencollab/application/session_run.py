@@ -79,8 +79,8 @@ class SessionRunUseCase:
             if self.tracer:
                 self.tracer.flush()
             raise
-        except Exception:
-            self.state.fail()
+        except Exception as exc:
+            self.state.fail(reason=f"{type(exc).__name__}: {exc}")
             raise
 
         for msg in reversed(self.state.messages):
@@ -141,29 +141,25 @@ class SessionRunUseCase:
         if cancel_event and cancel_event.is_set():
             self.state.append_message({"role": "system", "content": "[Session interrupted by user]"})
             await self.event_publisher.emit(self.event_factory.error("cancelled"))
-            self.state.transition_to(SessionPhase.CANCELLED)
+            self.state.transition_to(SessionPhase.CANCELLED, reason="interrupted by user")
             return
 
         if self.state.used_tokens >= self.max_budget_tokens:
+            reason = f"budget exceeded: {self.state.used_tokens} tokens used"
             self.state.append_message(
-                {
-                    "role": "system",
-                    "content": f"[Budget exceeded: {self.state.used_tokens} tokens used. Session stopped.]",
-                }
+                {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
             )
             await self.event_publisher.emit(self.event_factory.error("budget_exceeded"))
-            self.state.transition_to(SessionPhase.BUDGET_EXCEEDED)
+            self.state.transition_to(SessionPhase.BUDGET_EXCEEDED, reason=reason)
             return
 
         if self.state.step_count >= self.max_steps:
+            reason = f"step limit reached: {self.state.step_count} steps"
             self.state.append_message(
-                {
-                    "role": "system",
-                    "content": f"[Step limit reached: {self.state.step_count} steps. Session stopped.]",
-                }
+                {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
             )
             await self.event_publisher.emit(self.event_factory.error("step_limit_exceeded"))
-            self.state.transition_to(SessionPhase.BUDGET_EXCEEDED)
+            self.state.transition_to(SessionPhase.STEP_LIMIT_EXCEEDED, reason=reason)
             return
 
         if self.compaction.should_compact():
@@ -213,7 +209,7 @@ class SessionRunUseCase:
 
         await self.finish_step(pending.latency)
         self.clear_pending_step()
-        self.state.transition_to(SessionPhase.DONE)
+        self.state.transition_to(SessionPhase.DONE, reason="completed")
 
     async def execute_pending_tools(self) -> None:
         pending = self._pending

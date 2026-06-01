@@ -421,7 +421,8 @@ def test_run_loop_with_zero_max_steps_exits_without_llm_call():
     assert fake_llm.calls == []
     assert session.step_count == 0
     assert session.is_done is False
-    assert session.phase == SessionPhase.IDLE
+    assert session.phase == SessionPhase.STEP_LIMIT_EXCEEDED
+    assert session.state.terminal_reason == "step limit reached: 0 steps"
 
 
 def test_session_runner_facade_hides_private_response_handler():
