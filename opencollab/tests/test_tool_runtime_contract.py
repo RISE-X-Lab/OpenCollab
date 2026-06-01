@@ -10,8 +10,11 @@ from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.tools import human
 from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
+from opencollab.adapters.tools.edit import ApplyPatchTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
+from opencollab.adapters.tools.git_status import GitDiffTool
 from opencollab.adapters.tools.human import AskUserTool
+from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.tool_execution import ToolRuntime
 
 
@@ -339,6 +342,9 @@ def test_built_in_tools_have_native_execute_with_runtime_methods():
     assert FileWriteTool.execute_with_runtime is not Tool.execute_with_runtime
     assert GrepTool.execute_with_runtime is not Tool.execute_with_runtime
     assert AskUserTool.execute_with_runtime is not Tool.execute_with_runtime
+    assert ApplyPatchTool.execute_with_runtime is not Tool.execute_with_runtime
+    assert GitDiffTool.execute_with_runtime is not Tool.execute_with_runtime
+    assert RunTestsTool.execute_with_runtime is not Tool.execute_with_runtime
 
 
 def test_base_tool_default_execute_with_runtime_raises_not_implemented():
@@ -349,7 +355,7 @@ def test_base_tool_default_execute_with_runtime_raises_not_implemented():
 
 
 def test_no_concrete_tool_defines_legacy_execute():
-    for name in ("bash", "fs", "human"):
+    for name in ("bash", "edit", "fs", "git_status", "human", "run_tests"):
         mod = __import__(f"opencollab.adapters.tools.{name}", fromlist=["_"])
         for cls in vars(mod).values():
             if isinstance(cls, type) and issubclass(cls, Tool) and cls is not Tool:
@@ -367,8 +373,11 @@ def test_tool_modules_do_not_import_inner_layers_or_concrete_sandbox():
     tool_files = [
         package_root / "opencollab/adapters/tools/base.py",
         package_root / "opencollab/adapters/tools/bash.py",
+        package_root / "opencollab/adapters/tools/edit.py",
         package_root / "opencollab/adapters/tools/fs.py",
+        package_root / "opencollab/adapters/tools/git_status.py",
         package_root / "opencollab/adapters/tools/human.py",
+        package_root / "opencollab/adapters/tools/run_tests.py",
     ]
 
     for path in tool_files:
