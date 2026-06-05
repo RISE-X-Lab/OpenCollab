@@ -33,6 +33,7 @@ Usage:
       [--session-root <host-dir>] \
       [--mount <host[:container[:ro|rw]]>] \
       [--mount-home-ro] \
+      [--no-hints] \
       [--keep-container]
 
 Runs the OpenCollab team inside the official sweb.eval container, with TUI
@@ -54,6 +55,10 @@ Configuration:
 Extra mounts:
   --mount defaults to read-only and may be repeated. Use --mount-home-ro only
   when the provider or tools really need host-level config/cache files.
+
+Ablation:
+  --no-hints omits the issue's maintainer hints_text from the task prompt
+  (for measuring how much hints contribute to resolve rate).
 EOF
 }
 
@@ -96,6 +101,7 @@ main() {
     local session_root=""
     local keep=0
     local mount_home_ro=0
+    local include_hints=1
     local -a extra_mounts=()
 
     while (($#)); do
@@ -113,6 +119,7 @@ main() {
             --session-root) session_root="${2:?}"; shift 2 ;;
             --mount) extra_mounts+=("${2:?}"); shift 2 ;;
             --mount-home-ro) mount_home_ro=1; shift ;;
+            --no-hints) include_hints=0; shift ;;
             --keep-container) keep=1; shift ;;
             *) die "unknown argument: $1 (use --help)" ;;
         esac
@@ -160,16 +167,20 @@ PY
 
     local task_file
     task_file="$(mktemp -t oc_task.XXXXXX)"
-    "$py_bin" - "$instance_file" > "$task_file" <<'PY'
+    OC_INCLUDE_HINTS="$include_hints" "$py_bin" - "$instance_file" > "$task_file" <<'PY'
 import json
+import os
 import sys
 
 with open(sys.argv[1], encoding="utf-8") as f:
     instance = json.load(f)
 
+include_hints = os.environ.get("OC_INCLUDE_HINTS", "1") == "1"
 repo_name = instance.get("repo") or ""
 problem_statement = instance.get("problem_statement") or ""
 hints_text = (instance.get("hints_text") or "").strip()
+if not include_hints:
+    hints_text = ""
 fail_to_pass = instance.get("FAIL_TO_PASS") or []
 if isinstance(fail_to_pass, str):
     try:
@@ -217,6 +228,7 @@ PY
     echo "Team file: $team_file"
     echo "Timeout:   ${timeout}s"
     echo "Network:   $network"
+    echo "Hints:     $([ "$include_hints" = "1" ] && echo on || echo off)"
     echo "Sessions:  $session_root"
 
     local -a docker_args=(
