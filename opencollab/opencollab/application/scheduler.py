@@ -9,6 +9,7 @@ Tracks every Session as a SessionControlBlock in a SessionTable:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from dataclasses import dataclass
@@ -97,6 +98,14 @@ class Scheduler:
         # child's completion fill the exact pending row that suspended its
         # parent. Absent for legacy fire-and-forget spawns (tool_call_id=None).
         self._spawn_origin: dict[int, tuple[int, str]] = {}
+        # Single-flight spawn dedup: task key -> the aid currently handling it,
+        # plus the reverse map for release. A (role, task) is reserved at spawn
+        # and freed when the child reaches a terminal phase, so a model that
+        # re-issues an identical spawn is refused (see ``inflight_spawn``) rather
+        # than spinning up a duplicate — tool-level enforcement of "don't spawn
+        # the same task twice", which prompt guidance alone cannot guarantee.
+        self._inflight: dict[str, int] = {}
+        self._inflight_key_of: dict[int, str] = {}
         # aid -> queued teammate messages waiting to be appended as user
         # messages once that session is not running or suspended on pending work.
         self._message_inbox: dict[int, list[QueuedTeammateMessage]] = {}
@@ -203,6 +212,9 @@ class Scheduler:
         """
         self._check_topology(parent_aid, role, verb="spawn")
         aid = self.table.allocate_aid()
+        # Reserve this (role, task) synchronously — before the first await — so a
+        # duplicate spawn later in the same tool-call batch already sees it.
+        self._reserve_inflight(aid, role, task)
 
         # Build environment
         env = await self._worktree_pool.acquire(role)
@@ -266,6 +278,7 @@ class Scheduler:
         try:
             result = await session.run_loop()
         except asyncio.CancelledError:
+            self._clear_inflight(aid)
             scb.state.cancel()
             await self._emit_scheduler_event(
                 "agent_cancelled",
@@ -273,6 +286,7 @@ class Scheduler:
             )
             raise
         except Exception as exc:
+            self._clear_inflight(aid)
             scb.state.fail()
             scb.result = f"Error: {exc}"
             await self._emit_scheduler_event(
@@ -287,8 +301,12 @@ class Scheduler:
 
         # Suspended on its own deferred work — not finished. A child's wake will
         # re-enter _drive_agent and finalize once it reaches a terminal phase.
+        # The reservation stays held: the task is still genuinely in flight.
         if scb.state.phase is SessionPhase.AWAITING_EVENTS:
             return
+
+        # Terminal — release the single-flight reservation before delivering.
+        self._clear_inflight(aid)
 
         # Append worktree diff if available (delivered to the parent / read by
         # spawn_with_review; scb.result keeps the pre-diff run-loop result).
@@ -375,6 +393,31 @@ class Scheduler:
     def _role_of(self, aid: int) -> str:
         scb = self.table.get(aid)
         return scb.agent.name if scb is not None else "?"
+
+    @staticmethod
+    def _task_key(role: str, task: str) -> str:
+        """Stable dedup key for a (role, task). Whitespace is collapsed so a
+        reflowed re-prompt of the same instruction maps to the same key.
+        """
+        normalized = " ".join(task.split())
+        return hashlib.md5(f"{role}\x00{normalized}".encode()).hexdigest()
+
+    def inflight_spawn(self, role: str, task: str) -> int | None:
+        """The aid already handling this (role, task) if a spawn is in flight,
+        else ``None``. The spawn tool consults this to refuse duplicates.
+        """
+        return self._inflight.get(self._task_key(role, task))
+
+    def _reserve_inflight(self, aid: int, role: str, task: str) -> None:
+        key = self._task_key(role, task)
+        self._inflight[key] = aid
+        self._inflight_key_of[aid] = key
+
+    def _clear_inflight(self, aid: int) -> None:
+        """Release a child's reservation once it is terminal (idempotent)."""
+        key = self._inflight_key_of.pop(aid, None)
+        if key is not None and self._inflight.get(key) == aid:
+            del self._inflight[key]
 
     def _check_topology(self, src_aid: int, dst_role: str, *, verb: str) -> None:
         """Raise ``PermissionError`` if the topology forbids src → dst_role."""

@@ -155,6 +155,12 @@ class SchedulerPort(Protocol):
         """
         ...
 
+    def inflight_spawn(self, role: str, task: str) -> int | None:
+        """The aid already handling this (role, task) if a spawn is in flight,
+        else ``None``. Lets the spawn tool refuse a duplicate single-flight.
+        """
+        ...
+
     async def spawn_with_review(
         self,
         parent_aid: int,
