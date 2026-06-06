@@ -3,10 +3,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
-from opencollab.application.tool_execution import (
-    MAX_TOOL_OUTPUT_CHARS,
-    ToolExecutionUseCase,
-)
+from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.session import SessionState
 from opencollab.domain.tools import LoopDetection
 
@@ -216,16 +213,17 @@ def test_tool_execution_use_case_preserves_trace_payload_capping():
     assert "\n...[truncated]...\n" in payload["result"]
 
 
-def test_tool_execution_use_case_preserves_tool_output_truncation():
-    raw_output = "a" * (MAX_TOOL_OUTPUT_CHARS + 10)
+def test_tool_execution_use_case_persists_full_tool_output():
+    # The full result is appended/persisted; bounding what the model sees is the
+    # job of the call-time per-tool-result budget shaper, not tool execution.
+    raw_output = "a" * 50_000
     tool = RuntimeNativeTool(output=raw_output)
     use_case, _publisher = build_use_case(agent=FakeAgent(tools=[tool]))
 
     result = run(use_case.process([tool_call()]))
 
     content = result.messages_to_append[0]["content"]
-    assert len(content) > MAX_TOOL_OUTPUT_CHARS
-    assert "... [10 chars truncated] ..." in content
+    assert content == raw_output
 
 
 def test_application_tool_execution_module_does_not_import_outer_layers():

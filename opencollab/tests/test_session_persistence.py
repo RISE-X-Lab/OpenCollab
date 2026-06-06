@@ -222,7 +222,7 @@ class _FakeLeadSession(_FakeChildSession):
 
 
 class _FakeFactory:
-    def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None):
+    def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None, task=None, context=""):
         return _FakeChildSession(role)
 
 

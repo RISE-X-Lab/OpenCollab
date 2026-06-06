@@ -104,7 +104,7 @@ class ScriptedFactory:
         self._children = list(children)
         self._scheduler_ref = scheduler_ref
 
-    def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None):
+    def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None, task=None, context=""):
         sess = self._children.pop(0)
         sess.state.aid = aid
         sess.scheduler = scheduler

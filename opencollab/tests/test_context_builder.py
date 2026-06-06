@@ -7,6 +7,7 @@ import pytest
 from opencollab.application.event_bus import EventBus
 from opencollab.bootstrap.container import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
+from opencollab.domain.context import ContextLayer, ContextPosition, LoadTiming
 from opencollab.domain.team import Topology
 
 
@@ -91,3 +92,62 @@ def test_scheduler_bound_tool_requires_scheduler():
     )
     with pytest.raises(ValueError, match="requires a scheduler"):
         ContextBuilder(team, _cfg()).build_agent("x", scheduler=None)
+
+
+# --- build_plan: layered context sources -----------------------------------
+
+
+def _sources_by_name(plan):
+    return {s.name: s for s in plan.sources}
+
+
+def test_build_plan_identity_is_startup_system_source_with_role_prompt():
+    plan = ContextBuilder(_team(), _cfg()).build_plan("coder")
+    identity = _sources_by_name(plan)["identity"]
+    assert identity.layer is ContextLayer.IDENTITY
+    assert identity.timing is LoadTiming.STARTUP
+    assert identity.position is ContextPosition.SYSTEM
+    assert identity.content == "Coder."
+
+
+def test_build_plan_team_section_is_startup_system_source_when_present():
+    plan = ContextBuilder(_team(), _cfg()).build_plan("lead")
+    team = _sources_by_name(plan)["team"]
+    assert team.position is ContextPosition.SYSTEM
+    assert "## Your team" in team.content
+
+
+def test_build_plan_task_is_startup_user_context_source_when_given():
+    plan = ContextBuilder(_team(), _cfg()).build_plan("coder", task="build it", context="ctx")
+    task = _sources_by_name(plan)["task"]
+    assert task.layer is ContextLayer.TASK
+    assert task.timing is LoadTiming.STARTUP
+    assert task.position is ContextPosition.USER_CONTEXT
+    assert "build it" in task.content and "ctx" in task.content
+    assert plan.startup_user_messages() == [{"role": "user", "content": task.content}]
+
+
+def test_build_plan_omits_task_source_when_no_task():
+    plan = ContextBuilder(_team(), _cfg()).build_plan("coder")
+    assert "task" not in _sources_by_name(plan)
+    assert plan.startup_user_messages() == []
+
+
+def test_build_plan_registers_reserved_layers_as_deferred_not_loaded():
+    plan = ContextBuilder(_team(), _cfg()).build_plan("coder", task="t")
+    deferred = {s.name: s for s in plan.deferred_sources()}
+    assert set(deferred) == {"project", "memory", "tool_meta"}
+    # reserved layers carry a loader_key and contribute no content this period
+    for s in deferred.values():
+        assert s.loader_key is not None
+        assert s.content == ""
+    # ...and none of them leak into the assembled messages
+    bodies = [m["content"] for m in plan.messages()]
+    assert all("loader" not in b for b in bodies)
+
+
+def test_build_agent_system_prompt_matches_plan_system_sources():
+    builder = ContextBuilder(_team(), _cfg())
+    plan = builder.build_plan("lead")
+    agent = builder.build_agent("lead", scheduler=SCHED, plan=plan)
+    assert agent.system_prompt == plan.system_prompt()

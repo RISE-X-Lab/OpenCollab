@@ -71,6 +71,23 @@ def test_session_builds_runtime_collaborators_eagerly():
     assert isinstance(session.store, SessionStore)
 
 
+def test_session_seed_user_messages_follow_system_prompt():
+    session = _new_session(
+        seed_user_messages=[{"role": "user", "content": "Task:\nbuild it"}]
+    )
+    assert session.messages == [
+        {"role": "system", "content": "You are a fake agent."},
+        {"role": "user", "content": "Task:\nbuild it"},
+    ]
+
+
+def test_session_wires_a_default_shaper_pipeline():
+    from opencollab.application.shaping import ShaperPipeline
+
+    session = _new_session()
+    assert isinstance(session.runner.shaper, ShaperPipeline)
+
+
 def test_session_event_bus_reaches_injected_sink():
     from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 

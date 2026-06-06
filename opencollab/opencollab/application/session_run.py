@@ -7,7 +7,7 @@ from typing import Any
 
 from opencollab.application.compaction import ContextCompactionUseCase
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
-from opencollab.application.ports import EventPublisherPort, LLMPort, TracePort
+from opencollab.application.ports import EventPublisherPort, LLMPort, ShaperPort, TracePort
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
@@ -48,6 +48,7 @@ class SessionRunUseCase:
         max_budget_tokens: int = 200_000,
         max_steps: int = 100,
         deferrable_tool_names: frozenset[str] = DEFAULT_DEFERRABLE_TOOLS,
+        shaper: ShaperPort | None = None,
     ):
         self.agent = agent
         self.state = state
@@ -60,6 +61,7 @@ class SessionRunUseCase:
         self.max_budget_tokens = max_budget_tokens
         self.max_steps = max_steps
         self.deferrable_tool_names = deferrable_tool_names
+        self.shaper = shaper
         self._pending: PendingStep | None = None
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
@@ -318,8 +320,15 @@ class SessionRunUseCase:
         return self.agent.tool_schemas() or None
 
     async def call_llm(self, tools: list[dict] | None) -> Any:
+        # Shape a copy for the model's view only; ``state.messages`` stays the
+        # complete, persisted history (the shaper never mutates it).
+        messages = (
+            self.shaper.shape(self.state.messages)
+            if self.shaper is not None
+            else self.state.messages
+        )
         return await self.llm.complete(
-            messages=self.state.messages,
+            messages=messages,
             tools=tools,
             temperature=self.agent.temperature,
         )

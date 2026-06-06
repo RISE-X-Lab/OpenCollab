@@ -76,7 +76,7 @@ class ChildFactory:
     def __init__(self, child):
         self._child = child
 
-    def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None):
+    def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None, task=None, context=""):
         self._child.state.aid = aid
         return self._child
 

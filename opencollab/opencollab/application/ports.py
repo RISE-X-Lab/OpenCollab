@@ -50,6 +50,20 @@ class EventPublisherPort(Protocol):
         ...
 
 
+class ShaperPort(Protocol):
+    """Reshapes the message list just before a model call.
+
+    A shaper is a pure transform: given the current messages it returns a new
+    list (never mutating the input), applied in ``SessionRunUseCase.call_llm``
+    before ``LLMPort.complete``. It bounds what the model *sees* without
+    touching the persisted history, so the transcript stays a complete audit
+    record. Shapers compose in order via ``ShaperPipeline``.
+    """
+
+    def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        ...
+
+
 class HookPort(Protocol):
     """Runs the hooks bound to a lifecycle event.
 
@@ -99,6 +113,8 @@ class SessionFactoryPort(Protocol):
         max_steps: int = 50,
         aid: int = -1,
         scheduler: Any = None,
+        task: str | None = None,
+        context: str = "",
     ) -> Any:
         ...
 

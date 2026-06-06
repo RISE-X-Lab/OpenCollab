@@ -25,7 +25,7 @@ from opencollab.application.ports import (
 )
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.pending import PendingRowError, RowStatus
-from opencollab.domain.scheduler import DelegationTask, ReviewVerdict, SessionControlBlock, SessionTable, split_budget
+from opencollab.domain.scheduler import ReviewVerdict, SessionControlBlock, SessionTable, split_budget
 from opencollab.domain.session import SessionPhase
 from opencollab.domain.team import Topology
 
@@ -208,18 +208,18 @@ class Scheduler:
         env = await self._worktree_pool.acquire(role)
         budget = split_budget(self._max_budget_tokens, self.used_tokens)
 
-        # Build session via factory
+        # Build session via factory. The task is seeded as the agent's first
+        # user-context message (the TASK-layer ContextSource) inside the factory,
+        # so the whole startup context is assembled in one place.
         session = self._session_factory.build_spawn_session(
             role=role,
             env=env,
             budget=budget,
             aid=aid,
             scheduler=self,
+            task=task,
+            context=context,
         )
-
-        # Add task to session messages
-        delegation = DelegationTask(role=role, task=task, context=context)
-        await session.add_user_message(delegation.render())
         session.state.set_phase(SessionPhase.SCHEDULED)
 
         # Create SCB

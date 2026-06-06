@@ -53,7 +53,7 @@ class FakeFactory:
     def __init__(self, teammate):
         self._teammate = teammate
 
-    def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None):
+    def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None, task=None, context=""):
         return self._teammate
 
 

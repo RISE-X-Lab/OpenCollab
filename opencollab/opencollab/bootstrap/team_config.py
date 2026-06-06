@@ -74,11 +74,19 @@ coordination tools:
 4. **Debugging stuck loops**: if a task fails repeatedly, DO NOT retry the same
    approach. Spawn a reviewer to analyze the error with fresh eyes, or ask the
    user for clarification.
+
+5. **Reading files**: work in narrow ranges — `grep` to locate relevant lines and
+   `file_read` with an offset/limit instead of dumping whole large files.
+   Oversized tool output is truncated and wastes context.
 """
 
 DEFAULT_ROLE_PROMPT = """\
 You are a specialist agent. Complete the assigned task using the provided tools.
 Be thorough but efficient. When done, provide a clear summary of what you did.
+
+When reading files, work in narrow ranges: prefer `grep` to locate the relevant
+lines and `file_read` with an offset/limit, rather than dumping whole large
+files — oversized tool output is truncated and wastes context.
 """
 
 

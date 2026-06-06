@@ -64,11 +64,20 @@ from opencollab.application.ports import (
     SafetyPolicyFactory,
     SafetyPolicyPort,
     SessionStorePort,
+    ShaperPort,
     TracePort,
 )
 from opencollab.application.scheduler import LaunchSpec, Scheduler
 from opencollab.application.session import Session, SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
+from opencollab.application.shaping import (
+    DEFAULT_TOOL_RESULT_BUDGET,
+    AutoCompactShaper,
+    ContextCollapseShaper,
+    OldHistorySnipShaper,
+    PerToolResultBudgetShaper,
+    ShaperPipeline,
+)
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.bootstrap.team_config import (
     RoleConfig,
@@ -78,6 +87,14 @@ from opencollab.bootstrap.team_config import (
     resolve_team_file,
 )
 from opencollab.domain.agent import Agent
+from opencollab.domain.context import (
+    ContextLayer,
+    ContextPlan,
+    ContextPosition,
+    ContextSource,
+    LoadTiming,
+)
+from opencollab.domain.scheduler import DelegationTask
 from opencollab.domain.session import SessionState
 
 # ---------------------------------------------------------------------------
@@ -201,8 +218,15 @@ def build_default_tools(*, include_ask_user: bool = False) -> list[Tool]:
 # ---------------------------------------------------------------------------
 
 
-def _build_initial_state(agent: Agent) -> SessionState:
-    return SessionState(messages=[{"role": "system", "content": agent.system_prompt}])
+def _build_initial_state(
+    agent: Agent, seed_user_messages: list[dict[str, Any]] | None = None
+) -> SessionState:
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": agent.system_prompt}
+    ]
+    if seed_user_messages:
+        messages.extend(seed_user_messages)
+    return SessionState(messages=messages)
 
 
 def build_session_runtime(
@@ -222,13 +246,17 @@ def build_session_runtime(
     store: SessionStorePort | None = None,
     auto_save_callback: Callable[[], None] | None = None,
     aid: int = -1,
+    seed_user_messages: list[dict[str, Any]] | None = None,
+    shaper: ShaperPort | None = None,
 ) -> SessionRuntime:
     """Build a ``SessionRuntime`` with the same construction order
     ``Session.__init__`` used to perform inline.
 
     ``auto_save_callback`` is the bound method the facade exposes for
     autosave; we accept it as an argument so the runtime does not need to
-    know about the facade.
+    know about the facade. ``seed_user_messages`` are startup user-context
+    messages appended after the system prompt (e.g. a spawned agent's task);
+    ``shaper`` reshapes the message list before each model call.
     """
     resolved_env = env if env is not None else LocalEnvironment()
     resolved_store: SessionStorePort = store if store is not None else SessionStore()
@@ -237,7 +265,7 @@ def build_session_runtime(
     if auto_save_path and auto_save_callback is not None:
         event_bus.subscribe(AutoSaveSubscriber(auto_save_callback))
 
-    state = _build_initial_state(agent)
+    state = _build_initial_state(agent, seed_user_messages)
     state.aid = aid
 
     resolved_llm: LLMPort
@@ -269,6 +297,23 @@ def build_session_runtime(
         tracer=tracer,
         compaction_threshold=compaction_threshold,
     )
+    # Lazy-degradation pipeline (cheapest first): per-tool-result budget bounds
+    # any one result; the reactive history layers then bound the *total* view
+    # once it crosses the trigger — snip (delete old tool turns) before
+    # auto-compact (summarize; off by default until a summarizer is wired) and a
+    # reserved collapse slot. All read-time over a copy; transcript stays full.
+    resolved_shaper: ShaperPort = (
+        shaper
+        if shaper is not None
+        else ShaperPipeline(
+            (
+                PerToolResultBudgetShaper(DEFAULT_TOOL_RESULT_BUDGET),
+                OldHistorySnipShaper(estimate_tokens=estimate_messages_tokens),
+                AutoCompactShaper(estimate_tokens=estimate_messages_tokens),
+                ContextCollapseShaper(),
+            )
+        )
+    )
     runner = SessionRunUseCase(
         agent=agent,
         state=state,
@@ -279,6 +324,7 @@ def build_session_runtime(
         tracer=tracer,
         max_budget_tokens=max_budget_tokens,
         max_steps=max_steps,
+        shaper=resolved_shaper,
     )
 
     return SessionRuntime(
@@ -314,6 +360,8 @@ def build_session(
     llm_timeout: float = 600.0,
     store: SessionStorePort | None = None,
     aid: int = -1,
+    seed_user_messages: list[dict[str, Any]] | None = None,
+    shaper: ShaperPort | None = None,
 ) -> Session:
     """Self-wiring ``Session`` factory.
 
@@ -338,6 +386,8 @@ def build_session(
         store=store,
         auto_save_callback=session._auto_save,
         aid=aid,
+        seed_user_messages=seed_user_messages,
+        shaper=shaper,
     )
     Session.__init__(
         session,
@@ -434,19 +484,102 @@ class SpawnConfig:
 
 
 class ContextBuilder:
-    """Turns a role name into a ready-to-run ``Agent``.
+    """Turns a role name into a ready-to-run ``Agent`` + its context plan.
 
     Owns the single role -> ``Agent`` assembly used for both the lead and
-    spawned agents: it composes the system prompt (the role's prompt plus an
-    auto-generated, topology-aware "Your team" section) and resolves the role's
-    tool *names* to concrete Tool instances via the registry. Tool descriptions
-    are NOT injected into the prompt — those already reach the LLM as
-    function-calling schemas.
+    spawned agents. ``build_plan`` is the editorial step: it emits an ordered
+    set of ``ContextSource`` objects, each tagged with its layer / load-timing /
+    structural position. Identity and team land in the system prompt; the task
+    and (reserved) project/memory layers are user-context. ``build_agent``
+    resolves the role's tool *names* to concrete Tools and folds the plan's
+    SYSTEM sources into ``Agent.system_prompt``. Tool descriptions are NOT
+    injected into the prompt — those already reach the LLM as function-calling
+    schemas, so the tool-meta layer is a registered-but-deferred source.
     """
 
     def __init__(self, team_cfg: TeamConfig, cfg: SpawnConfig):
         self._team = team_cfg
         self._cfg = cfg
+
+    def build_plan(
+        self,
+        role_name: str,
+        *,
+        task: str | None = None,
+        context: str = "",
+    ) -> ContextPlan:
+        """Emit the ordered context sources for ``role_name``.
+
+        Startup sources (identity, team, and the task when given) carry content
+        and are assembled into messages; project/memory/tool-meta are registered
+        with a ``loader_key`` for a future lazy-loading pass but contribute no
+        content this period.
+        """
+        role = self._team.role_for(role_name)
+        sources: list[ContextSource] = [
+            ContextSource(
+                name="identity",
+                layer=ContextLayer.IDENTITY,
+                timing=LoadTiming.STARTUP,
+                position=ContextPosition.SYSTEM,
+                content=role.prompt,
+            )
+        ]
+        team_section = self._team_section(role_name, role)
+        if team_section:
+            sources.append(
+                ContextSource(
+                    name="team",
+                    layer=ContextLayer.TEAM,
+                    timing=LoadTiming.STARTUP,
+                    position=ContextPosition.SYSTEM,
+                    content=team_section,
+                )
+            )
+        # Project conventions — reserved; registered now, loaded later.
+        sources.append(
+            ContextSource(
+                name="project",
+                layer=ContextLayer.PROJECT,
+                timing=LoadTiming.ON_DEMAND,
+                position=ContextPosition.USER_CONTEXT,
+                loader_key="project",
+            )
+        )
+        if task is not None:
+            sources.append(
+                ContextSource(
+                    name="task",
+                    layer=ContextLayer.TASK,
+                    timing=LoadTiming.STARTUP,
+                    position=ContextPosition.USER_CONTEXT,
+                    content=DelegationTask(
+                        role=role_name, task=task, context=context
+                    ).render(),
+                )
+            )
+        # Recalled memory — reserved; registered now, loaded later.
+        sources.append(
+            ContextSource(
+                name="memory",
+                layer=ContextLayer.MEMORY,
+                timing=LoadTiming.ON_DEMAND,
+                position=ContextPosition.USER_CONTEXT,
+                loader_key="memory",
+            )
+        )
+        # Tool schemas already reach the model via function-calling; the layer
+        # is registered for completeness, not injected as prose.
+        sources.append(
+            ContextSource(
+                name="tool_meta",
+                layer=ContextLayer.TOOL_META,
+                timing=LoadTiming.ON_DEMAND,
+                position=ContextPosition.SYSTEM,
+                loader_key="tools",
+            )
+        )
+        return ContextPlan(sources=tuple(sources))
 
     def build_agent(
         self,
@@ -454,26 +587,24 @@ class ContextBuilder:
         *,
         scheduler: Any = None,
         interactive: bool = False,
+        plan: ContextPlan | None = None,
     ) -> Agent:
         role = self._team.role_for(role_name)
-        system_prompt = self._compose_prompt(role_name, role)
+        if plan is None:
+            plan = self.build_plan(role_name)
         tools = build_tools_for_role(
             role.tools, scheduler=scheduler, interactive=interactive
         )
         cfg = self._cfg
         return Agent(
             name=role_name,
-            system_prompt=system_prompt,
+            system_prompt=plan.system_prompt(),
             tools=tools,
             model=role.model or cfg.model,
             provider=cfg.provider,
             api_key=cfg.api_key,
             base_url=cfg.base_url,
         )
-
-    def _compose_prompt(self, role_name: str, role: RoleConfig) -> str:
-        section = self._team_section(role_name, role)
-        return f"{role.prompt}\n\n{section}" if section else role.prompt
 
     def _team_section(self, role_name: str, role: RoleConfig) -> str:
         topo = self._team.topology
@@ -505,12 +636,16 @@ def build_spawn_session(
     aid: int = -1,
     scheduler: Any = None,
     team_cfg: TeamConfig | None = None,
+    task: str | None = None,
+    context: str = "",
 ) -> Session:
     """Build the Agent + Session bundle for a spawned child agent.
 
     ``team_cfg`` defaults to the lead-only default team, so roles resolve to the
     generic spec (base tools). The safety policy is derived from the child's
-    environment.
+    environment. When ``task`` is given it is seeded as the agent's first
+    user-context message (the TASK-layer source), so no separate
+    ``add_user_message`` is needed.
     """
     safety_policy = (
         cfg.safety_policy_factory(env)
@@ -518,7 +653,8 @@ def build_spawn_session(
         else None
     )
     builder = ContextBuilder(team_cfg or default_team_config(), cfg)
-    agent = builder.build_agent(role, scheduler=scheduler, interactive=False)
+    plan = builder.build_plan(role, task=task, context=context)
+    agent = builder.build_agent(role, scheduler=scheduler, interactive=False, plan=plan)
     return build_session(
         agent=agent,
         env=env,
@@ -530,6 +666,7 @@ def build_spawn_session(
         safety_policy=safety_policy,
         llm_timeout=cfg.llm_timeout,
         aid=aid,
+        seed_user_messages=plan.startup_user_messages(),
     )
 
 
@@ -570,6 +707,8 @@ class DefaultSessionFactory:
         max_steps: int = 50,
         aid: int = -1,
         scheduler: Any = None,
+        task: str | None = None,
+        context: str = "",
     ) -> Session:
         cfg = self._cfg
         safety_policy = (
@@ -577,8 +716,9 @@ class DefaultSessionFactory:
             if cfg.safety_policy_factory is not None
             else None
         )
+        plan = self._context_builder.build_plan(role, task=task, context=context)
         agent = self._context_builder.build_agent(
-            role, scheduler=scheduler, interactive=False
+            role, scheduler=scheduler, interactive=False, plan=plan
         )
         auto_save_path = (
             agent_save_path(self._save_dir, aid, role)
@@ -597,6 +737,7 @@ class DefaultSessionFactory:
             auto_save_path=auto_save_path,
             llm_timeout=cfg.llm_timeout,
             aid=aid,
+            seed_user_messages=plan.startup_user_messages(),
         )
 
     def create_lead_session(

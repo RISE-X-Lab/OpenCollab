@@ -417,3 +417,26 @@ def test_deferred_rejected_synchronously_does_not_suspend():
     assert state.pending_events.is_empty()
     tool_msgs = [m for m in llm.calls[1]["messages"] if m.get("role") == "tool"]
     assert tool_msgs == [{"role": "tool", "tool_call_id": "s1", "content": "Permission denied: nope"}]
+
+
+def test_shaper_bounds_model_view_but_leaves_state_messages_full():
+    from opencollab.application.shaping import PerToolResultBudgetShaper
+
+    big = "x" * 5000
+    state = SessionState(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "tool", "tool_call_id": "t1", "content": big},
+        ]
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(state=state, llm=llm, shaper=PerToolResultBudgetShaper(max_chars=1000))
+
+    run(runner.run_loop())
+
+    # The model saw a bounded copy...
+    sent_tool = [m for m in llm.calls[0]["messages"] if m.get("role") == "tool"][0]
+    assert len(sent_tool["content"]) <= 1000
+    assert "re-read a narrower range" in sent_tool["content"]
+    # ...while the persisted history kept the full result.
+    assert state.messages[1]["content"] == big

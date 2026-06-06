@@ -116,6 +116,36 @@ def test_build_spawn_session_without_factory_does_not_build_safety_policy(tmp_pa
     assert session.tool_execution.safety_policy is None
 
 
+def test_build_spawn_session_seeds_task_as_first_user_message(tmp_path, monkeypatch):
+    from opencollab.bootstrap import container as session_module
+
+    monkeypatch.setattr(session_module, "LLMClient", lambda **kwargs: object())
+
+    env = LocalEnvironment(str(tmp_path))
+    cfg = SpawnConfig(
+        model="fake-model",
+        provider="fake-provider",
+        api_key="fake-key",
+        base_url=None,
+        llm_timeout=600.0,
+        tracer=None,
+        event_bus=EventBus(None),
+        permission_policy=None,
+    )
+
+    session = build_spawn_session(
+        role="coder", env=env, cfg=cfg, budget=50_000, task="build it", context="ctx"
+    )
+
+    assert session.messages[0]["role"] == "system"
+    assert session.messages[1]["role"] == "user"
+    assert "build it" in session.messages[1]["content"]
+    assert "ctx" in session.messages[1]["content"]
+    # No task -> no extra user message (lead-style per-turn seeding path).
+    bare = build_spawn_session(role="coder", env=env, cfg=cfg, budget=50_000)
+    assert [m["role"] for m in bare.messages] == ["system"]
+
+
 def test_spawn_agent_tool_uses_runtime_native_execution():
     scheduler = FakeScheduler()
     tool = SpawnAgentTool(scheduler)

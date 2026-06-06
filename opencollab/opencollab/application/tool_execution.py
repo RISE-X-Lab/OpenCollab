@@ -19,8 +19,6 @@ from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, LoopDetection, ToolPro
 
 # Loop detection (ref: opencode doom_loop detection — 3 identical calls)
 MAX_SIMILAR_CALLS = 3
-# Output truncation for tool results (ref: openclaw truncateOversizedToolResults)
-MAX_TOOL_OUTPUT_CHARS = 16_000
 
 
 @dataclass(frozen=True)
@@ -115,7 +113,8 @@ class ToolExecutionUseCase:
             await self.event_publisher.emit(self.event_factory.tool_start(tool_name, args))
 
             tool_output, tool_latency = await self.execute_tool(tool, args)
-            tool_output = self.truncate_tool_result(tool_output)
+            # The full result is persisted; a per-tool-result budget shaper caps
+            # what the model sees at call time (see application.shaping).
 
             if self.tracer:
                 self.tracer.log_step(
@@ -202,15 +201,6 @@ class ToolExecutionUseCase:
         if isinstance(ref, int):
             return ref, None
         return None, str(ref)
-
-    def truncate_tool_result(self, result: str) -> str:
-        if len(result) > MAX_TOOL_OUTPUT_CHARS:
-            return (
-                result[: MAX_TOOL_OUTPUT_CHARS // 2]
-                + f"\n\n... [{len(result) - MAX_TOOL_OUTPUT_CHARS} chars truncated] ...\n\n"
-                + result[-MAX_TOOL_OUTPUT_CHARS // 2 :]
-            )
-        return result
 
     def trace_payload(self, tool_name: str, args: dict, tool_output: str) -> dict[str, Any]:
         # Cap result in trace to 4k to keep trajectory files manageable.

@@ -5,10 +5,7 @@ from opencollab.adapters.llm import LLMResponse, Usage
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.compaction import COMPACTION_KEEP_RECENT
 from opencollab.application.event_bus import EventBus
-from opencollab.application.tool_execution import (
-    MAX_TOOL_OUTPUT_CHARS,
-    CallbackPermissionPolicy,
-)
+from opencollab.application.tool_execution import CallbackPermissionPolicy
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import load_session, snapshot_session
 from opencollab.domain.compaction import CompactResult
@@ -620,27 +617,22 @@ def test_loop_detection_skips_third_identical_tool_call():
     ]
 
 
-def test_tool_output_is_truncated_before_appending_to_messages():
-    long_result = (
-        "a" * (MAX_TOOL_OUTPUT_CHARS // 2)
-        + "b" * 123
-        + "c" * (MAX_TOOL_OUTPUT_CHARS // 2)
-    )
+def test_tool_output_is_persisted_in_full_in_messages():
+    # The full tool result is now persisted verbatim in the message history;
+    # the per-tool-result budget shaper caps only the model-facing copy at call
+    # time (see test_shaping / test_session_run_loop).
+    long_result = "a" * 25_000 + "b" * 123 + "c" * 25_000
     tool = FakeTool(result=long_result)
     fake_llm = FakeLLMClient([
         llm_response(tool_calls=[tool_call(arguments='{"value": 1}')], finish_reason="tool_calls"),
-        llm_response(content="after truncation"),
+        llm_response(content="done"),
     ])
     session = Session(agent=FakeAgent(tools=[tool]), llm=fake_llm)
 
     result = run(session.run_loop())
 
-    assert result == "after truncation"
-    tool_output = session.messages[2]["content"]
-    assert tool_output != long_result
-    assert tool_output.startswith("a" * (MAX_TOOL_OUTPUT_CHARS // 2))
-    assert "\n\n... [123 chars truncated] ...\n\n" in tool_output
-    assert tool_output.endswith("c" * (MAX_TOOL_OUTPUT_CHARS // 2))
+    assert result == "done"
+    assert session.messages[2]["content"] == long_result
 
 
 def test_event_callback_exception_is_swallowed():
