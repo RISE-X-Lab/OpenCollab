@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PROJECT_DIR="$REPO_ROOT/opencollab"
 VENV_DIR="$PROJECT_DIR/.venv"
-DEFAULT_TEAM_FILE="$REPO_ROOT/configs/team.swebench.yaml"
+DEFAULT_TEAM_FILE="$REPO_ROOT/configs/team.self.collab.yaml"
 DEFAULT_ENV_FILE="$REPO_ROOT/configs/.env"
 
 usage() {
@@ -41,7 +41,7 @@ progress rendered live (via docker exec -it). The team is driven by the
 `opencollab` CLI directly — no Python wrapper on the host.
 
 Defaults:
-  --team-file  configs/team.swebench.yaml
+  --team-file  configs/team.self.collab.yaml
   --timeout    1800 seconds
   --arch       x86_64
   --network    host
@@ -129,6 +129,16 @@ main() {
     [ -n "$output" ]        || die "--output is required"
     [ -f "$instance_file" ] || die "instance file not found: $instance_file"
     [ -f "$team_file" ]     || die "team file not found: $team_file"
+
+    # The team file is read INSIDE the container, where opencollab runs with cwd
+    # /testbed and the repo is bind-mounted at its absolute host path. A relative
+    # path would resolve to /testbed/<rel> (which doesn't exist) and silently
+    # fall back to the lead-only default team. Force an absolute, mounted path.
+    team_file="$(readlink -f "$team_file")"
+    case "$team_file" in
+        "$REPO_ROOT"/*) ;;
+        *) die "team file must live under $REPO_ROOT (it's mounted into the container): $team_file" ;;
+    esac
 
     require_cmd docker
     require_cmd timeout

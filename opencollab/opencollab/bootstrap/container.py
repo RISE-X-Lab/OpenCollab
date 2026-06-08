@@ -748,9 +748,11 @@ class DefaultSessionFactory:
         budget: int,
         aid: int = 0,
     ) -> Session:
-        """Build agent 0 with its local env, lead-role tools, and prompt.
+        """Build agent 0 with its local env, entry-role tools, and prompt.
 
-        The scheduler-bound tools are resolved against ``scheduler`` here, so the
+        The entry role comes from the team config (``team_cfg.entry``), so agent
+        0 is whichever root the team declares — not a hardcoded ``lead``. The
+        scheduler-bound tools are resolved against ``scheduler`` here, so the
         lead<->scheduler cycle is closed inside this single handshake.
         ``launch.auto_save_path`` wires the auto-save subscriber; resume/seed is
         left to ``Session.apply_launch``.
@@ -758,7 +760,7 @@ class DefaultSessionFactory:
         cfg = self._cfg
         env = LocalEnvironment(self._lead_workspace)
         agent = self._context_builder.build_agent(
-            "lead", scheduler=scheduler, interactive=self._interactive
+            self._team.entry, scheduler=scheduler, interactive=self._interactive
         )
         return build_session(
             agent=agent,
@@ -810,7 +812,7 @@ def build_scheduler(
     # Per-run folder: every agent's transcript plus a team.json manifest land
     # here. Known before the factory so spawned children inherit the same dir.
     run_dir: str | None = make_run_dir(ctx.workspace) if auto_save else None
-    lead_save_path = agent_save_path(run_dir, 0, "lead") if run_dir else None
+    lead_save_path = agent_save_path(run_dir, 0, team_cfg.entry) if run_dir else None
 
     session_factory = DefaultSessionFactory(
         SpawnConfig(

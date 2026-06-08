@@ -7,6 +7,12 @@
 # an optional `model:` override (defaults to OPENCOLLAB_MODEL), and the list of
 # tool names it may use. `topology` is a directed graph: a source role may
 # spawn/message only the roles listed for it.
+#
+# `entry` (optional) names the role built as agent 0 — the root that receives
+# the user task and spawns the rest. If omitted, the resolver prefers a role
+# named `lead`, else the first declared role. Set it explicitly when your root
+# is not called `lead` (e.g. `entry: analyst`).
+entry: lead
 
 roles:
   lead:

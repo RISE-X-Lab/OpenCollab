@@ -130,15 +130,23 @@ class _TeamFileModel(BaseModel):
     roles: dict[str, _RoleFileModel] = Field(default_factory=dict)
     topology: dict[str, list[str]] = Field(default_factory=dict)
     hooks: dict[str, list[_HookActionFileModel]] = Field(default_factory=dict)
+    # Which role is agent 0 (the root that receives the user task and spawns the
+    # rest). Optional; see ``_resolve_entry_role`` for the fallback order.
+    entry: str | None = None
 
 
 @dataclass(frozen=True)
 class TeamConfig:
-    """Resolved team: role definitions + topology, with an unknown-role fallback."""
+    """Resolved team: role definitions + topology, with an unknown-role fallback.
+
+    ``entry`` is the role the scheduler builds as agent 0 (aid=0) — the root that
+    receives the user task and spawns the rest on demand.
+    """
 
     roles: dict[str, RoleConfig] = field(default_factory=dict)
     topology: Topology = field(default_factory=Topology)
     hooks: tuple[HookSpec, ...] = ()
+    entry: str = "lead"
 
     def role_for(self, name: str) -> RoleConfig:
         """Return the declared role, or a generic fallback for ad-hoc roles."""
@@ -153,7 +161,28 @@ def default_role(name: str) -> RoleConfig:
 def default_team_config() -> TeamConfig:
     """Lead-only team with a permissive topology (the no-file default)."""
     lead = RoleConfig(prompt=DEFAULT_LEAD_PROMPT, model=None, tools=list(LEAD_TOOL_NAMES))
-    return TeamConfig(roles={"lead": lead}, topology=Topology(allow_all=True))
+    return TeamConfig(roles={"lead": lead}, topology=Topology(allow_all=True), entry="lead")
+
+
+def _resolve_entry_role(explicit: str | None, roles: dict[str, RoleConfig]) -> str:
+    """Pick the entry role (agent 0).
+
+    Order: an explicit ``entry:`` field > a role literally named ``lead``
+    (backward compatibility with the old hardcoded default) > the first declared
+    role. An explicit ``entry:`` that names no declared role fails fast.
+    """
+    if explicit is not None:
+        if explicit not in roles:
+            raise ValueError(
+                f"entry role '{explicit}' is not declared in roles "
+                f"({sorted(roles)})."
+            )
+        return explicit
+    if "lead" in roles:
+        return "lead"
+    if roles:
+        return next(iter(roles))
+    return "lead"
 
 
 def _candidate_team_paths(workspace: str | None) -> list[Path]:
@@ -224,6 +253,7 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
         roles=roles,
         topology=Topology(edges=edges, allow_all=False),
         hooks=_build_hook_specs(model.hooks),
+        entry=_resolve_entry_role(model.entry, roles),
     )
 
 

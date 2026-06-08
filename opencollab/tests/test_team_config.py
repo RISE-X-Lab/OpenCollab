@@ -73,6 +73,68 @@ def test_unknown_role_falls_back_to_generic_spec(tmp_path, monkeypatch):
     assert fallback.tools == ["bash", "file_read", "file_write", "grep"]
 
 
+def test_default_team_entry_is_lead(monkeypatch):
+    monkeypatch.delenv("OPENCOLLAB_TEAM_FILE", raising=False)
+    assert default_team_config().entry == "lead"
+
+
+def test_entry_prefers_lead_role_when_unset(tmp_path, monkeypatch):
+    # TEAM_YAML declares lead + coder with no explicit entry → lead wins.
+    _write_team(tmp_path, monkeypatch)
+    assert load_team_config(str(tmp_path)).entry == "lead"
+
+
+def test_entry_falls_back_to_first_role_without_lead(tmp_path, monkeypatch):
+    yaml_text = """\
+roles:
+  analyst:
+    tools: [bash, spawn_agent]
+    prompt: |
+      Analyst prompt.
+  coder:
+    tools: [bash, file_write]
+    prompt: |
+      Coder prompt.
+topology:
+  analyst: [coder]
+"""
+    _write_team(tmp_path, monkeypatch, yaml_text=yaml_text)
+    assert load_team_config(str(tmp_path)).entry == "analyst"
+
+
+def test_explicit_entry_is_respected(tmp_path, monkeypatch):
+    yaml_text = """\
+entry: coder
+roles:
+  lead:
+    tools: [bash, spawn_agent]
+    prompt: |
+      Lead prompt.
+  coder:
+    tools: [bash, file_write]
+    prompt: |
+      Coder prompt.
+topology:
+  lead: [coder]
+"""
+    _write_team(tmp_path, monkeypatch, yaml_text=yaml_text)
+    assert load_team_config(str(tmp_path)).entry == "coder"
+
+
+def test_explicit_entry_naming_undeclared_role_raises(tmp_path, monkeypatch):
+    yaml_text = """\
+entry: nope
+roles:
+  lead:
+    tools: [bash]
+    prompt: |
+      Lead prompt.
+"""
+    _write_team(tmp_path, monkeypatch, yaml_text=yaml_text)
+    with pytest.raises(ValueError, match="entry role 'nope'"):
+        load_team_config(str(tmp_path))
+
+
 def test_missing_prompt_and_prompt_file_raises(tmp_path, monkeypatch):
     bad = """\
 roles:

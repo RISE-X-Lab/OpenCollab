@@ -7,7 +7,7 @@ from opencollab.bootstrap.config import build_config, load_config_env
 
 
 WORKSPACE = Path(__file__).resolve().parents[1]
-TEST_MODEL_NAME = "deepseek-v4-pro"
+TEST_MODEL_NAME = "kimi-k2.6"
 
 
 def request_qwen36_plus(prompt):
