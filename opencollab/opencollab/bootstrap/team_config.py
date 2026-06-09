@@ -30,7 +30,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from opencollab.domain.hooks import HOOK_EVENT_NAMES, HookSpec
 from opencollab.domain.team import Topology
 
-# Canonical tool bundles, referenced by name (see container.TOOL_REGISTRY).
+# Canonical tool bundles, referenced by name (see bootstrap.tool_registry).
 BASE_TOOL_NAMES: tuple[str, ...] = ("bash", "file_read", "file_write", "grep")
 LEAD_TOOL_NAMES: tuple[str, ...] = (
     *BASE_TOOL_NAMES,

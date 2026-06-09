@@ -1,28 +1,21 @@
 """Composition root for OpenCollab.
 
-Single file that knows how to wire every concrete adapter into the
-application use cases. The CLI entry point (agent 0) and the eval harness
-build their session/scheduler objects through the factory functions exposed
-here.
+Wires concrete adapters into the application use cases. This module owns the
+session-construction *core* — the only place ``LLMClient`` is instantiated, so
+``build_session_runtime`` and its model-client wiring live here together (tests
+monkeypatch ``container.LLMClient`` and rely on that). The rest of the
+composition root is split into focused siblings and re-exported here so
+``from opencollab.bootstrap.container import X`` keeps resolving every name:
 
-Contents (top to bottom):
-- ``RuntimeContext`` + ``build_runtime_context``: per-invocation context
-  (workspace, config, tracer, UI hooks).
-- ``build_workspace_safety_policy``: derives a sandbox interceptor from
-  an Environment instance.
-- ``TOOL_REGISTRY`` + ``build_tools_for_role`` + ``build_default_tools``:
-  resolve tool *names* (from the team config) to concrete Tool instances.
-- ``build_session_runtime``: the actual collaborator construction order
-  (event bus, state, store, autosave, LLM, tool execution, compactor,
-  run-loop use case).
-- ``build_session`` / ``snapshot_session``: self-wiring application
-  ``Session`` factories.
-- ``ContextBuilder``: turns a role name into an ``Agent`` (topology-aware
-  system prompt + resolved tools), shared by the lead and spawned agents.
-- ``SpawnConfig`` + ``build_spawn_session`` + ``DefaultSessionFactory``:
-  spawn-session wiring used by the scheduler.
-- ``build_scheduler``: the high-level CLI entry point — loads the team config,
-  builds agent 0 (the lead), and the Scheduler that runs and spawns children.
+- ``tool_registry``      — tool-name -> Tool resolution + curated name sets.
+- ``context_builder``    — ``SpawnConfig`` + ``ContextBuilder`` (role -> Agent).
+- ``session_factory``    — ``build_spawn_session`` / ``DefaultSessionFactory`` +
+                           run-folder transcript helpers.
+- ``scheduler_factory``  — ``build_scheduler`` (the CLI/eval entry point).
+
+``session_factory`` and ``scheduler_factory`` import back from this module, so
+they are re-exported lazily via module ``__getattr__`` (PEP 562) to keep import
+order acyclic regardless of which module is imported first.
 """
 
 from __future__ import annotations
@@ -31,25 +24,13 @@ import copy
 import os
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
-from opencollab.adapters.hooks import ShellHookRunner
 from opencollab.adapters.llm import LLMClient, estimate_messages_tokens
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.storage import SessionStore
-from opencollab.adapters.tools.base import Tool
-from opencollab.adapters.tools.bash import BashTool
-from opencollab.adapters.tools.edit import ApplyPatchTool
-from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
-from opencollab.adapters.tools.git_status import GitDiffTool
-from opencollab.adapters.tools.human import AskUserTool
-from opencollab.adapters.tools.message import MessageAgentTool, TeamStatusTool
-from opencollab.adapters.tools.run_tests import RunTestsTool
-from opencollab.adapters.tools.spawn import SpawnAgentTool, SpawnWithReviewTool
 from opencollab.adapters.trace import Tracer
-from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.compaction import (
     DEFAULT_COMPACTION_THRESHOLD,
@@ -57,18 +38,15 @@ from opencollab.application.compaction import (
 )
 from opencollab.application.compaction_summary import ReadTimeSummarizer
 from opencollab.application.event_bus import EventBus
-from opencollab.application.hooks import HookEventSubscriber
 from opencollab.application.ports import (
     EventPublisherPort,
     LLMPort,
     PermissionPort,
-    SafetyPolicyFactory,
     SafetyPolicyPort,
     SessionStorePort,
     ShaperPort,
     TracePort,
 )
-from opencollab.application.scheduler import LaunchSpec, Scheduler
 from opencollab.application.session import Session, SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.shaping import (
@@ -82,23 +60,25 @@ from opencollab.application.shaping import (
     history_trigger_target,
 )
 from opencollab.application.tool_execution import ToolExecutionUseCase
-from opencollab.bootstrap.team_config import (
-    RoleConfig,
-    TeamConfig,
-    default_team_config,
-    load_team_config,
-    resolve_team_file,
+from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
+from opencollab.bootstrap.tool_registry import (
+    COMPACTABLE_TOOL_NAMES,
+    build_default_tools,
+    build_tools_for_role,
 )
 from opencollab.domain.agent import Agent
-from opencollab.domain.context import (
-    ContextLayer,
-    ContextPlan,
-    ContextPosition,
-    ContextSource,
-    LoadTiming,
-)
-from opencollab.domain.scheduler import DelegationTask
 from opencollab.domain.session import SessionState
+
+if TYPE_CHECKING:
+    # Re-exported at runtime via ``__getattr__`` (see bottom of module); declared
+    # here so static tooling sees them as defined names in ``__all__``.
+    from opencollab.bootstrap.scheduler_factory import build_scheduler
+    from opencollab.bootstrap.session_factory import (
+        DefaultSessionFactory,
+        agent_save_path,
+        build_spawn_session,
+        make_run_dir,
+    )
 
 # ---------------------------------------------------------------------------
 # Runtime context
@@ -138,7 +118,7 @@ def build_runtime_context(
 
 
 # ---------------------------------------------------------------------------
-# Safety + tools
+# Safety
 # ---------------------------------------------------------------------------
 
 
@@ -148,83 +128,8 @@ def build_workspace_safety_policy(env: Any) -> SafetyPolicyPort | None:
     return SandboxInterceptor(env.workspace)
 
 
-# Tool name -> factory. Stateless tools need nothing; scheduler-bound tools take
-# the scheduler so an agent can spawn/message via the SchedulerPort.
-STATELESS_TOOL_FACTORIES: dict[str, Callable[[], Tool]] = {
-    "bash": BashTool,
-    "file_read": FileReadTool,
-    "file_write": FileWriteTool,
-    "apply_patch": ApplyPatchTool,
-    "run_tests": RunTestsTool,
-    "git_diff": GitDiffTool,
-    "grep": GrepTool,
-    "ask_user": AskUserTool,
-}
-SCHEDULER_TOOL_FACTORIES: dict[str, Callable[[Any], Tool]] = {
-    "spawn_agent": SpawnAgentTool,
-    "spawn_with_review": SpawnWithReviewTool,
-    "message_agent": MessageAgentTool,
-    "team_status": TeamStatusTool,
-}
-KNOWN_TOOL_NAMES: frozenset[str] = frozenset(STATELESS_TOOL_FACTORIES) | frozenset(SCHEDULER_TOOL_FACTORIES)
-# Tools that let a role act on teammates — used to decide whether to render the
-# topology-aware "Your team" prompt section.
-COORDINATION_TOOL_NAMES: frozenset[str] = frozenset(SCHEDULER_TOOL_FACTORIES)
-# Bulky, reconstructible read-only tool outputs whose OLD results may be cleared
-# in place by ``ToolOutputClearShaper``. Intersected with the real registry so a
-# renamed/removed tool drops out automatically (driven from real names, not a
-# hardcoded library set). Edits/writes and coordination tools are excluded.
-COMPACTABLE_TOOL_NAMES: frozenset[str] = (
-    frozenset({"bash", "file_read", "grep", "git_diff", "run_tests"}) & KNOWN_TOOL_NAMES
-)
-
-
-def build_tools_for_role(
-    tool_names: list[str],
-    *,
-    scheduler: Any = None,
-    interactive: bool = False,
-) -> list[Tool]:
-    """Resolve tool names to Tool instances.
-
-    ``ask_user`` is dropped in non-interactive (headless) mode. Scheduler-bound
-    tools require a ``scheduler``. Unknown names raise — fail fast at startup.
-    """
-    tools: list[Tool] = []
-    for name in tool_names:
-        if name == "ask_user" and not interactive:
-            continue
-        if name in STATELESS_TOOL_FACTORIES:
-            tools.append(STATELESS_TOOL_FACTORIES[name]())
-        elif name in SCHEDULER_TOOL_FACTORIES:
-            if scheduler is None:
-                raise ValueError(
-                    f"Tool '{name}' requires a scheduler but none was provided."
-                )
-            tools.append(SCHEDULER_TOOL_FACTORIES[name](scheduler))
-        else:
-            raise ValueError(
-                f"Unknown tool '{name}' in team config. "
-                f"Known tools: {sorted(KNOWN_TOOL_NAMES)}"
-            )
-    return tools
-
-
-def build_default_tools(*, include_ask_user: bool = False) -> list[Tool]:
-    """Canonical tool bundle: bash, file_read, file_write, grep, [ask_user]."""
-    tools: list[Tool] = [
-        BashTool(),
-        FileReadTool(),
-        FileWriteTool(),
-        GrepTool(),
-    ]
-    if include_ask_user:
-        tools.append(AskUserTool())
-    return tools
-
-
 # ---------------------------------------------------------------------------
-# Session runtime construction
+# Session runtime construction (the LLMClient-bound core)
 # ---------------------------------------------------------------------------
 
 
@@ -492,435 +397,31 @@ def snapshot_session(session: Session) -> Session:
 
 
 # ---------------------------------------------------------------------------
-# Spawn session wiring
+# Lazy re-exports of the higher-level factories.
+#
+# ``session_factory`` and ``scheduler_factory`` import names from THIS module,
+# so importing them eagerly here would create an import cycle. PEP 562 module
+# ``__getattr__`` defers their import until first attribute access, by which
+# point this module is fully initialised — keeping load order acyclic no matter
+# which module is imported first.
 # ---------------------------------------------------------------------------
 
-
-def agent_save_path(save_dir: str, aid: int, role: str) -> str:
-    """Per-agent transcript path within a run folder: ``agent_<aid>_<role>.json``."""
-    return os.path.join(save_dir, f"agent_{aid}_{role}.json")
-
-
-def make_run_dir(workspace: str) -> str:
-    """A timestamped run folder under ``<workspace>/.opencollab/sessions``.
-
-    A 4-char suffix is appended if a same-second folder already exists, so two
-    runs started within the same second do not collide.
-    """
-    base = os.path.join(workspace, ".opencollab", "sessions")
-    run_dir = os.path.join(base, datetime.now().strftime("%Y-%m-%dT%H-%M-%S"))
-    if os.path.exists(run_dir):
-        run_dir = f"{run_dir}-{uuid.uuid4().hex[:4]}"
-    return run_dir
+_SESSION_FACTORY_EXPORTS = frozenset(
+    {"DefaultSessionFactory", "agent_save_path", "build_spawn_session", "make_run_dir"}
+)
+_SCHEDULER_FACTORY_EXPORTS = frozenset({"build_scheduler"})
 
 
-@dataclass
-class SpawnConfig:
-    """Shared LLM/runtime config inherited by every spawned agent session."""
+def __getattr__(name: str) -> Any:
+    if name in _SESSION_FACTORY_EXPORTS:
+        from opencollab.bootstrap import session_factory
 
-    model: str
-    provider: str
-    api_key: str | None
-    base_url: str | None
-    llm_timeout: float
-    tracer: Tracer | None
-    event_bus: EventBus
-    permission_policy: PermissionPort | None
-    safety_policy_factory: SafetyPolicyFactory | None = None
+        return getattr(session_factory, name)
+    if name in _SCHEDULER_FACTORY_EXPORTS:
+        from opencollab.bootstrap import scheduler_factory
 
-
-class ContextBuilder:
-    """Turns a role name into a ready-to-run ``Agent`` + its context plan.
-
-    Owns the single role -> ``Agent`` assembly used for both the lead and
-    spawned agents. ``build_plan`` is the editorial step: it emits an ordered
-    set of ``ContextSource`` objects, each tagged with its layer / load-timing /
-    structural position. Identity and team land in the system prompt; the task
-    and (reserved) project/memory layers are user-context. ``build_agent``
-    resolves the role's tool *names* to concrete Tools and folds the plan's
-    SYSTEM sources into ``Agent.system_prompt``. Tool descriptions are NOT
-    injected into the prompt — those already reach the LLM as function-calling
-    schemas, so the tool-meta layer is a registered-but-deferred source.
-    """
-
-    def __init__(self, team_cfg: TeamConfig, cfg: SpawnConfig):
-        self._team = team_cfg
-        self._cfg = cfg
-
-    def build_plan(
-        self,
-        role_name: str,
-        *,
-        task: str | None = None,
-        context: str = "",
-    ) -> ContextPlan:
-        """Emit the ordered context sources for ``role_name``.
-
-        Startup sources (identity, team, and the task when given) carry content
-        and are assembled into messages; project/memory/tool-meta are registered
-        with a ``loader_key`` for a future lazy-loading pass but contribute no
-        content this period.
-        """
-        role = self._team.role_for(role_name)
-        sources: list[ContextSource] = [
-            ContextSource(
-                name="identity",
-                layer=ContextLayer.IDENTITY,
-                timing=LoadTiming.STARTUP,
-                position=ContextPosition.SYSTEM,
-                content=role.prompt,
-            )
-        ]
-        team_section = self._team_section(role_name, role)
-        if team_section:
-            sources.append(
-                ContextSource(
-                    name="team",
-                    layer=ContextLayer.TEAM,
-                    timing=LoadTiming.STARTUP,
-                    position=ContextPosition.SYSTEM,
-                    content=team_section,
-                )
-            )
-        # Project conventions — reserved; registered now, loaded later.
-        sources.append(
-            ContextSource(
-                name="project",
-                layer=ContextLayer.PROJECT,
-                timing=LoadTiming.ON_DEMAND,
-                position=ContextPosition.USER_CONTEXT,
-                loader_key="project",
-            )
-        )
-        if task is not None:
-            sources.append(
-                ContextSource(
-                    name="task",
-                    layer=ContextLayer.TASK,
-                    timing=LoadTiming.STARTUP,
-                    position=ContextPosition.USER_CONTEXT,
-                    content=DelegationTask(
-                        role=role_name, task=task, context=context
-                    ).render(),
-                )
-            )
-        # Recalled memory — reserved; registered now, loaded later.
-        sources.append(
-            ContextSource(
-                name="memory",
-                layer=ContextLayer.MEMORY,
-                timing=LoadTiming.ON_DEMAND,
-                position=ContextPosition.USER_CONTEXT,
-                loader_key="memory",
-            )
-        )
-        # Tool schemas already reach the model via function-calling; the layer
-        # is registered for completeness, not injected as prose.
-        sources.append(
-            ContextSource(
-                name="tool_meta",
-                layer=ContextLayer.TOOL_META,
-                timing=LoadTiming.ON_DEMAND,
-                position=ContextPosition.SYSTEM,
-                loader_key="tools",
-            )
-        )
-        return ContextPlan(sources=tuple(sources))
-
-    def build_agent(
-        self,
-        role_name: str,
-        *,
-        scheduler: Any = None,
-        interactive: bool = False,
-        plan: ContextPlan | None = None,
-    ) -> Agent:
-        role = self._team.role_for(role_name)
-        if plan is None:
-            plan = self.build_plan(role_name)
-        tools = build_tools_for_role(
-            role.tools, scheduler=scheduler, interactive=interactive
-        )
-        cfg = self._cfg
-        return Agent(
-            name=role_name,
-            system_prompt=plan.system_prompt(),
-            tools=tools,
-            model=role.model or cfg.model,
-            provider=cfg.provider,
-            api_key=cfg.api_key,
-            base_url=cfg.base_url,
-        )
-
-    def _team_section(self, role_name: str, role: RoleConfig) -> str:
-        topo = self._team.topology
-        # The permissive default carries generic guidance in the base prompt;
-        # the dynamic section only adds value for an explicit topology graph.
-        if topo.allow_all:
-            return ""
-        targets = sorted(topo.edges.get(role_name, frozenset()))
-        if not targets or not (set(role.tools) & COORDINATION_TOOL_NAMES):
-            return ""
-        lines = ["## Your team", "", "Roles you may spawn or message:"]
-        lines += [f"- {t}" for t in targets]
-        if {"team_status", "message_agent"} & set(role.tools):
-            lines += [
-                "",
-                "Use `team_status` to list live agents (with their ids) and "
-                "`message_agent` to send an async message to one.",
-            ]
-        return "\n".join(lines)
-
-
-def build_spawn_session(
-    *,
-    role: str,
-    env: Environment,
-    cfg: SpawnConfig,
-    budget: int,
-    max_steps: int = 50,
-    aid: int = -1,
-    scheduler: Any = None,
-    team_cfg: TeamConfig | None = None,
-    task: str | None = None,
-    context: str = "",
-) -> Session:
-    """Build the Agent + Session bundle for a spawned child agent.
-
-    ``team_cfg`` defaults to the lead-only default team, so roles resolve to the
-    generic spec (base tools). The safety policy is derived from the child's
-    environment. When ``task`` is given it is seeded as the agent's first
-    user-context message (the TASK-layer source), so no separate
-    ``add_user_message`` is needed.
-    """
-    safety_policy = (
-        cfg.safety_policy_factory(env)
-        if cfg.safety_policy_factory is not None
-        else None
-    )
-    builder = ContextBuilder(team_cfg or default_team_config(), cfg)
-    plan = builder.build_plan(role, task=task, context=context)
-    agent = builder.build_agent(role, scheduler=scheduler, interactive=False, plan=plan)
-    return build_session(
-        agent=agent,
-        env=env,
-        tracer=cfg.tracer,
-        max_budget_tokens=budget,
-        max_steps=max_steps,
-        event_sink=cfg.event_bus,
-        permission_policy=cfg.permission_policy,
-        safety_policy=safety_policy,
-        llm_timeout=cfg.llm_timeout,
-        aid=aid,
-        seed_user_messages=plan.startup_user_messages(),
-    )
-
-
-class DefaultSessionFactory:
-    """Default ``SessionFactoryPort`` implementation used by the scheduler.
-
-    Holds the shared ``SpawnConfig`` (LLM config inherited by every session),
-    the resolved ``TeamConfig`` (role prompts/tools + topology), and the
-    lead-only composition bits (``lead_workspace`` for the local environment and
-    ``interactive`` for the ask-user tool). All role -> Agent assembly is
-    delegated to a single ``ContextBuilder``.
-    """
-
-    def __init__(
-        self,
-        cfg: SpawnConfig,
-        *,
-        team_cfg: TeamConfig | None = None,
-        lead_workspace: str | None = None,
-        interactive: bool = False,
-        save_dir: str | None = None,
-    ):
-        self._cfg = cfg
-        self._team = team_cfg or default_team_config()
-        self._context_builder = ContextBuilder(self._team, cfg)
-        self._lead_workspace = lead_workspace
-        self._interactive = interactive
-        # Run folder where every agent's transcript is persisted. When set,
-        # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
-        self._save_dir = save_dir
-
-    def build_spawn_session(
-        self,
-        *,
-        role: str,
-        env: Any,
-        budget: int,
-        max_steps: int = 50,
-        aid: int = -1,
-        scheduler: Any = None,
-        task: str | None = None,
-        context: str = "",
-    ) -> Session:
-        cfg = self._cfg
-        safety_policy = (
-            cfg.safety_policy_factory(env)
-            if cfg.safety_policy_factory is not None
-            else None
-        )
-        plan = self._context_builder.build_plan(role, task=task, context=context)
-        agent = self._context_builder.build_agent(
-            role, scheduler=scheduler, interactive=False, plan=plan
-        )
-        auto_save_path = (
-            agent_save_path(self._save_dir, aid, role)
-            if self._save_dir
-            else None
-        )
-        return build_session(
-            agent=agent,
-            env=env,
-            tracer=cfg.tracer,
-            max_budget_tokens=budget,
-            max_steps=max_steps,
-            event_sink=cfg.event_bus,
-            permission_policy=cfg.permission_policy,
-            safety_policy=safety_policy,
-            auto_save_path=auto_save_path,
-            llm_timeout=cfg.llm_timeout,
-            aid=aid,
-            seed_user_messages=plan.startup_user_messages(),
-        )
-
-    def create_lead_session(
-        self,
-        *,
-        scheduler: Any,
-        launch: LaunchSpec,
-        budget: int,
-        aid: int = 0,
-    ) -> Session:
-        """Build agent 0 with its local env, entry-role tools, and prompt.
-
-        The entry role comes from the team config (``team_cfg.entry``), so agent
-        0 is whichever root the team declares — not a hardcoded ``lead``. The
-        scheduler-bound tools are resolved against ``scheduler`` here, so the
-        lead<->scheduler cycle is closed inside this single handshake.
-        ``launch.auto_save_path`` wires the auto-save subscriber; resume/seed is
-        left to ``Session.apply_launch``.
-        """
-        cfg = self._cfg
-        env = LocalEnvironment(self._lead_workspace)
-        agent = self._context_builder.build_agent(
-            self._team.entry, scheduler=scheduler, interactive=self._interactive
-        )
-        return build_session(
-            agent=agent,
-            env=env,
-            tracer=cfg.tracer,
-            max_budget_tokens=budget,
-            event_sink=cfg.event_bus,
-            permission_policy=cfg.permission_policy,
-            safety_policy=build_workspace_safety_policy(env),
-            auto_save_path=launch.auto_save_path,
-            llm_timeout=cfg.llm_timeout,
-            aid=aid,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Scheduler factory (the CLI entry point)
-# ---------------------------------------------------------------------------
-
-
-def build_scheduler(
-    ctx: RuntimeContext,
-    *,
-    use_worktrees: bool,
-    interactive: bool,
-    session_file: str | None = None,
-    auto_save: bool = True,
-    enable_hooks: bool = True,
-) -> Scheduler:
-    """Build the Scheduler and let it create agent 0 (the init process).
-
-    Loads the team config (roles/tools/topology) from the workspace, wires
-    dependencies, and hands the scheduler a ``LaunchSpec``;
-    ``scheduler.create_init_process`` builds agent 0 (aid=0) through the factory
-    and applies the launch spec. ``session_file`` resumes agent 0's history;
-    ``auto_save`` writes a structured-JSON transcript per agent
-    (``agent_<aid>_<role>.json``) plus a ``team.json`` manifest under a
-    timestamped run folder in ``<workspace>/.opencollab/sessions``.
-
-    When ``enable_hooks`` and the team config declares ``hooks``, a
-    ``HookEventSubscriber`` is attached to the team event bus so configured
-    shell commands fire on lifecycle events. Disable (e.g. under eval) to keep
-    runs free of hook side effects.
-    """
-    cfg = ctx.config
-    team_cfg = load_team_config(ctx.workspace)
-    event_bus = EventBus(ctx.event_sink)
-
-    # Per-run folder: every agent's transcript plus a team.json manifest land
-    # here. Known before the factory so spawned children inherit the same dir.
-    run_dir: str | None = make_run_dir(ctx.workspace) if auto_save else None
-    lead_save_path = agent_save_path(run_dir, 0, team_cfg.entry) if run_dir else None
-
-    session_factory = DefaultSessionFactory(
-        SpawnConfig(
-            model=cfg["model"],
-            provider=cfg["provider"],
-            api_key=cfg["api_key"],
-            base_url=cfg["base_url"],
-            llm_timeout=cfg.get("llm_timeout", 600.0),
-            tracer=ctx.tracer,
-            event_bus=event_bus,
-            permission_policy=ctx.permission_policy,
-            safety_policy_factory=build_workspace_safety_policy,
-        ),
-        team_cfg=team_cfg,
-        lead_workspace=ctx.workspace,
-        interactive=interactive,
-        save_dir=run_dir,
-    )
-    worktree_pool = WorktreePool(ctx.workspace, use_worktrees=use_worktrees)
-
-    scheduler = Scheduler(
-        session_factory=session_factory,
-        worktree_pool=worktree_pool,
-        event_sink=event_bus,
-        tracer=ctx.tracer,
-        max_budget_tokens=cfg["budget"],
-        permission_policy=ctx.permission_policy,
-        topology=team_cfg.topology,
-        roles=tuple(team_cfg.roles),
-    )
-
-    # Attach hooks after the scheduler exists so the runner can hold its handle
-    # (the coordination-ready seam for a future ``agent`` executor). Subscribing
-    # appends to the same bus, leaving the TUI sink at target[0] untouched.
-    if enable_hooks and team_cfg.hooks:
-        runner = ShellHookRunner(team_cfg.hooks, scheduler=scheduler)
-        event_bus.subscribe(HookEventSubscriber(runner))
-
-    # Persist a team.json manifest from the live roster on every roster change.
-    # Wired before create_init_process so agent 0 is captured on registration.
-    if run_dir is not None:
-        store = SessionStore()
-        manifest_path = os.path.join(run_dir, "team.json")
-        team_file = resolve_team_file(ctx.workspace)
-        run_id = os.path.basename(run_dir)
-        started_at = datetime.now(timezone.utc).isoformat()
-
-        def _write_manifest() -> None:
-            store.save_manifest(manifest_path, {
-                "run_id": run_id,
-                "started_at": started_at,
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-                "team_file": str(team_file) if team_file else None,
-                "agents": scheduler.team_snapshot(),
-            })
-
-        scheduler.set_manifest_writer(_write_manifest)
-
-    scheduler.create_init_process(
-        LaunchSpec(session_file=session_file, auto_save_path=lead_save_path)
-    )
-    return scheduler
+        return getattr(scheduler_factory, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [
