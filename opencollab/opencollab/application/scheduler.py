@@ -40,6 +40,11 @@ from opencollab.domain.team import Topology
 
 logger = logging.getLogger(__name__)
 
+# Worktree diffs appended to a child's result are bounded so one huge diff
+# can't blow up the parent's context; oversize diffs keep head + tail.
+WORKTREE_DIFF_MAX_CHARS = 12_000
+WORKTREE_DIFF_KEEP_CHARS = 6_000  # kept from each end when truncating
+
 
 class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
     """Passive scheduler that tracks SCBs and runs agents in parallel.
@@ -200,11 +205,11 @@ class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
         diff = await get_diff()
         if not diff:
             return result
-        if len(diff) > 12_000:
+        if len(diff) > WORKTREE_DIFF_MAX_CHARS:
             diff = (
-                diff[:6_000]
-                + f"\n\n... [{len(diff) - 12_000} chars truncated] ...\n\n"
-                + diff[-6_000:]
+                diff[:WORKTREE_DIFF_KEEP_CHARS]
+                + f"\n\n... [{len(diff) - WORKTREE_DIFF_MAX_CHARS} chars truncated] ...\n\n"
+                + diff[-WORKTREE_DIFF_KEEP_CHARS:]
             )
         return result + f"\n\n[Changes made in worktree]\n```diff\n{diff}\n```"
 
