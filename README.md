@@ -11,8 +11,8 @@ team, and headless evaluation modes.
   See `configs/README.md`.
 - `scripts/` contains repository-level launcher and benchmark helper scripts.
   See `scripts/README.md`.
-- `tools/swe_bench/` contains the Docker-based SWE-bench runner. See
-  `tools/swe_bench/README.md`.
+- `swebench/` contains the Docker-based SWE-bench runner. See
+  `swebench/README.md`.
 - `docs/` contains project documentation and architecture notes.
 
 ## Start Here

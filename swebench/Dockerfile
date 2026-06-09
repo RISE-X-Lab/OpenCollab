@@ -21,7 +21,7 @@ COPY opencollab /app/opencollab
 RUN pip install --no-cache-dir -e "/app/opencollab[swebench]"
 
 # Runner scripts
-RUN mkdir -p /app/tools/swe_bench
-COPY tools/swe_bench/run_swe_docker.py /app/tools/swe_bench/run_swe_docker.py
+RUN mkdir -p /app/swebench
+COPY swebench/run_swe_docker.py /app/swebench/run_swe_docker.py
 
-ENTRYPOINT ["python", "/app/tools/swe_bench/run_swe_docker.py"]
+ENTRYPOINT ["python", "/app/swebench/run_swe_docker.py"]

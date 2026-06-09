@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 # Allow config loading and package imports relative to this script.
-_repo_root = Path(__file__).resolve().parents[2]
+_repo_root = Path(__file__).resolve().parents[1]
 
 # Allow running without editable install: repo_root/opencollab is the package root.
 _pkg_root = _repo_root / "opencollab"

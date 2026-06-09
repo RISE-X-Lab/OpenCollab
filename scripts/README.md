@@ -99,14 +99,14 @@ scripts/run_swe_docker.sh --instance_ids django__django-15400
 The implementation lives under:
 
 ```text
-tools/swe_bench/
+swebench/
 ```
 
-The script builds `tools/swe_bench/Dockerfile` with the repository root as the
+The script builds `swebench/Dockerfile` with the repository root as the
 Docker build context, then runs the resulting `swe-collab` image with mounted
 `configs/`, `logs/`, `swe_workdir/`, and the Docker socket.
 
-See `tools/swe_bench/README.md` for runner implementation details.
+See `swebench/README.md` for runner implementation details.
 
 ## SWE-bench team eval (`run_team_batch.sh` → `start_team_run.sh`)
 

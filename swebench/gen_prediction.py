@@ -19,7 +19,7 @@ Grade the result with the official harness, e.g.::
 
 Run with the OpenCollab venv (it must import ``opencollab``)::
 
-    opencollab/.venv/bin/python tools/swe_bench/gen_prediction.py \
+    opencollab/.venv/bin/python swebench/gen_prediction.py \
         --instance-file /home/xuzhenhua/swebench-eval/instance_sympy-20590.json \
         --output /home/xuzhenhua/swebench-eval/predictions-opencollab.jsonl
 """
@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 # Make the opencollab package importable without an editable install.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
+_REPO_ROOT = Path(__file__).resolve().parents[1]
 _PKG_ROOT = _REPO_ROOT / "opencollab"
 if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))

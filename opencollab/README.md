@@ -60,7 +60,7 @@ The eval command reads JSONL tasks. Each line describes one task:
 The harness writes `results.jsonl` and trajectory logs under the output
 directory.
 
-Use the Docker-based SWE-bench runner in `tools/swe_bench/` for benchmark
+Use the Docker-based SWE-bench runner in `swebench/` for benchmark
 container orchestration.
 
 ## Package Layout

@@ -10,7 +10,7 @@ Run it from the repository root through the script wrapper:
 scripts/run_swe_docker.sh --instance_ids django__django-15400
 ```
 
-The wrapper builds the `swe-collab` image from `tools/swe_bench/Dockerfile`
+The wrapper builds the `swe-collab` image from `swebench/Dockerfile`
 with the repository root as the Docker build context, then starts the runner
 container.
 

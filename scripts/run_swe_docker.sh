@@ -5,7 +5,7 @@ set -e
 IMAGE_NAME="swe-collab"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-DOCKERFILE="$REPO_ROOT/tools/swe_bench/Dockerfile"
+DOCKERFILE="$REPO_ROOT/swebench/Dockerfile"
 
 # Build image if needed
 if ! docker image inspect "$IMAGE_NAME" >/dev/null 2>&1; then
