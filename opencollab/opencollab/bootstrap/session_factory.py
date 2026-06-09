@@ -1,25 +1,40 @@
 """Spawn-session wiring used by the scheduler.
 
-``build_spawn_session`` and ``DefaultSessionFactory`` assemble the Agent +
-Session bundle for spawned children and for agent 0 (the lead). Both delegate
-role -> Agent assembly to a ``ContextBuilder`` and session construction to
-``build_session`` (in ``container``); this module owns only the per-run
-transcript-path helpers and the factory glue.
+``build_session`` is the self-wiring ``Session`` factory (with its
+``load_session``/``snapshot_session`` companions); ``build_spawn_session`` and
+``DefaultSessionFactory`` assemble the Agent + Session bundle for spawned
+children and for agent 0 (the lead), delegating role -> Agent assembly to a
+``ContextBuilder``. The ``SessionRuntime`` core stays in ``container``
+(``build_session_runtime`` — the only place ``LLMClient`` is instantiated).
 """
 
 from __future__ import annotations
 
+import copy
 import os
 import uuid
 from datetime import datetime
 from typing import Any
 
 from opencollab.adapters.env import Environment, LocalEnvironment
+from opencollab.adapters.trace import Tracer
+from opencollab.application.autosave import AutoSaveSubscriber
+from opencollab.application.compaction import DEFAULT_COMPACTION_THRESHOLD
+from opencollab.application.ports import (
+    EventPublisherPort,
+    LLMPort,
+    PermissionPort,
+    SafetyPolicyPort,
+    SessionStorePort,
+    ShaperPort,
+)
 from opencollab.application.scheduler import LaunchSpec
 from opencollab.application.session import Session
-from opencollab.bootstrap.container import build_session, build_workspace_safety_policy
+from opencollab.bootstrap.container import build_session_runtime
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
+from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
 from opencollab.bootstrap.team_config import TeamConfig, default_team_config
+from opencollab.domain.agent import Agent
 
 
 def agent_save_path(save_dir: str, aid: int, role: str) -> str:
@@ -38,6 +53,107 @@ def make_run_dir(workspace: str) -> str:
     if os.path.exists(run_dir):
         run_dir = f"{run_dir}-{uuid.uuid4().hex[:4]}"
     return run_dir
+
+
+def build_session(
+    *,
+    agent: Agent,
+    env: Environment | None = None,
+    tracer: Tracer | None = None,
+    max_budget_tokens: int = 200_000,
+    max_steps: int = 100,
+    compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
+    auto_save_path: str | None = None,
+    event_sink: EventPublisherPort | None = None,
+    permission_policy: PermissionPort | None = None,
+    safety_policy: SafetyPolicyPort | None = None,
+    llm: LLMPort | None = None,
+    llm_timeout: float = 600.0,
+    store: SessionStorePort | None = None,
+    aid: int = -1,
+    seed_user_messages: list[dict[str, Any]] | None = None,
+    shaper: ShaperPort | None = None,
+) -> Session:
+    """Self-wiring ``Session`` factory.
+
+    Callers that want full control over collaborators can still build a
+    ``SessionRuntime`` via ``build_session_runtime`` and pass it directly
+    to ``application.session.Session``.
+    """
+    session = Session.__new__(Session)
+    runtime = build_session_runtime(
+        agent=agent,
+        env=env,
+        tracer=tracer,
+        max_budget_tokens=max_budget_tokens,
+        max_steps=max_steps,
+        compaction_threshold=compaction_threshold,
+        auto_save_path=auto_save_path,
+        event_sink=event_sink,
+        permission_policy=permission_policy,
+        safety_policy=safety_policy,
+        llm=llm,
+        llm_timeout=llm_timeout,
+        store=store,
+        auto_save_callback=session._auto_save,
+        aid=aid,
+        seed_user_messages=seed_user_messages,
+        shaper=shaper,
+    )
+    Session.__init__(
+        session,
+        agent=agent,
+        runtime=runtime,
+        env=env,
+        tracer=tracer,
+        max_budget_tokens=max_budget_tokens,
+        max_steps=max_steps,
+        compaction_threshold=compaction_threshold,
+        auto_save_path=auto_save_path,
+        permission_policy=permission_policy,
+        safety_policy=safety_policy,
+    )
+    return session
+
+
+def load_session(
+    path: str,
+    agent: Agent,
+    **kwargs: Any,
+) -> Session:
+    """Build a session and replace its messages with the JSONL at ``path``."""
+    session = build_session(agent=agent, **kwargs)
+    session.messages = session.store.load_messages(path, agent.system_prompt)
+    return session
+
+
+def snapshot_session(session: Session) -> Session:
+    """Build an independent ``Session`` sharing the source's state.
+
+    Drops the original session's internal ``AutoSaveSubscriber`` but
+    re-attaches any external subscriber on the bus so external observers
+    keep seeing events.
+    """
+    external_sink: EventPublisherPort | None = None
+    for target in session.event_bus._targets:
+        if not isinstance(target, AutoSaveSubscriber):
+            external_sink = target  # type: ignore[assignment]
+            break
+    new = build_session(
+        agent=session.agent,
+        env=session.env,
+        tracer=session.tracer,
+        max_budget_tokens=session.max_budget_tokens,
+        max_steps=session.max_steps,
+        compaction_threshold=session.compaction_threshold,
+        event_sink=external_sink,
+        permission_policy=session.permission_policy,
+        safety_policy=session._safety_policy,
+    )
+    new.messages = copy.deepcopy(session.messages)
+    new.used_tokens = session.used_tokens
+    new.step_count = session.step_count
+    return new
 
 
 def build_spawn_session(
@@ -193,6 +309,9 @@ class DefaultSessionFactory:
 __all__ = [
     "DefaultSessionFactory",
     "agent_save_path",
+    "build_session",
     "build_spawn_session",
+    "load_session",
     "make_run_dir",
+    "snapshot_session",
 ]

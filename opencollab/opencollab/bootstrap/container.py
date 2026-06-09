@@ -9,6 +9,7 @@ composition root is split into focused siblings and re-exported here so
 
 - ``tool_registry``      — tool-name -> Tool resolution + curated name sets.
 - ``context_builder``    — ``SpawnConfig`` + ``ContextBuilder`` (role -> Agent).
+- ``runtime_context``    — ``RuntimeContext`` + workspace safety policy.
 - ``session_factory``    — ``build_spawn_session`` / ``DefaultSessionFactory`` +
                            run-folder transcript helpers.
 - ``scheduler_factory``  — ``build_scheduler`` (the CLI/eval entry point).
@@ -20,17 +21,11 @@ order acyclic regardless of which module is imported first.
 
 from __future__ import annotations
 
-import copy
-import os
-import uuid
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient, estimate_messages_tokens
-from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.storage import SessionStore
-from opencollab.adapters.trace import Tracer
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.compaction import (
     DEFAULT_COMPACTION_THRESHOLD,
@@ -47,7 +42,7 @@ from opencollab.application.ports import (
     ShaperPort,
     TracePort,
 )
-from opencollab.application.session import Session, SessionRuntime
+from opencollab.application.session import SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.shaping import (
     DEFAULT_TOOL_RESULT_BUDGET,
@@ -61,6 +56,11 @@ from opencollab.application.shaping import (
 )
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
+from opencollab.bootstrap.runtime_context import (
+    RuntimeContext,
+    build_runtime_context,
+    build_workspace_safety_policy,
+)
 from opencollab.bootstrap.tool_registry import (
     COMPACTABLE_TOOL_NAMES,
     build_default_tools,
@@ -76,57 +76,12 @@ if TYPE_CHECKING:
     from opencollab.bootstrap.session_factory import (
         DefaultSessionFactory,
         agent_save_path,
+        build_session,
         build_spawn_session,
+        load_session,
         make_run_dir,
+        snapshot_session,
     )
-
-# ---------------------------------------------------------------------------
-# Runtime context
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class RuntimeContext:
-    workspace: str
-    config: dict
-    tracer: Tracer | None
-    event_sink: EventPublisherPort | None
-    permission_policy: PermissionPort | None
-
-
-def build_runtime_context(
-    workspace: str,
-    cli_overrides: dict,
-    *,
-    trace: bool,
-    event_sink: EventPublisherPort | None = None,
-    permission_policy: PermissionPort | None = None,
-    run_id_prefix: str = "",
-) -> RuntimeContext:
-    abs_workspace = os.path.abspath(workspace)
-    tracer = (
-        Tracer(run_id=f"{run_id_prefix}{uuid.uuid4().hex[:8]}") if trace else None
-    )
-
-    return RuntimeContext(
-        workspace=abs_workspace,
-        config=dict(cli_overrides),
-        tracer=tracer,
-        event_sink=event_sink,
-        permission_policy=permission_policy,
-    )
-
-
-# ---------------------------------------------------------------------------
-# Safety
-# ---------------------------------------------------------------------------
-
-
-def build_workspace_safety_policy(env: Any) -> SafetyPolicyPort | None:
-    if env is None or not getattr(env, "workspace", None):
-        return None
-    return SandboxInterceptor(env.workspace)
-
 
 # ---------------------------------------------------------------------------
 # Session runtime construction (the LLMClient-bound core)
@@ -314,112 +269,6 @@ def build_session_runtime(
 
 
 # ---------------------------------------------------------------------------
-# Session factory + snapshot
-# ---------------------------------------------------------------------------
-
-
-def build_session(
-    *,
-    agent: Agent,
-    env: Environment | None = None,
-    tracer: Tracer | None = None,
-    max_budget_tokens: int = 200_000,
-    max_steps: int = 100,
-    compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
-    auto_save_path: str | None = None,
-    event_sink: EventPublisherPort | None = None,
-    permission_policy: PermissionPort | None = None,
-    safety_policy: SafetyPolicyPort | None = None,
-    llm: LLMPort | None = None,
-    llm_timeout: float = 600.0,
-    store: SessionStorePort | None = None,
-    aid: int = -1,
-    seed_user_messages: list[dict[str, Any]] | None = None,
-    shaper: ShaperPort | None = None,
-) -> Session:
-    """Self-wiring ``Session`` factory.
-
-    Callers that want full control over collaborators can still build a
-    ``SessionRuntime`` via ``build_session_runtime`` and pass it directly
-    to ``application.session.Session``.
-    """
-    session = Session.__new__(Session)
-    runtime = build_session_runtime(
-        agent=agent,
-        env=env,
-        tracer=tracer,
-        max_budget_tokens=max_budget_tokens,
-        max_steps=max_steps,
-        compaction_threshold=compaction_threshold,
-        auto_save_path=auto_save_path,
-        event_sink=event_sink,
-        permission_policy=permission_policy,
-        safety_policy=safety_policy,
-        llm=llm,
-        llm_timeout=llm_timeout,
-        store=store,
-        auto_save_callback=session._auto_save,
-        aid=aid,
-        seed_user_messages=seed_user_messages,
-        shaper=shaper,
-    )
-    Session.__init__(
-        session,
-        agent=agent,
-        runtime=runtime,
-        env=env,
-        tracer=tracer,
-        max_budget_tokens=max_budget_tokens,
-        max_steps=max_steps,
-        compaction_threshold=compaction_threshold,
-        auto_save_path=auto_save_path,
-        permission_policy=permission_policy,
-        safety_policy=safety_policy,
-    )
-    return session
-
-
-def load_session(
-    path: str,
-    agent: Agent,
-    **kwargs: Any,
-) -> Session:
-    """Build a session and replace its messages with the JSONL at ``path``."""
-    session = build_session(agent=agent, **kwargs)
-    session.messages = session.store.load_messages(path, agent.system_prompt)
-    return session
-
-
-def snapshot_session(session: Session) -> Session:
-    """Build an independent ``Session`` sharing the source's state.
-
-    Drops the original session's internal ``AutoSaveSubscriber`` but
-    re-attaches any external subscriber on the bus so external observers
-    keep seeing events.
-    """
-    external_sink: EventPublisherPort | None = None
-    for target in session.event_bus._targets:
-        if not isinstance(target, AutoSaveSubscriber):
-            external_sink = target  # type: ignore[assignment]
-            break
-    new = build_session(
-        agent=session.agent,
-        env=session.env,
-        tracer=session.tracer,
-        max_budget_tokens=session.max_budget_tokens,
-        max_steps=session.max_steps,
-        compaction_threshold=session.compaction_threshold,
-        event_sink=external_sink,
-        permission_policy=session.permission_policy,
-        safety_policy=session._safety_policy,
-    )
-    new.messages = copy.deepcopy(session.messages)
-    new.used_tokens = session.used_tokens
-    new.step_count = session.step_count
-    return new
-
-
-# ---------------------------------------------------------------------------
 # Lazy re-exports of the higher-level factories.
 #
 # ``session_factory`` and ``scheduler_factory`` import names from THIS module,
@@ -430,7 +279,15 @@ def snapshot_session(session: Session) -> Session:
 # ---------------------------------------------------------------------------
 
 _SESSION_FACTORY_EXPORTS = frozenset(
-    {"DefaultSessionFactory", "agent_save_path", "build_spawn_session", "make_run_dir"}
+    {
+        "DefaultSessionFactory",
+        "agent_save_path",
+        "build_session",
+        "build_spawn_session",
+        "load_session",
+        "make_run_dir",
+        "snapshot_session",
+    }
 )
 _SCHEDULER_FACTORY_EXPORTS = frozenset({"build_scheduler"})
 
