@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from prompt_toolkit.formatted_text import to_formatted_text
 
-from opencollab.adapters.cli.main import _PROMPT_STYLE, _format_team_toolbar
+from opencollab.adapters.cli.main import _PROMPT_STYLE
+from opencollab.adapters.cli.toolbar import _format_team_toolbar
 
 
 def _plain_and_fragments(toolbar):

@@ -5,6 +5,10 @@ Two surfaces:
   first session and can spawn child agents via the Scheduler.
 - ``eval``: headless batch evaluation for benchmarks (SWE-bench, etc.).
 
+Split by concern: ``toolbar`` (prompt bottom-toolbar), ``config_resolve``
+(CLI args + .env merge, API-key checks), ``eval`` (headless eval command).
+This module keeps the Typer app, the chat REPL, and ``main()``.
+
 Ref:
 - kimi-cli: Typer app with callback, async main, session management
 - opencode: bun run dev with agent mode selection
@@ -15,16 +19,21 @@ Ref:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import uuid
-from html import escape
 from typing import Any, Optional
 
 import typer
-from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 from rich.console import Console
+
+from opencollab.adapters.cli.config_resolve import (
+    _missing_api_key,
+    _print_missing_key_hint,
+    _resolve_config,
+)
+from opencollab.adapters.cli.eval import eval_cmd
+from opencollab.adapters.cli.toolbar import _format_team_toolbar
 
 app = typer.Typer(
     name="opencollab",
@@ -37,6 +46,8 @@ _PROMPT_STYLE = Style.from_dict({
     "bottom-toolbar": "noreverse bg:default fg:ansibrightblack",
     "bottom-toolbar.text": "noreverse bg:default fg:ansibrightblack",
 })
+
+app.command(name="eval")(eval_cmd)
 
 
 def _get_prompt_session() -> Any:
@@ -61,112 +72,6 @@ async def _read_line(prompt_text: str, bottom_toolbar: Any = None) -> str:
     except Exception:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, lambda: console.input(prompt_text))
-
-
-_TOOLBAR_MUTED = "ansibrightblack"
-_TOOLBAR_ACCENT = "ansicyan"
-_TOOLBAR_SUCCESS = "ansigreen"
-_TOOLBAR_WARNING = "ansiyellow"
-_TOOLBAR_ERROR = "ansired"
-
-_TOOLBAR_STATE_STYLES = {
-    "busy": _TOOLBAR_WARNING,
-    "running": _TOOLBAR_WARNING,
-    "idle": _TOOLBAR_SUCCESS,
-    "done": _TOOLBAR_SUCCESS,
-    "completed": _TOOLBAR_SUCCESS,
-    "failed": _TOOLBAR_ERROR,
-    "cancelled": _TOOLBAR_WARNING,
-}
-
-
-def _toolbar_style(text: Any, color: str) -> str:
-    return f'<style fg="{color}">{escape(str(text))}</style>'
-
-
-def _display_team_state(entry: dict) -> str:
-    if entry.get("busy"):
-        return "busy"
-    phase = entry.get("phase", "?")
-    return "idle" if phase in ("done", "scheduled") else phase
-
-
-def _format_team_toolbar(snapshot: list[dict]) -> HTML | str:
-    """One-line team roster for the prompt bottom toolbar."""
-    if not snapshot:
-        return ""
-    parts = []
-    for entry in snapshot:
-        aid = entry.get("aid")
-        role = entry.get("role", "?")
-        if aid is None:
-            label = role  # configured role with no live agent yet
-        elif aid == 0:
-            label = "Lead"
-        else:
-            label = f"A{aid} {role}"
-        state = _display_team_state(entry)
-        state_style = _TOOLBAR_STATE_STYLES.get(str(state).lower(), _TOOLBAR_MUTED)
-        parts.append(
-            _toolbar_style(label, _TOOLBAR_MUTED)
-            + _toolbar_style("(", _TOOLBAR_MUTED)
-            + _toolbar_style(state, state_style)
-            + _toolbar_style(")", _TOOLBAR_MUTED)
-        )
-    separator = _toolbar_style("  ", _TOOLBAR_MUTED)
-    return HTML(
-        _toolbar_style("Team:", _TOOLBAR_ACCENT)
-        + _toolbar_style(" ", _TOOLBAR_MUTED)
-        + separator.join(parts)
-    )
-
-
-def _safe_int(value: Any, default: int) -> int:
-    try:
-        return int(value) if value else default
-    except (TypeError, ValueError):
-        return default
-
-
-def _required_env_key(provider: str | None) -> str:
-    p = (provider or "openai").lower()
-    return "ANTHROPIC_API_KEY" if p == "anthropic" else "OPENAI_API_KEY"
-
-
-def _missing_api_key(provider: str | None, api_key: str | None) -> bool:
-    if api_key:
-        return False
-    return not bool(os.environ.get(_required_env_key(provider)))
-
-
-def _print_missing_key_hint(provider: str | None, base_url: str | None = None) -> None:
-    from opencollab.adapters.tui import TUI
-
-    tui = TUI(console)
-    tui.print_welcome()
-    env_key = _required_env_key(provider)
-    accepted = f"OPENCOLLAB_API_KEY or {env_key}"
-    if base_url and "dashscope" in base_url.lower() and env_key != "DASHSCOPE_API_KEY":
-        accepted += " or DASHSCOPE_API_KEY"
-    console.print(
-        f"[red]Missing API key[/red]: pass [bold]--api-key[/bold] or set [bold]{accepted}[/bold]."
-    )
-
-
-def _resolve_config(workspace: str, model: str | None, provider: str | None,
-                     api_key: str | None, base_url: str | None, budget: int | None) -> dict:
-    """Merge CLI args with .env defaults. CLI args take precedence."""
-    from opencollab.bootstrap.config import get_config
-    cfg = get_config(workspace)
-    return {
-        "model": model or cfg["model"],
-        "provider": provider or cfg["provider"],
-        "api_key": api_key or cfg["api_key"],
-        "base_url": base_url or cfg["base_url"],
-        "budget": budget if budget is not None else _safe_int(cfg["budget"], 200_000),
-        "llm_timeout": cfg["llm_timeout"],
-        "filter_messages": bool(cfg["filter_messages"]),
-    }
 
 
 @app.callback(invoke_without_command=True)
@@ -195,7 +100,7 @@ def main_callback(
 
     cfg = _resolve_config(workspace, model, provider, api_key, base_url, budget)
     if _missing_api_key(cfg["provider"], cfg["api_key"]):
-        _print_missing_key_hint(cfg["provider"], cfg["base_url"])
+        _print_missing_key_hint(console, cfg["provider"], cfg["base_url"])
         raise typer.Exit(code=1)
 
     one_shot = _resolve_one_shot_prompt(prompt, prompt_file)
@@ -223,27 +128,6 @@ def _resolve_one_shot_prompt(prompt: str | None, prompt_file: str | None) -> str
     if prompt:
         return prompt
     return None
-
-
-@app.command(name="eval")
-def eval_cmd(
-    tasks_file: str = typer.Argument(..., help="JSONL file with eval tasks"),
-    model: Optional[str] = typer.Option(None, "--model", "-m", help="LLM model (default from config)"),
-    provider: Optional[str] = typer.Option(None, "--provider", "-p", help="LLM provider (default from config)"),
-    api_key: Optional[str] = typer.Option(None, "--api-key", help="API key (default from config)"),
-    base_url: Optional[str] = typer.Option(None, "--base-url", help="API base URL (default from config)"),
-    output_dir: str = typer.Option("eval_results", "--output", "-o"),
-    concurrency: int = typer.Option(4, "--concurrency", "-c", help="Parallel tasks"),
-    max_tokens: int = typer.Option(100_000, "--max-tokens"),
-    timeout: float = typer.Option(600.0, "--timeout"),
-):
-    """Headless evaluation mode for benchmarks (SWE-bench, etc.)."""
-    cfg = _resolve_config(".", model, provider, api_key, base_url, None)
-    asyncio.run(_eval(
-        tasks_file=tasks_file, model=cfg["model"], provider=cfg["provider"],
-        api_key=cfg["api_key"], base_url=cfg["base_url"], output_dir=output_dir,
-        concurrency=concurrency, max_tokens=max_tokens, timeout=timeout,
-    ))
 
 
 # ---------------------------------------------------------------------------
@@ -340,54 +224,6 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
         ctx.tracer.close()
         console.print(f"[dim]Trajectory saved to {ctx.tracer.path}[/dim]")
     console.print("[dim]Goodbye.[/dim]")
-
-
-async def _eval(
-    tasks_file: str, model: str, provider: str,
-    api_key: str | None, base_url: str | None,
-    output_dir: str, concurrency: int,
-    max_tokens: int, timeout: float,
-):
-    from opencollab.harness.evaluator import EvalTask, run_eval_batch, save_results
-
-    tasks = []
-    with open(tasks_file) as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            data = json.loads(line)
-            tasks.append(EvalTask(
-                task_id=data["task_id"],
-                description=data["description"],
-                repo_path=data.get("repo_path"),
-                docker_image=data.get("docker_image"),
-                timeout=data.get("timeout", timeout),
-                max_tokens=data.get("max_tokens", max_tokens),
-            ))
-
-    console.print(f"[bold]Running {len(tasks)} eval tasks[/bold] (concurrency={concurrency})")
-
-    results = await run_eval_batch(
-        tasks,
-        concurrency=concurrency,
-        model=model,
-        provider=provider,
-        api_key=api_key,
-        base_url=base_url,
-        output_dir=output_dir,
-    )
-
-    results_path = os.path.join(output_dir, "results.jsonl")
-    save_results(results, results_path)
-
-    passed = sum(1 for r in results if r.success)
-    console.print(f"\n[bold]Results: {passed}/{len(results)} passed[/bold]")
-    console.print(f"Results saved to {results_path}")
-
-    for r in results:
-        status = "[green]PASS[/green]" if r.success else "[red]FAIL[/red]"
-        console.print(f"  {r.task_id}: {status} ({r.tokens_used:,} tokens, {r.duration:.1f}s)")
 
 
 def main():
