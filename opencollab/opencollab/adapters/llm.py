@@ -10,7 +10,6 @@ import asyncio
 import json
 import os
 import random
-import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
 
@@ -200,7 +199,6 @@ class LLMClient:
         temperature: float = 0.0,
     ) -> LLMResponse:
         """Single-shot completion. Returns full response."""
-        start = time.monotonic()
         if self._anthropic:
             return await self._complete_anthropic(messages, tools, temperature)
         return await self._complete_openai(messages, tools, temperature)
@@ -427,7 +425,8 @@ def _convert_to_anthropic_messages(messages: list[dict]) -> tuple[list[str], lis
                 for tc in m["tool_calls"]:
                     func = tc["function"]
                     try:
-                        tool_input = json.loads(func["arguments"]) if isinstance(func["arguments"], str) else func["arguments"]
+                        arguments = func["arguments"]
+                        tool_input = json.loads(arguments) if isinstance(arguments, str) else arguments
                     except (json.JSONDecodeError, TypeError):
                         tool_input = {}
                     content_blocks.append({

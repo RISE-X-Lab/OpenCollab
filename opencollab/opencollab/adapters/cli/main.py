@@ -180,7 +180,9 @@ def main_callback(
     base_url: Optional[str] = typer.Option(None, "--base-url", help="API base URL (default from config)"),
     workspace: str = typer.Option(".", "--workspace", "-w", help="Working directory"),
     budget: Optional[int] = typer.Option(None, "--budget", help="Max token budget (default from config or 500000)"),
-    session_file: Optional[str] = typer.Option(None, "--session", "-s", help="Resume from a saved agent JSON (or legacy JSONL)"),
+    session_file: Optional[str] = typer.Option(
+        None, "--session", "-s", help="Resume from a saved agent JSON (or legacy JSONL)"
+    ),
     trace: bool = typer.Option(False, "--trace", help="Enable trajectory recording"),
     yolo: bool = typer.Option(False, "--yolo", help="Auto-approve risky commands"),
     no_worktrees: bool = typer.Option(False, "--no-worktrees", help="Disable git worktree isolation"),
