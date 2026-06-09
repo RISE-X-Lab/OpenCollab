@@ -144,6 +144,84 @@ def _build_initial_state(
     return SessionState(messages=messages)
 
 
+def _resolve_llm(agent: Agent, llm: LLMPort | None, llm_timeout: float) -> LLMPort:
+    """The injected ``llm`` if given, else a fresh ``LLMClient`` for the agent."""
+    if llm is not None:
+        return llm
+    return LLMClient(
+        model=agent.model,
+        api_key=agent.api_key,
+        base_url=agent.base_url,
+        provider=agent.provider,
+        request_timeout=llm_timeout,
+    )
+
+
+def _build_summarizer(
+    agent: Agent,
+    llm: LLMPort | None,
+    resolved_llm: LLMPort,
+    llm_timeout: float,
+    auto_save_path: str | None,
+) -> ReadTimeSummarizer:
+    """Build the read-time summarizer that powers ``AutoCompactShaper``.
+
+    Read-time path owns compaction (Option B): wire the 9-section summary
+    prompt into the otherwise-dormant AutoCompactShaper via a sync bridge over
+    the async LLM. We build a fresh client *inside* the summarizer coroutine so
+    its async HTTP client never crosses event loops; an injected ``llm`` is
+    reused as-is.
+    """
+    if llm is not None:
+        async def _summary_complete(request: list[dict[str, Any]]) -> Any:
+            return await resolved_llm.complete(request, temperature=0.0)
+    else:
+        async def _summary_complete(request: list[dict[str, Any]]) -> Any:
+            client = LLMClient(
+                model=agent.model,
+                api_key=agent.api_key,
+                base_url=agent.base_url,
+                provider=agent.provider,
+                request_timeout=llm_timeout,
+            )
+            return await client.complete(request, temperature=0.0)
+
+    return ReadTimeSummarizer(_summary_complete, transcript_path=auto_save_path)
+
+
+def _build_default_shaper(
+    resolved_llm: LLMPort, summarizer: ReadTimeSummarizer
+) -> ShaperPort:
+    """Assemble the default lazy-degradation shaper pipeline.
+
+    Cheapest/lowest-loss first: per-tool-result budget bounds any one result;
+    the reactive history layers then bound the *total* view once it crosses the
+    trigger — clear old tool *content* in place (lowest loss) → snip whole old
+    tool turns → auto-compact (summarize the remaining old span via the ported
+    prompt) → reserved collapse slot. All read-time over a copy; transcript
+    stays full for lossless resume.
+    """
+    # Trigger/target scale to the active model's real context window, degrading
+    # to fixed defaults when the model is unrecognised.
+    context_window = getattr(resolved_llm, "context_window", lambda: None)()
+    history_trigger, history_target = history_trigger_target(context_window)
+
+    history_kwargs = {
+        "estimate_tokens": estimate_messages_tokens,
+        "trigger_tokens": history_trigger,
+        "target_tokens": history_target,
+    }
+    return ShaperPipeline(
+        (
+            PerToolResultBudgetShaper(DEFAULT_TOOL_RESULT_BUDGET),
+            ToolOutputClearShaper(compactable_tools=COMPACTABLE_TOOL_NAMES, **history_kwargs),
+            OldHistorySnipShaper(**history_kwargs),
+            AutoCompactShaper(summarizer=summarizer, **history_kwargs),
+            ContextCollapseShaper(),
+        )
+    )
+
+
 def build_session_runtime(
     *,
     agent: Agent,
@@ -183,17 +261,7 @@ def build_session_runtime(
     state = _build_initial_state(agent, seed_user_messages)
     state.aid = aid
 
-    resolved_llm: LLMPort
-    if llm is not None:
-        resolved_llm = llm
-    else:
-        resolved_llm = LLMClient(
-            model=agent.model,
-            api_key=agent.api_key,
-            base_url=agent.base_url,
-            provider=agent.provider,
-            request_timeout=llm_timeout,
-        )
+    resolved_llm = _resolve_llm(agent, llm, llm_timeout)
 
     tool_execution = ToolExecutionUseCase(
         agent=agent,
@@ -212,55 +280,10 @@ def build_session_runtime(
         tracer=tracer,
         compaction_threshold=compaction_threshold,
     )
-    # Trigger/target scale to the active model's real context window, degrading
-    # to fixed defaults when the model is unrecognised.
-    context_window = getattr(resolved_llm, "context_window", lambda: None)()
-    history_trigger, history_target = history_trigger_target(context_window)
 
-    # Read-time path owns compaction (Option B): wire the 9-section summary
-    # prompt into the otherwise-dormant AutoCompactShaper via a sync bridge over
-    # the async LLM. We build a fresh client *inside* the summarizer coroutine so
-    # its async HTTP client never crosses event loops; an injected ``llm`` is
-    # reused as-is.
-    if llm is not None:
-        async def _summary_complete(request: list[dict[str, Any]]) -> Any:
-            return await resolved_llm.complete(request, temperature=0.0)
-    else:
-        async def _summary_complete(request: list[dict[str, Any]]) -> Any:
-            client = LLMClient(
-                model=agent.model,
-                api_key=agent.api_key,
-                base_url=agent.base_url,
-                provider=agent.provider,
-                request_timeout=llm_timeout,
-            )
-            return await client.complete(request, temperature=0.0)
-
-    summarizer = ReadTimeSummarizer(_summary_complete, transcript_path=auto_save_path)
-
-    # Lazy-degradation pipeline (cheapest/lowest-loss first): per-tool-result
-    # budget bounds any one result; the reactive history layers then bound the
-    # *total* view once it crosses the trigger — clear old tool *content* in
-    # place (lowest loss) → snip whole old tool turns → auto-compact (summarize
-    # the remaining old span via the ported prompt) → reserved collapse slot.
-    # All read-time over a copy; transcript stays full for lossless resume.
-    history_kwargs = {
-        "estimate_tokens": estimate_messages_tokens,
-        "trigger_tokens": history_trigger,
-        "target_tokens": history_target,
-    }
+    summarizer = _build_summarizer(agent, llm, resolved_llm, llm_timeout, auto_save_path)
     resolved_shaper: ShaperPort = (
-        shaper
-        if shaper is not None
-        else ShaperPipeline(
-            (
-                PerToolResultBudgetShaper(DEFAULT_TOOL_RESULT_BUDGET),
-                ToolOutputClearShaper(compactable_tools=COMPACTABLE_TOOL_NAMES, **history_kwargs),
-                OldHistorySnipShaper(**history_kwargs),
-                AutoCompactShaper(summarizer=summarizer, **history_kwargs),
-                ContextCollapseShaper(),
-            )
-        )
+        shaper if shaper is not None else _build_default_shaper(resolved_llm, summarizer)
     )
     runner = SessionRunUseCase(
         agent=agent,
