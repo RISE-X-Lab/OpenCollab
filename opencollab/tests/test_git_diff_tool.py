@@ -4,7 +4,7 @@ import subprocess
 import pytest
 
 from opencollab.adapters.env import LocalEnvironment
-from opencollab.adapters.tools.git_status import GitDiffTool
+from opencollab.adapters.tools.git_diff import GitDiffTool
 from opencollab.application.tool_execution import ToolRuntime
 
 

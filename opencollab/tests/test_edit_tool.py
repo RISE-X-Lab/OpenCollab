@@ -4,7 +4,7 @@ import pytest
 
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
-from opencollab.adapters.tools.edit import ApplyPatchTool
+from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.application.tool_execution import ToolRuntime
 
 
