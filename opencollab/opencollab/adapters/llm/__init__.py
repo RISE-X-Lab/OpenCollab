@@ -6,14 +6,13 @@ and Anthropic natively. No custom message format — uses standard dicts.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import os
-import random
 from typing import Any, AsyncIterator
 
 import openai
 
+from opencollab.adapters.llm.retry import with_retry
 from opencollab.adapters.llm.types import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     MODEL_CONTEXT_WINDOWS,
@@ -88,56 +87,6 @@ class LLMClient:
         """Tokens to reserve for the model's response (best-effort default)."""
         return DEFAULT_MAX_OUTPUT_TOKENS
 
-    async def _with_retry(self, call_factory, provider: str) -> Any:
-        """Retry transient provider errors with exponential backoff.
-
-        Prioritizes Retry-After when available (OpenRouter/OpenAI-compatible).
-        """
-        attempt = 0
-        while True:
-            try:
-                return await call_factory()
-            except Exception as e:
-                if attempt >= self.max_retries or not self._is_retryable_error(e):
-                    raise
-
-                retry_after = self._extract_retry_after_seconds(e)
-                base = retry_after if retry_after is not None else (2 ** attempt)
-                # Add small jitter to reduce thundering herd.
-                delay = max(0.0, base + random.uniform(0.0, 0.25))
-                await asyncio.sleep(delay)
-                attempt += 1
-
-    @staticmethod
-    def _is_retryable_error(error: Exception) -> bool:
-        status = getattr(error, "status_code", None)
-        if status in {408, 409, 429, 500, 502, 503, 504}:
-            return True
-
-        response = getattr(error, "response", None)
-        if response is not None:
-            resp_status = getattr(response, "status_code", None)
-            if resp_status in {408, 409, 429, 500, 502, 503, 504}:
-                return True
-
-        msg = str(error).lower()
-        return any(k in msg for k in ("rate limit", "429", "timeout", "temporarily unavailable", "overloaded"))
-
-    @staticmethod
-    def _extract_retry_after_seconds(error: Exception) -> float | None:
-        response = getattr(error, "response", None)
-        headers = getattr(response, "headers", None) if response is not None else None
-        if not headers:
-            return None
-
-        value = headers.get("Retry-After") or headers.get("retry-after")
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-
     # ---- Non-streaming completion ----
 
     async def complete(
@@ -166,9 +115,9 @@ class LLMClient:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
 
-        resp = await self._with_retry(
+        resp = await with_retry(
             lambda: self._openai.chat.completions.create(**kwargs),
-            provider="openai",
+            max_retries=self.max_retries,
         )
         choice = resp.choices[0]
         msg = choice.message
@@ -221,9 +170,9 @@ class LLMClient:
                 })
             kwargs["tools"] = anthropic_tools
 
-        resp = await self._with_retry(
+        resp = await with_retry(
             lambda: self._anthropic.messages.create(**kwargs),
-            provider="anthropic",
+            max_retries=self.max_retries,
         )
 
         content = ""
