@@ -44,7 +44,7 @@ Source root: `opencollab/opencollab/`. Entry point: `python -m opencollab`
 
 ### adapters/ — implement ports, talk to drivers
 - `cli/main.py` — Typer CLI: default agent + eval commands; invokes `build_scheduler`; prompt `bottom_toolbar` shows the live team (`team_snapshot`)
-- `tui/` — TUI, `TuiEventSink` (EventPort), `TuiPermissionPolicy` (PermissionPort); renders a live team roster panel from scheduler events
+- `tui/` — TUI, `TuiEventSink` (EventPort), `TuiPermissionPolicy` (PermissionPort); renders a live team roster panel from scheduler events. `renderer.py` (TUI state + Live lifecycle) composes `renderer_events.py` (`_RendererEventsMixin`: event dispatch → timeline/status/roster) + `renderer_display.py` (`_RendererDisplayMixin`: Rich renderable building, style palette, `_LineViewport`)
 - `llm/` — one provider per module behind the `LLMClient` facade; `__init__.py` re-exports everything so `from adapters.llm import LLMClient` still resolves. `client.py` (`LLMClient` dispatch), `openai_provider.py`/`anthropic_provider.py` (request build/parse + OpenAI→Anthropic message conversion), `retry.py` (transient-error backoff), `types.py` (`LLMResponse`/`Usage`/`StreamDelta`, context windows, `estimate_messages_tokens`)
 - `env.py` — `LocalEnvironment`, `WorktreeEnvironment`
 - `worktree_pool.py` — `WorktreePool` (git worktree)
