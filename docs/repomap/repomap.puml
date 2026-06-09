@@ -66,8 +66,12 @@ package "Interface Adapters" as ADAPTERS #FDEBD0 {
   [adapters.tools\nBash / FileRead / FileWrite / Grep\nAskUser / Spawn] as ToolAdapters
 }
 
-package "Composition Root\n(bootstrap, 2 files)" as COMPOSITION #EBF5FB {
-  [bootstrap.container\nbuild_runtime_context\nbuild_session_runtime\nbuild_session / snapshot_session / load_session\nbuild_scheduler\nbuild_spawn_session\nDefaultSessionFactory (build_spawn_session +\ncreate_lead_session) + SpawnConfig\nbuild_default_tools\nbuild_workspace_safety_policy] as Container
+package "Composition Root\n(bootstrap, 6 files)" as COMPOSITION #EBF5FB {
+  [bootstrap.container\nsession-construction core +\npublic re-export facade\nbuild_runtime_context\nbuild_session_runtime (only LLMClient site)\nbuild_session / snapshot_session / load_session\nbuild_workspace_safety_policy] as Container
+  [bootstrap.tool_registry\nname->Tool factories + name sets\nbuild_tools_for_role / build_default_tools] as ToolRegistry
+  [bootstrap.context_builder\nSpawnConfig + ContextBuilder] as ContextBuilderMod
+  [bootstrap.session_factory\nbuild_spawn_session\nDefaultSessionFactory\nagent_save_path / make_run_dir] as SessionFactoryMod
+  [bootstrap.scheduler_factory\nbuild_scheduler] as SchedulerFactoryMod
   [bootstrap.config\nload config + env] as Config
 }
 
@@ -76,7 +80,7 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   [app.session_run\nSessionRunUseCase] as SessionRunner
   [app.compaction\nContextCompactionUseCase] as Compactor
   [app.tool_execution\nToolExecutionUseCase + ToolRuntime\nCallbackPermissionPolicy] as ToolExec
-  [app.scheduler\nScheduler\ncreate_init_process (agent 0) + spawn (children),\nparallel via asyncio.create_task\nLaunchSpec] as SchedulerUC
+  [app.scheduler\nScheduler\ncreate_init_process (agent 0) + spawn (children),\nparallel via asyncio.create_task\n(LaunchSpec/QueuedTeammateMessage -> scheduler_types;\nspawn_with_review loop -> self_collaboration)] as SchedulerUC
   [app.autosave\nAutoSaveSubscriber] as Autosave
   [app.event_bus\nEventBus (fan-out)] as EventBus
   [app.events\nSessionEventFactory\n(one builder, all run-loop events)] as EventsModule
@@ -137,14 +141,20 @@ Container --> Config
 Container --> LLMAdapter
 Container --> EnvAdapter
 Container --> StoreAdapter
-Container --> WorktreeAdapter
 Container --> TraceAdapter
 Container --> SafetyAdapter
-Container --> ToolAdapters
 Container --> SessionFacade
-Container --> SchedulerUC
+Container --> ContextBuilderMod
+Container --> ToolRegistry
+ContextBuilderMod --> ToolRegistry
+SessionFactoryMod --> Container
+SessionFactoryMod --> ContextBuilderMod
+SchedulerFactoryMod --> SessionFactoryMod
+SchedulerFactoryMod --> WorktreeAdapter
+SchedulerFactoryMod --> SchedulerUC
+ToolRegistry --> ToolAdapters
 
-CliAdapter --> Container : invokes build_scheduler
+CliAdapter --> SchedulerFactoryMod : invokes build_scheduler
 
 ' ============================================================
 ' Application internal wiring
@@ -234,16 +244,19 @@ note right of APP
 end note
 
 note right of COMPOSITION
-  2 bootstrap files: container + config.
-  bootstrap.container is the single composition
-  root. build_scheduler() wires deps and hands the
-  Scheduler a LaunchSpec; the Scheduler builds agent 0
-  through DefaultSessionFactory.create_lead_session
-  (lead env + spawn tools + prompt). build_session()
-  is the free factory returning application.session.Session;
-  snapshot_session and load_session are sibling functions.
-  SpawnConfig + build_spawn_session wire sessions for
-  agents the scheduler spawns at runtime.
+  The composition root is split into focused modules.
+  bootstrap.container holds the session-construction core
+  (build_session_runtime — the only LLMClient site, so
+  tests monkeypatch container.LLMClient) and re-exports the
+  siblings so `from bootstrap.container import X` resolves
+  every name; the cyclic factories (session_factory,
+  scheduler_factory) are re-exported lazily via module
+  __getattr__ (PEP 562) to keep imports acyclic.
+  scheduler_factory.build_scheduler() wires deps and hands
+  the Scheduler a LaunchSpec; the Scheduler builds agent 0
+  through DefaultSessionFactory.create_lead_session.
+  context_builder owns SpawnConfig + ContextBuilder;
+  tool_registry owns name->Tool resolution.
 end note
 
 note bottom of EventPort
