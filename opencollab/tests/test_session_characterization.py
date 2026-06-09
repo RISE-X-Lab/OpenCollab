@@ -3,7 +3,6 @@ import copy
 
 from opencollab.adapters.llm import LLMResponse, Usage
 from opencollab.adapters.storage import SessionStore
-from opencollab.application.compaction import COMPACTION_KEEP_RECENT
 from opencollab.application.event_bus import EventBus
 from opencollab.application.tool_execution import CallbackPermissionPolicy
 from opencollab.bootstrap import build_session as Session
@@ -298,10 +297,13 @@ def test_budget_exceeded_stops_before_llm_call_and_emits_error():
     assert [(event.type, event.data) for event in events] == [("error", {"reason": "budget_exceeded", "aid": -1})]
 
 
-def test_compaction_trigger_summarizes_older_messages_then_runs_step():
+def test_run_loop_does_not_route_to_mutating_compaction():
+    # The mutating ContextCompactionUseCase is retired: even when it *would*
+    # trigger (threshold 0), the run loop no longer routes to a COMPACTING phase
+    # — read-time shaping (AutoCompactShaper) owns compaction instead. So the
+    # first model response is the answer; no extra summarization turn is spent.
     fake_llm = FakeLLMClient([
-        llm_response(content="compact summary", input_tokens=3, output_tokens=4),
-        llm_response(content="final after compaction", input_tokens=5, output_tokens=6),
+        llm_response(content="direct answer", input_tokens=3, output_tokens=4),
     ])
     tracer = FakeTracer()
     events, on_event = event_collector()
@@ -313,21 +315,15 @@ def test_compaction_trigger_summarizes_older_messages_then_runs_step():
         event_sink=EventBus(on_event),
     )
     session.messages.extend({"role": "user", "content": f"message {idx}"} for idx in range(10))
-    original_recent = copy.deepcopy(session.messages[-COMPACTION_KEEP_RECENT:])
 
     result = run(session.run_loop())
 
-    assert result == "final after compaction"
-    assert fake_llm.calls[0]["temperature"] == 0.0
-    assert fake_llm.calls[0]["messages"][0]["content"].startswith("You are a context compaction assistant.")
-    assert fake_llm.calls[1]["messages"][1]["content"] == (
-        "[Context compacted — summary of 2 earlier messages]:\ncompact summary"
-    )
-    assert session.messages[0] == {"role": "system", "content": "You are a fake agent."}
-    assert session.messages[2:10] == original_recent
-    assert session.used_tokens == 18
-    assert "compaction" in [event.type for event in events]
-    assert tracer.steps[0]["step_type"] == "compaction"
+    # The compactor still *reports* it would compact, but the loop ignores it.
+    assert session.compactor.should_compact() is True
+    assert result == "direct answer"
+    assert len(fake_llm.calls) == 1
+    assert "compaction" not in [event.type for event in events]
+    assert all(step["step_type"] != "compaction" for step in tracer.steps)
 
 
 def test_no_tool_calls_marks_done_and_emits_text_delta():

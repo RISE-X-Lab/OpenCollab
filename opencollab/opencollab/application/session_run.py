@@ -49,6 +49,7 @@ class SessionRunUseCase:
         max_steps: int = 100,
         deferrable_tool_names: frozenset[str] = DEFAULT_DEFERRABLE_TOOLS,
         shaper: ShaperPort | None = None,
+        compaction_enabled: bool = True,
     ):
         self.agent = agent
         self.state = state
@@ -62,6 +63,11 @@ class SessionRunUseCase:
         self.max_steps = max_steps
         self.deferrable_tool_names = deferrable_tool_names
         self.shaper = shaper
+        # When False, the run loop never routes to the mutating COMPACTING phase
+        # — read-time shaping (AutoCompactShaper) owns compaction instead. The
+        # ``compaction`` use case is still constructed (and unit-tested) but its
+        # decision is not consulted, so only one summarizer is ever active.
+        self.compaction_enabled = compaction_enabled
         self._pending: PendingStep | None = None
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
@@ -164,7 +170,7 @@ class SessionRunUseCase:
             self.state.transition_to(SessionPhase.STEP_LIMIT_EXCEEDED, reason=reason)
             return
 
-        if self.compaction.should_compact():
+        if self.compaction_enabled and self.compaction.should_compact():
             self.state.transition_to(SessionPhase.COMPACTING)
             return
 

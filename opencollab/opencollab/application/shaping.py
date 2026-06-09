@@ -52,6 +52,44 @@ DEFAULT_HISTORY_TARGET_TOKENS = 90_000
 # Most-recent groups always kept verbatim (never snipped or summarized).
 DEFAULT_HISTORY_KEEP_RECENT_GROUPS = 4
 
+# Tool-output clearing (ToolOutputClearShaper). Old results from these bulky,
+# reconstructible read-only tools have their *content* replaced in place; the
+# last ``KEEP_RECENT`` compactable results stay verbatim. Names are real
+# OpenCollab tool names (see ``bootstrap/container.py``), not a hardcoded set.
+DEFAULT_CLEARED_TOOL_CONTENT = "[Old tool result content cleared]"
+DEFAULT_TOOL_CLEAR_KEEP_RECENT = 5
+DEFAULT_COMPACTABLE_TOOLS = frozenset(
+    {"bash", "file_read", "grep", "git_diff", "run_tests"}
+)
+
+# Window-derived trigger math (ref: context-compaction-py effective_context_window).
+# effective = context_window - output_reserve; trigger = effective - buffer; the
+# layers then compact down to ``trigger * HISTORY_TARGET_RATIO`` (anti-thrash).
+DEFAULT_OUTPUT_RESERVE_TOKENS = 20_000  # held back for the summary/answer response
+DEFAULT_COMPACT_BUFFER_TOKENS = 13_000  # safety margin below the effective window
+HISTORY_TARGET_RATIO = 0.75
+
+
+def history_trigger_target(
+    context_window: int | None,
+    *,
+    output_reserve: int = DEFAULT_OUTPUT_RESERVE_TOKENS,
+    buffer: int = DEFAULT_COMPACT_BUFFER_TOKENS,
+    target_ratio: float = HISTORY_TARGET_RATIO,
+) -> tuple[int, int]:
+    """Derive ``(trigger, target)`` token thresholds from the model's real window.
+
+    Scales the reactive history layers to the active model instead of fixed
+    constants. Degrades to the fixed ``DEFAULT_HISTORY_*`` defaults when the
+    window is unknown (``None``/non-positive), so an unrecognised model still
+    gets sane behaviour.
+    """
+    if not context_window or context_window <= 0:
+        return DEFAULT_HISTORY_TRIGGER_TOKENS, DEFAULT_HISTORY_TARGET_TOKENS
+    trigger = max(1, context_window - output_reserve - buffer)
+    target = max(1, int(trigger * target_ratio))
+    return trigger, target
+
 # Visible marker prefix for an auto-compacted segment — the summary announces
 # itself as a compressed stand-in rather than masquerading as original history
 # (Liu et al. 2026 §11.3: no invisible compression).
@@ -195,6 +233,76 @@ class _ReactiveHistoryShaper:
         return bool(messages) and self._estimate(messages) > self.trigger_tokens
 
 
+class ToolOutputClearShaper(_ReactiveHistoryShaper):
+    """Layer A0 — lowest-loss history compaction: clear old tool *content*.
+
+    Less lossy than ``OldHistorySnipShaper``: instead of deleting whole
+    tool-exchange turns, it keeps the call/answer skeleton (and the assistant's
+    reasoning) intact and replaces only the bulky *content* of OLD compactable
+    tool results with a short placeholder. The most recent ``keep_recent``
+    compactable results stay verbatim. No model call; zero orphan risk (the tool
+    message survives — only its content shrinks). Reactive: identity below the
+    trigger. Idempotent: an already-cleared result is skipped. Slotted before
+    ``OldHistorySnipShaper`` so the cheaper/lower-loss layer runs first.
+
+    Only ``compactable_tools`` results (large, reconstructible read-only outputs)
+    are cleared; edits/writes and coordination tool results are left untouched.
+    The dropped content survives in ``state.messages`` / the transcript.
+    """
+
+    def __init__(
+        self,
+        *,
+        compactable_tools: frozenset[str] = DEFAULT_COMPACTABLE_TOOLS,
+        cleared_content: str = DEFAULT_CLEARED_TOOL_CONTENT,
+        keep_recent: int = DEFAULT_TOOL_CLEAR_KEEP_RECENT,
+        **kwargs: Any,
+    ):
+        super().__init__(**kwargs)
+        self.compactable_tools = compactable_tools
+        self.cleared_content = cleared_content
+        self.keep_recent = max(1, keep_recent)  # never clear the most recent result
+
+    def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not self._over_trigger(messages):
+            return messages
+        clear_ids = self._ids_to_clear(messages)
+        if not clear_ids:
+            return messages
+
+        out: list[dict[str, Any]] = []
+        changed = False
+        for message in messages:
+            if (
+                message.get("role") == "tool"
+                and message.get("tool_call_id") in clear_ids
+                and message.get("content") != self.cleared_content
+            ):
+                out.append({**message, "content": self.cleared_content})
+                changed = True
+            else:
+                out.append(message)
+        return out if changed else messages
+
+    def _ids_to_clear(self, messages: list[dict[str, Any]]) -> set[str]:
+        """Compactable tool_call_ids older than the last ``keep_recent``.
+
+        Order is taken from the assistant ``tool_calls`` that issued them (the
+        tool *name* lives on the call, not the ``role:"tool"`` answer).
+        """
+        compactable_ids: list[str] = []
+        for message in messages:
+            if message.get("role") != "assistant":
+                continue
+            for call in message.get("tool_calls") or ():
+                name = call.get("function", {}).get("name")
+                if name in self.compactable_tools and call.get("id"):
+                    compactable_ids.append(call["id"])
+        if len(compactable_ids) <= self.keep_recent:
+            return set()
+        return set(compactable_ids[: -self.keep_recent])
+
+
 class OldHistorySnipShaper(_ReactiveHistoryShaper):
     """Layer A — cheapest history compaction: pure deletion of old turns.
 
@@ -288,11 +396,19 @@ __all__ = [
     "DEFAULT_HISTORY_TRIGGER_TOKENS",
     "DEFAULT_HISTORY_TARGET_TOKENS",
     "DEFAULT_HISTORY_KEEP_RECENT_GROUPS",
+    "DEFAULT_CLEARED_TOOL_CONTENT",
+    "DEFAULT_TOOL_CLEAR_KEEP_RECENT",
+    "DEFAULT_COMPACTABLE_TOOLS",
+    "DEFAULT_OUTPUT_RESERVE_TOKENS",
+    "DEFAULT_COMPACT_BUFFER_TOKENS",
+    "HISTORY_TARGET_RATIO",
     "COMPACTED_MARKER_PREFIX",
     "SummarizerPort",
     "approx_messages_tokens",
+    "history_trigger_target",
     "ShaperPipeline",
     "PerToolResultBudgetShaper",
+    "ToolOutputClearShaper",
     "OldHistorySnipShaper",
     "AutoCompactShaper",
     "ContextCollapseShaper",

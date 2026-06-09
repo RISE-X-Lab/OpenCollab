@@ -55,6 +55,42 @@ class StreamDelta:
 
 
 # ---------------------------------------------------------------------------
+# Model context windows
+# ---------------------------------------------------------------------------
+
+# Best-effort context-window sizes (tokens), keyed by a substring of the model
+# id. Used to derive history-compaction triggers (see
+# ``shaping.history_trigger_target``); an unrecognised model returns ``None`` and
+# the caller falls back to fixed defaults. Substring match keeps this resilient
+# to version/date suffixes (e.g. ``claude-opus-4-8-2026...`` matches ``claude``).
+MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "claude": 200_000,
+    "gpt-4o": 128_000,
+    "gpt-4-turbo": 128_000,
+    "gpt-4": 8_192,
+    "o1": 200_000,
+    "o3": 200_000,
+    "deepseek": 64_000,
+    "qwen": 131_072,
+    "gemini": 1_000_000,
+}
+
+# Conservative default output reservation when a model is recognised.
+DEFAULT_MAX_OUTPUT_TOKENS = 8_192
+
+
+def model_context_window(model: str | None) -> int | None:
+    """The known context window for ``model``, or ``None`` if unrecognised."""
+    if not model:
+        return None
+    lowered = model.lower()
+    for key, window in MODEL_CONTEXT_WINDOWS.items():
+        if key in lowered:
+            return window
+    return None
+
+
+# ---------------------------------------------------------------------------
 # LLM Client
 # ---------------------------------------------------------------------------
 
@@ -96,6 +132,14 @@ class LLMClient:
                 timeout=request_timeout,
             )
             self._anthropic = None
+
+    def context_window(self) -> int | None:
+        """The model's context window in tokens, or ``None`` if unknown."""
+        return model_context_window(self.model)
+
+    def max_output_tokens(self) -> int:
+        """Tokens to reserve for the model's response (best-effort default)."""
+        return DEFAULT_MAX_OUTPUT_TOKENS
 
     async def _with_retry(self, call_factory, provider: str) -> Any:
         """Retry transient provider errors with exponential backoff.

@@ -55,6 +55,7 @@ from opencollab.application.compaction import (
     DEFAULT_COMPACTION_THRESHOLD,
     ContextCompactionUseCase,
 )
+from opencollab.application.compaction_summary import ReadTimeSummarizer
 from opencollab.application.event_bus import EventBus
 from opencollab.application.hooks import HookEventSubscriber
 from opencollab.application.ports import (
@@ -77,6 +78,8 @@ from opencollab.application.shaping import (
     OldHistorySnipShaper,
     PerToolResultBudgetShaper,
     ShaperPipeline,
+    ToolOutputClearShaper,
+    history_trigger_target,
 )
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.bootstrap.team_config import (
@@ -167,6 +170,13 @@ KNOWN_TOOL_NAMES: frozenset[str] = frozenset(STATELESS_TOOL_FACTORIES) | frozens
 # Tools that let a role act on teammates — used to decide whether to render the
 # topology-aware "Your team" prompt section.
 COORDINATION_TOOL_NAMES: frozenset[str] = frozenset(SCHEDULER_TOOL_FACTORIES)
+# Bulky, reconstructible read-only tool outputs whose OLD results may be cleared
+# in place by ``ToolOutputClearShaper``. Intersected with the real registry so a
+# renamed/removed tool drops out automatically (driven from real names, not a
+# hardcoded library set). Edits/writes and coordination tools are excluded.
+COMPACTABLE_TOOL_NAMES: frozenset[str] = (
+    frozenset({"bash", "file_read", "grep", "git_diff", "run_tests"}) & KNOWN_TOOL_NAMES
+)
 
 
 def build_tools_for_role(
@@ -297,19 +307,52 @@ def build_session_runtime(
         tracer=tracer,
         compaction_threshold=compaction_threshold,
     )
-    # Lazy-degradation pipeline (cheapest first): per-tool-result budget bounds
-    # any one result; the reactive history layers then bound the *total* view
-    # once it crosses the trigger — snip (delete old tool turns) before
-    # auto-compact (summarize; off by default until a summarizer is wired) and a
-    # reserved collapse slot. All read-time over a copy; transcript stays full.
+    # Trigger/target scale to the active model's real context window, degrading
+    # to fixed defaults when the model is unrecognised.
+    context_window = getattr(resolved_llm, "context_window", lambda: None)()
+    history_trigger, history_target = history_trigger_target(context_window)
+
+    # Read-time path owns compaction (Option B): wire the 9-section summary
+    # prompt into the otherwise-dormant AutoCompactShaper via a sync bridge over
+    # the async LLM. We build a fresh client *inside* the summarizer coroutine so
+    # its async HTTP client never crosses event loops; an injected ``llm`` is
+    # reused as-is.
+    if llm is not None:
+        async def _summary_complete(request: list[dict[str, Any]]) -> Any:
+            return await resolved_llm.complete(request, temperature=0.0)
+    else:
+        async def _summary_complete(request: list[dict[str, Any]]) -> Any:
+            client = LLMClient(
+                model=agent.model,
+                api_key=agent.api_key,
+                base_url=agent.base_url,
+                provider=agent.provider,
+                request_timeout=llm_timeout,
+            )
+            return await client.complete(request, temperature=0.0)
+
+    summarizer = ReadTimeSummarizer(_summary_complete, transcript_path=auto_save_path)
+
+    # Lazy-degradation pipeline (cheapest/lowest-loss first): per-tool-result
+    # budget bounds any one result; the reactive history layers then bound the
+    # *total* view once it crosses the trigger — clear old tool *content* in
+    # place (lowest loss) → snip whole old tool turns → auto-compact (summarize
+    # the remaining old span via the ported prompt) → reserved collapse slot.
+    # All read-time over a copy; transcript stays full for lossless resume.
+    history_kwargs = {
+        "estimate_tokens": estimate_messages_tokens,
+        "trigger_tokens": history_trigger,
+        "target_tokens": history_target,
+    }
     resolved_shaper: ShaperPort = (
         shaper
         if shaper is not None
         else ShaperPipeline(
             (
                 PerToolResultBudgetShaper(DEFAULT_TOOL_RESULT_BUDGET),
-                OldHistorySnipShaper(estimate_tokens=estimate_messages_tokens),
-                AutoCompactShaper(estimate_tokens=estimate_messages_tokens),
+                ToolOutputClearShaper(compactable_tools=COMPACTABLE_TOOL_NAMES, **history_kwargs),
+                OldHistorySnipShaper(**history_kwargs),
+                AutoCompactShaper(summarizer=summarizer, **history_kwargs),
                 ContextCollapseShaper(),
             )
         )
@@ -325,6 +368,9 @@ def build_session_runtime(
         max_budget_tokens=max_budget_tokens,
         max_steps=max_steps,
         shaper=resolved_shaper,
+        # Read-time AutoCompactShaper is the active summarizer now; the mutating
+        # ContextCompactionUseCase is retired (constructed but never routed to).
+        compaction_enabled=False,
     )
 
     return SessionRuntime(
