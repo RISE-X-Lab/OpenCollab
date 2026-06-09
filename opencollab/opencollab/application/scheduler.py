@@ -12,7 +12,6 @@ import asyncio
 import hashlib
 import logging
 import time
-from dataclasses import dataclass
 from typing import Any, Callable
 from xml.sax.saxutils import escape, quoteattr
 
@@ -24,36 +23,15 @@ from opencollab.application.ports import (
     TracePort,
     WorktreePoolPort,
 )
+from opencollab.application.scheduler_types import LaunchSpec, QueuedTeammateMessage
+from opencollab.application.self_collaboration import run_spawn_with_review
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.pending import PendingRowError, RowStatus
-from opencollab.domain.scheduler import ReviewVerdict, SessionControlBlock, SessionTable, split_budget
+from opencollab.domain.scheduler import SessionControlBlock, SessionTable, split_budget
 from opencollab.domain.session import SessionPhase
 from opencollab.domain.team import Topology
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class LaunchSpec:
-    """Launch-time persistence spec for a session process.
-
-    Carries *where* to restore from and *where* to checkpoint. The scheduler
-    sequences resume/seed as a launch lifecycle step (``create_init_process``
-    -> ``Session.apply_launch``); the Session/Store own *how*. Pure data — the
-    scheduler forwards it without interpreting the contents.
-    """
-
-    session_file: str | None = None
-    auto_save_path: str | None = None
-
-
-@dataclass(frozen=True)
-class QueuedTeammateMessage:
-    from_aid: int
-    to_aid: int
-    summary: str
-    content: str
-    xml: str
 
 
 class Scheduler:
@@ -678,73 +656,10 @@ class Scheduler:
         context: str = "",
         max_iterations: int = 3,
     ) -> str:
-        """Self-Collaboration: Coder -> Reviewer loop.
-
-        Runs sequentially within the scheduler but tracks each agent in the
-        SessionTable for observability.
-        """
-        current_task = task
-        last_result = ""
-
-        for iteration in range(1, max_iterations + 1):
-            await self._emit_scheduler_event(
-                "review_started",
-                {
-                    "tool": "review_loop",
-                    "iteration": iteration,
-                    "max": max_iterations,
-                },
-            )
-
-            # Spawn coder and wait
-            coder_aid = await self.spawn(parent_aid, "coder", current_task, context)
-            await self._tasks[coder_aid]
-            coder_scb = self.table.get(coder_aid)
-            code_result = coder_scb.result if coder_scb else ""
-
-            # Spawn reviewer and wait
-            review_prompt = (
-                f"Review the following implementation for task: '{task}'\n\n"
-                f"Implementation result:\n{code_result}\n\n"
-                f"Your response MUST end with a verdict line in exactly this format:\n"
-                f"VERDICT: PASS\n"
-                f"or\n"
-                f"VERDICT: FAIL\n\n"
-                f"If FAIL, provide detailed fix instructions before the verdict line."
-            )
-            reviewer_aid = await self.spawn(parent_aid, "reviewer", review_prompt)
-            await self._tasks[reviewer_aid]
-            reviewer_scb = self.table.get(reviewer_aid)
-            review_result = reviewer_scb.result if reviewer_scb else ""
-
-            verdict = ReviewVerdict.parse(review_result)
-            await self._emit_scheduler_event(
-                "review_completed",
-                {
-                    "tool": "review_loop",
-                    "iteration": iteration,
-                    "verdict": "PASS" if verdict.passed else "FAIL",
-                },
-            )
-
-            if verdict.passed:
-                return (
-                    f"[Self-Collaboration: PASSED after {iteration} iteration(s)]\n\n"
-                    f"{code_result}"
-                )
-
-            current_task = (
-                f"Your previous implementation failed review (iteration {iteration}/{max_iterations}).\n"
-                f"Original task: {task}\n\n"
-                f"Reviewer feedback:\n{review_result}\n\n"
-                f"Fix the issues identified by the reviewer."
-            )
-            last_result = code_result
-
-        return (
-            f"[Self-Collaboration: FAILED after {max_iterations} iterations]\n\n"
-            f"Last implementation:\n{last_result}"
+        """Self-Collaboration: Coder -> Reviewer loop (see ``self_collaboration``)."""
+        return await run_spawn_with_review(
+            self, parent_aid, task, context, max_iterations
         )
 
 
-__all__ = ["LaunchSpec", "Scheduler"]
+__all__ = ["LaunchSpec", "QueuedTeammateMessage", "Scheduler"]
