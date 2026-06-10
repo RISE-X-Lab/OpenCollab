@@ -201,20 +201,30 @@ def test_file_read_preserves_workspace_path_jail(tmp_path):
         run(FileReadTool().execute_with_runtime({"path": "/etc/passwd"}, runtime))
 
 
-def test_file_read_preserves_file_not_found():
+def test_file_read_requires_environment():
     runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+
+    result = run(FileReadTool().execute_with_runtime({"path": "missing.txt"}, runtime))
+
+    assert result == "Error: no execution environment available."
+
+
+def test_file_read_preserves_file_not_found(tmp_path):
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
     result = run(FileReadTool().execute_with_runtime({"path": "missing.txt"}, runtime))
 
     assert result == "Error: file not found: missing.txt"
 
 
-def test_file_read_preserves_permission_error_string(monkeypatch):
+def test_file_read_preserves_permission_error_string(monkeypatch, tmp_path):
     def raise_permission_error(*args, **kwargs):
         raise PermissionError("denied")
 
     monkeypatch.setattr(builtins, "open", raise_permission_error)
-    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
     result = run(FileReadTool().execute_with_runtime({"path": "secret.txt"}, runtime))
 
@@ -267,14 +277,28 @@ def test_file_write_preserves_workspace_path_jail(tmp_path):
         )
 
 
-def test_file_write_preserves_missing_old_str(tmp_path):
-    target = tmp_path / "note.txt"
-    target.write_text("alpha\n", encoding="utf-8")
+def test_file_write_requires_environment():
     runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
 
     result = run(
         FileWriteTool().execute_with_runtime(
-            {"path": str(target), "mode": "str_replace", "new_str": "beta"},
+            {"path": "note.txt", "mode": "create", "content": "x"},
+            runtime,
+        )
+    )
+
+    assert result == "Error: no execution environment available."
+
+
+def test_file_write_preserves_missing_old_str(tmp_path):
+    target = tmp_path / "note.txt"
+    target.write_text("alpha\n", encoding="utf-8")
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {"path": "note.txt", "mode": "str_replace", "new_str": "beta"},
             runtime,
         )
     )
@@ -285,18 +309,19 @@ def test_file_write_preserves_missing_old_str(tmp_path):
 def test_file_write_preserves_duplicate_old_str_error(tmp_path):
     target = tmp_path / "note.txt"
     target.write_text("alpha\nalpha\n", encoding="utf-8")
-    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
     result = run(
         FileWriteTool().execute_with_runtime(
-            {"path": str(target), "mode": "str_replace", "old_str": "alpha", "new_str": "beta"},
+            {"path": "note.txt", "mode": "str_replace", "old_str": "alpha", "new_str": "beta"},
             runtime,
         )
     )
 
     assert (
         result
-        == f"Error: old_str found 2 times in {target}. Provide more context to make it unique."
+        == "Error: old_str found 2 times in note.txt. Provide more context to make it unique."
     )
 
 
@@ -360,6 +385,14 @@ def test_host_write_lock_taken_for_none_and_local_envs(tmp_path):
 # ---------------------------------------------------------------------------
 # GrepTool
 # ---------------------------------------------------------------------------
+
+
+def test_grep_tool_requires_environment():
+    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+
+    result = run(GrepTool().execute_with_runtime({"pattern": "needle"}, runtime))
+
+    assert result == "Error: no execution environment available."
 
 
 def test_grep_tool_preserves_env_exec_path_without_path_safety():

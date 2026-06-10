@@ -18,6 +18,25 @@ def _runtime(workspace):
     return ToolRuntime(environment=env, safety_policy=sandbox, permission_policy=None)
 
 
+def test_apply_patch_requires_environment():
+    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "line_replace",
+                "start_line": 1,
+                "end_line": 1,
+                "new_str": "x",
+            },
+            runtime,
+        )
+    )
+
+    assert result == "Error: no execution environment available."
+
+
 def test_line_replace_applies_range_and_stale_guard_keeps_file_unchanged(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()

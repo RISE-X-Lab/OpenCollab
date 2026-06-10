@@ -22,7 +22,6 @@ Ref:
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from opencollab.adapters.tools.apply_patch_engine import (
@@ -105,17 +104,16 @@ class ApplyPatchTool(Tool):
         env = runtime.environment
         safety_policy = runtime.safety_policy
 
+        if not env:
+            return "Error: no execution environment available."
+
         if safety_policy:
             path = safety_policy.check_path(path)
 
         try:
             with host_write_lock(path, env):
                 try:
-                    if env:
-                        current = await env.read_file(path)
-                    else:
-                        with open(path, "r", encoding="utf-8") as f:
-                            current = f.read()
+                    current = await env.read_file(path)
                 except FileNotFoundError:
                     return f"Error: file not found: {path}"
 
@@ -133,12 +131,7 @@ class ApplyPatchTool(Tool):
                     return f"Error applying patch to {path}: {err}"
 
                 assert updated is not None
-                if env:
-                    await env.write_file(path, updated)
-                else:
-                    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-                    with open(path, "w", encoding="utf-8") as f:
-                        f.write(updated)
+                await env.write_file(path, updated)
                 return _summary(path, mode, current, updated)
 
         except PermissionError as e:
