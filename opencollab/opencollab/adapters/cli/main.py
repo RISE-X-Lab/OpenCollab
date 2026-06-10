@@ -192,21 +192,18 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
     elif lead.auto_save_path:
         console.print(f"[dim]Session auto-saving to {lead.auto_save_path}[/dim]")
 
-    cancel_event = asyncio.Event()
-
     async def turn(line: str) -> None:
         if line.lower() == "/save":
             path = f"session-{uuid.uuid4().hex[:8]}.jsonl"
             lead.save(path)
             console.print(f"[dim]Session saved to {path}[/dim]")
             return
-        cancel_event.clear()
         tui.reset()
         tui.start_live()
         try:
             await scheduler.run(line)
         except KeyboardInterrupt:
-            cancel_event.set()
+            pass  # abandon the turn, return to the REPL
         finally:
             tui.stop_live()
             tui.print_stats(scheduler.used_tokens, lead.step_count)
