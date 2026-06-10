@@ -13,7 +13,7 @@ from typing import Optional
 import typer
 from rich.console import Console
 
-from opencollab.adapters.cli.config_resolve import _resolve_config
+from opencollab.adapters.cli.config_resolve import resolve_config
 
 console = Console()
 
@@ -30,7 +30,7 @@ def eval_cmd(
     timeout: float = typer.Option(600.0, "--timeout"),
 ):
     """Headless evaluation mode for benchmarks (SWE-bench, etc.)."""
-    cfg = _resolve_config(".", model, provider, api_key, base_url, None)
+    cfg = resolve_config(".", model, provider, api_key, base_url, None)
     asyncio.run(_eval(
         tasks_file=tasks_file, model=cfg["model"], provider=cfg["provider"],
         api_key=cfg["api_key"], base_url=cfg["base_url"], output_dir=output_dir,

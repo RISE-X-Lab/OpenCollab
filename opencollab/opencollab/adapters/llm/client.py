@@ -9,6 +9,7 @@ import openai
 
 from opencollab.adapters.llm.anthropic_provider import complete_anthropic
 from opencollab.adapters.llm.openai_provider import complete_openai
+from opencollab.adapters.llm.providers import is_anthropic, warn_provider_near_miss
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 
 
@@ -34,7 +35,8 @@ class LLMClient:
         self.max_retries = max(0, max_retries)
         self.request_timeout = request_timeout
 
-        if provider == "anthropic":
+        warn_provider_near_miss(provider)
+        if is_anthropic(provider):
             import anthropic
 
             self._anthropic = anthropic.AsyncAnthropic(

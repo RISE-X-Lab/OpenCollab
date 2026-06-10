@@ -54,7 +54,7 @@ class _RendererEventsMixin:
                 role = str(args.get("role", ""))
             label = f"{agent_label}:{tool}"
             self._active_tools[label] = event.data
-            preview = self._args_preview(args)
+            preview = self._args_preview(event.data)
             self._append_activity((f"{label} started", self._STYLE_ACCENT), (preview, self._STYLE_MUTED))
             if tool == "spawn_agent" and role:
                 self._emit_status(Text(f"{agent_label} spawned {role}", style=self._STYLE_ACCENT))

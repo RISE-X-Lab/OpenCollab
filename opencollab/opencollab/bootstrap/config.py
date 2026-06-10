@@ -24,6 +24,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from opencollab.adapters.llm.providers import is_anthropic, required_env_key
+
 
 class OpenCollabConfig(BaseModel):
     """Runtime configuration for OpenCollab."""
@@ -119,6 +121,53 @@ def load_config_env(workspace: str | None = None) -> dict[str, str]:
     return values
 
 
+def _is_dashscope_base_url(base_url: str | None) -> bool:
+    lowered = (base_url or "").lower()
+    return "dashscope" in lowered or "aliyuncs" in lowered
+
+
+def api_key_env_precedence(provider: str | None, base_url: str | None = None) -> tuple[str, ...]:
+    """Ordered API-key env vars to consult, most provider-specific first.
+
+    Key specificity matters more than source: this keeps a generic exported
+    ``OPENAI_API_KEY`` from being sent to a provider-specific compatible
+    endpoint (DashScope) or to the native Anthropic path.
+    """
+    if _is_dashscope_base_url(base_url):
+        return ("DASHSCOPE_API_KEY", "OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+    if is_anthropic(provider):
+        return ("ANTHROPIC_API_KEY", "OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "DASHSCOPE_API_KEY")
+    return ("OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY")
+
+
+def accepted_api_key_envs(provider: str | None, base_url: str | None = None) -> list[str]:
+    """The env-var names a user can set to satisfy the API-key requirement.
+
+    ``OPENCOLLAB_API_KEY`` plus the provider-specific key, with
+    ``DASHSCOPE_API_KEY`` appended for a DashScope-compatible endpoint.
+    """
+    names = ["OPENCOLLAB_API_KEY", required_env_key(provider)]
+    if _is_dashscope_base_url(base_url):
+        names.append("DASHSCOPE_API_KEY")
+    return list(dict.fromkeys(names))
+
+
+def missing_api_key(provider: str | None, api_key: str | None, base_url: str | None = None) -> bool:
+    """Whether no usable API key is resolvable for ``provider``.
+
+    A non-empty ``api_key`` (already resolved, e.g. from ``build_config``)
+    satisfies the requirement; otherwise consult the env vars in precedence
+    order. Whitespace-only values do not count as present.
+    """
+    if api_key and api_key.strip():
+        return False
+    for key in api_key_env_precedence(provider, base_url):
+        value = os.environ.get(key)
+        if value and value.strip():
+            return False
+    return True
+
+
 def build_config(workspace: str | None = None, overrides: dict[str, Any] | None = None) -> OpenCollabConfig:
     """Build and validate runtime configuration.
 
@@ -165,31 +214,10 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
 
     provider_value = resolve("OPENCOLLAB_PROVIDER", default="openai")
     base_url_value = resolve("OPENCOLLAB_BASE_URL", "OPENAI_BASE_URL")
-    base_url_lower = (base_url_value or "").lower()
-    if "dashscope" in base_url_lower or "aliyuncs" in base_url_lower:
-        api_key_value = resolve_ordered(
-            "DASHSCOPE_API_KEY",
-            "OPENCOLLAB_API_KEY",
-            "OPENAI_API_KEY",
-            "ANTHROPIC_API_KEY",
-            file_first=True,
-        )
-    elif (provider_value or "").lower() == "anthropic":
-        api_key_value = resolve_ordered(
-            "ANTHROPIC_API_KEY",
-            "OPENCOLLAB_API_KEY",
-            "OPENAI_API_KEY",
-            "DASHSCOPE_API_KEY",
-            file_first=True,
-        )
-    else:
-        api_key_value = resolve_ordered(
-            "OPENCOLLAB_API_KEY",
-            "OPENAI_API_KEY",
-            "ANTHROPIC_API_KEY",
-            "DASHSCOPE_API_KEY",
-            file_first=True,
-        )
+    api_key_value = resolve_ordered(
+        *api_key_env_precedence(provider_value, base_url_value),
+        file_first=True,
+    )
 
     values: dict[str, Any] = {
         "model": resolve("OPENCOLLAB_MODEL", default="gpt-4o"),

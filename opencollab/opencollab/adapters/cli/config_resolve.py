@@ -1,11 +1,17 @@
-"""CLI config resolution: merge CLI args with .env defaults + API-key checks."""
+"""CLI config resolution: merge CLI args with .env defaults + API-key checks.
+
+Provider→env-key knowledge (which keys satisfy a provider, which is missing)
+lives in ``bootstrap.config``; this module only merges CLI args and renders the
+missing-key hint.
+"""
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from rich.console import Console
+
+from opencollab.bootstrap.config import accepted_api_key_envs, missing_api_key
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -15,35 +21,25 @@ def _safe_int(value: Any, default: int) -> int:
         return default
 
 
-def _required_env_key(provider: str | None) -> str:
-    p = (provider or "openai").lower()
-    return "ANTHROPIC_API_KEY" if p == "anthropic" else "OPENAI_API_KEY"
+def missing_api_key_for(provider: str | None, api_key: str | None, base_url: str | None = None) -> bool:
+    return missing_api_key(provider, api_key, base_url)
 
 
-def _missing_api_key(provider: str | None, api_key: str | None) -> bool:
-    if api_key:
-        return False
-    return not bool(os.environ.get(_required_env_key(provider)))
-
-
-def _print_missing_key_hint(
+def print_missing_key_hint(
     console: Console, provider: str | None, base_url: str | None = None
 ) -> None:
     from opencollab.adapters.tui import TUI
 
     tui = TUI(console)
     tui.print_welcome()
-    env_key = _required_env_key(provider)
-    accepted = f"OPENCOLLAB_API_KEY or {env_key}"
-    if base_url and "dashscope" in base_url.lower() and env_key != "DASHSCOPE_API_KEY":
-        accepted += " or DASHSCOPE_API_KEY"
+    accepted = " or ".join(accepted_api_key_envs(provider, base_url))
     console.print(
         f"[red]Missing API key[/red]: pass [bold]--api-key[/bold] or set [bold]{accepted}[/bold]."
     )
 
 
-def _resolve_config(workspace: str, model: str | None, provider: str | None,
-                     api_key: str | None, base_url: str | None, budget: int | None) -> dict:
+def resolve_config(workspace: str, model: str | None, provider: str | None,
+                   api_key: str | None, base_url: str | None, budget: int | None) -> dict:
     """Merge CLI args with .env defaults. CLI args take precedence."""
     from opencollab.bootstrap.config import get_config
     cfg = get_config(workspace)

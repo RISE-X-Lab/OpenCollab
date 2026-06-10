@@ -143,6 +143,7 @@ SchedulerUC ..|> SchedulerPort
 ' Composition Root wiring (only place that knows concretes)
 ' ============================================================
 Container --> Config
+Config --> LLMAdapter : provider classification (providers.py)
 Container --> LLMAdapter
 Container --> EnvAdapter
 Container --> StoreAdapter

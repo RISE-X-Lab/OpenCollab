@@ -84,6 +84,33 @@ def test_tool_start_for_spawn_agent_promotes_role_from_args():
     assert any("spawned analyst" in s for s in statuses)
 
 
+def test_args_preview_reads_nested_session_args_and_top_level_task():
+    tui = _make_tui()
+    # Session tool: args nested under "args".
+    assert tui._args_preview({"args": {"command": "ls -la"}}) == " ls -la"
+    assert tui._args_preview({"args": {"file_path": "src/x.py"}}) == " src/x.py"
+    # Scheduler event (e.g. agent_spawned): task carried at the top level.
+    assert tui._args_preview({"role": "coder", "task": "implement X"}) == " implement X"
+    # Code formatting + length cap for the spinner.
+    assert tui._args_preview({"args": {"command": "echo hi"}}, code=True) == " `echo hi`"
+
+
+def test_spawn_spinner_preview_uses_scheduler_task_payload():
+    tui = _make_tui()
+    tui._live_paused = True
+    tui.event_handler(
+        SchedulerEvent(
+            "agent_spawned",
+            {"aid": 1, "parent_aid": 0, "role": "coder", "task": "implement X"},
+        )
+    )
+    display = tui._build_display()
+    plain = "\n".join(
+        getattr(block, "plain", "") for block in display.renderables
+    )
+    assert "implement X" in plain
+
+
 def test_step_start_updates_step_counter_and_status():
     tui = _make_tui()
     tui._live_paused = True
@@ -290,6 +317,17 @@ def test_team_provider_marks_busy_agent_running():
     panel = tui._build_team_panel()
     assert "Lead [running]" in panel.plain
     assert "A1 coder [running]" in panel.plain
+
+
+def test_team_provider_settled_phases_render_idle():
+    tui = _make_tui()
+    tui.set_team_provider(lambda: [
+        {"aid": 0, "role": "lead", "phase": "done", "busy": False},
+        {"aid": 1, "role": "coder", "phase": "scheduled", "busy": False},
+    ])
+    panel = tui._build_team_panel()
+    assert "Lead [idle]" in panel.plain
+    assert "A1 coder [idle]" in panel.plain
 
 
 def test_team_provider_failure_falls_back_to_event_roster():
