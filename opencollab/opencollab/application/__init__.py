@@ -12,10 +12,11 @@ from opencollab.application.ports import (
     ToolPort,
 )
 from opencollab.application.session_run import SessionRunUseCase
-from opencollab.application.tool_execution import ToolExecutionUseCase, ToolRuntime
+from opencollab.application.tool_execution import DeferredCall, ToolExecutionUseCase, ToolRuntime
 
 __all__ = [
     "AutoSaveSubscriber",
+    "DeferredCall",
     "EnvironmentPort",
     "EventBus",
     "EventCallback",

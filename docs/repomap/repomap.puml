@@ -79,7 +79,7 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   [app.session\nSession + SessionRuntime\napply_launch (idempotent resume/seed)] as SessionFacade
   [app.session_run\nSessionRunUseCase] as SessionRunner
   [app.compaction\nContextCompactionUseCase] as Compactor
-  [app.tool_execution\nToolExecutionUseCase + ToolRuntime\nCallbackPermissionPolicy] as ToolExec
+  [app.tool_execution\nToolExecutionUseCase + ToolRuntime\nDeferredCall (deferred-tool contract)\nCallbackPermissionPolicy] as ToolExec
   [app.scheduler\nScheduler\ncreate_init_process (agent 0) + spawn (children),\nparallel via asyncio.create_task\n(LaunchSpec/QueuedTeammateMessage -> scheduler_types;\nspawn_with_review loop -> self_collaboration)] as SchedulerUC
   [app.autosave\nAutoSaveSubscriber] as Autosave
   [app.event_bus\nEventBus (fan-out)] as EventBus

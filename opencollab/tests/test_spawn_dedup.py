@@ -15,7 +15,7 @@ import asyncio
 from opencollab.adapters.tools.spawn import SpawnAgentTool
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.scheduler import Scheduler
-from opencollab.application.tool_execution import ToolRuntime
+from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 from opencollab.domain.session import SessionPhase, SessionState
 
 
@@ -98,10 +98,11 @@ def test_duplicate_spawn_tool_call_is_refused_while_in_flight():
             environment=None, safety_policy=None, permission_policy=None,
             aid=0, tool_call_id="call-1",
         )
-        aid = await tool.execute_with_runtime(
+        deferred = await tool.execute_with_runtime(
             {"role": "coder", "task": "build it"}, first_rt
         )
-        assert isinstance(aid, int)
+        assert isinstance(deferred, DeferredCall)
+        aid = deferred.ref
 
         # Second identical spawn returns a self-describing string, not a child.
         dup_rt = ToolRuntime(

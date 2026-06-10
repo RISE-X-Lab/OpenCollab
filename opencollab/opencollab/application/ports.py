@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
 from opencollab.domain.hooks import HookOutcome
 
 if TYPE_CHECKING:
-    from opencollab.application.tool_execution import ToolRuntime
+    from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 
 
 class EnvironmentPort(Protocol):
@@ -79,6 +79,11 @@ class HookPort(Protocol):
 
 
 class ToolPort(Protocol):
+    """A callable tool: JSON Schema input, string result. A deferrable tool
+    (e.g. ``spawn_agent``) returns a ``DeferredCall`` instead when it hands
+    work off whose result arrives later.
+    """
+
     name: str
     description: str
     parameters: dict[str, Any]
@@ -90,7 +95,7 @@ class ToolPort(Protocol):
         self,
         params: dict[str, Any],
         runtime: "ToolRuntime",
-    ) -> str:
+    ) -> "str | DeferredCall":
         ...
 
 

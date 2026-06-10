@@ -17,7 +17,7 @@ from typing import Any, ContextManager
 
 from filelock import FileLock
 
-from opencollab.application.tool_execution import ToolRuntime
+from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 
 
 def host_write_lock(path: str, env: Any) -> ContextManager[Any]:
@@ -60,8 +60,12 @@ class Tool:
         self,
         params: dict[str, Any],
         runtime: ToolRuntime,
-    ) -> str:
-        """Execute the tool with the runtime bundle. Returns result as string."""
+    ) -> str | DeferredCall:
+        """Execute the tool with the runtime bundle.
+
+        Returns the result as a string; a deferrable tool returns a
+        ``DeferredCall`` instead when it hands work off.
+        """
         raise NotImplementedError(
             f"Tool '{self.name}' must implement execute_with_runtime()"
         )

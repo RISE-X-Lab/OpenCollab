@@ -6,14 +6,15 @@ from typing import Any
 
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.ports import SchedulerPort
-from opencollab.application.tool_execution import ToolRuntime
+from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 
 
 class SpawnAgentTool(Tool):
     """Tool that an agent uses to spawn a child agent asynchronously.
 
-    Returns immediately with the child agent's aid. The child runs in parallel
-    and its result is injected into the parent's message history when complete.
+    Returns immediately with a ``DeferredCall`` referencing the child agent's
+    aid. The child runs in parallel and its result is injected into the
+    parent's message history when complete.
     """
 
     name = "spawn_agent"
@@ -50,7 +51,7 @@ class SpawnAgentTool(Tool):
         self,
         params: dict[str, Any],
         runtime: ToolRuntime,
-    ) -> int:
+    ) -> DeferredCall | str:
         role = params["role"]
         task = params["task"]
         context = params.get("context", "")
@@ -66,11 +67,12 @@ class SpawnAgentTool(Tool):
                 f"its result will be delivered to you as a tool result, and you "
                 f"can act on it then."
             )
-        # Return the child aid so the deferral path can register a pending row
-        # keyed by this tool call; the child's result fills it on completion.
-        return await self._scheduler.spawn(
+        # Defer with the child aid so the deferral path can register a pending
+        # row keyed by this tool call; the child's result fills it on completion.
+        aid = await self._scheduler.spawn(
             parent_aid, role, task, context, tool_call_id=runtime.tool_call_id
         )
+        return DeferredCall(ref=aid)
 
 
 class SpawnWithReviewTool(Tool):
