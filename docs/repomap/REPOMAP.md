@@ -63,7 +63,7 @@ Source root: `opencollab/opencollab/`. Entry point: `python -m opencollab`
 - `config.py` — load config + env
 
 ### harness/
-- `evaluator.py` — eval harness
+- `evaluator.py` — headless eval harness (sole consumer: `adapters/cli/eval.py`). `run_eval_task`/`run_eval_batch` take injectable `prompt`/`tools_factory`/`env_factory`/`max_steps` (defaults `EVAL_AGENT_PROMPT`/`default_tools`/`default_env_factory`/`DEFAULT_MAX_STEPS` preserve current behavior). `EvalResult.patch_produced` (and the `save_results` JSONL key) reports a non-empty diff with no error — a patch was produced, not that the instance was resolved.
 
 ## Key flows
 - **Context assembly:** a session's startup messages come from a `ContextPlan` (built by `ContextBuilder.build_plan`), not a single concatenated prompt. Identity + team land in the system message; a spawned child's task is a TASK-layer USER_CONTEXT source seeded right after the system prompt (so the assembled startup is ≥2 messages, persisted and resumed intact). Project/memory/tool-meta layers are *registered* as deferred sources but not loaded yet. The lead's first turn is per-turn (`add_user_message` from the CLI), not a startup source.

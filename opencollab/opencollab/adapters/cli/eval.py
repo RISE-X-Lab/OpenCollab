@@ -77,10 +77,10 @@ async def _eval(
     results_path = os.path.join(output_dir, "results.jsonl")
     save_results(results, results_path)
 
-    passed = sum(1 for r in results if r.success)
-    console.print(f"\n[bold]Results: {passed}/{len(results)} passed[/bold]")
+    produced = sum(1 for r in results if r.patch_produced)
+    console.print(f"\n[bold]Results: {produced}/{len(results)} produced a patch[/bold]")
     console.print(f"Results saved to {results_path}")
 
     for r in results:
-        status = "[green]PASS[/green]" if r.success else "[red]FAIL[/red]"
+        status = "[green]PATCH[/green]" if r.patch_produced else "[red]NO PATCH[/red]"
         console.print(f"  {r.task_id}: {status} ({r.tokens_used:,} tokens, {r.duration:.1f}s)")
