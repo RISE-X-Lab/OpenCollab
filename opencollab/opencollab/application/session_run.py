@@ -71,6 +71,12 @@ class SessionRunUseCase:
         self._pending: PendingStep | None = None
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
+        """Drive the phase FSM until the turn finishes or suspends.
+
+        Returns the last assistant text answer (empty string if none). On an
+        unexpected exception the session is marked failed and the exception
+        re-raised; cancellation flushes the tracer before propagating.
+        """
         try:
             # A session suspended on deferred work resumes from its pending
             # table; a completed turn (DONE) short-circuits to its last answer;
@@ -97,6 +103,7 @@ class SessionRunUseCase:
         return ""
 
     def is_terminal_phase(self) -> bool:
+        """Whether the session has finished its turn (done/failed/limits)."""
         return self.state.phase.is_terminal()
 
     def _should_suspend(self) -> bool:
@@ -120,6 +127,7 @@ class SessionRunUseCase:
         self.state.transition_to(SessionPhase.PRECHECK)
 
     async def advance(self, cancel_event: asyncio.Event | None = None) -> None:
+        """Execute one FSM step: dispatch the current phase to its handler."""
         match self.state.phase:
             case SessionPhase.SCHEDULED:
                 self.state.transition_to(SessionPhase.IDLE)
@@ -146,6 +154,12 @@ class SessionRunUseCase:
                 raise RuntimeError(f"Cannot advance terminal phase: {self.state.phase.value}")
 
     async def precheck(self, cancel_event: asyncio.Event | None) -> None:
+        """Gate the next LLM call: cancellation, token budget, step limit.
+
+        Each guard appends a visible system message, emits an error event, and
+        moves to the matching terminal phase; otherwise route to COMPACTING
+        (when enabled and due) or straight to CALLING_LLM.
+        """
         if cancel_event and cancel_event.is_set():
             self.state.append_message({"role": "system", "content": "[Session interrupted by user]"})
             await self.event_publisher.emit(self.event_factory.error("cancelled"))
@@ -177,6 +191,7 @@ class SessionRunUseCase:
         self.state.transition_to(SessionPhase.CALLING_LLM)
 
     async def run_compaction(self) -> None:
+        """Run the (legacy, mutating) compaction use case, then call the LLM."""
         result = await self.compaction.compact(apply=False)
         result.apply_to(self.state)
         if result.did_compact:
@@ -186,6 +201,8 @@ class SessionRunUseCase:
         self.state.transition_to(SessionPhase.CALLING_LLM)
 
     async def run_llm_call(self) -> None:
+        """One model call: track tokens, trace, append the assistant message,
+        and stash the response as the pending step for HANDLING_RESPONSE."""
         self.state.advance_step()
         await self.event_publisher.emit(self.event_factory.step_start(self.state.step_count))
         start = time.monotonic()
@@ -202,6 +219,8 @@ class SessionRunUseCase:
         self.state.transition_to(SessionPhase.HANDLING_RESPONSE)
 
     async def handle_pending_response(self) -> None:
+        """Route the pending LLM response: tool calls → EXECUTING_TOOLS;
+        a plain text answer finishes the turn (DONE)."""
         pending = self._pending
         if pending is None:
             self.state.fail()
@@ -220,6 +239,14 @@ class SessionRunUseCase:
         self.state.transition_to(SessionPhase.DONE, reason="completed")
 
     async def execute_pending_tools(self) -> None:
+        """Run the pending response's tool calls.
+
+        All-synchronous batches run immediately and proceed to AUTOSAVING. A
+        batch containing a deferrable tool (e.g. ``spawn_agent``) is buffered
+        whole into the pending-events table so the eventual tool-result block
+        stays contiguous; the session then suspends on AWAITING_EVENTS until
+        the scheduler delivers the outstanding results.
+        """
         pending = self._pending
         if pending is None:
             self.state.fail()
@@ -302,6 +329,7 @@ class SessionRunUseCase:
         self.state.transition_to(SessionPhase.AWAITING_EVENTS)
 
     def _split_tool_calls(self, tool_calls: list[dict]) -> tuple[list[dict], list[dict]]:
+        """Partition a batch into (immediate, deferred) by deferrable name."""
         immediate: list[dict] = []
         deferred: list[dict] = []
         for tc in tool_calls:
@@ -313,6 +341,7 @@ class SessionRunUseCase:
         return immediate, deferred
 
     async def autosave_pending_step(self) -> None:
+        """Emit step_end (the autosave trigger) and loop back to PRECHECK."""
         pending = self._pending
         latency = pending.latency if pending is not None else 0.0
         await self.finish_step(latency)
@@ -326,8 +355,11 @@ class SessionRunUseCase:
         return self.agent.tool_schemas() or None
 
     async def call_llm(self, tools: list[dict] | None) -> Any:
-        # Shape a copy for the model's view only; ``state.messages`` stays the
-        # complete, persisted history (the shaper never mutates it).
+        """Complete against the shaped view of history.
+
+        The shaper reshapes a copy for the model's view only;
+        ``state.messages`` stays the complete, persisted history.
+        """
         messages = (
             self.shaper.shape(self.state.messages)
             if self.shaper is not None

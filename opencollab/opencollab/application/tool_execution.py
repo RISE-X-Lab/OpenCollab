@@ -66,6 +66,15 @@ class ToolExecutionUseCase:
         self.safety_policy = safety_policy
 
     async def process(self, tool_calls: list[dict]) -> ToolProcessingResult:
+        """Execute a batch of tool calls and collect their result messages.
+
+        Every call gets a ``role:"tool"`` answer — including failures (bad JSON
+        args, unknown tool, loop detection), which answer with an error string
+        instead of raising — so no ``tool_call_id`` is ever left unanswered.
+        Repeated identical calls past ``MAX_SIMILAR_CALLS`` short-circuit with
+        a loop warning rather than executing. Nothing is applied to session
+        state here; the caller applies the returned ``ToolProcessingResult``.
+        """
         result = ToolProcessingResult()
         recent_call_hashes = list(self.state.recent_call_hashes)
 
@@ -144,6 +153,11 @@ class ToolExecutionUseCase:
         return self.agent.find_tool(tool_name)
 
     async def execute_tool(self, tool, args: dict) -> tuple[str, float]:
+        """Run one tool, mapping any exception to an error string.
+
+        Returns ``(output, latency_seconds)`` — never raises, so one failing
+        tool cannot abort the rest of the batch.
+        """
         start = time.monotonic()
         runtime = self.tool_runtime()
         try:

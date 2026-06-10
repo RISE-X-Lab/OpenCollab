@@ -139,49 +139,50 @@ class FileWriteTool(Tool):
         try:
             with lock:
                 if mode == "create":
-                    content = params.get("content", "")
-                    if env:
-                        await env.write_file(path, content)
-                    else:
-                        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-                        with open(path, "w", encoding="utf-8") as f:
-                            f.write(content)
-                    return f"Created/wrote {path} ({len(content)} chars)"
-
-                elif mode == "str_replace":
-                    old_str = params.get("old_str", "")
-                    new_str = params.get("new_str", "")
-                    if not old_str:
-                        return "Error: old_str is required for str_replace mode."
-
-                    # Read current content
-                    if env:
-                        current = await env.read_file(path)
-                    else:
-                        with open(path, "r", encoding="utf-8") as f:
-                            current = f.read()
-
-                    # Check uniqueness (ref: claude-code Edit — must be unique)
-                    count = current.count(old_str)
-                    if count == 0:
-                        return f"Error: old_str not found in {path}. Make sure the text matches exactly."
-                    if count > 1:
-                        return f"Error: old_str found {count} times in {path}. Provide more context to make it unique."
-
-                    # Replace
-                    updated = current.replace(old_str, new_str, 1)
-                    if env:
-                        await env.write_file(path, updated)
-                    else:
-                        with open(path, "w", encoding="utf-8") as f:
-                            f.write(updated)
-                    return f"Replaced in {path}: {len(old_str)} chars → {len(new_str)} chars"
-
-                else:
-                    return f"Error: unknown mode '{mode}'. Use 'create' or 'str_replace'."
-
+                    return await self._create(env, path, params.get("content", ""))
+                if mode == "str_replace":
+                    return await self._str_replace(env, path, params)
+                return f"Error: unknown mode '{mode}'. Use 'create' or 'str_replace'."
         except PermissionError as e:
             return f"Error: {e}"
+
+    async def _create(self, env: Any, path: str, content: str) -> str:
+        """Write ``content`` to ``path``, creating parent directories as needed."""
+        if env:
+            await env.write_file(path, content)
+        else:
+            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(content)
+        return f"Created/wrote {path} ({len(content)} chars)"
+
+    async def _str_replace(self, env: Any, path: str, params: dict[str, Any]) -> str:
+        """Replace a unique occurrence of ``old_str`` with ``new_str`` in ``path``."""
+        old_str = params.get("old_str", "")
+        new_str = params.get("new_str", "")
+        if not old_str:
+            return "Error: old_str is required for str_replace mode."
+
+        if env:
+            current = await env.read_file(path)
+        else:
+            with open(path, "r", encoding="utf-8") as f:
+                current = f.read()
+
+        # Check uniqueness (ref: claude-code Edit — must be unique)
+        count = current.count(old_str)
+        if count == 0:
+            return f"Error: old_str not found in {path}. Make sure the text matches exactly."
+        if count > 1:
+            return f"Error: old_str found {count} times in {path}. Provide more context to make it unique."
+
+        updated = current.replace(old_str, new_str, 1)
+        if env:
+            await env.write_file(path, updated)
+        else:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(updated)
+        return f"Replaced in {path}: {len(old_str)} chars → {len(new_str)} chars"
 
 
 class GrepTool(Tool):

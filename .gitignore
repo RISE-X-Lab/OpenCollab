@@ -5,6 +5,7 @@ opencode/
 self-collaboration_paper_tex/
 .env
 configs/.env
+configs/team.yaml
 .opencollab/
 .claude/
 logs/
