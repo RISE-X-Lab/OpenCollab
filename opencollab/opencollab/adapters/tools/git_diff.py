@@ -19,6 +19,7 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
+from opencollab.adapters.tools._output import truncate
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -96,14 +97,14 @@ class GitDiffTool(Tool):
             err = (diff_result.stderr or diff_result.stdout).strip()
             if "not a git repository" in err.lower():
                 return "Error: not a git repository."
-            return f"Error running '{diff_cmd}':\n{_truncate(err, MAX_STATUS_CHARS)}"
+            return f"Error running '{diff_cmd}':\n{truncate(err, MAX_STATUS_CHARS)}"
 
         parts: list[str] = []
         if include_status:
             status_result = await env.exec_cmd("git --no-pager status --short", timeout=30)
             status = status_result.stdout.strip()
             parts.append(
-                "Status (git status --short):\n" + _truncate(status, MAX_STATUS_CHARS)
+                "Status (git status --short):\n" + truncate(status, MAX_STATUS_CHARS)
                 if status
                 else "Status: working tree clean."
             )
@@ -111,20 +112,8 @@ class GitDiffTool(Tool):
         diff = diff_result.stdout.strip()
         label = "diff --stat" if stat_only else ("staged diff" if staged else "diff vs HEAD")
         if diff:
-            parts.append(f"{label}:\n" + _truncate(diff, MAX_DIFF_CHARS))
+            parts.append(f"{label}:\n" + truncate(diff, MAX_DIFF_CHARS))
         else:
             parts.append(f"{label}: (no changes)")
 
         return "\n\n".join(parts)
-
-
-def _truncate(text: str, max_chars: int) -> str:
-    """Keep head + tail, drop the middle (ref: bash.py _truncate)."""
-    if len(text) <= max_chars:
-        return text
-    half = max_chars // 2
-    return (
-        text[:half]
-        + f"\n\n... [{len(text) - max_chars} chars truncated] ...\n\n"
-        + text[-half:]
-    )

@@ -1,28 +1,25 @@
+import re
 from pathlib import Path
+
+_PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "opencollab"
+
+# The domain is the innermost layer: it may import nothing else in the package
+# (application included — the rule that the application-boundary glob does not
+# cover). Match real import statements only; a docstring mention is fine.
+_FORBIDDEN = re.compile(
+    r"^\s*(?:from|import)\s+opencollab\."
+    r"(?:core|application|tools|bootstrap|cli|adapters|team)\b",
+    re.MULTILINE,
+)
 
 
 def test_domain_modules_do_not_import_outer_layers():
-    package_root = Path(__file__).resolve().parents[1]
-    domain_files = [
-        package_root / "opencollab/domain/agent.py",
-        package_root / "opencollab/domain/session.py",
-        package_root / "opencollab/domain/tools.py",
-        package_root / "opencollab/domain/events.py",
+    offenders = [
+        str(p.relative_to(_PACKAGE_ROOT))
+        for p in (_PACKAGE_ROOT / "domain").rglob("*.py")
+        if _FORBIDDEN.search(p.read_text(encoding="utf-8"))
     ]
-    forbidden = [
-        "opencollab.core",
-        "opencollab.application",
-        "opencollab.tools",
-        "opencollab.bootstrap",
-        "opencollab.cli",
-        "opencollab.adapters",
-        "opencollab.team",
-    ]
-
-    for path in domain_files:
-        source = path.read_text(encoding="utf-8")
-        for import_path in forbidden:
-            assert import_path not in source
+    assert offenders == []
 
 
 def test_tool_base_satisfies_tool_spec():

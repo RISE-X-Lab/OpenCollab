@@ -207,6 +207,26 @@ def test_config_unknown_event_raises(tmp_path, monkeypatch):
         load_team_config(str(tmp_path))
 
 
+def test_config_unknown_action_type_raises(tmp_path, monkeypatch):
+    bad = (
+        "roles:\n  lead:\n    tools: [bash]\n    prompt: x\n"
+        "hooks:\n  Stop:\n    - command: echo\n      type: banana\n"
+    )
+    _write_team(tmp_path, monkeypatch, bad)
+    with pytest.raises(ValueError, match="Unknown hook action type"):
+        load_team_config(str(tmp_path))
+
+
+def test_config_reserved_action_type_parses(tmp_path, monkeypatch):
+    team = (
+        "roles:\n  lead:\n    tools: [bash]\n    prompt: x\n"
+        "hooks:\n  Stop:\n    - command: echo\n      type: agent\n"
+    )
+    _write_team(tmp_path, monkeypatch, team)
+    cfg = load_team_config(str(tmp_path))
+    assert cfg.hooks[0].action_type == "agent"
+
+
 def test_config_without_hooks_is_empty(tmp_path, monkeypatch):
     _write_team(tmp_path, monkeypatch, "roles:\n  lead:\n    tools: [bash]\n    prompt: x\n")
     assert load_team_config(str(tmp_path)).hooks == ()

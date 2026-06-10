@@ -27,7 +27,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
-from opencollab.domain.hooks import HOOK_EVENT_NAMES, HookSpec
+from opencollab.domain.hooks import HOOK_ACTION_TYPES, HOOK_EVENT_NAMES, HookSpec
 from opencollab.domain.team import Topology
 
 # Canonical tool bundles, referenced by name (see bootstrap.tool_registry).
@@ -226,6 +226,11 @@ def _build_hook_specs(hooks: dict[str, list[_HookActionFileModel]]) -> tuple[Hoo
                 f"Known events: {sorted(HOOK_EVENT_NAMES)}"
             )
         for action in actions:
+            if action.type not in HOOK_ACTION_TYPES:
+                raise ValueError(
+                    f"Unknown hook action type '{action.type}' for event "
+                    f"'{event_name}'. Known types: {sorted(HOOK_ACTION_TYPES)}"
+                )
             specs.append(
                 HookSpec(
                     event=event_name,

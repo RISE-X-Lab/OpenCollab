@@ -21,6 +21,7 @@ import re
 import shlex
 from typing import Any
 
+from opencollab.adapters.tools._output import truncate
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -113,17 +114,6 @@ def _build_command(runner: str, target: str, extra_args: str) -> str:
     return " ".join(parts)
 
 
-def _truncate(text: str, max_chars: int) -> str:
-    if len(text) <= max_chars:
-        return text
-    half = max_chars // 2
-    return (
-        text[:half]
-        + f"\n\n... [{len(text) - max_chars} chars truncated] ...\n\n"
-        + text[-half:]
-    )
-
-
 def _summary_line(output: str) -> str | None:
     """The last pytest summary line (``==== ... in 0.1s ====``), if any."""
     summary = None
@@ -168,7 +158,7 @@ def _traceback_head(output: str) -> str:
             end = section.find("= short test summary info =")
             if end != -1:
                 section = section[:end]
-            return _truncate(section.strip(), MAX_TRACEBACK_CHARS)
+            return truncate(section.strip(), MAX_TRACEBACK_CHARS)
     return ""
 
 
@@ -178,7 +168,7 @@ def _format_report(cmd: str, returncode: int, output: str) -> str:
             f"Command: {cmd}\nExit code: {returncode}\n"
             "Error: test runner not found. Is pytest installed, and is the "
             "'runner' command correct for this project?\n"
-            f"{_truncate(output.strip(), 1_000)}"
+            f"{truncate(output.strip(), 1_000)}"
         )
 
     summary = _summary_line(output)
@@ -206,6 +196,6 @@ def _format_report(cmd: str, returncode: int, output: str) -> str:
 
     # No structured signal at all (e.g. collection crash) — fall back to output.
     if not counts and not failed and not head:
-        parts.append("Output:\n" + _truncate(output.strip(), MAX_TRACEBACK_CHARS))
+        parts.append("Output:\n" + truncate(output.strip(), MAX_TRACEBACK_CHARS))
 
     return "\n".join(parts)

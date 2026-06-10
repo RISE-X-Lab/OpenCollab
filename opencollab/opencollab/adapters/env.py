@@ -14,12 +14,15 @@ Ref:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shlex
 import shutil
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -165,7 +168,14 @@ class WorktreeEnvironment(Environment):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await proc.communicate()
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(
+                    "git worktree remove exited %s for %s: %s",
+                    proc.returncode,
+                    self._worktree_dir,
+                    stderr.decode(errors="replace").strip(),
+                )
 
             # Clean up branch
             proc = await asyncio.create_subprocess_exec(
@@ -174,7 +184,14 @@ class WorktreeEnvironment(Environment):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await proc.communicate()
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(
+                    "git branch -D exited %s for %s: %s",
+                    proc.returncode,
+                    self._branch,
+                    stderr.decode(errors="replace").strip(),
+                )
 
             # Fallback: remove directory
             if os.path.exists(self._worktree_dir):
@@ -299,5 +316,12 @@ class DockerEnvironment(Environment):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await proc.communicate()
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(
+                    "docker kill exited %s for %s: %s",
+                    proc.returncode,
+                    self._container_id,
+                    stderr.decode(errors="replace").strip(),
+                )
             self._container_id = None

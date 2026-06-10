@@ -7,9 +7,12 @@ env for a given role, remember it for cleanup, tear them all down at the end.
 
 from __future__ import annotations
 
+import logging
 import uuid
 
 from opencollab.adapters.env import Environment, LocalEnvironment, WorktreeEnvironment
+
+logger = logging.getLogger(__name__)
 
 
 class WorktreePool:
@@ -36,12 +39,16 @@ class WorktreePool:
         return env
 
     async def release(self) -> None:
-        """Tear down every worktree this pool has handed out."""
+        """Tear down every worktree this pool has handed out.
+
+        One failing teardown must not abort the others, so each is isolated;
+        the failure is logged rather than swallowed so it is diagnosable.
+        """
         for env in self._envs:
             try:
                 await env.cleanup()
             except Exception:
-                pass
+                logger.warning("worktree cleanup failed for %s", env.workspace, exc_info=True)
         self._envs.clear()
 
     async def cleanup(self) -> None:
