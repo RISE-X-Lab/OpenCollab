@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, runtime_ch
 from opencollab.domain.hooks import HookOutcome
 
 if TYPE_CHECKING:
+    from opencollab.application.scheduler_types import LaunchSpec
     from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 
 
@@ -125,11 +126,11 @@ class SessionFactoryPort(Protocol):
         self,
         *,
         role: str,
-        env: Any,
+        env: EnvironmentPort,
         budget: int,
         max_steps: int = 50,
         aid: int = -1,
-        scheduler: Any = None,
+        scheduler: SchedulerPort | None = None,
         task: str | None = None,
         context: str = "",
     ) -> Any:
@@ -138,8 +139,8 @@ class SessionFactoryPort(Protocol):
     def create_lead_session(
         self,
         *,
-        scheduler: Any,
-        launch: Any,
+        scheduler: SchedulerPort,
+        launch: LaunchSpec,
         budget: int,
         aid: int = 0,
     ) -> Any:

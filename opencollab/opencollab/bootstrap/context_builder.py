@@ -11,11 +11,10 @@ system prompt.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
 from opencollab.adapters.trace import Tracer
 from opencollab.application.event_bus import EventBus
-from opencollab.application.ports import PermissionPort, SafetyPolicyFactory
+from opencollab.application.ports import PermissionPort, SafetyPolicyFactory, SchedulerPort
 from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
 from opencollab.bootstrap.tool_registry import COORDINATION_TOOL_NAMES, build_tools_for_role
 from opencollab.domain.agent import Agent
@@ -146,7 +145,7 @@ class ContextBuilder:
         self,
         role_name: str,
         *,
-        scheduler: Any = None,
+        scheduler: SchedulerPort | None = None,
         interactive: bool = False,
         plan: ContextPlan | None = None,
     ) -> Agent:
