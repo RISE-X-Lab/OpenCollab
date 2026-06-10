@@ -311,15 +311,15 @@ def test_run_loop_does_not_route_to_mutating_compaction():
         agent=FakeAgent(),
         llm=fake_llm,
         tracer=tracer,
-        compaction_threshold=0,
         event_sink=EventBus(on_event),
     )
+    session.runner.compaction.compaction_threshold = 0
     session.messages.extend({"role": "user", "content": f"message {idx}"} for idx in range(10))
 
     result = run(session.run_loop())
 
     # The compactor still *reports* it would compact, but the loop ignores it.
-    assert session.compactor.should_compact() is True
+    assert session.runner.compaction.should_compact() is True
     assert result == "direct answer"
     assert len(fake_llm.calls) == 1
     assert "compaction" not in [event.type for event in events]
@@ -360,7 +360,7 @@ def test_session_accepts_explicit_llm_client():
 
     assert session._llm is fake_llm
     assert session.runner.llm is fake_llm
-    assert session.compactor.llm is fake_llm
+    assert session.runner.compaction.llm is fake_llm
 
     result = run(session.run_loop())
 
@@ -384,7 +384,7 @@ def test_session_event_sink_wires_through_to_runtime():
     assert session.event_bus.sink is sink
     assert session.runner.event_publisher is session.event_bus
     assert session.tool_execution.event_publisher is session.event_bus
-    assert session.compactor.event_publisher is session.event_bus
+    assert session.runner.compaction.event_publisher is session.event_bus
 
     result = run(session.run_loop())
 
@@ -649,9 +649,10 @@ def test_event_callback_exception_is_swallowed():
 
 
 def test_context_compactor_should_compact_uses_estimated_messages():
-    session = Session(agent=FakeAgent(), llm=FakeLLMClient(), compaction_threshold=0)
+    session = Session(agent=FakeAgent(), llm=FakeLLMClient())
+    session.runner.compaction.compaction_threshold = 0
 
-    assert session.compactor.should_compact() is True
+    assert session.runner.compaction.should_compact() is True
 
 
 def test_context_compactor_with_insufficient_messages_only_emits_event():
@@ -660,7 +661,7 @@ def test_context_compactor_with_insufficient_messages_only_emits_event():
     session = Session(agent=FakeAgent(), llm=fake_llm, event_sink=EventBus(on_event))
     original_messages = copy.deepcopy(session.messages)
 
-    run(session.compactor.compact())
+    run(session.runner.compaction.compact())
 
     assert fake_llm.calls == []
     assert session.messages == original_messages
@@ -675,7 +676,7 @@ def test_context_compactor_falls_back_to_raw_text_when_llm_fails():
     session = Session(agent=FakeAgent(), llm=fake_llm)
     session.messages.extend({"role": "user", "content": f"message {idx}"} for idx in range(10))
 
-    run(session.compactor.compact())
+    run(session.runner.compaction.compact())
 
     assert len(fake_llm.calls) == 1
     assert session.used_tokens == 0
@@ -693,7 +694,7 @@ def test_context_compactor_can_return_result_before_state_application():
     session.messages.extend({"role": "user", "content": f"message {idx}"} for idx in range(10))
     original_messages = copy.deepcopy(session.messages)
 
-    result = run(session.compactor.compact(apply=False))
+    result = run(session.runner.compaction.compact(apply=False))
 
     assert isinstance(result, CompactResult)
     assert result.did_compact is True

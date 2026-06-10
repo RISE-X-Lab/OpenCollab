@@ -13,7 +13,6 @@ import os
 
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
-from opencollab.application.compaction import ContextCompactionUseCase
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.bootstrap import build_session as Session
@@ -66,7 +65,6 @@ def test_session_builds_runtime_collaborators_eagerly():
     session = _new_session()
 
     assert isinstance(session.tool_execution, ToolExecutionUseCase)
-    assert isinstance(session.compactor, ContextCompactionUseCase)
     assert isinstance(session.runner, SessionRunUseCase)
     assert isinstance(session.store, SessionStore)
 

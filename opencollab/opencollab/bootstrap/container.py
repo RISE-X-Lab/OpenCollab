@@ -27,10 +27,7 @@ from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient, estimate_messages_tokens
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
-from opencollab.application.compaction import (
-    DEFAULT_COMPACTION_THRESHOLD,
-    ContextCompactionUseCase,
-)
+from opencollab.application.compaction import ContextCompactionUseCase
 from opencollab.application.compaction_summary import ReadTimeSummarizer
 from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import (
@@ -183,7 +180,6 @@ def build_session_runtime(
     tracer: TracePort | None = None,
     max_budget_tokens: int = 200_000,
     max_steps: int = 100,
-    compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
     auto_save_path: str | None = None,
     event_sink: EventPublisherPort | None = None,
     permission_policy: PermissionPort | None = None,
@@ -232,7 +228,6 @@ def build_session_runtime(
         event_publisher=event_bus,
         estimate_tokens=estimate_messages_tokens,
         tracer=tracer,
-        compaction_threshold=compaction_threshold,
     )
 
     summarizer = _build_summarizer(agent, llm, resolved_llm, llm_timeout, auto_save_path)
@@ -261,7 +256,6 @@ def build_session_runtime(
         llm=resolved_llm,
         store=resolved_store,
         tool_execution=tool_execution,
-        compactor=compactor,
         runner=runner,
         auto_save_path=auto_save_path,
     )

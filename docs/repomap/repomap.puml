@@ -161,7 +161,6 @@ CliAdapter --> SchedulerFactoryMod : invokes build_scheduler
 ' ============================================================
 SessionFacade --> SessionRunner
 SessionFacade --> ToolExec
-SessionFacade --> Compactor
 SessionFacade --> EventBus
 SessionFacade --> Autosave
 SessionFacade --> StorePort

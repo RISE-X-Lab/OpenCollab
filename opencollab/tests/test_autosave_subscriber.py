@@ -113,6 +113,6 @@ def test_direct_compaction_apply_autosaves_compacted_messages(tmp_path):
         {"role": "user", "content": f"message {idx}"} for idx in range(10)
     )
 
-    asyncio.run(session.compactor.compact(apply=True))
+    asyncio.run(session.runner.compaction.compact(apply=True))
 
     assert "Context compacted" in path.read_text()

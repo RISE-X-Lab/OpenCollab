@@ -19,7 +19,6 @@ from typing import Any
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.trace import Tracer
 from opencollab.application.autosave import AutoSaveSubscriber
-from opencollab.application.compaction import DEFAULT_COMPACTION_THRESHOLD
 from opencollab.application.ports import (
     EventPublisherPort,
     LLMPort,
@@ -62,7 +61,6 @@ def build_session(
     tracer: Tracer | None = None,
     max_budget_tokens: int = 200_000,
     max_steps: int = 100,
-    compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
     auto_save_path: str | None = None,
     event_sink: EventPublisherPort | None = None,
     permission_policy: PermissionPort | None = None,
@@ -87,7 +85,6 @@ def build_session(
         tracer=tracer,
         max_budget_tokens=max_budget_tokens,
         max_steps=max_steps,
-        compaction_threshold=compaction_threshold,
         auto_save_path=auto_save_path,
         event_sink=event_sink,
         permission_policy=permission_policy,
@@ -108,7 +105,6 @@ def build_session(
         tracer=tracer,
         max_budget_tokens=max_budget_tokens,
         max_steps=max_steps,
-        compaction_threshold=compaction_threshold,
         auto_save_path=auto_save_path,
         permission_policy=permission_policy,
         safety_policy=safety_policy,
@@ -145,7 +141,6 @@ def snapshot_session(session: Session) -> Session:
         tracer=session.tracer,
         max_budget_tokens=session.max_budget_tokens,
         max_steps=session.max_steps,
-        compaction_threshold=session.compaction_threshold,
         event_sink=external_sink,
         permission_policy=session.permission_policy,
         safety_policy=session._safety_policy,
