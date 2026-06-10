@@ -34,7 +34,7 @@ from opencollab.application.scheduler_lifecycle import LifecycleMixin
 from opencollab.application.scheduler_messaging import MessagingMixin
 from opencollab.application.scheduler_types import LaunchSpec, QueuedTeammateMessage
 from opencollab.application.self_collaboration import run_spawn_with_review
-from opencollab.domain.events import SchedulerEvent
+from opencollab.domain.events import SchedulerEvent, SchedulerEventType
 from opencollab.domain.scheduler import SessionTable
 from opencollab.domain.session import SessionPhase
 from opencollab.domain.team import Topology
@@ -213,8 +213,8 @@ class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
             )
         return result + f"\n\n[Changes made in worktree]\n```diff\n{diff}\n```"
 
-    async def _emit_scheduler_event(self, event_type: str, data: dict) -> None:
-        """Emit a scheduler event via the event sink."""
+    async def emit_scheduler_event(self, event_type: SchedulerEventType, data: dict[str, Any]) -> None:
+        """Emit a typed scheduler event via the event sink."""
         if self._event_sink is None:
             return
         event = SchedulerEvent(type=event_type, data=data)
@@ -287,6 +287,18 @@ class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
         self._autosave_all_sessions()
         self._write_manifest()
         await self._worktree_pool.release()
+
+    async def wait_for(self, aid: int) -> None:
+        """Wait until ``aid``'s current driving task settles.
+
+        Returns immediately when no task is tracked for ``aid``. A session
+        that suspends on deferred work returns its task while its children
+        run, so this waits for the current task only, not for the session to
+        reach a terminal phase.
+        """
+        task = self._tasks.get(aid)
+        if task is not None:
+            await task
 
     async def spawn_with_review(
         self,

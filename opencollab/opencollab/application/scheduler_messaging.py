@@ -8,7 +8,7 @@ another user turn.
 
 ``MessagingMixin`` is composed into ``Scheduler`` and relies on the
 ``_sessions`` / ``_tasks`` / ``_locks`` / ``_message_inbox`` maps and the
-``_role_of`` / ``_autosave_session`` / ``_emit_scheduler_event`` / ``_drive_agent``
+``_role_of`` / ``_autosave_session`` / ``emit_scheduler_event`` / ``_drive_agent``
 helpers defined on ``Scheduler``.
 """
 
@@ -66,7 +66,7 @@ class MessagingMixin:
                 }
             )
             self._autosave_session(to_aid)
-            await self._emit_scheduler_event(
+            await self.emit_scheduler_event(
                 "agent_message_sent",
                 {
                     "from_aid": from_aid,
@@ -122,7 +122,7 @@ class MessagingMixin:
         for message in messages:
             session.state.discard_pending_user_message(message.xml)
             await session.add_user_message(message.xml)
-            await self._emit_scheduler_event(
+            await self.emit_scheduler_event(
                 "agent_message_delivered",
                 {
                     "from_aid": message.from_aid,

@@ -123,7 +123,7 @@ class LifecycleMixin:
             self._spawn_origin[aid] = (parent_aid, tool_call_id)
 
         # Emit spawn event
-        await self._emit_scheduler_event(
+        await self.emit_scheduler_event(
             "agent_spawned",
             {"aid": aid, "parent_aid": parent_aid, "role": role, "task": task[:100]},
         )
@@ -156,7 +156,7 @@ class LifecycleMixin:
         except asyncio.CancelledError:
             self._clear_inflight(aid)
             scb.state.cancel()
-            await self._emit_scheduler_event(
+            await self.emit_scheduler_event(
                 "agent_cancelled",
                 {"aid": aid, "role": scb.agent.name},
             )
@@ -165,7 +165,7 @@ class LifecycleMixin:
             self._clear_inflight(aid)
             scb.state.fail()
             scb.result = f"Error: {exc}"
-            await self._emit_scheduler_event(
+            await self.emit_scheduler_event(
                 "agent_failed",
                 {"aid": aid, "role": scb.agent.name, "error": str(exc)},
             )
@@ -200,7 +200,7 @@ class LifecycleMixin:
                 latency=latency,
             )
 
-        await self._emit_scheduler_event(
+        await self.emit_scheduler_event(
             "agent_completed",
             {
                 "aid": aid,
@@ -228,7 +228,7 @@ class LifecycleMixin:
         except PendingRowError as exc:
             # A misrouted completion must surface loudly, never silently succeed.
             logger.error("misrouted completion from child %s: %s", child_aid, exc)
-            await self._emit_scheduler_event(
+            await self.emit_scheduler_event(
                 "agent_failed",
                 {"aid": parent_aid, "role": self._role_of(parent_aid), "error": str(exc)},
             )
@@ -261,7 +261,7 @@ class LifecycleMixin:
                 )
 
         if should_resume:
-            await self._emit_scheduler_event(
+            await self.emit_scheduler_event(
                 "agent_resumed",
                 {"aid": parent_aid, "role": self._role_of(parent_aid)},
             )
