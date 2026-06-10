@@ -84,6 +84,39 @@ def test_dashscope_file_key_beats_generic_export(monkeypatch, tmp_path):
     assert build_config().api_key == "dashscope-key"
 
 
+def test_dashscope_file_key_beats_same_name_stale_export(monkeypatch, tmp_path):
+    cfg_file = tmp_path / "dashscope.env"
+    cfg_file.write_text(
+        "\n".join(
+            [
+                "OPENCOLLAB_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "DASHSCOPE_API_KEY=real-file-key",
+            ]
+        )
+    )
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(cfg_file))
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "stale-shell-key")
+
+    assert build_config().api_key == "real-file-key"
+
+
+def test_anthropic_file_key_beats_generic_export(monkeypatch, tmp_path):
+    cfg_file = tmp_path / "anthropic.env"
+    cfg_file.write_text(
+        "\n".join(
+            [
+                "OPENCOLLAB_PROVIDER=anthropic",
+                "ANTHROPIC_API_KEY=anthropic-file-key",
+            ]
+        )
+    )
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(cfg_file))
+    monkeypatch.setenv("OPENCOLLAB_API_KEY", "generic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    assert build_config().api_key == "anthropic-file-key"
+
+
 def test_config_repr_does_not_include_api_key(monkeypatch):
     monkeypatch.setenv("OPENCOLLAB_API_KEY", "secret-key")
     assert "secret-key" not in repr(build_config())

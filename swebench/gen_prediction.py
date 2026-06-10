@@ -48,7 +48,7 @@ from opencollab.adapters.tools.fs import (  # noqa: E402
     GrepTool,
 )
 from opencollab.adapters.trace import Tracer  # noqa: E402
-from opencollab.bootstrap.config import get_config, load_config_env  # noqa: E402
+from opencollab.bootstrap.config import get_config  # noqa: E402
 from opencollab.bootstrap.container import (  # noqa: E402
     agent_save_path,
     build_session,
@@ -181,13 +181,6 @@ def main() -> None:
     image = args.image or f"sweb.eval.{args.arch}.{iid}:latest"
 
     cfg = get_config(str(_REPO_ROOT))
-    # get_config() resolves os.environ before configs/.env, so a stray
-    # ANTHROPIC_API_KEY/OPENAI_API_KEY in the shell shadows the real key in the
-    # env file. Prefer the env-file key (same resolution as check_dashscope.py).
-    env_file = load_config_env(str(_REPO_ROOT))
-    file_key = env_file.get("DASHSCOPE_API_KEY") or env_file.get("OPENCOLLAB_API_KEY")
-    if file_key:
-        cfg["api_key"] = file_key
     if args.model:
         cfg["model"] = args.model
     if args.provider:

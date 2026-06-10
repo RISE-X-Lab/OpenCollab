@@ -145,17 +145,22 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
                 return val
         return default
 
-    def resolve_ordered(*keys: str, default: str | None = None) -> str | None:
+    def resolve_ordered(
+        *keys: str, default: str | None = None, file_first: bool = False
+    ) -> str | None:
         # For provider-specific secrets, key specificity matters more than
         # source. This prevents a generic exported OPENAI_API_KEY from being sent
         # to a provider-specific compatible endpoint such as DashScope.
+        #
+        # With file_first, the env FILE value of each key beats a shell export of
+        # the same key. A stale shell ANTHROPIC_API_KEY/OPENAI_API_KEY then cannot
+        # shadow the real provider key written to configs/.env.
         for key in keys:
-            val = os.environ.get(key)
-            if val:
-                return val
-            val = dotenv.get(key)
-            if val:
-                return val
+            sources = (dotenv, os.environ) if file_first else (os.environ, dotenv)
+            for source in sources:
+                val = source.get(key)
+                if val:
+                    return val
         return default
 
     provider_value = resolve("OPENCOLLAB_PROVIDER", default="openai")
@@ -167,6 +172,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
             "OPENCOLLAB_API_KEY",
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
+            file_first=True,
         )
     elif (provider_value or "").lower() == "anthropic":
         api_key_value = resolve_ordered(
@@ -174,6 +180,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
             "OPENCOLLAB_API_KEY",
             "OPENAI_API_KEY",
             "DASHSCOPE_API_KEY",
+            file_first=True,
         )
     else:
         api_key_value = resolve_ordered(
@@ -181,6 +188,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
             "OPENAI_API_KEY",
             "ANTHROPIC_API_KEY",
             "DASHSCOPE_API_KEY",
+            file_first=True,
         )
 
     values: dict[str, Any] = {
