@@ -6,7 +6,6 @@ from types import SimpleNamespace
 
 from opencollab.application.event_bus import EventBus
 from opencollab.application.session_run import SessionRunUseCase
-from opencollab.domain.compaction import CompactResult
 from opencollab.domain.pending import RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
 from opencollab.domain.tools import ToolProcessingResult
@@ -60,25 +59,6 @@ class FakeLLM:
         if not self.responses:
             raise AssertionError("unexpected LLM call")
         return self.responses.pop(0)
-
-
-class FakeCompactor:
-    def __init__(self, state, should_compact=False, result=None):
-        self.state = state
-        self.should_values = [should_compact]
-        self.compact_calls = []
-        self.result = result
-
-    def should_compact(self):
-        if len(self.should_values) > 1:
-            return self.should_values.pop(0)
-        return self.should_values[0]
-
-    async def compact(self, apply=True):
-        self.compact_calls.append(apply)
-        if self.result is not None:
-            return self.result
-        return CompactResult()
 
 
 class FakeToolExecution:
@@ -149,7 +129,6 @@ def build_runner(
     llm=None,
     event_bus=None,
     tool_execution=None,
-    compactor=None,
     tracer=None,
     **kwargs,
 ):
@@ -160,7 +139,6 @@ def build_runner(
         llm=llm if llm is not None else FakeLLM([llm_response(content="done")]),
         event_publisher=event_bus if event_bus is not None else EventBus(None),
         tool_execution=tool_execution if tool_execution is not None else FakeToolExecution(),
-        compaction=compactor if compactor is not None else FakeCompactor(state),
         tracer=tracer,
         **kwargs,
     )
@@ -219,31 +197,6 @@ def test_run_loop_cancel_event_appends_interrupt_and_sets_phase():
     assert state.phase is SessionPhase.CANCELLED
     assert state.messages[-1] == {"role": "system", "content": "[Session interrupted by user]"}
     assert events == [("error", {"reason": "cancelled", "aid": -1})]
-
-
-def test_run_loop_compaction_applies_result_before_llm_call():
-    events, bus = collect_events()
-    original_messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "old"}]
-    compacted_messages = [{"role": "system", "content": "sys"}, {"role": "system", "content": "summary"}]
-    state = SessionState(messages=copy.deepcopy(original_messages))
-    compactor = FakeCompactor(
-        state,
-        should_compact=True,
-        result=CompactResult(messages=copy.deepcopy(compacted_messages), used_tokens_delta=3, did_compact=True),
-    )
-    compactor.should_values = [True, False]
-    llm = FakeLLM([llm_response(content="after compact", total_tokens=4)])
-    runner = build_runner(
-        state=state, llm=llm, event_bus=bus, compactor=compactor, compaction_enabled=True
-    )
-
-    result = run(runner.run_loop())
-
-    assert result == "after compact"
-    assert compactor.compact_calls == [False]
-    assert llm.calls[0]["messages"] == compacted_messages
-    assert state.used_tokens == 7
-    assert ("compaction_applied", {"tokens_after": 3, "aid": -1}) in events
 
 
 def test_run_loop_llm_step_events_trace_and_message_shape():

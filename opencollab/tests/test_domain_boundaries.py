@@ -7,7 +7,6 @@ def test_domain_modules_do_not_import_outer_layers():
         package_root / "opencollab/domain/agent.py",
         package_root / "opencollab/domain/session.py",
         package_root / "opencollab/domain/tools.py",
-        package_root / "opencollab/domain/compaction.py",
         package_root / "opencollab/domain/events.py",
     ]
     forbidden = [

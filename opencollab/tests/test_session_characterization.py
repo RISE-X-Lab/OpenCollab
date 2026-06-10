@@ -7,7 +7,6 @@ from opencollab.application.event_bus import EventBus
 from opencollab.application.tool_execution import CallbackPermissionPolicy
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import load_session, snapshot_session
-from opencollab.domain.compaction import CompactResult
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.session import SessionPhase
 from opencollab.domain.tools import ToolProcessingResult
@@ -298,10 +297,9 @@ def test_budget_exceeded_stops_before_llm_call_and_emits_error():
 
 
 def test_run_loop_does_not_route_to_mutating_compaction():
-    # The mutating ContextCompactionUseCase is retired: even when it *would*
-    # trigger (threshold 0), the run loop no longer routes to a COMPACTING phase
-    # — read-time shaping (AutoCompactShaper) owns compaction instead. So the
-    # first model response is the answer; no extra summarization turn is spent.
+    # The mutating compaction path is gone: read-time shaping (AutoCompactShaper)
+    # owns compaction instead, so even a long history costs no extra
+    # summarization turn — the first model response is the answer.
     fake_llm = FakeLLMClient([
         llm_response(content="direct answer", input_tokens=3, output_tokens=4),
     ])
@@ -313,13 +311,10 @@ def test_run_loop_does_not_route_to_mutating_compaction():
         tracer=tracer,
         event_sink=EventBus(on_event),
     )
-    session.runner.compaction.compaction_threshold = 0
     session.messages.extend({"role": "user", "content": f"message {idx}"} for idx in range(10))
 
     result = run(session.run_loop())
 
-    # The compactor still *reports* it would compact, but the loop ignores it.
-    assert session.runner.compaction.should_compact() is True
     assert result == "direct answer"
     assert len(fake_llm.calls) == 1
     assert "compaction" not in [event.type for event in events]
@@ -360,7 +355,6 @@ def test_session_accepts_explicit_llm_client():
 
     assert session._llm is fake_llm
     assert session.runner.llm is fake_llm
-    assert session.runner.compaction.llm is fake_llm
 
     result = run(session.run_loop())
 
@@ -384,7 +378,6 @@ def test_session_event_sink_wires_through_to_runtime():
     assert session.event_bus.sink is sink
     assert session.runner.event_publisher is session.event_bus
     assert session.tool_execution.event_publisher is session.event_bus
-    assert session.runner.compaction.event_publisher is session.event_bus
 
     result = run(session.run_loop())
 
@@ -646,69 +639,6 @@ def test_event_callback_exception_is_swallowed():
     assert result == "answer despite bad callback"
     assert session.is_done is True
     assert session.messages[-1] == {"role": "assistant", "content": "answer despite bad callback"}
-
-
-def test_context_compactor_should_compact_uses_estimated_messages():
-    session = Session(agent=FakeAgent(), llm=FakeLLMClient())
-    session.runner.compaction.compaction_threshold = 0
-
-    assert session.runner.compaction.should_compact() is True
-
-
-def test_context_compactor_with_insufficient_messages_only_emits_event():
-    fake_llm = FakeLLMClient()
-    events, on_event = event_collector()
-    session = Session(agent=FakeAgent(), llm=fake_llm, event_sink=EventBus(on_event))
-    original_messages = copy.deepcopy(session.messages)
-
-    run(session.runner.compaction.compact())
-
-    assert fake_llm.calls == []
-    assert session.messages == original_messages
-    assert session.used_tokens == 0
-    assert [(event.type, event.data) for event in events] == [
-        ("compaction", {"reason": "context_overflow", "aid": -1})
-    ]
-
-
-def test_context_compactor_falls_back_to_raw_text_when_llm_fails():
-    fake_llm = FakeLLMClient([RuntimeError("summary failed")])
-    session = Session(agent=FakeAgent(), llm=fake_llm)
-    session.messages.extend({"role": "user", "content": f"message {idx}"} for idx in range(10))
-
-    run(session.runner.compaction.compact())
-
-    assert len(fake_llm.calls) == 1
-    assert session.used_tokens == 0
-    assert session.messages[1]["role"] == "system"
-    assert session.messages[1]["content"].startswith("[Context compacted — summary of 2 earlier messages]:")
-    assert "[user]: message 0" in session.messages[1]["content"]
-    assert "[user]: message 1" in session.messages[1]["content"]
-
-
-def test_context_compactor_can_return_result_before_state_application():
-    fake_llm = FakeLLMClient([
-        llm_response(content="compact summary", input_tokens=3, output_tokens=4),
-    ])
-    session = Session(agent=FakeAgent(), llm=fake_llm)
-    session.messages.extend({"role": "user", "content": f"message {idx}"} for idx in range(10))
-    original_messages = copy.deepcopy(session.messages)
-
-    result = run(session.runner.compaction.compact(apply=False))
-
-    assert isinstance(result, CompactResult)
-    assert result.did_compact is True
-    assert result.compacted_count == 2
-    assert result.summary_len == len("compact summary")
-    assert result.used_tokens_delta == 7
-    assert session.messages == original_messages
-    assert session.used_tokens == 0
-
-    result.apply_to(session.state)
-
-    assert session.messages != original_messages
-    assert session.messages[1]["content"] == "[Context compacted — summary of 2 earlier messages]:\ncompact summary"
-    assert session.used_tokens == 7
 
 
 # Characterizes historical/current behavior: mutating runtime config after

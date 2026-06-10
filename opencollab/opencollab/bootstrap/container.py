@@ -27,7 +27,6 @@ from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient, estimate_messages_tokens
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
-from opencollab.application.compaction import ContextCompactionUseCase
 from opencollab.application.compaction_summary import ReadTimeSummarizer
 from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import (
@@ -222,14 +221,6 @@ def build_session_runtime(
         permission_policy=permission_policy,
         safety_policy=safety_policy,
     )
-    compactor = ContextCompactionUseCase(
-        state=state,
-        llm=resolved_llm,
-        event_publisher=event_bus,
-        estimate_tokens=estimate_messages_tokens,
-        tracer=tracer,
-    )
-
     summarizer = _build_summarizer(agent, llm, resolved_llm, llm_timeout, auto_save_path)
     resolved_shaper: ShaperPort = (
         shaper if shaper is not None else _build_default_shaper(resolved_llm, summarizer)
@@ -240,14 +231,10 @@ def build_session_runtime(
         llm=resolved_llm,
         event_publisher=event_bus,
         tool_execution=tool_execution,
-        compaction=compactor,
         tracer=tracer,
         max_budget_tokens=max_budget_tokens,
         max_steps=max_steps,
         shaper=resolved_shaper,
-        # Read-time AutoCompactShaper is the active summarizer now; the mutating
-        # ContextCompactionUseCase is retired (constructed but never routed to).
-        compaction_enabled=False,
     )
 
     return SessionRuntime(

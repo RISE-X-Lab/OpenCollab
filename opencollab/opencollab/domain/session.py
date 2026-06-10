@@ -16,7 +16,6 @@ class SessionPhase(Enum):
     SCHEDULED = "scheduled"
     IDLE = "idle"
     PRECHECK = "precheck"
-    COMPACTING = "compacting"
     CALLING_LLM = "calling_llm"
     HANDLING_RESPONSE = "handling_response"
     EXECUTING_TOOLS = "executing_tools"
@@ -68,14 +67,12 @@ PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
     SessionPhase.IDLE: frozenset({SessionPhase.PRECHECK}),
     SessionPhase.PRECHECK: frozenset(
         {
-            SessionPhase.COMPACTING,
             SessionPhase.CALLING_LLM,
             SessionPhase.CANCELLED,
             SessionPhase.BUDGET_EXCEEDED,
             SessionPhase.STEP_LIMIT_EXCEEDED,
         }
     ),
-    SessionPhase.COMPACTING: frozenset({SessionPhase.CALLING_LLM}),
     SessionPhase.CALLING_LLM: frozenset({SessionPhase.HANDLING_RESPONSE}),
     SessionPhase.HANDLING_RESPONSE: frozenset({SessionPhase.EXECUTING_TOOLS, SessionPhase.DONE}),
     SessionPhase.EXECUTING_TOOLS: frozenset(
@@ -178,7 +175,7 @@ class SessionState:
 
         Precedence per message: an embedded ``timestamp`` (e.g. a resumed
         transcript) wins; else the prior timestamp of the same dict object
-        (preserved across compaction's slice-and-rebuild); else now.
+        (preserved across a slice-and-rebuild); else now.
         """
         prior = {id(m): ts for m, ts in zip(self.messages, self.message_timestamps)}
         new_messages: list[dict[str, Any]] = []
