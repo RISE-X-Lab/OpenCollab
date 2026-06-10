@@ -233,7 +233,9 @@ def test_run_loop_compaction_applies_result_before_llm_call():
     )
     compactor.should_values = [True, False]
     llm = FakeLLM([llm_response(content="after compact", total_tokens=4)])
-    runner = build_runner(state=state, llm=llm, event_bus=bus, compactor=compactor)
+    runner = build_runner(
+        state=state, llm=llm, event_bus=bus, compactor=compactor, compaction_enabled=True
+    )
 
     result = run(runner.run_loop())
 

@@ -43,13 +43,13 @@ class SessionRunUseCase:
         event_publisher: EventPublisherPort,
         event_factory: SessionEventFactory | None = None,
         tool_execution: ToolExecutionUseCase,
-        compaction: ContextCompactionUseCase,
+        compaction: ContextCompactionUseCase | None = None,
         tracer: TracePort | None = None,
         max_budget_tokens: int = 200_000,
         max_steps: int = 100,
         deferrable_tool_names: frozenset[str] = DEFAULT_DEFERRABLE_TOOLS,
         shaper: ShaperPort | None = None,
-        compaction_enabled: bool = True,
+        compaction_enabled: bool = False,
     ):
         self.agent = agent
         self.state = state
@@ -184,7 +184,7 @@ class SessionRunUseCase:
             self.state.transition_to(SessionPhase.STEP_LIMIT_EXCEEDED, reason=reason)
             return
 
-        if self.compaction_enabled and self.compaction.should_compact():
+        if self.compaction_enabled and self.compaction is not None and self.compaction.should_compact():
             self.state.transition_to(SessionPhase.COMPACTING)
             return
 
@@ -192,6 +192,9 @@ class SessionRunUseCase:
 
     async def run_compaction(self) -> None:
         """Run the (legacy, mutating) compaction use case, then call the LLM."""
+        if self.compaction is None:
+            self.state.fail()
+            raise RuntimeError("Cannot run compaction without a compaction use case")
         result = await self.compaction.compact(apply=False)
         result.apply_to(self.state)
         if result.did_compact:
