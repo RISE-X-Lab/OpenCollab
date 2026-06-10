@@ -33,6 +33,7 @@ class Environment:
     """Abstract execution environment. All tools operate through this."""
 
     workspace: str = "."
+    local_filesystem: bool = False
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         raise NotImplementedError
@@ -50,6 +51,8 @@ class Environment:
 
 class LocalEnvironment(Environment):
     """Direct OS execution — for interactive CLI use."""
+
+    local_filesystem = True
 
     def __init__(self, workspace: str = "."):
         self.workspace = os.path.abspath(workspace)
@@ -97,6 +100,8 @@ class WorktreeEnvironment(Environment):
     Ref: User feedback on blind spot #2 — parallel delegation must use
     separate physical workspaces, not just file locks.
     """
+
+    local_filesystem = True
 
     def __init__(self, source_workspace: str, branch_name: str | None = None):
         import uuid

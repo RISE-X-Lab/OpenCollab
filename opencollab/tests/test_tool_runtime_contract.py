@@ -7,7 +7,7 @@ import pytest
 
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
-from opencollab.adapters.tools import human
+from opencollab.adapters.tools import base, human
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
@@ -60,6 +60,34 @@ class SpySafetyPolicy:
 class FakePermissionPolicy:
     async def confirm(self, prompt: str) -> bool:
         return True
+
+
+class FakeRemoteEnv:
+    """Environment that does I/O somewhere other than the host filesystem."""
+
+    def __init__(self, files: dict[str, str] | None = None):
+        self.files = dict(files or {})
+
+    async def read_file(self, path: str) -> str:
+        if path not in self.files:
+            raise FileNotFoundError(path)
+        return self.files[path]
+
+    async def write_file(self, path: str, content: str) -> None:
+        self.files[path] = content
+
+
+class SpyLock:
+    instances: list["SpyLock"] = []
+
+    def __init__(self, *args, **kwargs):
+        SpyLock.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +298,63 @@ def test_file_write_preserves_duplicate_old_str_error(tmp_path):
         result
         == f"Error: old_str found 2 times in {target}. Provide more context to make it unique."
     )
+
+
+# ---------------------------------------------------------------------------
+# Host write lock — only taken when I/O hits the host filesystem
+# ---------------------------------------------------------------------------
+
+
+def test_file_write_remote_env_takes_no_host_lock(monkeypatch):
+    SpyLock.instances = []
+    monkeypatch.setattr(base, "FileLock", SpyLock)
+    env = FakeRemoteEnv({"note.txt": "alpha\n"})
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {"path": "note.txt", "mode": "str_replace", "old_str": "alpha", "new_str": "beta"},
+            runtime,
+        )
+    )
+
+    assert "Replaced in" in result
+    assert env.files["note.txt"] == "beta\n"
+    assert SpyLock.instances == []
+
+
+def test_apply_patch_remote_env_takes_no_host_lock(monkeypatch):
+    SpyLock.instances = []
+    monkeypatch.setattr(base, "FileLock", SpyLock)
+    env = FakeRemoteEnv({"f.py": "a\nb\nc\nd\n"})
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "line_replace",
+                "start_line": 2,
+                "end_line": 2,
+                "new_str": "B",
+            },
+            runtime,
+        )
+    )
+
+    assert "Applied line_replace" in result
+    assert env.files["f.py"] == "a\nB\nc\nd\n"
+    assert SpyLock.instances == []
+
+
+def test_host_write_lock_taken_for_none_and_local_envs(tmp_path):
+    none_lock = base.host_write_lock(str(tmp_path / "x.txt"), None)
+    local_lock = base.host_write_lock(str(tmp_path / "y.txt"), LocalEnvironment(str(tmp_path)))
+    remote_lock = base.host_write_lock(str(tmp_path / "z.txt"), FakeRemoteEnv())
+
+    assert isinstance(none_lock, base.FileLock)
+    assert isinstance(local_lock, base.FileLock)
+    assert not isinstance(remote_lock, base.FileLock)
 
 
 # ---------------------------------------------------------------------------

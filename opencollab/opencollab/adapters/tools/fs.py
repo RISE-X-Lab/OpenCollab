@@ -16,9 +16,7 @@ import re
 import shlex
 from typing import Any
 
-from filelock import FileLock
-
-from opencollab.adapters.tools.base import Tool
+from opencollab.adapters.tools.base import Tool, host_write_lock
 from opencollab.application.tool_execution import ToolRuntime
 
 
@@ -133,11 +131,8 @@ class FileWriteTool(Tool):
         if safety_policy:
             path = safety_policy.check_path(path)
 
-        # File lock for concurrent safety (ref: design doc filelock)
-        lock = FileLock(f"{path}.lock", timeout=10)
-
         try:
-            with lock:
+            with host_write_lock(path, env):
                 if mode == "create":
                     return await self._create(env, path, params.get("content", ""))
                 if mode == "str_replace":

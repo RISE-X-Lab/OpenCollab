@@ -25,14 +25,12 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from filelock import FileLock
-
 from opencollab.adapters.tools.apply_patch_engine import (
     _apply_line_replace,
     _apply_unified_diff,
     _summary,
 )
-from opencollab.adapters.tools.base import Tool
+from opencollab.adapters.tools.base import Tool, host_write_lock
 from opencollab.application.tool_execution import ToolRuntime
 
 
@@ -110,9 +108,8 @@ class ApplyPatchTool(Tool):
         if safety_policy:
             path = safety_policy.check_path(path)
 
-        lock = FileLock(f"{path}.lock", timeout=10)
         try:
-            with lock:
+            with host_write_lock(path, env):
                 try:
                     if env:
                         current = await env.read_file(path)
