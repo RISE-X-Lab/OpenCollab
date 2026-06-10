@@ -180,6 +180,43 @@ class SchedulerPort(Protocol):
         ...
 
 
+class CompletionUsage(Protocol):
+    """Token accounting attached to a completion."""
+
+    @property
+    def input_tokens(self) -> int:
+        ...
+
+    @property
+    def total_tokens(self) -> int:
+        ...
+
+
+class CompletionResponse(Protocol):
+    """Structural contract for one LLM completion result.
+
+    Exactly the attributes the run loop dereferences — adapter response types
+    (e.g. ``adapters.llm.LLMResponse``) satisfy it without this layer importing
+    them. ``tool_calls`` holds OpenAI-shaped dicts (``id`` + ``function``).
+    """
+
+    @property
+    def content(self) -> str | None:
+        ...
+
+    @property
+    def tool_calls(self) -> list[dict[str, Any]]:
+        ...
+
+    @property
+    def usage(self) -> CompletionUsage:
+        ...
+
+    @property
+    def finish_reason(self) -> str | None:
+        ...
+
+
 class LLMPort(Protocol):
     """LLM client surface used by the session run loop and compaction."""
 
@@ -189,7 +226,7 @@ class LLMPort(Protocol):
         *,
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.0,
-    ) -> Any:
+    ) -> CompletionResponse:
         ...
 
 

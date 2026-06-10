@@ -86,6 +86,7 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   [app.events\nSessionEventFactory\n(one builder, all run-loop events)] as EventsModule
 
   interface "LLMPort" as LLMPort
+  interface "CompletionResponse\n(structural completion result)" as CompletionResp
   interface "EnvironmentPort" as EnvPort
   interface "SessionStorePort" as StorePort
   interface "TracePort" as TracePort
@@ -173,6 +174,7 @@ SessionRunner --> EventPort
 SessionRunner --> ToolExec
 SessionRunner --> Compactor
 SessionRunner --> LLMPort
+LLMPort ..> CompletionResp : returns
 SessionRunner --> TracePort
 SessionRunner --> SessionDomain
 SessionRunner --> EventsModule

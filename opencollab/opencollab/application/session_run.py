@@ -6,7 +6,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
-from opencollab.application.ports import EventPublisherPort, LLMPort, ShaperPort, TracePort
+from opencollab.application.ports import (
+    CompletionResponse,
+    EventPublisherPort,
+    LLMPort,
+    ShaperPort,
+    TracePort,
+)
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
@@ -21,16 +27,16 @@ class PendingStep:
     adapter-shaped object and would breach the inward dependency rule.
     """
 
-    response: Any
+    response: CompletionResponse
     latency: float
 
 
 class SessionRunUseCase:
     """Application use case for the session run loop.
 
-    The LLM response is structural: it must expose ``content``,
-    ``tool_calls``, ``finish_reason``, ``usage.input_tokens``, and
-    ``usage.total_tokens``.
+    The LLM response is structural (``CompletionResponse`` in
+    ``application/ports.py``): it must expose ``content``, ``tool_calls``,
+    ``finish_reason``, ``usage.input_tokens``, and ``usage.total_tokens``.
     """
 
     def __init__(
@@ -328,7 +334,7 @@ class SessionRunUseCase:
     def build_tool_schemas(self) -> list[dict] | None:
         return self.agent.tool_schemas() or None
 
-    async def call_llm(self, tools: list[dict] | None) -> Any:
+    async def call_llm(self, tools: list[dict] | None) -> CompletionResponse:
         """Complete against the shaped view of history.
 
         The shaper reshapes a copy for the model's view only;
@@ -345,7 +351,7 @@ class SessionRunUseCase:
             temperature=self.agent.temperature,
         )
 
-    def record_llm_trace(self, response: Any, latency: float) -> None:
+    def record_llm_trace(self, response: CompletionResponse, latency: float) -> None:
         if self.tracer:
             tool_calls_log = None
             if response.tool_calls:
@@ -369,7 +375,7 @@ class SessionRunUseCase:
                 latency=latency,
             )
 
-    def append_assistant_message(self, response: Any) -> None:
+    def append_assistant_message(self, response: CompletionResponse) -> None:
         assistant_msg: dict[str, Any] = {"role": "assistant"}
         if response.content:
             assistant_msg["content"] = response.content
