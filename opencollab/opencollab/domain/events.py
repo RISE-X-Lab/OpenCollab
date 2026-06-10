@@ -4,7 +4,7 @@ Two distinct event families flow through the runtime:
 
 - ``SessionRuntimeEvent``: emitted by the session run loop and its
   collaborators (text deltas, step boundaries, tool start/end as called by
-  the session, compaction, loop detection, budget warnings, errors).
+  the session, loop detection, budget warnings, errors).
 - ``SchedulerEvent``: emitted by scheduler orchestration (agent lifecycle,
   spawn, review loop iterations).
 
@@ -34,8 +34,6 @@ SessionEventType = Literal[
     "tool_end",
     "step_start",
     "step_end",
-    "compaction",
-    "compaction_applied",
     "loop_detected",
     "budget_warning",
     "error",

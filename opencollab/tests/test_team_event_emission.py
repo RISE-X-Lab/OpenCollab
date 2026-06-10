@@ -12,6 +12,7 @@ import json
 from typing import Any
 
 from opencollab.adapters.worktree_pool import WorktreePool
+from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.session import SessionState
@@ -90,7 +91,7 @@ def _build_scheduler(monkeypatch, role_results: dict[str, list[str]]) -> tuple[S
     scheduler = Scheduler(
         session_factory=factory,
         worktree_pool=WorktreePool(".", use_worktrees=False),
-        event_sink=sink,
+        event_sink=EventBus(sink),
     )
     lead_session = _FakeLeadSession()
     scheduler.register_lead(lead_session)

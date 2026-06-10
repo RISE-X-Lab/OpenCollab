@@ -2,7 +2,12 @@
 
 from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus, EventCallback
-from opencollab.application.events import SessionEventFactory, default_session_event_factory
+from opencollab.application.events import (
+    SchedulerEventFactory,
+    SessionEventFactory,
+    default_scheduler_event_factory,
+    default_session_event_factory,
+)
 from opencollab.application.ports import (
     AskUserPort,
     EnvironmentPort,
@@ -27,10 +32,12 @@ __all__ = [
     "SafetyPolicyFactory",
     "SafetyPolicyPort",
     "SAVE_TRIGGERS",
+    "SchedulerEventFactory",
     "SessionEventFactory",
     "SessionRunUseCase",
     "ToolPort",
     "ToolRuntime",
     "ToolExecutionUseCase",
+    "default_scheduler_event_factory",
     "default_session_event_factory",
 ]

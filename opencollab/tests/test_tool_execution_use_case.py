@@ -79,8 +79,6 @@ def event_factory() -> SessionEventFactory:
         step_end=factory.step_end,
         text_delta=factory.text_delta,
         error=factory.error,
-        compaction=factory.compaction,
-        compaction_applied=factory.compaction_applied,
         loop_detected=lambda tool, count: SimpleNamespace(
             type="loop_detected",
             data={"tool": tool, "count": count},

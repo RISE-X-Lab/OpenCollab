@@ -67,13 +67,9 @@ class MessagingMixin:
             )
             self._autosave_session(to_aid)
             await self.emit_scheduler_event(
-                "agent_message_sent",
-                {
-                    "from_aid": from_aid,
-                    "to_aid": to_aid,
-                    "role": self._role_of(to_aid),
-                    "summary": summary,
-                },
+                self._events.agent_message_sent(
+                    from_aid, to_aid, self._role_of(to_aid), summary
+                )
             )
             await self._drain_message_inbox_locked(to_aid)
         return f"Message queued to aid {to_aid}."
@@ -123,13 +119,12 @@ class MessagingMixin:
             session.state.discard_pending_user_message(message.xml)
             await session.add_user_message(message.xml)
             await self.emit_scheduler_event(
-                "agent_message_delivered",
-                {
-                    "from_aid": message.from_aid,
-                    "to_aid": message.to_aid,
-                    "summary": message.summary,
-                    "content_len": len(message.content),
-                },
+                self._events.agent_message_delivered(
+                    message.from_aid,
+                    message.to_aid,
+                    message.summary,
+                    len(message.content),
+                )
             )
         self._autosave_session(aid)
 

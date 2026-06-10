@@ -234,6 +234,7 @@ def test_manifest_records_spawned_child_parent_link(tmp_path):
     scheduler = Scheduler(
         session_factory=_FakeFactory(),
         worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(None),
     )
 
     def _write_manifest():

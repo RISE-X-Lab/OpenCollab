@@ -3,15 +3,16 @@
 Extracted from ``Scheduler`` so the long, self-contained review-iteration logic
 does not bloat the scheduler's core. It drives the loop through the slice of the
 scheduler's public surface typed by ``ReviewLoopScheduler`` (``spawn``,
-``wait_for``, ``table``, ``emit_scheduler_event``), so it takes the scheduler
-as a parameter rather than being a method.
+``wait_for``, ``table``, ``events``, ``emit_scheduler_event``), so it takes the
+scheduler as a parameter rather than being a method.
 """
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Protocol
 
-from opencollab.domain.events import SchedulerEventType
+from opencollab.application.events import SchedulerEventFactory
+from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.scheduler import ReviewVerdict, SessionTable
 
 
@@ -19,6 +20,7 @@ class ReviewLoopScheduler(Protocol):
     """The slice of the Scheduler surface the review loop drives."""
 
     table: SessionTable
+    events: SchedulerEventFactory
 
     async def spawn(
         self,
@@ -32,11 +34,7 @@ class ReviewLoopScheduler(Protocol):
     async def wait_for(self, aid: int) -> None:
         ...
 
-    async def emit_scheduler_event(
-        self,
-        event_type: SchedulerEventType,
-        data: dict[str, Any],
-    ) -> None:
+    async def emit_scheduler_event(self, event: SchedulerEvent) -> None:
         ...
 
 
@@ -62,12 +60,7 @@ async def run_spawn_with_review(
 
     for iteration in range(1, max_iterations + 1):
         await scheduler.emit_scheduler_event(
-            "review_started",
-            {
-                "tool": "review_loop",
-                "iteration": iteration,
-                "max": max_iterations,
-            },
+            scheduler.events.review_started(iteration, max_iterations)
         )
 
         # Spawn coder and wait
@@ -93,12 +86,7 @@ async def run_spawn_with_review(
 
         verdict = ReviewVerdict.parse(review_result)
         await scheduler.emit_scheduler_event(
-            "review_completed",
-            {
-                "tool": "review_loop",
-                "iteration": iteration,
-                "verdict": "PASS" if verdict.passed else "FAIL",
-            },
+            scheduler.events.review_completed(iteration, verdict.passed)
         )
 
         if verdict.passed:

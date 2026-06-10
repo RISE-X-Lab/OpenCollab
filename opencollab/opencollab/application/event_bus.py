@@ -32,6 +32,11 @@ class EventBus:
         """First subscribed target (for snapshot/build code that needs one)."""
         return self._targets[0] if self._targets else None
 
+    @property
+    def subscribers(self) -> tuple[EventPublisherPort | EventCallback, ...]:
+        """Read-only view of every subscribed target, in subscription order."""
+        return tuple(self._targets)
+
     async def emit(self, event: Any) -> None:
         for target in self._targets:
             try:

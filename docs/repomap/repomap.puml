@@ -83,7 +83,7 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   [app.scheduler\nScheduler\ncreate_init_process (agent 0) + spawn (children),\nparallel via asyncio.create_task\n(LaunchSpec/QueuedTeammateMessage -> scheduler_types;\nspawn_with_review loop -> self_collaboration)] as SchedulerUC
   [app.autosave\nAutoSaveSubscriber] as Autosave
   [app.event_bus\nEventBus (fan-out)] as EventBus
-  [app.events\nSessionEventFactory\n(one builder, all run-loop events)] as EventsModule
+  [app.events\nSessionEventFactory + SchedulerEventFactory\n(builders: run-loop/tool + orchestration events)] as EventsModule
 
   interface "LLMPort" as LLMPort
   interface "CompletionResponse\n(structural completion result)" as CompletionResp
@@ -271,8 +271,9 @@ note bottom of EventPort
   TuiEventSink, EventBus, and AutoSaveSubscriber all
   implement it. Every event carries an aid so the TUI
   can route, filter, and group per-agent output.
-  app.events.SessionEventFactory is the one place
-  every run-loop / tool / compaction event is built.
+  app.events is the one place every event is built:
+  SessionEventFactory (run-loop / tool) and
+  SchedulerEventFactory (orchestration).
 end note
 
 note right of DOMAIN

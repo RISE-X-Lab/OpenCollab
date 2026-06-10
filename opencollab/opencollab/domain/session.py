@@ -178,14 +178,16 @@ class SessionState:
         (preserved across a slice-and-rebuild); else now.
         """
         prior = {id(m): ts for m, ts in zip(self.messages, self.message_timestamps)}
-        new_messages: list[dict[str, Any]] = []
-        new_timestamps: list[str] = []
-        for m in messages:
-            embedded = m.pop("timestamp", None) if isinstance(m, dict) else None
-            new_messages.append(m)
-            new_timestamps.append(embedded or prior.get(id(m)) or _now_iso())
-        self.messages = new_messages
-        self.message_timestamps = new_timestamps
+        rebuilt = [
+            (
+                ({k: v for k, v in m.items() if k != "timestamp"}, m["timestamp"])
+                if isinstance(m, dict) and "timestamp" in m
+                else (m, prior.get(id(m)) or _now_iso())
+            )
+            for m in messages
+        ]
+        self.messages = [m for m, _ in rebuilt]
+        self.message_timestamps = [ts for _, ts in rebuilt]
 
     def add_used_tokens(self, tokens: int) -> None:
         self.used_tokens += tokens

@@ -1,8 +1,7 @@
 """AutoSaveSubscriber — persists session messages on lifecycle events.
 
-Listens for the three events that change persisted state:
+Listens for the events that change persisted state:
 - `user_message_appended` — user added a turn
-- `compaction_applied`   — compactor rewrote message history
 - `step_end`             — assistant finished a step
 
 Save failures are caught and swallowed (the EventBus already isolates
@@ -20,7 +19,6 @@ from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 
 SAVE_TRIGGERS = frozenset({
     "user_message_appended",
-    "compaction_applied",
     "step_end",
 })
 

@@ -76,9 +76,6 @@ class _RendererEventsMixin:
             self._clear_thinking_status()
             self._emit_status(Text(f"{agent_label} thinking... step {self._step}", style=self._STYLE_MUTED))
 
-        elif etype == "compaction":
-            self._emit_status(Text("Context compacted", style=self._STYLE_MUTED))
-
         elif etype == "loop_detected":
             tool = event.data.get("tool", "?")
             count = event.data.get("count", 0)

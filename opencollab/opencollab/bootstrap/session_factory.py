@@ -135,7 +135,7 @@ def snapshot_session(session: Session) -> Session:
     keep seeing events.
     """
     external_sink: EventPublisherPort | None = None
-    for target in session.event_bus._targets:
+    for target in session.event_bus.subscribers:
         if not isinstance(target, AutoSaveSubscriber):
             external_sink = target  # type: ignore[assignment]
             break
@@ -147,7 +147,7 @@ def snapshot_session(session: Session) -> Session:
         max_steps=session.max_steps,
         event_sink=external_sink,
         permission_policy=session.permission_policy,
-        safety_policy=session._safety_policy,
+        safety_policy=session.tool_execution.safety_policy,
     )
     new.messages = copy.deepcopy(session.messages)
     new.used_tokens = session.used_tokens
@@ -174,29 +174,19 @@ def build_spawn_session(
     generic spec (base tools). The safety policy is derived from the child's
     environment. When ``task`` is given it is seeded as the agent's first
     user-context message (the TASK-layer source), so no separate
-    ``add_user_message`` is needed.
+    ``add_user_message`` is needed. Delegates to ``DefaultSessionFactory`` so the
+    spawn-session assembly lives in one place.
     """
-    safety_policy = (
-        cfg.safety_policy_factory(env)
-        if cfg.safety_policy_factory is not None
-        else None
-    )
-    builder = ContextBuilder(team_cfg or default_team_config(), cfg)
-    plan = builder.build_plan(role, task=task, context=context)
-    agent = builder.build_agent(role, scheduler=scheduler, interactive=False, plan=plan)
-    return build_session(
-        agent=agent,
+    factory = DefaultSessionFactory(cfg, team_cfg=team_cfg)
+    return factory.build_spawn_session(
+        role=role,
         env=env,
-        tracer=cfg.tracer,
-        max_budget_tokens=budget,
+        budget=budget,
         max_steps=max_steps,
-        event_sink=cfg.event_bus,
-        permission_policy=cfg.permission_policy,
-        ask_policy=cfg.ask_policy,
-        safety_policy=safety_policy,
-        llm_timeout=cfg.llm_timeout,
         aid=aid,
-        seed_user_messages=plan.startup_user_messages(),
+        scheduler=scheduler,
+        task=task,
+        context=context,
     )
 
 

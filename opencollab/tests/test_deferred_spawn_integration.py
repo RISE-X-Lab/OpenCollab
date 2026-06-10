@@ -94,7 +94,7 @@ def test_lead_reasons_over_child_result_in_same_turn():
     scheduler = Scheduler(
         session_factory=ChildFactory(child),
         worktree_pool=WorktreePool(".", use_worktrees=False),
-        event_sink=None,
+        event_sink=EventBus(None),
     )
 
     lead_state = SessionState(messages=[{"role": "system", "content": "you are lead"}])

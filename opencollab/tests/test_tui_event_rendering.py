@@ -94,15 +94,6 @@ def test_step_start_updates_step_counter_and_status():
     assert any("thinking..." in s and "step 4" in s for s in statuses)
 
 
-def test_compaction_event_emits_status_line():
-    tui = _make_tui()
-    tui._live_paused = True
-
-    tui.event_handler(SessionRuntimeEvent("compaction", {}))
-    statuses = _status_plains(tui)
-    assert any(s == "Context compacted" for s in statuses)
-
-
 def test_loop_detected_event_emits_warning_status():
     tui = _make_tui()
     tui._live_paused = True

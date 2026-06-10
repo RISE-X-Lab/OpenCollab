@@ -124,8 +124,7 @@ class LifecycleMixin:
 
         # Emit spawn event
         await self.emit_scheduler_event(
-            "agent_spawned",
-            {"aid": aid, "parent_aid": parent_aid, "role": role, "task": task[:100]},
+            self._events.agent_spawned(aid, parent_aid, role, task)
         )
 
         # Start async task
@@ -157,8 +156,7 @@ class LifecycleMixin:
             self._clear_inflight(aid)
             scb.state.cancel()
             await self.emit_scheduler_event(
-                "agent_cancelled",
-                {"aid": aid, "role": scb.agent.name},
+                self._events.agent_cancelled(aid, scb.agent.name)
             )
             raise
         except Exception as exc:
@@ -166,8 +164,7 @@ class LifecycleMixin:
             scb.state.fail()
             scb.result = f"Error: {exc}"
             await self.emit_scheduler_event(
-                "agent_failed",
-                {"aid": aid, "role": scb.agent.name, "error": str(exc)},
+                self._events.agent_failed(aid, scb.agent.name, str(exc))
             )
             await self._deliver_to_parent(aid, f"Error: {exc}", RowStatus.FAILED)
             await self._drain_message_inbox(aid, allow_current_task=True)
@@ -201,14 +198,9 @@ class LifecycleMixin:
             )
 
         await self.emit_scheduler_event(
-            "agent_completed",
-            {
-                "aid": aid,
-                "parent_aid": scb.parent_aid,
-                "role": scb.agent.name,
-                "latency": latency,
-                "result_len": len(result),
-            },
+            self._events.agent_completed(
+                aid, scb.parent_aid, scb.agent.name, latency, len(result)
+            )
         )
 
         status = RowStatus.FAILED if scb.state.phase is SessionPhase.ERROR else RowStatus.DONE
@@ -229,8 +221,7 @@ class LifecycleMixin:
             # A misrouted completion must surface loudly, never silently succeed.
             logger.error("misrouted completion from child %s: %s", child_aid, exc)
             await self.emit_scheduler_event(
-                "agent_failed",
-                {"aid": parent_aid, "role": self._role_of(parent_aid), "error": str(exc)},
+                self._events.agent_failed(parent_aid, self._role_of(parent_aid), str(exc))
             )
 
     async def _wake(self, parent_aid: int, tool_call_id: str, result: str, status: RowStatus) -> None:
@@ -262,6 +253,5 @@ class LifecycleMixin:
 
         if should_resume:
             await self.emit_scheduler_event(
-                "agent_resumed",
-                {"aid": parent_aid, "role": self._role_of(parent_aid)},
+                self._events.agent_resumed(parent_aid, self._role_of(parent_aid))
             )

@@ -14,6 +14,7 @@ import asyncio
 
 from opencollab.adapters.tools.spawn import SpawnAgentTool
 from opencollab.adapters.worktree_pool import WorktreePool
+from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
 from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 from opencollab.domain.session import SessionPhase, SessionState
@@ -58,7 +59,7 @@ def _scheduler(child: BlockingChild) -> Scheduler:
     return Scheduler(
         session_factory=ChildFactory(child),
         worktree_pool=WorktreePool(".", use_worktrees=False),
-        event_sink=None,
+        event_sink=EventBus(None),
     )
 
 

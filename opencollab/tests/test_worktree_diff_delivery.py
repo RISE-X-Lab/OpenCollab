@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 
 from opencollab.adapters.worktree_pool import WorktreePool
+from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
@@ -71,6 +72,7 @@ def test_child_worktree_diff_is_delivered_to_parent_pending_row():
     scheduler = Scheduler(
         session_factory=_Factory(child),
         worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(None),
     )
     scheduler.register_lead(lead)
 

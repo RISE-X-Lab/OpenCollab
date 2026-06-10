@@ -8,6 +8,7 @@ import json
 import pytest
 
 from opencollab.adapters.worktree_pool import WorktreePool
+from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.scheduler import SessionControlBlock
@@ -66,7 +67,7 @@ def _build_scheduler(teammate, topology=None, roles=()):
     scheduler = Scheduler(
         session_factory=FakeFactory(teammate),
         worktree_pool=WorktreePool(".", use_worktrees=False),
-        event_sink=sink,
+        event_sink=EventBus(sink),
         topology=topology,
         roles=roles,
     )
