@@ -388,6 +388,18 @@ def test_grep_tool_preserves_env_exec_path_without_path_safety():
 # ---------------------------------------------------------------------------
 
 
+class FakeAskPolicy:
+    """Records the question and returns a canned answer (no terminal I/O)."""
+
+    def __init__(self, answer: str = "Use the smaller patch."):
+        self.answer = answer
+        self.questions: list[str] = []
+
+    async def ask(self, question: str) -> str:
+        self.questions.append(question)
+        return self.answer
+
+
 def test_ask_user_tool_non_interactive_fallback():
     runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
 
@@ -396,7 +408,55 @@ def test_ask_user_tool_non_interactive_fallback():
     assert result == "Running in non-interactive mode. Make your own best judgment and proceed."
 
 
-def test_ask_user_tool_uses_prompt_when_permission_exists(monkeypatch):
+def test_ask_user_tool_routes_through_ask_port():
+    ask_policy = FakeAskPolicy()
+    runtime = ToolRuntime(
+        environment=None,
+        safety_policy=None,
+        permission_policy=None,
+        ask_policy=ask_policy,
+    )
+
+    result = run(AskUserTool().execute_with_runtime({"question": "Proceed?"}, runtime))
+
+    assert ask_policy.questions == ["Proceed?"]
+    assert result == "Use the smaller patch."
+
+
+def test_ask_user_tool_ask_port_used_even_in_yolo_without_confirm():
+    # --yolo wires no permission (confirm) policy but still wires an ask policy:
+    # the tool must stay interactive instead of falsely reporting non-interactive.
+    ask_policy = FakeAskPolicy(answer="keep going")
+    runtime = ToolRuntime(
+        environment=None,
+        safety_policy=None,
+        permission_policy=None,
+        ask_policy=ask_policy,
+    )
+
+    result = run(AskUserTool().execute_with_runtime({"question": "Ship it?"}, runtime))
+
+    assert result == "keep going"
+
+
+def test_ask_user_tool_declines_on_ask_port_eof():
+    class EofAskPolicy:
+        async def ask(self, question: str) -> str:
+            raise EOFError
+
+    runtime = ToolRuntime(
+        environment=None,
+        safety_policy=None,
+        permission_policy=None,
+        ask_policy=EofAskPolicy(),
+    )
+
+    result = run(AskUserTool().execute_with_runtime({"question": "Proceed?"}, runtime))
+
+    assert result == "User declined to answer."
+
+
+def test_ask_user_tool_uses_prompt_when_no_ask_port_but_permission_exists(monkeypatch):
     runtime = ToolRuntime(
         environment=None,
         safety_policy=None,

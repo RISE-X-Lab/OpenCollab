@@ -45,10 +45,17 @@ class AskUserTool(Tool):
         runtime: ToolRuntime,
     ) -> str:
         question = params["question"]
-        confirm_fn = runtime.confirm_fn()
+        ask_fn = runtime.ask_fn()
 
-        # Non-interactive mode: auto-dismiss (ref: kimi-cli yolo fallback)
-        if confirm_fn is None:
+        if ask_fn is not None:
+            try:
+                return await ask_fn(question)
+            except (EOFError, KeyboardInterrupt):
+                return "User declined to answer."
+
+        # No ask port wired: a human is only present when the CLI did not pass
+        # one (headless eval). Auto-dismiss (ref: kimi-cli yolo fallback).
+        if runtime.confirm_fn() is None:
             return (
                 "Running in non-interactive mode. "
                 "Make your own best judgment and proceed."

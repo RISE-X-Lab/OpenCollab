@@ -20,6 +20,7 @@ from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.trace import Tracer
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.ports import (
+    AskUserPort,
     EventPublisherPort,
     LLMPort,
     PermissionPort,
@@ -65,6 +66,7 @@ def build_session(
     auto_save_path: str | None = None,
     event_sink: EventPublisherPort | None = None,
     permission_policy: PermissionPort | None = None,
+    ask_policy: AskUserPort | None = None,
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
     llm_timeout: float = 600.0,
@@ -89,6 +91,7 @@ def build_session(
         auto_save_path=auto_save_path,
         event_sink=event_sink,
         permission_policy=permission_policy,
+        ask_policy=ask_policy,
         safety_policy=safety_policy,
         llm=llm,
         llm_timeout=llm_timeout,
@@ -189,6 +192,7 @@ def build_spawn_session(
         max_steps=max_steps,
         event_sink=cfg.event_bus,
         permission_policy=cfg.permission_policy,
+        ask_policy=cfg.ask_policy,
         safety_policy=safety_policy,
         llm_timeout=cfg.llm_timeout,
         aid=aid,
@@ -259,6 +263,7 @@ class DefaultSessionFactory:
             max_steps=max_steps,
             event_sink=cfg.event_bus,
             permission_policy=cfg.permission_policy,
+            ask_policy=cfg.ask_policy,
             safety_policy=safety_policy,
             auto_save_path=auto_save_path,
             llm_timeout=cfg.llm_timeout,
@@ -295,6 +300,7 @@ class DefaultSessionFactory:
             max_budget_tokens=budget,
             event_sink=cfg.event_bus,
             permission_policy=cfg.permission_policy,
+            ask_policy=cfg.ask_policy,
             safety_policy=build_workspace_safety_policy(env),
             auto_save_path=launch.auto_save_path,
             llm_timeout=cfg.llm_timeout,

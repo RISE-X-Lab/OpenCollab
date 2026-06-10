@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
+    AskUserPort,
     EnvironmentPort,
     EventPublisherPort,
     PermissionPort,
@@ -39,6 +40,7 @@ class ToolRuntime:
     environment: EnvironmentPort | None
     safety_policy: SafetyPolicyPort | None
     permission_policy: PermissionPort | None
+    ask_policy: AskUserPort | None = None
     aid: int = -1
     tool_call_id: str | None = None
 
@@ -46,6 +48,11 @@ class ToolRuntime:
         if self.permission_policy is None:
             return None
         return self.permission_policy.confirm
+
+    def ask_fn(self):
+        if self.ask_policy is None:
+            return None
+        return self.ask_policy.ask
 
 
 class CallbackPermissionPolicy:
@@ -67,6 +74,7 @@ class ToolExecutionUseCase:
         event_factory: SessionEventFactory | None = None,
         tracer: TracePort | None = None,
         permission_policy: PermissionPort | None = None,
+        ask_policy: AskUserPort | None = None,
         safety_policy: SafetyPolicyPort | None = None,
     ):
         self.agent = agent
@@ -76,6 +84,7 @@ class ToolExecutionUseCase:
         self.event_factory = event_factory or default_session_event_factory(state.aid)
         self.tracer = tracer
         self.permission_policy = permission_policy
+        self.ask_policy = ask_policy
         self.safety_policy = safety_policy
 
     async def process(self, tool_calls: list[dict]) -> ToolProcessingResult:
@@ -187,6 +196,7 @@ class ToolExecutionUseCase:
             environment=self.environment,
             safety_policy=self.safety_policy,
             permission_policy=self.permission_policy,
+            ask_policy=self.ask_policy,
             aid=self.state.aid,
             tool_call_id=tool_call_id,
         )

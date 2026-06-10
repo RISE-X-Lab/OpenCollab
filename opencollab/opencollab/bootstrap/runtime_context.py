@@ -16,6 +16,7 @@ from opencollab.adapters.env import Environment
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.trace import Tracer
 from opencollab.application.ports import (
+    AskUserPort,
     EventPublisherPort,
     PermissionPort,
     SafetyPolicyPort,
@@ -29,6 +30,7 @@ class RuntimeContext:
     tracer: Tracer | None
     event_sink: EventPublisherPort | None
     permission_policy: PermissionPort | None
+    ask_policy: AskUserPort | None = None
 
 
 def build_runtime_context(
@@ -38,6 +40,7 @@ def build_runtime_context(
     trace: bool,
     event_sink: EventPublisherPort | None = None,
     permission_policy: PermissionPort | None = None,
+    ask_policy: AskUserPort | None = None,
     run_id_prefix: str = "",
 ) -> RuntimeContext:
     """Resolve the workspace path and optional tracer into a ``RuntimeContext``."""
@@ -52,6 +55,7 @@ def build_runtime_context(
         tracer=tracer,
         event_sink=event_sink,
         permission_policy=permission_policy,
+        ask_policy=ask_policy,
     )
 
 

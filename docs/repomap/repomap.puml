@@ -93,6 +93,7 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   interface "TracePort" as TracePort
   interface "EventPublisherPort" as EventPort
   interface "PermissionPort" as PermissionPort
+  interface "AskUserPort\n(free-text human input)" as AskUserPort
   interface "SafetyPolicyPort" as SafetyPort
   interface "WorktreePoolPort" as WorktreePort
   interface "ToolPort" as ToolPort
@@ -132,6 +133,7 @@ StoreAdapter ..|> StorePort
 TraceAdapter ..|> TracePort
 TuiAdapter ..|> EventPort
 TuiAdapter ..|> PermissionPort
+TuiAdapter ..|> AskUserPort
 SafetyAdapter ..|> SafetyPort
 WorktreeAdapter ..|> WorktreePort
 ToolAdapters ..|> ToolPort
@@ -194,6 +196,7 @@ ToolExec --> EventPort
 ToolExec --> ToolPort
 ToolExec --> EnvPort
 ToolExec --> PermissionPort
+ToolExec --> AskUserPort
 ToolExec --> SafetyPort
 ToolExec --> TracePort
 ToolExec --> AgentDomain

@@ -58,6 +58,20 @@ class PermissionPort(Protocol):
         ...
 
 
+class AskUserPort(Protocol):
+    """Free-text human input for the ``ask_user`` tool.
+
+    Distinct from ``PermissionPort`` (a yes/no confirm gate): this returns the
+    user's answer to an open question. A TUI implementation pauses its live
+    render around the prompt; ``None`` is never returned — its presence is the
+    signal that a human is reachable, so a wired ask port keeps ``ask_user``
+    interactive even in auto-approve (yolo) mode.
+    """
+
+    async def ask(self, question: str) -> str:
+        ...
+
+
 class EventPublisherPort(Protocol):
     async def emit(self, event: Any) -> None:
         ...

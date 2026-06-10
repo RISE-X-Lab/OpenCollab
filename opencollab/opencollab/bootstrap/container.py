@@ -30,6 +30,7 @@ from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.compaction_summary import ReadTimeSummarizer
 from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import (
+    AskUserPort,
     EventPublisherPort,
     LLMPort,
     PermissionPort,
@@ -182,6 +183,7 @@ def build_session_runtime(
     auto_save_path: str | None = None,
     event_sink: EventPublisherPort | None = None,
     permission_policy: PermissionPort | None = None,
+    ask_policy: AskUserPort | None = None,
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
     llm_timeout: float = 600.0,
@@ -219,6 +221,7 @@ def build_session_runtime(
         event_publisher=event_bus,
         tracer=tracer,
         permission_policy=permission_policy,
+        ask_policy=ask_policy,
         safety_policy=safety_policy,
     )
     summarizer = _build_summarizer(agent, llm, resolved_llm, llm_timeout, auto_save_path)

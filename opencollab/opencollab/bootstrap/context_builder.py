@@ -14,7 +14,12 @@ from dataclasses import dataclass
 
 from opencollab.adapters.trace import Tracer
 from opencollab.application.event_bus import EventBus
-from opencollab.application.ports import PermissionPort, SafetyPolicyFactory, SchedulerPort
+from opencollab.application.ports import (
+    AskUserPort,
+    PermissionPort,
+    SafetyPolicyFactory,
+    SchedulerPort,
+)
 from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
 from opencollab.bootstrap.tool_registry import COORDINATION_TOOL_NAMES, build_tools_for_role
 from opencollab.domain.agent import Agent
@@ -40,6 +45,7 @@ class SpawnConfig:
     tracer: Tracer | None
     event_bus: EventBus
     permission_policy: PermissionPort | None
+    ask_policy: AskUserPort | None = None
     safety_policy_factory: SafetyPolicyFactory | None = None
 
 

@@ -165,20 +165,29 @@ async def _repl_loop(tui: Any, handle_turn, bottom_toolbar: Any = None) -> None:
 async def _run(workspace: str, cfg: dict, session_file: str | None,
                trace: bool, yolo: bool, use_worktrees: bool,
                one_shot_prompt: str | None = None):
-    from opencollab.adapters.tui import TUI, TuiEventSink, TuiPermissionPolicy
+    from opencollab.adapters.tui import (
+        TUI,
+        TuiAskUserPolicy,
+        TuiEventSink,
+        TuiPermissionPolicy,
+    )
     from opencollab.bootstrap import build_runtime_context, build_scheduler
 
     tui = TUI(console, filter_messages=cfg["filter_messages"])
     tui.print_welcome()
 
+    # ``--yolo`` only auto-approves risky commands; a human is still present, so
+    # the ask-user tool stays interactive (routed through the TUI's suspend/resume).
     permission_policy = None
     if not yolo:
         permission_policy = TuiPermissionPolicy(render=tui, read_line=_read_line)
+    ask_policy = TuiAskUserPolicy(render=tui, read_line=_read_line)
 
     ctx = build_runtime_context(
         workspace, cfg, trace=trace,
         event_sink=TuiEventSink(tui),
         permission_policy=permission_policy,
+        ask_policy=ask_policy,
         run_id_prefix="scheduler-",
     )
     scheduler = build_scheduler(
