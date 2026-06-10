@@ -21,6 +21,7 @@ import logging
 from typing import Any, Callable
 
 from opencollab.application.ports import (
+    DiffCapablePort,
     EnvironmentPort,
     EventPublisherPort,
     PermissionPort,
@@ -199,10 +200,9 @@ class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
 
     async def _append_worktree_diff(self, env: EnvironmentPort, result: str) -> str:
         """If env is a worktree, append its diff to the result."""
-        get_diff = getattr(env, "get_diff", None)
-        if not callable(get_diff):
+        if not isinstance(env, DiffCapablePort):
             return result
-        diff = await get_diff()
+        diff = await env.get_diff()
         if not diff:
             return result
         if len(diff) > WORKTREE_DIFF_MAX_CHARS:

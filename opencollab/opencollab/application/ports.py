@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from opencollab.domain.hooks import HookOutcome
 
@@ -16,6 +16,18 @@ class EnvironmentPort(Protocol):
         ...
 
     async def write_file(self, path: str, content: str) -> None:
+        ...
+
+
+@runtime_checkable
+class DiffCapablePort(Protocol):
+    """An environment that can report its accumulated changes as a diff.
+
+    Satisfied by worktree-style environments; the scheduler appends the diff
+    to a finished child's result before delivering it to the parent.
+    """
+
+    async def get_diff(self) -> str:
         ...
 
 
@@ -269,6 +281,9 @@ class TracePort(Protocol):
         tokens: int = 0,
         latency: float = 0.0,
     ) -> None:
+        ...
+
+    def flush(self) -> None:
         ...
 
 

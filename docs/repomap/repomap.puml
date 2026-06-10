@@ -88,6 +88,7 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   interface "LLMPort" as LLMPort
   interface "CompletionResponse\n(structural completion result)" as CompletionResp
   interface "EnvironmentPort" as EnvPort
+  interface "DiffCapablePort\n(runtime-checkable: env get_diff)" as DiffPort
   interface "SessionStorePort" as StorePort
   interface "TracePort" as TracePort
   interface "EventPublisherPort" as EventPort
@@ -126,6 +127,7 @@ SchedulerUC --> DriverAsync
 ' ============================================================
 LLMAdapter ..|> LLMPort
 EnvAdapter ..|> EnvPort
+EnvAdapter ..|> DiffPort
 StoreAdapter ..|> StorePort
 TraceAdapter ..|> TracePort
 TuiAdapter ..|> EventPort
@@ -204,6 +206,7 @@ EventsModule --> DomainEvents
 
 SchedulerUC --> EventBus
 SchedulerUC --> WorktreePort
+SchedulerUC --> DiffPort
 SchedulerUC --> SessionFactoryPort
 SchedulerUC --> TracePort
 SchedulerUC --> SchedulerDomain
