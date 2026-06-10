@@ -25,14 +25,6 @@ if TYPE_CHECKING:
     from opencollab.application.scheduler import LaunchSpec
 
 
-class BudgetExceededError(Exception):
-    pass
-
-
-class LoopDetectedError(Exception):
-    pass
-
-
 @dataclass
 class SessionRuntime:
     """Pre-built collaborators a ``Session`` facade keeps as attributes.
@@ -206,8 +198,6 @@ class Session:
 
 
 __all__ = [
-    "BudgetExceededError",
-    "LoopDetectedError",
     "Session",
     "SessionRuntime",
 ]

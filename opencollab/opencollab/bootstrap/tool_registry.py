@@ -83,19 +83,6 @@ def build_tools_for_role(
     return tools
 
 
-def build_default_tools(*, include_ask_user: bool = False) -> list[Tool]:
-    """Canonical tool bundle: bash, file_read, file_write, grep, [ask_user]."""
-    tools: list[Tool] = [
-        BashTool(),
-        FileReadTool(),
-        FileWriteTool(),
-        GrepTool(),
-    ]
-    if include_ask_user:
-        tools.append(AskUserTool())
-    return tools
-
-
 __all__ = [
     "STATELESS_TOOL_FACTORIES",
     "SCHEDULER_TOOL_FACTORIES",
@@ -103,5 +90,4 @@ __all__ = [
     "COORDINATION_TOOL_NAMES",
     "COMPACTABLE_TOOL_NAMES",
     "build_tools_for_role",
-    "build_default_tools",
 ]

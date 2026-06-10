@@ -63,7 +63,6 @@ from opencollab.bootstrap.runtime_context import (
 )
 from opencollab.bootstrap.tool_registry import (
     COMPACTABLE_TOOL_NAMES,
-    build_default_tools,
     build_tools_for_role,
 )
 from opencollab.domain.agent import Agent
@@ -312,7 +311,6 @@ __all__ = [
     "SpawnConfig",
     "agent_save_path",
     "make_run_dir",
-    "build_default_tools",
     "build_runtime_context",
     "build_session",
     "build_session_runtime",

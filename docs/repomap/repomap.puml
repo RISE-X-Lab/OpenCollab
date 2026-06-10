@@ -68,7 +68,7 @@ package "Interface Adapters" as ADAPTERS #FDEBD0 {
 
 package "Composition Root\n(bootstrap, 6 files)" as COMPOSITION #EBF5FB {
   [bootstrap.container\nsession-construction core +\npublic re-export facade\nbuild_runtime_context\nbuild_session_runtime (only LLMClient site)\nbuild_session / snapshot_session / load_session\nbuild_workspace_safety_policy] as Container
-  [bootstrap.tool_registry\nname->Tool factories + name sets\nbuild_tools_for_role / build_default_tools] as ToolRegistry
+  [bootstrap.tool_registry\nname->Tool factories + name sets\nbuild_tools_for_role] as ToolRegistry
   [bootstrap.context_builder\nSpawnConfig + ContextBuilder] as ContextBuilderMod
   [bootstrap.session_factory\nbuild_spawn_session\nDefaultSessionFactory\nagent_save_path / make_run_dir] as SessionFactoryMod
   [bootstrap.scheduler_factory\nbuild_scheduler] as SchedulerFactoryMod

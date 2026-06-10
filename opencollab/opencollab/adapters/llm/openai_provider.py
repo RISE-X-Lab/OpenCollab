@@ -53,7 +53,6 @@ def _parse_response(resp: Any) -> LLMResponse:
             output_tokens=resp.usage.completion_tokens if resp.usage else 0,
         ),
         finish_reason=choice.finish_reason,
-        raw=resp,
     )
 
 

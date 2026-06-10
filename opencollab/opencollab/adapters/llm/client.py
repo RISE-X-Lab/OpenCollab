@@ -9,11 +9,7 @@ import openai
 
 from opencollab.adapters.llm.anthropic_provider import complete_anthropic
 from opencollab.adapters.llm.openai_provider import complete_openai
-from opencollab.adapters.llm.types import (
-    DEFAULT_MAX_OUTPUT_TOKENS,
-    LLMResponse,
-    model_context_window,
-)
+from opencollab.adapters.llm.types import LLMResponse, model_context_window
 
 
 class LLMClient:
@@ -57,10 +53,6 @@ class LLMClient:
     def context_window(self) -> int | None:
         """The model's context window in tokens, or ``None`` if unknown."""
         return model_context_window(self.model)
-
-    def max_output_tokens(self) -> int:
-        """Tokens to reserve for the model's response (best-effort default)."""
-        return DEFAULT_MAX_OUTPUT_TOKENS
 
     async def complete(
         self,

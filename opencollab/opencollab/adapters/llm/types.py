@@ -28,7 +28,6 @@ class LLMResponse:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     usage: Usage = field(default_factory=lambda: Usage())
     finish_reason: str | None = None
-    raw: Any = None
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,1 @@
-from opencollab.adapters.tools.base import Tool
-from opencollab.adapters.tools.bash import BashTool
-from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
-
-__all__ = ["Tool", "BashTool", "FileReadTool", "FileWriteTool", "GrepTool"]
+"""Concrete tools — import from the submodules (e.g. ``opencollab.adapters.tools.bash``)."""

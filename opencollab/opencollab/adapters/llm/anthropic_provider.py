@@ -79,7 +79,6 @@ async def complete_anthropic(
             output_tokens=resp.usage.output_tokens,
         ),
         finish_reason=resp.stop_reason,
-        raw=resp,
     )
 
 
