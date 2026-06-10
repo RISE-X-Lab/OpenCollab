@@ -58,7 +58,7 @@ package "Interface Adapters" as ADAPTERS #FDEBD0 {
   [adapters.cli.main\ndefault agent + eval commands] as CliAdapter
   [adapters.tui\nTUI\nTuiEventSink\nTuiPermissionPolicy] as TuiAdapter
   [adapters.llm\nLLMClient\nestimate_messages_tokens] as LLMAdapter
-  [adapters.env\nLocalEnvironment\nWorktreeEnvironment] as EnvAdapter
+  [adapters.env\nLocalEnvironment\nWorktreeEnvironment\nDockerEnvironment] as EnvAdapter
   [adapters.worktree_pool\nWorktreePool] as WorktreeAdapter
   [adapters.storage\nSessionStore] as StoreAdapter
   [adapters.trace\nTracer] as TraceAdapter

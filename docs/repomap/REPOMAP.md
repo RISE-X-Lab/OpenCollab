@@ -44,7 +44,7 @@ Source root: `opencollab/opencollab/`. Entry point: `python -m opencollab`
 - `cli/` — Typer CLI split by concern: `main.py` (app + callback + chat REPL; invokes `build_scheduler`), `toolbar.py` (prompt `bottom_toolbar` team roster), `config_resolve.py` (CLI args + .env merge, API-key checks), `eval.py` (headless `eval` command, registered on the app in `main.py`)
 - `tui/` — TUI, `TuiEventSink` (EventPort), `TuiPermissionPolicy` (PermissionPort); renders a live team roster panel from scheduler events. `renderer.py` (TUI state + Live lifecycle) composes `renderer_events.py` (`_RendererEventsMixin`: event dispatch → timeline/status/roster) + `renderer_display.py` (`_RendererDisplayMixin`: Rich renderable building, style palette, `_LineViewport`)
 - `llm/` — one provider per module behind the `LLMClient` facade; `__init__.py` re-exports everything so `from adapters.llm import LLMClient` still resolves. `client.py` (`LLMClient` dispatch), `openai_provider.py`/`anthropic_provider.py` (request build/parse + OpenAI→Anthropic message conversion), `retry.py` (transient-error backoff), `types.py` (`LLMResponse`/`Usage`, context windows, `estimate_messages_tokens`)
-- `env.py` — `LocalEnvironment`, `WorktreeEnvironment`
+- `env.py` — `LocalEnvironment`, `WorktreeEnvironment`, `DockerEnvironment` (start mode via `setup()`, or attach to a running container via `container_id=`; `exec_workdir`/`command_prefix`/`timeout_returncode` exec hooks)
 - `worktree_pool.py` — `WorktreePool` (git worktree)
 - `storage.py` — `SessionStore` (structured per-agent JSON `{aid,role,model,messages}` + `save_manifest`; reads legacy JSONL too)
 - `trace.py` — `Tracer`
