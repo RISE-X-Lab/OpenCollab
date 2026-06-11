@@ -48,6 +48,9 @@ class FileReadTool(Tool):
         "required": ["path"],
     }
 
+    def __init__(self, max_read_chars: int = MAX_READ_CHARS):
+        self.max_read_chars = max_read_chars
+
     async def execute_with_runtime(
         self,
         params: dict[str, Any],
@@ -83,7 +86,7 @@ class FileReadTool(Tool):
         # Format with line numbers (ref: claude-code cat -n format)
         numbered = [f"{start + i + 1}\t{line}" for i, line in enumerate(selected)]
         header = f"File: {params['path']} ({total} lines total, showing {start + 1}-{end})"
-        return header + "\n" + truncate("\n".join(numbered), MAX_READ_CHARS)
+        return header + "\n" + truncate("\n".join(numbered), self.max_read_chars)
 
 
 class FileWriteTool(Tool):
@@ -240,6 +243,9 @@ class GrepTool(Tool):
         "required": ["pattern"],
     }
 
+    def __init__(self, max_grep_chars: int = MAX_GREP_CHARS):
+        self.max_grep_chars = max_grep_chars
+
     async def execute_with_runtime(
         self,
         params: dict[str, Any],
@@ -266,5 +272,5 @@ class GrepTool(Tool):
 
         result = await env.exec_cmd(rg_cmd, timeout=30)
         if result.stdout.strip():
-            return truncate(result.stdout.strip(), MAX_GREP_CHARS)
+            return truncate(result.stdout.strip(), self.max_grep_chars)
         return f"No matches found for pattern: {pattern}"

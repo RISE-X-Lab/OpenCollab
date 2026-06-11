@@ -137,6 +137,11 @@ class _TeamFileModel(BaseModel):
     # Which role is agent 0 (the root that receives the user task and spawns the
     # rest). Optional; see ``_resolve_entry_role`` for the fallback order.
     entry: str | None = None
+    # Per-tool output-cap overrides, e.g. {"bash": {"max_output_chars": 6000}}.
+    # Keys are tool names; values are constructor kwargs for that tool. Lets a
+    # team tune output budgets to its backend's context size (see
+    # ``bootstrap.tool_registry.build_tools_for_role``).
+    tool_limits: dict[str, dict[str, int]] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -151,6 +156,8 @@ class TeamConfig:
     topology: Topology = field(default_factory=Topology)
     hooks: tuple[HookSpec, ...] = ()
     entry: str = "lead"
+    # Tool name -> constructor kwargs (output caps); applied by the registry.
+    tool_limits: dict[str, dict[str, int]] = field(default_factory=dict)
 
     def role_for(self, name: str) -> RoleConfig:
         """Return the declared role, or a generic fallback for ad-hoc roles."""
@@ -263,6 +270,7 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
         topology=Topology(edges=edges, allow_all=False),
         hooks=_build_hook_specs(model.hooks),
         entry=_resolve_entry_role(model.entry, roles),
+        tool_limits={name: dict(kwargs) for name, kwargs in model.tool_limits.items()},
     )
 
 

@@ -79,6 +79,9 @@ class RunTestsTool(Tool):
         "required": [],
     }
 
+    def __init__(self, max_traceback_chars: int = MAX_TRACEBACK_CHARS):
+        self.max_traceback_chars = max_traceback_chars
+
     async def execute_with_runtime(
         self,
         params: dict[str, Any],
@@ -102,7 +105,9 @@ class RunTestsTool(Tool):
 
         result = await env.exec_cmd(cmd, timeout=timeout)
         combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
-        return _format_report(cmd, result.returncode, combined)
+        return _format_report(
+            cmd, result.returncode, combined, max_chars=self.max_traceback_chars
+        )
 
 
 def _build_command(runner: str, target: str, extra_args: str) -> str:
@@ -151,7 +156,7 @@ def _failed_tests(output: str) -> list[str]:
     return fails
 
 
-def _traceback_head(output: str) -> str:
+def _traceback_head(output: str, max_chars: int = MAX_TRACEBACK_CHARS) -> str:
     """Head of the first FAILURES/ERRORS section (or a raw Python traceback)."""
     for marker in ("= FAILURES =", "= ERRORS =", "Traceback (most recent call last)"):
         idx = output.find(marker)
@@ -160,11 +165,13 @@ def _traceback_head(output: str) -> str:
             end = section.find("= short test summary info =")
             if end != -1:
                 section = section[:end]
-            return truncate(section.strip(), MAX_TRACEBACK_CHARS)
+            return truncate(section.strip(), max_chars)
     return ""
 
 
-def _format_report(cmd: str, returncode: int, output: str) -> str:
+def _format_report(
+    cmd: str, returncode: int, output: str, max_chars: int = MAX_TRACEBACK_CHARS
+) -> str:
     if returncode == 127 or "No module named pytest" in output:
         return (
             f"Command: {cmd}\nExit code: {returncode}\n"
@@ -192,12 +199,12 @@ def _format_report(cmd: str, returncode: int, output: str) -> str:
         if len(failed) > len(shown):
             parts.append(f"  ... and {len(failed) - len(shown)} more")
 
-    head = _traceback_head(output)
+    head = _traceback_head(output, max_chars)
     if head:
         parts.append("First failure detail:\n" + head)
 
     # No structured signal at all (e.g. collection crash) — fall back to output.
     if not counts and not failed and not head:
-        parts.append("Output:\n" + truncate(output.strip(), MAX_TRACEBACK_CHARS))
+        parts.append("Output:\n" + truncate(output.strip(), max_chars))
 
     return "\n".join(parts)

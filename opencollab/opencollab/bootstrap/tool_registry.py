@@ -69,19 +69,34 @@ def build_tools_for_role(
     scheduler: SchedulerPort | None = None,
     skill_store: SkillStorePort | None = None,
     interactive: bool = False,
+    tool_limits: dict[str, dict[str, int]] | None = None,
 ) -> list[Tool]:
     """Resolve tool names to Tool instances.
 
     ``ask_user`` is dropped in non-interactive (headless) mode. Scheduler-bound
     tools require a ``scheduler``; skill-bound tools require a ``skill_store``.
-    Unknown names raise — fail fast at startup.
+    ``tool_limits`` maps a tool name to constructor kwargs (output caps) so a
+    team file can tune per-tool output budgets to its backend. Unknown names or
+    kwargs raise — fail fast at startup.
     """
+    limits = tool_limits or {}
+    unknown = set(limits) - KNOWN_TOOL_NAMES
+    if unknown:
+        raise ValueError(
+            f"tool_limits names unknown tools {sorted(unknown)}. "
+            f"Known tools: {sorted(KNOWN_TOOL_NAMES)}"
+        )
+    uncappable = set(limits) & frozenset(SCHEDULER_TOOL_FACTORIES)
+    if uncappable:
+        raise ValueError(
+            f"tool_limits not supported for coordination tools {sorted(uncappable)}."
+        )
     tools: list[Tool] = []
     for name in tool_names:
         if name == "ask_user" and not interactive:
             continue
         if name in STATELESS_TOOL_FACTORIES:
-            tools.append(STATELESS_TOOL_FACTORIES[name]())
+            tools.append(_instantiate(name, STATELESS_TOOL_FACTORIES[name], limits))
         elif name in SCHEDULER_TOOL_FACTORIES:
             if scheduler is None:
                 raise ValueError(
@@ -100,6 +115,21 @@ def build_tools_for_role(
                 f"Known tools: {sorted(KNOWN_TOOL_NAMES)}"
             )
     return tools
+
+
+def _instantiate(
+    name: str,
+    factory: Callable[..., Tool],
+    limits: dict[str, dict[str, int]],
+) -> Tool:
+    """Build a stateless tool, applying any configured limit kwargs."""
+    kwargs = limits.get(name, {})
+    try:
+        return factory(**kwargs)
+    except TypeError as e:
+        raise ValueError(
+            f"tool_limits for '{name}' has unsupported keys {sorted(kwargs)}: {e}"
+        ) from e
 
 
 __all__ = [

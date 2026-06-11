@@ -191,6 +191,7 @@ class ContextBuilder:
             scheduler=scheduler,
             skill_store=self._skill_store,
             interactive=interactive,
+            tool_limits=self._team.tool_limits,
         )
         cfg = self._cfg
         return Agent(

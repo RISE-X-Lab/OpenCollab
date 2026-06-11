@@ -44,3 +44,12 @@ topology:
   coder: [reviewer]
   reviewer: [coder]
 
+# Optional: per-tool output caps (constructor kwargs), to tune tool output
+# budgets to the backend's context size. Defaults shown; uncomment to override.
+# tool_limits:
+#   bash: { max_output_chars: 8000 }
+#   git_diff: { max_diff_chars: 8000, max_status_chars: 2000 }
+#   run_tests: { max_traceback_chars: 6000 }
+#   file_read: { max_read_chars: 30000 }
+#   grep: { max_grep_chars: 10000 }
+
