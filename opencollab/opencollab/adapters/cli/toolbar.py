@@ -7,6 +7,8 @@ from typing import Any
 
 from prompt_toolkit.formatted_text import HTML
 
+from opencollab.application.scheduler_types import RosterEntry, roster_display_state
+
 _TOOLBAR_MUTED = "ansibrightblack"
 _TOOLBAR_ACCENT = "ansicyan"
 _TOOLBAR_SUCCESS = "ansigreen"
@@ -14,11 +16,8 @@ _TOOLBAR_WARNING = "ansiyellow"
 _TOOLBAR_ERROR = "ansired"
 
 _TOOLBAR_STATE_STYLES = {
-    "busy": _TOOLBAR_WARNING,
     "running": _TOOLBAR_WARNING,
     "idle": _TOOLBAR_SUCCESS,
-    "done": _TOOLBAR_SUCCESS,
-    "completed": _TOOLBAR_SUCCESS,
     "failed": _TOOLBAR_ERROR,
     "cancelled": _TOOLBAR_WARNING,
 }
@@ -28,14 +27,7 @@ def _toolbar_style(text: Any, color: str) -> str:
     return f'<style fg="{color}">{escape(str(text))}</style>'
 
 
-def _display_team_state(entry: dict) -> str:
-    if entry.get("busy"):
-        return "busy"
-    phase = entry.get("phase", "?")
-    return "idle" if phase in ("done", "scheduled") else phase
-
-
-def _format_team_toolbar(snapshot: list[dict]) -> HTML | str:
+def format_team_toolbar(snapshot: list[RosterEntry]) -> HTML | str:
     """One-line team roster for the prompt bottom toolbar."""
     if not snapshot:
         return ""
@@ -49,7 +41,7 @@ def _format_team_toolbar(snapshot: list[dict]) -> HTML | str:
             label = "Lead"
         else:
             label = f"A{aid} {role}"
-        state = _display_team_state(entry)
+        state = roster_display_state(entry)
         state_style = _TOOLBAR_STATE_STYLES.get(str(state).lower(), _TOOLBAR_MUTED)
         parts.append(
             _toolbar_style(label, _TOOLBAR_MUTED)

@@ -28,19 +28,6 @@ class LLMResponse:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     usage: Usage = field(default_factory=lambda: Usage())
     finish_reason: str | None = None
-    raw: Any = None
-
-
-@dataclass
-class StreamDelta:
-    """A single chunk from streaming response."""
-
-    content: str | None = None
-    tool_call_index: int | None = None
-    tool_call_id: str | None = None
-    tool_call_name: str | None = None
-    tool_call_args_delta: str | None = None
-    finish_reason: str | None = None
 
 
 # ---------------------------------------------------------------------------

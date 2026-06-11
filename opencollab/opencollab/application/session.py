@@ -5,7 +5,6 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from opencollab.application.compaction import DEFAULT_COMPACTION_THRESHOLD, ContextCompactionUseCase
 from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import (
     EnvironmentPort,
@@ -25,14 +24,6 @@ if TYPE_CHECKING:
     from opencollab.application.scheduler import LaunchSpec
 
 
-class BudgetExceededError(Exception):
-    pass
-
-
-class LoopDetectedError(Exception):
-    pass
-
-
 @dataclass
 class SessionRuntime:
     """Pre-built collaborators a ``Session`` facade keeps as attributes.
@@ -47,7 +38,6 @@ class SessionRuntime:
     llm: LLMPort
     store: SessionStorePort
     tool_execution: ToolExecutionUseCase
-    compactor: ContextCompactionUseCase
     runner: SessionRunUseCase
     auto_save_path: str | None
 
@@ -69,7 +59,6 @@ class Session:
         tracer: TracePort | None = None,
         max_budget_tokens: int = 200_000,
         max_steps: int = 100,
-        compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
         auto_save_path: str | None = None,
         permission_policy: PermissionPort | None = None,
         safety_policy: SafetyPolicyPort | None = None,
@@ -79,7 +68,6 @@ class Session:
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
         self.max_steps = max_steps
-        self.compaction_threshold = compaction_threshold
         self._permission_policy = permission_policy
         self._safety_policy = safety_policy
         self._auto_save_path = auto_save_path
@@ -92,7 +80,6 @@ class Session:
         self._llm = runtime.llm
         self.store = runtime.store
         self.tool_execution = runtime.tool_execution
-        self.compactor = runtime.compactor
         self.runner = runtime.runner
         # The env attribute mirrors the runtime's tool_execution env so
         # downstream readers (snapshot, characterization tests) still see
@@ -206,8 +193,6 @@ class Session:
 
 
 __all__ = [
-    "BudgetExceededError",
-    "LoopDetectedError",
     "Session",
     "SessionRuntime",
 ]

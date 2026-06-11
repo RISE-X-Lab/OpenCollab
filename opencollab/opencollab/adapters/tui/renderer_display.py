@@ -13,6 +13,8 @@ from rich.markdown import Markdown
 from rich.segment import Segment
 from rich.text import Text
 
+from opencollab.application.scheduler_types import roster_display_state
+
 
 class _LineViewport:
     """A pre-rendered, bottom-aligned live viewport."""
@@ -40,7 +42,6 @@ class _RendererDisplayMixin:
     _STATE_STYLES = {
         "running": _STYLE_WARNING,
         "idle": _STYLE_SUCCESS,
-        "done": _STYLE_SUCCESS,
         "failed": _STYLE_ERROR,
         "cancelled": _STYLE_WARNING,
     }
@@ -54,27 +55,30 @@ class _RendererDisplayMixin:
             return True
         return aid == self._selected_aid
 
-    def _args_preview(self, args: Any) -> str:
-        """Render a short argument preview for tool activity lines."""
-        if not isinstance(args, dict):
-            return ""
-        if "command" in args and isinstance(args["command"], str):
-            return f" {args['command'][:80]}"
-        if "task" in args and isinstance(args["task"], str):
-            return f" {args['task'][:80]}"
-        if "path" in args and isinstance(args["path"], str):
-            return f" {args['path'][:80]}"
-        if "file_path" in args and isinstance(args["file_path"], str):
-            return f" {args['file_path'][:80]}"
-        return ""
+    # Argument keys to preview, in priority order; ``command`` reads as code.
+    _PREVIEW_KEYS = ("command", "task", "path", "file_path")
 
-    @staticmethod
-    def _roster_state(entry: dict) -> str:
-        """Map a scheduler roster entry (phase/busy) to a panel state label."""
-        if entry.get("busy"):
-            return "running"
-        phase = entry.get("phase", "?")
-        return "idle" if phase in ("done", "scheduled", "completed") else phase
+    def _args_preview(self, payload: Any, *, limit: int = 80, code: bool = False) -> str:
+        """Short preview of a tool's arguments for activity lines and spinners.
+
+        ``payload`` may be a bare args dict, or a full event-data dict whose args
+        live under ``"args"`` (session tools) or directly on it (scheduler events
+        such as ``agent_spawned``, which carry ``task`` at the top level).
+        """
+        if not isinstance(payload, dict):
+            return ""
+        sources = []
+        nested = payload.get("args")
+        if isinstance(nested, dict):
+            sources.append(nested)
+        sources.append(payload)
+        for source in sources:
+            for key in self._PREVIEW_KEYS:
+                value = source.get(key)
+                if isinstance(value, str):
+                    text = value[:limit]
+                    return f" `{text}`" if code and key == "command" else f" {text}"
+        return ""
 
     def _team_entries(self) -> list[tuple[int | None, str, str]]:
         """(aid, role, state) tuples for the panel: the configured roster from
@@ -86,7 +90,7 @@ class _RendererDisplayMixin:
                 roster = []
             if roster:
                 return [
-                    (e.get("aid"), e.get("role", "?"), self._roster_state(e))
+                    (e.get("aid"), e.get("role", "?"), roster_display_state(e))
                     for e in roster
                 ]
         return [
@@ -138,15 +142,7 @@ class _RendererDisplayMixin:
         if self._active_tools:
             parts.append(Text("Running", style=self._STYLE_HEADING))
             for label, data in self._active_tools.items():
-                args_preview = ""
-                if "args" in data:
-                    args = data["args"]
-                    if isinstance(args, dict) and "command" in args:
-                        args_preview = f" `{args['command'][:60]}`"
-                    elif isinstance(args, dict) and "task" in args:
-                        args_preview = f" {args['task'][:60]}"
-                elif "task" in data and isinstance(data["task"], str):
-                    args_preview = f" {data['task'][:60]}"
+                args_preview = self._args_preview(data, limit=60, code=True)
 
                 spinner_text = Text.assemble(
                     ("  ", self._STYLE_MUTED),

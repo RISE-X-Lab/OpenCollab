@@ -7,7 +7,7 @@ import pytest
 
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
-from opencollab.adapters.tools import human
+from opencollab.adapters.tools import base, human
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
@@ -60,6 +60,34 @@ class SpySafetyPolicy:
 class FakePermissionPolicy:
     async def confirm(self, prompt: str) -> bool:
         return True
+
+
+class FakeRemoteEnv:
+    """Environment that does I/O somewhere other than the host filesystem."""
+
+    def __init__(self, files: dict[str, str] | None = None):
+        self.files = dict(files or {})
+
+    async def read_file(self, path: str) -> str:
+        if path not in self.files:
+            raise FileNotFoundError(path)
+        return self.files[path]
+
+    async def write_file(self, path: str, content: str) -> None:
+        self.files[path] = content
+
+
+class SpyLock:
+    instances: list["SpyLock"] = []
+
+    def __init__(self, *args, **kwargs):
+        SpyLock.instances.append(self)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -173,20 +201,30 @@ def test_file_read_preserves_workspace_path_jail(tmp_path):
         run(FileReadTool().execute_with_runtime({"path": "/etc/passwd"}, runtime))
 
 
-def test_file_read_preserves_file_not_found():
+def test_file_read_requires_environment():
     runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+
+    result = run(FileReadTool().execute_with_runtime({"path": "missing.txt"}, runtime))
+
+    assert result == "Error: no execution environment available."
+
+
+def test_file_read_preserves_file_not_found(tmp_path):
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
     result = run(FileReadTool().execute_with_runtime({"path": "missing.txt"}, runtime))
 
     assert result == "Error: file not found: missing.txt"
 
 
-def test_file_read_preserves_permission_error_string(monkeypatch):
+def test_file_read_preserves_permission_error_string(monkeypatch, tmp_path):
     def raise_permission_error(*args, **kwargs):
         raise PermissionError("denied")
 
     monkeypatch.setattr(builtins, "open", raise_permission_error)
-    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
     result = run(FileReadTool().execute_with_runtime({"path": "secret.txt"}, runtime))
 
@@ -239,14 +277,28 @@ def test_file_write_preserves_workspace_path_jail(tmp_path):
         )
 
 
-def test_file_write_preserves_missing_old_str(tmp_path):
-    target = tmp_path / "note.txt"
-    target.write_text("alpha\n", encoding="utf-8")
+def test_file_write_requires_environment():
     runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
 
     result = run(
         FileWriteTool().execute_with_runtime(
-            {"path": str(target), "mode": "str_replace", "new_str": "beta"},
+            {"path": "note.txt", "mode": "create", "content": "x"},
+            runtime,
+        )
+    )
+
+    assert result == "Error: no execution environment available."
+
+
+def test_file_write_preserves_missing_old_str(tmp_path):
+    target = tmp_path / "note.txt"
+    target.write_text("alpha\n", encoding="utf-8")
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {"path": "note.txt", "mode": "str_replace", "new_str": "beta"},
             runtime,
         )
     )
@@ -257,24 +309,90 @@ def test_file_write_preserves_missing_old_str(tmp_path):
 def test_file_write_preserves_duplicate_old_str_error(tmp_path):
     target = tmp_path / "note.txt"
     target.write_text("alpha\nalpha\n", encoding="utf-8")
-    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
     result = run(
         FileWriteTool().execute_with_runtime(
-            {"path": str(target), "mode": "str_replace", "old_str": "alpha", "new_str": "beta"},
+            {"path": "note.txt", "mode": "str_replace", "old_str": "alpha", "new_str": "beta"},
             runtime,
         )
     )
 
     assert (
         result
-        == f"Error: old_str found 2 times in {target}. Provide more context to make it unique."
+        == "Error: old_str found 2 times in note.txt. Provide more context to make it unique."
     )
+
+
+# ---------------------------------------------------------------------------
+# Host write lock — only taken when I/O hits the host filesystem
+# ---------------------------------------------------------------------------
+
+
+def test_file_write_remote_env_takes_no_host_lock(monkeypatch):
+    SpyLock.instances = []
+    monkeypatch.setattr(base, "FileLock", SpyLock)
+    env = FakeRemoteEnv({"note.txt": "alpha\n"})
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {"path": "note.txt", "mode": "str_replace", "old_str": "alpha", "new_str": "beta"},
+            runtime,
+        )
+    )
+
+    assert "Replaced in" in result
+    assert env.files["note.txt"] == "beta\n"
+    assert SpyLock.instances == []
+
+
+def test_apply_patch_remote_env_takes_no_host_lock(monkeypatch):
+    SpyLock.instances = []
+    monkeypatch.setattr(base, "FileLock", SpyLock)
+    env = FakeRemoteEnv({"f.py": "a\nb\nc\nd\n"})
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "line_replace",
+                "start_line": 2,
+                "end_line": 2,
+                "new_str": "B",
+            },
+            runtime,
+        )
+    )
+
+    assert "Applied line_replace" in result
+    assert env.files["f.py"] == "a\nB\nc\nd\n"
+    assert SpyLock.instances == []
+
+
+def test_host_write_lock_taken_for_none_and_local_envs(tmp_path):
+    none_lock = base.host_write_lock(str(tmp_path / "x.txt"), None)
+    local_lock = base.host_write_lock(str(tmp_path / "y.txt"), LocalEnvironment(str(tmp_path)))
+    remote_lock = base.host_write_lock(str(tmp_path / "z.txt"), FakeRemoteEnv())
+
+    assert isinstance(none_lock, base.FileLock)
+    assert isinstance(local_lock, base.FileLock)
+    assert not isinstance(remote_lock, base.FileLock)
 
 
 # ---------------------------------------------------------------------------
 # GrepTool
 # ---------------------------------------------------------------------------
+
+
+def test_grep_tool_requires_environment():
+    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+
+    result = run(GrepTool().execute_with_runtime({"pattern": "needle"}, runtime))
+
+    assert result == "Error: no execution environment available."
 
 
 def test_grep_tool_preserves_env_exec_path_without_path_safety():
@@ -303,6 +421,18 @@ def test_grep_tool_preserves_env_exec_path_without_path_safety():
 # ---------------------------------------------------------------------------
 
 
+class FakeAskPolicy:
+    """Records the question and returns a canned answer (no terminal I/O)."""
+
+    def __init__(self, answer: str = "Use the smaller patch."):
+        self.answer = answer
+        self.questions: list[str] = []
+
+    async def ask(self, question: str) -> str:
+        self.questions.append(question)
+        return self.answer
+
+
 def test_ask_user_tool_non_interactive_fallback():
     runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
 
@@ -311,7 +441,55 @@ def test_ask_user_tool_non_interactive_fallback():
     assert result == "Running in non-interactive mode. Make your own best judgment and proceed."
 
 
-def test_ask_user_tool_uses_prompt_when_permission_exists(monkeypatch):
+def test_ask_user_tool_routes_through_ask_port():
+    ask_policy = FakeAskPolicy()
+    runtime = ToolRuntime(
+        environment=None,
+        safety_policy=None,
+        permission_policy=None,
+        ask_policy=ask_policy,
+    )
+
+    result = run(AskUserTool().execute_with_runtime({"question": "Proceed?"}, runtime))
+
+    assert ask_policy.questions == ["Proceed?"]
+    assert result == "Use the smaller patch."
+
+
+def test_ask_user_tool_ask_port_used_even_in_yolo_without_confirm():
+    # --yolo wires no permission (confirm) policy but still wires an ask policy:
+    # the tool must stay interactive instead of falsely reporting non-interactive.
+    ask_policy = FakeAskPolicy(answer="keep going")
+    runtime = ToolRuntime(
+        environment=None,
+        safety_policy=None,
+        permission_policy=None,
+        ask_policy=ask_policy,
+    )
+
+    result = run(AskUserTool().execute_with_runtime({"question": "Ship it?"}, runtime))
+
+    assert result == "keep going"
+
+
+def test_ask_user_tool_declines_on_ask_port_eof():
+    class EofAskPolicy:
+        async def ask(self, question: str) -> str:
+            raise EOFError
+
+    runtime = ToolRuntime(
+        environment=None,
+        safety_policy=None,
+        permission_policy=None,
+        ask_policy=EofAskPolicy(),
+    )
+
+    result = run(AskUserTool().execute_with_runtime({"question": "Proceed?"}, runtime))
+
+    assert result == "User declined to answer."
+
+
+def test_ask_user_tool_uses_prompt_when_no_ask_port_but_permission_exists(monkeypatch):
     runtime = ToolRuntime(
         environment=None,
         safety_policy=None,

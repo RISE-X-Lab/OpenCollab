@@ -7,10 +7,10 @@ to Anthropic's format on the way out.
 from __future__ import annotations
 
 import json
-from typing import Any, AsyncIterator
+from typing import Any
 
 from opencollab.adapters.llm.retry import with_retry
-from opencollab.adapters.llm.types import DEFAULT_MAX_OUTPUT_TOKENS, LLMResponse, StreamDelta, Usage
+from opencollab.adapters.llm.types import DEFAULT_MAX_OUTPUT_TOKENS, LLMResponse, Usage
 
 
 def _build_request_kwargs(
@@ -79,37 +79,7 @@ async def complete_anthropic(
             output_tokens=resp.usage.output_tokens,
         ),
         finish_reason=resp.stop_reason,
-        raw=resp,
     )
-
-
-async def stream_anthropic(
-    client: Any,
-    model: str,
-    messages: list[dict],
-    tools: list[dict] | None,
-    temperature: float,
-) -> AsyncIterator[StreamDelta]:
-    """Streaming completion against the Anthropic API."""
-    kwargs = _build_request_kwargs(model, messages, tools, temperature)
-
-    async with client.messages.stream(**kwargs) as stream:
-        async for event in stream:
-            if event.type == "content_block_delta":
-                if event.delta.type == "text_delta":
-                    yield StreamDelta(content=event.delta.text)
-                elif event.delta.type == "input_json_delta":
-                    yield StreamDelta(tool_call_args_delta=event.delta.partial_json)
-            elif event.type == "content_block_start":
-                if event.content_block.type == "tool_use":
-                    yield StreamDelta(
-                        tool_call_index=event.index,
-                        tool_call_id=event.content_block.id,
-                        tool_call_name=event.content_block.name,
-                    )
-            elif event.type == "message_delta":
-                if hasattr(event.delta, "stop_reason") and event.delta.stop_reason:
-                    yield StreamDelta(finish_reason=event.delta.stop_reason)
 
 
 # ---------------------------------------------------------------------------

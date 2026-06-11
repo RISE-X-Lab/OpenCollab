@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from opencollab.domain.hooks import HookOutcome
 
 if TYPE_CHECKING:
-    from opencollab.application.tool_execution import ToolRuntime
+    from opencollab.application.scheduler_types import LaunchSpec
+    from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 
 
 class EnvironmentPort(Protocol):
@@ -16,6 +17,18 @@ class EnvironmentPort(Protocol):
         ...
 
     async def write_file(self, path: str, content: str) -> None:
+        ...
+
+
+@runtime_checkable
+class DiffCapablePort(Protocol):
+    """An environment that can report its accumulated changes as a diff.
+
+    Satisfied by worktree-style environments; the scheduler appends the diff
+    to a finished child's result before delivering it to the parent.
+    """
+
+    async def get_diff(self) -> str:
         ...
 
 
@@ -42,6 +55,20 @@ SafetyPolicyFactory = Callable[[Any], SafetyPolicyPort | None]
 
 class PermissionPort(Protocol):
     async def confirm(self, prompt: str) -> bool:
+        ...
+
+
+class AskUserPort(Protocol):
+    """Free-text human input for the ``ask_user`` tool.
+
+    Distinct from ``PermissionPort`` (a yes/no confirm gate): this returns the
+    user's answer to an open question. A TUI implementation pauses its live
+    render around the prompt; ``None`` is never returned — its presence is the
+    signal that a human is reachable, so a wired ask port keeps ``ask_user``
+    interactive even in auto-approve (yolo) mode.
+    """
+
+    async def ask(self, question: str) -> str:
         ...
 
 
@@ -79,6 +106,11 @@ class HookPort(Protocol):
 
 
 class ToolPort(Protocol):
+    """A callable tool: JSON Schema input, string result. A deferrable tool
+    (e.g. ``spawn_agent``) returns a ``DeferredCall`` instead when it hands
+    work off whose result arrives later.
+    """
+
     name: str
     description: str
     parameters: dict[str, Any]
@@ -90,7 +122,7 @@ class ToolPort(Protocol):
         self,
         params: dict[str, Any],
         runtime: "ToolRuntime",
-    ) -> str:
+    ) -> "str | DeferredCall":
         ...
 
 
@@ -108,11 +140,11 @@ class SessionFactoryPort(Protocol):
         self,
         *,
         role: str,
-        env: Any,
+        env: EnvironmentPort,
         budget: int,
         max_steps: int = 50,
         aid: int = -1,
-        scheduler: Any = None,
+        scheduler: SchedulerPort | None = None,
         task: str | None = None,
         context: str = "",
     ) -> Any:
@@ -121,8 +153,8 @@ class SessionFactoryPort(Protocol):
     def create_lead_session(
         self,
         *,
-        scheduler: Any,
-        launch: Any,
+        scheduler: SchedulerPort,
+        launch: LaunchSpec,
         budget: int,
         aid: int = 0,
     ) -> Any:
@@ -180,6 +212,43 @@ class SchedulerPort(Protocol):
         ...
 
 
+class CompletionUsage(Protocol):
+    """Token accounting attached to a completion."""
+
+    @property
+    def input_tokens(self) -> int:
+        ...
+
+    @property
+    def total_tokens(self) -> int:
+        ...
+
+
+class CompletionResponse(Protocol):
+    """Structural contract for one LLM completion result.
+
+    Exactly the attributes the run loop dereferences — adapter response types
+    (e.g. ``adapters.llm.LLMResponse``) satisfy it without this layer importing
+    them. ``tool_calls`` holds OpenAI-shaped dicts (``id`` + ``function``).
+    """
+
+    @property
+    def content(self) -> str | None:
+        ...
+
+    @property
+    def tool_calls(self) -> list[dict[str, Any]]:
+        ...
+
+    @property
+    def usage(self) -> CompletionUsage:
+        ...
+
+    @property
+    def finish_reason(self) -> str | None:
+        ...
+
+
 class LLMPort(Protocol):
     """LLM client surface used by the session run loop and compaction."""
 
@@ -189,7 +258,7 @@ class LLMPort(Protocol):
         *,
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.0,
-    ) -> Any:
+    ) -> CompletionResponse:
         ...
 
 
@@ -227,6 +296,9 @@ class TracePort(Protocol):
         tokens: int = 0,
         latency: float = 0.0,
     ) -> None:
+        ...
+
+    def flush(self) -> None:
         ...
 
 

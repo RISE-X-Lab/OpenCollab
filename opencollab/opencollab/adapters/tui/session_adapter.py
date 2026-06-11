@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable, Protocol
 
-from opencollab.application.ports import EventPublisherPort, PermissionPort
+from opencollab.application.ports import AskUserPort, EventPublisherPort, PermissionPort
 
 
 class SuspendableRender(Protocol):
@@ -50,3 +50,27 @@ class TuiPermissionPolicy(PermissionPort):
         finally:
             self._render.resume_live(was_suspended)
         return answer.strip().lower() in ("y", "yes")
+
+
+class TuiAskUserPolicy(AskUserPort):
+    """Ask policy that pauses a live render around a free-text prompt.
+
+    Reuses the same suspend/resume seam as ``TuiPermissionPolicy`` so the
+    ``ask_user`` tool's question is not clobbered by the Rich Live frame. On
+    EOF/interrupt it raises ``EOFError`` so the tool reports the user declined.
+    """
+
+    def __init__(
+        self,
+        render: SuspendableRender,
+        read_line: Callable[[str], Awaitable[str]],
+    ):
+        self._render = render
+        self._read_line = read_line
+
+    async def ask(self, question: str) -> str:
+        was_suspended = self._render.suspend_live()
+        try:
+            return await self._read_line(f"[Agent asks] {question}\n> ")
+        finally:
+            self._render.resume_live(was_suspended)

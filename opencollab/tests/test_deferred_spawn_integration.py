@@ -19,7 +19,6 @@ from opencollab.application.scheduler import Scheduler
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import Agent
-from opencollab.domain.compaction import CompactResult
 from opencollab.domain.session import SessionPhase, SessionState
 
 
@@ -44,14 +43,6 @@ class FakeLLM:
     async def complete(self, messages, tools=None, temperature=0.0):
         self.calls.append({"messages": copy.deepcopy(messages)})
         return self.responses.pop(0)
-
-
-class NoCompaction:
-    def should_compact(self):
-        return False
-
-    async def compact(self, apply=True):
-        return CompactResult()
 
 
 class ChildSession:
@@ -103,7 +94,7 @@ def test_lead_reasons_over_child_result_in_same_turn():
     scheduler = Scheduler(
         session_factory=ChildFactory(child),
         worktree_pool=WorktreePool(".", use_worktrees=False),
-        event_sink=None,
+        event_sink=EventBus(None),
     )
 
     lead_state = SessionState(messages=[{"role": "system", "content": "you are lead"}])
@@ -136,7 +127,6 @@ def test_lead_reasons_over_child_result_in_same_turn():
         llm=llm,
         event_publisher=bus,
         tool_execution=tool_execution,
-        compaction=NoCompaction(),
     )
     lead = LeadSession(runner, lead_state, lead_agent)
     scheduler.register_lead(lead)

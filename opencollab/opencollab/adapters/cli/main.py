@@ -28,12 +28,12 @@ from prompt_toolkit.styles import Style
 from rich.console import Console
 
 from opencollab.adapters.cli.config_resolve import (
-    _missing_api_key,
-    _print_missing_key_hint,
-    _resolve_config,
+    missing_api_key_for,
+    print_missing_key_hint,
+    resolve_config,
 )
 from opencollab.adapters.cli.eval import eval_cmd
-from opencollab.adapters.cli.toolbar import _format_team_toolbar
+from opencollab.adapters.cli.toolbar import format_team_toolbar
 
 app = typer.Typer(
     name="opencollab",
@@ -98,9 +98,9 @@ def main_callback(
     if ctx.invoked_subcommand is not None:
         return
 
-    cfg = _resolve_config(workspace, model, provider, api_key, base_url, budget)
-    if _missing_api_key(cfg["provider"], cfg["api_key"]):
-        _print_missing_key_hint(console, cfg["provider"], cfg["base_url"])
+    cfg = resolve_config(workspace, model, provider, api_key, base_url, budget)
+    if missing_api_key_for(cfg["provider"], cfg["api_key"], cfg["base_url"]):
+        print_missing_key_hint(console, cfg["provider"], cfg["base_url"])
         raise typer.Exit(code=1)
 
     one_shot = _resolve_one_shot_prompt(prompt, prompt_file)
@@ -146,7 +146,31 @@ async def _read_command(tui, bottom_toolbar: Any = None) -> str | None:
         tui.resume_live(was_suspended)
 
 
-async def _repl_loop(tui: Any, handle_turn, bottom_toolbar: Any = None) -> None:
+_EXIT_COMMANDS = frozenset({"exit", "quit", "/exit", "/quit"})
+
+
+def _save_session(lead: Any) -> None:
+    """`/save` REPL command: write the lead session to a fresh JSONL file."""
+    path = f"session-{uuid.uuid4().hex[:8]}.jsonl"
+    lead.save(path)
+    console.print(f"[dim]Session saved to {path}[/dim]")
+
+
+def _dispatch_repl_command(line: str, lead: Any) -> bool:
+    """Handle a built-in REPL command. Returns True to keep looping, False to exit.
+
+    ``None`` (not a command) is signalled by raising ``KeyError`` to the caller.
+    """
+    command = line.lower()
+    if command in _EXIT_COMMANDS:
+        return False
+    if command == "/save":
+        _save_session(lead)
+        return True
+    raise KeyError(line)
+
+
+async def _repl_loop(tui: Any, handle_turn, lead: Any, bottom_toolbar: Any = None) -> None:
     """Shared REPL: read line, dispatch built-in slash commands, run a turn."""
     while True:
         line = await _read_command(tui, bottom_toolbar=bottom_toolbar)
@@ -155,8 +179,12 @@ async def _repl_loop(tui: Any, handle_turn, bottom_toolbar: Any = None) -> None:
         line = line.strip()
         if not line:
             continue
-        if line.lower() in ("exit", "quit", "/exit", "/quit"):
-            break
+        try:
+            if not _dispatch_repl_command(line, lead):
+                break
+            continue
+        except KeyError:
+            pass
         result = await handle_turn(line)
         if result is False:
             break
@@ -165,20 +193,29 @@ async def _repl_loop(tui: Any, handle_turn, bottom_toolbar: Any = None) -> None:
 async def _run(workspace: str, cfg: dict, session_file: str | None,
                trace: bool, yolo: bool, use_worktrees: bool,
                one_shot_prompt: str | None = None):
-    from opencollab.adapters.tui import TUI, TuiEventSink, TuiPermissionPolicy
+    from opencollab.adapters.tui import (
+        TUI,
+        TuiAskUserPolicy,
+        TuiEventSink,
+        TuiPermissionPolicy,
+    )
     from opencollab.bootstrap import build_runtime_context, build_scheduler
 
     tui = TUI(console, filter_messages=cfg["filter_messages"])
     tui.print_welcome()
 
+    # ``--yolo`` only auto-approves risky commands; a human is still present, so
+    # the ask-user tool stays interactive (routed through the TUI's suspend/resume).
     permission_policy = None
     if not yolo:
         permission_policy = TuiPermissionPolicy(render=tui, read_line=_read_line)
+    ask_policy = TuiAskUserPolicy(render=tui, read_line=_read_line)
 
     ctx = build_runtime_context(
         workspace, cfg, trace=trace,
         event_sink=TuiEventSink(tui),
         permission_policy=permission_policy,
+        ask_policy=ask_policy,
         run_id_prefix="scheduler-",
     )
     scheduler = build_scheduler(
@@ -192,32 +229,24 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
     elif lead.auto_save_path:
         console.print(f"[dim]Session auto-saving to {lead.auto_save_path}[/dim]")
 
-    cancel_event = asyncio.Event()
-
     async def turn(line: str) -> None:
-        if line.lower() == "/save":
-            path = f"session-{uuid.uuid4().hex[:8]}.jsonl"
-            lead.save(path)
-            console.print(f"[dim]Session saved to {path}[/dim]")
-            return
-        cancel_event.clear()
         tui.reset()
         tui.start_live()
         try:
             await scheduler.run(line)
         except KeyboardInterrupt:
-            cancel_event.set()
+            pass  # abandon the turn, return to the REPL
         finally:
             tui.stop_live()
             tui.print_stats(scheduler.used_tokens, lead.step_count)
 
     def team_toolbar() -> str:
-        return _format_team_toolbar(scheduler.team_roster())
+        return format_team_toolbar(scheduler.team_roster())
 
     if one_shot_prompt is not None:
         await turn(one_shot_prompt)
     else:
-        await _repl_loop(tui, turn, bottom_toolbar=team_toolbar)
+        await _repl_loop(tui, turn, lead, bottom_toolbar=team_toolbar)
 
     await scheduler.cleanup()
     if ctx.tracer:

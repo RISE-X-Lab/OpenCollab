@@ -13,7 +13,7 @@ from typing import Optional
 import typer
 from rich.console import Console
 
-from opencollab.adapters.cli.config_resolve import _resolve_config
+from opencollab.adapters.cli.config_resolve import resolve_config
 
 console = Console()
 
@@ -30,7 +30,7 @@ def eval_cmd(
     timeout: float = typer.Option(600.0, "--timeout"),
 ):
     """Headless evaluation mode for benchmarks (SWE-bench, etc.)."""
-    cfg = _resolve_config(".", model, provider, api_key, base_url, None)
+    cfg = resolve_config(".", model, provider, api_key, base_url, None)
     asyncio.run(_eval(
         tasks_file=tasks_file, model=cfg["model"], provider=cfg["provider"],
         api_key=cfg["api_key"], base_url=cfg["base_url"], output_dir=output_dir,
@@ -77,10 +77,10 @@ async def _eval(
     results_path = os.path.join(output_dir, "results.jsonl")
     save_results(results, results_path)
 
-    passed = sum(1 for r in results if r.success)
-    console.print(f"\n[bold]Results: {passed}/{len(results)} passed[/bold]")
+    produced = sum(1 for r in results if r.patch_produced)
+    console.print(f"\n[bold]Results: {produced}/{len(results)} produced a patch[/bold]")
     console.print(f"Results saved to {results_path}")
 
     for r in results:
-        status = "[green]PASS[/green]" if r.success else "[red]FAIL[/red]"
+        status = "[green]PATCH[/green]" if r.patch_produced else "[red]NO PATCH[/red]"
         console.print(f"  {r.task_id}: {status} ({r.tokens_used:,} tokens, {r.duration:.1f}s)")

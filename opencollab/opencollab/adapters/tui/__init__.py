@@ -3,8 +3,15 @@
 from opencollab.adapters.tui.renderer import TUI
 from opencollab.adapters.tui.session_adapter import (
     SuspendableRender,
+    TuiAskUserPolicy,
     TuiEventSink,
     TuiPermissionPolicy,
 )
 
-__all__ = ["TUI", "TuiEventSink", "TuiPermissionPolicy", "SuspendableRender"]
+__all__ = [
+    "TUI",
+    "TuiAskUserPolicy",
+    "TuiEventSink",
+    "TuiPermissionPolicy",
+    "SuspendableRender",
+]

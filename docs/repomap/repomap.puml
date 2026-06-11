@@ -58,7 +58,7 @@ package "Interface Adapters" as ADAPTERS #FDEBD0 {
   [adapters.cli.main\ndefault agent + eval commands] as CliAdapter
   [adapters.tui\nTUI\nTuiEventSink\nTuiPermissionPolicy] as TuiAdapter
   [adapters.llm\nLLMClient\nestimate_messages_tokens] as LLMAdapter
-  [adapters.env\nLocalEnvironment\nWorktreeEnvironment] as EnvAdapter
+  [adapters.env\nLocalEnvironment\nWorktreeEnvironment\nDockerEnvironment] as EnvAdapter
   [adapters.worktree_pool\nWorktreePool] as WorktreeAdapter
   [adapters.storage\nSessionStore] as StoreAdapter
   [adapters.trace\nTracer] as TraceAdapter
@@ -68,7 +68,7 @@ package "Interface Adapters" as ADAPTERS #FDEBD0 {
 
 package "Composition Root\n(bootstrap, 6 files)" as COMPOSITION #EBF5FB {
   [bootstrap.container\nsession-construction core +\npublic re-export facade\nbuild_runtime_context\nbuild_session_runtime (only LLMClient site)\nbuild_session / snapshot_session / load_session\nbuild_workspace_safety_policy] as Container
-  [bootstrap.tool_registry\nname->Tool factories + name sets\nbuild_tools_for_role / build_default_tools] as ToolRegistry
+  [bootstrap.tool_registry\nname->Tool factories + name sets\nbuild_tools_for_role] as ToolRegistry
   [bootstrap.context_builder\nSpawnConfig + ContextBuilder] as ContextBuilderMod
   [bootstrap.session_factory\nbuild_spawn_session\nDefaultSessionFactory\nagent_save_path / make_run_dir] as SessionFactoryMod
   [bootstrap.scheduler_factory\nbuild_scheduler] as SchedulerFactoryMod
@@ -79,18 +79,21 @@ package "Application Layer\n(use cases + ports)" as APP #D5F5E3 {
   [app.session\nSession + SessionRuntime\napply_launch (idempotent resume/seed)] as SessionFacade
   [app.session_run\nSessionRunUseCase] as SessionRunner
   [app.compaction\nContextCompactionUseCase] as Compactor
-  [app.tool_execution\nToolExecutionUseCase + ToolRuntime\nCallbackPermissionPolicy] as ToolExec
+  [app.tool_execution\nToolExecutionUseCase + ToolRuntime\nDeferredCall (deferred-tool contract)\nCallbackPermissionPolicy] as ToolExec
   [app.scheduler\nScheduler\ncreate_init_process (agent 0) + spawn (children),\nparallel via asyncio.create_task\n(LaunchSpec/QueuedTeammateMessage -> scheduler_types;\nspawn_with_review loop -> self_collaboration)] as SchedulerUC
   [app.autosave\nAutoSaveSubscriber] as Autosave
   [app.event_bus\nEventBus (fan-out)] as EventBus
-  [app.events\nSessionEventFactory\n(one builder, all run-loop events)] as EventsModule
+  [app.events\nSessionEventFactory + SchedulerEventFactory\n(builders: run-loop/tool + orchestration events)] as EventsModule
 
   interface "LLMPort" as LLMPort
+  interface "CompletionResponse\n(structural completion result)" as CompletionResp
   interface "EnvironmentPort" as EnvPort
+  interface "DiffCapablePort\n(runtime-checkable: env get_diff)" as DiffPort
   interface "SessionStorePort" as StorePort
   interface "TracePort" as TracePort
   interface "EventPublisherPort" as EventPort
   interface "PermissionPort" as PermissionPort
+  interface "AskUserPort\n(free-text human input)" as AskUserPort
   interface "SafetyPolicyPort" as SafetyPort
   interface "WorktreePoolPort" as WorktreePort
   interface "ToolPort" as ToolPort
@@ -125,10 +128,12 @@ SchedulerUC --> DriverAsync
 ' ============================================================
 LLMAdapter ..|> LLMPort
 EnvAdapter ..|> EnvPort
+EnvAdapter ..|> DiffPort
 StoreAdapter ..|> StorePort
 TraceAdapter ..|> TracePort
 TuiAdapter ..|> EventPort
 TuiAdapter ..|> PermissionPort
+TuiAdapter ..|> AskUserPort
 SafetyAdapter ..|> SafetyPort
 WorktreeAdapter ..|> WorktreePort
 ToolAdapters ..|> ToolPort
@@ -138,6 +143,7 @@ SchedulerUC ..|> SchedulerPort
 ' Composition Root wiring (only place that knows concretes)
 ' ============================================================
 Container --> Config
+Config --> LLMAdapter : provider classification (providers.py)
 Container --> LLMAdapter
 Container --> EnvAdapter
 Container --> StoreAdapter
@@ -161,7 +167,6 @@ CliAdapter --> SchedulerFactoryMod : invokes build_scheduler
 ' ============================================================
 SessionFacade --> SessionRunner
 SessionFacade --> ToolExec
-SessionFacade --> Compactor
 SessionFacade --> EventBus
 SessionFacade --> Autosave
 SessionFacade --> StorePort
@@ -174,6 +179,7 @@ SessionRunner --> EventPort
 SessionRunner --> ToolExec
 SessionRunner --> Compactor
 SessionRunner --> LLMPort
+LLMPort ..> CompletionResp : returns
 SessionRunner --> TracePort
 SessionRunner --> SessionDomain
 SessionRunner --> EventsModule
@@ -191,6 +197,7 @@ ToolExec --> EventPort
 ToolExec --> ToolPort
 ToolExec --> EnvPort
 ToolExec --> PermissionPort
+ToolExec --> AskUserPort
 ToolExec --> SafetyPort
 ToolExec --> TracePort
 ToolExec --> AgentDomain
@@ -203,6 +210,7 @@ EventsModule --> DomainEvents
 
 SchedulerUC --> EventBus
 SchedulerUC --> WorktreePort
+SchedulerUC --> DiffPort
 SchedulerUC --> SessionFactoryPort
 SchedulerUC --> TracePort
 SchedulerUC --> SchedulerDomain
@@ -264,8 +272,9 @@ note bottom of EventPort
   TuiEventSink, EventBus, and AutoSaveSubscriber all
   implement it. Every event carries an aid so the TUI
   can route, filter, and group per-agent output.
-  app.events.SessionEventFactory is the one place
-  every run-loop / tool / compaction event is built.
+  app.events is the one place every event is built:
+  SessionEventFactory (run-loop / tool) and
+  SchedulerEventFactory (orchestration).
 end note
 
 note right of DOMAIN

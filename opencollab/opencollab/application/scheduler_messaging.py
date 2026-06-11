@@ -8,7 +8,7 @@ another user turn.
 
 ``MessagingMixin`` is composed into ``Scheduler`` and relies on the
 ``_sessions`` / ``_tasks`` / ``_locks`` / ``_message_inbox`` maps and the
-``_role_of`` / ``_autosave_session`` / ``_emit_scheduler_event`` / ``_drive_agent``
+``_role_of`` / ``_autosave_session`` / ``emit_scheduler_event`` / ``_drive_agent``
 helpers defined on ``Scheduler``.
 """
 
@@ -66,14 +66,10 @@ class MessagingMixin:
                 }
             )
             self._autosave_session(to_aid)
-            await self._emit_scheduler_event(
-                "agent_message_sent",
-                {
-                    "from_aid": from_aid,
-                    "to_aid": to_aid,
-                    "role": self._role_of(to_aid),
-                    "summary": summary,
-                },
+            await self.emit_scheduler_event(
+                self._events.agent_message_sent(
+                    from_aid, to_aid, self._role_of(to_aid), summary
+                )
             )
             await self._drain_message_inbox_locked(to_aid)
         return f"Message queued to aid {to_aid}."
@@ -122,14 +118,13 @@ class MessagingMixin:
         for message in messages:
             session.state.discard_pending_user_message(message.xml)
             await session.add_user_message(message.xml)
-            await self._emit_scheduler_event(
-                "agent_message_delivered",
-                {
-                    "from_aid": message.from_aid,
-                    "to_aid": message.to_aid,
-                    "summary": message.summary,
-                    "content_len": len(message.content),
-                },
+            await self.emit_scheduler_event(
+                self._events.agent_message_delivered(
+                    message.from_aid,
+                    message.to_aid,
+                    message.summary,
+                    len(message.content),
+                )
             )
         self._autosave_session(aid)
 

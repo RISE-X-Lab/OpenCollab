@@ -9,6 +9,39 @@ bootstrap factories.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypedDict
+
+
+class RosterEntry(TypedDict):
+    """One row of a team roster (``Scheduler.team_snapshot``/``team_roster``).
+
+    ``aid`` is ``None`` for a configured-but-unspawned role. ``phase`` is a
+    ``SessionPhase`` value for a live agent, or the synthetic ``"available"``
+    for an unspawned role; there is no ``"completed"`` phase.
+    """
+
+    aid: int | None
+    role: str
+    parent_aid: int | None
+    phase: str
+    busy: bool
+
+
+# Live phases that present as "settled" (idle) in a roster display.
+_SETTLED_PHASES = frozenset({"done", "scheduled"})
+
+
+def roster_display_state(entry: RosterEntry) -> str:
+    """Map a roster entry (phase/busy) to a single display-state label.
+
+    Shared by the prompt toolbar and the TUI team panel so their state
+    vocabulary cannot drift: a busy agent is ``"running"``; a settled phase is
+    ``"idle"``; otherwise the raw phase is shown.
+    """
+    if entry.get("busy"):
+        return "running"
+    phase = entry.get("phase", "?")
+    return "idle" if phase in _SETTLED_PHASES else phase
 
 
 @dataclass(frozen=True)
@@ -34,4 +67,9 @@ class QueuedTeammateMessage:
     xml: str
 
 
-__all__ = ["LaunchSpec", "QueuedTeammateMessage"]
+__all__ = [
+    "LaunchSpec",
+    "QueuedTeammateMessage",
+    "RosterEntry",
+    "roster_display_state",
+]

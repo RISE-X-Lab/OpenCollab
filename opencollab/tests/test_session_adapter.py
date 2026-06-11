@@ -1,6 +1,8 @@
 import asyncio
 
-from opencollab.adapters.tui import TuiPermissionPolicy
+import pytest
+
+from opencollab.adapters.tui import TuiAskUserPolicy, TuiPermissionPolicy
 
 
 def run(coro):
@@ -51,4 +53,30 @@ def test_tui_permission_policy_resumes_on_eof():
 
     policy = TuiPermissionPolicy(render=render, read_line=fake_read)
     assert run(policy.confirm("Allow?")) is False
+    assert ("resume", True) in render.events
+
+
+def test_tui_ask_user_policy_suspends_resumes_and_returns_answer():
+    render = FakeRender()
+    prompts = []
+
+    async def fake_read(prompt: str) -> str:
+        prompts.append(prompt)
+        return "use the smaller patch\n"
+
+    policy = TuiAskUserPolicy(render=render, read_line=fake_read)
+    assert run(policy.ask("Which patch?")) == "use the smaller patch\n"
+    assert "Which patch?" in prompts[0]
+    assert render.events == ["suspend", ("resume", True)]
+
+
+def test_tui_ask_user_policy_resumes_then_propagates_eof():
+    render = FakeRender()
+
+    async def fake_read(prompt: str) -> str:
+        raise EOFError
+
+    policy = TuiAskUserPolicy(render=render, read_line=fake_read)
+    with pytest.raises(EOFError):
+        run(policy.ask("Which patch?"))
     assert ("resume", True) in render.events

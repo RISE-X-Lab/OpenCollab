@@ -3,18 +3,14 @@
 from __future__ import annotations
 
 import os
-from typing import Any, AsyncIterator
+from typing import Any
 
 import openai
 
-from opencollab.adapters.llm.anthropic_provider import complete_anthropic, stream_anthropic
-from opencollab.adapters.llm.openai_provider import complete_openai, stream_openai
-from opencollab.adapters.llm.types import (
-    DEFAULT_MAX_OUTPUT_TOKENS,
-    LLMResponse,
-    StreamDelta,
-    model_context_window,
-)
+from opencollab.adapters.llm.anthropic_provider import complete_anthropic
+from opencollab.adapters.llm.openai_provider import complete_openai
+from opencollab.adapters.llm.providers import is_anthropic, warn_provider_near_miss
+from opencollab.adapters.llm.types import LLMResponse, model_context_window
 
 
 class LLMClient:
@@ -39,7 +35,8 @@ class LLMClient:
         self.max_retries = max(0, max_retries)
         self.request_timeout = request_timeout
 
-        if provider == "anthropic":
+        warn_provider_near_miss(provider)
+        if is_anthropic(provider):
             import anthropic
 
             self._anthropic = anthropic.AsyncAnthropic(
@@ -59,10 +56,6 @@ class LLMClient:
         """The model's context window in tokens, or ``None`` if unknown."""
         return model_context_window(self.model)
 
-    def max_output_tokens(self) -> int:
-        """Tokens to reserve for the model's response (best-effort default)."""
-        return DEFAULT_MAX_OUTPUT_TOKENS
-
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -77,17 +70,3 @@ class LLMClient:
         return await complete_openai(
             self._openai, self.model, messages, tools, temperature, self.max_retries
         )
-
-    async def stream(
-        self,
-        messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]] | None = None,
-        temperature: float = 0.0,
-    ) -> AsyncIterator[StreamDelta]:
-        """Streaming completion. Yields deltas."""
-        if self._anthropic:
-            provider_stream = stream_anthropic(self._anthropic, self.model, messages, tools, temperature)
-        else:
-            provider_stream = stream_openai(self._openai, self.model, messages, tools, temperature)
-        async for delta in provider_stream:
-            yield delta

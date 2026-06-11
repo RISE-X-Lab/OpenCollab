@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable
 
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
+    AskUserPort,
     EnvironmentPort,
     EventPublisherPort,
     PermissionPort,
@@ -22,10 +23,24 @@ MAX_SIMILAR_CALLS = 3
 
 
 @dataclass(frozen=True)
+class DeferredCall:
+    """Returned by a deferrable tool instead of a result string.
+
+    Signals that the tool handed work off (e.g. spawned a child agent) and
+    this call's result arrives later; ``ref`` identifies the deferred work —
+    for ``spawn_agent``, the child's aid — and is recorded on the pending row
+    that suspends the session until the result is delivered.
+    """
+
+    ref: int
+
+
+@dataclass(frozen=True)
 class ToolRuntime:
     environment: EnvironmentPort | None
     safety_policy: SafetyPolicyPort | None
     permission_policy: PermissionPort | None
+    ask_policy: AskUserPort | None = None
     aid: int = -1
     tool_call_id: str | None = None
 
@@ -33,6 +48,11 @@ class ToolRuntime:
         if self.permission_policy is None:
             return None
         return self.permission_policy.confirm
+
+    def ask_fn(self):
+        if self.ask_policy is None:
+            return None
+        return self.ask_policy.ask
 
 
 class CallbackPermissionPolicy:
@@ -54,6 +74,7 @@ class ToolExecutionUseCase:
         event_factory: SessionEventFactory | None = None,
         tracer: TracePort | None = None,
         permission_policy: PermissionPort | None = None,
+        ask_policy: AskUserPort | None = None,
         safety_policy: SafetyPolicyPort | None = None,
     ):
         self.agent = agent
@@ -63,6 +84,7 @@ class ToolExecutionUseCase:
         self.event_factory = event_factory or default_session_event_factory(state.aid)
         self.tracer = tracer
         self.permission_policy = permission_policy
+        self.ask_policy = ask_policy
         self.safety_policy = safety_policy
 
     async def process(self, tool_calls: list[dict]) -> ToolProcessingResult:
@@ -174,6 +196,7 @@ class ToolExecutionUseCase:
             environment=self.environment,
             safety_policy=self.safety_policy,
             permission_policy=self.permission_policy,
+            ask_policy=self.ask_policy,
             aid=self.state.aid,
             tool_call_id=tool_call_id,
         )
@@ -182,11 +205,12 @@ class ToolExecutionUseCase:
         """Drive a single deferrable tool (e.g. ``spawn_agent``).
 
         Returns ``(ref, None)`` when the tool deferred work and handed back a
-        reference (a child aid) to await, or ``(None, error_text)`` when it
-        resolved synchronously (bad args, unknown tool, permission/topology
-        rejection, or a non-int return) and its row should fill at once. The
-        per-call ``tool_call_id`` is threaded into the runtime so the scheduler
-        can route the eventual completion back to the right pending row.
+        :class:`DeferredCall` (its ``ref`` — a child aid — is awaited), or
+        ``(None, error_text)`` when it resolved synchronously (bad args,
+        unknown tool, permission/topology rejection, or a plain string return)
+        and its row should fill at once. The per-call ``tool_call_id`` is
+        threaded into the runtime so the scheduler can route the eventual
+        completion back to the right pending row.
 
         Deferred tools bypass ``process`` (and thus loop-detection hashing) by
         design — a spawn is never a doom-loop the way a repeated read is.
@@ -205,16 +229,16 @@ class ToolExecutionUseCase:
         await self.event_publisher.emit(self.event_factory.tool_start(tool_name, args))
         runtime = self.tool_runtime(tool_call_id=tc["id"])
         try:
-            ref = await tool.execute_with_runtime(args, runtime)
+            outcome = await tool.execute_with_runtime(args, runtime)
         except PermissionError as e:
             return None, f"Permission denied: {e}"
         except Exception as e:
             return None, f"Tool execution error: {type(e).__name__}: {e}"
         await self.event_publisher.emit(self.event_factory.tool_end(tool_name, 0.0))
 
-        if isinstance(ref, int):
-            return ref, None
-        return None, str(ref)
+        if isinstance(outcome, DeferredCall):
+            return outcome.ref, None
+        return None, str(outcome)
 
     def trace_payload(self, tool_name: str, args: dict, tool_output: str) -> dict[str, Any]:
         # Cap result in trace to 4k to keep trajectory files manageable.

@@ -32,7 +32,6 @@ import json
 import subprocess
 import sys
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
 
 # Make the opencollab package importable without an editable install.
@@ -41,21 +40,7 @@ _PKG_ROOT = _REPO_ROOT / "opencollab"
 if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
-# Single agent => the per-file write lock is pure overhead, and it would try to
-# create a *.lock next to a /testbed path that does not exist on the host.
-import opencollab.adapters.tools.fs as _fs  # noqa: E402
-
-
-class _NoLock:
-    def __init__(self, *_a, **_k) -> None: ...
-    def __enter__(self) -> "_NoLock":
-        return self
-    def __exit__(self, *_a) -> bool:
-        return False
-
-
-_fs.FileLock = _NoLock  # type: ignore[assignment]
-
+from opencollab.adapters.env import DockerEnvironment  # noqa: E402
 from opencollab.adapters.tools.bash import BashTool  # noqa: E402
 from opencollab.adapters.tools.fs import (  # noqa: E402
     FileReadTool,
@@ -63,7 +48,7 @@ from opencollab.adapters.tools.fs import (  # noqa: E402
     GrepTool,
 )
 from opencollab.adapters.trace import Tracer  # noqa: E402
-from opencollab.bootstrap.config import get_config, load_config_env  # noqa: E402
+from opencollab.bootstrap.config import get_config  # noqa: E402
 from opencollab.bootstrap.container import (  # noqa: E402
     agent_save_path,
     build_session,
@@ -90,64 +75,6 @@ Rules:
   is fixed, then stop.
 - Do NOT run `git commit`. Just leave your edits in the working tree.
 """
-
-
-@dataclass
-class ExecResult:
-    returncode: int
-    stdout: str
-    stderr: str
-
-
-class ContainerEnv:
-    """Environment port targeting an already-running container's /testbed."""
-
-    workspace = DOCKER_WORKDIR
-
-    def __init__(self, container_id: str):
-        self._cid = container_id
-
-    async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
-        wrapped = f"{_ACTIVATE}\n{cmd}"
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "docker", "exec", "-w", DOCKER_WORKDIR, self._cid,
-                "bash", "-lc", wrapped,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            return ExecResult(
-                returncode=proc.returncode or 0,
-                stdout=out.decode("utf-8", errors="replace"),
-                stderr=err.decode("utf-8", errors="replace"),
-            )
-        except asyncio.TimeoutError:
-            return ExecResult(returncode=124, stdout="", stderr=f"timed out after {timeout}s")
-
-    async def read_file(self, path: str) -> str:
-        res = await self.exec_cmd(f"cat -- {_q(path)}")
-        if res.returncode != 0:
-            raise FileNotFoundError(res.stderr or path)
-        return res.stdout
-
-    async def write_file(self, path: str, content: str) -> None:
-        import base64
-
-        encoded = base64.b64encode(content.encode()).decode()
-        await self.exec_cmd(
-            f"mkdir -p \"$(dirname -- {_q(path)})\" && base64 -d > {_q(path)} "
-            f"<<'__OC_B64__'\n{encoded}\n__OC_B64__"
-        )
-
-    async def cleanup(self) -> None:  # pragma: no cover - lifecycle handled by caller
-        return None
-
-
-def _q(s: str) -> str:
-    import shlex
-
-    return shlex.quote(s)
 
 
 def _docker(*args: str, timeout: int = 60) -> subprocess.CompletedProcess:
@@ -189,7 +116,13 @@ def build_task(instance: dict) -> str:
 
 async def run_agent(task: str, cid: str, cfg: dict, max_steps: int, budget: int,
                     timeout: float) -> str:
-    env = ContainerEnv(cid)
+    env = DockerEnvironment(
+        container_id=cid,
+        workspace=DOCKER_WORKDIR,
+        exec_workdir=DOCKER_WORKDIR,
+        command_prefix=_ACTIVATE,
+        timeout_returncode=124,
+    )
     agent = Agent(
         name="swe_agent",
         system_prompt=AGENT_PROMPT,
@@ -248,13 +181,6 @@ def main() -> None:
     image = args.image or f"sweb.eval.{args.arch}.{iid}:latest"
 
     cfg = get_config(str(_REPO_ROOT))
-    # get_config() resolves os.environ before configs/.env, so a stray
-    # ANTHROPIC_API_KEY/OPENAI_API_KEY in the shell shadows the real key in the
-    # env file. Prefer the env-file key (same resolution as check_dashscope.py).
-    env_file = load_config_env(str(_REPO_ROOT))
-    file_key = env_file.get("DASHSCOPE_API_KEY") or env_file.get("OPENCOLLAB_API_KEY")
-    if file_key:
-        cfg["api_key"] = file_key
     if args.model:
         cfg["model"] = args.model
     if args.provider:

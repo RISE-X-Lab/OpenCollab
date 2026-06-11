@@ -14,11 +14,15 @@ Ref:
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shlex
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,6 +36,7 @@ class Environment:
     """Abstract execution environment. All tools operate through this."""
 
     workspace: str = "."
+    local_filesystem: bool = False
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         raise NotImplementedError
@@ -49,6 +54,8 @@ class Environment:
 
 class LocalEnvironment(Environment):
     """Direct OS execution — for interactive CLI use."""
+
+    local_filesystem = True
 
     def __init__(self, workspace: str = "."):
         self.workspace = os.path.abspath(workspace)
@@ -96,6 +103,8 @@ class WorktreeEnvironment(Environment):
     Ref: User feedback on blind spot #2 — parallel delegation must use
     separate physical workspaces, not just file locks.
     """
+
+    local_filesystem = True
 
     def __init__(self, source_workspace: str, branch_name: str | None = None):
         import uuid
@@ -159,7 +168,14 @@ class WorktreeEnvironment(Environment):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await proc.communicate()
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(
+                    "git worktree remove exited %s for %s: %s",
+                    proc.returncode,
+                    self._worktree_dir,
+                    stderr.decode(errors="replace").strip(),
+                )
 
             # Clean up branch
             proc = await asyncio.create_subprocess_exec(
@@ -168,7 +184,14 @@ class WorktreeEnvironment(Environment):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await proc.communicate()
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(
+                    "git branch -D exited %s for %s: %s",
+                    proc.returncode,
+                    self._branch,
+                    stderr.decode(errors="replace").strip(),
+                )
 
             # Fallback: remove directory
             if os.path.exists(self._worktree_dir):
@@ -178,14 +201,38 @@ class WorktreeEnvironment(Environment):
 class DockerEnvironment(Environment):
     """Docker container sandbox — for eval / SWE-bench.
 
-    Each eval task runs in an isolated container with the repo mounted.
+    Two modes:
+    - Start mode (default): ``setup()`` starts a fresh container, optionally
+      mounting a local directory. Used by ``harness/evaluator.py``.
+    - Attach mode: pass ``container_id`` to target an ALREADY-RUNNING container
+      (e.g. an official ``sweb.eval`` image started outside this process). No
+      ``setup()`` call is needed and ``cleanup()`` leaves the container alone.
+
+    ``exec_workdir`` sets the ``docker exec -w`` working directory. ``command_prefix``
+    wraps each command before execution (e.g. activating a conda env). When a prefix
+    is supplied, commands run through a login shell (``bash -lc``) so the activation
+    sticks. ``timeout_returncode`` is the ``returncode`` reported on timeout.
+
     Ref: design doc Environment abstraction + Harness Engineering.
     """
 
-    def __init__(self, image: str = "python:3.11-slim", workspace: str = "/workspace"):
+    def __init__(
+        self,
+        image: str = "python:3.11-slim",
+        workspace: str = "/workspace",
+        *,
+        container_id: str | None = None,
+        exec_workdir: str | None = None,
+        command_prefix: Callable[[str], str] | str | None = None,
+        timeout_returncode: int = -1,
+    ):
         self._image = image
         self.workspace = workspace
-        self._container_id: str | None = None
+        self._container_id = container_id
+        self._exec_workdir = exec_workdir
+        self._command_prefix = command_prefix
+        self._timeout_returncode = timeout_returncode
+        self._attached = container_id is not None
 
     async def setup(self, mount_dir: str | None = None) -> str:
         """Start a container. Optionally mount a local directory."""
@@ -206,13 +253,27 @@ class DockerEnvironment(Environment):
         self._container_id = stdout.decode().strip()
         return self._container_id
 
+    def _wrap_command(self, cmd: str) -> str:
+        prefix = self._command_prefix
+        if prefix is None:
+            return cmd
+        if callable(prefix):
+            return prefix(cmd)
+        return f"{prefix}\n{cmd}"
+
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         if not self._container_id:
             raise RuntimeError("Container not started. Call setup() first.")
 
+        exec_argv = ["docker", "exec"]
+        if self._exec_workdir:
+            exec_argv += ["-w", self._exec_workdir]
+        shell_flag = "-lc" if self._command_prefix is not None else "-c"
+        exec_argv += [self._container_id, "bash", shell_flag, self._wrap_command(cmd)]
+
         try:
             proc = await asyncio.create_subprocess_exec(
-                "docker", "exec", self._container_id, "bash", "-c", cmd,
+                *exec_argv,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -223,7 +284,11 @@ class DockerEnvironment(Environment):
                 stderr=stderr.decode("utf-8", errors="replace"),
             )
         except asyncio.TimeoutError:
-            return ExecResult(returncode=-1, stdout="", stderr=f"Command timed out after {timeout}s")
+            return ExecResult(
+                returncode=self._timeout_returncode,
+                stdout="",
+                stderr=f"Command timed out after {timeout}s",
+            )
 
     async def read_file(self, path: str) -> str:
         quoted_path = shlex.quote(path)
@@ -243,11 +308,20 @@ class DockerEnvironment(Environment):
         )
 
     async def cleanup(self) -> None:
+        if self._attached:
+            return
         if self._container_id:
             proc = await asyncio.create_subprocess_exec(
                 "docker", "kill", self._container_id,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await proc.communicate()
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(
+                    "docker kill exited %s for %s: %s",
+                    proc.returncode,
+                    self._container_id,
+                    stderr.decode(errors="replace").strip(),
+                )
             self._container_id = None

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from opencollab.bootstrap.config import build_config
+from opencollab.bootstrap.config import (
+    accepted_api_key_envs,
+    api_key_env_precedence,
+    build_config,
+    missing_api_key,
+)
 
 _FILTER_ENV = "OPENCOLLAB_FILTER_MESSAGES"
 
@@ -84,6 +89,75 @@ def test_dashscope_file_key_beats_generic_export(monkeypatch, tmp_path):
     assert build_config().api_key == "dashscope-key"
 
 
+def test_dashscope_file_key_beats_same_name_stale_export(monkeypatch, tmp_path):
+    cfg_file = tmp_path / "dashscope.env"
+    cfg_file.write_text(
+        "\n".join(
+            [
+                "OPENCOLLAB_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1",
+                "DASHSCOPE_API_KEY=real-file-key",
+            ]
+        )
+    )
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(cfg_file))
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "stale-shell-key")
+
+    assert build_config().api_key == "real-file-key"
+
+
+def test_anthropic_file_key_beats_generic_export(monkeypatch, tmp_path):
+    cfg_file = tmp_path / "anthropic.env"
+    cfg_file.write_text(
+        "\n".join(
+            [
+                "OPENCOLLAB_PROVIDER=anthropic",
+                "ANTHROPIC_API_KEY=anthropic-file-key",
+            ]
+        )
+    )
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(cfg_file))
+    monkeypatch.setenv("OPENCOLLAB_API_KEY", "generic-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    assert build_config().api_key == "anthropic-file-key"
+
+
 def test_config_repr_does_not_include_api_key(monkeypatch):
     monkeypatch.setenv("OPENCOLLAB_API_KEY", "secret-key")
     assert "secret-key" not in repr(build_config())
+
+
+def test_api_key_env_precedence_is_provider_and_endpoint_specific():
+    assert api_key_env_precedence("openai")[0] == "OPENCOLLAB_API_KEY"
+    assert api_key_env_precedence("anthropic")[0] == "ANTHROPIC_API_KEY"
+    assert api_key_env_precedence(
+        "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    )[0] == "DASHSCOPE_API_KEY"
+
+
+def test_accepted_api_key_envs_reproduces_hint_order():
+    assert accepted_api_key_envs("openai") == ["OPENCOLLAB_API_KEY", "OPENAI_API_KEY"]
+    assert accepted_api_key_envs("anthropic") == ["OPENCOLLAB_API_KEY", "ANTHROPIC_API_KEY"]
+    assert accepted_api_key_envs(
+        "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    ) == ["OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "DASHSCOPE_API_KEY"]
+
+
+def test_missing_api_key_true_when_no_key_anywhere(monkeypatch):
+    assert missing_api_key("openai", None) is True
+
+
+def test_missing_api_key_false_for_resolved_key(monkeypatch):
+    assert missing_api_key("openai", "resolved-key") is False
+
+
+def test_missing_api_key_treats_whitespace_only_key_as_missing(monkeypatch):
+    assert missing_api_key("openai", "   ") is True
+    monkeypatch.setenv("OPENAI_API_KEY", "   ")
+    assert missing_api_key("openai", None) is True
+
+
+def test_missing_api_key_honors_dashscope_endpoint(monkeypatch):
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")
+    base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert missing_api_key("openai", None, base_url) is False

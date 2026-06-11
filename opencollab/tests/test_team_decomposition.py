@@ -11,7 +11,7 @@ from opencollab.adapters.tools import spawn as spawn_mod
 from opencollab.adapters.tools.spawn import SpawnAgentTool, SpawnWithReviewTool
 from opencollab.application import scheduler as scheduler_mod
 from opencollab.application.event_bus import EventBus
-from opencollab.application.tool_execution import ToolRuntime
+from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 from opencollab.bootstrap.container import SpawnConfig, build_spawn_session, build_workspace_safety_policy
 from opencollab.domain.scheduler import split_budget
 
@@ -163,9 +163,10 @@ def test_spawn_agent_tool_uses_runtime_native_execution():
         )
     )
 
-    # Returns the child aid (not a string) so the deferral path can register a
-    # pending row; the tool_call_id is threaded through for completion routing.
-    assert result == 42
+    # Defers with a DeferredCall carrying the child aid (not a string) so the
+    # deferral path can register a pending row; the tool_call_id is threaded
+    # through for completion routing.
+    assert result == DeferredCall(ref=42)
     assert scheduler.spawn_calls == [(0, "coder", "implement", "ctx", "call-7")]
     assert "execute" not in SpawnAgentTool.__dict__
 

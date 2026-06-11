@@ -11,14 +11,10 @@ Ref:
 
 from __future__ import annotations
 
-import os
-import re
 import shlex
 from typing import Any
 
-from filelock import FileLock
-
-from opencollab.adapters.tools.base import Tool
+from opencollab.adapters.tools.base import Tool, host_write_lock
 from opencollab.application.tool_execution import ToolRuntime
 
 
@@ -51,15 +47,14 @@ class FileReadTool(Tool):
         env = runtime.environment
         safety_policy = runtime.safety_policy
 
+        if not env:
+            return "Error: no execution environment available."
+
         if safety_policy:
             path = safety_policy.check_path(path)
 
         try:
-            if env:
-                content = await env.read_file(path)
-            else:
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    content = f.read()
+            content = await env.read_file(path)
         except FileNotFoundError:
             return f"Error: file not found: {path}"
         except PermissionError as e:
@@ -130,14 +125,14 @@ class FileWriteTool(Tool):
         env = runtime.environment
         safety_policy = runtime.safety_policy
 
+        if not env:
+            return "Error: no execution environment available."
+
         if safety_policy:
             path = safety_policy.check_path(path)
 
-        # File lock for concurrent safety (ref: design doc filelock)
-        lock = FileLock(f"{path}.lock", timeout=10)
-
         try:
-            with lock:
+            with host_write_lock(path, env):
                 if mode == "create":
                     return await self._create(env, path, params.get("content", ""))
                 if mode == "str_replace":
@@ -148,12 +143,7 @@ class FileWriteTool(Tool):
 
     async def _create(self, env: Any, path: str, content: str) -> str:
         """Write ``content`` to ``path``, creating parent directories as needed."""
-        if env:
-            await env.write_file(path, content)
-        else:
-            os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
+        await env.write_file(path, content)
         return f"Created/wrote {path} ({len(content)} chars)"
 
     async def _str_replace(self, env: Any, path: str, params: dict[str, Any]) -> str:
@@ -163,11 +153,7 @@ class FileWriteTool(Tool):
         if not old_str:
             return "Error: old_str is required for str_replace mode."
 
-        if env:
-            current = await env.read_file(path)
-        else:
-            with open(path, "r", encoding="utf-8") as f:
-                current = f.read()
+        current = await env.read_file(path)
 
         # Check uniqueness (ref: claude-code Edit — must be unique)
         count = current.count(old_str)
@@ -177,11 +163,7 @@ class FileWriteTool(Tool):
             return f"Error: old_str found {count} times in {path}. Provide more context to make it unique."
 
         updated = current.replace(old_str, new_str, 1)
-        if env:
-            await env.write_file(path, updated)
-        else:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(updated)
+        await env.write_file(path, updated)
         return f"Replaced in {path}: {len(old_str)} chars → {len(new_str)} chars"
 
 
@@ -215,50 +197,20 @@ class GrepTool(Tool):
         max_results = params.get("max_results", 50)
         env = runtime.environment
 
-        # Try using ripgrep if available (faster), fallback to Python
-        if env:
-            quoted_pattern = shlex.quote(pattern)
-            quoted_search_path = shlex.quote(search_path)
-            rg_cmd = f"rg -n --max-count {max_results} "
-            if glob_pattern:
-                rg_cmd += f"-g {shlex.quote(glob_pattern)} "
-            rg_cmd += f"{quoted_pattern} {quoted_search_path} 2>/dev/null || grep -rn "
-            if glob_pattern:
-                rg_cmd += f"--include={shlex.quote(glob_pattern)} "
-            rg_cmd += f"{quoted_pattern} {quoted_search_path} 2>/dev/null | head -n {max_results}"
+        if not env:
+            return "Error: no execution environment available."
 
-            result = await env.exec_cmd(rg_cmd, timeout=30)
-            if result.stdout.strip():
-                return result.stdout.strip()
-            return f"No matches found for pattern: {pattern}"
+        quoted_pattern = shlex.quote(pattern)
+        quoted_search_path = shlex.quote(search_path)
+        rg_cmd = f"rg -n --max-count {max_results} "
+        if glob_pattern:
+            rg_cmd += f"-g {shlex.quote(glob_pattern)} "
+        rg_cmd += f"{quoted_pattern} {quoted_search_path} 2>/dev/null || grep -rn "
+        if glob_pattern:
+            rg_cmd += f"--include={shlex.quote(glob_pattern)} "
+        rg_cmd += f"{quoted_pattern} {quoted_search_path} 2>/dev/null | head -n {max_results}"
 
-        # Pure Python fallback
-        return self._python_grep(pattern, search_path, glob_pattern, max_results)
-
-    def _python_grep(
-        self, pattern: str, search_path: str, glob_pattern: str | None, max_results: int
-    ) -> str:
-        import fnmatch
-
-        try:
-            regex = re.compile(pattern)
-        except re.error as e:
-            return f"Error: invalid regex: {e}"
-
-        results = []
-        for root, _dirs, files in os.walk(search_path):
-            for fname in files:
-                if glob_pattern and not fnmatch.fnmatch(fname, glob_pattern):
-                    continue
-                fpath = os.path.join(root, fname)
-                try:
-                    with open(fpath, "r", encoding="utf-8", errors="replace") as f:
-                        for lineno, line in enumerate(f, 1):
-                            if regex.search(line):
-                                results.append(f"{fpath}:{lineno}:{line.rstrip()}")
-                                if len(results) >= max_results:
-                                    return "\n".join(results)
-                except (PermissionError, IsADirectoryError, OSError):
-                    continue
-
-        return "\n".join(results) if results else f"No matches found for pattern: {pattern}"
+        result = await env.exec_cmd(rg_cmd, timeout=30)
+        if result.stdout.strip():
+            return result.stdout.strip()
+        return f"No matches found for pattern: {pattern}"

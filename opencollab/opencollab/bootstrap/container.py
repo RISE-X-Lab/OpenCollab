@@ -27,13 +27,10 @@ from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.llm import LLMClient, estimate_messages_tokens
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
-from opencollab.application.compaction import (
-    DEFAULT_COMPACTION_THRESHOLD,
-    ContextCompactionUseCase,
-)
 from opencollab.application.compaction_summary import ReadTimeSummarizer
 from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import (
+    AskUserPort,
     EventPublisherPort,
     LLMPort,
     PermissionPort,
@@ -63,7 +60,6 @@ from opencollab.bootstrap.runtime_context import (
 )
 from opencollab.bootstrap.tool_registry import (
     COMPACTABLE_TOOL_NAMES,
-    build_default_tools,
     build_tools_for_role,
 )
 from opencollab.domain.agent import Agent
@@ -184,10 +180,10 @@ def build_session_runtime(
     tracer: TracePort | None = None,
     max_budget_tokens: int = 200_000,
     max_steps: int = 100,
-    compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
     auto_save_path: str | None = None,
     event_sink: EventPublisherPort | None = None,
     permission_policy: PermissionPort | None = None,
+    ask_policy: AskUserPort | None = None,
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
     llm_timeout: float = 600.0,
@@ -225,17 +221,9 @@ def build_session_runtime(
         event_publisher=event_bus,
         tracer=tracer,
         permission_policy=permission_policy,
+        ask_policy=ask_policy,
         safety_policy=safety_policy,
     )
-    compactor = ContextCompactionUseCase(
-        state=state,
-        llm=resolved_llm,
-        event_publisher=event_bus,
-        estimate_tokens=estimate_messages_tokens,
-        tracer=tracer,
-        compaction_threshold=compaction_threshold,
-    )
-
     summarizer = _build_summarizer(agent, llm, resolved_llm, llm_timeout, auto_save_path)
     resolved_shaper: ShaperPort = (
         shaper if shaper is not None else _build_default_shaper(resolved_llm, summarizer)
@@ -246,14 +234,10 @@ def build_session_runtime(
         llm=resolved_llm,
         event_publisher=event_bus,
         tool_execution=tool_execution,
-        compaction=compactor,
         tracer=tracer,
         max_budget_tokens=max_budget_tokens,
         max_steps=max_steps,
         shaper=resolved_shaper,
-        # Read-time AutoCompactShaper is the active summarizer now; the mutating
-        # ContextCompactionUseCase is retired (constructed but never routed to).
-        compaction_enabled=False,
     )
 
     return SessionRuntime(
@@ -262,7 +246,6 @@ def build_session_runtime(
         llm=resolved_llm,
         store=resolved_store,
         tool_execution=tool_execution,
-        compactor=compactor,
         runner=runner,
         auto_save_path=auto_save_path,
     )
@@ -312,7 +295,6 @@ __all__ = [
     "SpawnConfig",
     "agent_save_path",
     "make_run_dir",
-    "build_default_tools",
     "build_runtime_context",
     "build_session",
     "build_session_runtime",

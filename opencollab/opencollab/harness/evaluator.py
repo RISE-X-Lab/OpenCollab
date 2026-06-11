@@ -15,15 +15,20 @@ import asyncio
 import json
 import os
 import time
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 
 from opencollab.adapters.env import DockerEnvironment, Environment, LocalEnvironment
+from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.trace import Tracer
 from opencollab.application.session import Session
 from opencollab.bootstrap import build_session
 from opencollab.domain.agent import Agent
+
+EnvFactory = Callable[["EvalTask"], Awaitable[Environment]]
+ToolFactory = Callable[[], Sequence[Tool]]
 
 
 @dataclass
@@ -32,7 +37,7 @@ class EvalResult:
 
     task_id: str
     patch: str  # Git diff output
-    success: bool
+    patch_produced: bool
     tokens_used: int
     steps: int
     duration: float
@@ -62,6 +67,22 @@ Rules:
 - When done, make sure all changes are saved. Do NOT commit.
 """
 
+DEFAULT_MAX_STEPS = 80
+
+
+def default_tools() -> list[Tool]:
+    """Build the default tool set for an eval agent."""
+    return [BashTool(), FileReadTool(), FileWriteTool(), GrepTool()]
+
+
+async def default_env_factory(task: EvalTask) -> Environment:
+    """Build the default environment for a task (docker if imaged, else local)."""
+    if task.docker_image:
+        env = DockerEnvironment(image=task.docker_image)
+        await env.setup(mount_dir=task.repo_path)
+        return env
+    return LocalEnvironment(workspace=task.repo_path or ".")
+
 
 async def run_eval_task(
     task: EvalTask,
@@ -70,6 +91,10 @@ async def run_eval_task(
     api_key: str | None = None,
     base_url: str | None = None,
     output_dir: str = "eval_results",
+    prompt: str = EVAL_AGENT_PROMPT,
+    tools_factory: ToolFactory = default_tools,
+    env_factory: EnvFactory = default_env_factory,
+    max_steps: int = DEFAULT_MAX_STEPS,
 ) -> EvalResult:
     """Run a single evaluation task.
 
@@ -86,16 +111,12 @@ async def run_eval_task(
 
     try:
         # Create environment (inside try — docker setup can fail)
-        if task.docker_image:
-            env = DockerEnvironment(image=task.docker_image)
-            await env.setup(mount_dir=task.repo_path)
-        else:
-            env = LocalEnvironment(workspace=task.repo_path or ".")
+        env = await env_factory(task)
 
         agent = Agent(
             name="eval_agent",
-            system_prompt=EVAL_AGENT_PROMPT,
-            tools=[BashTool(), FileReadTool(), FileWriteTool(), GrepTool()],
+            system_prompt=prompt,
+            tools=list(tools_factory()),
             model=model,
             provider=provider,
             api_key=api_key,
@@ -107,7 +128,7 @@ async def run_eval_task(
             env=env,
             tracer=tracer,
             max_budget_tokens=task.max_tokens,
-            max_steps=80,
+            max_steps=max_steps,
         )
 
         await session.add_user_message(task.description)
@@ -141,7 +162,7 @@ async def run_eval_task(
     return EvalResult(
         task_id=task.task_id,
         patch=patch,
-        success=bool(patch.strip()) and error is None,
+        patch_produced=bool(patch.strip()) and error is None,
         tokens_used=session.used_tokens if session else 0,
         steps=session.step_count if session else 0,
         duration=duration,
@@ -170,7 +191,7 @@ async def run_eval_batch(
                 return EvalResult(
                     task_id=task.task_id,
                     patch="",
-                    success=False,
+                    patch_produced=False,
                     tokens_used=0,
                     steps=0,
                     duration=0.0,
@@ -188,7 +209,7 @@ def save_results(results: list[EvalResult], output_path: str) -> None:
         for r in results:
             record = {
                 "task_id": r.task_id,
-                "success": r.success,
+                "patch_produced": r.patch_produced,
                 "tokens_used": r.tokens_used,
                 "steps": r.steps,
                 "duration": round(r.duration, 2),

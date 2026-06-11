@@ -19,12 +19,13 @@ from typing import Any
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.trace import Tracer
 from opencollab.application.autosave import AutoSaveSubscriber
-from opencollab.application.compaction import DEFAULT_COMPACTION_THRESHOLD
 from opencollab.application.ports import (
+    AskUserPort,
     EventPublisherPort,
     LLMPort,
     PermissionPort,
     SafetyPolicyPort,
+    SchedulerPort,
     SessionStorePort,
     ShaperPort,
 )
@@ -62,10 +63,10 @@ def build_session(
     tracer: Tracer | None = None,
     max_budget_tokens: int = 200_000,
     max_steps: int = 100,
-    compaction_threshold: int = DEFAULT_COMPACTION_THRESHOLD,
     auto_save_path: str | None = None,
     event_sink: EventPublisherPort | None = None,
     permission_policy: PermissionPort | None = None,
+    ask_policy: AskUserPort | None = None,
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
     llm_timeout: float = 600.0,
@@ -87,10 +88,10 @@ def build_session(
         tracer=tracer,
         max_budget_tokens=max_budget_tokens,
         max_steps=max_steps,
-        compaction_threshold=compaction_threshold,
         auto_save_path=auto_save_path,
         event_sink=event_sink,
         permission_policy=permission_policy,
+        ask_policy=ask_policy,
         safety_policy=safety_policy,
         llm=llm,
         llm_timeout=llm_timeout,
@@ -108,7 +109,6 @@ def build_session(
         tracer=tracer,
         max_budget_tokens=max_budget_tokens,
         max_steps=max_steps,
-        compaction_threshold=compaction_threshold,
         auto_save_path=auto_save_path,
         permission_policy=permission_policy,
         safety_policy=safety_policy,
@@ -135,7 +135,7 @@ def snapshot_session(session: Session) -> Session:
     keep seeing events.
     """
     external_sink: EventPublisherPort | None = None
-    for target in session.event_bus._targets:
+    for target in session.event_bus.subscribers:
         if not isinstance(target, AutoSaveSubscriber):
             external_sink = target  # type: ignore[assignment]
             break
@@ -145,10 +145,9 @@ def snapshot_session(session: Session) -> Session:
         tracer=session.tracer,
         max_budget_tokens=session.max_budget_tokens,
         max_steps=session.max_steps,
-        compaction_threshold=session.compaction_threshold,
         event_sink=external_sink,
         permission_policy=session.permission_policy,
-        safety_policy=session._safety_policy,
+        safety_policy=session.tool_execution.safety_policy,
     )
     new.messages = copy.deepcopy(session.messages)
     new.used_tokens = session.used_tokens
@@ -164,7 +163,7 @@ def build_spawn_session(
     budget: int,
     max_steps: int = 50,
     aid: int = -1,
-    scheduler: Any = None,
+    scheduler: SchedulerPort | None = None,
     team_cfg: TeamConfig | None = None,
     task: str | None = None,
     context: str = "",
@@ -175,28 +174,19 @@ def build_spawn_session(
     generic spec (base tools). The safety policy is derived from the child's
     environment. When ``task`` is given it is seeded as the agent's first
     user-context message (the TASK-layer source), so no separate
-    ``add_user_message`` is needed.
+    ``add_user_message`` is needed. Delegates to ``DefaultSessionFactory`` so the
+    spawn-session assembly lives in one place.
     """
-    safety_policy = (
-        cfg.safety_policy_factory(env)
-        if cfg.safety_policy_factory is not None
-        else None
-    )
-    builder = ContextBuilder(team_cfg or default_team_config(), cfg)
-    plan = builder.build_plan(role, task=task, context=context)
-    agent = builder.build_agent(role, scheduler=scheduler, interactive=False, plan=plan)
-    return build_session(
-        agent=agent,
+    factory = DefaultSessionFactory(cfg, team_cfg=team_cfg)
+    return factory.build_spawn_session(
+        role=role,
         env=env,
-        tracer=cfg.tracer,
-        max_budget_tokens=budget,
+        budget=budget,
         max_steps=max_steps,
-        event_sink=cfg.event_bus,
-        permission_policy=cfg.permission_policy,
-        safety_policy=safety_policy,
-        llm_timeout=cfg.llm_timeout,
         aid=aid,
-        seed_user_messages=plan.startup_user_messages(),
+        scheduler=scheduler,
+        task=task,
+        context=context,
     )
 
 
@@ -232,11 +222,11 @@ class DefaultSessionFactory:
         self,
         *,
         role: str,
-        env: Any,
+        env: Environment,
         budget: int,
         max_steps: int = 50,
         aid: int = -1,
-        scheduler: Any = None,
+        scheduler: SchedulerPort | None = None,
         task: str | None = None,
         context: str = "",
     ) -> Session:
@@ -263,6 +253,7 @@ class DefaultSessionFactory:
             max_steps=max_steps,
             event_sink=cfg.event_bus,
             permission_policy=cfg.permission_policy,
+            ask_policy=cfg.ask_policy,
             safety_policy=safety_policy,
             auto_save_path=auto_save_path,
             llm_timeout=cfg.llm_timeout,
@@ -273,7 +264,7 @@ class DefaultSessionFactory:
     def create_lead_session(
         self,
         *,
-        scheduler: Any,
+        scheduler: SchedulerPort,
         launch: LaunchSpec,
         budget: int,
         aid: int = 0,
@@ -299,6 +290,7 @@ class DefaultSessionFactory:
             max_budget_tokens=budget,
             event_sink=cfg.event_bus,
             permission_policy=cfg.permission_policy,
+            ask_policy=cfg.ask_policy,
             safety_policy=build_workspace_safety_policy(env),
             auto_save_path=launch.auto_save_path,
             llm_timeout=cfg.llm_timeout,

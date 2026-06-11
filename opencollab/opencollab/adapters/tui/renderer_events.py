@@ -54,7 +54,7 @@ class _RendererEventsMixin:
                 role = str(args.get("role", ""))
             label = f"{agent_label}:{tool}"
             self._active_tools[label] = event.data
-            preview = self._args_preview(args)
+            preview = self._args_preview(event.data)
             self._append_activity((f"{label} started", self._STYLE_ACCENT), (preview, self._STYLE_MUTED))
             if tool == "spawn_agent" and role:
                 self._emit_status(Text(f"{agent_label} spawned {role}", style=self._STYLE_ACCENT))
@@ -75,9 +75,6 @@ class _RendererEventsMixin:
             self._step = event.data.get("step", 0)
             self._clear_thinking_status()
             self._emit_status(Text(f"{agent_label} thinking... step {self._step}", style=self._STYLE_MUTED))
-
-        elif etype == "compaction":
-            self._emit_status(Text("Context compacted", style=self._STYLE_MUTED))
 
         elif etype == "loop_detected":
             tool = event.data.get("tool", "?")

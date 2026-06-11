@@ -70,6 +70,7 @@ def build_scheduler(
             tracer=ctx.tracer,
             event_bus=event_bus,
             permission_policy=ctx.permission_policy,
+            ask_policy=ctx.ask_policy,
             safety_policy_factory=build_workspace_safety_policy,
         ),
         team_cfg=team_cfg,

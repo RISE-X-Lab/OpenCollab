@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from opencollab.adapters.tools._output import truncate
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -66,8 +67,8 @@ class BashTool(Tool):
         result = await env.exec_cmd(cmd, timeout=timeout)
 
         # Format output with truncation (ref: user blind spot #1)
-        stdout = _truncate(result.stdout, MAX_OUTPUT_CHARS, "stdout")
-        stderr = _truncate(result.stderr, MAX_OUTPUT_CHARS, "stderr")
+        stdout = truncate(result.stdout, MAX_OUTPUT_CHARS, "stdout")
+        stderr = truncate(result.stderr, MAX_OUTPUT_CHARS, "stderr")
 
         parts = [f"Exit code: {result.returncode}"]
         if stdout:
@@ -75,15 +76,3 @@ class BashTool(Tool):
         if stderr:
             parts.append(f"stderr:\n{stderr}")
         return "\n".join(parts)
-
-
-def _truncate(text: str, max_chars: int, label: str) -> str:
-    """Keep head + tail, drop middle to avoid context explosion."""
-    if len(text) <= max_chars:
-        return text
-    half = max_chars // 2
-    return (
-        text[:half]
-        + f"\n\n... [{len(text) - max_chars} chars of {label} truncated] ...\n\n"
-        + text[-half:]
-    )

@@ -9,7 +9,7 @@ cleared in place by ``ToolOutputClearShaper``).
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import Callable
 
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.base import Tool
@@ -20,6 +20,7 @@ from opencollab.adapters.tools.human import AskUserTool
 from opencollab.adapters.tools.message import MessageAgentTool, TeamStatusTool
 from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.adapters.tools.spawn import SpawnAgentTool, SpawnWithReviewTool
+from opencollab.application.ports import SchedulerPort
 
 # Tool name -> factory. Stateless tools need nothing; scheduler-bound tools take
 # the scheduler so an agent can spawn/message via the SchedulerPort.
@@ -33,7 +34,7 @@ STATELESS_TOOL_FACTORIES: dict[str, Callable[[], Tool]] = {
     "grep": GrepTool,
     "ask_user": AskUserTool,
 }
-SCHEDULER_TOOL_FACTORIES: dict[str, Callable[[Any], Tool]] = {
+SCHEDULER_TOOL_FACTORIES: dict[str, Callable[[SchedulerPort], Tool]] = {
     "spawn_agent": SpawnAgentTool,
     "spawn_with_review": SpawnWithReviewTool,
     "message_agent": MessageAgentTool,
@@ -55,7 +56,7 @@ COMPACTABLE_TOOL_NAMES: frozenset[str] = (
 def build_tools_for_role(
     tool_names: list[str],
     *,
-    scheduler: Any = None,
+    scheduler: SchedulerPort | None = None,
     interactive: bool = False,
 ) -> list[Tool]:
     """Resolve tool names to Tool instances.
@@ -83,19 +84,6 @@ def build_tools_for_role(
     return tools
 
 
-def build_default_tools(*, include_ask_user: bool = False) -> list[Tool]:
-    """Canonical tool bundle: bash, file_read, file_write, grep, [ask_user]."""
-    tools: list[Tool] = [
-        BashTool(),
-        FileReadTool(),
-        FileWriteTool(),
-        GrepTool(),
-    ]
-    if include_ask_user:
-        tools.append(AskUserTool())
-    return tools
-
-
 __all__ = [
     "STATELESS_TOOL_FACTORIES",
     "SCHEDULER_TOOL_FACTORIES",
@@ -103,5 +91,4 @@ __all__ = [
     "COORDINATION_TOOL_NAMES",
     "COMPACTABLE_TOOL_NAMES",
     "build_tools_for_role",
-    "build_default_tools",
 ]

@@ -12,9 +12,24 @@ Ref:
 
 from __future__ import annotations
 
-from typing import Any
+import contextlib
+from typing import Any, ContextManager
 
-from opencollab.application.tool_execution import ToolRuntime
+from filelock import FileLock
+
+from opencollab.application.tool_execution import DeferredCall, ToolRuntime
+
+
+def host_write_lock(path: str, env: Any) -> ContextManager[Any]:
+    """Host ``FileLock`` for ``path`` when I/O hits the host filesystem, else a no-op.
+
+    A real lock is returned for the host-fallback path (``env is None``) and for
+    environments that write to the host filesystem (``local_filesystem`` true).
+    Environments that execute elsewhere (e.g. a container) get a no-op context.
+    """
+    if env is None or getattr(env, "local_filesystem", False):
+        return FileLock(f"{path}.lock", timeout=10)
+    return contextlib.nullcontext()
 
 
 class Tool:
@@ -45,8 +60,12 @@ class Tool:
         self,
         params: dict[str, Any],
         runtime: ToolRuntime,
-    ) -> str:
-        """Execute the tool with the runtime bundle. Returns result as string."""
+    ) -> str | DeferredCall:
+        """Execute the tool with the runtime bundle.
+
+        Returns the result as a string; a deferrable tool returns a
+        ``DeferredCall`` instead when it hands work off.
+        """
         raise NotImplementedError(
             f"Tool '{self.name}' must implement execute_with_runtime()"
         )

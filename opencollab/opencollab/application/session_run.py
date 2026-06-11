@@ -5,9 +5,14 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from opencollab.application.compaction import ContextCompactionUseCase
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
-from opencollab.application.ports import EventPublisherPort, LLMPort, ShaperPort, TracePort
+from opencollab.application.ports import (
+    CompletionResponse,
+    EventPublisherPort,
+    LLMPort,
+    ShaperPort,
+    TracePort,
+)
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
@@ -22,16 +27,16 @@ class PendingStep:
     adapter-shaped object and would breach the inward dependency rule.
     """
 
-    response: Any
+    response: CompletionResponse
     latency: float
 
 
 class SessionRunUseCase:
     """Application use case for the session run loop.
 
-    The LLM response is structural: it must expose ``content``,
-    ``tool_calls``, ``finish_reason``, ``usage.input_tokens``, and
-    ``usage.total_tokens``.
+    The LLM response is structural (``CompletionResponse`` in
+    ``application/ports.py``): it must expose ``content``, ``tool_calls``,
+    ``finish_reason``, ``usage.input_tokens``, and ``usage.total_tokens``.
     """
 
     def __init__(
@@ -43,13 +48,11 @@ class SessionRunUseCase:
         event_publisher: EventPublisherPort,
         event_factory: SessionEventFactory | None = None,
         tool_execution: ToolExecutionUseCase,
-        compaction: ContextCompactionUseCase,
         tracer: TracePort | None = None,
         max_budget_tokens: int = 200_000,
         max_steps: int = 100,
         deferrable_tool_names: frozenset[str] = DEFAULT_DEFERRABLE_TOOLS,
         shaper: ShaperPort | None = None,
-        compaction_enabled: bool = True,
     ):
         self.agent = agent
         self.state = state
@@ -57,17 +60,11 @@ class SessionRunUseCase:
         self.event_publisher = event_publisher
         self.event_factory = event_factory or default_session_event_factory(state.aid)
         self.tool_execution = tool_execution
-        self.compaction = compaction
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
         self.max_steps = max_steps
         self.deferrable_tool_names = deferrable_tool_names
         self.shaper = shaper
-        # When False, the run loop never routes to the mutating COMPACTING phase
-        # — read-time shaping (AutoCompactShaper) owns compaction instead. The
-        # ``compaction`` use case is still constructed (and unit-tested) but its
-        # decision is not consulted, so only one summarizer is ever active.
-        self.compaction_enabled = compaction_enabled
         self._pending: PendingStep | None = None
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
@@ -135,8 +132,6 @@ class SessionRunUseCase:
                 self.state.transition_to(SessionPhase.PRECHECK)
             case SessionPhase.PRECHECK:
                 await self.precheck(cancel_event)
-            case SessionPhase.COMPACTING:
-                await self.run_compaction()
             case SessionPhase.CALLING_LLM:
                 await self.run_llm_call()
             case SessionPhase.HANDLING_RESPONSE:
@@ -157,8 +152,7 @@ class SessionRunUseCase:
         """Gate the next LLM call: cancellation, token budget, step limit.
 
         Each guard appends a visible system message, emits an error event, and
-        moves to the matching terminal phase; otherwise route to COMPACTING
-        (when enabled and due) or straight to CALLING_LLM.
+        moves to the matching terminal phase; otherwise proceed to CALLING_LLM.
         """
         if cancel_event and cancel_event.is_set():
             self.state.append_message({"role": "system", "content": "[Session interrupted by user]"})
@@ -184,20 +178,6 @@ class SessionRunUseCase:
             self.state.transition_to(SessionPhase.STEP_LIMIT_EXCEEDED, reason=reason)
             return
 
-        if self.compaction_enabled and self.compaction.should_compact():
-            self.state.transition_to(SessionPhase.COMPACTING)
-            return
-
-        self.state.transition_to(SessionPhase.CALLING_LLM)
-
-    async def run_compaction(self) -> None:
-        """Run the (legacy, mutating) compaction use case, then call the LLM."""
-        result = await self.compaction.compact(apply=False)
-        result.apply_to(self.state)
-        if result.did_compact:
-            await self.event_publisher.emit(
-                self.event_factory.compaction_applied(self.state.used_tokens)
-            )
         self.state.transition_to(SessionPhase.CALLING_LLM)
 
     async def run_llm_call(self) -> None:
@@ -354,7 +334,7 @@ class SessionRunUseCase:
     def build_tool_schemas(self) -> list[dict] | None:
         return self.agent.tool_schemas() or None
 
-    async def call_llm(self, tools: list[dict] | None) -> Any:
+    async def call_llm(self, tools: list[dict] | None) -> CompletionResponse:
         """Complete against the shaped view of history.
 
         The shaper reshapes a copy for the model's view only;
@@ -371,7 +351,7 @@ class SessionRunUseCase:
             temperature=self.agent.temperature,
         )
 
-    def record_llm_trace(self, response: Any, latency: float) -> None:
+    def record_llm_trace(self, response: CompletionResponse, latency: float) -> None:
         if self.tracer:
             tool_calls_log = None
             if response.tool_calls:
@@ -395,7 +375,7 @@ class SessionRunUseCase:
                 latency=latency,
             )
 
-    def append_assistant_message(self, response: Any) -> None:
+    def append_assistant_message(self, response: CompletionResponse) -> None:
         assistant_msg: dict[str, Any] = {"role": "assistant"}
         if response.content:
             assistant_msg["content"] = response.content

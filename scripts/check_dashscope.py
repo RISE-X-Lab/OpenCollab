@@ -3,7 +3,7 @@ from pathlib import Path
 
 import requests
 
-from opencollab.bootstrap.config import build_config, load_config_env
+from opencollab.bootstrap.config import build_config
 
 
 WORKSPACE = Path(__file__).resolve().parents[1]
@@ -12,8 +12,7 @@ TEST_MODEL_NAME = "kimi-k2.6"
 
 def request_qwen36_plus(prompt):
     config = build_config(str(WORKSPACE))
-    env_file = load_config_env(str(WORKSPACE))
-    api_key = env_file.get("DASHSCOPE_API_KEY") or env_file.get("OPENCOLLAB_API_KEY") or config.api_key
+    api_key = config.api_key
     if not api_key:
         raise ValueError("Missing OPENCOLLAB_API_KEY or DASHSCOPE_API_KEY")
 

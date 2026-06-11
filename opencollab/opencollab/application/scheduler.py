@@ -20,7 +20,12 @@ import asyncio
 import logging
 from typing import Any, Callable
 
+from opencollab.application.events import (
+    SchedulerEventFactory,
+    default_scheduler_event_factory,
+)
 from opencollab.application.ports import (
+    DiffCapablePort,
     EnvironmentPort,
     EventPublisherPort,
     PermissionPort,
@@ -61,16 +66,18 @@ class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
         *,
         session_factory: SessionFactoryPort,
         worktree_pool: WorktreePoolPort,
-        event_sink: EventPublisherPort | None = None,
+        event_sink: EventPublisherPort,
         tracer: TracePort | None = None,
         max_budget_tokens: int = 500_000,
         permission_policy: PermissionPort | None = None,
         topology: Topology | None = None,
         roles: tuple[str, ...] = (),
+        event_factory: SchedulerEventFactory | None = None,
     ):
         self._session_factory = session_factory
         self._worktree_pool = worktree_pool
         self._event_sink = event_sink
+        self._events = event_factory or default_scheduler_event_factory()
         self._tracer = tracer
         self._max_budget_tokens = max_budget_tokens
         self._permission_policy = permission_policy
@@ -132,6 +139,11 @@ class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
     def _autosave_all_sessions(self) -> None:
         for aid in list(self._sessions):
             self._autosave_session(aid)
+
+    @property
+    def events(self) -> SchedulerEventFactory:
+        """The scheduler-event builders (the orchestration event vocabulary)."""
+        return self._events
 
     @property
     def used_tokens(self) -> int:
@@ -199,10 +211,9 @@ class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
 
     async def _append_worktree_diff(self, env: EnvironmentPort, result: str) -> str:
         """If env is a worktree, append its diff to the result."""
-        get_diff = getattr(env, "get_diff", None)
-        if not callable(get_diff):
+        if not isinstance(env, DiffCapablePort):
             return result
-        diff = await get_diff()
+        diff = await env.get_diff()
         if not diff:
             return result
         if len(diff) > WORKTREE_DIFF_MAX_CHARS:
@@ -213,17 +224,14 @@ class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
             )
         return result + f"\n\n[Changes made in worktree]\n```diff\n{diff}\n```"
 
-    async def _emit_scheduler_event(self, event_type: str, data: dict) -> None:
-        """Emit a scheduler event via the event sink."""
-        if self._event_sink is None:
-            return
-        event = SchedulerEvent(type=event_type, data=data)
-        if hasattr(self._event_sink, "emit"):
-            await self._event_sink.emit(event)
-        else:
-            result = self._event_sink(event)
-            if asyncio.iscoroutine(result):
-                await result
+    async def emit_scheduler_event(self, event: SchedulerEvent) -> None:
+        """Emit a pre-built scheduler event via the event sink.
+
+        Events are built through ``self._events`` (a ``SchedulerEventFactory``)
+        so the orchestration vocabulary lives in one place; the sink is a
+        required ``EventPublisherPort``, so emission is a single ``emit``.
+        """
+        await self._event_sink.emit(event)
 
     async def run(self, user_message: str) -> str:
         """Send message to lead and run until the whole team is quiescent.
@@ -287,6 +295,18 @@ class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
         self._autosave_all_sessions()
         self._write_manifest()
         await self._worktree_pool.release()
+
+    async def wait_for(self, aid: int) -> None:
+        """Wait until ``aid``'s current driving task settles.
+
+        Returns immediately when no task is tracked for ``aid``. A session
+        that suspends on deferred work returns its task while its children
+        run, so this waits for the current task only, not for the session to
+        reach a terminal phase.
+        """
+        task = self._tasks.get(aid)
+        if task is not None:
+            await task
 
     async def spawn_with_review(
         self,
