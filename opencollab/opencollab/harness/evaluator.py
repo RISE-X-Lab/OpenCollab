@@ -20,9 +20,12 @@ from dataclasses import dataclass
 from typing import Any
 
 from opencollab.adapters.env import DockerEnvironment, Environment, LocalEnvironment
+from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
+from opencollab.adapters.tools.git_diff import GitDiffTool
+from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.adapters.trace import Tracer
 from opencollab.application.session import Session
 from opencollab.application.workflow import WorkflowContext
@@ -74,8 +77,22 @@ DEFAULT_MAX_STEPS = 80
 
 
 def default_tools() -> list[Tool]:
-    """Build the default tool set for an eval agent."""
-    return [BashTool(), FileReadTool(), FileWriteTool(), GrepTool()]
+    """Build the default tool set for an eval agent.
+
+    Mirrors the curated single-agent surface used by team roles (coder +
+    reviewer tools) so headless eval exercises the same toolset: the bash
+    description deflects to run_tests/git_diff/grep, and apply_patch is the
+    fallback when str_replace edits fail to match.
+    """
+    return [
+        BashTool(),
+        FileReadTool(),
+        FileWriteTool(),
+        ApplyPatchTool(),
+        RunTestsTool(),
+        GitDiffTool(),
+        GrepTool(),
+    ]
 
 
 async def default_env_factory(task: EvalTask) -> Environment:
