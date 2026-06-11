@@ -72,6 +72,7 @@ class ContextBuilder:
         cfg: SpawnConfig,
         *,
         skill_store: SkillStorePort | None = None,
+        project_context: str | None = None,
     ):
         self._team = team_cfg
         self._cfg = cfg
@@ -79,6 +80,9 @@ class ContextBuilder:
         # plan time and the dispatcher tool is bound to this store. Defaults to
         # an empty store so call sites that do not wire skills behave as before.
         self._skill_store: SkillStorePort = skill_store or NullSkillStore()
+        # Startup content for the PROJECT layer (e.g. a repo map built by the
+        # composition root). Empty string means "none".
+        self._project_context = project_context or None
 
     def build_plan(
         self,
@@ -130,16 +134,30 @@ class ContextBuilder:
                         content=catalog,
                     )
                 )
-        # Project conventions — reserved; registered now, loaded later.
-        sources.append(
-            ContextSource(
-                name="project",
-                layer=ContextLayer.PROJECT,
-                timing=LoadTiming.ON_DEMAND,
-                position=ContextPosition.USER_CONTEXT,
-                loader_key="project",
+        # Project layer: with content (a repo map from the composition root)
+        # it ships at startup in the system prompt — SYSTEM so both the lead
+        # and spawn paths pick it up (only spawns seed user-context messages).
+        # Without content it stays a registered-but-deferred source.
+        if self._project_context:
+            sources.append(
+                ContextSource(
+                    name="project",
+                    layer=ContextLayer.PROJECT,
+                    timing=LoadTiming.STARTUP,
+                    position=ContextPosition.SYSTEM,
+                    content=self._project_context,
+                )
             )
-        )
+        else:
+            sources.append(
+                ContextSource(
+                    name="project",
+                    layer=ContextLayer.PROJECT,
+                    timing=LoadTiming.ON_DEMAND,
+                    position=ContextPosition.USER_CONTEXT,
+                    loader_key="project",
+                )
+            )
         if task is not None:
             sources.append(
                 ContextSource(

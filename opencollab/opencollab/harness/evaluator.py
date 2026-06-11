@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from opencollab.adapters.env import DockerEnvironment, Environment, LocalEnvironment
+from opencollab.adapters.repo_map import build_repo_map_via_env
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
@@ -310,6 +311,11 @@ async def run_eval_task(
         # Create environment (inside try — docker setup can fail)
         env = await env_factory(task)
         tools = list(tools_factory())
+
+        # Orientation up front: a bounded repo map in the system prompt saves
+        # the model its first N steps of ls/find exploration.
+        repo_map = await build_repo_map_via_env(env)
+        prompt = f"{prompt}\n\n{repo_map}" if repo_map else prompt
 
         if workflow is None:
             session = await _run_single_session(
