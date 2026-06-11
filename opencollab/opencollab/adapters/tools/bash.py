@@ -54,6 +54,9 @@ class BashTool(Tool):
         "required": ["command"],
     }
 
+    def __init__(self, max_output_chars: int = MAX_OUTPUT_CHARS):
+        self.max_output_chars = max_output_chars
+
     async def execute_with_runtime(
         self,
         params: dict[str, Any],
@@ -74,8 +77,8 @@ class BashTool(Tool):
         result = await env.exec_cmd(cmd, timeout=timeout)
 
         # Format output with truncation (ref: user blind spot #1)
-        stdout = truncate(result.stdout, MAX_OUTPUT_CHARS, "stdout")
-        stderr = truncate(result.stderr, MAX_OUTPUT_CHARS, "stderr")
+        stdout = truncate(result.stdout, self.max_output_chars, "stdout")
+        stderr = truncate(result.stderr, self.max_output_chars, "stderr")
 
         parts = [f"Exit code: {result.returncode}"]
         if stdout:

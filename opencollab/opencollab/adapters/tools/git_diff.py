@@ -67,6 +67,14 @@ class GitDiffTool(Tool):
         "required": [],
     }
 
+    def __init__(
+        self,
+        max_diff_chars: int = MAX_DIFF_CHARS,
+        max_status_chars: int = MAX_STATUS_CHARS,
+    ):
+        self.max_diff_chars = max_diff_chars
+        self.max_status_chars = max_status_chars
+
     async def execute_with_runtime(
         self,
         params: dict[str, Any],
@@ -97,14 +105,14 @@ class GitDiffTool(Tool):
             err = (diff_result.stderr or diff_result.stdout).strip()
             if "not a git repository" in err.lower():
                 return "Error: not a git repository."
-            return f"Error running '{diff_cmd}':\n{truncate(err, MAX_STATUS_CHARS)}"
+            return f"Error running '{diff_cmd}':\n{truncate(err, self.max_status_chars)}"
 
         parts: list[str] = []
         if include_status:
             status_result = await env.exec_cmd("git --no-pager status --short", timeout=30)
             status = status_result.stdout.strip()
             parts.append(
-                "Status (git status --short):\n" + truncate(status, MAX_STATUS_CHARS)
+                "Status (git status --short):\n" + truncate(status, self.max_status_chars)
                 if status
                 else "Status: working tree clean."
             )
@@ -112,7 +120,7 @@ class GitDiffTool(Tool):
         diff = diff_result.stdout.strip()
         label = "diff --stat" if stat_only else ("staged diff" if staged else "diff vs HEAD")
         if diff:
-            parts.append(f"{label}:\n" + truncate(diff, MAX_DIFF_CHARS))
+            parts.append(f"{label}:\n" + truncate(diff, self.max_diff_chars))
         else:
             parts.append(f"{label}: (no changes)")
 
