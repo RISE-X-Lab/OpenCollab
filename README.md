@@ -3,17 +3,21 @@
 OpenCollab is a minimal multi-agent software development framework with chat,
 team, and headless evaluation modes.
 
+OpenCollab follows a strict clean architecture. For the layer map and
+contribution guidance, see `CLAUDE.md` and `opencollab/README.md`.
+
 ## Repository Guide
 
-- `opencollab/` contains the Python package, CLI, core runtime, TUI, team
-  orchestration, and local evaluation harness. See `opencollab/README.md`.
-- `configs/` contains runtime configuration templates and config loading notes.
-  See `configs/README.md`.
-- `scripts/` contains repository-level launcher and benchmark helper scripts.
-  See `scripts/README.md`.
-- `swebench/` contains the Docker-based SWE-bench runner. See
-  `swebench/README.md`.
-- `docs/` contains project documentation and architecture notes.
+| Path | What it is | Read next |
+|------|------------|-----------|
+| `opencollab/` | The installable Python package and `opencollab` CLI. | `opencollab/README.md` |
+| `configs/` | Runtime configuration templates and config loading notes. | `configs/README.md` |
+| `scripts/` | Repository-level launcher and benchmark helper scripts. | `scripts/README.md` |
+| `swebench/` | Docker-based SWE-bench runner. | `swebench/README.md` |
+| `docs/archive/` | Historical record: completed refactor plans, architecture surveys, and the old code map. | files within |
+
+Untracked local state (gitignored, safe to ignore when reading the code):
+`evals/` (prediction outputs), `logs/`, `swe_workdir/`.
 
 ## Start Here
 

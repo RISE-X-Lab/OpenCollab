@@ -12,6 +12,5 @@ logs/
 __pycache__/
 *.pyc
 .DS_Store
-CLAUDE.md
 evals/
 swe_workdir/
