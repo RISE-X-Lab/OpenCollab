@@ -118,6 +118,22 @@ def test_run_eval_task_honors_injected_params(monkeypatch, tmp_path):
     assert captured["max_steps"] == 7
 
 
+def test_default_tools_match_curated_team_surface():
+    # The headless eval agent must exercise the same curated toolset as team
+    # roles — in particular run_tests/git_diff/apply_patch, which the bash
+    # description deflects to. Guards against the two paths drifting apart.
+    names = [t.name for t in evaluator.default_tools()]
+    assert names == [
+        "bash",
+        "file_read",
+        "file_write",
+        "apply_patch",
+        "run_tests",
+        "git_diff",
+        "grep",
+    ]
+
+
 def test_save_results_writes_patch_produced_key(tmp_path):
     results = [
         EvalResult(
