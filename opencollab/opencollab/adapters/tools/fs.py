@@ -14,8 +14,19 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
+from opencollab.adapters.tools._output import truncate
 from opencollab.adapters.tools.base import Tool, host_write_lock
 from opencollab.application.tool_execution import ToolRuntime
+
+# Line limits alone don't bound the context cost — one minified/long-line file
+# can dwarf 500 normal lines. Char caps are the hard backstop (ref: bash.py).
+MAX_READ_CHARS = 30_000
+MAX_GREP_CHARS = 10_000
+
+# create-mode guard: refuse to silently replace a substantial file with a much
+# smaller one — the classic "model rewrote a truncated copy" failure.
+OVERWRITE_GUARD_MIN_CHARS = 1_000
+OVERWRITE_GUARD_SHRINK_RATIO = 0.5
 
 
 class FileReadTool(Tool):
@@ -72,7 +83,7 @@ class FileReadTool(Tool):
         # Format with line numbers (ref: claude-code cat -n format)
         numbered = [f"{start + i + 1}\t{line}" for i, line in enumerate(selected)]
         header = f"File: {params['path']} ({total} lines total, showing {start + 1}-{end})"
-        return header + "\n" + "\n".join(numbered)
+        return header + "\n" + truncate("\n".join(numbered), MAX_READ_CHARS)
 
 
 class FileWriteTool(Tool):
@@ -114,6 +125,11 @@ class FileWriteTool(Tool):
                 "type": "string",
                 "description": "Replacement text (for 'str_replace' mode).",
             },
+            "overwrite": {
+                "type": "boolean",
+                "description": "For 'create' mode: set true to confirm replacing an "
+                "existing file with much shorter content (guarded otherwise).",
+            },
         },
         "required": ["path", "mode"],
     }
@@ -137,15 +153,44 @@ class FileWriteTool(Tool):
         try:
             with host_write_lock(path, env):
                 if mode == "create":
-                    return await self._create(env, path, params.get("content", ""))
+                    return await self._create(
+                        env,
+                        path,
+                        params.get("content", ""),
+                        overwrite=params.get("overwrite", False),
+                    )
                 if mode == "str_replace":
                     return await self._str_replace(env, path, params)
                 return f"Error: unknown mode '{mode}'. Use 'create' or 'str_replace'."
         except PermissionError as e:
             return f"Error: {e}"
 
-    async def _create(self, env: Any, path: str, content: str) -> str:
-        """Write ``content`` to ``path``, creating parent directories as needed."""
+    async def _create(
+        self, env: Any, path: str, content: str, *, overwrite: bool = False
+    ) -> str:
+        """Write ``content`` to ``path``, creating parent directories as needed.
+
+        Guard: replacing a substantial existing file with much shorter content
+        is refused unless ``overwrite`` is set — that shape is almost always a
+        model accidentally writing a truncated copy, not an intentional rewrite.
+        """
+        if not overwrite:
+            try:
+                current = await env.read_file(path)
+            except FileNotFoundError:
+                current = None
+            if (
+                current is not None
+                and len(current) >= OVERWRITE_GUARD_MIN_CHARS
+                and len(content) < len(current) * OVERWRITE_GUARD_SHRINK_RATIO
+            ):
+                return (
+                    f"Error: refusing to overwrite {path} ({len(current)} chars) "
+                    f"with much shorter content ({len(content)} chars). For "
+                    "targeted edits use str_replace or the apply_patch tool; to "
+                    "intentionally replace the whole file, retry with "
+                    "overwrite: true."
+                )
         await env.write_file(path, content)
         return f"Created/wrote {path} ({len(content)} chars)"
 
@@ -161,7 +206,11 @@ class FileWriteTool(Tool):
         # Check uniqueness (ref: claude-code Edit — must be unique)
         count = current.count(old_str)
         if count == 0:
-            return f"Error: old_str not found in {path}. Make sure the text matches exactly."
+            return (
+                f"Error: old_str not found in {path}. Make sure the text matches "
+                "exactly (including whitespace). If the edit keeps failing to "
+                "match, use the apply_patch tool instead."
+            )
         if count > 1:
             return f"Error: old_str found {count} times in {path}. Provide more context to make it unique."
 
@@ -217,5 +266,5 @@ class GrepTool(Tool):
 
         result = await env.exec_cmd(rg_cmd, timeout=30)
         if result.stdout.strip():
-            return result.stdout.strip()
+            return truncate(result.stdout.strip(), MAX_GREP_CHARS)
         return f"No matches found for pattern: {pattern}"
