@@ -205,3 +205,31 @@ def test_discover_workflows_missing_dir_returns_empty_registry(tmp_path):
 
     reg = discover_workflows(str(tmp_path / "does-not-exist"))
     assert reg.list_specs() == []
+
+
+def test_discover_workflows_dedupes_aliased_workflow(tmp_path):
+    """A decorated function bound under two module-level names (alias /
+    re-export) carries the SAME spec; discovery must dedupe by spec identity
+    rather than abort the whole directory on a duplicate-name registration.
+    """
+    from opencollab.bootstrap.workflow_runtime import discover_workflows
+
+    wf_dir = tmp_path / "workflows"
+    wf_dir.mkdir()
+    _write_workflow_module(
+        wf_dir,
+        "aliased.py",
+        """
+        from opencollab.application.workflow_registry import workflow
+
+        @workflow(name="alpha", description="a")
+        async def alpha(ctx, args):
+            return None
+
+        # alias / re-export of the SAME decorated function object
+        alpha_alias = alpha
+        """,
+    )
+
+    reg = discover_workflows(str(wf_dir))
+    assert [s.name for s in reg.list_specs()] == ["alpha"]

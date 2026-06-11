@@ -103,6 +103,19 @@ def test_validate_top_level_array():
     assert validate(["a", 2], schema)
 
 
+def test_validate_union_type_list():
+    # JSON Schema permits ``type`` to be a list ("any of these"). A union type
+    # must not raise (unhashable list) and must accept any listed member.
+    schema = {
+        "type": "object",
+        "properties": {"x": {"type": ["string", "null"]}},
+    }
+    assert validate({"x": "hi"}, schema) == []
+    assert validate({"x": None}, schema) == []
+    # a value matching none of the union members is rejected, not crashed
+    assert validate({"x": 7}, schema)
+
+
 # --------------------------------------------------------------------------- #
 # StructuredOutputTool
 # --------------------------------------------------------------------------- #
@@ -167,6 +180,12 @@ class CapturingSession:
     ``payloads`` is a list of payloads to feed on successive run_loop() calls.
     Each run_loop locates the injected StructuredOutputTool from ``tools`` and
     invokes it with the next payload, simulating the model self-correcting.
+
+    Models the real ``Session.run_loop`` DONE short-circuit (session_run.py):
+    once a turn finishes, a bare re-run does NOT re-invoke the tool — it just
+    returns the prior answer. Only an intervening ``add_user_message`` (which
+    resets DONE -> IDLE) lets the next run_loop produce a fresh payload. So a
+    retry test fails if production forgets the corrective ``add_user_message``.
     """
 
     def __init__(self, tools: Sequence[Any], payloads: list[Any], tokens_each: int = 0) -> None:
@@ -176,6 +195,8 @@ class CapturingSession:
         self._tokens_each = tokens_each
         self.state = FakeState()
         self.run_count = 0
+        # True once a turn has finished; cleared by add_user_message.
+        self._done = False
 
     def _structured_tool(self) -> StructuredOutputTool | None:
         for t in self._tools:
@@ -185,15 +206,21 @@ class CapturingSession:
 
     async def add_user_message(self, content: str) -> None:
         self.state.messages.append({"role": "user", "content": content})
+        self._done = False  # reset_for_user_turn -> resume_to_idle (DONE -> IDLE)
 
     async def run_loop(self) -> str:
         self.run_count += 1
+        # DONE short-circuit: a re-run without an intervening user message
+        # returns the prior answer without re-invoking any tool.
+        if self._done:
+            return "assistant text"
         tool = self._structured_tool()
         if tool is not None and self._call < len(self._payloads):
             payload = self._payloads[self._call]
             if payload is not _NO_CALL:
                 await tool.execute_with_runtime(payload, _runtime())
         self._call += 1
+        self._done = True
         return "assistant text"
 
     @property

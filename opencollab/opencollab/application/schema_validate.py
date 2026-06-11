@@ -11,6 +11,7 @@ Pure application layer: stdlib only.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 # Maps a JSON-Schema ``type`` name to the predicate that accepts a value of it.
@@ -23,6 +24,7 @@ _TYPE_CHECKS = {
     "boolean": lambda v: isinstance(v, bool),
     "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
     "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+    "null": lambda v: v is None,
 }
 
 
@@ -77,7 +79,10 @@ def _validate_array(
         _validate(item, item_schema, f"{path}[{index}]", errors)
 
 
-def _check_type(value: Any, expected_type: str) -> bool:
+def _check_type(value: Any, expected_type: Any) -> bool:
+    # JSON Schema allows ``type`` to be a list of names meaning "any of these".
+    if isinstance(expected_type, Sequence) and not isinstance(expected_type, str):
+        return any(_check_type(value, member) for member in expected_type)
     check = _TYPE_CHECKS.get(expected_type)
     if check is None:
         # Unknown type keyword: be permissive rather than reject silently.

@@ -202,10 +202,16 @@ def _load_specs_from_file(path: str) -> list[WorkflowSpec]:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
+    # Dedupe by spec identity: a decorated function bound under more than one
+    # module-level name (an alias or a re-export) carries the SAME spec object
+    # under each name. Collecting both would register the same name twice and
+    # abort discovery of the whole directory, so keep one entry per spec.
     found: list[WorkflowSpec] = []
+    seen: set[int] = set()
     for value in vars(module).values():
         wf_spec = getattr(value, "__workflow_spec__", None)
-        if isinstance(wf_spec, WorkflowSpec):
+        if isinstance(wf_spec, WorkflowSpec) and id(wf_spec) not in seen:
+            seen.add(id(wf_spec))
             found.append(wf_spec)
     return found
 
