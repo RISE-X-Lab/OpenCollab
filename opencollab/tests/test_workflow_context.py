@@ -138,13 +138,6 @@ async def test_agent_forwards_tools_and_isolation():
     assert factory.builds[0]["isolation"] is True
 
 
-@pytest.mark.asyncio
-async def test_agent_schema_not_implemented_in_phase1():
-    ctx = WorkflowContext(FakeFactory([FakeSession()]))
-    with pytest.raises(NotImplementedError):
-        await ctx.agent("p", schema={"type": "object"})
-
-
 # --------------------------------------------------------------------------- #
 # concurrency cap
 # --------------------------------------------------------------------------- #

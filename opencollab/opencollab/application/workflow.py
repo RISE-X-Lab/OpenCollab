@@ -34,8 +34,23 @@ from opencollab.application.ports import (
     TracePort,
     WorkflowSessionFactoryPort,
 )
+from opencollab.application.structured_output import StructuredOutputTool
 
 DEFAULT_MAX_CONCURRENCY = 4
+
+# Appended to a schema= prompt: the agent must finish by emitting structured
+# output via the injected tool rather than free-text.
+_STRUCTURED_INSTRUCTION = (
+    "\n\nYou MUST finish by calling the `structured_output` tool exactly once "
+    "with your final result. Do not answer in free text."
+)
+
+# Corrective message appended to the same session before the single retry when
+# the first run produced no valid structured payload.
+_STRUCTURED_RETRY = (
+    "You did not produce a valid structured_output result. Call the "
+    "`structured_output` tool now with arguments that conform to the schema."
+)
 
 # Per-agent token budget handed to a session when the workflow budget is
 # unbounded (``budget_total is None``). The session still needs a finite cap.
@@ -123,14 +138,11 @@ class WorkflowContext:
 
         Returns ``None`` if the session errors — one dead agent never kills the
         fleet. Raises ``WorkflowBudgetExceeded`` only when the shared budget is
-        already exhausted before the call starts. ``schema=`` (structured
-        output) is reserved for phase 2 and currently raises.
+        already exhausted before the call starts. When ``schema=`` is given the
+        agent must finish by calling ``structured_output``; the validated dict
+        is returned (with one corrective retry on the same session before
+        giving up and returning ``None``).
         """
-        if schema is not None:
-            raise NotImplementedError(
-                "structured-output agent() (schema=) lands in phase 2"
-            )
-
         if self.budget.remaining() <= 0:
             raise WorkflowBudgetExceeded(
                 f"workflow budget exhausted: spent {self.budget.spent()} "
@@ -138,6 +150,10 @@ class WorkflowContext:
             )
 
         async with self._semaphore:
+            if schema is not None:
+                return await self._run_structured_agent(
+                    prompt, schema=schema, label=label, tools=tools, isolation=isolation
+                )
             return await self._run_agent(prompt, label=label, tools=tools, isolation=isolation)
 
     async def _run_agent(
@@ -168,6 +184,52 @@ class WorkflowContext:
             return await session.run_loop()
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             await self.log(f"agent failed ({label or 'agent'}): {exc}")
+            return None
+
+    async def _run_structured_agent(
+        self,
+        prompt: str,
+        *,
+        schema: dict[str, Any],
+        label: str | None,
+        tools: Sequence[Any] | None,
+        isolation: bool,
+    ) -> dict | None:
+        """Run a schema-bound session, returning the validated payload or None.
+
+        Injects a ``StructuredOutputTool`` into the toolset and instructs the
+        agent to finish by calling it. After the first ``run_loop`` a missing or
+        invalid capture triggers ONE corrective retry on the same session; a
+        still-missing capture yields ``None``.
+        """
+        capture_tool = StructuredOutputTool(schema)
+        seeded_prompt = prompt + _STRUCTURED_INSTRUCTION
+        combined_tools = [capture_tool, *(tools or [])]
+        session_budget = self._session_budget()
+        try:
+            session = self._factory.build_workflow_session(
+                prompt=seeded_prompt,
+                budget=session_budget,
+                tools=combined_tools,
+                isolation=isolation,
+            )
+        except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
+            await self.log(f"structured agent build failed ({label or 'agent'}): {exc}")
+            return None
+
+        # Track immediately so tokens count even if a run_loop raises midway.
+        self._sessions.append(session)
+        try:
+            await session.add_user_message(seeded_prompt)
+            await session.run_loop()
+            if capture_tool.captured is not None:
+                return capture_tool.captured
+            # Single corrective retry on the same session.
+            await session.add_user_message(_STRUCTURED_RETRY)
+            await session.run_loop()
+            return capture_tool.captured
+        except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
+            await self.log(f"structured agent failed ({label or 'agent'}): {exc}")
             return None
 
     def _session_budget(self) -> int:
