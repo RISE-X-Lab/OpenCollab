@@ -34,6 +34,7 @@ from opencollab.adapters.cli.config_resolve import (
 )
 from opencollab.adapters.cli.eval import eval_cmd
 from opencollab.adapters.cli.toolbar import format_team_toolbar
+from opencollab.adapters.cli.workflow import app as workflow_app
 
 app = typer.Typer(
     name="opencollab",
@@ -48,6 +49,7 @@ _PROMPT_STYLE = Style.from_dict({
 })
 
 app.command(name="eval")(eval_cmd)
+app.add_typer(workflow_app, name="workflow")
 
 
 def _get_prompt_session() -> Any:
