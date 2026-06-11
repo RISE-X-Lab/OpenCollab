@@ -17,6 +17,7 @@ from datetime import datetime
 from typing import Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
+from opencollab.adapters.repo_map import build_repo_map
 from opencollab.adapters.trace import Tracer
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.ports import (
@@ -229,7 +230,12 @@ class DefaultSessionFactory:
         # and binding the use_skill dispatcher; repos without skills/ are
         # unaffected (empty store → no catalog, no tool offered).
         skill_store = build_skill_store(lead_workspace)
-        self._context_builder = ContextBuilder(self._team, cfg, skill_store=skill_store)
+        # One repo map for the whole team: children work in the lead's
+        # workspace (or worktree copies of it), so the lead's map orients all.
+        project_context = build_repo_map(lead_workspace) if lead_workspace else None
+        self._context_builder = ContextBuilder(
+            self._team, cfg, skill_store=skill_store, project_context=project_context
+        )
         self._lead_workspace = lead_workspace
         self._interactive = interactive
         # Run folder where every agent's transcript is persisted. When set,
