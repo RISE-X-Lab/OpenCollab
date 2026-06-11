@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from opencollab.domain.hooks import HookOutcome
@@ -166,6 +167,27 @@ class SessionFactoryPort(Protocol):
         ``launch.auto_save_path`` (subscriber wiring) and leaves resume/seed to
         the scheduler via ``Session.apply_launch``.
         """
+        ...
+
+
+class WorkflowSessionFactoryPort(Protocol):
+    """Factory the workflow engine uses to build one-shot agent sessions.
+
+    Bootstrap binds this to the concrete ``build_session`` builder so the
+    ``WorkflowContext`` engine never imports ``Session`` or knows how a session
+    is wired. The returned session is duck-typed and driven through
+    ``add_user_message`` / ``run_loop`` and read via ``used_tokens`` and
+    ``state.messages`` — no inheritance contract beyond those names.
+    """
+
+    def build_workflow_session(
+        self,
+        *,
+        prompt: str,
+        budget: int,
+        tools: Sequence[Any] | None = None,
+        isolation: bool = False,
+    ) -> Any:
         ...
 
 
