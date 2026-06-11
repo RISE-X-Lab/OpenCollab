@@ -17,6 +17,7 @@ import os
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from opencollab.adapters.env import DockerEnvironment, Environment, LocalEnvironment
 from opencollab.adapters.tools.base import Tool
@@ -24,6 +25,8 @@ from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.trace import Tracer
 from opencollab.application.session import Session
+from opencollab.application.workflow import WorkflowContext
+from opencollab.application.workflow_registry import WorkflowFn
 from opencollab.bootstrap import build_session
 from opencollab.domain.agent import Agent
 
@@ -84,6 +87,173 @@ async def default_env_factory(task: EvalTask) -> Environment:
     return LocalEnvironment(workspace=task.repo_path or ".")
 
 
+class _EvalSessionFactory:
+    """``WorkflowSessionFactoryPort`` bound to one eval task's shared env.
+
+    Every ``build_workflow_session`` call assembles a fresh one-shot ``Agent`` on
+    the *same* task ``Environment`` (so each workflow agent sees the cumulative
+    working-tree changes and the final ``git diff`` aggregates them) and the same
+    tracer. The caller's ``tools`` override the default eval toolset when given.
+    """
+
+    def __init__(
+        self,
+        *,
+        env: Environment,
+        tracer: Tracer,
+        prompt: str,
+        model: str,
+        provider: str,
+        api_key: str | None,
+        base_url: str | None,
+        max_steps: int,
+        default_toolset: Sequence[Tool],
+    ) -> None:
+        self._env = env
+        self._tracer = tracer
+        self._prompt = prompt
+        self._model = model
+        self._provider = provider
+        self._api_key = api_key
+        self._base_url = base_url
+        self._max_steps = max_steps
+        self._default_toolset = list(default_toolset)
+
+    def build_workflow_session(
+        self,
+        *,
+        prompt: str,
+        budget: int,
+        tools: Sequence[Any] | None = None,
+        isolation: bool = False,
+    ) -> Session:
+        agent = Agent(
+            name="eval_agent",
+            system_prompt=self._prompt,
+            tools=list(tools) if tools is not None else list(self._default_toolset),
+            model=self._model,
+            provider=self._provider,
+            api_key=self._api_key,
+            base_url=self._base_url,
+        )
+        return build_session(
+            agent=agent,
+            env=self._env,
+            tracer=self._tracer,
+            max_budget_tokens=budget,
+            max_steps=self._max_steps,
+        )
+
+
+def _build_eval_session_factory(
+    *,
+    env: Environment,
+    tracer: Tracer,
+    prompt: str,
+    model: str,
+    provider: str,
+    api_key: str | None,
+    base_url: str | None,
+    max_steps: int,
+    default_toolset: Sequence[Tool],
+) -> _EvalSessionFactory:
+    """Construct the per-task workflow session factory (seam for tests)."""
+    return _EvalSessionFactory(
+        env=env,
+        tracer=tracer,
+        prompt=prompt,
+        model=model,
+        provider=provider,
+        api_key=api_key,
+        base_url=base_url,
+        max_steps=max_steps,
+        default_toolset=default_toolset,
+    )
+
+
+async def _run_single_session(
+    *,
+    task: EvalTask,
+    env: Environment,
+    tracer: Tracer,
+    prompt: str,
+    tools: Sequence[Tool],
+    model: str,
+    provider: str,
+    api_key: str | None,
+    base_url: str | None,
+    max_steps: int,
+) -> Session:
+    """Drive the unchanged single-session eval loop and return the session."""
+    agent = Agent(
+        name="eval_agent",
+        system_prompt=prompt,
+        tools=list(tools),
+        model=model,
+        provider=provider,
+        api_key=api_key,
+        base_url=base_url,
+    )
+    session = build_session(
+        agent=agent,
+        env=env,
+        tracer=tracer,
+        max_budget_tokens=task.max_tokens,
+        max_steps=max_steps,
+    )
+    await session.add_user_message(task.description)
+    await asyncio.wait_for(session.run_loop(), timeout=task.timeout)
+    return session
+
+
+async def _run_workflow_mode(
+    *,
+    task: EvalTask,
+    env: Environment,
+    tracer: Tracer,
+    prompt: str,
+    tools: Sequence[Tool],
+    model: str,
+    provider: str,
+    api_key: str | None,
+    base_url: str | None,
+    max_steps: int,
+    workflow: WorkflowFn,
+) -> WorkflowContext:
+    """Run ``workflow`` over a task-bound context; return the context.
+
+    The context's session factory is bound to the shared task env, so each
+    workflow agent sees cumulative changes and the final ``git diff`` aggregates
+    them. The shared env is attached as ``ctx.env`` (a harness convention) so
+    harness-layer workflows can read the working-tree diff. ``tokens_used`` /
+    ``steps`` are aggregated by the caller across every session created.
+    """
+    factory = _build_eval_session_factory(
+        env=env,
+        tracer=tracer,
+        prompt=prompt,
+        model=model,
+        provider=provider,
+        api_key=api_key,
+        base_url=base_url,
+        max_steps=max_steps,
+        default_toolset=tools,
+    )
+    ctx = WorkflowContext(factory, tracer=tracer, budget_total=task.max_tokens)
+    ctx.env = env  # type: ignore[attr-defined] — harness seam for workflows
+    args = {"task_id": task.task_id, "description": task.description}
+    await asyncio.wait_for(workflow(ctx, args), timeout=task.timeout)
+    return ctx
+
+
+def _aggregate_tokens(sessions: Sequence[Any]) -> int:
+    return sum(int(getattr(s, "used_tokens", 0)) for s in sessions)
+
+
+def _aggregate_steps(sessions: Sequence[Any]) -> int:
+    return sum(int(getattr(s, "step_count", 0)) for s in sessions)
+
+
 async def run_eval_task(
     task: EvalTask,
     model: str = "gpt-4o",
@@ -95,10 +265,18 @@ async def run_eval_task(
     tools_factory: ToolFactory = default_tools,
     env_factory: EnvFactory = default_env_factory,
     max_steps: int = DEFAULT_MAX_STEPS,
+    workflow: WorkflowFn | None = None,
 ) -> EvalResult:
     """Run a single evaluation task.
 
-    Returns an EvalResult with the git patch of all changes made.
+    With ``workflow=None`` (default) this drives one agent session — behavior is
+    byte-for-byte unchanged. When a ``workflow`` is given, the task is instead
+    orchestrated by that workflow function over a ``WorkflowContext`` whose
+    session factory is bound to the task env / budget. ``tokens_used`` and
+    ``steps`` then aggregate across *all* sessions the workflow created (sum
+    semantics — a workflow's cost is the cost of every agent it ran). Patch
+    extraction, timeout handling, and the ``EvalResult`` shape are identical in
+    both modes.
     """
     os.makedirs(output_dir, exist_ok=True)
     start = time.monotonic()
@@ -106,33 +284,42 @@ async def run_eval_task(
 
     env: Environment | None = None
     session: Session | None = None
+    workflow_ctx: WorkflowContext | None = None
     error: str | None = None
     patch = ""
 
     try:
         # Create environment (inside try — docker setup can fail)
         env = await env_factory(task)
+        tools = list(tools_factory())
 
-        agent = Agent(
-            name="eval_agent",
-            system_prompt=prompt,
-            tools=list(tools_factory()),
-            model=model,
-            provider=provider,
-            api_key=api_key,
-            base_url=base_url,
-        )
-
-        session = build_session(
-            agent=agent,
-            env=env,
-            tracer=tracer,
-            max_budget_tokens=task.max_tokens,
-            max_steps=max_steps,
-        )
-
-        await session.add_user_message(task.description)
-        await asyncio.wait_for(session.run_loop(), timeout=task.timeout)
+        if workflow is None:
+            session = await _run_single_session(
+                task=task,
+                env=env,
+                tracer=tracer,
+                prompt=prompt,
+                tools=tools,
+                model=model,
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url,
+                max_steps=max_steps,
+            )
+        else:
+            workflow_ctx = await _run_workflow_mode(
+                task=task,
+                env=env,
+                tracer=tracer,
+                prompt=prompt,
+                tools=tools,
+                model=model,
+                provider=provider,
+                api_key=api_key,
+                base_url=base_url,
+                max_steps=max_steps,
+                workflow=workflow,
+            )
 
     except asyncio.TimeoutError:
         error = f"Task timed out after {task.timeout}s"
@@ -159,12 +346,20 @@ async def run_eval_task(
         except Exception:
             pass
 
+    if workflow_ctx is not None:
+        sessions = workflow_ctx.sessions
+        tokens_used = _aggregate_tokens(sessions)
+        steps = _aggregate_steps(sessions)
+    else:
+        tokens_used = session.used_tokens if session else 0
+        steps = session.step_count if session else 0
+
     return EvalResult(
         task_id=task.task_id,
         patch=patch,
         patch_produced=bool(patch.strip()) and error is None,
-        tokens_used=session.used_tokens if session else 0,
-        steps=session.step_count if session else 0,
+        tokens_used=tokens_used,
+        steps=steps,
         duration=duration,
         error=error,
         trajectory_path=tracer.path,

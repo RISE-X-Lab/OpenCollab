@@ -123,6 +123,15 @@ class WorkflowContext:
         self._sessions: list[Any] = []
         self.budget = WorkflowBudget(budget_total, self._sessions)
 
+    @property
+    def sessions(self) -> Sequence[Any]:
+        """Read-only view of every session created so far (newest last).
+
+        Lets an outer-layer caller (e.g. the eval harness) aggregate token /
+        step counts across all sessions a workflow produced.
+        """
+        return tuple(self._sessions)
+
     # -- agent ------------------------------------------------------------- #
 
     async def agent(
