@@ -6,7 +6,9 @@ when ``WorkflowContext.agent`` is called with ``schema=``; the agent is told to
 finish by calling ``structured_output`` with its result. ``execute_with_runtime``
 validates the call against the caller's schema:
 
-* valid  -> stores the payload on ``self.captured`` and acknowledges,
+* valid  -> stores the payload on ``self.captured``, fires ``on_capture``
+  (the engine wires this to a cancel event so the session halts before its
+  next LLM call), and acknowledges,
 * invalid -> returns the validation errors as the tool result string so the
   model self-corrects within its own run loop.
 
@@ -15,6 +17,7 @@ Pure application layer: stdlib + application imports only.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from opencollab.application.schema_validate import validate
@@ -39,8 +42,13 @@ class StructuredOutputTool:
         "and call structured_output again."
     )
 
-    def __init__(self, schema: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        schema: dict[str, Any],
+        on_capture: Callable[[], None] | None = None,
+    ) -> None:
         self._schema = schema
+        self._on_capture = on_capture
         self.parameters = schema
         self.captured: dict[str, Any] | None = None
 
@@ -67,7 +75,9 @@ class StructuredOutputTool:
                 f"Fix and call {self.name} again. Errors: {joined}"
             )
         self.captured = params
-        return "Recorded. Structured output accepted."
+        if self._on_capture is not None:
+            self._on_capture()
+        return "Recorded. Structured output accepted. Your task is complete."
 
 
 __all__ = ["StructuredOutputTool", "TOOL_NAME"]

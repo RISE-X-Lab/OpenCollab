@@ -18,7 +18,6 @@ from opencollab.application.structured_output import StructuredOutputTool
 from opencollab.application.tool_execution import ToolRuntime
 from opencollab.application.workflow import WorkflowContext
 
-
 # --------------------------------------------------------------------------- #
 # validator
 # --------------------------------------------------------------------------- #
@@ -177,24 +176,39 @@ class FakeState:
 class CapturingSession:
     """Session whose run_loop calls structured_output with a scripted payload.
 
-    ``payloads`` is a list of payloads to feed on successive run_loop() calls.
-    Each run_loop locates the injected StructuredOutputTool from ``tools`` and
-    invokes it with the next payload, simulating the model self-correcting.
+    ``payloads`` is a list of payloads to feed on successive rounds. Each round
+    locates the injected StructuredOutputTool from ``tools`` and invokes it with
+    the next payload, simulating the model self-correcting.
 
     Models the real ``Session.run_loop`` DONE short-circuit (session_run.py):
     once a turn finishes, a bare re-run does NOT re-invoke the tool — it just
     returns the prior answer. Only an intervening ``add_user_message`` (which
     resets DONE -> IDLE) lets the next run_loop produce a fresh payload. So a
     retry test fails if production forgets the corrective ``add_user_message``.
+
+    ``max_rounds`` models the post-capture runaway seen live: a single
+    run_loop keeps issuing rounds (the model re-calling the tool) until the
+    round cap — or until the engine's ``cancel_event`` is set, mirroring the
+    real precheck gate that stops the loop before the next LLM call. Each
+    round costs ``tokens_each``.
     """
 
-    def __init__(self, tools: Sequence[Any], payloads: list[Any], tokens_each: int = 0) -> None:
+    def __init__(
+        self,
+        tools: Sequence[Any],
+        payloads: list[Any],
+        tokens_each: int = 0,
+        max_rounds: int = 1,
+    ) -> None:
         self._tools = list(tools)
         self._payloads = list(payloads)
         self._call = 0
         self._tokens_each = tokens_each
+        self._max_rounds = max_rounds
         self.state = FakeState()
         self.run_count = 0
+        self.rounds = 0
+        self.cancel_events: list[Any] = []
         # True once a turn has finished; cleared by add_user_message.
         self._done = False
 
@@ -208,24 +222,30 @@ class CapturingSession:
         self.state.messages.append({"role": "user", "content": content})
         self._done = False  # reset_for_user_turn -> resume_to_idle (DONE -> IDLE)
 
-    async def run_loop(self) -> str:
+    async def run_loop(self, cancel_event: Any = None) -> str:
         self.run_count += 1
+        self.cancel_events.append(cancel_event)
         # DONE short-circuit: a re-run without an intervening user message
         # returns the prior answer without re-invoking any tool.
         if self._done:
             return "assistant text"
         tool = self._structured_tool()
-        if tool is not None and self._call < len(self._payloads):
-            payload = self._payloads[self._call]
-            if payload is not _NO_CALL:
-                await tool.execute_with_runtime(payload, _runtime())
-        self._call += 1
+        for _ in range(self._max_rounds):
+            # The real loop checks the event in precheck, BEFORE each LLM call.
+            if cancel_event is not None and cancel_event.is_set():
+                break
+            if tool is not None and self._call < len(self._payloads):
+                payload = self._payloads[self._call]
+                if payload is not _NO_CALL:
+                    await tool.execute_with_runtime(payload, _runtime())
+            self._call += 1
+            self.rounds += 1
         self._done = True
         return "assistant text"
 
     @property
     def used_tokens(self) -> int:
-        return self._tokens_each * self.run_count
+        return self._tokens_each * self.rounds
 
 
 _NO_CALL = object()
@@ -234,9 +254,10 @@ _NO_CALL = object()
 class ScriptedFactory:
     """Builds a single CapturingSession, capturing the injected tools."""
 
-    def __init__(self, payloads: list[Any], tokens_each: int = 0) -> None:
+    def __init__(self, payloads: list[Any], tokens_each: int = 0, max_rounds: int = 1) -> None:
         self._payloads = payloads
         self._tokens_each = tokens_each
+        self._max_rounds = max_rounds
         self.session: CapturingSession | None = None
         self.builds: list[dict[str, Any]] = []
 
@@ -249,7 +270,9 @@ class ScriptedFactory:
         isolation: bool = False,
     ) -> CapturingSession:
         self.builds.append({"prompt": prompt, "tools": tools, "isolation": isolation})
-        self.session = CapturingSession(tools or [], self._payloads, self._tokens_each)
+        self.session = CapturingSession(
+            tools or [], self._payloads, self._tokens_each, self._max_rounds
+        )
         return self.session
 
 
@@ -319,6 +342,53 @@ async def test_agent_schema_retry_tokens_counted_in_budget():
 
     assert result is None
     # two run_loops -> 2 * 100 tokens counted
+    assert ctx.budget.spent() == 200
+
+
+@pytest.mark.asyncio
+async def test_agent_schema_capture_stops_runaway_session():
+    """A successful capture must halt the session before its next LLM call.
+
+    Live failure mode this pins: the model captured a valid payload on round
+    one, then kept re-calling structured_output for 28 more rounds until the
+    session budget died. With the capture-stop, only the capturing round runs.
+    """
+    factory = ScriptedFactory(payloads=[{"x": 1}] * 5, tokens_each=100, max_rounds=5)
+    ctx = WorkflowContext(factory, budget_total=10_000)
+
+    result = await ctx.agent("give me x", schema=SCHEMA)
+
+    assert result == {"x": 1}
+    assert factory.session.rounds == 1  # post-capture rounds never ran
+    assert ctx.budget.spent() == 100  # not 500
+
+
+@pytest.mark.asyncio
+async def test_agent_schema_run_loop_receives_set_cancel_event():
+    factory = ScriptedFactory(payloads=[{"x": 1}])
+    ctx = WorkflowContext(factory)
+
+    await ctx.agent("give me x", schema=SCHEMA)
+
+    assert len(factory.session.cancel_events) == 1
+    event = factory.session.cancel_events[0]
+    assert event is not None
+    assert event.is_set()  # set by the capture
+
+
+@pytest.mark.asyncio
+async def test_agent_schema_self_correction_stops_at_capture():
+    """Invalid then valid within one run: the loop stops right after the
+    valid round, not at the round cap."""
+    factory = ScriptedFactory(
+        payloads=[{"x": "bad"}, {"x": 2}, {"x": 3}], tokens_each=100, max_rounds=5
+    )
+    ctx = WorkflowContext(factory, budget_total=10_000)
+
+    result = await ctx.agent("give me x", schema=SCHEMA)
+
+    assert result == {"x": 2}
+    assert factory.session.rounds == 2
     assert ctx.budget.spent() == 200
 
 

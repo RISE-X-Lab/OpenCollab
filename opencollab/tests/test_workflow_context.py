@@ -54,7 +54,7 @@ class FakeSession:
         self.prompt = content
         self.state.messages.append({"role": "user", "content": content})
 
-    async def run_loop(self) -> str:
+    async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         if self._on_enter is not None:
             await self._on_enter()
         if self._gate is not None:

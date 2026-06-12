@@ -210,8 +210,15 @@ class WorkflowContext:
         agent to finish by calling it. After the first ``run_loop`` a missing or
         invalid capture triggers ONE corrective retry on the same session; a
         still-missing capture yields ``None``.
+
+        A successful capture sets a cancel event that the session's precheck
+        observes before each LLM call, halting the loop immediately. Without
+        it, a model that keeps re-calling structured_output after acceptance
+        burns the whole session budget (observed live: one valid capture
+        followed by 28 wasted calls until budget death).
         """
-        capture_tool = StructuredOutputTool(schema)
+        capture_done = asyncio.Event()
+        capture_tool = StructuredOutputTool(schema, on_capture=capture_done.set)
         seeded_prompt = prompt + _STRUCTURED_INSTRUCTION
         combined_tools = [capture_tool, *(tools or [])]
         session_budget = self._session_budget()
@@ -230,12 +237,12 @@ class WorkflowContext:
         self._sessions.append(session)
         try:
             await session.add_user_message(seeded_prompt)
-            await session.run_loop()
+            await session.run_loop(capture_done)
             if capture_tool.captured is not None:
                 return capture_tool.captured
             # Single corrective retry on the same session.
             await session.add_user_message(_STRUCTURED_RETRY)
-            await session.run_loop()
+            await session.run_loop(capture_done)
             return capture_tool.captured
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             await self.log(f"structured agent failed ({label or 'agent'}): {exc}")
