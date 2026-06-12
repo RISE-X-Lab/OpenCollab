@@ -25,7 +25,7 @@ from opencollab.application.ports import (
     EventPublisherPort,
     TracePort,
 )
-from opencollab.application.workflow import WorkflowContext
+from opencollab.application.workflow import WorkflowBudgetExceeded, WorkflowContext
 from opencollab.application.workflow_registry import Registry, WorkflowSpec
 from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
@@ -160,6 +160,15 @@ async def run_workflow(
 
     Accepts either a :class:`WorkflowSpec` or a raw ``@workflow``-decorated (or
     plain async) function.
+
+    ``WorkflowBudgetExceeded`` — the sole exception ``WorkflowContext`` lets
+    escape — is caught at this run boundary and turned into a structured result
+    so the CLI prints a JSON budget report instead of a raw traceback::
+
+        {"status": "budget_exceeded", "error": <str>,
+         "tokens_spent": <int>, "budget_total": <int | None>}
+
+    Every other exception still propagates to the caller.
     """
     ctx = build_workflow_context(
         cfg=cfg,
@@ -170,7 +179,15 @@ async def run_workflow(
         max_concurrency=max_concurrency,
     )
     fn = _resolve_spec_fn(spec_or_fn)
-    return await fn(ctx, args)
+    try:
+        return await fn(ctx, args)
+    except WorkflowBudgetExceeded as exc:
+        return {
+            "status": "budget_exceeded",
+            "error": str(exc),
+            "tokens_spent": ctx.budget.spent(),
+            "budget_total": ctx.budget.total,
+        }
 
 
 def discover_workflows(directory: str) -> Registry:

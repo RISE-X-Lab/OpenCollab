@@ -79,7 +79,11 @@ def run_cmd(
     api_key: Optional[str] = typer.Option(None, "--api-key", help="API key (default from config)"),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="API base URL (default from config)"),
     workspace: str = typer.Option(".", "--workspace", "-w", help="Working directory"),
-    budget: Optional[int] = typer.Option(None, "--budget", help="Max token budget (default from config)"),
+    budget: Optional[int] = typer.Option(
+        None,
+        "--budget",
+        help="Max token budget (default: max(config budget, 500000); workflows fan out many sessions)",
+    ),
     concurrency: int = typer.Option(4, "--concurrency", "-c", help="Max concurrent agent sessions"),
 ) -> None:
     """Run a workflow and print its result as JSON."""
@@ -104,6 +108,13 @@ def run_cmd(
     if missing_api_key_for(cfg["provider"], cfg["api_key"], cfg["base_url"]):
         print_missing_key_hint(console, cfg["provider"], cfg["base_url"])
         raise typer.Exit(code=1)
+
+    # Workflows fan out many one-shot sessions (mirroring main.py's spawn-aware
+    # default), so lift the fallback budget when --budget was not given. The
+    # explicit budget arg stays None below, so run_workflow falls back to this
+    # raised cfg["budget"].
+    if budget is None:
+        cfg["budget"] = max(cfg["budget"], 500_000)
 
     event_sink: EventPublisherPort = _ConsoleEventSink(console)
     result = asyncio.run(

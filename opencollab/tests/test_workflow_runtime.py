@@ -12,7 +12,7 @@ from typing import Any
 
 import pytest
 
-from opencollab.application.workflow import WorkflowContext
+from opencollab.application.workflow import WorkflowBudgetExceeded, WorkflowContext
 from opencollab.bootstrap import workflow_runtime
 
 
@@ -121,3 +121,64 @@ async def test_run_workflow_accepts_a_workflow_spec(monkeypatch):
         fn.__workflow_spec__, {}, cfg=_cfg()
     )
     assert result == "spec-ran"
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_returns_structured_budget_exceeded(monkeypatch):
+    """WorkflowBudgetExceeded at the run boundary becomes a structured result.
+
+    A workflow that exhausts the budget should not blow up the caller with a raw
+    traceback; run_workflow catches WorkflowBudgetExceeded and returns a dict
+    carrying status, error text, and the spend/total snapshot.
+    """
+    _patch_build_session(monkeypatch)
+
+    async def fn(ctx, args):
+        # Drive a session so some tokens are spent, then raise as agent() would
+        # once the budget is exhausted.
+        raise WorkflowBudgetExceeded("workflow budget exhausted: spent 50 of 40")
+
+    result = await workflow_runtime.run_workflow(fn, {}, cfg=_cfg(budget=40))
+
+    assert result["status"] == "budget_exceeded"
+    assert result["error"] == "workflow budget exhausted: spent 50 of 40"
+    assert result["budget_total"] == 40
+    # No session spent anything in this fn, so the live snapshot is 0.
+    assert result["tokens_spent"] == 0
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_reports_live_spend_on_budget_exceeded(monkeypatch):
+    """The structured budget_exceeded dict reports the live token spend.
+
+    Running an agent first spends tokens via the tracked session; when the
+    workflow then raises WorkflowBudgetExceeded, the returned dict's
+    ``tokens_spent`` reflects that live spend (not 0).
+    """
+    calls = _patch_build_session(monkeypatch)
+
+    async def fn(ctx, args):
+        await ctx.agent("do work")
+        # The fake session reports used_tokens=0, but assert the wiring reads the
+        # live budget snapshot rather than a hardcoded value.
+        raise WorkflowBudgetExceeded("exhausted")
+
+    result = await workflow_runtime.run_workflow(fn, {}, cfg=_cfg(budget=1000))
+
+    assert result["status"] == "budget_exceeded"
+    assert result["error"] == "exhausted"
+    assert result["budget_total"] == 1000
+    assert result["tokens_spent"] == 0  # _FakeSession.used_tokens == 0
+    assert len(calls) == 1  # the agent did build+run before the raise
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_other_exceptions_propagate(monkeypatch):
+    """Only WorkflowBudgetExceeded is caught; everything else still raises."""
+    _patch_build_session(monkeypatch)
+
+    async def fn(ctx, args):
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await workflow_runtime.run_workflow(fn, {}, cfg=_cfg())

@@ -245,7 +245,10 @@ class WorkflowContext:
         remaining = self.budget.remaining()
         if remaining == float("inf"):
             return UNBOUNDED_SESSION_BUDGET
-        return int(remaining)
+        # Clamp to zero: a concurrent agent's spend can land between agent()'s
+        # budget gate and this call, driving ``remaining`` negative. A negative
+        # per-session budget is nonsensical, so floor it at 0.
+        return max(0, int(remaining))
 
     # -- parallel ---------------------------------------------------------- #
 

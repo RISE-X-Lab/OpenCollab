@@ -342,6 +342,141 @@ async def test_budget_none_never_raises():
 
 
 # --------------------------------------------------------------------------- #
+# budget-exceeded swallow contract inside parallel() / pipeline()
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_parallel_swallows_budget_exceeded_to_none():
+    """A budget-exhausted ctx.agent() inside a parallel thunk resolves to None.
+
+    WorkflowBudgetExceeded escapes ctx.agent() at the WorkflowContext level, but
+    parallel()'s per-slot guard localizes ANY exception (including the budget
+    one) to that slot — it must not abort the gather.
+    """
+    s1 = FakeSession(reply="a", tokens=500)
+    s2 = FakeSession(reply="b", tokens=0)
+    ctx = WorkflowContext(FakeFactory([s1, s2]), budget_total=500)
+
+    # First call spends the whole budget; the second starts already exhausted.
+    assert await ctx.agent("warm up") == "a"
+
+    results = await ctx.parallel([lambda: ctx.agent("exhausted")])
+
+    assert results == [None]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_swallows_budget_exceeded_to_none_and_skips_rest():
+    """A budget-exhausted ctx.agent() in a pipeline stage drops the item to None.
+
+    The exhausted stage raises WorkflowBudgetExceeded; pipeline()'s flow guard
+    drops that item to None and skips its remaining stages, leaving other items
+    untouched.
+    """
+    s1 = FakeSession(reply="a", tokens=500)
+    s2 = FakeSession(reply="b", tokens=0)
+    ctx = WorkflowContext(FakeFactory([s1, s2]), budget_total=500)
+
+    # Spend the whole budget so the pipeline's agent stage starts exhausted.
+    assert await ctx.agent("warm up") == "a"
+
+    later_ran: list[int] = []
+
+    async def agent_stage(prev: Any, item: int, idx: int) -> Any:
+        return await ctx.agent(f"item {item}")
+
+    async def later_stage(prev: Any, item: int, idx: int) -> Any:
+        later_ran.append(item)
+        return prev
+
+    results = await ctx.pipeline([7], agent_stage, later_stage)
+
+    assert results == [None]
+    # The exhausted item never reaches the later stage.
+    assert later_ran == []
+
+
+class _DeferredTokenSession(FakeSession):
+    """A FakeSession whose reported token spend can be deferred.
+
+    ``used_tokens`` reads 0 until ``land_spend()`` flips it to ``_tokens``. This
+    models a concurrent agent whose spend lands AFTER another agent has passed
+    agent()'s budget gate but BEFORE that agent computes its per-session budget —
+    the exact window in which a naive ``int(remaining)`` would go negative.
+    """
+
+    def __init__(self, *, tokens: int, on_enter=None) -> None:
+        super().__init__(reply="a", tokens=tokens, on_enter=on_enter)
+        self._landed = False
+
+    def land_spend(self) -> None:
+        self._landed = True
+
+    @property
+    def used_tokens(self) -> int:
+        return self._tokens if self._landed else 0
+
+
+@pytest.mark.asyncio
+async def test_session_budget_clamped_to_zero_under_concurrent_overspend():
+    """_session_budget() never hands a negative budget to a concurrent build.
+
+    Total budget is 100. The first agent holds the single semaphore permit and
+    parks in run_loop; its 150-token spend has not landed yet (spent==0). The
+    second agent then passes agent()'s budget gate (spent==0) and BLOCKS on the
+    semaphore — it is now between its gate check and its session build. We land
+    the first session's spend (spent jumps to 150, remaining == -50) and release
+    the first agent. When the second agent finally builds, ``_session_budget()``
+    must clamp its per-session budget to 0, never -50.
+
+    Deterministic via asyncio.Event handoff + ``asyncio.sleep(0)`` yields only;
+    no real-duration sleeps. ``max_concurrency=1`` makes the semaphore serialize
+    the two agents so the blocking window is guaranteed.
+    """
+    first_running = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def first_on_enter() -> None:
+        # First session is built+appended and holds the semaphore; spend pending.
+        first_running.set()
+        await release_first.wait()
+
+    s1 = _DeferredTokenSession(tokens=150, on_enter=first_on_enter)
+    s2 = FakeSession(reply="b", tokens=0)
+    factory = FakeFactory([s1, s2])
+    # Single permit -> the second agent must wait on the first inside the
+    # gate->build window, reproducing the concurrent-overspend race.
+    ctx = WorkflowContext(factory, budget_total=100, max_concurrency=1)
+
+    # 1. First agent: passes gate (spent==0), takes the permit, parks in run_loop.
+    first_task = asyncio.create_task(ctx.agent("first"))
+    await first_running.wait()
+    assert factory.builds[0]["budget"] == 100  # full budget, nothing spent yet
+
+    # 2. Second agent: passes gate (spent still 0), then blocks on the permit.
+    second_task = asyncio.create_task(ctx.agent("second"))
+    for _ in range(5):  # let it clear the gate and park on the semaphore
+        await asyncio.sleep(0)
+    assert len(factory.builds) == 1  # it has NOT built yet (still gated by permit)
+
+    # 3. Land the first session's spend: spent jumps to 150, remaining == -50.
+    s1.land_spend()
+    assert ctx.budget.spent() == 150
+
+    # 4. Release the first agent; the second now acquires the permit and builds
+    #    its session against the overspent budget.
+    release_first.set()
+    second_result = await asyncio.wait_for(second_task, timeout=1.0)
+    assert await first_task == "a"
+
+    assert second_result == "b"
+    assert len(factory.builds) == 2
+    # The clamp: int(-50) would be negative; the budget must floor at 0.
+    assert factory.builds[1]["budget"] == 0
+
+
+# --------------------------------------------------------------------------- #
 # phase() / log()
 # --------------------------------------------------------------------------- #
 

@@ -78,6 +78,84 @@ def test_workflow_run_prints_result_as_json(monkeypatch):
     assert captured["kwargs"]["max_concurrency"] == 2
 
 
+def test_workflow_run_default_budget_raised_to_500k(monkeypatch):
+    """With no --budget, run_cmd raises the workflow default to 500k.
+
+    Workflows fan out many one-shot sessions (mirroring main.py's spawn-aware
+    default), so the config fallback budget is lifted to at least 500k and that
+    raised value reaches the context: ``--budget`` is None, so run_workflow falls
+    back to ``cfg['budget']``.
+    """
+    @workflow(name="echo", description="echoes its args")
+    async def echo(ctx, args):
+        return {"ok": True}
+
+    reg = Registry()
+    reg.register(echo.__workflow_spec__)
+    monkeypatch.setattr(workflow_cli, "load_registry", lambda: reg)
+    monkeypatch.setattr(workflow_cli, "missing_api_key_for", lambda *a, **k: False)
+    # A small config fallback budget so the 500k floor is the value that wins.
+    monkeypatch.setattr(
+        workflow_cli,
+        "resolve_config",
+        lambda *a, **k: {
+            "model": "m",
+            "provider": "anthropic",
+            "api_key": "k",
+            "base_url": None,
+            "budget": 200_000,
+        },
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_workflow(spec_or_fn, args, *, cfg, budget=None, **kwargs):
+        captured["cfg_budget"] = cfg["budget"]
+        captured["budget_arg"] = budget
+        return await spec_or_fn.fn(object(), args)
+
+    monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
+
+    result = runner.invoke(workflow_cli.app, ["run", "echo", "--args", "{}"])
+
+    assert result.exit_code == 0
+    # --budget was not given, so the explicit budget arg stays None and the
+    # effective budget flows from the raised cfg fallback.
+    assert captured["budget_arg"] is None
+    assert captured["cfg_budget"] == 500_000
+
+
+def test_workflow_run_explicit_budget_not_raised(monkeypatch):
+    """An explicit --budget below 500k is honored verbatim, not floored up."""
+    @workflow(name="echo", description="echoes its args")
+    async def echo(ctx, args):
+        return {"ok": True}
+
+    reg = Registry()
+    reg.register(echo.__workflow_spec__)
+    monkeypatch.setattr(workflow_cli, "load_registry", lambda: reg)
+    monkeypatch.setattr(workflow_cli, "missing_api_key_for", lambda *a, **k: False)
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_workflow(spec_or_fn, args, *, cfg, budget=None, **kwargs):
+        captured["cfg_budget"] = cfg["budget"]
+        captured["budget_arg"] = budget
+        return await spec_or_fn.fn(object(), args)
+
+    monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
+
+    result = runner.invoke(
+        workflow_cli.app, ["run", "echo", "--args", "{}", "--budget", "12345"]
+    )
+
+    assert result.exit_code == 0
+    # Explicit budget is passed through and the cfg budget equals it (resolve_config
+    # uses the given value); the 500k floor only applies when --budget is omitted.
+    assert captured["budget_arg"] == 12345
+    assert captured["cfg_budget"] == 12345
+
+
 def test_workflow_run_unknown_name_exits_nonzero(monkeypatch):
     monkeypatch.setattr(workflow_cli, "load_registry", lambda: _stub_registry())
 
