@@ -30,7 +30,11 @@ class BashTool(Tool):
     name = "bash"
     description = (
         "Execute a shell command in the workspace. Returns stdout and stderr. "
-        "Use this for running tests, installing packages, git operations, etc."
+        "Use this for running tests, installing packages, git operations, etc. "
+        "Runs non-interactively with no TTY: pass non-interactive flags (e.g. -y), "
+        "pipe pagers to cat, and never block on prompts. The working directory does "
+        "NOT persist between calls — use absolute paths rather than cd. Reach for this "
+        "only when no dedicated tool (file_read / grep / run_tests) fits."
     )
     parameters = {
         "type": "object",

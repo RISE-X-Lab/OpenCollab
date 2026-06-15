@@ -32,7 +32,14 @@ Rules:
 to test, file_write/apply_patch to edit. Use bash ONLY for what no dedicated \
 tool covers (e.g. a one-line `python -c` repro).
 - Fix the ROOT CAUSE in the source; make the SMALLEST correct change.
-- NEVER edit test files. NEVER run `git commit`; leave edits in the working tree."""
+- NEVER edit test files. NEVER run `git commit`; leave edits in the working tree.
+- Never assume a package is available: confirm the repo already imports it \
+(grep / check the manifest) before using it, and verify your own imports \
+resolve before reporting done.
+- Keep reports tight: <=8 lines — changed files + what changed, why, and the \
+verification result. No preamble or postamble.
+- Do NOT grep for a FAIL_TO_PASS test that does not exist yet — the task may \
+require creating it; chasing a missing test wastes budget."""
 
 PLAN_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -67,10 +74,12 @@ VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["verdict", "findings"],
     "properties": {
-        "verdict": {"type": "string", "enum": ["PASS", "FAIL"]},
+        "verdict": {"type": "string", "enum": ["PASS", "FAIL", "BLOCKED"]},
         "findings": {
             "type": "string",
-            "description": "On FAIL: the exact failing command, error/traceback, suspected file/line.",
+            "description": "On FAIL: the exact failing command, error/traceback, suspected file/line. "
+            "On BLOCKED: name the environmental blocker (missing dependency, no network, "
+            "broken/unrelated infra) — not a code defect — so it can be surfaced upward.",
         },
     },
 }
@@ -127,10 +136,13 @@ Reviewer feedback:
 
 CODER_PROMPT = """\
 You are a Coder doing ONE task. Inspect with file_read/grep. Default edit: \
-file_write in str_replace mode — minimal and targeted; if str_replace fails \
-twice, fall back to apply_patch. Verify with run_tests (or a short `python -c` \
-repro) before reporting. Your final message is your report: what you changed \
-(each file + edit), why, and your verification result.
+file_write in str_replace mode — minimal and targeted. If str_replace fails \
+twice (no unique match — whitespace diff, duplicate/ambiguous lines, line \
+drift), do NOT retry the same replacement: fall back to apply_patch with a \
+content-anchored diff (use line_replace with expected_str to guard the range). \
+Verify with run_tests (or a short `python -c` repro) before reporting. Your \
+final message is your report: what you changed (each file + edit), why, and \
+your verification result.
 
 {rules}
 
@@ -155,6 +167,12 @@ tests with run_tests. Inspect the ACTUAL source with file_read/grep — do not \
 trust the coder's summary; confirm the change is really there and really fixes \
 the root cause. Hunt failures: edge cases, missing handling, regressions in \
 neighboring behavior. You do not edit files.
+
+Verdict PASS only when the change is really there and the definition of done \
+holds. Verdict FAIL for a code defect. Verdict BLOCKED only when the failure is \
+ENVIRONMENTAL — a missing dependency, no network, or broken/unrelated infra — \
+not something more coding can fix; name the blocker in findings so it can be \
+surfaced upward instead of burning more rounds.
 
 {rules}
 
@@ -211,6 +229,12 @@ async def _run_phase(ctx: Any, ph: dict[str, Any], idx: int) -> dict[str, Any]:
         )
         if isinstance(verdict, dict) and verdict.get("verdict") == "PASS":
             return {"goal": ph["goal"], "status": "passed", "rounds": rounds}
+        if isinstance(verdict, dict) and verdict.get("verdict") == "BLOCKED":
+            # Environmental blocker: more coding rounds cannot clear it. Stop the
+            # loop and surface the blocker upward instead of burning the rest.
+            blocker = verdict.get("findings", "") or "environmental blocker (unspecified)"
+            await ctx.log(f"phase {idx} round {round_no} BLOCKED: {blocker[:200]}")
+            return {"goal": ph["goal"], "status": "blocked", "rounds": rounds, "blocker": blocker}
         if not isinstance(verdict, dict):
             await ctx.log(f"phase {idx} round {round_no} tester died — substituting generic findings")
         # Never re-issue an identical task: the next round carries the findings.
@@ -289,8 +313,8 @@ async def self_collab(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         report = await _run_phase(ctx, ph, idx)
         phase_reports.append(report)
         if report["status"] != "passed":
-            # Stop rather than build later phases on a broken base.
-            await ctx.log(f"phase {idx} failed after {report['rounds']} rounds — stopping")
+            # Stop rather than build later phases on a broken (or blocked) base.
+            await ctx.log(f"phase {idx} {report['status']} after {report['rounds']} rounds — stopping")
             break
 
     all_passed = bool(phase_reports) and all(r["status"] == "passed" for r in phase_reports)

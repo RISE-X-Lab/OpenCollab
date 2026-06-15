@@ -51,7 +51,9 @@ class RunTestsTool(Tool):
         "result: pass/fail/error counts, the failing test node-ids, and the head of "
         "the first traceback — not raw stdout. Use it to VERIFY a fix instead of "
         "guessing. Pass `target` (a path or node-id like 'tests/test_x.py::test_y') "
-        "to focus the run. Override `runner` only for non-pytest projects."
+        "to focus the run. Override `runner` only for non-pytest projects. "
+        "Prefer this over bash for running the test suite; it returns a structured "
+        "pass/fail signal."
     )
     parameters = {
         "type": "object",

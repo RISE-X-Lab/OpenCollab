@@ -24,7 +24,8 @@ class FileReadTool(Tool):
     name = "file_read"
     description = (
         "Read a file's content. Supports reading specific line ranges. "
-        "Returns content with line numbers."
+        "Returns content with line numbers. "
+        "On large files, prefer a ranged read (offset/limit) over reading the whole file."
     )
     parameters = {
         "type": "object",
@@ -88,7 +89,9 @@ class FileWriteTool(Tool):
         "Edit a file. Modes:\n"
         "- 'create': Write a new file (or overwrite entirely).\n"
         "- 'str_replace': Find old_str and replace with new_str. Must be unique match.\n"
-        "Use str_replace for targeted edits (most common). Use create for new files."
+        "Use str_replace for targeted edits (most common). Use create for new files. "
+        "Read the target span with file_read first; replacements apply to the file's "
+        "current on-disk content."
     )
     parameters = {
         "type": "object",
@@ -173,7 +176,9 @@ class GrepTool(Tool):
     name = "grep"
     description = (
         "Search for a regex pattern across files in the workspace. "
-        "Returns matching lines with file paths and line numbers."
+        "Returns matching lines with file paths and line numbers. "
+        "Use it to locate symbols/strings across files; prefer this over reading whole "
+        "files or shelling out to grep/rg via bash."
     )
     parameters = {
         "type": "object",
