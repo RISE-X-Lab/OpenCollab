@@ -15,6 +15,13 @@ DEFAULT_HISTORY_TARGET_TOKENS = 90_000
 # Most-recent groups always kept verbatim (never snipped or summarized).
 DEFAULT_HISTORY_KEEP_RECENT_GROUPS = 4
 
+# Context-source priority at/above which a message is *pinned*: never cleared,
+# snipped, or summarized. Sources are tagged with their resolved layer priority
+# (``domain.context.LAYER_PRIORITY``) via the ``_ctx`` key; identity/team/task
+# sit above this floor, project/memory below it. Untagged messages (tool work,
+# turns) have no ``_ctx`` and are governed by the recency-based layers instead.
+PIN_FLOOR = 70
+
 # Window-derived trigger math (ref: context-compaction-py effective_context_window).
 # effective = context_window - output_reserve; trigger = effective - buffer; the
 # layers then compact down to ``trigger * HISTORY_TARGET_RATIO`` (anti-thrash).
@@ -114,3 +121,41 @@ def _droppable_region(
     lo = 1  # protect the leading (system) group
     hi = max(lo, len(spans) - keep_recent_groups)
     return spans, lo, hi
+
+
+def ctx_priority(message: dict[str, Any]) -> int | None:
+    """The source priority stamped on a message, or ``None`` if untagged."""
+    ctx = message.get("_ctx")
+    return ctx.get("priority") if isinstance(ctx, dict) else None
+
+
+def is_pinned(message: dict[str, Any]) -> bool:
+    """True if the message is a context source at/above ``PIN_FLOOR``."""
+    priority = ctx_priority(message)
+    return priority is not None and priority >= PIN_FLOOR
+
+
+def pinned_free_region(
+    messages: list[dict[str, Any]],
+    spans: list[tuple[int, int]],
+    lo: int,
+    hi: int,
+) -> tuple[int, int]:
+    """Narrow ``[lo, hi)`` to a contiguous run of groups holding no pinned message.
+
+    A region-collapsing layer (auto-compact) must not fold a pinned source
+    (identity/team/task) into a summary. Pinned seed messages sit at the head of
+    the droppable region, so this advances ``lo`` past any leading pinned group
+    and stops ``hi`` at the first pinned group after it — yielding the largest
+    pinned-free prefix run. ``lo >= hi`` means nothing summarizable remains.
+    """
+    def group_has_pinned(span: tuple[int, int]) -> bool:
+        start, end = span
+        return any(is_pinned(messages[i]) for i in range(start, end))
+
+    while lo < hi and group_has_pinned(spans[lo]):
+        lo += 1
+    end = lo
+    while end < hi and not group_has_pinned(spans[end]):
+        end += 1
+    return lo, end

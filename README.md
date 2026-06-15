@@ -63,9 +63,20 @@ function-calling, so that layer is *not* injected as prose
 are registered now with a `loader_key` for a future lazy-loading pass but
 contribute no content at startup.
 
+The layers are **load-bearing under pressure**, not just labels. Each layer has
+a keep/shed priority (`LAYER_PRIORITY` in `domain/context.py`): identity/team/task
+rank high, project/memory low. When a `USER_CONTEXT` source is seeded it is
+stamped with an internal `_ctx` tag (layer + resolved priority) that rides along
+on the message — the same convention as `tool_call_id`, so providers ignore it.
+Sources at or above `PIN_FLOOR` (`application/shaping/pipeline.py`) are **pinned**:
+the compaction chain will never clear, snip, or summarize them, so an agent's own
+task can no longer be folded into a summary.
+
 At runtime, history is trimmed by a reactive compaction chain
 (`opencollab/opencollab/application/shaping/reactive.py`): it no-ops until the
-estimated context crosses a trigger, then progressively clears old tool output,
-snips whole old tool-exchange turns, and (default-off) auto-compacts to a
-model-generated summary — always as a read-time projection over a copy, leaving
-the persisted transcript intact.
+estimated context crosses a trigger, then degrades progressively — shed the
+lowest-priority context sources first (`LowPriorityContextShedShaper`; dormant
+until project/memory carry content), then clear old tool output, snip whole old
+tool-exchange turns, and (default-off) auto-compact the remaining non-pinned span
+to a model-generated summary. Every step is a read-time projection over a copy,
+leaving the persisted transcript intact.

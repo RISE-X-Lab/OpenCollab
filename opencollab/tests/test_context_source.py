@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from opencollab.domain.context import (
+    LAYER_PRIORITY,
     ContextLayer,
     ContextPlan,
     ContextPosition,
@@ -40,7 +41,13 @@ def test_startup_user_messages_take_only_user_context_startup_sources():
             _src("task", ContextLayer.TASK, LoadTiming.STARTUP, ContextPosition.USER_CONTEXT, "do the thing"),
         )
     )
-    assert plan.startup_user_messages() == [{"role": "user", "content": "do the thing"}]
+    assert plan.startup_user_messages() == [
+        {
+            "role": "user",
+            "content": "do the thing",
+            "_ctx": {"layer": "task", "priority": LAYER_PRIORITY[ContextLayer.TASK]},
+        }
+    ]
 
 
 def test_messages_is_system_then_user_context():
@@ -52,7 +59,11 @@ def test_messages_is_system_then_user_context():
     )
     assert plan.messages() == [
         {"role": "system", "content": "I am lead."},
-        {"role": "user", "content": "do the thing"},
+        {
+            "role": "user",
+            "content": "do the thing",
+            "_ctx": {"layer": "task", "priority": LAYER_PRIORITY[ContextLayer.TASK]},
+        },
     ]
 
 
@@ -93,5 +104,40 @@ def test_assembly_is_generic_over_position_not_layer():
     )
     assert plan.messages() == [
         {"role": "system", "content": "sys"},
-        {"role": "user", "content": "project conventions here"},
+        {
+            "role": "user",
+            "content": "project conventions here",
+            "_ctx": {"layer": "project", "priority": LAYER_PRIORITY[ContextLayer.PROJECT]},
+        },
+    ]
+
+
+def test_effective_priority_falls_back_to_layer_default_then_override():
+    base = _src(
+        "memory", ContextLayer.MEMORY, LoadTiming.STARTUP,
+        ContextPosition.USER_CONTEXT, "m",
+    )
+    assert base.effective_priority == LAYER_PRIORITY[ContextLayer.MEMORY]
+    pinned = ContextSource(
+        name="vip-memory",
+        layer=ContextLayer.MEMORY,
+        timing=LoadTiming.STARTUP,
+        position=ContextPosition.USER_CONTEXT,
+        content="m",
+        priority=95,  # explicit override beats the layer default
+    )
+    assert pinned.effective_priority == 95
+
+
+def test_startup_user_messages_stamp_layer_and_priority():
+    plan = ContextPlan(
+        sources=(
+            _src("project", ContextLayer.PROJECT, LoadTiming.STARTUP, ContextPosition.USER_CONTEXT, "p"),
+            _src("memory", ContextLayer.MEMORY, LoadTiming.STARTUP, ContextPosition.USER_CONTEXT, "m"),
+        )
+    )
+    tags = [m["_ctx"] for m in plan.startup_user_messages()]
+    assert tags == [
+        {"layer": "project", "priority": LAYER_PRIORITY[ContextLayer.PROJECT]},
+        {"layer": "memory", "priority": LAYER_PRIORITY[ContextLayer.MEMORY]},
     ]

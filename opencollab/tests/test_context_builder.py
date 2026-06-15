@@ -124,7 +124,13 @@ def test_build_plan_task_is_startup_user_context_source_when_given():
     assert task.timing is LoadTiming.STARTUP
     assert task.position is ContextPosition.USER_CONTEXT
     assert "build it" in task.content and "ctx" in task.content
-    assert plan.startup_user_messages() == [{"role": "user", "content": task.content}]
+    assert plan.startup_user_messages() == [
+        {
+            "role": "user",
+            "content": task.content,
+            "_ctx": {"layer": "task", "priority": task.effective_priority},
+        }
+    ]
 
 
 def test_build_plan_omits_task_source_when_no_task():

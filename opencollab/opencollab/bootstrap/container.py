@@ -45,6 +45,7 @@ from opencollab.application.shaping import (
     DEFAULT_TOOL_RESULT_BUDGET,
     AutoCompactShaper,
     ContextCollapseShaper,
+    LowPriorityContextShedShaper,
     OldHistorySnipShaper,
     PerToolResultBudgetShaper,
     ShaperPipeline,
@@ -165,6 +166,7 @@ def _build_default_shaper(
     return ShaperPipeline(
         (
             PerToolResultBudgetShaper(DEFAULT_TOOL_RESULT_BUDGET),
+            LowPriorityContextShedShaper(**history_kwargs),
             ToolOutputClearShaper(compactable_tools=COMPACTABLE_TOOL_NAMES, **history_kwargs),
             OldHistorySnipShaper(**history_kwargs),
             AutoCompactShaper(summarizer=summarizer, **history_kwargs),

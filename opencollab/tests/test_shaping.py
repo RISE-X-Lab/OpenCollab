@@ -6,8 +6,10 @@ import copy
 
 from opencollab.application.shaping import (
     COMPACTED_MARKER_PREFIX,
+    PIN_FLOOR,
     AutoCompactShaper,
     ContextCollapseShaper,
+    LowPriorityContextShedShaper,
     OldHistorySnipShaper,
     PerToolResultBudgetShaper,
     ShaperPipeline,
@@ -281,3 +283,72 @@ def test_lazy_degradation_snip_insufficient_triggers_autocompact():
 def test_context_collapse_is_identity_placeholder():
     messages = [_sys(), _user(), _text("a"), _text("b")]
     assert ContextCollapseShaper().shape(messages) is messages
+
+
+# ---------------------------------------------------------------------------
+# Layer-aware compaction: pinning (auto-compact) and priority shedding
+# ---------------------------------------------------------------------------
+
+
+def _ctx_user(content, layer="task", priority=80):
+    return {"role": "user", "content": content, "_ctx": {"layer": layer, "priority": priority}}
+
+
+def _shed(**kw):
+    return LowPriorityContextShedShaper(
+        estimate_tokens=_chars, trigger_tokens=1500, target_tokens=800,
+        keep_recent_groups=1, **kw,
+    )
+
+
+def test_autocompact_never_folds_a_pinned_source_into_the_summary():
+    # A pinned task sits in the droppable middle (group 1). Auto-compact must
+    # summarize the non-pinned tool span around it but leave the task verbatim.
+    task = _ctx_user("the immutable task", priority=PIN_FLOOR + 10)
+    messages = [_sys(), task, _text("x" * 1000), _text("y" * 1000), _text("recent")]
+    seen_segments = []
+
+    def summarizer(segment):
+        seen_segments.append(segment)
+        return "SUMMARY"
+
+    out = _autocompact(summarizer=summarizer).shape(messages)
+    assert task in out                                   # pinned source survives
+    assert any(str(m.get("content", "")).startswith(COMPACTED_MARKER_PREFIX) for m in out)
+    # the task was never handed to the summarizer
+    assert all(task not in segment for segment in seen_segments)
+
+
+def test_shed_noop_below_trigger():
+    messages = [_sys(), _ctx_user("m" * 10, "memory", 20), _text("recent")]
+    out = _shed().shape(messages)
+    assert out is messages
+
+
+def test_shed_drops_lowest_priority_context_first():
+    # Over trigger; target leaves room for exactly one shed → the lowest goes.
+    proj = _ctx_user("p" * 1000, "project", 30)
+    mem = _ctx_user("m" * 1000, "memory", 20)
+    messages = [_sys(), proj, mem, _text("recent")]
+    shed = LowPriorityContextShedShaper(
+        estimate_tokens=_chars, trigger_tokens=1500, target_tokens=1200,
+        keep_recent_groups=1,
+    )
+    out = shed.shape(messages)
+    assert mem not in out      # lowest priority shed first
+    assert proj in out         # higher-priority source kept once under target
+
+
+def test_shed_never_touches_pinned_or_untagged_messages():
+    task = _ctx_user("t" * 5000, "task", PIN_FLOOR + 10)   # huge but pinned
+    work = _text("u" * 5000)                                # huge but untagged
+    messages = [_sys(), task, work]
+    out = _shed().shape(messages)
+    assert out is messages     # nothing is sheddable, even though over trigger
+
+
+def test_shed_does_not_mutate_input():
+    messages = [_sys(), _ctx_user("p" * 2000, "project", 30), _text("recent")]
+    snapshot = copy.deepcopy(messages)
+    _shed().shape(messages)
+    assert messages == snapshot
