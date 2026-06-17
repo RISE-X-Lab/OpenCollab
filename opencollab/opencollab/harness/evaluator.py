@@ -126,6 +126,7 @@ class _EvalSessionFactory:
         budget: int,
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
+        label: str | None = None,
     ) -> Session:
         agent = Agent(
             name="eval_agent",

@@ -268,6 +268,7 @@ class ScriptedFactory:
         budget: int,
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
+        label: str | None = None,
     ) -> CapturingSession:
         self.builds.append({"prompt": prompt, "tools": tools, "isolation": isolation})
         self.session = CapturingSession(

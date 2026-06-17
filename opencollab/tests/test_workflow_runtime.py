@@ -218,6 +218,31 @@ async def test_save_dir_threads_sequential_per_session_paths(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_save_dir_slugs_agent_label_into_filename(monkeypatch, tmp_path):
+    """A caller label is slugged into the transcript filename for readability."""
+    calls = _patch_build_session(monkeypatch)
+    save_dir = str(tmp_path / "run")
+    ctx = workflow_runtime.build_workflow_context(cfg=_cfg(), save_dir=save_dir)
+
+    await ctx.agent("analyze the bug", label="analyst")
+    await ctx.agent("write the fix", label="coder:s1r2")
+
+    assert [c["auto_save_path"] for c in calls] == [
+        os.path.join(save_dir, "session_000_analyst.json"),
+        os.path.join(save_dir, "session_001_coder-s1r2.json"),
+    ]
+
+
+def test_slug_sanitizes_and_caps_labels():
+    assert workflow_runtime._slug("coder:s1r2") == "coder-s1r2"
+    assert workflow_runtime._slug("reviewer: 1") == "reviewer-1"
+    assert workflow_runtime._slug(":analyst:revise:") == "analyst-revise"
+    assert workflow_runtime._slug(None) == ""
+    assert workflow_runtime._slug("") == ""
+    assert len(workflow_runtime._slug("x" * 100)) == 40
+
+
+@pytest.mark.asyncio
 async def test_run_workflow_writes_manifest(monkeypatch, tmp_path):
     """A save_dir run drops a workflow.json grouping the run's sessions."""
     _patch_build_session(monkeypatch)

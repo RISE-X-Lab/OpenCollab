@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import re
 import uuid
 from collections.abc import Sequence
 from typing import Any
@@ -41,6 +42,23 @@ WORKFLOW_AGENT_PROMPT = (
 
 # Per-call token cap handed to a session when the workflow budget is unbounded.
 UNBOUNDED_SESSION_BUDGET = 1_000_000
+
+# Longest slug kept from an agent label when naming its transcript file.
+_MAX_SLUG_LEN = 40
+
+
+def _slug(label: str | None) -> str:
+    """Filename-safe slug from an agent label (``coder:s1r2`` -> ``coder-s1r2``).
+
+    Collapses any run of characters outside ``[A-Za-z0-9._-]`` to a single dash,
+    trims separators, and caps length so a label can never produce an unsafe or
+    unbounded filename. Empty / falsy labels yield ``""`` (caller omits the
+    suffix entirely).
+    """
+    if not label:
+        return ""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-._")
+    return cleaned[:_MAX_SLUG_LEN]
 
 
 class WorkflowSessionFactory:
@@ -82,19 +100,23 @@ class WorkflowSessionFactory:
         self._save_dir = save_dir
         self._session_seq = 0
 
-    def _next_save_path(self) -> str | None:
-        """Per-session transcript path: ``<save_dir>/session_<seq>.json``.
+    def _next_save_path(self, label: str | None) -> str | None:
+        """Per-session transcript path: ``<save_dir>/session_<seq>[_<label>].json``.
 
         Returns ``None`` when no run folder is configured. The sequence number
-        orders sessions by creation; incrementing it has no ``await`` so it is
-        atomic under the event loop's cooperative scheduling even when
-        ``parallel``/``pipeline`` build many sessions concurrently.
+        orders sessions by creation and guarantees uniqueness; incrementing it
+        has no ``await`` so it is atomic under the event loop's cooperative
+        scheduling even when ``parallel``/``pipeline`` build many sessions
+        concurrently. The caller's ``label`` (e.g. ``coder:s1r2``) is slugged
+        into the name so a run folder reads as its workflow phases at a glance.
         """
         if self._save_dir is None:
             return None
         seq = self._session_seq
         self._session_seq += 1
-        return os.path.join(self._save_dir, f"session_{seq:03d}.json")
+        slug = _slug(label)
+        stem = f"session_{seq:03d}_{slug}" if slug else f"session_{seq:03d}"
+        return os.path.join(self._save_dir, f"{stem}.json")
 
     def build_workflow_session(
         self,
@@ -103,6 +125,7 @@ class WorkflowSessionFactory:
         budget: int,
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
+        label: str | None = None,
     ) -> Any:
         agent = Agent(
             name="workflow_agent",
@@ -121,7 +144,7 @@ class WorkflowSessionFactory:
             max_budget_tokens=budget,
             event_sink=self._event_sink,
             llm_timeout=self._llm_timeout,
-            auto_save_path=self._next_save_path(),
+            auto_save_path=self._next_save_path(label),
         )
 
 

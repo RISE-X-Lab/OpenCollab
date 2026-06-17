@@ -83,9 +83,16 @@ class FakeFactory:
         budget: int,
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
+        label: str | None = None,
     ) -> FakeSession:
         self.builds.append(
-            {"prompt": prompt, "budget": budget, "tools": tools, "isolation": isolation}
+            {
+                "prompt": prompt,
+                "budget": budget,
+                "tools": tools,
+                "isolation": isolation,
+                "label": label,
+            }
         )
         session = self._sessions[self._idx]
         self._idx += 1

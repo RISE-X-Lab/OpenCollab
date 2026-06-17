@@ -180,6 +180,7 @@ class WorkflowContext:
                 budget=session_budget,
                 tools=tools,
                 isolation=isolation,
+                label=label,
             )
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             await self.log(f"agent build failed ({label or 'agent'}): {exc}")
@@ -228,6 +229,7 @@ class WorkflowContext:
                 budget=session_budget,
                 tools=combined_tools,
                 isolation=isolation,
+                label=label,
             )
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             await self.log(f"structured agent build failed ({label or 'agent'}): {exc}")

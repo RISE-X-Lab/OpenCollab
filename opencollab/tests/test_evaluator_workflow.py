@@ -119,7 +119,7 @@ def test_workflow_mode_aggregates_tokens_across_sessions(tmp_path):
     def patched_factory(*args, **kwargs):
         factory = original(*args, **kwargs)
 
-        def build(*, prompt, budget, tools=None, isolation=False):
+        def build(*, prompt, budget, tools=None, isolation=False, label=None):
             return FakeSession(env=env, tokens=7)
 
         factory.build_workflow_session = build  # type: ignore[attr-defined]

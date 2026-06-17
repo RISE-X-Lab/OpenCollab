@@ -187,6 +187,7 @@ class WorkflowSessionFactoryPort(Protocol):
         budget: int,
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
+        label: str | None = None,
     ) -> Any:
         ...
 
