@@ -8,6 +8,8 @@ monkeypatched so no real LLM client is ever constructed.
 
 from __future__ import annotations
 
+import json
+import os
 from typing import Any
 
 import pytest
@@ -182,3 +184,60 @@ async def test_run_workflow_other_exceptions_propagate(monkeypatch):
 
     with pytest.raises(RuntimeError, match="boom"):
         await workflow_runtime.run_workflow(fn, {}, cfg=_cfg())
+
+
+# -- session persistence --------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_no_save_dir_keeps_sessions_ephemeral(monkeypatch):
+    """Without a save_dir, build_session gets auto_save_path=None (no autosave)."""
+    calls = _patch_build_session(monkeypatch)
+    ctx = workflow_runtime.build_workflow_context(cfg=_cfg())
+
+    await ctx.agent("one")
+    await ctx.agent("two")
+
+    assert [c["auto_save_path"] for c in calls] == [None, None]
+
+
+@pytest.mark.asyncio
+async def test_save_dir_threads_sequential_per_session_paths(monkeypatch, tmp_path):
+    """With a save_dir, each session gets its own ordered session_<n>.json path."""
+    calls = _patch_build_session(monkeypatch)
+    save_dir = str(tmp_path / "run")
+    ctx = workflow_runtime.build_workflow_context(cfg=_cfg(), save_dir=save_dir)
+
+    await ctx.agent("one")
+    await ctx.agent("two")
+
+    assert [c["auto_save_path"] for c in calls] == [
+        os.path.join(save_dir, "session_000.json"),
+        os.path.join(save_dir, "session_001.json"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_writes_manifest(monkeypatch, tmp_path):
+    """A save_dir run drops a workflow.json grouping the run's sessions."""
+    _patch_build_session(monkeypatch)
+    save_dir = str(tmp_path / "run")
+    from opencollab.application.workflow_registry import workflow
+
+    @workflow(name="demo_wf", description="d")
+    async def fn(ctx, args):
+        await ctx.agent("a")
+        await ctx.agent("b")
+        return "ok"
+
+    result = await workflow_runtime.run_workflow(
+        fn.__workflow_spec__, {"goal": "x"}, cfg=_cfg(), save_dir=save_dir
+    )
+
+    assert result == "ok"
+    with open(os.path.join(save_dir, "workflow.json")) as f:
+        manifest = json.load(f)
+    assert manifest["workflow"] == "demo_wf"
+    assert manifest["args"] == {"goal": "x"}
+    assert manifest["sessions"] == 2
+    assert manifest["budget_total"] == 100_000

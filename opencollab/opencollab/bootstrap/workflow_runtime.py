@@ -21,6 +21,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.storage import SessionStore
 from opencollab.application.ports import (
     EventPublisherPort,
     TracePort,
@@ -63,6 +64,7 @@ class WorkflowSessionFactory:
         tracer: TracePort | None = None,
         event_sink: EventPublisherPort | None = None,
         llm_timeout: float = 600.0,
+        save_dir: str | None = None,
     ) -> None:
         self._model = model
         self._provider = provider
@@ -72,6 +74,27 @@ class WorkflowSessionFactory:
         self._tracer = tracer
         self._event_sink = event_sink
         self._llm_timeout = llm_timeout
+        # Run folder where each one-shot session's transcript is autosaved. When
+        # set, every ``build_workflow_session`` gets its own ``session_<n>.json``
+        # so the AutoSaveSubscriber (wired by ``build_session`` once an
+        # ``auto_save_path`` is present) persists it — the same mechanism chat
+        # sessions use. ``None`` keeps sessions ephemeral (the prior behaviour).
+        self._save_dir = save_dir
+        self._session_seq = 0
+
+    def _next_save_path(self) -> str | None:
+        """Per-session transcript path: ``<save_dir>/session_<seq>.json``.
+
+        Returns ``None`` when no run folder is configured. The sequence number
+        orders sessions by creation; incrementing it has no ``await`` so it is
+        atomic under the event loop's cooperative scheduling even when
+        ``parallel``/``pipeline`` build many sessions concurrently.
+        """
+        if self._save_dir is None:
+            return None
+        seq = self._session_seq
+        self._session_seq += 1
+        return os.path.join(self._save_dir, f"session_{seq:03d}.json")
 
     def build_workflow_session(
         self,
@@ -98,6 +121,7 @@ class WorkflowSessionFactory:
             max_budget_tokens=budget,
             event_sink=self._event_sink,
             llm_timeout=self._llm_timeout,
+            auto_save_path=self._next_save_path(),
         )
 
 
@@ -109,6 +133,7 @@ def build_workflow_context(
     event_sink: EventPublisherPort | None = None,
     budget: int | None = None,
     max_concurrency: int = 4,
+    save_dir: str | None = None,
 ) -> WorkflowContext:
     """Build a :class:`WorkflowContext` wired to the concrete session factory.
 
@@ -116,7 +141,9 @@ def build_workflow_context(
     ``base_url`` / ``budget`` / optional ``llm_timeout``) produced by the CLI's
     file-first config resolution — so a stale shell ``ANTHROPIC_API_KEY`` cannot
     shadow the configured key. ``budget`` overrides ``cfg['budget']`` when given;
-    ``None`` for an unbounded workflow.
+    ``None`` for an unbounded workflow. ``save_dir``, when given, is the run
+    folder each session's transcript is autosaved into; ``None`` keeps sessions
+    ephemeral.
     """
     factory = WorkflowSessionFactory(
         model=cfg["model"],
@@ -127,6 +154,7 @@ def build_workflow_context(
         tracer=tracer,
         event_sink=event_sink,
         llm_timeout=float(cfg.get("llm_timeout", 600.0)),
+        save_dir=save_dir,
     )
     budget_total = budget if budget is not None else cfg.get("budget")
     return WorkflowContext(
@@ -155,6 +183,7 @@ async def run_workflow(
     event_sink: EventPublisherPort | None = None,
     budget: int | None = None,
     max_concurrency: int = 4,
+    save_dir: str | None = None,
 ) -> Any:
     """Build a context, run the workflow function with ``args``, return its result.
 
@@ -169,6 +198,11 @@ async def run_workflow(
          "tokens_spent": <int>, "budget_total": <int | None>}
 
     Every other exception still propagates to the caller.
+
+    When ``save_dir`` is given, each session's transcript is autosaved there and
+    a ``workflow.json`` manifest (workflow name, args, session count, spend) is
+    written on completion — grouping the run's one-shot sessions the way the
+    team manifest groups a chat run's agents.
     """
     ctx = build_workflow_context(
         cfg=cfg,
@@ -177,17 +211,44 @@ async def run_workflow(
         event_sink=event_sink,
         budget=budget,
         max_concurrency=max_concurrency,
+        save_dir=save_dir,
     )
     fn = _resolve_spec_fn(spec_or_fn)
+    name = spec_or_fn.name if isinstance(spec_or_fn, WorkflowSpec) else getattr(fn, "__name__", "workflow")
     try:
-        return await fn(ctx, args)
+        result = await fn(ctx, args)
     except WorkflowBudgetExceeded as exc:
-        return {
+        result = {
             "status": "budget_exceeded",
             "error": str(exc),
             "tokens_spent": ctx.budget.spent(),
             "budget_total": ctx.budget.total,
         }
+    if save_dir is not None:
+        _write_workflow_manifest(save_dir, name=name, args=args, ctx=ctx)
+    return result
+
+
+def _write_workflow_manifest(
+    save_dir: str,
+    *,
+    name: str,
+    args: dict[str, Any],
+    ctx: WorkflowContext,
+) -> None:
+    """Write ``<save_dir>/workflow.json`` summarising the run.
+
+    Ties the run folder's anonymous ``session_<n>.json`` transcripts to the
+    workflow that produced them, mirroring the chat ``team.json`` manifest.
+    """
+    manifest = {
+        "workflow": name,
+        "args": args,
+        "sessions": len(ctx.sessions),
+        "tokens_spent": ctx.budget.spent(),
+        "budget_total": ctx.budget.total,
+    }
+    SessionStore().save_manifest(os.path.join(save_dir, "workflow.json"), manifest)
 
 
 def discover_workflows(directory: str) -> Registry:

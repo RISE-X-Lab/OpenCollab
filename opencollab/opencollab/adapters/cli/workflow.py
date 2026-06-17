@@ -27,6 +27,7 @@ from opencollab.adapters.cli.config_resolve import (
 )
 from opencollab.application.ports import EventPublisherPort
 from opencollab.application.workflow_registry import Registry
+from opencollab.bootstrap.session_factory import make_run_dir
 from opencollab.bootstrap.workflow_runtime import discover_workflows, run_workflow
 
 app = typer.Typer(name="workflow", help="Run deterministic Python workflows.")
@@ -85,6 +86,11 @@ def run_cmd(
         help="Max token budget (default: max(config budget, 500000); workflows fan out many sessions)",
     ),
     concurrency: int = typer.Option(4, "--concurrency", "-c", help="Max concurrent agent sessions"),
+    save: bool = typer.Option(
+        True,
+        "--save/--no-save",
+        help="Persist each session's transcript under <workspace>/.opencollab/sessions/<run>/",
+    ),
 ) -> None:
     """Run a workflow and print its result as JSON."""
     registry = load_registry()
@@ -116,6 +122,8 @@ def run_cmd(
     if budget is None:
         cfg["budget"] = max(cfg["budget"], 500_000)
 
+    save_dir = make_run_dir(workspace) if save else None
+
     event_sink: EventPublisherPort = _ConsoleEventSink(console)
     result = asyncio.run(
         run_workflow(
@@ -126,8 +134,11 @@ def run_cmd(
             event_sink=event_sink,
             budget=budget,
             max_concurrency=concurrency,
+            save_dir=save_dir,
         )
     )
+    if save_dir is not None:
+        console.print(f"[dim]== sessions saved to {save_dir}[/dim]")
     console.print(json.dumps(result, indent=2, default=str))
 
 
