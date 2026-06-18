@@ -216,6 +216,15 @@ class SchedulerPort(Protocol):
         """
         ...
 
+    @property
+    def budget_exhausted(self) -> bool:
+        """True once the team's *aggregate* spend has reached the global cap.
+
+        Lets a session's precheck enforce the global ceiling as defense-in-depth
+        without importing the concrete scheduler.
+        """
+        ...
+
     async def spawn_with_review(
         self,
         parent_aid: int,

@@ -20,7 +20,7 @@ from typing import Any
 
 from opencollab.application.scheduler_types import LaunchSpec
 from opencollab.domain.pending import PendingRowError, RowStatus
-from opencollab.domain.scheduler import SessionControlBlock, split_budget
+from opencollab.domain.scheduler import SessionControlBlock
 from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,9 @@ class LifecycleMixin:
         self.table.add(scb)
         self._sessions[aid] = session
         self._lead_session = session
+        # Seed the running allocation with the Lead's reserve so the first child
+        # is granted from the pool minus the Lead's headroom.
+        self._seed_lead_reservation()
         self._write_manifest()
         return aid
 
@@ -88,13 +91,15 @@ class LifecycleMixin:
         """
         self._check_topology(parent_aid, role, verb="spawn")
         aid = self.table.allocate_aid()
-        # Reserve this (role, task) synchronously — before the first await — so a
-        # duplicate spawn later in the same tool-call batch already sees it.
+        # Reserve this (role, task) AND its budget synchronously — before the
+        # first await — so a duplicate / batched spawn later in the same
+        # tool-call batch already sees the updated allocation and cannot
+        # oversubscribe the global pool.
         self._reserve_inflight(aid, role, task)
+        budget = self._reserve_child_budget(aid)
 
         # Build environment
         env = await self._worktree_pool.acquire(role)
-        budget = split_budget(self._max_budget_tokens, self.used_tokens)
 
         # Build session via factory. The task is seeded as the agent's first
         # user-context message (the TASK-layer ContextSource) inside the factory,
@@ -134,6 +139,16 @@ class LifecycleMixin:
         self._autosave_session(parent_aid)
         return aid
 
+    def _release_reservations(self, aid: int) -> None:
+        """Release a terminal child's single-flight and budget reservations.
+
+        Both are held from spawn until the child reaches a terminal phase; this
+        frees them together so a later spawn can reuse the (role, task) key and
+        the unspent budget headroom. Idempotent at each site.
+        """
+        self._clear_inflight(aid)
+        self._release_child_budget(aid)
+
     async def _drive_agent(self, aid: int, session: Any) -> None:
         """Run a session's loop once and finalize.
 
@@ -153,14 +168,14 @@ class LifecycleMixin:
         try:
             result = await session.run_loop()
         except asyncio.CancelledError:
-            self._clear_inflight(aid)
+            self._release_reservations(aid)
             scb.state.cancel()
             await self.emit_scheduler_event(
                 self._events.agent_cancelled(aid, scb.agent.name)
             )
             raise
         except Exception as exc:
-            self._clear_inflight(aid)
+            self._release_reservations(aid)
             scb.state.fail()
             scb.result = f"Error: {exc}"
             await self.emit_scheduler_event(
@@ -178,8 +193,9 @@ class LifecycleMixin:
         if scb.state.phase is SessionPhase.AWAITING_EVENTS:
             return
 
-        # Terminal — release the single-flight reservation before delivering.
-        self._clear_inflight(aid)
+        # Terminal — release the single-flight + budget reservations before
+        # delivering, so a later spawn can reuse this child's unspent headroom.
+        self._release_reservations(aid)
 
         # Append worktree diff if available (delivered to the parent / read by
         # spawn_with_review; scb.result keeps the pre-diff run-loop result).

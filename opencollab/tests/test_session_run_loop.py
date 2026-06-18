@@ -163,6 +163,48 @@ def test_run_loop_budget_exceeded_emits_error_and_sets_phase():
     assert events == [("error", {"reason": "budget_exceeded", "aid": -1})]
 
 
+def test_run_loop_team_aggregate_ceiling_stops_under_own_cap():
+    # Per-session cap is generous (1_000_000) and the session has spent nothing,
+    # so the per-session check passes — but the injected team-aggregate predicate
+    # reports the global pool exhausted, so the session must still stop.
+    events, bus = collect_events()
+    state = SessionState(messages=[{"role": "system", "content": "sys"}], used_tokens=0)
+    llm = FakeLLM()
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        event_bus=bus,
+        max_budget_tokens=1_000_000,
+        team_budget_exhausted=lambda: True,
+    )
+
+    result = run(runner.run_loop())
+
+    assert result == ""
+    assert llm.calls == []  # never called the model
+    assert state.phase is SessionPhase.BUDGET_EXCEEDED
+    assert "team budget exceeded" in state.terminal_reason
+    assert events == [("error", {"reason": "budget_exceeded", "aid": -1})]
+
+
+def test_run_loop_team_aggregate_ceiling_not_reached_proceeds_normally():
+    # When the aggregate predicate reports headroom, the per-session loop runs as
+    # before (regression guard that the new check is additive, not a hard stop).
+    events, bus = collect_events()
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        llm=llm,
+        event_bus=bus,
+        max_budget_tokens=1_000_000,
+        team_budget_exhausted=lambda: False,
+    )
+
+    result = run(runner.run_loop())
+
+    assert result == "done"
+    assert len(llm.calls) == 1
+
+
 def test_run_loop_step_limit_exceeded_emits_error_and_sets_phase():
     events, bus = collect_events()
     state = SessionState(messages=[{"role": "system", "content": "sys"}], step_count=3)

@@ -14,7 +14,7 @@ import copy
 import os
 import uuid
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.trace import Tracer
@@ -36,6 +36,17 @@ from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
 from opencollab.bootstrap.team_config import TeamConfig, default_team_config
 from opencollab.domain.agent import Agent
+
+
+def _team_budget_guard(scheduler: SchedulerPort | None) -> Callable[[], bool] | None:
+    """A zero-arg predicate over the scheduler's aggregate budget, or ``None``.
+
+    Threaded into the session runner so its precheck can enforce the team-wide
+    ceiling without the application layer importing the concrete Scheduler.
+    """
+    if scheduler is None:
+        return None
+    return lambda: scheduler.budget_exhausted
 
 
 def agent_save_path(save_dir: str, aid: int, role: str) -> str:
@@ -74,6 +85,7 @@ def build_session(
     aid: int = -1,
     seed_user_messages: list[dict[str, Any]] | None = None,
     shaper: ShaperPort | None = None,
+    team_budget_exhausted: Callable[[], bool] | None = None,
 ) -> Session:
     """Self-wiring ``Session`` factory.
 
@@ -100,6 +112,7 @@ def build_session(
         aid=aid,
         seed_user_messages=seed_user_messages,
         shaper=shaper,
+        team_budget_exhausted=team_budget_exhausted,
     )
     Session.__init__(
         session,
@@ -259,6 +272,7 @@ class DefaultSessionFactory:
             llm_timeout=cfg.llm_timeout,
             aid=aid,
             seed_user_messages=plan.startup_user_messages(),
+            team_budget_exhausted=_team_budget_guard(scheduler),
         )
 
     def create_lead_session(
@@ -295,6 +309,7 @@ class DefaultSessionFactory:
             auto_save_path=launch.auto_save_path,
             llm_timeout=cfg.llm_timeout,
             aid=aid,
+            team_budget_exhausted=_team_budget_guard(scheduler),
         )
 
 

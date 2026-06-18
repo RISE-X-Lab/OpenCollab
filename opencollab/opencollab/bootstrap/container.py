@@ -194,6 +194,7 @@ def build_session_runtime(
     aid: int = -1,
     seed_user_messages: list[dict[str, Any]] | None = None,
     shaper: ShaperPort | None = None,
+    team_budget_exhausted: Callable[[], bool] | None = None,
 ) -> SessionRuntime:
     """Build a ``SessionRuntime`` with the same construction order
     ``Session.__init__`` used to perform inline.
@@ -240,6 +241,7 @@ def build_session_runtime(
         max_budget_tokens=max_budget_tokens,
         max_steps=max_steps,
         shaper=resolved_shaper,
+        team_budget_exhausted=team_budget_exhausted,
     )
 
     return SessionRuntime(

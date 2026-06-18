@@ -17,14 +17,31 @@ from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionState
 
 
-def split_budget(total: int, used: int) -> int:
-    """How many tokens a spawned agent gets, reserving headroom for the Lead."""
-    remaining = max(10_000, total - used)
-    reserve_for_lead = min(
-        max(10_000, total // 4),
-        max(0, remaining - 10_000),
-    )
-    return max(10_000, remaining - reserve_for_lead)
+def lead_reserve(total: int) -> int:
+    """Headroom the Lead (agent 0) keeps when children are spawned.
+
+    This is the pool the parent retains for its own coordination turns; it is
+    the seed value of the scheduler's running ``_allocated_tokens`` so the very
+    first child is granted from ``total - lead_reserve(total)``.
+    """
+    return max(10_000, total // 4)
+
+
+def split_budget(total: int, allocated: int) -> int:
+    """How many tokens a spawned agent gets, given the budget already handed out.
+
+    ``allocated`` is the sum of budget already reserved against the global pool
+    (the Lead reserve plus every live child's granted cap). The grant is the
+    unallocated remainder ``total - allocated``, floored at 10_000. Flooring can
+    push the *sum* of grants past ``total`` only in the exhausted tail (each
+    starving child still gets the 10_000 minimum); above the floor the running
+    sum of grants never exceeds ``total``.
+
+    Kept pure: all running-total bookkeeping (add on spawn, reclaim on terminal)
+    lives in the application-layer scheduler.
+    """
+    remaining = total - allocated
+    return max(10_000, remaining)
 
 
 @dataclass(frozen=True)
@@ -109,5 +126,6 @@ __all__ = [
     "ReviewVerdict",
     "SessionControlBlock",
     "SessionTable",
+    "lead_reserve",
     "split_budget",
 ]

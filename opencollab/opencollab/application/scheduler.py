@@ -39,7 +39,7 @@ from opencollab.application.scheduler_messaging import MessagingMixin
 from opencollab.application.scheduler_types import LaunchSpec, QueuedTeammateMessage
 from opencollab.application.self_collaboration import run_spawn_with_review
 from opencollab.domain.events import SchedulerEvent
-from opencollab.domain.scheduler import SessionTable
+from opencollab.domain.scheduler import SessionTable, lead_reserve, split_budget
 from opencollab.domain.session import SessionPhase
 from opencollab.domain.team import Topology
 
@@ -103,6 +103,17 @@ class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
         # the same task twice", which prompt guidance alone cannot guarantee.
         self._inflight: dict[str, int] = {}
         self._inflight_key_of: dict[int, str] = {}
+        # Reserve-at-allocation budget bookkeeping. ``_allocated_tokens`` is the
+        # sum of budget already handed out against the global pool: the Lead
+        # reserve (seeded at lead registration) plus every live child's granted
+        # cap. Each spawn grants from ``_max_budget_tokens - _allocated_tokens``
+        # and adds its grant here *synchronously, before any await*, so a batch /
+        # duplicate spawn already sees the updated allocation and the sum of
+        # grants can never oversubscribe the global ceiling. A child's grant is
+        # reclaimed (subtracted) when it reaches a terminal phase, so an
+        # early-finishing child never strands budget that a later spawn could use.
+        self._allocated_tokens: int = 0
+        self._child_reservation: dict[int, int] = {}
         # aid -> queued teammate messages waiting to be appended as user
         # messages once that session is not running or suspended on pending work.
         self._message_inbox: dict[int, list[QueuedTeammateMessage]] = {}
@@ -149,6 +160,54 @@ class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
     def used_tokens(self) -> int:
         """Total tokens across all agents."""
         return self.table.total_used_tokens
+
+    @property
+    def allocated_tokens(self) -> int:
+        """Budget reserved against the global pool (Lead reserve + live grants)."""
+        return self._allocated_tokens
+
+    @property
+    def budget_exhausted(self) -> bool:
+        """True once the team's *aggregate* spend has reached the global cap.
+
+        Defense-in-depth companion to the per-session budget check: even though
+        reserve-at-allocation keeps the sum of grants under the ceiling, a
+        session may overshoot its own cap (a single LLM turn returns more tokens
+        than budgeted). This catches the team total regardless of how the spend
+        is distributed across sessions.
+        """
+        return self.used_tokens >= self._max_budget_tokens
+
+    def _seed_lead_reservation(self) -> None:
+        """Seed the running allocation with the Lead's reserve (idempotent).
+
+        Called when agent 0 is registered. The Lead keeps the full pool as its
+        own cap (it is the parent), but for the purpose of dividing the pool
+        among children it reserves only ``lead_reserve(total)`` — the first child
+        is granted from ``total - lead_reserve(total)``.
+        """
+        self._allocated_tokens = lead_reserve(self._max_budget_tokens)
+
+    def _reserve_child_budget(self, aid: int) -> int:
+        """Grant a child its cap from the unallocated remainder and book it.
+
+        Synchronous (no await): a duplicate / batched spawn that runs before the
+        first child's await already sees the updated ``_allocated_tokens``.
+        Returns the granted cap.
+        """
+        grant = split_budget(self._max_budget_tokens, self._allocated_tokens)
+        self._allocated_tokens += grant
+        self._child_reservation[aid] = grant
+        return grant
+
+    def _release_child_budget(self, aid: int) -> None:
+        """Reclaim a terminal child's reservation so later spawns can reuse it.
+
+        Idempotent: a child is finalized at most once per reservation.
+        """
+        grant = self._child_reservation.pop(aid, None)
+        if grant is not None:
+            self._allocated_tokens = max(0, self._allocated_tokens - grant)
 
     @property
     def lead_session(self) -> Any:

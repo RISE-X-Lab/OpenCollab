@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
@@ -53,6 +53,7 @@ class SessionRunUseCase:
         max_steps: int = 100,
         deferrable_tool_names: frozenset[str] = DEFAULT_DEFERRABLE_TOOLS,
         shaper: ShaperPort | None = None,
+        team_budget_exhausted: Callable[[], bool] | None = None,
     ):
         self.agent = agent
         self.state = state
@@ -65,6 +66,14 @@ class SessionRunUseCase:
         self.max_steps = max_steps
         self.deferrable_tool_names = deferrable_tool_names
         self.shaper = shaper
+        # Defense-in-depth aggregate ceiling. An injected zero-arg predicate that
+        # reports whether the *team total* spend has reached the global cap.
+        # Passed as a plain callable (resolved in bootstrap/the factory) so the
+        # application layer never imports the concrete Scheduler — same pattern as
+        # ``max_budget_tokens`` being injected rather than read from the scheduler.
+        # ``None`` for standalone (non-team) sessions: only the per-session cap
+        # applies, preserving existing behavior.
+        self._team_budget_exhausted = team_budget_exhausted
         self._pending: PendingStep | None = None
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
@@ -162,6 +171,19 @@ class SessionRunUseCase:
 
         if self.state.used_tokens >= self.max_budget_tokens:
             reason = f"budget exceeded: {self.state.used_tokens} tokens used"
+            self.state.append_message(
+                {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
+            )
+            await self.event_publisher.emit(self.event_factory.error("budget_exceeded"))
+            self.state.transition_to(SessionPhase.BUDGET_EXCEEDED, reason=reason)
+            return
+
+        # Aggregate ceiling (defense-in-depth): even when this session is under
+        # its own cap, stop if the *team total* has reached the global cap. A
+        # single overshooting turn or fan-out could otherwise spend past the
+        # global pool that reserve-at-allocation is meant to protect.
+        if self._team_budget_exhausted is not None and self._team_budget_exhausted():
+            reason = "team budget exceeded: aggregate spend reached the global cap"
             self.state.append_message(
                 {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
             )

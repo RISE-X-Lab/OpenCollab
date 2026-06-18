@@ -13,7 +13,7 @@ from opencollab.application import scheduler as scheduler_mod
 from opencollab.application.event_bus import EventBus
 from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 from opencollab.bootstrap.container import SpawnConfig, build_spawn_session, build_workspace_safety_policy
-from opencollab.domain.scheduler import split_budget
+from opencollab.domain.scheduler import lead_reserve, split_budget
 
 
 def run(coro):
@@ -37,33 +37,42 @@ class FakeScheduler:
         return f"reviewed {task} [{context}] x{max_iterations}"
 
 
-# split_budget arithmetic — used to be inline in Team.delegate, hard to test.
+# split_budget arithmetic — reserve-at-allocation: each grant is the
+# unallocated remainder (total - already-allocated), floored at 10_000. The
+# scheduler seeds ``allocated`` with ``lead_reserve(total)``.
 
-def test_split_budget_fresh_team_reserves_quarter_for_lead():
-    # Total 400_000, nothing used → lead reserve = max(10_000, 100_000) = 100_000
-    # spawn = max(10_000, 400_000 - 100_000) = 300_000
-    assert split_budget(total=400_000, used=0) == 300_000
-
-
-def test_split_budget_with_prior_usage_subtracts():
-    # Total 400_000, used 150_000 → remaining 250_000
-    # reserve = min(100_000, 240_000) = 100_000
-    # spawn = max(10_000, 250_000 - 100_000) = 150_000
-    assert split_budget(total=400_000, used=150_000) == 150_000
+def test_lead_reserve_is_a_quarter_with_10k_floor():
+    assert lead_reserve(400_000) == 100_000  # total // 4
+    assert lead_reserve(30_000) == 10_000  # max(10_000, 7_500)
 
 
-def test_split_budget_floors_spawn_at_10k():
-    # Total 400_000, used 395_000 → remaining max(10_000, 5_000) = 10_000
-    # reserve = min(100_000, 0) = 0
-    # spawn = max(10_000, 10_000 - 0) = 10_000
-    assert split_budget(total=400_000, used=395_000) == 10_000
+def test_split_budget_first_child_grant_is_pool_minus_lead_reserve():
+    # Fresh team: allocated seeded with lead_reserve(400_000) = 100_000.
+    # First child grant = 400_000 - 100_000 = 300_000.
+    allocated = lead_reserve(400_000)
+    assert split_budget(total=400_000, allocated=allocated) == 300_000
 
 
-def test_split_budget_small_total_still_floors_at_10k():
-    # Total 30_000, used 0 → remaining 30_000
-    # reserve = min(max(10_000, 7_500), max(0, 20_000)) = 10_000
-    # spawn = max(10_000, 20_000) = 20_000
-    assert split_budget(total=30_000, used=0) == 20_000
+def test_split_budget_grants_never_oversubscribe_global_pool():
+    # Two children spawned in sequence each grant from the running allocation,
+    # so lead_reserve + grant_1 + grant_2 never exceeds the global pool.
+    total = 400_000
+    allocated = lead_reserve(total)  # 100_000
+    grant_1 = split_budget(total=total, allocated=allocated)  # 300_000
+    allocated += grant_1  # 400_000
+    grant_2 = split_budget(total=total, allocated=allocated)  # floored 10_000
+    assert grant_1 == 300_000
+    # Above the floor the running sum never exceeds total; the exhausted tail
+    # only ever adds the 10_000 minimum.
+    assert allocated == total
+    assert grant_2 == 10_000  # floor, pool already fully allocated
+
+
+def test_split_budget_floors_spawn_at_10k_when_pool_exhausted():
+    # allocated == total → remaining 0 → floored to 10_000.
+    assert split_budget(total=400_000, allocated=400_000) == 10_000
+    # over-allocated (defensive) still floors at 10_000.
+    assert split_budget(total=400_000, allocated=420_000) == 10_000
 
 
 def test_build_spawn_session_wires_environment_safety_policy(tmp_path, monkeypatch):
