@@ -12,6 +12,7 @@ This package keeps one provider per module behind the ``LLMClient`` facade:
 """
 
 from opencollab.adapters.llm.client import LLMClient
+from opencollab.adapters.llm.errors import is_context_overflow_error
 from opencollab.adapters.llm.types import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     MODEL_CONTEXT_WINDOWS,
@@ -30,5 +31,6 @@ __all__ = [
     "Usage",
     "estimate_messages_tokens",
     "estimate_tokens",
+    "is_context_overflow_error",
     "model_context_window",
 ]

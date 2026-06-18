@@ -24,7 +24,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
-from opencollab.adapters.llm import LLMClient, estimate_messages_tokens
+from opencollab.adapters.llm import (
+    LLMClient,
+    estimate_messages_tokens,
+    is_context_overflow_error,
+)
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.compaction_summary import ReadTimeSummarizer
@@ -242,6 +246,11 @@ def build_session_runtime(
         max_steps=max_steps,
         shaper=resolved_shaper,
         team_budget_exhausted=team_budget_exhausted,
+        # The context-overflow classifier lives in the adapter layer; injected
+        # as a plain callable so the application use case never imports it (same
+        # boundary pattern as the team-budget predicate). Enables the
+        # force-compact-and-retry + graceful-stop safety net in ``call_llm``.
+        is_context_overflow=is_context_overflow_error,
     )
 
     return SessionRuntime(

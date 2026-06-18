@@ -52,6 +52,7 @@ from opencollab.application.shaping.pipeline import (
     PIN_FLOOR,
     ShaperPipeline,
     approx_messages_tokens,
+    forced_shape,
     history_trigger_target,
 )
 from opencollab.application.shaping.reactive import (
@@ -86,6 +87,7 @@ __all__ = [
     "PIN_FLOOR",
     "SummarizerPort",
     "approx_messages_tokens",
+    "forced_shape",
     "history_trigger_target",
     "ShaperPipeline",
     "PerToolResultBudgetShaper",

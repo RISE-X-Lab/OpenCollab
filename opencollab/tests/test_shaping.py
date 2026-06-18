@@ -352,3 +352,87 @@ def test_shed_does_not_mutate_input():
     snapshot = copy.deepcopy(messages)
     _shed().shape(messages)
     assert messages == snapshot
+
+
+# ---------------------------------------------------------------------------
+# Forced maximal compaction (the context-overflow safety-net entry point)
+# ---------------------------------------------------------------------------
+
+
+def test_forced_shape_compacts_even_below_trigger():
+    from opencollab.application.shaping import forced_shape
+
+    # A view comfortably BELOW the trigger: the estimate-gated snip layer would
+    # normally no-op. A forced pass must still drop the old tool turns.
+    snip = OldHistorySnipShaper(
+        estimate_tokens=_chars, trigger_tokens=1_000_000, target_tokens=10,
+        keep_recent_groups=1,
+    )
+    messages = [
+        _sys(), _user(),
+        _call("t1"), _tool("t1", "x" * 50),
+        _call("t2"), _tool("t2", "x" * 50),
+        _text("recent"),
+    ]
+    # Normal pass: identity (well below trigger).
+    assert snip.shape(messages) is messages
+    # Forced pass: old tool turns are dropped despite being under the trigger.
+    out = forced_shape(snip, messages)
+    assert not any(m.get("role") == "tool" for m in out)
+    assert out[-1] == _text("recent")
+
+
+def test_forced_shape_restores_forced_flag_after():
+    from opencollab.application.shaping import forced_shape
+
+    snip = OldHistorySnipShaper(
+        estimate_tokens=_chars, trigger_tokens=1_000_000, target_tokens=10,
+        keep_recent_groups=1,
+    )
+    messages = [_sys(), _user(), _call("t1"), _tool("t1", "x" * 50), _text("recent")]
+    forced_shape(snip, messages)
+    # The flag is restored, so a subsequent normal call no-ops again.
+    assert snip._forced is False
+    assert snip.shape(messages) is messages
+
+
+def test_forced_shape_still_never_folds_pinned_source():
+    from opencollab.application.shaping import forced_shape
+
+    # Even under forced compaction, a pinned task is never handed to the
+    # summarizer — the safety net must not destroy identity/team/task.
+    task = _ctx_user("the immutable task", priority=PIN_FLOOR + 10)
+    messages = [_sys(), task, _text("x" * 50), _text("y" * 50), _text("recent")]
+    seen = []
+
+    def summarizer(segment):
+        seen.append(segment)
+        return "SUMMARY"
+
+    auto = AutoCompactShaper(
+        summarizer=summarizer, estimate_tokens=_chars,
+        trigger_tokens=1_000_000, target_tokens=10, keep_recent_groups=1,
+    )
+    out = forced_shape(auto, messages)
+    assert task in out
+    assert all(task not in segment for segment in seen)
+
+
+def test_forced_shape_through_pipeline_reaches_nested_layers():
+    from opencollab.application.shaping import forced_shape
+
+    # A real pipeline wrapping a reactive layer: forcing the pipeline must reach
+    # the nested layer (recursion through ShaperPipeline).
+    snip = OldHistorySnipShaper(
+        estimate_tokens=_chars, trigger_tokens=1_000_000, target_tokens=10,
+        keep_recent_groups=1,
+    )
+    pipeline = ShaperPipeline((PerToolResultBudgetShaper(max_chars=10_000), snip))
+    messages = [
+        _sys(), _user(),
+        _call("t1"), _tool("t1", "x" * 50),
+        _text("recent"),
+    ]
+    assert pipeline.shape(messages) == messages  # normal: nothing to do
+    out = forced_shape(pipeline, messages)
+    assert not any(m.get("role") == "tool" for m in out)

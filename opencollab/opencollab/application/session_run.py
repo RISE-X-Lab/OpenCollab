@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -13,11 +14,23 @@ from opencollab.application.ports import (
     ShaperPort,
     TracePort,
 )
+from opencollab.application.shaping import forced_shape
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_DEFERRABLE_TOOLS = frozenset({"spawn_agent"})
+
+
+class _ContextOverflowStop(Exception):
+    """Internal control-flow signal: the prompt still overflows the model window
+    after a forced maximal compaction pass and one retry. Caught inside
+    ``run_llm_call`` to perform a controlled graceful stop (CONTEXT_OVERFLOW)
+    rather than letting it propagate as an unhandled ERROR. Never escapes the
+    use case.
+    """
 
 
 @dataclass
@@ -54,6 +67,7 @@ class SessionRunUseCase:
         deferrable_tool_names: frozenset[str] = DEFAULT_DEFERRABLE_TOOLS,
         shaper: ShaperPort | None = None,
         team_budget_exhausted: Callable[[], bool] | None = None,
+        is_context_overflow: Callable[[Exception], bool] | None = None,
     ):
         self.agent = agent
         self.state = state
@@ -74,6 +88,14 @@ class SessionRunUseCase:
         # ``None`` for standalone (non-team) sessions: only the per-session cap
         # applies, preserving existing behavior.
         self._team_budget_exhausted = team_budget_exhausted
+        # Adapter-supplied predicate classifying a provider exception as a
+        # context-window overflow (prompt too large even after reactive
+        # compaction). Injected as a plain callable (resolved in the factory) so
+        # the application layer never imports ``adapters.llm`` — same boundary
+        # pattern as ``team_budget_exhausted``. ``None`` (tests/standalone)
+        # means "never an overflow", preserving the prior propagate-as-ERROR
+        # behaviour for callers that don't wire it.
+        self._is_context_overflow = is_context_overflow or (lambda _exc: False)
         self._pending: PendingStep | None = None
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
@@ -204,13 +226,24 @@ class SessionRunUseCase:
 
     async def run_llm_call(self) -> None:
         """One model call: track tokens, trace, append the assistant message,
-        and stash the response as the pending step for HANDLING_RESPONSE."""
+        and stash the response as the pending step for HANDLING_RESPONSE.
+
+        Context-overflow safety net: ``call_llm`` already force-compacts and
+        retries once on an overflow rejection. If the retry still overflows it
+        raises ``_ContextOverflowStop``; we catch it here and stop the session
+        gracefully (CONTEXT_OVERFLOW) instead of letting it crash as an
+        unhandled ERROR — mirroring the BUDGET_EXCEEDED degradation.
+        """
         self.state.advance_step()
         await self.event_publisher.emit(self.event_factory.step_start(self.state.step_count))
         start = time.monotonic()
 
         tools = self.build_tool_schemas()
-        response = await self.call_llm(tools)
+        try:
+            response = await self.call_llm(tools)
+        except _ContextOverflowStop:
+            await self._stop_on_context_overflow()
+            return
         latency = time.monotonic() - start
         self.state.add_used_tokens(response.usage.total_tokens)
         self.state.set_context_tokens(response.usage.input_tokens)
@@ -361,17 +394,77 @@ class SessionRunUseCase:
 
         The shaper reshapes a copy for the model's view only;
         ``state.messages`` stays the complete, persisted history.
+
+        Context-overflow safety net: the normal shaped call uses the estimate-
+        gated reactive layers, which can under-count dense content (code / JSON /
+        CJK) and let a prompt overflow the real window. If the provider rejects
+        the call as a context overflow, run a FORCED maximal compaction pass
+        (compact every sheddable source unconditionally toward target,
+        regardless of the estimate) and retry ONCE. If that *still* overflows —
+        e.g. the pinned identity/team/task seed alone exceeds the window — raise
+        ``_ContextOverflowStop`` so the caller stops the session gracefully.
         """
         messages = (
             self.shaper.shape(self.state.messages)
             if self.shaper is not None
             else self.state.messages
         )
+        try:
+            return await self._complete(messages, tools)
+        except Exception as exc:
+            if not self._is_context_overflow(exc):
+                raise
+
+        # First overflow: force a maximal compaction pass and retry once.
+        forced = (
+            forced_shape(self.shaper, self.state.messages)
+            if self.shaper is not None
+            else self.state.messages
+        )
+        logger.warning(
+            "context overflow on aid=%s: recompacting (%d -> %d messages) and retrying once",
+            self.state.aid,
+            len(messages),
+            len(forced),
+        )
+        await self.event_publisher.emit(self.event_factory.error("context_overflow_recompacted"))
+        try:
+            return await self._complete(forced, tools)
+        except Exception as exc:
+            if self._is_context_overflow(exc):
+                raise _ContextOverflowStop() from exc
+            raise
+
+    async def _complete(
+        self, messages: list[dict], tools: list[dict] | None
+    ) -> CompletionResponse:
         return await self.llm.complete(
             messages=messages,
             tools=tools,
             temperature=self.agent.temperature,
         )
+
+    async def _stop_on_context_overflow(self) -> None:
+        """Graceful terminal stop when a prompt overflows the model window even
+        after forced compaction + one retry. Mirrors the BUDGET_EXCEEDED
+        degradation: a visible system message, an error event, and a validated
+        transition to the dedicated CONTEXT_OVERFLOW terminal. A child stopped
+        this way delivers a controlled result to its parent (DONE row) rather
+        than crashing the parent's turn.
+        """
+        reason = "context overflow: prompt exceeds the model context window even after compaction"
+        self.state.append_message(
+            {
+                "role": "system",
+                "content": (
+                    "[Context overflow: prompt exceeds the model context window "
+                    "even after compaction. Session stopped.]"
+                ),
+            }
+        )
+        await self.event_publisher.emit(self.event_factory.error("context_overflow"))
+        self.clear_pending_step()
+        self.state.transition_to(SessionPhase.CONTEXT_OVERFLOW, reason=reason)
 
     def record_llm_trace(self, response: CompletionResponse, latency: float) -> None:
         if self.tracer:

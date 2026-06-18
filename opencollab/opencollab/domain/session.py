@@ -25,6 +25,7 @@ class SessionPhase(Enum):
     CANCELLED = "cancelled"
     BUDGET_EXCEEDED = "budget_exceeded"
     STEP_LIMIT_EXCEEDED = "step_limit_exceeded"
+    CONTEXT_OVERFLOW = "context_overflow"
     ERROR = "error"
 
     def is_terminal(self) -> bool:
@@ -37,6 +38,7 @@ TERMINAL_PHASES = frozenset(
         SessionPhase.CANCELLED,
         SessionPhase.BUDGET_EXCEEDED,
         SessionPhase.STEP_LIMIT_EXCEEDED,
+        SessionPhase.CONTEXT_OVERFLOW,
         SessionPhase.ERROR,
     }
 )
@@ -57,6 +59,13 @@ TERMINAL_PHASES = frozenset(
 # ``max_steps``. Both caps are session-lifetime (see ``reset_for_user_turn``).
 # ``terminal_reason`` carries the human-readable detail for every terminal phase.
 #
+# CONTEXT_OVERFLOW is the context-window safety-net terminal, reached from
+# CALLING_LLM: the provider rejected the prompt as too large for the model's
+# window even after a forced maximal compaction pass + a single retry (e.g. the
+# pinned identity/team/task seed alone exceeds the window). It is a *controlled*
+# graceful stop — not an unhandled ERROR — so a child that overflows delivers a
+# clean result to its parent rather than crashing the parent's turn.
+#
 # AWAITING_EVENTS is a non-terminal *suspend* state: the loop stops there (the
 # task returns) when a step deferred work (e.g. a spawned child) and the
 # scheduler re-activates the session, resuming at PRECHECK, once every pending
@@ -73,7 +82,9 @@ PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
             SessionPhase.STEP_LIMIT_EXCEEDED,
         }
     ),
-    SessionPhase.CALLING_LLM: frozenset({SessionPhase.HANDLING_RESPONSE}),
+    SessionPhase.CALLING_LLM: frozenset(
+        {SessionPhase.HANDLING_RESPONSE, SessionPhase.CONTEXT_OVERFLOW}
+    ),
     SessionPhase.HANDLING_RESPONSE: frozenset({SessionPhase.EXECUTING_TOOLS, SessionPhase.DONE}),
     SessionPhase.EXECUTING_TOOLS: frozenset(
         {SessionPhase.AUTOSAVING, SessionPhase.AWAITING_EVENTS}
@@ -85,6 +96,7 @@ PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
     SessionPhase.CANCELLED: frozenset({SessionPhase.IDLE}),
     SessionPhase.BUDGET_EXCEEDED: frozenset({SessionPhase.IDLE}),
     SessionPhase.STEP_LIMIT_EXCEEDED: frozenset({SessionPhase.IDLE}),
+    SessionPhase.CONTEXT_OVERFLOW: frozenset({SessionPhase.IDLE}),
     SessionPhase.ERROR: frozenset({SessionPhase.IDLE}),
 }
 

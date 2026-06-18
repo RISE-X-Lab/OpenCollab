@@ -6,6 +6,8 @@ import asyncio
 import random
 from typing import Any
 
+from opencollab.adapters.llm.errors import is_context_overflow_error
+
 # HTTP statuses worth retrying: timeouts, conflicts, rate limits, server errors.
 RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
 
@@ -38,6 +40,14 @@ async def with_retry(call_factory, max_retries: int) -> Any:
 
 def is_retryable_error(error: Exception) -> bool:
     """Whether ``error`` looks transient (retryable status code or message)."""
+    # A context overflow is never transient: the identical prompt will overflow
+    # again. The session layer handles it (force-compact then retry once), so it
+    # must not be futilely retried here — guard explicitly even though 400 is
+    # absent from RETRYABLE_STATUS_CODES, in case an overflow's message ever
+    # happens to contain a retryable fragment ("overloaded", "timeout", ...).
+    if is_context_overflow_error(error):
+        return False
+
     status = getattr(error, "status_code", None)
     if status in RETRYABLE_STATUS_CODES:
         return True

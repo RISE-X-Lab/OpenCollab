@@ -59,8 +59,16 @@ class _ReactiveHistoryShaper:
         self.trigger_tokens = trigger_tokens
         self.target_tokens = target_tokens
         self.keep_recent_groups = keep_recent_groups
+        # When set, every layer acts as if the trigger were crossed: it compacts
+        # unconditionally toward ``target_tokens`` instead of no-op'ing below the
+        # estimate. Toggled only by the forced-compaction safety-net pass (see
+        # ``pipeline.forced_shape``) after a real context-overflow rejection,
+        # where the char estimate provably under-counted the prompt.
+        self._forced = False
 
     def _over_trigger(self, messages: list[dict[str, Any]]) -> bool:
+        if self._forced:
+            return bool(messages)
         return bool(messages) and self._estimate(messages) > self.trigger_tokens
 
 

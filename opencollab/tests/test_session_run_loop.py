@@ -416,6 +416,172 @@ def test_deferred_rejected_synchronously_does_not_suspend():
     assert tool_msgs == [{"role": "tool", "tool_call_id": "s1", "content": "Permission denied: nope"}]
 
 
+# ---------------------------------------------------------------------------
+# Context-overflow safety net
+# ---------------------------------------------------------------------------
+
+
+class FakeOverflowError(Exception):
+    """A context-overflow provider rejection stand-in (no real SDK / network)."""
+
+
+def _is_overflow(exc):
+    return isinstance(exc, FakeOverflowError)
+
+
+class OverflowThenOkLLM:
+    """Raises a context overflow on the FIRST ``complete`` call, then succeeds.
+
+    Records the messages it was handed each call so a test can assert the
+    retried (forced-compaction) prompt is smaller than the first attempt.
+    """
+
+    def __init__(self, ok_response):
+        self.ok_response = ok_response
+        self.calls = []
+
+    async def complete(self, messages, tools=None, temperature=0.0):
+        self.calls.append(copy.deepcopy(messages))
+        if len(self.calls) == 1:
+            raise FakeOverflowError("prompt is too long")
+        return self.ok_response
+
+
+class AlwaysOverflowLLM:
+    """Raises a context overflow on EVERY ``complete`` call."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def complete(self, messages, tools=None, temperature=0.0):
+        self.calls.append(copy.deepcopy(messages))
+        raise FakeOverflowError("prompt is too long")
+
+
+class FakeForcedShaper:
+    """A shaper that no-ops on the normal pass but compacts hard when forced.
+
+    Mirrors the real reactive layers' ``_forced`` contract: ``shape`` returns
+    the messages unchanged until ``forced_shape`` flips ``_forced`` on, at which
+    point it drops all but the first (pinned) message — standing in for a
+    maximal compaction pass.
+    """
+
+    def __init__(self):
+        self._forced = False
+
+    def shape(self, messages):
+        if not self._forced:
+            return list(messages)
+        return messages[:1]
+
+
+def test_call_llm_recompacts_and_retries_once_on_overflow():
+    # A long history; the shaper no-ops normally (so the first call overflows),
+    # then a forced compaction shrinks it and the retry succeeds.
+    state = SessionState(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "a" * 4000},
+            {"role": "assistant", "content": "b" * 4000},
+        ]
+    )
+    llm = OverflowThenOkLLM(llm_response(content="recovered"))
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        shaper=FakeForcedShaper(),
+        is_context_overflow=_is_overflow,
+    )
+
+    result = run(runner.run_loop())
+
+    assert result == "recovered"
+    assert state.phase is SessionPhase.DONE
+    # Two provider calls: the overflowing first, the forced-compacted retry.
+    assert len(llm.calls) == 2
+    # The retry's prompt is strictly smaller (forced compaction ran).
+    assert len(llm.calls[1]) < len(llm.calls[0])
+    assert llm.calls[1] == state.messages[:1]
+    # The original history is untouched by shaping (read-time only); only the
+    # new assistant answer was appended on success.
+    assert state.messages[:3] == [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "a" * 4000},
+        {"role": "assistant", "content": "b" * 4000},
+    ]
+    assert state.messages[-1] == {"role": "assistant", "content": "recovered"}
+
+
+def test_call_llm_emits_recompaction_event_on_overflow():
+    events, bus = collect_events()
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    llm = OverflowThenOkLLM(llm_response(content="ok"))
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        event_bus=bus,
+        shaper=FakeForcedShaper(),
+        is_context_overflow=_is_overflow,
+    )
+
+    run(runner.run_loop())
+
+    reasons = [data["reason"] for etype, data in events if etype == "error"]
+    assert "context_overflow_recompacted" in reasons
+
+
+def test_persistent_overflow_stops_gracefully_not_unhandled():
+    events, bus = collect_events()
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    llm = AlwaysOverflowLLM()
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        event_bus=bus,
+        shaper=FakeForcedShaper(),
+        is_context_overflow=_is_overflow,
+    )
+
+    # No unhandled exception — the loop returns normally with a controlled stop.
+    result = run(runner.run_loop())
+
+    assert result == ""
+    assert state.phase is SessionPhase.CONTEXT_OVERFLOW
+    assert state.terminal_reason.startswith("context overflow")
+    assert state.messages[-1] == {
+        "role": "system",
+        "content": (
+            "[Context overflow: prompt exceeds the model context window "
+            "even after compaction. Session stopped.]"
+        ),
+    }
+    # Both the recompaction notice and the final overflow error were emitted.
+    reasons = [data["reason"] for etype, data in events if etype == "error"]
+    assert "context_overflow_recompacted" in reasons
+    assert "context_overflow" in reasons
+    # The provider was tried exactly twice (initial + one forced retry).
+    assert len(llm.calls) == 2
+
+
+def test_overflow_classifier_off_propagates_as_error():
+    # Without an overflow classifier wired (standalone/legacy), an overflow is
+    # an opaque exception: the run loop fails to ERROR and re-raises, exactly as
+    # before the safety net existed (regression guard that the net is additive).
+    import pytest
+
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    llm = AlwaysOverflowLLM()
+    runner = build_runner(state=state, llm=llm, shaper=FakeForcedShaper())
+
+    with pytest.raises(FakeOverflowError):
+        run(runner.run_loop())
+
+    assert state.phase is SessionPhase.ERROR
+    # Only one call: with no classifier it isn't recognised, so no retry.
+    assert len(llm.calls) == 1
+
+
 def test_shaper_bounds_model_view_but_leaves_state_messages_full():
     from opencollab.application.shaping import PerToolResultBudgetShaper
 

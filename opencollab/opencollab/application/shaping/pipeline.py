@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from opencollab.application.ports import ShaperPort
 
@@ -67,6 +68,50 @@ def approx_messages_tokens(messages: list[dict[str, Any]]) -> int:
         for call in message.get("tool_calls") or ():
             total += len(str(call.get("function", {}).get("arguments", "")))
     return total // 4
+
+
+@contextmanager
+def _forced_layers(shaper: ShaperPort) -> Iterator[None]:
+    """Temporarily flip every reactive history layer reachable from ``shaper``
+    into forced mode (compact unconditionally toward target), restoring the
+    prior flags on exit. A shaper without a ``_forced`` flag is left untouched
+    (e.g. the per-tool-result cap, which is already unconditional). Recurses
+    into a nested ``ShaperPipeline`` so a wrapped chain is covered too.
+    """
+    toggled: list[Any] = []
+    stack: list[ShaperPort] = [shaper]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ShaperPipeline):
+            stack.extend(node._shapers)
+            continue
+        if hasattr(node, "_forced"):
+            toggled.append(node)
+    saved = [node._forced for node in toggled]
+    for node in toggled:
+        node._forced = True
+    try:
+        yield
+    finally:
+        for node, prior in zip(toggled, saved):
+            node._forced = prior
+
+
+def forced_shape(
+    shaper: ShaperPort, messages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Run ``shaper`` in forced maximal-compaction mode.
+
+    The safety-net entry point used after a real context-overflow rejection:
+    every reactive history layer compacts unconditionally toward its target
+    instead of no-op'ing below the char estimate (which provably under-counted,
+    since the provider rejected the prompt). Pinned sources (identity/team/task
+    at/above ``PIN_FLOOR``) are still never folded — so when the pinned seed
+    alone overflows the window, this is a no-op and the caller falls through to
+    the graceful-stop path.
+    """
+    with _forced_layers(shaper):
+        return shaper.shape(messages)
 
 
 class ShaperPipeline:
