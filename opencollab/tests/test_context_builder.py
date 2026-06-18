@@ -8,7 +8,24 @@ from opencollab.application.event_bus import EventBus
 from opencollab.bootstrap.container import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
 from opencollab.domain.context import ContextLayer, ContextPosition, LoadTiming
+from opencollab.domain.skill import SkillManifest
 from opencollab.domain.team import Topology
+
+
+class FakeSkillStore:
+    """A SkillStorePort holding a fixed set of skills (or none)."""
+
+    def __init__(self, skills: dict[str, str] | None = None):
+        self._skills = dict(skills or {})
+
+    def list_manifests(self) -> tuple[SkillManifest, ...]:
+        return tuple(
+            SkillManifest(name=n, description=d) for n, d in self._skills.items()
+        )
+
+    def get_body(self, name: str) -> str | None:
+        # body keyed off name for the headline test
+        return f"BODY OF {name}" if name in self._skills else None
 
 
 def _cfg(model="default-model"):
@@ -157,3 +174,59 @@ def test_build_agent_system_prompt_matches_plan_system_sources():
     plan = builder.build_plan("lead")
     agent = builder.build_agent("lead", scheduler=SCHED, plan=plan)
     assert agent.system_prompt == plan.system_prompt()
+
+
+# --- build_plan: skill catalog injection ------------------------------------
+
+
+def _team_with_skill_role(tools):
+    return TeamConfig(
+        roles={"specialist": RoleConfig(prompt="Specialist.", model=None, tools=tools)},
+        topology=Topology(),
+    )
+
+
+def test_skill_catalog_emitted_when_role_has_use_skill_and_store_nonempty():
+    store = FakeSkillStore({"alpha": "Alpha desc.", "beta": "Beta desc."})
+    team = _team_with_skill_role(["bash", "use_skill"])
+    plan = ContextBuilder(team, _cfg(), skill_store=store).build_plan("specialist")
+    skills = _sources_by_name(plan)["skills"]
+    assert skills.layer is ContextLayer.SKILL
+    assert skills.position is ContextPosition.SYSTEM
+    assert skills.timing is LoadTiming.STARTUP
+    # The catalog lists each skill name + description and tells the model to invoke.
+    assert "use_skill" in skills.content
+    assert "- alpha: Alpha desc." in skills.content
+    assert "- beta: Beta desc." in skills.content
+    # SYSTEM source folds into the assembled system prompt.
+    assert skills.content in plan.system_prompt()
+
+
+def test_skill_catalog_not_emitted_when_role_lacks_use_skill():
+    store = FakeSkillStore({"alpha": "Alpha desc."})
+    team = _team_with_skill_role(["bash"])  # no use_skill
+    plan = ContextBuilder(team, _cfg(), skill_store=store).build_plan("specialist")
+    assert "skills" not in _sources_by_name(plan)
+    assert "alpha" not in plan.system_prompt()
+
+
+def test_skill_catalog_not_emitted_when_store_empty():
+    store = FakeSkillStore({})  # use_skill granted, but no skills exist
+    team = _team_with_skill_role(["bash", "use_skill"])
+    plan = ContextBuilder(team, _cfg(), skill_store=store).build_plan("specialist")
+    assert "skills" not in _sources_by_name(plan)
+
+
+def test_no_skill_store_defaults_to_empty_no_catalog():
+    # Default ContextBuilder (no skill_store) → NullSkillStore → no catalog even
+    # if the role names use_skill.
+    team = _team_with_skill_role(["bash", "use_skill"])
+    plan = ContextBuilder(team, _cfg()).build_plan("specialist")
+    assert "skills" not in _sources_by_name(plan)
+
+
+def test_build_agent_binds_use_skill_tool_when_store_provided():
+    store = FakeSkillStore({"alpha": "Alpha desc."})
+    team = _team_with_skill_role(["bash", "use_skill"])
+    agent = ContextBuilder(team, _cfg(), skill_store=store).build_agent("specialist")
+    assert "use_skill" in {t.name for t in agent.tools}

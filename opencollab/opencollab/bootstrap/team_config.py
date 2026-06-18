@@ -39,6 +39,7 @@ LEAD_TOOL_NAMES: tuple[str, ...] = (
     "message_agent",
     "team_status",
     "ask_user",
+    "use_skill",
 )
 
 DEFAULT_LEAD_PROMPT = """\
@@ -54,6 +55,9 @@ coordination tools:
 - `team_status`: list the live team (agent ids, roles, phases).
 - `message_agent`: send an async message to an existing agent (by aid). The
   target receives it as a user message and may reply later by messaging you.
+- `use_skill`: load a specialized instruction set ("skill") by name. When skills
+  are configured they are listed under a "## Skills" section in your context;
+  call this to pull a matching skill's full instructions in before you start.
 
 ## How to work
 

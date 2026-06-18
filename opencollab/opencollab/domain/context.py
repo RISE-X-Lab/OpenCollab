@@ -33,6 +33,7 @@ class ContextLayer(Enum):
     MEMORY = "memory"          # recalled cross-session memory
     TASK = "task"              # the concrete assignment (DelegationTask / first turn)
     TOOL_META = "tool_meta"    # tool schemas / usage notes
+    SKILL = "skill"            # model-invocable skill catalog (name + description)
 
 
 class LoadTiming(Enum):
@@ -59,6 +60,7 @@ class ContextPosition(Enum):
 LAYER_PRIORITY: dict[ContextLayer, int] = {
     ContextLayer.IDENTITY: 100,
     ContextLayer.TEAM: 90,
+    ContextLayer.SKILL: 85,
     ContextLayer.TASK: 80,
     ContextLayer.TOOL_META: 50,
     ContextLayer.PROJECT: 30,

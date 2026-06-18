@@ -20,7 +20,8 @@ from opencollab.adapters.tools.human import AskUserTool
 from opencollab.adapters.tools.message import MessageAgentTool, TeamStatusTool
 from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.adapters.tools.spawn import SpawnAgentTool, SpawnWithReviewTool
-from opencollab.application.ports import SchedulerPort
+from opencollab.adapters.tools.use_skill import UseSkillTool
+from opencollab.application.ports import SchedulerPort, SkillStorePort
 
 # Tool name -> factory. Stateless tools need nothing; scheduler-bound tools take
 # the scheduler so an agent can spawn/message via the SchedulerPort.
@@ -40,7 +41,16 @@ SCHEDULER_TOOL_FACTORIES: dict[str, Callable[[SchedulerPort], Tool]] = {
     "message_agent": MessageAgentTool,
     "team_status": TeamStatusTool,
 }
-KNOWN_TOOL_NAMES: frozenset[str] = frozenset(STATELESS_TOOL_FACTORIES) | frozenset(SCHEDULER_TOOL_FACTORIES)
+# Skill-bound tools take a ``SkillStorePort`` so the dispatcher can fetch a
+# skill's body by name. One generic dispatcher serves all skills.
+SKILL_TOOL_FACTORIES: dict[str, Callable[[SkillStorePort], Tool]] = {
+    "use_skill": UseSkillTool,
+}
+KNOWN_TOOL_NAMES: frozenset[str] = (
+    frozenset(STATELESS_TOOL_FACTORIES)
+    | frozenset(SCHEDULER_TOOL_FACTORIES)
+    | frozenset(SKILL_TOOL_FACTORIES)
+)
 # Tools that let a role act on teammates — used to decide whether to render the
 # topology-aware "Your team" prompt section.
 COORDINATION_TOOL_NAMES: frozenset[str] = frozenset(SCHEDULER_TOOL_FACTORIES)
@@ -57,12 +67,14 @@ def build_tools_for_role(
     tool_names: list[str],
     *,
     scheduler: SchedulerPort | None = None,
+    skill_store: SkillStorePort | None = None,
     interactive: bool = False,
 ) -> list[Tool]:
     """Resolve tool names to Tool instances.
 
     ``ask_user`` is dropped in non-interactive (headless) mode. Scheduler-bound
-    tools require a ``scheduler``. Unknown names raise — fail fast at startup.
+    tools require a ``scheduler``; skill-bound tools require a ``skill_store``.
+    Unknown names raise — fail fast at startup.
     """
     tools: list[Tool] = []
     for name in tool_names:
@@ -76,6 +88,12 @@ def build_tools_for_role(
                     f"Tool '{name}' requires a scheduler but none was provided."
                 )
             tools.append(SCHEDULER_TOOL_FACTORIES[name](scheduler))
+        elif name in SKILL_TOOL_FACTORIES:
+            if skill_store is None:
+                raise ValueError(
+                    f"Tool '{name}' requires a skill store but none was provided."
+                )
+            tools.append(SKILL_TOOL_FACTORIES[name](skill_store))
         else:
             raise ValueError(
                 f"Unknown tool '{name}' in team config. "
@@ -87,6 +105,7 @@ def build_tools_for_role(
 __all__ = [
     "STATELESS_TOOL_FACTORIES",
     "SCHEDULER_TOOL_FACTORIES",
+    "SKILL_TOOL_FACTORIES",
     "KNOWN_TOOL_NAMES",
     "COORDINATION_TOOL_NAMES",
     "COMPACTABLE_TOOL_NAMES",

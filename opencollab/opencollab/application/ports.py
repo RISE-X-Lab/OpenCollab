@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from opencollab.domain.hooks import HookOutcome
+from opencollab.domain.skill import SkillManifest
 
 if TYPE_CHECKING:
     from opencollab.application.scheduler_types import LaunchSpec
@@ -124,6 +125,24 @@ class ToolPort(Protocol):
         params: dict[str, Any],
         runtime: "ToolRuntime",
     ) -> "str | DeferredCall":
+        ...
+
+
+class SkillStorePort(Protocol):
+    """Discovery + retrieval of skill packages. The reserved plug-point for skills.
+
+    ``list_manifests()`` is the catalog the model reads (name + description per
+    skill); ``get_body()`` is the on-invocation retrieval of the full instruction
+    body. This is the entire inward-facing contract for skills; concrete stores
+    (file-backed, null) live in ``adapters.skills``.
+    """
+
+    def list_manifests(self) -> tuple[SkillManifest, ...]:
+        """Catalog metadata (name + description) for every available skill."""
+        ...
+
+    def get_body(self, name: str) -> str | None:
+        """Full instruction body for ``name``, or ``None`` if unknown."""
         ...
 
 

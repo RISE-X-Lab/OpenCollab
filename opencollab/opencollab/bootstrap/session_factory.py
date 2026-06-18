@@ -31,7 +31,7 @@ from opencollab.application.ports import (
 )
 from opencollab.application.scheduler import LaunchSpec
 from opencollab.application.session import Session
-from opencollab.bootstrap.container import build_session_runtime
+from opencollab.bootstrap.container import build_session_runtime, build_skill_store
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
 from opencollab.bootstrap.team_config import TeamConfig, default_team_config
@@ -224,7 +224,12 @@ class DefaultSessionFactory:
     ):
         self._cfg = cfg
         self._team = team_cfg or default_team_config()
-        self._context_builder = ContextBuilder(self._team, cfg)
+        # Resolve the workspace's skills/ directory (FileSkillStore) or fall back
+        # to a NullSkillStore. Shared by the builder for both catalog injection
+        # and binding the use_skill dispatcher; repos without skills/ are
+        # unaffected (empty store → no catalog, no tool offered).
+        skill_store = build_skill_store(lead_workspace)
+        self._context_builder = ContextBuilder(self._team, cfg, skill_store=skill_store)
         self._lead_workspace = lead_workspace
         self._interactive = interactive
         # Run folder where every agent's transcript is persisted. When set,
