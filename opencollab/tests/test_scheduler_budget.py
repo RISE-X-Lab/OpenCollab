@@ -76,6 +76,27 @@ class _NoopWorktreePool:
         return None
 
 
+class _RaisingWorktreePool:
+    """A pool whose acquire always raises — simulates a spawn that fails after
+    the two reservations are booked but before the driver task is scheduled."""
+
+    async def acquire(self, role):
+        raise RuntimeError("worktree acquire failed")
+
+    async def release(self):
+        return None
+
+
+class _RaisingFactory(RecordingFactory):
+    """Builds children normally, but raises inside build_spawn_session — the
+    second site (after acquire) where a spawn can fail post-reservation."""
+
+    def build_spawn_session(
+        self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None, task=None, context=""
+    ):
+        raise RuntimeError("session build failed")
+
+
 def _scheduler(factory: RecordingFactory, *, max_budget_tokens: int) -> Scheduler:
     sched = Scheduler(
         session_factory=factory,
@@ -152,6 +173,113 @@ def test_finished_child_reservation_is_reclaimed():
 
         gate.set()
         await asyncio.gather(*[t for t in sched._tasks.values()])
+
+    run(scenario())
+
+
+def test_failed_worktree_acquire_releases_reservations():
+    """If ``_worktree_pool.acquire`` raises after the inflight + budget
+    reservations are booked, ``spawn`` must release BOTH and re-raise — otherwise
+    the budget grant leaks (shrinking the pool forever) and the inflight key
+    permanently refuses any re-spawn of the same (role, task)."""
+
+    async def scenario():
+        total = 400_000
+        gate = asyncio.Event()
+        factory = RecordingFactory(gate)
+        sched = Scheduler(
+            session_factory=factory,
+            worktree_pool=_RaisingWorktreePool(),
+            event_sink=EventBus(None),
+            max_budget_tokens=total,
+        )
+        sched._seed_lead_reservation()
+
+        before = sched.allocated_tokens
+        assert before == lead_reserve(total)
+        assert sched.inflight_spawn("coder", "leaky") is None
+
+        # The failing spawn must propagate the original exception.
+        raised = False
+        try:
+            await sched.spawn(0, "coder", "leaky", tool_call_id="c-0")
+        except RuntimeError as exc:
+            raised = True
+            assert "worktree acquire failed" in str(exc)
+        assert raised, "original exception must propagate out of spawn()"
+
+        # Budget reservation released — allocation is back to its pre-spawn value.
+        assert sched.allocated_tokens == before
+        # Inflight key cleared — a re-spawn of the SAME (role, task) is not refused.
+        assert sched.inflight_spawn("coder", "leaky") is None
+        # No driver task was scheduled for the failed spawn.
+        assert sched._tasks == {}
+
+    run(scenario())
+
+
+def test_failed_session_build_releases_reservations_then_respawn_succeeds():
+    """The second post-reservation failure site — ``build_spawn_session`` raising
+    — must also release both reservations, so a subsequent spawn of the same
+    (role, task) books fresh from the reclaimed headroom (not the floor)."""
+
+    async def scenario():
+        total = 400_000
+        gate = asyncio.Event()
+        factory = _RaisingFactory(gate)
+        sched = _scheduler(factory, max_budget_tokens=total)
+
+        before = sched.allocated_tokens
+
+        raised = False
+        try:
+            await sched.spawn(0, "coder", "retry-me", tool_call_id="c-0")
+        except RuntimeError as exc:
+            raised = True
+            assert "session build failed" in str(exc)
+        assert raised
+        assert sched.allocated_tokens == before
+        assert sched.inflight_spawn("coder", "retry-me") is None
+
+        # Swap in a working factory: a re-spawn of the SAME (role, task) is NOT
+        # refused and is granted from the full reclaimed headroom, not the floor.
+        good = RecordingFactory(gate)
+        sched._session_factory = good
+        sched._worktree_pool = _NoopWorktreePool()
+
+        aid = await sched.spawn(0, "coder", "retry-me", tool_call_id="c-1")
+        assert good.grants[0] == total - lead_reserve(total)  # 300_000, not floor
+        assert sched.inflight_spawn("coder", "retry-me") == aid
+
+        gate.set()
+        await asyncio.gather(*sched._tasks.values())
+
+    run(scenario())
+
+
+def test_successful_spawn_does_not_double_release():
+    """Regression: a NORMAL spawn holds its reservation until the agent
+    terminates — the failure-path release must not fire on the success path."""
+
+    async def scenario():
+        total = 400_000
+        gate = asyncio.Event()
+        factory = RecordingFactory(gate)
+        sched = _scheduler(factory, max_budget_tokens=total)
+
+        before = sched.allocated_tokens
+        aid = await sched.spawn(0, "coder", "work", tool_call_id="c-0")
+
+        # Reservation is HELD while the child runs (not released by the success
+        # path of spawn) — allocation reflects the live grant.
+        assert sched.allocated_tokens == before + factory.grants[0]
+        assert sched.inflight_spawn("coder", "work") == aid
+
+        # The child terminates: the driver task releases exactly once.
+        gate.set()
+        await sched._tasks[aid]
+        assert sched.allocated_tokens == before  # reclaimed once, not twice
+        assert sched.inflight_spawn("coder", "work") is None
 
     run(scenario())
 

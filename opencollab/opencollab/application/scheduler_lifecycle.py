@@ -98,42 +98,59 @@ class LifecycleMixin:
         self._reserve_inflight(aid, role, task)
         budget = self._reserve_child_budget(aid)
 
-        # Build environment
-        env = await self._worktree_pool.acquire(role)
+        # Everything from here until the driver task is scheduled may raise
+        # (worktree acquire, session build, event emission). The driver task owns
+        # releasing the two reservations on termination — but it only exists once
+        # ``create_task`` below succeeds. So if anything raises before that, the
+        # reservations would leak permanently (the budget grant inflates the pool
+        # for every future spawn, and the inflight key permanently refuses any
+        # re-spawn of this (role, task)). Release both and re-raise so the caller
+        # (execute_deferred) still surfaces the failure into the parent's row.
+        try:
+            # Build environment
+            env = await self._worktree_pool.acquire(role)
 
-        # Build session via factory. The task is seeded as the agent's first
-        # user-context message (the TASK-layer ContextSource) inside the factory,
-        # so the whole startup context is assembled in one place.
-        session = self._session_factory.build_spawn_session(
-            role=role,
-            env=env,
-            budget=budget,
-            aid=aid,
-            scheduler=self,
-            task=task,
-            context=context,
-        )
-        session.state.set_phase(SessionPhase.SCHEDULED)
+            # Build session via factory. The task is seeded as the agent's first
+            # user-context message (the TASK-layer ContextSource) inside the
+            # factory, so the whole startup context is assembled in one place.
+            session = self._session_factory.build_spawn_session(
+                role=role,
+                env=env,
+                budget=budget,
+                aid=aid,
+                scheduler=self,
+                task=task,
+                context=context,
+            )
+            session.state.set_phase(SessionPhase.SCHEDULED)
 
-        # Create SCB
-        scb = SessionControlBlock(
-            aid=aid,
-            parent_aid=parent_aid,
-            agent=session.agent,
-            state=session.state,
-        )
-        self.table.add(scb)
-        self._sessions[aid] = session
-        if tool_call_id is not None:
-            self._spawn_origin[aid] = (parent_aid, tool_call_id)
+            # Create SCB
+            scb = SessionControlBlock(
+                aid=aid,
+                parent_aid=parent_aid,
+                agent=session.agent,
+                state=session.state,
+            )
+            self.table.add(scb)
+            self._sessions[aid] = session
+            if tool_call_id is not None:
+                self._spawn_origin[aid] = (parent_aid, tool_call_id)
 
-        # Emit spawn event
-        await self.emit_scheduler_event(
-            self._events.agent_spawned(aid, parent_aid, role, task)
-        )
+            # Emit spawn event
+            await self.emit_scheduler_event(
+                self._events.agent_spawned(aid, parent_aid, role, task)
+            )
 
-        # Start async task
-        self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
+            # Start async task. Once this succeeds, _drive_agent owns the
+            # reservation release — must be the last statement that can hand off
+            # ownership, so the except below never double-releases on success.
+            self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
+        except Exception:
+            # Driver task was never scheduled, so nothing will release these.
+            # _release_reservations is idempotent and tolerant of a partially
+            # constructed spawn (pop-with-default on both maps).
+            self._release_reservations(aid)
+            raise
 
         self._write_manifest()
         self._autosave_session(parent_aid)
