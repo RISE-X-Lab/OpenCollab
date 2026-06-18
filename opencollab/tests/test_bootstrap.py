@@ -50,6 +50,7 @@ def test_build_scheduler_lead_has_spawn_tools(tmp_path):
     assert tool_names == {
         "bash", "file_read", "file_write", "grep",
         "spawn_agent", "spawn_with_review", "message_agent", "team_status", "ask_user",
+        "use_skill",
     }
 
 
