@@ -74,11 +74,31 @@ async def complete_anthropic(
     return LLMResponse(
         content=content or None,
         tool_calls=tool_calls,
-        usage=Usage(
-            input_tokens=resp.usage.input_tokens,
-            output_tokens=resp.usage.output_tokens,
-        ),
+        usage=_parse_usage(resp.usage),
         finish_reason=resp.stop_reason,
+    )
+
+
+def _parse_usage(usage: Any) -> Usage:
+    """Build a corrected ``Usage`` from an Anthropic usage object.
+
+    When prompt caching is active the Messages API splits input into three
+    fields: ``input_tokens`` (uncached input newly processed),
+    ``cache_read_input_tokens`` (read from cache), and
+    ``cache_creation_input_tokens`` (written to cache). ``input_tokens`` does
+    NOT include the cached portions, so the true input the model processed is
+    the sum of all three. We fold them into the accounted ``input_tokens`` so
+    the token budget can't run slow. Cache attributes are read defensively
+    since the SDK object may not carry them when caching is off.
+    """
+    cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
+    cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
+    uncached_input = getattr(usage, "input_tokens", 0) or 0
+    return Usage(
+        input_tokens=uncached_input + cache_read + cache_creation,
+        output_tokens=getattr(usage, "output_tokens", 0) or 0,
+        cache_read_tokens=cache_read,
+        cache_creation_tokens=cache_creation,
     )
 
 

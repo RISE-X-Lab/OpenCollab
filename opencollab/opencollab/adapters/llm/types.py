@@ -12,8 +12,21 @@ from typing import Any
 
 @dataclass
 class Usage:
+    """Token accounting for one completion.
+
+    ``input_tokens`` is the *true* total input the model processed for the
+    call. For providers with prompt caching (Anthropic), the provider folds
+    cached read/creation tokens into ``input_tokens`` so the budget meter and
+    ``total_tokens`` reflect everything the API actually billed/processed.
+    ``cache_read_tokens`` / ``cache_creation_tokens`` are retained purely for
+    observability (tracing) and are already included in ``input_tokens``.
+    """
+
     input_tokens: int = 0
     output_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_creation_tokens: int = 0
+    estimated: bool = False
 
     @property
     def total_tokens(self) -> int:

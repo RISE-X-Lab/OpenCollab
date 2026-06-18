@@ -9,7 +9,12 @@ from __future__ import annotations
 from typing import Any
 
 from opencollab.adapters.llm.retry import with_retry
-from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.adapters.llm.types import (
+    LLMResponse,
+    Usage,
+    estimate_messages_tokens,
+    estimate_tokens,
+)
 
 
 def _build_request_kwargs(
@@ -29,7 +34,7 @@ def _build_request_kwargs(
     return kwargs
 
 
-def _parse_response(resp: Any) -> LLMResponse:
+def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
     choice = resp.choices[0]
     message = choice.message
 
@@ -45,15 +50,55 @@ def _parse_response(resp: Any) -> LLMResponse:
                 },
             })
 
+    usage = _parse_usage(resp, request_messages, message)
     return LLMResponse(
         content=message.content,
         tool_calls=tool_calls,
-        usage=Usage(
-            input_tokens=resp.usage.prompt_tokens if resp.usage else 0,
-            output_tokens=resp.usage.completion_tokens if resp.usage else 0,
-        ),
+        usage=usage,
         finish_reason=choice.finish_reason,
     )
+
+
+def _parse_usage(resp: Any, request_messages: list[dict], message: Any) -> Usage:
+    """Build a ``Usage`` from an OpenAI-compatible response, with estimate fallback.
+
+    Some OpenAI-compatible endpoints (proxies, certain streaming configs,
+    vLLM/Ollama) omit the ``usage`` block or report zero token counts. Left
+    untreated the call would contribute 0 to the budget meter, so the budget
+    would never trip and only ``max_steps`` would bound the session. When the
+    reported counts are missing or zero we fall back to a non-zero estimate
+    derived from the request messages (input) and response text (output).
+
+    Note: OpenAI-compatible ``prompt_tokens`` ALREADY includes cached tokens
+    (``cached_tokens`` appears only as a sub-detail under
+    ``prompt_tokens_details``), so we do NOT add any cache field here — that
+    would double-count. The additive cache fix applies only to Anthropic.
+    """
+    usage = getattr(resp, "usage", None)
+    input_tokens = getattr(usage, "prompt_tokens", 0) or 0 if usage else 0
+    output_tokens = getattr(usage, "completion_tokens", 0) or 0 if usage else 0
+
+    estimated = False
+    if input_tokens <= 0:
+        input_tokens = estimate_messages_tokens(request_messages)
+        estimated = True
+    if output_tokens <= 0:
+        output_tokens = _estimate_output_tokens(message)
+        estimated = True
+
+    return Usage(
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        estimated=estimated,
+    )
+
+
+def _estimate_output_tokens(message: Any) -> int:
+    """Estimate output tokens from response text + serialized tool-call args."""
+    text = message.content or ""
+    for tool_call in message.tool_calls or []:
+        text += tool_call.function.name + tool_call.function.arguments
+    return estimate_tokens(text) if text else 0
 
 
 async def complete_openai(
@@ -70,4 +115,4 @@ async def complete_openai(
         lambda: client.chat.completions.create(**kwargs),
         max_retries=max_retries,
     )
-    return _parse_response(resp)
+    return _parse_response(resp, messages)
