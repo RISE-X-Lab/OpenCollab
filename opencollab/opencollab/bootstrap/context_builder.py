@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from opencollab.adapters.skills.null_skill_store import NullSkillStore
 from opencollab.adapters.trace import Tracer
 from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import (
@@ -19,6 +20,7 @@ from opencollab.application.ports import (
     PermissionPort,
     SafetyPolicyFactory,
     SchedulerPort,
+    SkillStorePort,
 )
 from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
 from opencollab.bootstrap.tool_registry import COORDINATION_TOOL_NAMES, build_tools_for_role
@@ -31,6 +33,7 @@ from opencollab.domain.context import (
     LoadTiming,
 )
 from opencollab.domain.scheduler import DelegationTask
+from opencollab.domain.skill import SkillManifest
 
 
 @dataclass
@@ -63,9 +66,19 @@ class ContextBuilder:
     schemas, so the tool-meta layer is a registered-but-deferred source.
     """
 
-    def __init__(self, team_cfg: TeamConfig, cfg: SpawnConfig):
+    def __init__(
+        self,
+        team_cfg: TeamConfig,
+        cfg: SpawnConfig,
+        *,
+        skill_store: SkillStorePort | None = None,
+    ):
         self._team = team_cfg
         self._cfg = cfg
+        # The skill store is a construction dep: a role's catalog is injected at
+        # plan time and the dispatcher tool is bound to this store. Defaults to
+        # an empty store so call sites that do not wire skills behave as before.
+        self._skill_store: SkillStorePort = skill_store or NullSkillStore()
 
     def build_plan(
         self,
@@ -102,6 +115,21 @@ class ContextBuilder:
                     content=team_section,
                 )
             )
+        # Skill catalog — injected only when the role may invoke ``use_skill``
+        # (no invoke permission → no catalog), and only when at least one skill
+        # exists. SYSTEM position folds it into the cache-stable system prefix.
+        if "use_skill" in role.tools:
+            catalog = _render_skill_catalog(self._skill_store.list_manifests())
+            if catalog:
+                sources.append(
+                    ContextSource(
+                        name="skills",
+                        layer=ContextLayer.SKILL,
+                        timing=LoadTiming.STARTUP,
+                        position=ContextPosition.SYSTEM,
+                        content=catalog,
+                    )
+                )
         # Project conventions — reserved; registered now, loaded later.
         sources.append(
             ContextSource(
@@ -159,7 +187,10 @@ class ContextBuilder:
         if plan is None:
             plan = self.build_plan(role_name)
         tools = build_tools_for_role(
-            role.tools, scheduler=scheduler, interactive=interactive
+            role.tools,
+            scheduler=scheduler,
+            skill_store=self._skill_store,
+            interactive=interactive,
         )
         cfg = self._cfg
         return Agent(
@@ -190,6 +221,27 @@ class ContextBuilder:
                 "`message_agent` to send an async message to one.",
             ]
         return "\n".join(lines)
+
+
+def _render_skill_catalog(manifests: tuple[SkillManifest, ...]) -> str:
+    """Render the model-facing skill catalog, or ``""`` when there are none.
+
+    A short header instructs the model to call ``use_skill(name)``, followed by
+    one ``- {name}: {description}`` line per available skill. Returning an empty
+    string when the store is empty lets ``build_plan`` skip the source entirely.
+    """
+    if not manifests:
+        return ""
+    lines = [
+        "## Skills",
+        "",
+        "Specialized instruction sets you can load on demand. When one matches "
+        "the task, call `use_skill(name)` to pull its full instructions into "
+        "your context.",
+        "",
+    ]
+    lines += [f"- {m.name}: {m.description}" for m in manifests]
+    return "\n".join(lines)
 
 
 __all__ = ["ContextBuilder", "SpawnConfig"]

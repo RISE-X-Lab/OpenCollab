@@ -21,6 +21,7 @@ order acyclic regardless of which module is imported first.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
@@ -29,6 +30,8 @@ from opencollab.adapters.llm import (
     estimate_messages_tokens,
     is_context_overflow_error,
 )
+from opencollab.adapters.skills.file_skill_store import FileSkillStore
+from opencollab.adapters.skills.null_skill_store import NullSkillStore
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.compaction_summary import ReadTimeSummarizer
@@ -41,6 +44,7 @@ from opencollab.application.ports import (
     SafetyPolicyPort,
     SessionStorePort,
     ShaperPort,
+    SkillStorePort,
     TracePort,
 )
 from opencollab.application.session import SessionRuntime
@@ -179,6 +183,22 @@ def _build_default_shaper(
     )
 
 
+def build_skill_store(workspace: str | None) -> SkillStorePort:
+    """Resolve the workspace's ``skills/`` directory into a skill store.
+
+    A repo opts into skills by adding a ``skills/`` directory at its root. When
+    that directory exists we scan it with ``FileSkillStore``; otherwise (no
+    workspace, or no ``skills/`` dir) we return a ``NullSkillStore`` so behavior
+    is byte-identical to today — no catalog appears and no body resolves. This
+    is the only place that picks the concrete store type.
+    """
+    if workspace:
+        skills_root = Path(workspace) / "skills"
+        if skills_root.is_dir():
+            return FileSkillStore(skills_root)
+    return NullSkillStore()
+
+
 def build_session_runtime(
     *,
     agent: Agent,
@@ -311,6 +331,7 @@ __all__ = [
     "build_runtime_context",
     "build_session",
     "build_session_runtime",
+    "build_skill_store",
     "build_scheduler",
     "build_spawn_session",
     "build_tools_for_role",
