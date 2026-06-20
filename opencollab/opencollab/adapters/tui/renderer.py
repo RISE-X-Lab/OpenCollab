@@ -49,7 +49,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         # When filtering is on, only the selected agent's text stream is shown.
         # Tool/status events stay visible for every agent so background work
         # does not look frozen while a teammate is running.
-        # Defaults to the Lead (aid 0); a future "/" picker switches it.
+        # Defaults to the Lead (aid 0).
         self._filter_messages = filter_messages
         self._selected_aid = 0
         # Optional callable returning the full team roster (live agents +
@@ -61,20 +61,6 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         """Supply a callable returning the full team roster so the live display
         shows the team continuously (matching the prompt's bottom toolbar)."""
         self._team_provider = provider
-
-    def select_agent(self, aid: int) -> None:
-        """Focus the filtered message view on one agent (the "/" picker hook)."""
-        self._selected_aid = aid
-        self._refresh()
-
-    def set_filter(self, enabled: bool) -> None:
-        """Turn per-agent message filtering on or off at runtime."""
-        self._filter_messages = enabled
-        self._refresh()
-
-    @property
-    def selected_aid(self) -> int:
-        return self._selected_aid
 
     def _refresh(self) -> None:
         """Re-render the current state."""

@@ -334,8 +334,9 @@ def test_deferred_spawn_suspends_then_resumes_after_fill():
     assert state.phase is SessionPhase.AWAITING_EVENTS
     assert result == "spawning"
     assert len(llm.calls) == 1
-    row = state.pending_events.find_by_ref(7)
+    row = state.pending_events.rows["s1"]
     assert row.tool_call_id == "s1"
+    assert row.ref == 7
     assert row.kind is RowKind.CHILD_AGENT
     assert row.status is RowStatus.PENDING
 

@@ -50,7 +50,7 @@ class _RendererEventsMixin:
             tool = event.data.get("tool", "?")
             role = event.data.get("role", "")
             args = event.data.get("args", {})
-            if not role and tool in ("spawn_agent", "spawn_with_review") and isinstance(args, dict):
+            if not role and tool == "spawn_agent" and isinstance(args, dict):
                 role = str(args.get("role", ""))
             label = f"{agent_label}:{tool}"
             self._active_tools[label] = event.data

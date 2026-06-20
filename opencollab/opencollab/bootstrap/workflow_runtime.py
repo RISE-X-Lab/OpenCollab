@@ -40,9 +40,6 @@ WORKFLOW_AGENT_PROMPT = (
     "Be concise and finish with a clear final answer."
 )
 
-# Per-call token cap handed to a session when the workflow budget is unbounded.
-UNBOUNDED_SESSION_BUDGET = 1_000_000
-
 # Longest slug kept from an agent label when naming its transcript file.
 _MAX_SLUG_LEN = 40
 
@@ -318,7 +315,6 @@ def _load_specs_from_file(path: str) -> list[WorkflowSpec]:
 
 
 __all__ = [
-    "UNBOUNDED_SESSION_BUDGET",
     "WORKFLOW_AGENT_PROMPT",
     "WorkflowSessionFactory",
     "build_session",

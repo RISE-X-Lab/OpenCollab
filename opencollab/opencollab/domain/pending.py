@@ -2,7 +2,7 @@
 
 When a run loop emits a batch of tool calls, every call gets a row here keyed by
 its ``tool_call_id``. Immediate (synchronous) tools fill their row at once;
-deferrable tools (a spawned child agent, a future external job) leave a PENDING
+deferrable tools (a spawned child agent) leave a PENDING
 row that the scheduler fills when the result arrives. The session resumes from
 ``AWAITING_EVENTS`` only once every row is filled, then drains
 ``ordered_results`` back into the message history as one contiguous tool-result
@@ -22,7 +22,6 @@ from enum import Enum
 class RowKind(Enum):
     IMMEDIATE = "immediate"
     CHILD_AGENT = "child_agent"
-    EXTERNAL = "external"
 
 
 class RowStatus(Enum):
@@ -98,19 +97,6 @@ class PendingEventTable:
         return [
             {"role": "tool", "tool_call_id": row.tool_call_id, "content": row.result or ""}
             for row in sorted(self.rows.values(), key=lambda r: r.order)
-        ]
-
-    def find_by_ref(self, ref: int | str) -> PendingRow | None:
-        for row in self.rows.values():
-            if row.ref == ref:
-                return row
-        return None
-
-    def pending_refs(self) -> list[int | str]:
-        return [
-            row.ref
-            for row in self.rows.values()
-            if row.status is RowStatus.PENDING and row.ref is not None
         ]
 
     def clear(self) -> None:
