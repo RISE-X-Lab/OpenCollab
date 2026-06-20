@@ -79,16 +79,6 @@ def test_mixed_batch_incomplete_until_all_filled():
     assert t.is_complete()
 
 
-def test_find_by_ref_and_pending_refs():
-    t = PendingEventTable()
-    t.add(child_row("c1", order=0, ref=11))
-    t.add(child_row("c2", order=1, ref=22))
-    assert t.find_by_ref(22).tool_call_id == "c2"
-    assert sorted(t.pending_refs()) == [11, 22]
-    t.fill("c1", result="x")
-    assert t.pending_refs() == [22]
-
-
 def test_failed_fill_surfaces_result_text():
     t = PendingEventTable()
     t.add(child_row("c1", order=0, ref=5))

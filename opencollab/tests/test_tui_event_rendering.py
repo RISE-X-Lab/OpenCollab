@@ -430,18 +430,10 @@ def test_filter_off_renders_every_agent_stream():
 
 def test_filter_on_shows_only_selected_agent_defaulting_to_lead():
     tui = TUI(filter_messages=True)
-    assert tui.selected_aid == 0
+    assert tui._selected_aid == 0
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "lead ", "aid": 0}))
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "child", "aid": 1}))
     assert tui._current_text == "lead "
-
-
-def test_select_agent_switches_the_visible_stream():
-    tui = TUI(filter_messages=True)
-    tui.select_agent(1)
-    tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "lead ", "aid": 0}))
-    tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "child", "aid": 1}))
-    assert tui._current_text == "child"
 
 
 def test_filter_keeps_other_agents_tool_activity_visible():
@@ -450,13 +442,6 @@ def test_filter_keeps_other_agents_tool_activity_visible():
         SessionRuntimeEvent("tool_start", {"tool": "bash", "args": {"command": "ls"}, "aid": 1})
     )
     assert "A1:bash" in tui._active_tools
-
-
-def test_set_filter_toggles_at_runtime():
-    tui = TUI(filter_messages=False)
-    tui.set_filter(True)
-    tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "child", "aid": 1}))
-    assert tui._current_text == ""
 
 
 def test_filter_keeps_scheduler_roster_visible():

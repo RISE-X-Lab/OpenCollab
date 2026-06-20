@@ -110,9 +110,6 @@ class SessionTable:
     def get(self, aid: int) -> SessionControlBlock | None:
         return self.entries.get(aid)
 
-    def children_of(self, parent_aid: int) -> list[SessionControlBlock]:
-        return [scb for scb in self.entries.values() if scb.parent_aid == parent_aid]
-
     @property
     def total_used_tokens(self) -> int:
         return sum(scb.state.used_tokens for scb in self.entries.values())
