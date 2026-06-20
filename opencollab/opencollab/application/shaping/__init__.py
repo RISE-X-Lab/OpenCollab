@@ -9,7 +9,11 @@ view.
 
 The pipeline is an ordered, **lazy-degradation** chain (Liu et al. 2026,
 §3.1/4.3): cheaper, lower-loss layers run before costlier ones, and each layer
-only acts under the pressure it is responsible for. Two orthogonal pressures:
+only acts under the pressure it is responsible for. The single exception is the
+front rung — ``EagerToolOutputClearShaper`` (``eager``) — which runs
+*unconditionally* on every call (no trigger), clearing old compactable tool
+content age-based and deterministically so the deep prefix stays cacheable and
+the reactive layers below rarely have to fire. Two orthogonal pressures:
 
 * **Per-message explosion** — ``PerToolResultBudgetShaper`` (``tool_budget``)
   caps *any one* tool result. It is unconditional: every oversize result is
@@ -42,6 +46,11 @@ Package layout: ``pipeline`` (chain + trigger math + span helpers),
 ``tool_budget`` (per-result cap), ``reactive`` (the history layers).
 """
 
+from opencollab.application.shaping.eager import (
+    DEFAULT_EAGER_KEEP_RECENT,
+    EAGER_STUB_PREFIX,
+    EagerToolOutputClearShaper,
+)
 from opencollab.application.shaping.pipeline import (
     DEFAULT_COMPACT_BUFFER_TOKENS,
     DEFAULT_HISTORY_KEEP_RECENT_GROUPS,
@@ -80,6 +89,8 @@ __all__ = [
     "DEFAULT_CLEARED_TOOL_CONTENT",
     "DEFAULT_TOOL_CLEAR_KEEP_RECENT",
     "DEFAULT_COMPACTABLE_TOOLS",
+    "DEFAULT_EAGER_KEEP_RECENT",
+    "EAGER_STUB_PREFIX",
     "DEFAULT_OUTPUT_RESERVE_TOKENS",
     "DEFAULT_COMPACT_BUFFER_TOKENS",
     "HISTORY_TARGET_RATIO",
@@ -91,6 +102,7 @@ __all__ = [
     "history_trigger_target",
     "ShaperPipeline",
     "PerToolResultBudgetShaper",
+    "EagerToolOutputClearShaper",
     "ToolOutputClearShaper",
     "LowPriorityContextShedShaper",
     "OldHistorySnipShaper",
