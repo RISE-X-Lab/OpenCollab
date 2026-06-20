@@ -136,7 +136,11 @@ class EagerToolOutputClearShaper:
         Pinned issuing turns are skipped. The last ``keep_recent`` ids are
         excluded so they stay verbatim.
         """
-        compactable: list[tuple[str, str]] = []  # (tool_call_id, stub)
+        # Collect raw (id, name, arguments) for every compactable call first, then
+        # parse arguments + build stubs ONLY for the older calls that get cleared —
+        # the last ``keep_recent`` are kept verbatim, so parsing their JSON every
+        # turn would be pure waste on this always-on rung.
+        compactable: list[tuple[str, str, Any]] = []  # (tool_call_id, name, arguments)
         for message in messages:
             if message.get("role") != "assistant" or is_pinned(message):
                 continue
@@ -144,8 +148,12 @@ class EagerToolOutputClearShaper:
                 name = call.get("function", {}).get("name")
                 call_id = call.get("id")
                 if name in self.compactable_tools and call_id:
-                    target = _call_target(call.get("function", {}).get("arguments"))
-                    compactable.append((call_id, _stub_for_call(name, target)))
+                    compactable.append(
+                        (call_id, name, call.get("function", {}).get("arguments"))
+                    )
         if len(compactable) <= self.keep_recent:
             return {}
-        return dict(compactable[: -self.keep_recent])
+        return {
+            call_id: _stub_for_call(name, _call_target(arguments))
+            for call_id, name, arguments in compactable[: -self.keep_recent]
+        }
