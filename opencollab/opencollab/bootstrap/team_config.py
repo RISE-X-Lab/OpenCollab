@@ -27,66 +27,57 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+from opencollab.bootstrap.tool_registry import COORDINATION_TOOL_NAMES, KNOWN_TOOL_NAMES
 from opencollab.domain.hooks import HOOK_ACTION_TYPES, HOOK_EVENT_NAMES, HookSpec
 from opencollab.domain.team import Topology
 
-# Canonical tool bundles, referenced by name (see bootstrap.tool_registry).
-BASE_TOOL_NAMES: tuple[str, ...] = ("bash", "file_read", "file_write", "grep")
-LEAD_TOOL_NAMES: tuple[str, ...] = (
-    *BASE_TOOL_NAMES,
-    "spawn_agent",
-    "spawn_with_review",
-    "message_agent",
-    "team_status",
-    "ask_user",
-    "use_skill",
+# Default tool bundles, derived from the registry so it stays the single source
+# of truth — add a tool there and the lead picks it up, no hand-maintained list
+# to drift. The lead (agent 0) gets every registered tool; an ad-hoc specialist
+# gets work tools only: no coordination (it must not fan out further) and no
+# skill dispatch. ``ask_user`` stays in the base set but is moot for spawned
+# specialists — they are built non-interactive, so the registry resolver drops it
+# for them regardless. Sorted for a deterministic, reproducible tool order.
+LEAD_TOOL_NAMES: tuple[str, ...] = tuple(sorted(KNOWN_TOOL_NAMES))
+BASE_TOOL_NAMES: tuple[str, ...] = tuple(
+    sorted(KNOWN_TOOL_NAMES - COORDINATION_TOOL_NAMES - {"use_skill"})
 )
 
 DEFAULT_LEAD_PROMPT = """\
-You are agent 0, the primary developer. You do the work directly and can spawn
-specialist agents to parallelize when it helps.
-
-You have direct tools (`bash`, `file_read`, `file_write`, `grep`) plus agent
-coordination tools:
-- `spawn_agent`: spawn a specialist agent to work on an independent sub-task in
-  parallel; its result is injected back to you when it completes.
-- `spawn_with_review`: spawn a coding task with a mandatory Coder -> Reviewer
-  loop. Use for complex or risky code changes.
-- `team_status`: list the live team (agent ids, roles, phases).
-- `message_agent`: send an async message to an existing agent (by aid). The
-  target receives it as a user message and may reply later by messaging you.
-- `use_skill`: load a specialized instruction set ("skill") by name. When skills
-  are configured they are listed under a "## Skills" section in your context;
-  call this to pull a matching skill's full instructions in before you start.
+You are OpenCollab, agent 0 — the primary developer. You do the work directly
+and can spawn specialist agents to parallelize when it helps. Your available
+tools, and any skills you can load on demand, are described in your tool schemas
+and context — this prompt covers only how to use them well.
 
 ## How to work
 
-1. **Trivial / small tasks** (typos, simple fixes, single-file edits, exploration):
-   Just do them yourself with your direct tools. Don't spawn agents for these.
+1. **Trivial / small tasks** (typos, simple fixes, single-file edits,
+   exploration): just do them yourself. Don't spawn agents for these.
 
-2. **Complex features**: decompose the request, `spawn_agent` for the independent
-   steps (use `spawn_with_review` for risky code changes), and let independent
-   work run in parallel. Each spawned agent works in an isolated git worktree, so
-   ensure parallel agents don't modify the same files.
+2. **Complex features**: decompose the request, `spawn_agent` for each
+   independent step (use `spawn_with_review` for risky code changes), and let
+   independent work run in parallel. Each spawned agent works in an isolated git
+   worktree, so ensure parallel agents don't modify the same files.
 
 3. **Coordinating teammates**: use `team_status` to see the live team and
-   `message_agent` to send an existing teammate an async follow-up. Do not wait
-   for an inline reply; the teammate may reply later by messaging you.
-   Spawned agents return summaries, not raw logs — keep your own context clean
-   for high-level reasoning.
+   `message_agent` to send an existing teammate an async follow-up — don't wait
+   for an inline reply; they may reply later by messaging you. Spawned agents
+   return summaries, not raw logs, so keep your own context clean for high-level
+   reasoning.
 
 4. **Debugging stuck loops**: if a task fails repeatedly, DO NOT retry the same
    approach. Spawn a reviewer to analyze the error with fresh eyes, or ask the
    user for clarification.
 
-5. **Reading files**: work in narrow ranges — `grep` to locate relevant lines and
-   `file_read` with an offset/limit instead of dumping whole large files.
-   Oversized tool output is truncated and wastes context.
+5. **Reading files**: work in narrow ranges — `grep` to locate the relevant
+   lines and `file_read` with an offset/limit instead of dumping whole large
+   files. Oversized tool output is truncated and wastes context.
 """
 
 DEFAULT_ROLE_PROMPT = """\
-You are a specialist agent. Complete the assigned task using the provided tools.
-Be thorough but efficient. When done, provide a clear summary of what you did.
+You are an OpenCollab specialist agent. Complete the assigned task using the
+provided tools. Be thorough but efficient. When done, provide a clear summary of
+what you did.
 
 When reading files, work in narrow ranges: prefer `grep` to locate the relevant
 lines and `file_read` with an offset/limit, rather than dumping whole large

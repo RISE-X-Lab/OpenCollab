@@ -8,7 +8,7 @@ from opencollab.bootstrap import (
     build_runtime_context,
     build_scheduler,
 )
-from opencollab.bootstrap.team_config import DEFAULT_LEAD_PROMPT
+from opencollab.bootstrap.team_config import DEFAULT_LEAD_PROMPT, LEAD_TOOL_NAMES
 
 
 def _cfg(**overrides):
@@ -46,12 +46,12 @@ def test_build_scheduler_lead_has_spawn_tools(tmp_path):
     system_message = lead.messages[0]
     assert system_message["role"] == "system"
 
+    # The no-team default lead gets every registered tool (interactive ⇒
+    # ask_user kept); the set is derived from the registry, so assert against
+    # the source constant rather than a frozen literal that would drift.
     tool_names = {t.name for t in lead.agent.tools}
-    assert tool_names == {
-        "bash", "file_read", "file_write", "grep",
-        "spawn_agent", "spawn_with_review", "message_agent", "team_status", "ask_user",
-        "use_skill",
-    }
+    assert tool_names == set(LEAD_TOOL_NAMES)
+    assert {"spawn_agent", "spawn_with_review"} <= tool_names
 
 
 def test_build_scheduler_lead_omits_ask_user_when_headless(tmp_path):
