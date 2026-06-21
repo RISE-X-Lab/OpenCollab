@@ -6,6 +6,8 @@ import pytest
 
 from opencollab.bootstrap.team_config import (
     BASE_TOOL_NAMES,
+    DEFAULT_LEAD_PROMPT,
+    DEFAULT_ROLE_PROMPT,
     LEAD_TOOL_NAMES,
     RoleConfig,
     default_team_config,
@@ -36,6 +38,15 @@ def _write_team(tmp_path, monkeypatch, yaml_text=TEAM_YAML, coder_prompt="Coder 
     prompts.mkdir()
     (prompts / "coder.md").write_text(coder_prompt)
     monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(configs / "team.yaml"))
+
+
+def test_default_prompts_load_from_packaged_files():
+    # The built-in defaults are data files under bootstrap/prompts/; guard that
+    # they load (non-empty, correct identity) so a packaging regression fails here
+    # rather than silently shipping an empty system prompt.
+    assert DEFAULT_LEAD_PROMPT.startswith("You are OpenCollab, agent 0")
+    assert "spawn_with_review" in DEFAULT_LEAD_PROMPT
+    assert DEFAULT_ROLE_PROMPT.startswith("You are an OpenCollab specialist agent.")
 
 
 def test_default_team_is_lead_only_with_allow_all(monkeypatch):
