@@ -49,6 +49,16 @@ def test_default_prompts_load_from_packaged_files():
     assert DEFAULT_ROLE_PROMPT.startswith("You are an OpenCollab specialist agent.")
 
 
+def test_lead_prompt_has_anti_thrash_recon_strategy():
+    # The per-read distill rule lives in the file_read tool description (universal
+    # across all workflows/teams). The lead prompt keeps only the lead-specific
+    # strategy: stop reading once notes cover the task, and delegate sprawling
+    # recon. Regression for the 90-read/0-write stall (session 2026-06-21T20-28-41).
+    assert "thrash" in DEFAULT_LEAD_PROMPT
+    assert "STOP reading" in DEFAULT_LEAD_PROMPT
+    assert "spawn_agent" in DEFAULT_LEAD_PROMPT  # delegate when recon sprawls
+
+
 def test_default_team_is_lead_only_with_allow_all(monkeypatch):
     monkeypatch.delenv("OPENCOLLAB_TEAM_FILE", raising=False)
     cfg = default_team_config()
