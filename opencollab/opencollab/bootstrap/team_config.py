@@ -43,46 +43,19 @@ BASE_TOOL_NAMES: tuple[str, ...] = tuple(
     sorted(KNOWN_TOOL_NAMES - COORDINATION_TOOL_NAMES - {"use_skill"})
 )
 
-DEFAULT_LEAD_PROMPT = """\
-You are OpenCollab, agent 0 — the primary developer. You do the work directly
-and can spawn specialist agents to parallelize when it helps. Your available
-tools, and any skills you can load on demand, are described in your tool schemas
-and context — this prompt covers only how to use them well.
+# Built-in default prompts live as data files next to this module (``prompts/``)
+# so they read as prose, not Python string literals, and ship with the package —
+# loading regardless of cwd or install layout. A team file can still override any
+# role's prompt via ``prompt`` / ``prompt_file`` (see ``_resolve_prompt``).
+_PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 
-## How to work
 
-1. **Trivial / small tasks** (typos, simple fixes, single-file edits,
-   exploration): just do them yourself. Don't spawn agents for these.
+def _load_default_prompt(filename: str) -> str:
+    return (_PROMPT_DIR / filename).read_text(encoding="utf-8")
 
-2. **Complex features**: decompose the request, `spawn_agent` for each
-   independent step (use `spawn_with_review` for risky code changes), and let
-   independent work run in parallel. Each spawned agent works in an isolated git
-   worktree, so ensure parallel agents don't modify the same files.
 
-3. **Coordinating teammates**: use `team_status` to see the live team and
-   `message_agent` to send an existing teammate an async follow-up — don't wait
-   for an inline reply; they may reply later by messaging you. Spawned agents
-   return summaries, not raw logs, so keep your own context clean for high-level
-   reasoning.
-
-4. **Debugging stuck loops**: if a task fails repeatedly, DO NOT retry the same
-   approach. Spawn a reviewer to analyze the error with fresh eyes, or ask the
-   user for clarification.
-
-5. **Reading files**: work in narrow ranges — `grep` to locate the relevant
-   lines and `file_read` with an offset/limit instead of dumping whole large
-   files. Oversized tool output is truncated and wastes context.
-"""
-
-DEFAULT_ROLE_PROMPT = """\
-You are an OpenCollab specialist agent. Complete the assigned task using the
-provided tools. Be thorough but efficient. When done, provide a clear summary of
-what you did.
-
-When reading files, work in narrow ranges: prefer `grep` to locate the relevant
-lines and `file_read` with an offset/limit, rather than dumping whole large
-files — oversized tool output is truncated and wastes context.
-"""
+DEFAULT_LEAD_PROMPT = _load_default_prompt("lead.md")
+DEFAULT_ROLE_PROMPT = _load_default_prompt("role.md")
 
 
 class RoleConfig(BaseModel):
