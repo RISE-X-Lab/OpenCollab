@@ -29,3 +29,9 @@ and context — this prompt covers only how to use them well.
    that file with `offset` near the matched line (e.g. `offset = line - 20`,
    `limit ~ 60`). A no-range `file_read` silently stops at the first 500 lines,
    so a ranged read also avoids missing the tail of big files.
+
+6. **Don't thrash on recon**: distill each read into a written line (the
+   `file_read` tool spells this out) — those notes, not your context, are your
+   memory. Once they cover the task, STOP reading and produce the artifact. If
+   recon sprawls across many files, `spawn_agent` to map a part and return a
+   summary rather than reading it all into your own context.

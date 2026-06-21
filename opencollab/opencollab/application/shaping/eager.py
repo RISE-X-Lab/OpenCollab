@@ -37,9 +37,14 @@ from opencollab.application.shaping.pipeline import is_pinned
 from opencollab.application.shaping.reactive import DEFAULT_COMPACTABLE_TOOLS
 
 # K most-recent compactable tool results kept verbatim; everything older is
-# stubbed. Aligned with the reactive keep-recent (``DEFAULT_TOOL_CLEAR_KEEP_RECENT``)
-# so the eager rung and the reactive layer agree on what "recent" means.
-DEFAULT_EAGER_KEEP_RECENT = 5
+# stubbed. Set ABOVE the reactive keep-recent (``DEFAULT_TOOL_CLEAR_KEEP_RECENT``)
+# on purpose: this rung runs at LOW context, where the cost of dropping a still-
+# needed read is a re-read loop (a multi-file task whose working set exceeds K
+# can never hold all its files at once and thrashes), so it retains more. The
+# reactive layer stays tighter for genuine 120k pressure. The informative stubs
+# below (which name the exact slice already read) are what make a cleared result
+# safe — the model can see it already read X without re-fetching it.
+DEFAULT_EAGER_KEEP_RECENT = 12
 
 # Marker prefix on every eager stub. A stub announces itself (no invisible
 # compression) and names the source tool + target so a reader / the model can
@@ -48,26 +53,27 @@ EAGER_STUB_PREFIX = "[Old tool result cleared"
 
 
 def _stub_for_call(tool_name: str, target: str | None) -> str:
-    """Deterministic, byte-stable stub naming the tool and its target.
+    """Deterministic, byte-stable stub naming the tool, its target and (for reads)
+    the exact slice already seen.
 
     A pure function of ``(tool_name, target)`` — no token counts, no message
     index, no randomness — so the same old message yields an identical stub on
-    every turn (the monotonic / cacheable property).
+    every turn (the monotonic / cacheable property). The wording tells the model
+    it ALREADY ran this call and the output is in the transcript, so it does not
+    re-issue the call merely to re-confirm what it read — the failure mode that
+    burns a whole step budget on identical re-reads.
     """
     where = f" {target}" if target else ""
     return (
         f"{EAGER_STUB_PREFIX}: {tool_name}{where}]"
-        " — re-read with offset/limit if needed."
+        " — you already ran this; the full output is in the transcript above."
+        " Re-issue ONLY if you need the exact content again, not to check whether"
+        " you read it."
     )
 
 
-def _call_target(arguments: Any) -> str | None:
-    """Best-effort path/target lifted from a tool call's arguments.
-
-    Arguments are typically a JSON string; we only need a stable label for the
-    stub, so we read common keys when the payload is a dict and otherwise return
-    ``None``. Parsing is deterministic and never raises.
-    """
+def _as_dict(arguments: Any) -> dict[str, Any] | None:
+    """A tool call's arguments as a dict, or ``None``. Deterministic; never raises."""
     if isinstance(arguments, str):
         import json
 
@@ -75,10 +81,44 @@ def _call_target(arguments: Any) -> str | None:
             arguments = json.loads(arguments)
         except (ValueError, TypeError):
             return None
-    if not isinstance(arguments, dict):
+    return arguments if isinstance(arguments, dict) else None
+
+
+def _range_label(arguments: dict[str, Any]) -> str:
+    """`` lines A-B`` / `` from line A`` / `` first N lines`` / `` (whole file)``,
+    derived only from integer ``offset``/``limit`` so it is byte-stable."""
+    offset = arguments.get("offset")
+    limit = arguments.get("limit")
+    off = offset if isinstance(offset, int) else None
+    lim = limit if isinstance(limit, int) else None
+    if off is not None and lim is not None:
+        return f" lines {off}-{off + lim - 1}"
+    if off is not None:
+        return f" from line {off}"
+    if lim is not None:
+        return f" first {lim} lines"
+    return " (whole file)"
+
+
+def _call_target(tool_name: str | None, arguments: Any) -> str | None:
+    """Best-effort target label lifted from a tool call's arguments.
+
+    For ``file_read`` the label carries the exact line range already seen
+    (``foo.py lines 1-100``) so each page of a multi-page read gets a DISTINCT
+    stub — otherwise every page of one file collapses to the same stub and the
+    model cannot tell which slice it already holds. Other tools keep their plain
+    path/pattern/command label. Deterministic; never raises.
+    """
+    parsed = _as_dict(arguments)
+    if parsed is None:
         return None
+    if tool_name == "file_read":
+        for key in ("path", "file_path", "filename", "file"):
+            value = parsed.get(key)
+            if isinstance(value, str) and value:
+                return f"{value}{_range_label(parsed)}"
     for key in ("path", "file_path", "filename", "file", "pattern", "command"):
-        value = arguments.get(key)
+        value = parsed.get(key)
         if isinstance(value, str) and value:
             return value
     return None
@@ -154,6 +194,6 @@ class EagerToolOutputClearShaper:
         if len(compactable) <= self.keep_recent:
             return {}
         return {
-            call_id: _stub_for_call(name, _call_target(arguments))
+            call_id: _stub_for_call(name, _call_target(name, arguments))
             for call_id, name, arguments in compactable[: -self.keep_recent]
         }

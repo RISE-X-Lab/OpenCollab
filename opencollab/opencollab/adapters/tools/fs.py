@@ -36,7 +36,12 @@ class FileReadTool(Tool):
     description = (
         "Read a file's content. Supports reading specific line ranges. "
         "Returns content with line numbers. "
-        "On large files, prefer a ranged read (offset/limit) over reading the whole file."
+        "On large files, prefer a ranged read (offset/limit) over reading the whole file. "
+        "Distill as you read: after a read, write one line of what you learned before "
+        "your next tool call — never send a tool call with an empty reply. Old reads are "
+        "later cleared to a stub naming what you already read (e.g. "
+        "'[...file_read foo.py lines 1-100...]'); trust that stub plus your own notes and "
+        "do NOT re-read the same range to reconfirm what you already saw."
     )
     parameters = {
         "type": "object",
@@ -295,7 +300,16 @@ class GrepTool(Tool):
         rg_cmd = f"rg -n --max-count {max_results} "
         if glob_pattern:
             rg_cmd += f"-g {shlex.quote(glob_pattern)} "
-        rg_cmd += f"{quoted_pattern} {quoted_search_path} 2>/dev/null || grep -rn "
+        rg_cmd += f"{quoted_pattern} {quoted_search_path} 2>/dev/null"
+        # Fallback when rg is missing from PATH: grep MUST use -E (ERE) so that
+        # `a|b|c` alternation works. Plain grep is BRE, where `|` is a literal
+        # character — an alternation pattern then silently matches nothing. Also
+        # exclude VCS/venv and the .opencollab session dir so the fallback can't
+        # "match" its own logged pattern strings instead of real source.
+        rg_cmd += (
+            " || grep -rEn"
+            " --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.opencollab "
+        )
         if glob_pattern:
             rg_cmd += f"--include={shlex.quote(glob_pattern)} "
         rg_cmd += f"{quoted_pattern} {quoted_search_path} 2>/dev/null | head -n {max_results}"
