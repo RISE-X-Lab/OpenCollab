@@ -143,6 +143,43 @@ def test_stub_names_tool_and_target():
     assert "file_read" in stub and "src/foo.py" in stub
 
 
+def test_default_keep_recent_retains_more_than_legacy_five():
+    # Regression: keep_recent=5 made a multi-file task (working set > 5 reads)
+    # thrash — it could never hold all its files at once, so it re-read them in a
+    # loop until the step cap. The default now retains 12, so a ~13-read recon
+    # keeps all but the single oldest verbatim.
+    out = EagerToolOutputClearShaper().shape(_history(13))  # DEFAULT keep_recent
+    stubbed = {
+        m["tool_call_id"]
+        for m in out
+        if m.get("role") == "tool" and _is_stub(m["content"])
+    }
+    assert stubbed == {"t1"}  # only the oldest (13 - 12)
+    assert not _is_stub(_tool_content(out, "t6"))  # was stubbed under the old K=5
+
+
+def test_stub_includes_read_range_so_pages_get_distinct_stubs():
+    # Regression: each page of a multi-page read must yield a DISTINCT stub naming
+    # its line range, so a cleared paged read tells the model exactly which slice
+    # it already holds (and need not re-read). Identical stubs per file caused the
+    # model to re-read pages it had already seen.
+    messages = [
+        _sys(),
+        *_exchange("p1", name="file_read",
+                   arguments='{"path": "a.py", "offset": 1, "limit": 100}'),
+        *_exchange("p2", name="file_read",
+                   arguments='{"path": "a.py", "offset": 101, "limit": 100}'),
+        *_exchange("x"), *_exchange("y"), *_exchange("z"),
+    ]
+    out = EagerToolOutputClearShaper(keep_recent=3).shape(messages)
+    s1 = _tool_content(out, "p1")
+    s2 = _tool_content(out, "p2")
+    assert "a.py lines 1-100" in s1
+    assert "a.py lines 101-200" in s2
+    assert s1 != s2
+    assert "already ran this" in s1  # wording discourages a re-read-to-reconfirm
+
+
 # --- MONOTONIC ---
 
 

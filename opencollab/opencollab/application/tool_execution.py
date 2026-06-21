@@ -168,8 +168,15 @@ class ToolExecutionUseCase:
         return hashlib.md5(json.dumps({"name": tool_name, "args": args}, sort_keys=True).encode()).hexdigest()
 
     def count_recent_similar_calls(self, recent_call_hashes: list[str], call_hash: str) -> int:
-        # Check for repeated identical calls (ref: opencode doom_loop)
-        return sum(1 for h in recent_call_hashes[-MAX_SIMILAR_CALLS * 2 :] if h == call_hash)
+        # Count identical calls across the WHOLE per-turn window (already capped at
+        # MAX_CALL_HASH_WINDOW and reset each turn), not just the last few. A model
+        # thrashing in a multi-call CYCLE — read A,B,C,…,A,B,C,… because cleared
+        # tool outputs forced re-reads — repeats each hash only once per cycle
+        # (10-17 calls apart in observed 100-step stalls), so the old last-6 slice
+        # never saw three of them and the loop ran to the step cap. Scanning the
+        # full window catches cyclic re-reads, not only back-to-back spam.
+        # (ref: opencode doom_loop)
+        return sum(1 for h in recent_call_hashes if h == call_hash)
 
     def find_tool(self, tool_name: str):
         return self.agent.find_tool(tool_name)
