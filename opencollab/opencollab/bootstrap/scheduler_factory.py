@@ -17,6 +17,7 @@ from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.event_bus import EventBus
 from opencollab.application.hooks import HookEventSubscriber
 from opencollab.application.scheduler import LaunchSpec, Scheduler
+from opencollab.bootstrap.config import DEFAULT_TEMPERATURE
 from opencollab.bootstrap.container import RuntimeContext, build_workspace_safety_policy
 from opencollab.bootstrap.context_builder import SpawnConfig
 from opencollab.bootstrap.session_factory import (
@@ -67,6 +68,7 @@ def build_scheduler(
             api_key=cfg["api_key"],
             base_url=cfg["base_url"],
             llm_timeout=cfg.get("llm_timeout", 600.0),
+            temperature=cfg.get("temperature", DEFAULT_TEMPERATURE),
             tracer=ctx.tracer,
             event_bus=event_bus,
             permission_policy=ctx.permission_policy,

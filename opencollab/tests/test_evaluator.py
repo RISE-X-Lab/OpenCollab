@@ -97,6 +97,7 @@ def test_run_eval_task_honors_injected_params(monkeypatch, tmp_path):
         captured["prompt"] = agent.system_prompt
         captured["tools"] = list(agent.tools)
         captured["max_steps"] = max_steps
+        captured["temperature"] = agent.temperature
         return real_build_session(agent=agent, max_steps=max_steps, **kwargs)
 
     monkeypatch.setattr(evaluator, "build_session", spy_build_session)
@@ -111,11 +112,13 @@ def test_run_eval_task_honors_injected_params(monkeypatch, tmp_path):
         tools_factory=lambda: [sentinel_tool],
         env_factory=env_factory,
         max_steps=7,
+        temperature=0.55,
     ))
 
     assert captured["prompt"] == "CUSTOM PROMPT"
     assert captured["tools"] == [sentinel_tool]
     assert captured["max_steps"] == 7
+    assert captured["temperature"] == 0.55
 
 
 def test_default_tools_match_curated_team_surface():

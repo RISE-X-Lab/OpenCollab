@@ -49,6 +49,7 @@ def resolve_config(workspace: str, model: str | None, provider: str | None,
         "api_key": api_key or cfg["api_key"],
         "base_url": base_url or cfg["base_url"],
         "budget": budget if budget is not None else _safe_int(cfg["budget"], 200_000),
+        "temperature": cfg["temperature"],
         "llm_timeout": cfg["llm_timeout"],
         "filter_messages": bool(cfg["filter_messages"]),
     }

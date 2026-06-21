@@ -24,6 +24,7 @@ def _isolate_config_env(monkeypatch, tmp_path):
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     monkeypatch.delenv("OPENCOLLAB_LLM_TIMEOUT", raising=False)
+    monkeypatch.delenv("OPENCOLLAB_TEMPERATURE", raising=False)
 
 
 def test_filter_messages_defaults_off(monkeypatch):
@@ -56,6 +57,33 @@ def test_llm_timeout_defaults_to_long_running_provider_window(monkeypatch):
 def test_llm_timeout_reads_env(monkeypatch):
     monkeypatch.setenv("OPENCOLLAB_LLM_TIMEOUT", "120.5")
     assert build_config().llm_timeout == 120.5
+
+
+def test_temperature_defaults_to_two_tenths(monkeypatch):
+    assert build_config().temperature == 0.2
+
+
+def test_temperature_reads_env(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_TEMPERATURE", "0.7")
+    assert build_config().temperature == 0.7
+
+
+def test_temperature_allows_zero(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_TEMPERATURE", "0")
+    assert build_config().temperature == 0.0
+
+
+def test_temperature_rejects_out_of_range(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_TEMPERATURE", "3.0")
+    with pytest.raises(Exception):
+        build_config()
+
+
+def test_temperature_surfaces_in_get_config_dict(monkeypatch):
+    from opencollab.bootstrap.config import get_config
+
+    monkeypatch.setenv("OPENCOLLAB_TEMPERATURE", "0.9")
+    assert get_config()["temperature"] == 0.9
 
 
 def test_dashscope_api_key_is_supported_as_fallback(monkeypatch):
