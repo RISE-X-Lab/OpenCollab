@@ -42,8 +42,16 @@ class FileReadTool(Tool):
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "File path relative to workspace."},
-            "offset": {"type": "integer", "description": "Starting line number (1-based, default 1)."},
-            "limit": {"type": "integer", "description": "Number of lines to read (default 500)."},
+            "offset": {
+                "type": "integer",
+                "description": "Start line (1-based). Pair with limit to read a "
+                "slice — e.g. the lines around a grep hit.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max lines to read (default 500). For large files "
+                "prefer a small window (~60-120) over the full default.",
+            },
         },
         "required": ["path"],
     }
@@ -86,7 +94,16 @@ class FileReadTool(Tool):
         # Format with line numbers (ref: claude-code cat -n format)
         numbered = [f"{start + i + 1}\t{line}" for i, line in enumerate(selected)]
         header = f"File: {params['path']} ({total} lines total, showing {start + 1}-{end})"
-        return header + "\n" + truncate("\n".join(numbered), self.max_read_chars)
+        body = header + "\n" + truncate("\n".join(numbered), self.max_read_chars)
+        # Loud footer when lines remain below the shown range — otherwise a
+        # default read silently stops at the limit and the tail is lost.
+        if end < total:
+            body += (
+                f"\n... {total - end} more lines below (showing {start + 1}-{end} "
+                f"of {total}). Continue with offset={end + 1}, or use the grep "
+                f"tool to jump to a symbol."
+            )
+        return body
 
 
 class FileWriteTool(Tool):
@@ -227,18 +244,31 @@ class GrepTool(Tool):
 
     name = "grep"
     description = (
-        "Search for a regex pattern across files in the workspace. "
-        "Returns matching lines with file paths and line numbers. "
-        "Use it to locate symbols/strings across files; prefer this over reading whole "
-        "files or shelling out to grep/rg via bash."
+        "Search files with a regex to locate symbols/strings/refs. Returns "
+        "file:line:match. Prefer this over bash grep/rg/find — it pinpoints lines "
+        "without pulling whole files into context; then file_read around the hit. "
+        "Use glob to filter file types, path to narrow scope, max_results to cap "
+        "output."
     )
     parameters = {
         "type": "object",
         "properties": {
             "pattern": {"type": "string", "description": "Regex pattern to search for."},
-            "path": {"type": "string", "description": "Directory or file to search (default: workspace root)."},
-            "glob": {"type": "string", "description": "File glob pattern to filter (e.g., '*.py')."},
-            "max_results": {"type": "integer", "description": "Max matching lines to return (default 50)."},
+            "path": {
+                "type": "string",
+                "description": "Directory/file to search under (default: workspace "
+                "root). Narrow it to speed up large repos.",
+            },
+            "glob": {
+                "type": "string",
+                "description": "File glob to filter (e.g. '*.py'). Omit to search "
+                "all files.",
+            },
+            "max_results": {
+                "type": "integer",
+                "description": "Max matching lines (default 50). Raise to widen the "
+                "net, lower if output floods context.",
+            },
         },
         "required": ["pattern"],
     }

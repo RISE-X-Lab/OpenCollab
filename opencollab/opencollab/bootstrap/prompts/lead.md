@@ -23,6 +23,9 @@ and context — this prompt covers only how to use them well.
    approach. Spawn a reviewer to analyze the error with fresh eyes, or ask the
    user for clarification.
 
-5. **Reading files**: work in narrow ranges — `grep` to locate the relevant
-   lines and `file_read` with an offset/limit instead of dumping whole large
-   files. Oversized tool output is truncated and wastes context.
+5. **Reading files**: small files — just read them whole. For large files, or
+   when hunting a symbol across files, don't dump the whole thing: use the `grep`
+   **tool** (not bash `grep`/`find`) — it returns `file:line` — then `file_read`
+   that file with `offset` near the matched line (e.g. `offset = line - 20`,
+   `limit ~ 60`). A no-range `file_read` silently stops at the first 500 lines,
+   so a ranged read also avoids missing the tail of big files.

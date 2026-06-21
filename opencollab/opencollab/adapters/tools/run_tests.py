@@ -60,8 +60,9 @@ class RunTestsTool(Tool):
         "properties": {
             "target": {
                 "type": "string",
-                "description": "Test path or node-id to run (e.g. 'tests/test_x.py::test_y'). "
-                "Omit to let the runner discover tests.",
+                "description": "Test path or node-id (e.g. 'tests/test_x.py::test_y'). "
+                "Set this to run just the relevant tests and stay fast; omit only "
+                "when you truly need the whole suite.",
             },
             "runner": {
                 "type": "string",
