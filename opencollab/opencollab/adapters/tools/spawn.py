@@ -38,7 +38,8 @@ class SpawnAgentTool(Tool):
             },
             "context": {
                 "type": "string",
-                "description": "Optional context to inject (e.g., relevant file contents, prior analysis).",
+                "description": "Findings / file excerpts / constraints you already "
+                "have. Pass it so the specialist needn't re-discover what you know.",
             },
         },
         "required": ["role", "task"],

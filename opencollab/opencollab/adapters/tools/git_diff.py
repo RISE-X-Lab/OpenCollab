@@ -57,7 +57,8 @@ class GitDiffTool(Tool):
             },
             "stat_only": {
                 "type": "boolean",
-                "description": "If true, show a per-file summary (--stat) instead of the full diff.",
+                "description": "Per-file summary (--stat) instead of the full diff — "
+                "see what changed without the line-by-line flood.",
             },
             "include_status": {
                 "type": "boolean",

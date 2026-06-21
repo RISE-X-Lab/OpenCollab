@@ -48,7 +48,8 @@ class BashTool(Tool):
             },
             "timeout": {
                 "type": "number",
-                "description": "Timeout in seconds (default 120).",
+                "description": "Timeout in seconds (default 120). Raise for slow "
+                "installs/builds or the full test suite.",
             },
         },
         "required": ["command"],
