@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from opencollab.adapters.llm.anthropic_provider import _parse_usage as parse_anthropic_usage
+from opencollab.adapters.llm.openai_provider import _build_request_kwargs as build_openai_kwargs
 from opencollab.adapters.llm.openai_provider import _parse_response as parse_openai_response
 from opencollab.adapters.llm.providers import (
     is_anthropic,
@@ -172,6 +173,37 @@ def test_openai_normal_usage_unchanged_and_no_double_count():
     assert result.usage.output_tokens == 50
     assert result.usage.total_tokens == 1050
     assert result.usage.estimated is False
+
+
+# ---------------------------------------------------------------------------
+# Thinking passthrough — OpenAI-compatible extra_body (DashScope compatible mode)
+# ---------------------------------------------------------------------------
+
+
+def test_openai_thinking_on_adds_extra_body():
+    """thinking=True ships thinking_params as extra_body for the SDK create()."""
+    kwargs = build_openai_kwargs(
+        "kimi-k2.6",
+        [{"role": "user", "content": "hi"}],
+        None,
+        0.2,
+        thinking=True,
+        thinking_params={"enable_thinking": True},
+    )
+    assert kwargs["extra_body"] == {"enable_thinking": True}
+
+
+def test_openai_thinking_off_adds_no_extra_body():
+    """thinking=False leaves the request unchanged — no extra_body key."""
+    kwargs = build_openai_kwargs(
+        "kimi-k2.6",
+        [{"role": "user", "content": "hi"}],
+        None,
+        0.2,
+        thinking=False,
+        thinking_params={"enable_thinking": True},
+    )
+    assert "extra_body" not in kwargs
 
 
 def test_openai_estimates_output_from_tool_calls_when_no_content():

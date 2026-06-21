@@ -32,7 +32,11 @@ from opencollab.application.session import Session
 from opencollab.application.workflow import WorkflowContext
 from opencollab.application.workflow_registry import WorkflowFn
 from opencollab.bootstrap import build_session
-from opencollab.bootstrap.config import DEFAULT_TEMPERATURE
+from opencollab.bootstrap.config import (
+    DEFAULT_TEMPERATURE,
+    DEFAULT_THINKING,
+    DEFAULT_THINKING_PARAMS,
+)
 from opencollab.domain.agent import Agent
 
 EnvFactory = Callable[["EvalTask"], Awaitable[Environment]]
@@ -128,6 +132,8 @@ class _EvalSessionFactory:
         max_steps: int,
         default_toolset: Sequence[Tool],
         temperature: float = DEFAULT_TEMPERATURE,
+        thinking: bool = DEFAULT_THINKING,
+        thinking_params: dict | None = None,
     ) -> None:
         self._env = env
         self._tracer = tracer
@@ -139,6 +145,10 @@ class _EvalSessionFactory:
         self._max_steps = max_steps
         self._default_toolset = list(default_toolset)
         self._temperature = temperature
+        self._thinking = thinking
+        self._thinking_params = (
+            thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
+        )
 
     def build_workflow_session(
         self,
@@ -158,6 +168,8 @@ class _EvalSessionFactory:
             api_key=self._api_key,
             base_url=self._base_url,
             temperature=self._temperature,
+            thinking=self._thinking,
+            thinking_params=self._thinking_params,
         )
         return build_session(
             agent=agent,
@@ -180,6 +192,8 @@ def _build_eval_session_factory(
     max_steps: int,
     default_toolset: Sequence[Tool],
     temperature: float = DEFAULT_TEMPERATURE,
+    thinking: bool = DEFAULT_THINKING,
+    thinking_params: dict | None = None,
 ) -> _EvalSessionFactory:
     """Construct the per-task workflow session factory (seam for tests)."""
     return _EvalSessionFactory(
@@ -193,6 +207,8 @@ def _build_eval_session_factory(
         max_steps=max_steps,
         default_toolset=default_toolset,
         temperature=temperature,
+        thinking=thinking,
+        thinking_params=thinking_params,
     )
 
 
@@ -209,6 +225,8 @@ async def _run_single_session(
     base_url: str | None,
     max_steps: int,
     temperature: float = DEFAULT_TEMPERATURE,
+    thinking: bool = DEFAULT_THINKING,
+    thinking_params: dict | None = None,
 ) -> Session:
     """Drive the unchanged single-session eval loop and return the session."""
     agent = Agent(
@@ -220,6 +238,8 @@ async def _run_single_session(
         api_key=api_key,
         base_url=base_url,
         temperature=temperature,
+        thinking=thinking,
+        thinking_params=thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS),
     )
     session = build_session(
         agent=agent,
@@ -247,6 +267,8 @@ async def _run_workflow_mode(
     max_steps: int,
     workflow: WorkflowFn,
     temperature: float = DEFAULT_TEMPERATURE,
+    thinking: bool = DEFAULT_THINKING,
+    thinking_params: dict | None = None,
 ) -> WorkflowContext:
     """Run ``workflow`` over a task-bound context; return the context.
 
@@ -267,6 +289,8 @@ async def _run_workflow_mode(
         max_steps=max_steps,
         default_toolset=tools,
         temperature=temperature,
+        thinking=thinking,
+        thinking_params=thinking_params,
     )
     ctx = WorkflowContext(factory, tracer=tracer, budget_total=task.max_tokens)
     ctx.env = env  # type: ignore[attr-defined] — harness seam for workflows
@@ -296,6 +320,8 @@ async def run_eval_task(
     max_steps: int = DEFAULT_MAX_STEPS,
     workflow: WorkflowFn | None = None,
     temperature: float = DEFAULT_TEMPERATURE,
+    thinking: bool = DEFAULT_THINKING,
+    thinking_params: dict | None = None,
 ) -> EvalResult:
     """Run a single evaluation task.
 
@@ -341,6 +367,8 @@ async def run_eval_task(
                 base_url=base_url,
                 max_steps=max_steps,
                 temperature=temperature,
+                thinking=thinking,
+                thinking_params=thinking_params,
             )
         else:
             workflow_ctx = await _run_workflow_mode(
@@ -356,6 +384,8 @@ async def run_eval_task(
                 max_steps=max_steps,
                 workflow=workflow,
                 temperature=temperature,
+                thinking=thinking,
+                thinking_params=thinking_params,
             )
 
     except asyncio.TimeoutError:

@@ -17,7 +17,11 @@ from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.event_bus import EventBus
 from opencollab.application.hooks import HookEventSubscriber
 from opencollab.application.scheduler import LaunchSpec, Scheduler
-from opencollab.bootstrap.config import DEFAULT_TEMPERATURE
+from opencollab.bootstrap.config import (
+    DEFAULT_TEMPERATURE,
+    DEFAULT_THINKING,
+    DEFAULT_THINKING_PARAMS,
+)
 from opencollab.bootstrap.container import RuntimeContext, build_workspace_safety_policy
 from opencollab.bootstrap.context_builder import SpawnConfig
 from opencollab.bootstrap.session_factory import (
@@ -69,6 +73,8 @@ def build_scheduler(
             base_url=cfg["base_url"],
             llm_timeout=cfg.get("llm_timeout", 600.0),
             temperature=cfg.get("temperature", DEFAULT_TEMPERATURE),
+            thinking=cfg.get("thinking", DEFAULT_THINKING),
+            thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
             tracer=ctx.tracer,
             event_bus=event_bus,
             permission_policy=ctx.permission_policy,

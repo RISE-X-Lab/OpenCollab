@@ -309,6 +309,8 @@ class LLMPort(Protocol):
         *,
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.0,
+        thinking: bool = False,
+        thinking_params: dict[str, Any] | None = None,
     ) -> CompletionResponse:
         ...
 

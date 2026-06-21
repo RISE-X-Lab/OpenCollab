@@ -36,6 +36,7 @@ def eval_cmd(
         api_key=cfg["api_key"], base_url=cfg["base_url"], output_dir=output_dir,
         concurrency=concurrency, max_tokens=max_tokens, timeout=timeout,
         temperature=cfg["temperature"],
+        thinking=cfg["thinking"], thinking_params=cfg["thinking_params"],
     ))
 
 
@@ -45,6 +46,8 @@ async def _eval(
     output_dir: str, concurrency: int,
     max_tokens: int, timeout: float,
     temperature: float,
+    thinking: bool = False,
+    thinking_params: dict | None = None,
 ):
     from opencollab.harness.evaluator import EvalTask, run_eval_batch, save_results
 
@@ -75,6 +78,8 @@ async def _eval(
         base_url=base_url,
         output_dir=output_dir,
         temperature=temperature,
+        thinking=thinking,
+        thinking_params=thinking_params,
     )
 
     results_path = os.path.join(output_dir, "results.jsonl")

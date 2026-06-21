@@ -10,7 +10,7 @@ system prompt.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from opencollab.adapters.skills.null_skill_store import NullSkillStore
 from opencollab.adapters.trace import Tracer
@@ -22,7 +22,11 @@ from opencollab.application.ports import (
     SchedulerPort,
     SkillStorePort,
 )
-from opencollab.bootstrap.config import DEFAULT_TEMPERATURE
+from opencollab.bootstrap.config import (
+    DEFAULT_TEMPERATURE,
+    DEFAULT_THINKING,
+    DEFAULT_THINKING_PARAMS,
+)
 from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
 from opencollab.bootstrap.tool_registry import COORDINATION_TOOL_NAMES, build_tools_for_role
 from opencollab.domain.agent import Agent
@@ -55,6 +59,10 @@ class SpawnConfig:
     # ``ContextBuilder.build_agent``). Defaulted so the field stays optional for
     # the many call sites that construct a ``SpawnConfig`` by keyword.
     temperature: float = DEFAULT_TEMPERATURE
+    # Global thinking passthrough; a role may override it (resolved in
+    # ``ContextBuilder.build_agent``). Defaulted (OFF) so the field stays optional.
+    thinking: bool = DEFAULT_THINKING
+    thinking_params: dict = field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
 
 
 class ContextBuilder:
@@ -222,6 +230,14 @@ class ContextBuilder:
         temperature = (
             role.temperature if role.temperature is not None else cfg.temperature
         )
+        # Thinking resolves the same way: an explicit per-role value (incl. an
+        # explicit False) wins; otherwise inherit the global SpawnConfig value.
+        thinking = role.thinking if role.thinking is not None else cfg.thinking
+        thinking_params = (
+            role.thinking_params
+            if role.thinking_params is not None
+            else cfg.thinking_params
+        )
         return Agent(
             name=role_name,
             system_prompt=plan.system_prompt(),
@@ -231,6 +247,8 @@ class ContextBuilder:
             api_key=cfg.api_key,
             base_url=cfg.base_url,
             temperature=temperature,
+            thinking=thinking,
+            thinking_params=thinking_params,
         )
 
     def _team_section(self, role_name: str, role: RoleConfig) -> str:

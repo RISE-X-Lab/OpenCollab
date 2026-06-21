@@ -1,0 +1,536 @@
+"""analyst-solve — analyst-driven reconnaissance, then a phased coder/tester build.
+
+Sibling of ``scout_solve.py`` and ``self_collab.py``. It grafts ``scout_solve``'s
+parallel read-only reconnaissance onto ``self_collab``'s phased coder/tester loop,
+but the ANALYST stays in charge end to end: it first decomposes the problem into
+exploration dimensions, then — after the scouts report — designs the phased fix
+itself instead of handing off to a separate synthesizer.
+
+Built for hard tasks where a single shallow pass already failed. Three levers
+distinguish it from the siblings:
+
+* it pays for breadth of reconnaissance up front (parallel scouts), so the plan
+  starts from a confirmed root cause rather than a guess;
+* phases run BEST-EFFORT — a failed phase does not stop the run (it leaves its
+  partial edits and the next phase continues), because a partial patch grades
+  better than none;
+* a budget floor guarantees output: before every expensive step it reserves
+  headroom, and if the budget runs low it bails to a single ``forced-write``
+  coder whose only job is to land a concrete edit, right or wrong.
+
+Shape:
+
+* analyst (scope) decomposes the PROBLEM into independent exploration dimensions;
+* each dimension is investigated in parallel by a read-only scout;
+* analyst (plan) synthesizes the findings into a root cause, an approach, and an
+  ordered list of implementation phases;
+* each phase runs a sequential coder -> tester loop, best-effort;
+* a final whole-goal verification gets one repair round if the budget allows.
+
+Run:
+    opencollab workflow run analyst-solve --args '{"goal": "<task>"}' [-w DIR]
+
+The eval harness runs it unchanged: ``goal`` falls back to the task
+``description`` that ``run_eval_task`` passes in its args dict.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from opencollab.adapters.tools.apply_patch import ApplyPatchTool
+from opencollab.adapters.tools.bash import BashTool
+from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
+from opencollab.adapters.tools.run_tests import RunTestsTool
+from opencollab.application.workflow_registry import workflow
+
+# Rounds a single phase gets before the run moves on (best-effort, no stop).
+MAX_ROUNDS_PER_PHASE = 4
+# Token headroom kept in reserve. Once the remaining budget drops below this, the
+# run abandons further loops and spends the reserve on one forced-write coder so
+# the working tree is never left empty. Size it for one full coder session.
+RESERVE_TOKENS = 350_000
+
+# Shared rules — every role gets them (lifted from configs/team.self.collab.yaml,
+# the SWE-bench-tuned variant: it warns off chasing not-yet-existing tests).
+SHARED_RULES = """\
+Rules:
+- Prefer your DEDICATED tool over bash: file_read/grep to inspect, run_tests \
+to test, file_write/apply_patch to edit. Use bash ONLY for what no dedicated \
+tool covers (e.g. a one-line `python -c` repro).
+- Fix the ROOT CAUSE in the source; make the SMALLEST correct change.
+- NEVER edit test files. NEVER run `git commit`; leave edits in the working tree.
+- Never assume a package is available: confirm the repo already imports it \
+(grep / check the manifest) before using it, and verify your own imports \
+resolve before reporting done.
+- Keep reports tight: <=8 lines — changed files + what changed, why, and the \
+verification result. No preamble or postamble.
+- Do NOT grep for a FAIL_TO_PASS test that does not exist yet — the task may \
+require creating it; chasing a missing test wastes budget."""
+
+DIMENSIONS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["dimensions"],
+    "properties": {
+        "initial_read": {
+            "type": "string",
+            "description": "One or two sentences on your first read of the problem — optional context for the scouts.",
+        },
+        "dimensions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["aspect", "question", "hints"],
+                "properties": {
+                    "aspect": {"type": "string", "description": "Short name for this angle, e.g. 'bug origin'."},
+                    "question": {
+                        "type": "string",
+                        "description": "The concrete, independently-answerable question this scout must resolve.",
+                    },
+                    "hints": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Where to start looking — files, dirs, symbols (may be empty).",
+                    },
+                },
+            },
+        },
+    },
+}
+
+PLAN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["root_cause", "approach", "phases"],
+    "properties": {
+        "root_cause": {"type": "string", "description": "The confirmed root cause the reconnaissance supports."},
+        "approach": {"type": "string", "description": "The smallest correct fix the evidence supports."},
+        "phases": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["goal", "files", "done"],
+                "properties": {
+                    "goal": {"type": "string", "description": "ONE unit of work."},
+                    "files": {"type": "array", "items": {"type": "string"}},
+                    "done": {"type": "string", "description": "A concrete, testable definition of done."},
+                },
+            },
+        },
+    },
+}
+
+VERDICT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["verdict", "findings"],
+    "properties": {
+        "verdict": {"type": "string", "enum": ["PASS", "FAIL", "BLOCKED"]},
+        "findings": {
+            "type": "string",
+            "description": "On FAIL: the exact failing command, error/traceback, suspected file/line. "
+            "On BLOCKED: name the environmental blocker (missing dependency, no network, "
+            "broken/unrelated infra) — not a code defect — so it can be surfaced upward.",
+        },
+    },
+}
+
+SCOPE_PROMPT = """\
+You are the Analyst. Do NOT solve and do NOT plan a fix yet — your job here is to \
+frame the investigation. Read the goal and skim the codebase (file_read, grep; \
+bash only for a one-line `python -c` behavior trace) just enough to decompose the \
+PROBLEM into INDEPENDENT exploration dimensions: distinct angles that, \
+investigated in parallel, surface everything needed to solve it correctly — e.g. \
+where the defect originates, how the relevant subsystem actually works, what the \
+tests/spec expect, what callers and contracts depend on it, and the edge cases. \
+Each dimension is ONE focused, read-only question with a hint about where to \
+start. Dimensions must be answerable independently and in any order — no scout \
+should need another's result. Size by the actual problem: a couple of sharp \
+dimensions beat many shallow ones; aim for two to four.
+
+{rules}
+
+Goal:
+{goal}"""
+
+SCOUT_PROMPT = """\
+You are a Scout investigating ONE dimension of a larger problem. You do NOT edit \
+anything — this is read-only reconnaissance (file_read, grep; bash only for a \
+one-line `python -c` trace). Answer your dimension's question thoroughly and \
+concretely: cite exact files and line numbers, quote the code that matters, and \
+spell out the contracts, edge cases, and risks you find. Do not propose a full \
+fix — surface the evidence the planner will need. Your final message IS your \
+findings report: dense, specific, and backed by what you actually read.
+
+{rules}
+
+Overall goal (for context only — answer your dimension, not the whole goal):
+{goal}
+
+Your dimension — {aspect}:
+{question}
+
+Where to start:
+{hints}"""
+
+PLAN_PROMPT = """\
+You are the Analyst, now designing the solution. Reconnaissance is complete — the \
+scouts' findings are below. Synthesize them into a concrete plan: the confirmed \
+root cause, the approach (the smallest correct change the evidence supports), and \
+an ordered list of implementation phases. Each phase is exactly ONE unit of work \
+with a focused file set and a concrete, testable definition of done. Size phases \
+by the actual work — most fixes are a SINGLE phase; split into multiple only when \
+the work has genuinely independent parts better implemented and verified \
+separately. Trust the findings but confirm anything decisive against the source \
+yourself (file_read/grep) before committing it to the plan. Do NOT edit anything.
+
+{rules}
+
+Goal:
+{goal}
+
+Reconnaissance findings:
+{findings}"""
+
+CODER_PROMPT = """\
+You are a Coder implementing ONE phase of a planned fix. A reconnaissance pass \
+already mapped this problem; work from the context and phase below, but verify \
+anything decisive in the source before you rely on it. Inspect with \
+file_read/grep. Default edit: file_write in str_replace mode — minimal and \
+targeted. If str_replace fails twice (no unique match — whitespace diff, \
+duplicate/ambiguous lines, line drift), do NOT retry the same replacement: fall \
+back to apply_patch with a content-anchored diff (use line_replace with \
+expected_str to guard the range). Verify with run_tests (or a short `python -c` \
+repro) before reporting. Your final message is your report: what you changed \
+(each file + edit), why, and your verification result.
+
+{rules}
+
+Overall goal:
+{goal}
+
+Confirmed root cause:
+{root_cause}
+
+Overall approach:
+{approach}
+
+This phase — {phase_goal}
+
+Files to touch:
+{files}
+
+Definition of done:
+{done}
+{findings_block}"""
+
+FINDINGS_BLOCK = """
+A previous attempt FAILED verification. Do not repeat it — address these \
+concrete findings from the tester:
+{findings}"""
+
+TESTER_PROMPT = """\
+You are a Tester adversarially verifying a coder's change. Run the project's \
+tests with run_tests. Inspect the ACTUAL source with file_read/grep — do not \
+trust the coder's summary; confirm the change is really there and really fixes \
+the root cause. Hunt failures: edge cases, missing handling, regressions in \
+neighboring behavior. You do not edit files.
+
+Verdict PASS only when the change is really there and the definition of done \
+holds. Verdict FAIL for a code defect. Verdict BLOCKED only when the failure is \
+ENVIRONMENTAL — a missing dependency, no network, or broken/unrelated infra — \
+not something more coding can fix; name the blocker in findings so it can be \
+surfaced upward instead of burning more rounds.
+
+{rules}
+
+Goal:
+{goal}
+
+Definition of done:
+{done}
+
+Coder's report:
+{summary}"""
+
+FORCED_PROMPT = """\
+You are a Coder and the token budget is nearly exhausted — this is the LAST \
+action of the run. STOP investigating. Based on the confirmed root cause, the \
+approach, and whatever edits are already in the working tree, implement the \
+single most likely correct fix RIGHT NOW. You MUST leave concrete edits in the \
+working tree (file_write or apply_patch) — a reasonable attempt is far better \
+than no patch at all. Do not run the full test suite; at most a quick \
+`python -c` sanity check. Then report in <=5 lines.
+
+{rules}
+
+Goal:
+{goal}
+
+Confirmed root cause:
+{root_cause}
+
+Approach:
+{approach}
+
+Work already attempted (for context):
+{progress}"""
+
+# Whole-goal definition of done for the final verification pass.
+FINAL_DONE = (
+    "The issue described in the goal is resolved at its root cause, and existing "
+    "and neighboring tests still pass (no regressions)."
+)
+
+
+def _read_tools() -> list[Any]:
+    return [BashTool(), FileReadTool(), GrepTool()]
+
+
+def _coder_tools() -> list[Any]:
+    return [BashTool(), FileReadTool(), FileWriteTool(), ApplyPatchTool(), RunTestsTool(), GrepTool()]
+
+
+def _tester_tools() -> list[Any]:
+    return [BashTool(), FileReadTool(), RunTestsTool(), GrepTool()]
+
+
+def _budget_ok(ctx: Any) -> bool:
+    """True while there is enough budget left for another full coder/tester step.
+
+    Keeps ``RESERVE_TOKENS`` in hand so the run can always afford one final
+    forced-write coder. ``remaining()`` is ``inf`` for an unbounded budget.
+    """
+    return ctx.budget.remaining() > RESERVE_TOKENS
+
+
+async def _recon(ctx: Any, goal: str, dims: list[dict[str, Any]]) -> str:
+    """Fan the dimensions out to parallel read-only scouts; return a combined,
+    labelled findings document for the planning analyst."""
+    reports = await ctx.parallel(
+        [
+            (
+                lambda d=d, i=i: ctx.agent(
+                    SCOUT_PROMPT.format(
+                        rules=SHARED_RULES,
+                        goal=goal,
+                        aspect=d.get("aspect", f"dimension {i}"),
+                        question=d.get("question", ""),
+                        hints="\n".join(d.get("hints") or []) or "(no starting point given — search from the goal)",
+                    ),
+                    label=f"scout:{i}:{(d.get('aspect') or '').strip().replace(' ', '-')[:24] or 'dim'}",
+                    tools=_read_tools(),
+                )
+            )
+            for i, d in enumerate(dims)
+        ]
+    )
+    usable = sum(1 for r in reports if isinstance(r, str) and r.strip())
+    if usable < len(reports):
+        await ctx.log(f"recon: {usable}/{len(reports)} scout reports usable")
+    sections = []
+    for i, (d, rep) in enumerate(zip(dims, reports)):
+        body = rep if isinstance(rep, str) and rep.strip() else "(scout died — no findings for this dimension)"
+        sections.append(f"## Dimension {i}: {d.get('aspect', '')}\nQuestion: {d.get('question', '')}\n\n{body}")
+    return "\n\n".join(sections)
+
+
+async def _run_phase(
+    ctx: Any, goal: str, root_cause: str, approach: str, ph: dict[str, Any], idx: int
+) -> dict[str, Any]:
+    """Drive one plan phase through the coder -> tester loop, best-effort.
+
+    Returns a report whose ``status`` is one of: passed, failed, blocked, or
+    ``budget_low`` — the last signalling the caller to stop and force a final
+    write while the reserve is still intact.
+    """
+    phase_goal = ph.get("goal", goal)
+    files = "\n".join(ph.get("files") or []) or "(analyst did not pin files — keep the change minimal)"
+    done = ph.get("done", FINAL_DONE)
+    findings = ""
+    rounds = 0
+    for round_no in range(1, MAX_ROUNDS_PER_PHASE + 1):
+        if not _budget_ok(ctx):
+            await ctx.log(f"phase {idx}: budget below reserve before round {round_no} — stopping for forced write")
+            return {"goal": phase_goal, "status": "budget_low", "rounds": rounds}
+        rounds = round_no
+        findings_block = FINDINGS_BLOCK.format(findings=findings) if findings else ""
+        summary = await ctx.agent(
+            CODER_PROMPT.format(
+                rules=SHARED_RULES,
+                goal=goal,
+                root_cause=root_cause,
+                approach=approach,
+                phase_goal=phase_goal,
+                files=files,
+                done=done,
+                findings_block=findings_block,
+            ),
+            label=f"coder:p{idx}r{round_no}",
+            tools=_coder_tools(),
+        )
+        verdict = await ctx.agent(
+            TESTER_PROMPT.format(
+                rules=SHARED_RULES,
+                goal=phase_goal,
+                done=done,
+                summary=summary or "(coder died — verify the working tree yourself)",
+            ),
+            schema=VERDICT_SCHEMA,
+            label=f"tester:p{idx}r{round_no}",
+            tools=_tester_tools(),
+        )
+        if isinstance(verdict, dict) and verdict.get("verdict") == "PASS":
+            return {"goal": phase_goal, "status": "passed", "rounds": rounds}
+        if isinstance(verdict, dict) and verdict.get("verdict") == "BLOCKED":
+            blocker = verdict.get("findings", "") or "environmental blocker (unspecified)"
+            await ctx.log(f"phase {idx} round {round_no} BLOCKED: {blocker[:200]}")
+            return {"goal": phase_goal, "status": "blocked", "rounds": rounds, "blocker": blocker}
+        if not isinstance(verdict, dict):
+            await ctx.log(f"phase {idx} round {round_no} tester died — substituting generic findings")
+        # Never re-issue an identical task: the next round carries the findings.
+        findings = (
+            verdict.get("findings", "") if isinstance(verdict, dict) else ""
+        ) or "Tester returned no verdict. Re-verify the definition of done yourself before reporting."
+        await ctx.log(f"phase {idx} round {round_no} FAILED: {findings[:200]}")
+    return {"goal": phase_goal, "status": "failed", "rounds": rounds, "last_findings": findings}
+
+
+async def _forced_final_write(ctx: Any, goal: str, root_cause: str, approach: str, progress: str) -> str:
+    """Spend the reserved headroom on one coder that MUST land an edit."""
+    await ctx.log("forced final write: budget low — landing a best-effort patch")
+    return await ctx.agent(
+        FORCED_PROMPT.format(
+            rules=SHARED_RULES,
+            goal=goal,
+            root_cause=root_cause,
+            approach=approach,
+            progress=progress or "(no prior coder edits recorded)",
+        ),
+        label="coder:forced-write",
+        tools=_coder_tools(),
+    )
+
+
+@workflow(
+    name="analyst-solve",
+    description="Analyst decomposes the problem -> parallel read-only recon -> analyst designs "
+    "a phased plan -> best-effort coder/tester loop per phase -> final verify, with a "
+    "budget floor that guarantees a patch",
+    phases=["scope", "recon", "plan", "implement", "verify"],
+)
+async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    # ``goal`` for CLI runs; ``description`` is what the eval harness passes.
+    goal = str(args.get("goal") or args.get("description") or "").strip()
+    if not goal:
+        return {"status": "error", "error": 'missing "goal" — pass --args \'{"goal": "..."}\''}
+
+    # Phase 1 — analyst frames the investigation.
+    await ctx.phase("scope")
+    scope = await ctx.agent(
+        SCOPE_PROMPT.format(rules=SHARED_RULES, goal=goal),
+        schema=DIMENSIONS_SCHEMA,
+        label="analyst:scope",
+        tools=_read_tools(),
+    )
+    dims = scope.get("dimensions") if isinstance(scope, dict) else None
+
+    # Phase 2 — parallel reconnaissance (skipped gracefully if framing failed).
+    await ctx.phase("recon")
+    if dims:
+        findings_doc = await _recon(ctx, goal, dims)
+    else:
+        await ctx.log("recon skipped — analyst produced no dimensions")
+        findings_doc = "(reconnaissance skipped — proceed from the goal itself)"
+
+    # Phase 3 — analyst designs the phased plan from the findings.
+    await ctx.phase("plan")
+    plan = await ctx.agent(
+        PLAN_PROMPT.format(rules=SHARED_RULES, goal=goal, findings=findings_doc),
+        schema=PLAN_SCHEMA,
+        label="analyst:plan",
+        tools=_read_tools(),
+    )
+    if isinstance(plan, dict) and plan.get("phases"):
+        root_cause = plan.get("root_cause", "")
+        approach = plan.get("approach", "")
+        phases = plan["phases"]
+    else:
+        # Degrade gracefully: still attempt the fix as one implicit phase rather
+        # than abandoning the task with an empty patch.
+        await ctx.log("planner produced no usable plan — falling back to a single implicit phase")
+        root_cause, approach = "", ""
+        phases = [{"goal": goal, "files": [], "done": FINAL_DONE}]
+
+    # Phase 4 — implement phases best-effort; bail to forced write if budget drops.
+    await ctx.phase("implement")
+    phase_reports: list[dict[str, Any]] = []
+    forced = False
+    for idx, ph in enumerate(phases):
+        report = await _run_phase(ctx, goal, root_cause, approach, ph, idx)
+        phase_reports.append(report)
+        if report["status"] == "budget_low":
+            progress = "\n".join(f"- phase {i}: {r['status']}" for i, r in enumerate(phase_reports))
+            await _forced_final_write(ctx, goal, root_cause, approach, progress)
+            forced = True
+            break
+        # Best-effort: a failed/blocked phase does NOT stop the run.
+        await ctx.log(f"phase {idx} {report['status']} after {report.get('rounds', 0)} round(s)")
+
+    # Phase 5 — one whole-goal verification, with a single repair round if affordable.
+    await ctx.phase("verify")
+    final_verdict: dict[str, Any] | None = None
+    repaired = False
+    if not forced and _budget_ok(ctx):
+        final_verdict = await ctx.agent(
+            TESTER_PROMPT.format(
+                rules=SHARED_RULES,
+                goal=goal,
+                done=FINAL_DONE,
+                summary="\n".join(f"- phase {i}: {r['status']}" for i, r in enumerate(phase_reports)),
+            ),
+            schema=VERDICT_SCHEMA,
+            label="tester:final",
+            tools=_tester_tools(),
+        )
+        if (
+            isinstance(final_verdict, dict)
+            and final_verdict.get("verdict") == "FAIL"
+            and _budget_ok(ctx)
+        ):
+            await ctx.log("final verify FAILED — one repair round")
+            repaired = True
+            await ctx.agent(
+                CODER_PROMPT.format(
+                    rules=SHARED_RULES,
+                    goal=goal,
+                    root_cause=root_cause,
+                    approach=approach,
+                    phase_goal="Address the final verification failure across the whole change.",
+                    files="(use the tester findings to locate the files)",
+                    done=FINAL_DONE,
+                    findings_block=FINDINGS_BLOCK.format(findings=final_verdict.get("findings", "")),
+                ),
+                label="coder:repair",
+                tools=_coder_tools(),
+            )
+            final_verdict = await ctx.agent(
+                TESTER_PROMPT.format(rules=SHARED_RULES, goal=goal, done=FINAL_DONE, summary="(post-repair re-check)"),
+                schema=VERDICT_SCHEMA,
+                label="tester:final2",
+                tools=_tester_tools(),
+            )
+
+    passed_phases = sum(1 for r in phase_reports if r["status"] == "passed")
+    verified = isinstance(final_verdict, dict) and final_verdict.get("verdict") == "PASS"
+    status = "done" if (verified or (not forced and passed_phases == len(phases) and phases)) else "incomplete"
+    return {
+        "status": status,
+        "root_cause": root_cause,
+        "approach": approach,
+        "phases_planned": len(phases),
+        "phases_passed": passed_phases,
+        "phases": phase_reports,
+        "forced_final_write": forced,
+        "repaired": repaired,
+        "final_verdict": final_verdict,
+        "tokens_spent": ctx.budget.spent(),
+    }
