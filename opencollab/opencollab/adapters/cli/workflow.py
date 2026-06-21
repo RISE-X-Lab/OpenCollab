@@ -91,6 +91,12 @@ def run_cmd(
         "--save/--no-save",
         help="Persist each session's transcript under <workspace>/.opencollab/sessions/<run>/",
     ),
+    trace: bool = typer.Option(
+        True,
+        "--trace/--no-trace",
+        help="Record a fine-grained JSONL trajectory (llm_call/tool_exec, tokens, "
+        "latency) at <run>/trajectory.jsonl. Requires --save.",
+    ),
 ) -> None:
     """Run a workflow and print its result as JSON."""
     registry = load_registry()
@@ -135,10 +141,14 @@ def run_cmd(
             budget=budget,
             max_concurrency=concurrency,
             save_dir=save_dir,
+            trace=trace,
         )
     )
     if save_dir is not None:
         console.print(f"[dim]== sessions saved to {save_dir}[/dim]")
+        if trace:
+            trace_path = os.path.join(save_dir, "trajectory.jsonl")
+            console.print(f"[dim]== trajectory at {trace_path}[/dim]")
     console.print(json.dumps(result, indent=2, default=str))
 
 
