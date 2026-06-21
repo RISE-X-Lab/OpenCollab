@@ -266,3 +266,70 @@ async def test_run_workflow_writes_manifest(monkeypatch, tmp_path):
     assert manifest["args"] == {"goal": "x"}
     assert manifest["sessions"] == 2
     assert manifest["budget_total"] == 100_000
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_writes_trajectory(monkeypatch, tmp_path):
+    """A saved run records a trajectory.jsonl via the auto-wired Tracer.
+
+    The workflow only emits phase/log events (which flow straight through the
+    context's tracer), so this exercises the trajectory wiring without a real
+    LLM — build_session is monkeypatched away.
+    """
+    _patch_build_session(monkeypatch)
+    save_dir = str(tmp_path / "run")
+    from opencollab.application.workflow_registry import workflow
+
+    @workflow(name="trace_wf", description="d")
+    async def fn(ctx, args):
+        await ctx.phase("scan")
+        await ctx.log("looking")
+        return "ok"
+
+    result = await workflow_runtime.run_workflow(
+        fn.__workflow_spec__, {}, cfg=_cfg(), save_dir=save_dir
+    )
+
+    assert result == "ok"
+    path = os.path.join(save_dir, "trajectory.jsonl")
+    assert os.path.exists(path)
+    with open(path) as f:
+        types = [json.loads(line)["type"] for line in f if line.strip()]
+    assert "workflow_phase" in types
+    assert "workflow_log" in types
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_trace_false_skips_trajectory(monkeypatch, tmp_path):
+    """``trace=False`` suppresses the trajectory even when the run is saved."""
+    _patch_build_session(monkeypatch)
+    save_dir = str(tmp_path / "run")
+    from opencollab.application.workflow_registry import workflow
+
+    @workflow(name="no_trace_wf", description="d")
+    async def fn(ctx, args):
+        await ctx.phase("scan")
+        return "ok"
+
+    await workflow_runtime.run_workflow(
+        fn.__workflow_spec__, {}, cfg=_cfg(), save_dir=save_dir, trace=False
+    )
+
+    assert not os.path.exists(os.path.join(save_dir, "trajectory.jsonl"))
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_no_save_dir_skips_trajectory(monkeypatch, tmp_path):
+    """Without a save_dir there is no run folder, so no trajectory is written."""
+    _patch_build_session(monkeypatch)
+    from opencollab.application.workflow_registry import workflow
+
+    @workflow(name="ephemeral_wf", description="d")
+    async def fn(ctx, args):
+        await ctx.phase("scan")
+        return "ok"
+
+    result = await workflow_runtime.run_workflow(fn.__workflow_spec__, {}, cfg=_cfg())
+
+    assert result == "ok"
+    assert not os.path.exists(os.path.join(str(tmp_path), "trajectory.jsonl"))

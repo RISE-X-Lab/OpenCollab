@@ -23,6 +23,7 @@ from typing import Any
 
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.storage import SessionStore
+from opencollab.adapters.trace import Tracer
 from opencollab.application.ports import (
     EventPublisherPort,
     TracePort,
@@ -42,6 +43,10 @@ WORKFLOW_AGENT_PROMPT = (
 
 # Longest slug kept from an agent label when naming its transcript file.
 _MAX_SLUG_LEN = 40
+
+# Tracer run_id for an auto-wired workflow trajectory; yields ``trajectory.jsonl``
+# in the run folder (the Tracer writes ``<output_dir>/<run_id>.jsonl``).
+WORKFLOW_TRACE_RUN_ID = "trajectory"
 
 
 def _slug(label: str | None) -> str:
@@ -204,6 +209,7 @@ async def run_workflow(
     budget: int | None = None,
     max_concurrency: int = 4,
     save_dir: str | None = None,
+    trace: bool = True,
 ) -> Any:
     """Build a context, run the workflow function with ``args``, return its result.
 
@@ -223,7 +229,21 @@ async def run_workflow(
     a ``workflow.json`` manifest (workflow name, args, session count, spend) is
     written on completion — grouping the run's one-shot sessions the way the
     team manifest groups a chat run's agents.
+
+    A saved run also records a fine-grained JSONL trajectory
+    (``<save_dir>/trajectory.jsonl``: one ``llm_call`` / ``tool_exec`` /
+    ``workflow_phase`` / ``workflow_log`` record per step, with tokens and
+    latency) via an auto-wired :class:`Tracer`, mirroring the eval harness's
+    "running produces a trajectory" behaviour. Pass ``trace=False`` to opt out,
+    or supply your own ``tracer`` to keep ownership (it is then not auto-closed).
     """
+    # Own a Tracer only when saving, not opted out, and the caller didn't bring
+    # one; close it in the finally below so the file handle is released even if
+    # the workflow raises. A caller-supplied tracer keeps its own lifecycle.
+    owns_tracer = tracer is None and save_dir is not None and trace
+    if owns_tracer:
+        tracer = Tracer(run_id=WORKFLOW_TRACE_RUN_ID, output_dir=save_dir)
+
     ctx = build_workflow_context(
         cfg=cfg,
         workspace=workspace,
@@ -236,17 +256,21 @@ async def run_workflow(
     fn = _resolve_spec_fn(spec_or_fn)
     name = spec_or_fn.name if isinstance(spec_or_fn, WorkflowSpec) else getattr(fn, "__name__", "workflow")
     try:
-        result = await fn(ctx, args)
-    except WorkflowBudgetExceeded as exc:
-        result = {
-            "status": "budget_exceeded",
-            "error": str(exc),
-            "tokens_spent": ctx.budget.spent(),
-            "budget_total": ctx.budget.total,
-        }
-    if save_dir is not None:
-        _write_workflow_manifest(save_dir, name=name, args=args, ctx=ctx)
-    return result
+        try:
+            result = await fn(ctx, args)
+        except WorkflowBudgetExceeded as exc:
+            result = {
+                "status": "budget_exceeded",
+                "error": str(exc),
+                "tokens_spent": ctx.budget.spent(),
+                "budget_total": ctx.budget.total,
+            }
+        if save_dir is not None:
+            _write_workflow_manifest(save_dir, name=name, args=args, ctx=ctx)
+        return result
+    finally:
+        if owns_tracer:
+            tracer.close()
 
 
 def _write_workflow_manifest(
