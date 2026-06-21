@@ -32,16 +32,32 @@ class _LineViewport:
 class _RendererDisplayMixin:
     """Builds Rich renderables from the TUI's current state."""
 
-    _STYLE_MUTED = "bright_black"
-    _STYLE_ACCENT = "cyan"
-    _STYLE_SUCCESS = "green"
-    _STYLE_WARNING = "yellow"
-    _STYLE_ERROR = "red"
-    _STYLE_HEADING = "bold cyan"
+    # ── Calm-HUD palette: one accent (cyan) + a two-tier grey hierarchy. ──
+    # State lives in color; every value is an explicit, non-"white" style so
+    # the per-glyph chrome walk in the tests passes.
+    _STYLE_MUTED = "grey46"        # chrome: markers, dividers, separators, args
+    _STYLE_SUBTLE = "grey58"       # secondary text: stats numbers, session path
+    _STYLE_ACCENT = "cyan"         # the one identity hue: brand, in-flight, messages
+    _STYLE_SUCCESS = "green3"      # outcome only: finished / received / idle
+    _STYLE_WARNING = "gold3"       # outcome only: loop / budget / cancelled / running
+    _STYLE_ERROR = "red3"          # outcome only: failed / error
+    _STYLE_HEADING = "bold cyan"   # section headings ("Running"), banner wordmark
+    _STYLE_KEY = "grey58"          # banner key column ("model", "cwd", …)
 
+    # Bold marker glyphs for activity lines — a marker reads louder than its sentence.
+    _MARK_START = ("▸ ", "cyan")          # work begun (in-flight, cyan)
+    _MARK_DONE = ("▪ ", "bold green3")    # finished / received
+    _MARK_FAIL = ("✗ ", "bold red3")      # failed / error
+    _MARK_WARN = ("⊘ ", "bold gold3")     # cancelled
+    _MARK_MSG = ("⇄ ", "bold cyan")       # inter-agent message
+    _MARK_DOT = ("· ", "grey46")          # neutral default / resumed
+
+    # State → color for team chips + toolbar parity. "available" = configured
+    # but un-spawned: it recedes to muted grey so empty slots don't draw a glance.
     _STATE_STYLES = {
         "running": _STYLE_WARNING,
         "idle": _STYLE_SUCCESS,
+        "available": _STYLE_MUTED,
         "failed": _STYLE_ERROR,
         "cancelled": _STYLE_WARNING,
     }
@@ -109,12 +125,14 @@ class _RendererDisplayMixin:
             focused = self._filter_messages and aid == self._selected_aid
             if chips:
                 chips.append(("  ", self._STYLE_MUTED))
+            if focused and aid is not None:
+                chips.append(("▶ ", self._STYLE_ACCENT))  # explicit accent glyph
             if aid is None:
-                chips.append((f"{role} ", "bold cyan"))
+                chips.append((f"{role} ", self._STYLE_HEADING))
             elif aid == 0:
-                chips.append((f"{'▶ ' if focused else ''}Lead ", "bold cyan"))
+                chips.append(("Lead ", self._STYLE_HEADING))
             else:
-                chips.append((f"{'▶ ' if focused else ''}A{aid} ", "bold cyan"))
+                chips.append((f"A{aid} ", self._STYLE_HEADING))
                 chips.append((f"{role} ", self._STYLE_MUTED))
             chips.append((f"[{state}]", style))
         header = (
@@ -138,18 +156,26 @@ class _RendererDisplayMixin:
             parts.append(Markdown(self._current_text))
             parts.append(Text("", style=""))
 
-        # Active tool spinners
+        # Active tool spinners — animated, accent-hued. Each tool is a one-row
+        # Table.grid so the spinner cell and label cell stay on a single render
+        # line (the block is captured by render_lines in _build_live_display).
         if self._active_tools:
+            from rich.spinner import Spinner
+            from rich.table import Table
+
             parts.append(Text("Running", style=self._STYLE_HEADING))
             for label, data in self._active_tools.items():
                 args_preview = self._args_preview(data, limit=60, code=True)
 
-                spinner_text = Text.assemble(
-                    ("  ", self._STYLE_MUTED),
-                    (f"[{label}]", self._STYLE_HEADING),
-                    (args_preview, self._STYLE_MUTED),
+                label_text = Text.assemble(
+                    (label, self._STYLE_ACCENT),        # tool name carries the accent
+                    (args_preview, self._STYLE_MUTED),  # preview stays dim (" `ls -la`")
                 )
-                parts.append(spinner_text)
+                row = Table.grid(padding=(0, 1))
+                row.add_column(no_wrap=True)            # spinner cell
+                row.add_column(ratio=1)                 # label + args cell
+                row.add_row(Spinner("dots", style=self._STYLE_ACCENT), label_text)
+                parts.append(row)
             parts.append(Text("", style=""))
 
         if self._status_lines:
@@ -174,3 +200,20 @@ class _RendererDisplayMixin:
         if len(lines) <= max_height:
             return display
         return _LineViewport(lines[-max_height:])
+
+    def _build_settled_display(self) -> Any | None:
+        """The persistent transcript committed to scrollback when a turn ends.
+
+        Only the conversation — assistant text + tool/activity lines — is kept.
+        The live-only HUD (running spinner, transient status, team roster) is
+        dropped so the settled view stays focused on the reply; the team remains
+        visible in the prompt's bottom toolbar. Returns ``None`` when the turn
+        produced nothing worth persisting.
+        """
+        if self._current_text:
+            self._flush_current_text_to_timeline()
+        if not self._timeline_blocks:
+            return None
+        from rich.console import Group
+
+        return Group(*self._timeline_blocks)

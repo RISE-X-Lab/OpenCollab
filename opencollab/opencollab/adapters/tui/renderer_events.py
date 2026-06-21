@@ -55,7 +55,11 @@ class _RendererEventsMixin:
             label = f"{agent_label}:{tool}"
             self._active_tools[label] = event.data
             preview = self._args_preview(event.data)
-            self._append_activity((f"{label} started", self._STYLE_ACCENT), (preview, self._STYLE_MUTED))
+            self._append_activity(
+                (f"{label} started", self._STYLE_ACCENT),
+                (preview, self._STYLE_MUTED),
+                marker=self._MARK_START,
+            )
             if tool == "spawn_agent" and role:
                 self._emit_status(Text(f"{agent_label} spawned {role}", style=self._STYLE_ACCENT))
             self._refresh()
@@ -68,6 +72,7 @@ class _RendererEventsMixin:
             self._append_activity(
                 (f"{label} finished", self._STYLE_SUCCESS),
                 (f" ({latency:.1f}s)", self._STYLE_MUTED),
+                marker=self._MARK_DONE,
             )
             self._refresh()
 
@@ -98,18 +103,20 @@ class _RendererEventsMixin:
 
         if etype == "agent_spawned":
             self._clear_thinking_status()
-            label = f"{agent_label}:spawn"
-            self._active_tools[label] = dict(event.data)
             self._roster[aid] = {"role": role or "agent", "state": "running"}
-            self._append_activity((f"{label} started", self._STYLE_ACCENT))
-            if role:
-                self._emit_status(Text(f"Agent {agent_label} ({role}) spawned", style=self._STYLE_ACCENT))
+            # aid 0 is the lead/turn itself, not a spawned teammate — no chrome.
+            if aid != 0:
+                label = f"{agent_label}:spawn"
+                self._active_tools[label] = dict(event.data)
+                self._append_activity((f"{label} started", self._STYLE_ACCENT), marker=self._MARK_START)
+                if role:
+                    self._emit_status(Text(f"Agent {agent_label} ({role}) spawned", style=self._STYLE_ACCENT))
             self._refresh()
 
         elif etype == "agent_resumed":
             # A parent that suspended on delegated work has been re-activated.
             self._mark_roster(aid, role, "running")
-            self._append_activity((f"{agent_label} resumed", self._STYLE_ACCENT))
+            self._append_activity((f"{agent_label} resumed", self._STYLE_ACCENT), marker=self._MARK_START)
             self._refresh()
 
         elif etype == "agent_completed":
@@ -117,14 +124,19 @@ class _RendererEventsMixin:
             self._active_tools.pop(label, None)
             self._mark_roster(aid, role, "idle")
             latency = event.data.get("latency", 0.0)
-            self._append_activity(
-                (f"{label} finished", self._STYLE_SUCCESS),
-                (f" ({latency:.1f}s)", self._STYLE_MUTED),
-            )
-            if role:
-                self._emit_status(
-                    Text(f"Agent {agent_label} ({role}) completed ({latency:.1f}s)", style=self._STYLE_SUCCESS)
+            # The lead (aid 0) finishing IS the turn boundary — the stats footer
+            # already marks it. Skip the teammate-style "finished"/"completed"
+            # chrome so a solo turn isn't buried under its own lifecycle noise.
+            if aid != 0:
+                self._append_activity(
+                    (f"{label} finished", self._STYLE_SUCCESS),
+                    (f" ({latency:.1f}s)", self._STYLE_MUTED),
+                    marker=self._MARK_DONE,
                 )
+                if role:
+                    self._emit_status(
+                        Text(f"Agent {agent_label} ({role}) completed ({latency:.1f}s)", style=self._STYLE_SUCCESS)
+                    )
             self._refresh()
 
         elif etype == "agent_failed":
@@ -132,31 +144,35 @@ class _RendererEventsMixin:
             self._active_tools.pop(label, None)
             self._mark_roster(aid, role, "failed")
             error = event.data.get("error", "unknown")
-            self._append_activity((f"{label} failed", self._STYLE_ERROR), (f": {error}", self._STYLE_MUTED))
+            self._append_activity(
+                (f"{label} failed", self._STYLE_ERROR),
+                (f": {error}", self._STYLE_MUTED),
+                marker=self._MARK_FAIL,
+            )
             self._refresh()
 
         elif etype == "agent_cancelled":
             label = f"{agent_label}:spawn"
             self._active_tools.pop(label, None)
             self._mark_roster(aid, role, "cancelled")
-            self._append_activity((f"{label} cancelled", self._STYLE_WARNING))
+            self._append_activity((f"{label} cancelled", self._STYLE_WARNING), marker=self._MARK_WARN)
             self._refresh()
 
         elif etype == "agent_message_sent":
             from_aid = event.data.get("from_aid", -1)
             to_aid = event.data.get("to_aid", -1)
-            self._append_activity((f"A{from_aid} → A{to_aid} message", self._STYLE_ACCENT))
+            self._append_activity((f"A{from_aid} → A{to_aid} message", self._STYLE_ACCENT), marker=self._MARK_MSG)
             self._refresh()
 
         elif etype == "agent_message_delivered":
             to_aid = event.data.get("to_aid", -1)
-            self._append_activity((f"A{to_aid} received message", self._STYLE_SUCCESS))
+            self._append_activity((f"A{to_aid} received message", self._STYLE_SUCCESS), marker=self._MARK_DONE)
             self._refresh()
 
         elif etype == "review_started":
             self._clear_thinking_status()
             self._active_tools["review_loop"] = dict(event.data)
-            self._append_activity(("review_loop started", self._STYLE_ACCENT))
+            self._append_activity(("review_loop started", self._STYLE_ACCENT), marker=self._MARK_START)
             self._refresh()
 
         elif etype == "review_completed":
@@ -178,10 +194,13 @@ class _RendererEventsMixin:
             return
         self.console.print(status)
 
-    def _append_activity(self, *segments: tuple[str, str]) -> None:
-        """Insert one activity line at the current timeline position."""
+    def _append_activity(
+        self, *segments: tuple[str, str], marker: tuple[str, str] | None = None
+    ) -> None:
+        """Insert one activity line; ``marker`` is the leading geometric glyph
+        (defaults to the neutral dot)."""
         self._flush_current_text_to_timeline()
-        styled_segments: list[tuple[str, str]] = [("• ", self._STYLE_MUTED)]
+        styled_segments: list[tuple[str, str]] = [marker or self._MARK_DOT]
         styled_segments.extend((text, style) for text, style in segments if text)
         line = Text.assemble(*styled_segments)
         self._timeline_blocks.append(line)
