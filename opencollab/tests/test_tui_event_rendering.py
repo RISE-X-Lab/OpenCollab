@@ -96,7 +96,11 @@ def test_args_preview_reads_nested_session_args_and_top_level_task():
 
 
 def test_spawn_spinner_preview_uses_scheduler_task_payload():
-    tui = _make_tui()
+    # The Running block renders each active tool as an animated Spinner inside a
+    # Table.grid, so the preview text is nested below the top-level renderables.
+    # Render the display to text and assert the preview is visible to the user.
+    console = Console(file=StringIO(), width=80, color_system="truecolor")
+    tui = TUI(console)
     tui._live_paused = True
     tui.event_handler(
         SchedulerEvent(
@@ -104,11 +108,9 @@ def test_spawn_spinner_preview_uses_scheduler_task_payload():
             {"aid": 1, "parent_aid": 0, "role": "coder", "task": "implement X"},
         )
     )
-    display = tui._build_display()
-    plain = "\n".join(
-        getattr(block, "plain", "") for block in display.renderables
-    )
-    assert "implement X" in plain
+    with console.capture() as capture:
+        console.print(tui._build_display())
+    assert "implement X" in capture.get()
 
 
 def test_step_start_updates_step_counter_and_status():

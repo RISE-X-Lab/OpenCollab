@@ -24,6 +24,7 @@ import uuid
 from typing import Any, Optional
 
 import typer
+from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 from rich.console import Console
 
@@ -47,6 +48,8 @@ _PROMPT_STYLE = Style.from_dict({
     "bottom-toolbar": "noreverse bg:default fg:ansibrightblack",
     "bottom-toolbar.text": "noreverse bg:default fg:ansibrightblack",
 })
+# Cyan chevron input prompt — ties the input line to the brand accent.
+_PROMPT = HTML('<style fg="ansicyan"><b>❯</b></style><style fg="ansibrightblack"> </style>')
 
 app.command(name="eval")(eval_cmd)
 app.add_typer(workflow_app, name="workflow")
@@ -62,18 +65,21 @@ def _get_prompt_session() -> Any:
     return _prompt_session
 
 
-async def _read_line(prompt_text: str, bottom_toolbar: Any = None) -> str:
+async def _read_line(prompt_text: Any, bottom_toolbar: Any = None) -> str:
     """Read one input line; fall back to rich console input if needed.
 
-    ``bottom_toolbar`` (a callable returning text) renders a status line under
-    the input, à la a HUD — used to show the live team roster at the prompt.
+    ``prompt_text`` may be a plain ``str`` or a prompt_toolkit ``HTML`` object
+    (the styled chevron). ``bottom_toolbar`` (a callable returning text) renders
+    a status line under the input, à la a HUD — used to show the live team
+    roster at the prompt.
     """
     try:
         session = _get_prompt_session()
         return await session.prompt_async(prompt_text, bottom_toolbar=bottom_toolbar)
     except Exception:
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, lambda: console.input(prompt_text))
+        fallback = prompt_text if isinstance(prompt_text, str) else "> "
+        return await loop.run_in_executor(None, lambda: console.input(fallback))
 
 
 @app.callback(invoke_without_command=True)
@@ -141,7 +147,7 @@ async def _read_command(tui, bottom_toolbar: Any = None) -> str | None:
     """Prompt for a user line, returning None on EOF/interrupt."""
     was_suspended = tui.suspend_live()
     try:
-        return await _read_line("> ", bottom_toolbar=bottom_toolbar)
+        return await _read_line(_PROMPT, bottom_toolbar=bottom_toolbar)
     except (EOFError, KeyboardInterrupt):
         return None
     finally:
@@ -190,6 +196,7 @@ async def _repl_loop(tui: Any, handle_turn, lead: Any, bottom_toolbar: Any = Non
         result = await handle_turn(line)
         if result is False:
             break
+        tui.print_turn_divider()
 
 
 async def _run(workspace: str, cfg: dict, session_file: str | None,
@@ -204,7 +211,12 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
     from opencollab.bootstrap import build_runtime_context, build_scheduler
 
     tui = TUI(console, filter_messages=cfg["filter_messages"])
-    tui.print_welcome()
+    tui.print_welcome(
+        model=cfg["model"],
+        provider=cfg["provider"],
+        workspace=workspace,
+        budget=cfg.get("budget"),
+    )
 
     # ``--yolo`` only auto-approves risky commands; a human is still present, so
     # the ask-user tool stays interactive (routed through the TUI's suspend/resume).
@@ -227,9 +239,9 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
     tui.set_team_provider(scheduler.team_roster)
     lead = scheduler.lead_session
     if session_file and os.path.exists(session_file):
-        console.print(f"[dim]Restored session from {session_file}[/dim]")
+        console.print(f"[grey46]─[/grey46] [grey58]restored from {session_file}[/grey58]")
     elif lead.auto_save_path:
-        console.print(f"[dim]Session auto-saving to {lead.auto_save_path}[/dim]")
+        console.print(f"[grey46]─[/grey46] [grey58]session → {lead.auto_save_path}[/grey58]")
 
     async def turn(line: str) -> None:
         tui.reset()
@@ -253,8 +265,8 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
     await scheduler.cleanup()
     if ctx.tracer:
         ctx.tracer.close()
-        console.print(f"[dim]Trajectory saved to {ctx.tracer.path}[/dim]")
-    console.print("[dim]Goodbye.[/dim]")
+        console.print(f"[grey46]─[/grey46] [grey58]trajectory → {ctx.tracer.path}[/grey58]")
+    console.print("\n[grey46]─[/grey46] [grey58]session ended.[/grey58]")
 
 
 def main():

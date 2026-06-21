@@ -18,6 +18,7 @@ _TOOLBAR_ERROR = "ansired"
 _TOOLBAR_STATE_STYLES = {
     "running": _TOOLBAR_WARNING,
     "idle": _TOOLBAR_SUCCESS,
+    "available": _TOOLBAR_MUTED,  # configured-only slots recede
     "failed": _TOOLBAR_ERROR,
     "cancelled": _TOOLBAR_WARNING,
 }

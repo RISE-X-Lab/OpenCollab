@@ -74,7 +74,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
             self._build_live_display(),
             console=self.console,
             refresh_per_second=10,
-            transient=False,
+            transient=True,
             vertical_overflow="crop",
         )
         self._live.start()
@@ -103,26 +103,92 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         self._live.start()
 
     def stop_live(self) -> None:
-        """Stop the Live display and print final output."""
+        """Stop the live HUD and commit the turn's transcript to scrollback.
+
+        The live frame is transient, so stopping erases the in-turn HUD (running
+        spinner, transient status, team roster). Only the conversation transcript
+        — assistant text + tool/activity lines — is reprinted so it persists,
+        keeping the settled view focused on the reply (the team stays visible in
+        the prompt's bottom toolbar)."""
         if self._live:
-            # Keep the final live frame on screen and avoid duplicate manual prints.
-            self._refresh()
+            settled = self._build_settled_display()
             self._live.stop()
             self._live = None
+            if settled is not None:
+                self.console.print(settled)
         self._live_paused = False
-
         self._status_lines.clear()
         self._current_text = ""
 
-    def print_welcome(self) -> None:
+    def print_welcome(
+        self,
+        *,
+        model: str | None = None,
+        provider: str | None = None,
+        workspace: str | None = None,
+        budget: int | None = None,
+    ) -> None:
+        """Compact 'Calm HUD' banner: wordmark + tagline, then an optional
+        aligned key/value metadata line. All fields are optional so a bare
+        ``print_welcome()`` still renders a clean two-line banner."""
+        import os
+
+        from rich.console import Group
+        from rich.rule import Rule
+
+        title = Text.assemble(
+            ("◆ ", self._STYLE_ACCENT),
+            ("OpenCollab", self._STYLE_HEADING),
+            ("  multi-agent dev", self._STYLE_MUTED),
+        )
+        tagline = Text(
+            "Type a message · Ctrl+C interrupts · 'exit' quits",
+            style=self._STYLE_MUTED,
+        )
+
+        fields: list[tuple[str, str]] = []
+        if provider or model:
+            fields.append(("model", f"{provider + ':' if provider else ''}{model or '?'}"))
+        if workspace:
+            home = os.path.expanduser("~")
+            cwd = os.path.abspath(str(workspace))
+            if home != "~" and cwd.startswith(home):
+                cwd = "~" + cwd[len(home):]
+            fields.append(("cwd", cwd))
+        if budget is not None:
+            fields.append(("budget", f"{budget:,} tok"))
+
+        body: list[Any] = [title, tagline]
+        if fields:
+            meta = Text(no_wrap=True, overflow="ellipsis")
+            for i, (key, val) in enumerate(fields):
+                if i:
+                    meta.append("   ", style=self._STYLE_MUTED)  # 3-space gutter
+                meta.append(f"{key} ", style=self._STYLE_KEY)
+                meta.append(val, style=self._STYLE_SUBTLE)
+            body += [Rule(style=self._STYLE_ACCENT), meta]
+
         self.console.print(Panel.fit(
-            "[bold]OpenCollab[/bold] — Mini Multi-Agent Collaboration Framework\n"
-            "[dim]Type your message. Ctrl+C to interrupt. 'exit' to quit.[/dim]",
-            border_style="blue",
+            Group(*body),
+            border_style=self._STYLE_ACCENT,
+            padding=(0, 2),
         ))
 
     def print_stats(self, tokens: int, steps: int) -> None:
-        self.console.print(f"\n[dim]({tokens:,} tokens, {steps} steps)[/dim]")
+        """Quiet hairline-led receipt under a completed turn."""
+        self.console.print()  # one breathing line
+        self.console.print(Text.assemble(
+            ("─ ", self._STYLE_MUTED),
+            (f"{tokens:,}", self._STYLE_SUBTLE), (" tokens", self._STYLE_MUTED),
+            ("  ·  ", self._STYLE_MUTED),
+            (f"{steps}", self._STYLE_SUBTLE), (" steps", self._STYLE_MUTED),
+        ))
+
+    def print_turn_divider(self) -> None:
+        """Hairline rule between turns (Rule is exempt from the glyph walk)."""
+        from rich.rule import Rule
+
+        self.console.print(Rule(style=self._STYLE_MUTED))
 
     def reset(self) -> None:
         """Reset state for next turn."""
