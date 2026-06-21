@@ -46,6 +46,20 @@ OPENCOLLAB_LLM_TIMEOUT=600
 For DashScope-compatible mode, `DASHSCOPE_API_KEY` is also accepted and is
 preferred over generic API-key variables for DashScope base URLs.
 
+## Sampling
+
+`OPENCOLLAB_TEMPERATURE` sets the LLM sampling temperature for every agent.
+It defaults to `0.2`; `0.0` is fully deterministic. The value must be in the
+range `0.0`–`2.0`.
+
+```dotenv
+OPENCOLLAB_TEMPERATURE=0.2
+```
+
+A team file may override the temperature per role via a `temperature:` field on
+the role (see [Team](#team) below). A role that leaves it unset inherits this
+global value; a role override of `0.0` is honored (not treated as "unset").
+
 ## Display
 
 `OPENCOLLAB_FILTER_MESSAGES` toggles per-agent message filtering in the TUI.
@@ -59,8 +73,9 @@ OPENCOLLAB_FILTER_MESSAGES=true
 
 ## Team
 
-Define a multi-agent team — per-role prompts, model overrides, tool allowlists,
-and a directed spawn/message topology — in `configs/team.yaml`:
+Define a multi-agent team — per-role prompts, model overrides, per-role
+`temperature:` overrides, tool allowlists, and a directed spawn/message
+topology — in `configs/team.yaml`:
 
 ```bash
 cp configs/team.example.yaml configs/team.yaml
@@ -80,6 +95,7 @@ plus a `topology` graph).
 
 The final resolved configuration is validated by a Pydantic model. `budget`
 must be a positive integer; `llm_timeout` must be a positive number of seconds;
-blank `api_key` and `base_url` values are treated as unset.
+`temperature` must be within `0.0`–`2.0`; blank `api_key` and `base_url` values
+are treated as unset.
 
 Do not commit `configs/.env` or any file containing real API keys.

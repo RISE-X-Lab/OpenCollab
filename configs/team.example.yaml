@@ -4,8 +4,9 @@
 # OPENCOLLAB_TEAM_FILE at it, to replace the built-in lead-only default.
 #
 # Each role declares its system prompt (inline `prompt:` or `prompt_file:`),
-# an optional `model:` override (defaults to OPENCOLLAB_MODEL), and the list of
-# tool names it may use. `topology` is a directed graph: a source role may
+# an optional `model:` override (defaults to OPENCOLLAB_MODEL), an optional
+# `temperature:` override (defaults to OPENCOLLAB_TEMPERATURE, 0.2), and the list
+# of tool names it may use. `topology` is a directed graph: a source role may
 # spawn/message only the roles listed for it.
 #
 # `entry` (optional) names the role built as agent 0 — the root that receives
@@ -34,9 +35,11 @@ roles:
       You are a Coder agent. 
 
   reviewer:
+    # A reviewer benefits from determinism; pin its temperature to 0.0.
+    temperature: 0.0
     tools: [bash, file_read, run_tests, git_diff, grep]
     prompt: |
-      You are a Reviewer agent. 
+      You are a Reviewer agent.
 
 topology:
   lead: [analyst, coder, reviewer]

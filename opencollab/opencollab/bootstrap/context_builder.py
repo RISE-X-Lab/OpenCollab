@@ -22,6 +22,7 @@ from opencollab.application.ports import (
     SchedulerPort,
     SkillStorePort,
 )
+from opencollab.bootstrap.config import DEFAULT_TEMPERATURE
 from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
 from opencollab.bootstrap.tool_registry import COORDINATION_TOOL_NAMES, build_tools_for_role
 from opencollab.domain.agent import Agent
@@ -50,6 +51,10 @@ class SpawnConfig:
     permission_policy: PermissionPort | None
     ask_policy: AskUserPort | None = None
     safety_policy_factory: SafetyPolicyFactory | None = None
+    # Global sampling-temperature default; a role may override it (see
+    # ``ContextBuilder.build_agent``). Defaulted so the field stays optional for
+    # the many call sites that construct a ``SpawnConfig`` by keyword.
+    temperature: float = DEFAULT_TEMPERATURE
 
 
 class ContextBuilder:
@@ -212,6 +217,11 @@ class ContextBuilder:
             tool_limits=self._team.tool_limits,
         )
         cfg = self._cfg
+        # A role override of 0.0 is meaningful (fully deterministic), so fall
+        # back to the global default only when the role left it unset (None).
+        temperature = (
+            role.temperature if role.temperature is not None else cfg.temperature
+        )
         return Agent(
             name=role_name,
             system_prompt=plan.system_prompt(),
@@ -220,6 +230,7 @@ class ContextBuilder:
             provider=cfg.provider,
             api_key=cfg.api_key,
             base_url=cfg.base_url,
+            temperature=temperature,
         )
 
     def _team_section(self, role_name: str, role: RoleConfig) -> str:

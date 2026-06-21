@@ -28,7 +28,7 @@ class FakeSkillStore:
         return f"BODY OF {name}" if name in self._skills else None
 
 
-def _cfg(model="default-model"):
+def _cfg(model="default-model", temperature=0.2):
     return SpawnConfig(
         model=model,
         provider="openai",
@@ -38,6 +38,7 @@ def _cfg(model="default-model"):
         tracer=None,
         event_bus=EventBus(None),
         permission_policy=None,
+        temperature=temperature,
     )
 
 
@@ -86,6 +87,30 @@ def test_model_override_and_default():
     builder = ContextBuilder(_team(), _cfg(model="default-model"))
     assert builder.build_agent("coder", scheduler=SCHED).model == "coder-model"
     assert builder.build_agent("reviewer", scheduler=SCHED).model == "default-model"
+
+
+def test_temperature_global_default_applies_when_role_unset():
+    # No role in _team() sets a temperature → all inherit the SpawnConfig value.
+    builder = ContextBuilder(_team(), _cfg(temperature=0.3))
+    assert builder.build_agent("coder", scheduler=SCHED).temperature == 0.3
+    assert builder.build_agent("reviewer", scheduler=SCHED).temperature == 0.3
+
+
+def test_temperature_role_override_and_zero_is_honored():
+    team = TeamConfig(
+        roles={
+            "hot": RoleConfig(prompt="h", model=None, temperature=0.9, tools=["bash"]),
+            "cold": RoleConfig(prompt="c", model=None, temperature=0.0, tools=["bash"]),
+            "plain": RoleConfig(prompt="p", model=None, tools=["bash"]),
+        },
+        topology=Topology(),
+    )
+    builder = ContextBuilder(team, _cfg(temperature=0.3))
+    assert builder.build_agent("hot").temperature == 0.9
+    # 0.0 is a meaningful override (fully deterministic) — it must NOT be treated
+    # as "unset" and fall back to the global 0.3.
+    assert builder.build_agent("cold").temperature == 0.0
+    assert builder.build_agent("plain").temperature == 0.3
 
 
 def test_unknown_role_falls_back_to_generic_spec():

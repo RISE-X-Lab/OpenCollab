@@ -11,6 +11,7 @@ Supported variables:
                             ANTHROPIC_API_KEY / DASHSCOPE_API_KEY)
     OPENCOLLAB_BASE_URL   — API base URL (also reads OPENAI_BASE_URL)
     OPENCOLLAB_BUDGET     — default token budget
+    OPENCOLLAB_TEMPERATURE — LLM sampling temperature (default 0.2)
     OPENCOLLAB_LLM_TIMEOUT — provider request timeout in seconds
     OPENCOLLAB_FILTER_MESSAGES — TUI: show only the selected agent's stream (bool)
     OPENCOLLAB_CONFIG_FILE — explicit path to an env file
@@ -26,6 +27,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from opencollab.adapters.llm.providers import is_anthropic, required_env_key
 
+# Authoritative LLM sampling-temperature default. Every runtime path resolves
+# its effective temperature from here (env/.env override → per-role override),
+# so this is the single source of truth referenced by SpawnConfig, the workflow
+# runtime, and the headless evaluator.
+DEFAULT_TEMPERATURE = 0.2
+
 
 class OpenCollabConfig(BaseModel):
     """Runtime configuration for OpenCollab."""
@@ -37,6 +44,7 @@ class OpenCollabConfig(BaseModel):
     api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = None
     budget: int = Field(default=200_000, ge=1)
+    temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0.0, le=2.0)
     llm_timeout: float = Field(default=600.0, gt=0)
     filter_messages: bool = Field(default=False)
 
@@ -225,6 +233,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         "api_key": api_key_value,
         "base_url": base_url_value,
         "budget": resolve("OPENCOLLAB_BUDGET", default="200000"),
+        "temperature": resolve("OPENCOLLAB_TEMPERATURE", default=str(DEFAULT_TEMPERATURE)),
         "llm_timeout": resolve("OPENCOLLAB_LLM_TIMEOUT", default="600"),
         "filter_messages": resolve("OPENCOLLAB_FILTER_MESSAGES", default="false"),
     }

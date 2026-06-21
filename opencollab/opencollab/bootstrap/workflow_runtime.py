@@ -30,6 +30,7 @@ from opencollab.application.ports import (
 )
 from opencollab.application.workflow import WorkflowBudgetExceeded, WorkflowContext
 from opencollab.application.workflow_registry import Registry, WorkflowSpec
+from opencollab.bootstrap.config import DEFAULT_TEMPERATURE
 from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
 
@@ -84,6 +85,7 @@ class WorkflowSessionFactory:
         tracer: TracePort | None = None,
         event_sink: EventPublisherPort | None = None,
         llm_timeout: float = 600.0,
+        temperature: float = DEFAULT_TEMPERATURE,
         save_dir: str | None = None,
     ) -> None:
         self._model = model
@@ -94,6 +96,7 @@ class WorkflowSessionFactory:
         self._tracer = tracer
         self._event_sink = event_sink
         self._llm_timeout = llm_timeout
+        self._temperature = temperature
         # Run folder where each one-shot session's transcript is autosaved. When
         # set, every ``build_workflow_session`` gets its own ``session_<n>.json``
         # so the AutoSaveSubscriber (wired by ``build_session`` once an
@@ -137,6 +140,7 @@ class WorkflowSessionFactory:
             provider=self._provider,
             api_key=self._api_key,
             base_url=self._base_url,
+            temperature=self._temperature,
         )
         env = LocalEnvironment(self._workspace) if self._workspace else LocalEnvironment()
         return build_session(
@@ -163,7 +167,8 @@ def build_workflow_context(
     """Build a :class:`WorkflowContext` wired to the concrete session factory.
 
     ``cfg`` is the resolved config dict (``model`` / ``provider`` / ``api_key`` /
-    ``base_url`` / ``budget`` / optional ``llm_timeout``) produced by the CLI's
+    ``base_url`` / ``budget`` / optional ``llm_timeout`` / ``temperature``)
+    produced by the CLI's
     file-first config resolution — so a stale shell ``ANTHROPIC_API_KEY`` cannot
     shadow the configured key. ``budget`` overrides ``cfg['budget']`` when given;
     ``None`` for an unbounded workflow. ``save_dir``, when given, is the run
@@ -179,6 +184,7 @@ def build_workflow_context(
         tracer=tracer,
         event_sink=event_sink,
         llm_timeout=float(cfg.get("llm_timeout", 600.0)),
+        temperature=float(cfg.get("temperature", DEFAULT_TEMPERATURE)),
         save_dir=save_dir,
     )
     budget_total = budget if budget is not None else cfg.get("budget")

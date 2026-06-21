@@ -59,6 +59,37 @@ def test_load_team_roundtrip_roles_and_topology(tmp_path, monkeypatch):
     assert not cfg.topology.allows("lead", "reviewer")
 
 
+def test_role_temperature_defaults_to_none_when_unset(tmp_path, monkeypatch):
+    # TEAM_YAML declares no temperature for either role → both stay None so the
+    # ContextBuilder falls back to the global OpenCollabConfig default.
+    _write_team(tmp_path, monkeypatch)
+    cfg = load_team_config(str(tmp_path))
+    assert cfg.roles["lead"].temperature is None
+    assert cfg.roles["coder"].temperature is None
+
+
+def test_role_temperature_override_is_parsed(tmp_path, monkeypatch):
+    yaml_text = """\
+roles:
+  lead:
+    temperature: 0.0
+    tools: [bash, spawn_agent]
+    prompt: |
+      Lead prompt.
+  coder:
+    temperature: 0.9
+    tools: [bash, file_write]
+    prompt: |
+      Coder prompt.
+topology:
+  lead: [coder]
+"""
+    _write_team(tmp_path, monkeypatch, yaml_text=yaml_text)
+    cfg = load_team_config(str(tmp_path))
+    assert cfg.roles["lead"].temperature == 0.0
+    assert cfg.roles["coder"].temperature == 0.9
+
+
 def test_prompt_file_is_resolved_relative_to_team_file(tmp_path, monkeypatch):
     _write_team(tmp_path, monkeypatch, coder_prompt="Resolved coder body.")
     cfg = load_team_config(str(tmp_path))
