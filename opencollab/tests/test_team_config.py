@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from opencollab.bootstrap.team_config import (
+    BASE_TOOL_NAMES,
     LEAD_TOOL_NAMES,
     RoleConfig,
     default_team_config,
@@ -101,7 +102,11 @@ def test_unknown_role_falls_back_to_generic_spec(tmp_path, monkeypatch):
     cfg = load_team_config(str(tmp_path))
     fallback = cfg.role_for("totally-new-role")
     assert isinstance(fallback, RoleConfig)
-    assert fallback.tools == ["bash", "file_read", "file_write", "grep"]
+    # Ad-hoc roles get the registry-derived worker bundle: no coordination tools
+    # (they must not fan out further) and no skill dispatch.
+    assert fallback.tools == list(BASE_TOOL_NAMES)
+    assert "spawn_agent" not in fallback.tools
+    assert "use_skill" not in fallback.tools
 
 
 def test_default_team_entry_is_lead(monkeypatch):

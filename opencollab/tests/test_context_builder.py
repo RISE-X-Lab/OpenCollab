@@ -6,7 +6,7 @@ import pytest
 
 from opencollab.application.event_bus import EventBus
 from opencollab.bootstrap.container import ContextBuilder, SpawnConfig
-from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
+from opencollab.bootstrap.team_config import BASE_TOOL_NAMES, RoleConfig, TeamConfig
 from opencollab.domain.context import ContextLayer, ContextPosition, LoadTiming
 from opencollab.domain.skill import SkillManifest
 from opencollab.domain.team import Topology
@@ -115,7 +115,9 @@ def test_temperature_role_override_and_zero_is_honored():
 
 def test_unknown_role_falls_back_to_generic_spec():
     agent = ContextBuilder(_team(), _cfg()).build_agent("data-scientist", scheduler=SCHED)
-    assert {t.name for t in agent.tools} == {"bash", "file_read", "file_write", "grep"}
+    # Ad-hoc roles get the registry-derived worker bundle; this non-interactive
+    # build drops ``ask_user`` (no coordination/skill tools to begin with).
+    assert {t.name for t in agent.tools} == set(BASE_TOOL_NAMES) - {"ask_user"}
 
 
 def test_unknown_tool_name_raises():
