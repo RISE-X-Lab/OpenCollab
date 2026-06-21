@@ -164,6 +164,25 @@ def test_tool_execution_use_case_preserves_loop_detection_event():
     ]
 
 
+def test_tool_execution_use_case_detects_cyclic_loop_spread_across_window():
+    # Regression: real 100-step stalls thrash in a CYCLE — the same (tool, args)
+    # recurs every ~13 calls (observed 10-17 apart), not back-to-back, because
+    # cleared tool outputs force re-reads. The old detector only scanned the last
+    # 6 hashes and never saw three of a cyclically-repeated call, so it never
+    # fired. The detector must count across the whole per-turn window.
+    state = SessionState(messages=[])
+    use_case, _ = build_use_case(state=state)
+    call_hash = use_case.tool_call_hash("fake_tool", {"value": 1})
+    filler = [f"other-{i}" for i in range(12)]  # one full thrash cycle of 13
+    # two prior occurrences, each separated by a full cycle -> 13 calls apart
+    state.replace_recent_tool_hashes([call_hash, *filler, call_hash, *filler])
+
+    result = run(use_case.process([tool_call(arguments='{"value": 1}')]))
+
+    assert result.loop_detections == [LoopDetection(tool="fake_tool", count=3)]
+    assert "Loop detected" in result.messages_to_append[0]["content"]
+
+
 def test_tool_execution_use_case_executes_runtime_native_tool_and_events():
     tool = RuntimeNativeTool()
     agent = FakeAgent(tools=[tool])

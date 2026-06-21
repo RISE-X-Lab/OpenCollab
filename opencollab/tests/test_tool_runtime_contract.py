@@ -416,6 +416,39 @@ def test_grep_tool_preserves_env_exec_path_without_path_safety():
     assert timeout == 30
 
 
+def test_file_read_description_teaches_distill_and_forbids_reread():
+    # The file_read description is the UNIVERSAL carrier of the anti-thrash rule:
+    # every workflow/team that has the tool sees it, regardless of its prompt. Pins
+    # the rule (distill into notes; trust the cleared stub; don't re-read to
+    # reconfirm) motivated by a 90-read/0-write/step-cap stall.
+    desc = FileReadTool.description
+    assert "Distill as you read" in desc
+    assert "empty reply" in desc  # forbids bare tool-call turns
+    assert "re-read" in desc      # trust the stub instead
+
+
+def test_grep_tool_fallback_uses_ere_and_skips_session_dir():
+    # When rg is missing from PATH the command falls back to grep. That fallback
+    # MUST use -E (ERE) so `a|b|c` alternation works — plain `grep -rn` is BRE,
+    # where `|` is a literal char and an alternation pattern silently matches
+    # nothing. It must also skip .opencollab so it can't "match" its own logged
+    # pattern strings instead of real source. (Regression: a 100-step run stalled
+    # because every alternation grep returned "No matches found".)
+    env = FakeEnv(stdout="")
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    run(
+        GrepTool().execute_with_runtime(
+            {"pattern": "Scheduler|RowStatus"}, runtime
+        )
+    )
+
+    cmd, _ = env.exec_calls[0]
+    assert "|| grep -rEn" in cmd
+    assert " grep -rn " not in cmd  # the buggy BRE fallback must be gone
+    assert "--exclude-dir=.opencollab" in cmd
+
+
 # ---------------------------------------------------------------------------
 # AskUserTool
 # ---------------------------------------------------------------------------
