@@ -18,6 +18,8 @@ def _build_request_kwargs(
     messages: list[dict],
     tools: list[dict] | None,
     temperature: float,
+    thinking: bool = False,
+    thinking_params: dict | None = None,
 ) -> dict[str, Any]:
     system_parts, anthropic_messages = convert_to_anthropic_messages(messages)
 
@@ -31,6 +33,13 @@ def _build_request_kwargs(
         kwargs["system"] = "\n\n".join(system_parts)
     if tools:
         kwargs["tools"] = [_convert_tool(tool) for tool in tools]
+    # Thinking passthrough (minimal, flag-guarded). This native-Anthropic path is
+    # unused here (DashScope compatible mode runs the OpenAI path), so keep it
+    # behind the flag: default-off changes nothing. ``thinking_params`` is the
+    # OpenAI-shaped payload; the Anthropic API instead wants an extended-thinking
+    # block, so we send a conservative enabled block rather than the raw params.
+    if thinking:
+        kwargs["thinking"] = {"type": "enabled", "budget_tokens": 2048}
     return kwargs
 
 
@@ -51,9 +60,13 @@ async def complete_anthropic(
     tools: list[dict] | None,
     temperature: float,
     max_retries: int,
+    thinking: bool = False,
+    thinking_params: dict | None = None,
 ) -> LLMResponse:
     """Single-shot completion against the Anthropic API."""
-    kwargs = _build_request_kwargs(model, messages, tools, temperature)
+    kwargs = _build_request_kwargs(
+        model, messages, tools, temperature, thinking, thinking_params
+    )
     resp = await with_retry(
         lambda: client.messages.create(**kwargs),
         max_retries=max_retries,

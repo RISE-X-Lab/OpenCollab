@@ -22,6 +22,8 @@ def _build_request_kwargs(
     messages: list[dict],
     tools: list[dict] | None,
     temperature: float,
+    thinking: bool = False,
+    thinking_params: dict | None = None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": model,
@@ -31,6 +33,15 @@ def _build_request_kwargs(
     if tools:
         kwargs["tools"] = tools
         kwargs["tool_choice"] = "auto"
+    # Thinking passthrough: when on, the provider-specific reasoning params ride
+    # along as ``extra_body`` (a valid OpenAI SDK create() kwarg) — for DashScope
+    # compatible mode this is ``{"enable_thinking": True}``. When off, nothing is
+    # added so the request is byte-for-byte unchanged. Merge into any existing
+    # extra_body rather than clobbering it.
+    if thinking and thinking_params:
+        extra_body = dict(kwargs.get("extra_body") or {})
+        extra_body.update(thinking_params)
+        kwargs["extra_body"] = extra_body
     return kwargs
 
 
@@ -108,9 +119,13 @@ async def complete_openai(
     tools: list[dict] | None,
     temperature: float,
     max_retries: int,
+    thinking: bool = False,
+    thinking_params: dict | None = None,
 ) -> LLMResponse:
     """Single-shot completion against an OpenAI-compatible endpoint."""
-    kwargs = _build_request_kwargs(model, messages, tools, temperature)
+    kwargs = _build_request_kwargs(
+        model, messages, tools, temperature, thinking, thinking_params
+    )
     resp = await with_retry(
         lambda: client.chat.completions.create(**kwargs),
         max_retries=max_retries,

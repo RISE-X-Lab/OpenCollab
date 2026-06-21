@@ -68,6 +68,11 @@ class RoleConfig(BaseModel):
     # Optional per-role sampling-temperature override. ``None`` falls back to the
     # global ``OpenCollabConfig.temperature`` (resolved in ``ContextBuilder``).
     temperature: float | None = None
+    # Optional per-role thinking overrides. ``None`` falls back to the global
+    # ``OpenCollabConfig`` values (resolved in ``ContextBuilder``), mirroring how
+    # ``temperature`` is resolved.
+    thinking: bool | None = None
+    thinking_params: dict | None = None
     tools: list[str] = Field(default_factory=list)
 
 
@@ -80,6 +85,8 @@ class _RoleFileModel(BaseModel):
     prompt_file: str | None = None
     model: str | None = None
     temperature: float | None = None
+    thinking: bool | None = None
+    thinking_params: dict | None = None
     tools: list[str] = Field(default_factory=list)
 
 
@@ -229,6 +236,8 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
             prompt=_resolve_prompt(entry, base_dir, name),
             model=entry.model,
             temperature=entry.temperature,
+            thinking=entry.thinking,
+            thinking_params=entry.thinking_params,
             tools=list(entry.tools),
         )
         for name, entry in model.roles.items()

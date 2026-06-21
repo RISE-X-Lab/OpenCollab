@@ -12,6 +12,9 @@ Supported variables:
     OPENCOLLAB_BASE_URL   — API base URL (also reads OPENAI_BASE_URL)
     OPENCOLLAB_BUDGET     — default token budget
     OPENCOLLAB_TEMPERATURE — LLM sampling temperature (default 0.2)
+    OPENCOLLAB_THINKING   — enable provider "thinking"/reasoning passthrough (bool, default off)
+    OPENCOLLAB_THINKING_PARAMS — JSON object of extra request params sent when
+                            thinking is on (default {"enable_thinking": true})
     OPENCOLLAB_LLM_TIMEOUT — provider request timeout in seconds
     OPENCOLLAB_FILTER_MESSAGES — TUI: show only the selected agent's stream (bool)
     OPENCOLLAB_CONFIG_FILE — explicit path to an env file
@@ -19,6 +22,7 @@ Supported variables:
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -33,6 +37,42 @@ from opencollab.adapters.llm.providers import is_anthropic, required_env_key
 # runtime, and the headless evaluator.
 DEFAULT_TEMPERATURE = 0.2
 
+# Provider "thinking"/reasoning passthrough. OFF by default so every existing
+# runtime path is byte-for-byte unchanged. When enabled, ``DEFAULT_THINKING_PARAMS``
+# is the request payload sent to the OpenAI-compatible API as ``extra_body`` (for
+# DashScope compatible mode this is ``{"enable_thinking": true}``). Mirrors the
+# temperature flow: resolved once here, threaded through SpawnConfig / workflow
+# runtime / evaluator and overridable per role.
+DEFAULT_THINKING = False
+DEFAULT_THINKING_PARAMS: dict[str, Any] = {"enable_thinking": True}
+
+# Truthy string tokens for boolean env vars ("1/true/yes/on").
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _parse_bool(value: str | None, *, default: bool = False) -> bool:
+    """Parse a truthy env string ("1/true/yes/on") to bool; default on absence."""
+    if value is None:
+        return default
+    return value.strip().lower() in _TRUTHY
+
+
+def _parse_thinking_params(value: str | None) -> dict[str, Any]:
+    """Parse a JSON object string into a dict; fall back to the default.
+
+    Invalid JSON (or a non-object payload) never crashes — the configured
+    default ``{"enable_thinking": true}`` is used instead.
+    """
+    if not value:
+        return dict(DEFAULT_THINKING_PARAMS)
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        return dict(DEFAULT_THINKING_PARAMS)
+    if not isinstance(parsed, dict):
+        return dict(DEFAULT_THINKING_PARAMS)
+    return parsed
+
 
 class OpenCollabConfig(BaseModel):
     """Runtime configuration for OpenCollab."""
@@ -45,8 +85,30 @@ class OpenCollabConfig(BaseModel):
     base_url: str | None = None
     budget: int = Field(default=200_000, ge=1)
     temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0.0, le=2.0)
+    thinking: bool = Field(default=DEFAULT_THINKING)
+    thinking_params: dict[str, Any] = Field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
     llm_timeout: float = Field(default=600.0, gt=0)
     filter_messages: bool = Field(default=False)
+
+    @field_validator("thinking", mode="before")
+    @classmethod
+    def _coerce_thinking(cls, value: Any) -> Any:
+        # Accept the env/.env truthy string form ("1/true/yes/on") as well as a
+        # real bool, mirroring how temperature accepts its string form.
+        if isinstance(value, str):
+            return _parse_bool(value)
+        return value
+
+    @field_validator("thinking_params", mode="before")
+    @classmethod
+    def _coerce_thinking_params(cls, value: Any) -> Any:
+        # A JSON object string (from env/.env) parses to a dict; invalid JSON
+        # falls back to the default rather than crashing.
+        if isinstance(value, str):
+            return _parse_thinking_params(value)
+        if value is None:
+            return dict(DEFAULT_THINKING_PARAMS)
+        return value
 
     @field_validator("model", "provider", mode="before")
     @classmethod
@@ -234,6 +296,8 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         "base_url": base_url_value,
         "budget": resolve("OPENCOLLAB_BUDGET", default="200000"),
         "temperature": resolve("OPENCOLLAB_TEMPERATURE", default=str(DEFAULT_TEMPERATURE)),
+        "thinking": resolve("OPENCOLLAB_THINKING", default=str(DEFAULT_THINKING)),
+        "thinking_params": resolve("OPENCOLLAB_THINKING_PARAMS"),
         "llm_timeout": resolve("OPENCOLLAB_LLM_TIMEOUT", default="600"),
         "filter_messages": resolve("OPENCOLLAB_FILTER_MESSAGES", default="false"),
     }

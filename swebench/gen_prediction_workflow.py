@@ -47,6 +47,7 @@ import gen_prediction as gp  # noqa: E402 — shared container plumbing
 
 from opencollab.adapters.env import DockerEnvironment  # noqa: E402
 from opencollab.bootstrap.config import get_config  # noqa: E402
+from opencollab.bootstrap.workflow_runtime import discover_workflows  # noqa: E402
 from opencollab.harness.evaluator import EvalTask, run_eval_task  # noqa: E402
 from opencollab.harness.workflows import generate_review_fix  # noqa: E402
 
@@ -86,8 +87,10 @@ def build_task(instance: dict) -> str:
     )
 
 
-async def generate(instance: dict, image: str, cfg: dict, args: argparse.Namespace) -> tuple[str, dict]:
-    """Run the review-fix workflow in a fresh container; return (patch, metrics)."""
+async def generate(
+    instance: dict, image: str, cfg: dict, args: argparse.Namespace, workflow_fn
+) -> tuple[str, dict]:
+    """Run the chosen workflow in a fresh container; return (patch, metrics)."""
     iid = instance["instance_id"]
     name = f"oc-wf-{iid}-{uuid.uuid4().hex[:6]}"[:60]
     cid = gp.start_container(image, name)
@@ -122,7 +125,9 @@ async def generate(instance: dict, image: str, cfg: dict, args: argparse.Namespa
             prompt=gp.AGENT_PROMPT,
             env_factory=env_factory,
             max_steps=args.max_steps,
-            workflow=generate_review_fix,
+            workflow=workflow_fn,
+            thinking=cfg.get("thinking", False),
+            thinking_params=cfg.get("thinking_params") or None,
         )
         print(
             f"  workflow: tokens={result.tokens_used} steps={result.steps} "
@@ -152,6 +157,9 @@ def main() -> None:
     ap.add_argument("--model", default=None)
     ap.add_argument("--provider", default=None)
     ap.add_argument("--model-name", default=None, help="model_name_or_path in predictions")
+    ap.add_argument("--workflow", default=None,
+                    help="CLI workflow name from workflows/ (e.g. analyst-solve); "
+                         "default: the built-in generate_review_fix")
     ap.add_argument("--max-steps", type=int, default=DEFAULT_MAX_STEPS,
                     help="Step cap per workflow session")
     ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET,
@@ -164,20 +172,33 @@ def main() -> None:
     iid = instance["instance_id"]
     image = args.image or f"sweb.eval.{args.arch}.{iid}:latest"
 
+    # Resolve the workflow: a named CLI workflow from workflows/, or the built-in.
+    if args.workflow:
+        registry = discover_workflows(str(_REPO_ROOT / "workflows"))
+        try:
+            spec = registry.get(args.workflow)
+        except KeyError:
+            names = ", ".join(s.name for s in registry.list_specs()) or "(none)"
+            ap.error(f"unknown --workflow {args.workflow!r}; available: {names}")
+        workflow_fn, wf_label = spec.fn, spec.name
+    else:
+        workflow_fn, wf_label = generate_review_fix, "generate_review_fix"
+
     cfg = get_config(str(_REPO_ROOT))
     if args.model:
         cfg["model"] = args.model
     if args.provider:
         cfg["provider"] = args.provider
-    model_name = args.model_name or f"opencollab-review-fix-{cfg['model']}"
+    model_name = args.model_name or f"opencollab-{wf_label}-{cfg['model']}"
 
     print(f"Instance: {iid}")
     print(f"Image:    {image}")
     print(f"Model:    {cfg['model']} (provider={cfg['provider']})")
-    print(f"Workflow: generate_review_fix (budget={args.budget}, "
+    print(f"Thinking: {cfg.get('thinking', False)}")
+    print(f"Workflow: {wf_label} (budget={args.budget}, "
           f"max_steps/session={args.max_steps})")
 
-    patch, metrics = asyncio.run(generate(instance, image, cfg, args))
+    patch, metrics = asyncio.run(generate(instance, image, cfg, args, workflow_fn))
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)

@@ -438,10 +438,22 @@ class SessionRunUseCase:
     async def _complete(
         self, messages: list[dict], tools: list[dict] | None
     ) -> CompletionResponse:
+        # ``thinking`` is read defensively (getattr) so duck-typed agent stubs
+        # without the field keep working. When OFF (the default) the call is made
+        # exactly as before — the thinking kwargs are omitted entirely so the LLM
+        # surface is byte-for-byte unchanged for every existing caller.
+        if not getattr(self.agent, "thinking", False):
+            return await self.llm.complete(
+                messages=messages,
+                tools=tools,
+                temperature=self.agent.temperature,
+            )
         return await self.llm.complete(
             messages=messages,
             tools=tools,
             temperature=self.agent.temperature,
+            thinking=True,
+            thinking_params=getattr(self.agent, "thinking_params", None),
         )
 
     async def _stop_on_context_overflow(self) -> None:

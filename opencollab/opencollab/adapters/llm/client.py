@@ -61,12 +61,33 @@ class LLMClient:
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
         temperature: float = 0.0,
+        thinking: bool = False,
+        thinking_params: dict[str, Any] | None = None,
     ) -> LLMResponse:
-        """Single-shot completion. Returns full response."""
+        """Single-shot completion. Returns full response.
+
+        ``thinking`` is OFF by default, so existing callers are unaffected. When
+        on, ``thinking_params`` is the provider-specific reasoning payload (sent
+        as ``extra_body`` on the OpenAI-compatible path).
+        """
         if self._anthropic:
             return await complete_anthropic(
-                self._anthropic, self.model, messages, tools, temperature, self.max_retries
+                self._anthropic,
+                self.model,
+                messages,
+                tools,
+                temperature,
+                self.max_retries,
+                thinking=thinking,
+                thinking_params=thinking_params,
             )
         return await complete_openai(
-            self._openai, self.model, messages, tools, temperature, self.max_retries
+            self._openai,
+            self.model,
+            messages,
+            tools,
+            temperature,
+            self.max_retries,
+            thinking=thinking,
+            thinking_params=thinking_params,
         )

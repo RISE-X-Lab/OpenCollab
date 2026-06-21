@@ -25,6 +25,9 @@ class Agent:
         base_url: Override base URL (for proxies, local models, etc.).
         max_tokens_per_step: Max output tokens per LLM call.
         temperature: Sampling temperature.
+        thinking: Enable provider "thinking"/reasoning passthrough (default off).
+        thinking_params: Extra request params sent when ``thinking`` is on
+            (e.g. ``{"enable_thinking": True}`` for DashScope compatible mode).
     """
 
     name: str
@@ -36,6 +39,8 @@ class Agent:
     base_url: str | None = None
     max_tokens_per_step: int = 8192
     temperature: float = 0.0
+    thinking: bool = False
+    thinking_params: dict = field(default_factory=dict)
 
     def tool_schemas(self) -> list[dict]:
         """Generate OpenAI-format tool schemas for LLM function calling."""

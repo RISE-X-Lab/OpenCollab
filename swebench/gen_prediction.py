@@ -131,6 +131,8 @@ async def run_agent(task: str, cid: str, cfg: dict, max_steps: int, budget: int,
         provider=cfg["provider"],
         api_key=cfg["api_key"],
         base_url=cfg["base_url"],
+        thinking=cfg.get("thinking", False),
+        thinking_params=cfg.get("thinking_params") or {},
     )
     tracer = Tracer(run_id=f"swe_{uuid.uuid4().hex[:8]}",
                     output_dir=str(_REPO_ROOT / "logs" / "trajectories"))
