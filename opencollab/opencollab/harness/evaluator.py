@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shlex
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -39,6 +40,7 @@ from opencollab.bootstrap.config import (
     DEFAULT_THINKING_PARAMS,
 )
 from opencollab.domain.agent import Agent
+from opencollab.harness.test_injection import apply_test_patch
 
 EnvFactory = Callable[["EvalTask"], Awaitable[Environment]]
 ToolFactory = Callable[[], Sequence[Tool]]
@@ -68,6 +70,10 @@ class EvalTask:
     docker_image: str | None = None  # Docker image (for container env)
     timeout: float = 600.0  # Max seconds per task
     max_tokens: int = 100_000
+    # Generic benchmark passthrough — never interpreted by the harness core, only
+    # forwarded into the workflow args. SWE-bench uses it to thread the
+    # ``test_patch`` (injected before the run) and parsed ``fail_to_pass`` ids.
+    extras: dict | None = None
 
 
 EVAL_AGENT_PROMPT = """\
@@ -269,6 +275,7 @@ async def _run_workflow_mode(
     base_url: str | None,
     max_steps: int,
     workflow: WorkflowFn,
+    injected_paths: Sequence[str] | None = None,
     temperature: float = DEFAULT_TEMPERATURE,
     thinking: bool = DEFAULT_THINKING,
     thinking_params: dict | None = None,
@@ -303,6 +310,21 @@ async def _run_workflow_mode(
     )
     ctx.env = env  # type: ignore[attr-defined] — harness seam for workflows
     args = {"task_id": task.task_id, "description": task.description}
+    # Forward benchmark passthrough (e.g. SWE-bench fail_to_pass ids + the paths
+    # of any injected test files) so the workflow can scope to the target tests.
+    if task.extras:
+        args.update(task.extras)
+    # The F2P hard-gate (D2) keys on ``fail_to_pass`` non-emptiness and demands the
+    # agent run those exact node-ids. That is only satisfiable when the tests were
+    # actually injected: if injection FAILED (``injected_paths`` empty) the tests
+    # do not exist at the base commit, so forwarding the ids would make the gate
+    # unsatisfiable rather than bypassed. Couple the two — drop ``fail_to_pass``
+    # when nothing was injected so the gate falls back to the trusted-verdict path
+    # its docstring describes.
+    if not injected_paths:
+        args.pop("fail_to_pass", None)
+    else:
+        args["injected_test_paths"] = list(injected_paths)
     await asyncio.wait_for(workflow(ctx, args), timeout=task.timeout)
     return ctx
 
@@ -351,11 +373,23 @@ async def run_eval_task(
     workflow_ctx: WorkflowContext | None = None
     error: str | None = None
     patch = ""
+    # Paths of any injected benchmark test files — checked out before patch
+    # extraction so they never contaminate the submitted model_patch.
+    injected_paths: list[str] = []
 
     try:
         # Create environment (inside try — docker setup can fail)
         env = await env_factory(task)
         tools = list(tools_factory())
+
+        # SWE-bench test injection: apply the real FAIL_TO_PASS test into the
+        # workspace BEFORE the workflow runs so the agent can verify against it.
+        # Guarded on extras so single-session / non-SWE-bench paths are
+        # unaffected. A bad patch never aborts the run (apply_test_patch returns
+        # [] on failure).
+        test_patch = (task.extras or {}).get("test_patch")
+        if test_patch:
+            injected_paths = await apply_test_patch(env, test_patch)
 
         # Orientation up front: a bounded repo map in the system prompt saves
         # the model its first N steps of ls/find exploration.
@@ -391,6 +425,7 @@ async def run_eval_task(
                 base_url=base_url,
                 max_steps=max_steps,
                 workflow=workflow,
+                injected_paths=injected_paths,
                 temperature=temperature,
                 thinking=thinking,
                 thinking_params=thinking_params,
@@ -400,6 +435,28 @@ async def run_eval_task(
         error = f"Task timed out after {task.timeout}s"
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
+
+    # Diff-exclusion (load-bearing): revert any injected benchmark test files
+    # before extracting the patch so the submitted model_patch NEVER contains the
+    # test edits. The grader applies its own test_patch; leaving these in would
+    # cause a double-apply / conflict at grading time.
+    #
+    # Done per-path so a single failure can't abort the rest, and a test_patch
+    # that ADDS a new file (the common SWE-bench case) is handled too. The real
+    # SWE-bench driver extracts via ``git add -A && git diff --cached``, so an
+    # untracked injected file would otherwise be staged and leak: ``git checkout``
+    # only restores TRACKED paths and errors on an untracked one, so we follow it
+    # with ``git clean -fq`` to remove any still-untracked (newly added) injected
+    # file. ``git clean`` is a no-op on a path with no untracked content, so it is
+    # safe to run unconditionally for both modified-existing and added files.
+    if env and injected_paths:
+        for path in injected_paths:
+            quoted = shlex.quote(path)
+            try:
+                await env.exec_cmd(f"git checkout -- {quoted}")
+                await env.exec_cmd(f"git clean -fq -- {quoted}")
+            except Exception:
+                pass
 
     # Extract git patch (best-effort even after errors)
     if env:

@@ -53,7 +53,10 @@ class RunTestsTool(Tool):
         "guessing. Pass `target` (a path or node-id like 'tests/test_x.py::test_y') "
         "to focus the run. Override `runner` only for non-pytest projects. "
         "Prefer this over bash for running the test suite; it returns a structured "
-        "pass/fail signal."
+        "pass/fail signal. Warnings are NOISE, not failures: the pass/fail decision "
+        "is exit-code + failed/error counts only, and warnings are reported on a "
+        "separate line. Failures are the signal — do not treat a warning as a "
+        "regression."
     )
     parameters = {
         "type": "object",
@@ -107,14 +110,22 @@ class RunTestsTool(Tool):
         result = await env.exec_cmd(cmd, timeout=timeout)
         combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
         return _format_report(
-            cmd, result.returncode, combined, max_chars=self.max_traceback_chars
+            cmd,
+            result.returncode,
+            combined,
+            target=target,
+            max_chars=self.max_traceback_chars,
         )
 
 
 def _build_command(runner: str, target: str, extra_args: str) -> str:
     # --tb=short keeps tracebacks compact; -rfE forces a failed/error summary
-    # block even under -q so we can list failing node-ids reliably.
-    parts = [runner, "--tb=short", "-rfE", "-q"]
+    # block even under -q so we can list failing node-ids reliably. -rA adds a
+    # per-test short summary (incl. PASSED) so a downstream gate can confirm a
+    # NAMED test went green; -p no:cacheprovider makes runs deterministic (no
+    # stashed last-failed state). -rA/-p only meaningfully apply to the default
+    # pytest path; they are harmless flags otherwise.
+    parts = [runner, "--tb=short", "-rfE", "-rA", "-p", "no:cacheprovider", "-q"]
     if target:
         parts.append(shlex.quote(target))
     if extra_args:
@@ -138,14 +149,26 @@ def _summary_line(output: str) -> str | None:
     return summary
 
 
-def _parse_counts(summary: str | None) -> dict[str, int]:
+def _parse_counts(summary: str | None) -> tuple[dict[str, int], int]:
+    """Parse the summary line into (decision-relevant counts, warnings).
+
+    Warnings are kept parseable but pulled OUT of the returned counts: the
+    pass/fail decision is exit-code + failed/error counts only, so a noisy
+    warning must never masquerade as a regression. They are returned separately
+    for a 'Warnings: N (not failures)' line.
+    """
     counts: dict[str, int] = {}
+    warnings = 0
     if not summary:
-        return counts
+        return counts, warnings
     for m in _COUNT_RE.finditer(summary):
-        key = m.group(2).rstrip("s") if m.group(2).startswith("error") else m.group(2)
+        token = m.group(2)
+        if token.startswith("warning"):
+            warnings += int(m.group(1))
+            continue
+        key = token.rstrip("s") if token.startswith("error") else token
         counts[key] = counts.get(key, 0) + int(m.group(1))
-    return counts
+    return counts, warnings
 
 
 def _failed_tests(output: str) -> list[str]:
@@ -155,6 +178,16 @@ def _failed_tests(output: str) -> list[str]:
         if s.startswith("FAILED ") or s.startswith("ERROR "):
             fails.append(s)
     return fails
+
+
+def _passed_tests(output: str) -> list[str]:
+    """Node-ids reported as PASSED in the -rA short summary (default pytest)."""
+    passes = []
+    for line in output.splitlines():
+        s = line.strip()
+        if s.startswith("PASSED "):
+            passes.append(s)
+    return passes
 
 
 def _traceback_head(output: str, max_chars: int = MAX_TRACEBACK_CHARS) -> str:
@@ -171,7 +204,11 @@ def _traceback_head(output: str, max_chars: int = MAX_TRACEBACK_CHARS) -> str:
 
 
 def _format_report(
-    cmd: str, returncode: int, output: str, max_chars: int = MAX_TRACEBACK_CHARS
+    cmd: str,
+    returncode: int,
+    output: str,
+    target: str = "",
+    max_chars: int = MAX_TRACEBACK_CHARS,
 ) -> str:
     if returncode == 127 or "No module named pytest" in output:
         return (
@@ -182,15 +219,20 @@ def _format_report(
         )
 
     summary = _summary_line(output)
-    counts = _parse_counts(summary)
+    counts, warnings = _parse_counts(summary)
     failed = _failed_tests(output)
+    passed = _passed_tests(output)
 
     parts = [f"Command: {cmd}", f"Exit code: {returncode}"]
     if counts:
+        # Warnings are deliberately excluded — the pass/fail decision is
+        # exit-code + failed/error counts only, never a warning count.
         parts.append(
             "Counts: "
             + ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
         )
+    if warnings:
+        parts.append(f"Warnings: {warnings} (not failures)")
     parts.append(f"Summary: {summary}" if summary else "Summary: (could not parse)")
 
     if failed:
@@ -199,6 +241,17 @@ def _format_report(
         parts.extend(f"  - {line}" for line in shown)
         if len(failed) > len(shown):
             parts.append(f"  ... and {len(failed) - len(shown)} more")
+
+    # List PASSED node-ids only for a focused run (a named target was requested
+    # or the -rA summary is present). For a full-suite run the PASSED list is
+    # suppressed to protect context — the aggregate count is enough. This lets a
+    # downstream gate confirm a NAMED test went green.
+    if passed and target:
+        shown_pass = passed[:25]
+        parts.append("Passed tests:")
+        parts.extend(f"  - {line}" for line in shown_pass)
+        if len(passed) > len(shown_pass):
+            parts.append(f"  ... and {len(passed) - len(shown_pass)} more")
 
     head = _traceback_head(output, max_chars)
     if head:
