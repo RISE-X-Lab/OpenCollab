@@ -58,6 +58,14 @@ DEFAULT_MAX_STEPS = 60  # per workflow session; 60 proved enough to act, 40 did 
 DEFAULT_TIMEOUT = 1800.0  # the workflow runs up to 3 sequential sessions
 
 
+def _fail_to_pass_ids(instance: dict) -> list[str]:
+    """Parse the FAIL_TO_PASS node-ids (JSON string or list) from an instance."""
+    f2p = instance.get("FAIL_TO_PASS", "[]")
+    if isinstance(f2p, str):
+        f2p = json.loads(f2p)
+    return list(f2p)
+
+
 def build_task(instance: dict) -> str:
     """Issue prompt with hints_text forwarded and the FAIL_TO_PASS caveat.
 
@@ -65,9 +73,7 @@ def build_task(instance: dict) -> str:
     baseline's prompt builder changes.
     """
     problem = instance["problem_statement"]
-    f2p = instance.get("FAIL_TO_PASS", "[]")
-    if isinstance(f2p, str):
-        f2p = json.loads(f2p)
+    f2p = _fail_to_pass_ids(instance)
     tests = "\n".join(f"- {t}" for t in f2p)
     hints = (instance.get("hints_text") or "").strip()
     hints_block = (
@@ -109,11 +115,20 @@ async def generate(
         async def env_factory(_task: EvalTask) -> DockerEnvironment:
             return env
 
+        # Thread the real FAIL_TO_PASS test through the harness: the harness
+        # injects ``test_patch`` into the workspace before the workflow runs (so
+        # the agent can verify against it) and excludes the injected test files
+        # from the submitted model_patch. ``fail_to_pass`` ids let the workflow
+        # scope its plan to the target behavior.
         task = EvalTask(
             task_id=iid,
             description=build_task(instance),
             timeout=args.timeout,
             max_tokens=args.budget,
+            extras={
+                "test_patch": instance.get("test_patch") or "",
+                "fail_to_pass": _fail_to_pass_ids(instance),
+            },
         )
         result = await run_eval_task(
             task,

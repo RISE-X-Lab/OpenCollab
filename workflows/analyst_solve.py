@@ -121,7 +121,7 @@ PLAN_SCHEMA: dict[str, Any] = {
 
 VERDICT_SCHEMA: dict[str, Any] = {
     "type": "object",
-    "required": ["verdict", "findings"],
+    "required": ["verdict", "findings", "tests_run", "failed_count"],
     "properties": {
         "verdict": {"type": "string", "enum": ["PASS", "FAIL", "BLOCKED"]},
         "findings": {
@@ -129,6 +129,18 @@ VERDICT_SCHEMA: dict[str, Any] = {
             "description": "On FAIL: the exact failing command, error/traceback, suspected file/line. "
             "On BLOCKED: name the environmental blocker (missing dependency, no network, "
             "broken/unrelated infra) — not a code defect — so it can be surfaced upward.",
+        },
+        "tests_run": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "The exact test node-ids you actually executed with run_tests this "
+            "verification — proof, not a label. For a graded task this MUST include every "
+            "target (FAIL_TO_PASS) node-id you were given.",
+        },
+        "failed_count": {
+            "type": "integer",
+            "description": "How many of the tests you ran failed or errored (0 for a clean PASS). "
+            "Read it straight off run_tests' Counts line; do not estimate.",
         },
     },
 }
@@ -149,7 +161,20 @@ dimensions beat many shallow ones; aim for two to four.
 {rules}
 
 Goal:
-{goal}"""
+{goal}
+{target_tests}"""
+
+# Surfaces the FAIL_TO_PASS node-ids the run is graded on WITHOUT echoing the
+# tests' literal assertion values — naming a test's expected output invites
+# overfitting to that one input. We hand over the node-ids + an instruction to
+# read the behavior and fix the ROOT CAUSE for the whole class of inputs.
+TARGET_TESTS_BLOCK = """
+Target tests (graded on these — fix the ROOT CAUSE, do not overfit):
+{ids}
+These node-ids name the BEHAVIOR your fix must satisfy. Read each test to \
+understand the behavior it checks, but do NOT special-case the test's literal \
+assertion values — fix the underlying defect for the whole class of inputs so \
+the behavior is correct in general, not just for these exact cases."""
 
 SCOUT_PROMPT = """\
 You are a Scout investigating ONE dimension of a larger problem. You do NOT edit \
@@ -180,12 +205,15 @@ with a focused file set and a concrete, testable definition of done. Size phases
 by the actual work — most fixes are a SINGLE phase; split into multiple only when \
 the work has genuinely independent parts better implemented and verified \
 separately. Trust the findings but confirm anything decisive against the source \
-yourself (file_read/grep) before committing it to the plan. Do NOT edit anything.
+yourself (file_read/grep) before committing it to the plan. Do NOT edit anything. \
+Every target test's behavior below MUST be covered by some phase's definition of \
+done — but define done by the corrected behavior, not by the test's literal values.
 
 {rules}
 
 Goal:
 {goal}
+{target_tests}
 
 Reconnaissance findings:
 {findings}"""
@@ -220,6 +248,7 @@ Files to touch:
 
 Definition of done:
 {done}
+{target_tests}
 {findings_block}"""
 
 FINDINGS_BLOCK = """
@@ -234,16 +263,26 @@ trust the coder's summary; confirm the change is really there and really fixes \
 the root cause. Hunt failures: edge cases, missing handling, regressions in \
 neighboring behavior. You do not edit files.
 
-Verdict PASS only when the change is really there and the definition of done \
-holds. Verdict FAIL for a code defect. Verdict BLOCKED only when the failure is \
-ENVIRONMENTAL — a missing dependency, no network, or broken/unrelated infra — \
-not something more coding can fix; name the blocker in findings so it can be \
-surfaced upward instead of burning more rounds.
+Proof, not a label. If target tests are named below, you MUST run them with \
+run_tests using those EXACT node-ids (pass them as the `target`) and report them \
+in `tests_run`; report the failed/errored total in `failed_count` straight off \
+run_tests' Counts line. NEVER self-certify with `python -c` or by eyeballing the \
+source — only a real run_tests execution of the named node-ids counts. \
+PASS requires that EVERY named target node-id appears in `tests_run`, is in the \
+run's passed set, and `failed_count` is 0 (zero failed, zero errored).
+
+Verdict PASS only when the change is really there, the named target tests pass \
+with zero failures, and the definition of done holds. Verdict FAIL for a code \
+defect (including any target test still failing). Verdict BLOCKED only when the \
+failure is ENVIRONMENTAL — a missing dependency, no network, or broken/unrelated \
+infra — not something more coding can fix; name the blocker in findings so it can \
+be surfaced upward instead of burning more rounds.
 
 {rules}
 
 Goal:
 {goal}
+{target_tests}
 
 Definition of done:
 {done}
@@ -276,9 +315,60 @@ Work already attempted (for context):
 
 # Whole-goal definition of done for the final verification pass.
 FINAL_DONE = (
-    "The issue described in the goal is resolved at its root cause, and existing "
-    "and neighboring tests still pass (no regressions)."
+    "The issue described in the goal is resolved at its root cause; the named "
+    "FAIL_TO_PASS target tests run green with zero failures; and existing and "
+    "neighboring tests still pass (no regressions)."
 )
+
+
+def _target_tests_block(args: dict[str, Any]) -> str:
+    """Render the FAIL_TO_PASS node-ids as a behavior hint (or empty string).
+
+    Anti-overfit by construction: we surface only the node-ids — never the
+    tests' literal assertion values — plus a fix-the-root-cause instruction.
+    Empty when no ids were threaded in (CLI runs, non-SWE-bench tasks), so the
+    prompts collapse back to their original shape.
+    """
+    ids = args.get("fail_to_pass") or []
+    if not ids:
+        return ""
+    listed = "\n".join(f"- {i}" for i in ids)
+    return TARGET_TESTS_BLOCK.format(ids=listed)
+
+
+def _f2p_gate(verdict: Any, fail_to_pass: list[str]) -> str | None:
+    """Hard-gate a tester PASS on the real FAIL_TO_PASS node-ids (D2).
+
+    Returns ``None`` when the PASS may stand, or a findings string when it must
+    be overridden to not-passed. The gate fires only when ``fail_to_pass`` is
+    non-empty (injection succeeded); an empty list means the harness could not
+    inject the tests, so the verdict is trusted as-is — preserving today's
+    behavior. Defense in depth: even a PASS verdict must carry machine-checkable
+    proof — ``failed_count == 0`` AND every required node-id present in
+    ``tests_run`` — or it does not count.
+    """
+    if not fail_to_pass:
+        return None  # nothing to inject -> bypass the gate
+    if not isinstance(verdict, dict):
+        return None  # not a PASS to override; the caller handles dead/FAIL verdicts
+    failed = verdict.get("failed_count")
+    if isinstance(failed, int) and failed > 0:
+        return (
+            f"Tester reported {failed} failed/errored test(s). The named FAIL_TO_PASS "
+            "tests must run green with ZERO failures. Re-run the exact target node-ids "
+            "with run_tests and fix the remaining failures."
+        )
+    ran = verdict.get("tests_run")
+    ran_set = set(ran) if isinstance(ran, list) else set()
+    missing = [nid for nid in fail_to_pass if nid not in ran_set]
+    if missing:
+        listed = ", ".join(missing)
+        return (
+            "These required FAIL_TO_PASS node-ids were not shown as executed in the "
+            f"verification: {listed}. Run them with run_tests using the EXACT node-ids "
+            "and ensure they pass with zero failures before reporting PASS."
+        )
+    return None
 
 
 def _read_tools() -> list[Any]:
@@ -334,7 +424,14 @@ async def _recon(ctx: Any, goal: str, dims: list[dict[str, Any]]) -> str:
 
 
 async def _run_phase(
-    ctx: Any, goal: str, root_cause: str, approach: str, ph: dict[str, Any], idx: int
+    ctx: Any,
+    goal: str,
+    root_cause: str,
+    approach: str,
+    ph: dict[str, Any],
+    idx: int,
+    target_tests: str = "",
+    fail_to_pass: list[str] | None = None,
 ) -> dict[str, Any]:
     """Drive one plan phase through the coder -> tester loop, best-effort.
 
@@ -347,6 +444,7 @@ async def _run_phase(
     phase_goal = ph.get("goal", goal)
     files = "\n".join(ph.get("files") or []) or "(analyst did not pin files — keep the change minimal)"
     done = ph.get("done", FINAL_DONE)
+    f2p = fail_to_pass or []
     findings = ""
     rounds = 0
     for round_no in range(1, MAX_ROUNDS_PER_PHASE + 1):
@@ -364,6 +462,7 @@ async def _run_phase(
                 phase_goal=phase_goal,
                 files=files,
                 done=done,
+                target_tests=target_tests,
                 findings_block=findings_block,
             ),
             label=f"coder:p{idx}r{round_no}",
@@ -385,6 +484,7 @@ async def _run_phase(
                 rules=SHARED_RULES,
                 goal=phase_goal,
                 done=done,
+                target_tests=target_tests,
                 summary=coder_summary,
             ),
             schema=VERDICT_SCHEMA,
@@ -414,6 +514,29 @@ async def _run_phase(
                     "last_findings": findings,
                 }
             continue
+        # F2P gate (the real lever): a tester PASS must NOT stand unless the run
+        # carries proof the named FAIL_TO_PASS tests actually went green —
+        # failed_count == 0 AND every required node-id present in tests_run. Only
+        # active when ids were injected (f2p non-empty); empty -> bypass,
+        # preserving today's behavior. Mirrors the tree-unchanged override: seed
+        # the next round's findings and continue, or fail on the final round.
+        if passed:
+            gate_findings = _f2p_gate(verdict, f2p)
+            if gate_findings is not None:
+                await ctx.log(
+                    f"phase {idx} round {round_no}: tester PASS overridden — "
+                    "FAIL_TO_PASS proof insufficient"
+                )
+                findings = gate_findings
+                await ctx.log(f"phase {idx} round {round_no} FAILED: {findings[:200]}")
+                if round_no == MAX_ROUNDS_PER_PHASE:
+                    return {
+                        "goal": phase_goal,
+                        "status": "failed",
+                        "rounds": rounds,
+                        "last_findings": findings,
+                    }
+                continue
         if passed:
             return {"goal": phase_goal, "status": "passed", "rounds": rounds}
         if isinstance(verdict, dict) and verdict.get("verdict") == "BLOCKED":
@@ -468,10 +591,19 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     if not goal:
         return {"status": "error", "error": 'missing "goal" — pass --args \'{"goal": "..."}\''}
 
+    # FAIL_TO_PASS node-ids the run is graded on (threaded by the harness). The
+    # block surfaces the BEHAVIOR, never the tests' literal values — see
+    # _target_tests_block. Empty for CLI / non-SWE-bench runs. The raw id list
+    # drives the code-side hard gate (D2): when present (injection succeeded) a
+    # tester PASS must carry proof those node-ids ran green; when empty the gate
+    # is bypassed, preserving today's behavior.
+    target_tests = _target_tests_block(args)
+    fail_to_pass = list(args.get("fail_to_pass") or [])
+
     # Phase 1 — analyst frames the investigation.
     await ctx.phase("scope")
     scope = await ctx.agent(
-        SCOPE_PROMPT.format(rules=SHARED_RULES, goal=goal),
+        SCOPE_PROMPT.format(rules=SHARED_RULES, goal=goal, target_tests=target_tests),
         schema=DIMENSIONS_SCHEMA,
         label="analyst:scope",
         tools=_read_tools(),
@@ -489,7 +621,9 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     # Phase 3 — analyst designs the phased plan from the findings.
     await ctx.phase("plan")
     plan = await ctx.agent(
-        PLAN_PROMPT.format(rules=SHARED_RULES, goal=goal, findings=findings_doc),
+        PLAN_PROMPT.format(
+            rules=SHARED_RULES, goal=goal, target_tests=target_tests, findings=findings_doc
+        ),
         schema=PLAN_SCHEMA,
         label="analyst:plan",
         tools=_read_tools(),
@@ -510,7 +644,9 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     phase_reports: list[dict[str, Any]] = []
     forced = False
     for idx, ph in enumerate(phases):
-        report = await _run_phase(ctx, goal, root_cause, approach, ph, idx)
+        report = await _run_phase(
+            ctx, goal, root_cause, approach, ph, idx, target_tests, fail_to_pass
+        )
         phase_reports.append(report)
         if report["status"] in ("budget_low", "empty_tree"):
             progress = "\n".join(f"- phase {i}: {r['status']}" for i, r in enumerate(phase_reports))
@@ -543,6 +679,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                 rules=SHARED_RULES,
                 goal=goal,
                 done=FINAL_DONE,
+                target_tests=target_tests,
                 summary="\n".join(f"- phase {i}: {r['status']}" for i, r in enumerate(phase_reports)),
             ),
             schema=VERDICT_SCHEMA,
@@ -565,20 +702,36 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                     phase_goal="Address the final verification failure across the whole change.",
                     files="(use the tester findings to locate the files)",
                     done=FINAL_DONE,
+                    target_tests=target_tests,
                     findings_block=FINDINGS_BLOCK.format(findings=final_verdict.get("findings", "")),
                 ),
                 label="coder:repair",
                 tools=_coder_tools(),
             )
             final_verdict = await ctx.agent(
-                TESTER_PROMPT.format(rules=SHARED_RULES, goal=goal, done=FINAL_DONE, summary="(post-repair re-check)"),
+                TESTER_PROMPT.format(
+                    rules=SHARED_RULES,
+                    goal=goal,
+                    done=FINAL_DONE,
+                    target_tests=target_tests,
+                    summary="(post-repair re-check)",
+                ),
                 schema=VERDICT_SCHEMA,
                 label="tester:final2",
                 tools=_tester_tools(),
             )
 
     passed_phases = sum(1 for r in phase_reports if r["status"] == "passed")
-    verified = isinstance(final_verdict, dict) and final_verdict.get("verdict") == "PASS"
+    # "verified" requires not just a PASS label but the named FAIL_TO_PASS tests
+    # green: when ids were injected, the final verdict must also clear the f2p
+    # gate (failed_count == 0 AND every required node-id in tests_run). With no
+    # ids (gate bypassed) this collapses to the bare verdict == PASS check,
+    # preserving today's behavior.
+    verified = (
+        isinstance(final_verdict, dict)
+        and final_verdict.get("verdict") == "PASS"
+        and _f2p_gate(final_verdict, fail_to_pass) is None
+    )
     self_reported_done = verified or (not forced and passed_phases == len(phases) and phases)
 
     # A run cannot be "done" unless the working tree actually changed. The probe

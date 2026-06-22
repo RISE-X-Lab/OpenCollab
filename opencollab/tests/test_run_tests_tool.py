@@ -35,6 +35,10 @@ collected 3 items
 
 tests/test_x.py ...                                              [100%]
 
+======================= short test summary info =======================
+PASSED tests/test_x.py::test_one
+PASSED tests/test_x.py::test_two
+PASSED tests/test_x.py::test_three
 ========================== 3 passed in 0.05s ==========================
 """
 
@@ -50,8 +54,40 @@ tests/test_x.py:8: in test_two
     assert add(1, 1) == 3
 E   assert 2 == 3
 ======================= short test summary info =======================
+PASSED tests/test_x.py::test_one
+PASSED tests/test_x.py::test_three
 FAILED tests/test_x.py::test_two - assert 2 == 3
 ===================== 1 failed, 2 passed in 0.06s =====================
+"""
+
+WARN_OUTPUT = """\
+========================= test session starts =========================
+collected 3 items
+
+tests/test_x.py .F.                                              [100%]
+
+=============================== FAILURES ===============================
+______________________________ test_two ______________________________
+tests/test_x.py:8: in test_two
+    assert add(1, 1) == 3
+E   assert 2 == 3
+======================= short test summary info =======================
+PASSED tests/test_x.py::test_one
+PASSED tests/test_x.py::test_three
+FAILED tests/test_x.py::test_two - assert 2 == 3
+================= 1 failed, 2 passed, 3 warnings in 0.07s ==============
+"""
+
+COLLECTION_CRASH_OUTPUT = """\
+========================= test session starts =========================
+collected 0 items / 1 error
+
+=============================== ERRORS ================================
+ImportError while importing test module 'tests/test_x.py'.
+Traceback (most recent call last):
+  File "tests/test_x.py", line 1, in <module>
+    import nope
+ModuleNotFoundError: No module named 'nope'
 """
 
 
@@ -62,11 +98,19 @@ def test_run_tests_runs_pytest_and_returns_pass_summary():
     result = run(RunTestsTool().execute_with_runtime({"target": "tests/test_x.py::test_y"}, runtime))
 
     assert env.exec_calls == [
-        ("python -m pytest --tb=short -rfE -q tests/test_x.py::test_y", 300.0)
+        (
+            "python -m pytest --tb=short -rfE -rA -p no:cacheprovider -q "
+            "tests/test_x.py::test_y",
+            300.0,
+        )
     ]
     assert "Exit code: 0" in result
     assert "passed=3" in result
     assert "Failed/errored tests" not in result
+    # Focused run lists the PASSED node-ids so a gate can confirm a NAMED test.
+    assert "Passed tests:" in result
+    assert "  - PASSED tests/test_x.py::test_one" in result
+    assert "  - PASSED tests/test_x.py::test_three" in result
 
 
 def test_run_tests_returns_failure_summary_and_traceback_head():
@@ -83,6 +127,81 @@ def test_run_tests_returns_failure_summary_and_traceback_head():
     assert "short test summary info" not in result.split("First failure detail:")[1]
 
 
+def test_run_tests_build_command_includes_determinism_flags():
+    # -rA (per-test summary incl PASSED) and -p no:cacheprovider (determinism)
+    # ride alongside the existing --tb=short -rfE -q.
+    from opencollab.adapters.tools.run_tests import _build_command
+
+    cmd = _build_command("python -m pytest", "tests/test_x.py::test_y", "")
+
+    assert "--tb=short" in cmd and "-rfE" in cmd and "-q" in cmd
+    assert "-rA" in cmd
+    assert "-p no:cacheprovider" in cmd
+
+
+def test_run_tests_excludes_warnings_from_counts_with_separate_line():
+    # '1 failed, 2 passed, 3 warnings' -> Counts shows passed/failed only,
+    # warnings on their own line; the pass/fail decision is unaffected.
+    env = FakeEnv(stdout=WARN_OUTPUT, returncode=1)
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(RunTestsTool().execute_with_runtime({}, runtime))
+
+    counts_line = next(ln for ln in result.splitlines() if ln.startswith("Counts:"))
+    assert "passed=2" in counts_line and "failed=1" in counts_line
+    assert "warning" not in counts_line.lower()
+    assert "Warnings: 3 (not failures)" in result
+    # Decision is driven by exit code + failed/error counts, not the warnings.
+    assert "Exit code: 1" in result
+    assert "failed=1" in result
+
+
+def test_run_tests_full_suite_suppresses_passed_list():
+    # No target -> full-suite run: PASSED list is suppressed to protect context,
+    # only the aggregate count is reported.
+    env = FakeEnv(stdout=PASS_OUTPUT)
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(RunTestsTool().execute_with_runtime({}, runtime))
+
+    assert "passed=3" in result
+    assert "Passed tests:" not in result
+    assert "PASSED tests/test_x.py::test_one" not in result
+
+
+def test_run_tests_caps_passed_list_at_25():
+    passed_lines = "\n".join(
+        f"PASSED tests/test_x.py::test_{i}" for i in range(30)
+    )
+    output = (
+        "========================= test session starts =========================\n"
+        "collected 30 items\n\n"
+        "======================= short test summary info =======================\n"
+        f"{passed_lines}\n"
+        "========================= 30 passed in 0.10s =========================\n"
+    )
+    env = FakeEnv(stdout=output)
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        RunTestsTool().execute_with_runtime({"target": "tests/test_x.py"}, runtime)
+    )
+
+    shown = [ln for ln in result.splitlines() if ln.startswith("  - PASSED ")]
+    assert len(shown) == 25
+    assert "  ... and 5 more" in result
+
+
+def test_run_tests_collection_crash_falls_back_to_output():
+    env = FakeEnv(stdout=COLLECTION_CRASH_OUTPUT, returncode=2)
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(RunTestsTool().execute_with_runtime({"target": "tests/test_x.py"}, runtime))
+
+    assert "Exit code: 2" in result
+    assert "ModuleNotFoundError: No module named 'nope'" in result
+
+
 def test_run_tests_honors_runner_options_and_safety_policy():
     env = FakeEnv(stdout=PASS_OUTPUT)
     safety = SpySafetyPolicy()
@@ -95,8 +214,9 @@ def test_run_tests_honors_runner_options_and_safety_policy():
         )
     )
 
-    assert env.exec_calls == [("bin/test --tb=short -rfE -q -k smoke", 30)]
-    assert safety.cmd_calls == [("bin/test --tb=short -rfE -q -k smoke", None)]
+    expected = "bin/test --tb=short -rfE -rA -p no:cacheprovider -q -k smoke"
+    assert env.exec_calls == [(expected, 30)]
+    assert safety.cmd_calls == [(expected, None)]
 
 
 def test_run_tests_requires_execution_environment():
