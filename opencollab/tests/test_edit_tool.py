@@ -5,6 +5,7 @@ import pytest
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
+from opencollab.adapters.tools.fs import FileWriteTool
 from opencollab.application.tool_execution import ToolRuntime
 
 
@@ -165,3 +166,49 @@ def test_apply_patch_reports_file_and_workspace_errors(tmp_path):
 
     assert missing.startswith("Error: file not found:")
     assert missing.endswith("missing.py")
+
+
+def test_str_replace_identical_old_and_new_is_explicit_noop_error(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text("hello world\n", encoding="utf-8")
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "str_replace",
+                "old_str": "hello world",
+                "new_str": "hello world",
+            },
+            _runtime(ws),
+        )
+    )
+
+    assert "no-op" in result
+    assert result.startswith("Error:")
+    # File untouched.
+    assert target.read_text(encoding="utf-8") == "hello world\n"
+
+
+def test_str_replace_success_reports_content_changed(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text("hello world\n", encoding="utf-8")
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "str_replace",
+                "old_str": "world",
+                "new_str": "there",
+            },
+            _runtime(ws),
+        )
+    )
+
+    assert "content changed" in result
+    assert target.read_text(encoding="utf-8") == "hello there\n"

@@ -269,6 +269,7 @@ class ScriptedFactory:
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
         label: str | None = None,
+        tool_choice: str | None = None,
     ) -> CapturingSession:
         self.builds.append({"prompt": prompt, "tools": tools, "isolation": isolation})
         self.session = CapturingSession(

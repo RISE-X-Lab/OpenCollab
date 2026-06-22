@@ -84,6 +84,7 @@ class FakeFactory:
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
         label: str | None = None,
+        tool_choice: str | None = None,
     ) -> FakeSession:
         self.builds.append(
             {
@@ -92,6 +93,7 @@ class FakeFactory:
                 "tools": tools,
                 "isolation": isolation,
                 "label": label,
+                "tool_choice": tool_choice,
             }
         )
         session = self._sessions[self._idx]
@@ -505,3 +507,61 @@ async def test_phase_and_log_noop_without_sink():
     # Must not raise when no sink is wired.
     await ctx.phase("planning")
     await ctx.log("hello world")
+
+
+# --------------------------------------------------------------------------- #
+# working-tree probe (P0-1)
+# --------------------------------------------------------------------------- #
+
+
+class FakeProbe:
+    """A scripted WorkingTreeProbe recording how often it is asked."""
+
+    def __init__(self, *, changed: bool = True, boom: bool = False) -> None:
+        self._changed = changed
+        self._boom = boom
+        self.calls = 0
+
+    async def changed(self) -> bool:
+        self.calls += 1
+        if self._boom:
+            raise RuntimeError("git unavailable")
+        return self._changed
+
+    async def diff(self) -> str:
+        return "diff"
+
+
+@pytest.mark.asyncio
+async def test_tree_changed_is_none_without_probe():
+    # No probe wired -> "cannot verify" -> None (callers must not hard-block).
+    ctx = WorkflowContext(FakeFactory([]))
+    assert await ctx.tree_changed() is None
+
+
+@pytest.mark.asyncio
+async def test_tree_changed_proxies_probe_result():
+    ctx_yes = WorkflowContext(FakeFactory([]), tree_probe=FakeProbe(changed=True))
+    ctx_no = WorkflowContext(FakeFactory([]), tree_probe=FakeProbe(changed=False))
+    assert await ctx_yes.tree_changed() is True
+    assert await ctx_no.tree_changed() is False
+
+
+@pytest.mark.asyncio
+async def test_tree_changed_swallows_probe_error_to_none():
+    # A flaky git call must never abort the run: error -> None.
+    ctx = WorkflowContext(FakeFactory([]), tree_probe=FakeProbe(boom=True))
+    assert await ctx.tree_changed() is None
+
+
+@pytest.mark.asyncio
+async def test_agent_threads_tool_choice_to_factory():
+    factory = FakeFactory([FakeSession(reply="ok")])
+    ctx = WorkflowContext(factory)
+    # Ordinary call: no tool_choice forced.
+    await ctx.agent("normal")
+    assert factory.builds[-1]["tool_choice"] is None
+    factory._sessions.append(FakeSession(reply="ok"))
+    # Forced call: tool_choice="required" reaches the factory build.
+    await ctx.agent("forced", tool_choice="required")
+    assert factory.builds[-1]["tool_choice"] == "required"

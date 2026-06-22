@@ -33,6 +33,7 @@ from opencollab.application.ports import (
     EventPublisherPort,
     TracePort,
     WorkflowSessionFactoryPort,
+    WorkingTreeProbe,
 )
 from opencollab.application.structured_output import StructuredOutputTool
 
@@ -115,6 +116,7 @@ class WorkflowContext:
         tracer: TracePort | None = None,
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         budget_total: int | None = None,
+        tree_probe: WorkingTreeProbe | None = None,
     ) -> None:
         self._factory = factory
         self._event_sink = event_sink
@@ -122,6 +124,25 @@ class WorkflowContext:
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._sessions: list[Any] = []
         self.budget = WorkflowBudget(budget_total, self._sessions)
+        self._tree_probe = tree_probe
+
+    # -- working-tree verification ---------------------------------------- #
+
+    async def tree_changed(self) -> bool | None:
+        """Whether the working tree has uncommitted changes.
+
+        Returns ``True``/``False`` when a :class:`WorkingTreeProbe` is wired, or
+        ``None`` ("cannot verify") when none is — callers must treat ``None`` as
+        unknown and never hard-block on it. A probe error is swallowed to
+        ``None`` so a flaky git call never aborts a workflow.
+        """
+        if self._tree_probe is None:
+            return None
+        try:
+            return await self._tree_probe.changed()
+        except Exception as exc:  # noqa: BLE001 — verification must never abort the run
+            await self.log(f"tree_changed probe failed: {exc}")
+            return None
 
     @property
     def sessions(self) -> Sequence[Any]:
@@ -142,6 +163,7 @@ class WorkflowContext:
         label: str | None = None,
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
+        tool_choice: str | None = None,
     ) -> str | dict | None:
         """Run one one-shot session and return its final assistant text.
 
@@ -151,6 +173,11 @@ class WorkflowContext:
         agent must finish by calling ``structured_output``; the validated dict
         is returned (with one corrective retry on the same session before
         giving up and returning ``None``).
+
+        ``tool_choice`` (e.g. ``"required"``) forces the model to emit a tool
+        call on the non-structured path — used by a forced-write step that MUST
+        land an edit. It is ignored on the structured path (which already pins
+        ``structured_output``).
         """
         if self.budget.remaining() <= 0:
             raise WorkflowBudgetExceeded(
@@ -163,7 +190,9 @@ class WorkflowContext:
                 return await self._run_structured_agent(
                     prompt, schema=schema, label=label, tools=tools, isolation=isolation
                 )
-            return await self._run_agent(prompt, label=label, tools=tools, isolation=isolation)
+            return await self._run_agent(
+                prompt, label=label, tools=tools, isolation=isolation, tool_choice=tool_choice
+            )
 
     async def _run_agent(
         self,
@@ -172,6 +201,7 @@ class WorkflowContext:
         label: str | None,
         tools: Sequence[Any] | None,
         isolation: bool,
+        tool_choice: str | None = None,
     ) -> str | None:
         session_budget = self._session_budget()
         try:
@@ -181,6 +211,7 @@ class WorkflowContext:
                 tools=tools,
                 isolation=isolation,
                 label=label,
+                tool_choice=tool_choice,
             )
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             await self.log(f"agent build failed ({label or 'agent'}): {exc}")

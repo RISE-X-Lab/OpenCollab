@@ -28,6 +28,7 @@ from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.tools.git_diff import GitDiffTool
 from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.adapters.trace import Tracer
+from opencollab.adapters.working_tree import EnvWorkingTreeProbe
 from opencollab.application.session import Session
 from opencollab.application.workflow import WorkflowContext
 from opencollab.application.workflow_registry import WorkflowFn
@@ -158,6 +159,7 @@ class _EvalSessionFactory:
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
         label: str | None = None,
+        tool_choice: str | None = None,
     ) -> Session:
         agent = Agent(
             name="eval_agent",
@@ -170,6 +172,7 @@ class _EvalSessionFactory:
             temperature=self._temperature,
             thinking=self._thinking,
             thinking_params=self._thinking_params,
+            tool_choice=tool_choice,
         )
         return build_session(
             agent=agent,
@@ -292,7 +295,12 @@ async def _run_workflow_mode(
         thinking=thinking,
         thinking_params=thinking_params,
     )
-    ctx = WorkflowContext(factory, tracer=tracer, budget_total=task.max_tokens)
+    ctx = WorkflowContext(
+        factory,
+        tracer=tracer,
+        budget_total=task.max_tokens,
+        tree_probe=EnvWorkingTreeProbe(env),
+    )
     ctx.env = env  # type: ignore[attr-defined] — harness seam for workflows
     args = {"task_id": task.task_id, "description": task.description}
     await asyncio.wait_for(workflow(ctx, args), timeout=task.timeout)

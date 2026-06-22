@@ -338,9 +338,11 @@ async def _run_phase(
 ) -> dict[str, Any]:
     """Drive one plan phase through the coder -> tester loop, best-effort.
 
-    Returns a report whose ``status`` is one of: passed, failed, blocked, or
-    ``budget_low`` — the last signalling the caller to stop and force a final
-    write while the reserve is still intact.
+    Returns a report whose ``status`` is one of: passed, failed, blocked,
+    ``budget_low`` — signalling the caller to stop and force a final write while
+    the reserve is still intact — or ``empty_tree``: the final round ended with
+    the working tree verifiably unchanged (a tester PASS was overridden), so the
+    caller should trigger a forced write.
     """
     phase_goal = ph.get("goal", goal)
     files = "\n".join(ph.get("files") or []) or "(analyst did not pin files — keep the change minimal)"
@@ -367,18 +369,52 @@ async def _run_phase(
             label=f"coder:p{idx}r{round_no}",
             tools=_coder_tools(),
         )
+        # Disambiguate a dead coder (None) from an empty-output coder (""): the
+        # `or` idiom collapsed both, hiding which failure occurred. Pass distinct
+        # context to the tester each way.
+        if summary is None:
+            await ctx.log(f"phase {idx} round {round_no}: coder died (no session result)")
+            coder_summary = "(coder died — no session result; verify the working tree yourself)"
+        elif not summary.strip():
+            await ctx.log(f"phase {idx} round {round_no}: coder produced empty output")
+            coder_summary = "(coder produced empty output; verify the working tree yourself)"
+        else:
+            coder_summary = summary
         verdict = await ctx.agent(
             TESTER_PROMPT.format(
                 rules=SHARED_RULES,
                 goal=phase_goal,
                 done=done,
-                summary=summary or "(coder died — verify the working tree yourself)",
+                summary=coder_summary,
             ),
             schema=VERDICT_SCHEMA,
             label=f"tester:p{idx}r{round_no}",
             tools=_tester_tools(),
         )
-        if isinstance(verdict, dict) and verdict.get("verdict") == "PASS":
+        # Diff guard: a tester PASS must NOT stand if the working tree is
+        # verifiably unchanged this round — no edit means nothing to pass. Seed
+        # the next round so the coder is told it MUST write; on the final round
+        # signal the run to force a write.
+        tree = await ctx.tree_changed()
+        passed = isinstance(verdict, dict) and verdict.get("verdict") == "PASS"
+        if passed and tree is False:
+            await ctx.log(
+                f"phase {idx} round {round_no}: tester PASS overridden — working tree unchanged"
+            )
+            findings = (
+                "No edit was made this round — the working tree is unchanged. "
+                "You MUST call file_write or apply_patch to land a concrete edit."
+            )
+            await ctx.log(f"phase {idx} round {round_no} FAILED: {findings}")
+            if round_no == MAX_ROUNDS_PER_PHASE:
+                return {
+                    "goal": phase_goal,
+                    "status": "empty_tree",
+                    "rounds": rounds,
+                    "last_findings": findings,
+                }
+            continue
+        if passed:
             return {"goal": phase_goal, "status": "passed", "rounds": rounds}
         if isinstance(verdict, dict) and verdict.get("verdict") == "BLOCKED":
             blocker = verdict.get("findings", "") or "environmental blocker (unspecified)"
@@ -394,9 +430,17 @@ async def _run_phase(
     return {"goal": phase_goal, "status": "failed", "rounds": rounds, "last_findings": findings}
 
 
-async def _forced_final_write(ctx: Any, goal: str, root_cause: str, approach: str, progress: str) -> str:
-    """Spend the reserved headroom on one coder that MUST land an edit."""
-    await ctx.log("forced final write: budget low — landing a best-effort patch")
+async def _forced_final_write(
+    ctx: Any, goal: str, root_cause: str, approach: str, progress: str, *, reason: str
+) -> str:
+    """Spend the reserved headroom on one coder that MUST land an edit.
+
+    ``reason`` distinguishes the trigger in the log ("budget low" vs "empty tree
+    after implement"). The coder runs with ``tool_choice="required"`` so the
+    provider forces a tool call — the session layer falls back to "auto" once if
+    the endpoint rejects "required".
+    """
+    await ctx.log(f"forced write: {reason} — landing a best-effort patch")
     return await ctx.agent(
         FORCED_PROMPT.format(
             rules=SHARED_RULES,
@@ -407,6 +451,7 @@ async def _forced_final_write(ctx: Any, goal: str, root_cause: str, approach: st
         ),
         label="coder:forced-write",
         tools=_coder_tools(),
+        tool_choice="required",
     )
 
 
@@ -467,13 +512,26 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     for idx, ph in enumerate(phases):
         report = await _run_phase(ctx, goal, root_cause, approach, ph, idx)
         phase_reports.append(report)
-        if report["status"] == "budget_low":
+        if report["status"] in ("budget_low", "empty_tree"):
             progress = "\n".join(f"- phase {i}: {r['status']}" for i, r in enumerate(phase_reports))
-            await _forced_final_write(ctx, goal, root_cause, approach, progress)
+            reason = "budget low" if report["status"] == "budget_low" else "empty tree after phase"
+            await _forced_final_write(ctx, goal, root_cause, approach, progress, reason=reason)
             forced = True
             break
         # Best-effort: a failed/blocked phase does NOT stop the run.
         await ctx.log(f"phase {idx} {report['status']} after {report.get('rounds', 0)} round(s)")
+
+    # P0-2 — forced write on an empty tree, independent of budget. Even when no
+    # phase signalled budget_low/empty_tree, if every phase finished but the
+    # working tree is still verifiably empty, land a best-effort patch before the
+    # final verify rather than reporting "done" with no edit. ``None`` (no probe
+    # wired) is treated as "cannot verify" and does NOT trigger a forced write.
+    if not forced and (await ctx.tree_changed()) is False:
+        progress = "\n".join(f"- phase {i}: {r['status']}" for i, r in enumerate(phase_reports))
+        await _forced_final_write(
+            ctx, goal, root_cause, approach, progress, reason="empty tree after implement"
+        )
+        forced = True
 
     # Phase 5 — one whole-goal verification, with a single repair round if affordable.
     await ctx.phase("verify")
@@ -521,8 +579,20 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
 
     passed_phases = sum(1 for r in phase_reports if r["status"] == "passed")
     verified = isinstance(final_verdict, dict) and final_verdict.get("verdict") == "PASS"
-    status = "done" if (verified or (not forced and passed_phases == len(phases) and phases)) else "incomplete"
-    return {
+    self_reported_done = verified or (not forced and passed_phases == len(phases) and phases)
+
+    # A run cannot be "done" unless the working tree actually changed. The probe
+    # answers True/False when wired, or None when it cannot verify. On None we
+    # keep the self-reported outcome but flag it as unverified so the caller
+    # knows the success was not corroborated by a real diff.
+    tree = await ctx.tree_changed()
+    if self_reported_done and tree is False:
+        await ctx.log("run marked incomplete — working tree is empty despite a PASS self-report")
+        status = "incomplete"
+    else:
+        status = "done" if self_reported_done else "incomplete"
+
+    result: dict[str, Any] = {
         "status": status,
         "root_cause": root_cause,
         "approach": approach,
@@ -532,5 +602,9 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         "forced_final_write": forced,
         "repaired": repaired,
         "final_verdict": final_verdict,
+        "tree_changed": tree,
         "tokens_spent": ctx.budget.spent(),
     }
+    if tree is None:
+        result["tree_unverified"] = True
+    return result

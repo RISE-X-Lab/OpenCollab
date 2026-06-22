@@ -243,6 +243,49 @@ def test_tool_execution_use_case_persists_full_tool_output():
     assert content == raw_output
 
 
+def test_short_circuit_invalid_json_is_traced():
+    tracer = FakeTracer()
+    use_case, _ = build_use_case(tracer=tracer)
+
+    run(use_case.process([tool_call(arguments="{not-json")]))
+
+    assert len(tracer.steps) == 1
+    step = tracer.steps[0]
+    assert step["step_type"] == "tool_error"
+    assert step["payload"]["tool"] == "fake_tool"
+    assert step["payload"]["error"] == "invalid_json_args"
+
+
+def test_short_circuit_unknown_tool_is_traced():
+    tracer = FakeTracer()
+    agent = FakeAgent(tools=[SimpleNamespace(name="known_tool")])
+    use_case, _ = build_use_case(agent=agent, tracer=tracer)
+
+    run(use_case.process([tool_call(name="missing_tool", arguments="{}")]))
+
+    assert len(tracer.steps) == 1
+    step = tracer.steps[0]
+    assert step["step_type"] == "tool_error"
+    assert step["payload"]["tool"] == "missing_tool"
+    assert step["payload"]["error"] == "unknown_tool"
+
+
+def test_short_circuit_loop_block_is_traced():
+    tracer = FakeTracer()
+    state = SessionState(messages=[])
+    use_case, _ = build_use_case(state=state, tracer=tracer)
+    call_hash = use_case.tool_call_hash("fake_tool", {"value": 1})
+    state.replace_recent_tool_hashes([call_hash, call_hash])
+
+    run(use_case.process([tool_call(arguments='{"value": 1}')]))
+
+    assert len(tracer.steps) == 1
+    step = tracer.steps[0]
+    assert step["step_type"] == "loop_blocked"
+    assert step["payload"]["tool"] == "fake_tool"
+    assert step["payload"]["count"] == 3
+
+
 def test_application_tool_execution_module_does_not_import_outer_layers():
     package_root = Path(__file__).resolve().parents[1]
     source = (package_root / "opencollab/application/tool_execution.py").read_text(encoding="utf-8")

@@ -15,12 +15,20 @@ def run(coro):
     return asyncio.run(coro)
 
 
-def llm_response(content=None, tool_calls=None, total_tokens=5, input_tokens=1, finish_reason="stop"):
+def llm_response(
+    content=None,
+    tool_calls=None,
+    total_tokens=5,
+    input_tokens=1,
+    finish_reason="stop",
+    reasoning=None,
+):
     return SimpleNamespace(
         content=content,
         tool_calls=tool_calls or [],
         usage=SimpleNamespace(total_tokens=total_tokens, input_tokens=input_tokens),
         finish_reason=finish_reason,
+        reasoning=reasoning,
     )
 
 
@@ -312,6 +320,142 @@ def test_run_loop_without_tool_calls_marks_done():
     assert state.used_tokens == 6
     assert state.messages[-1] == {"role": "assistant", "content": "plain"}
     assert [event_type for event_type, _data in events] == ["step_start", "text_delta", "step_end"]
+
+
+# ---------------------------------------------------------------------------
+# Empty-stop retry — a finish_reason="stop" turn with no text and no tool calls
+# ---------------------------------------------------------------------------
+
+
+def _no_consecutive_same_role(messages):
+    """No two adjacent messages share a role (the role-alternation contract)."""
+    return all(a["role"] != b["role"] for a, b in zip(messages, messages[1:]))
+
+
+def _convo():
+    return [{"role": "system", "content": "sys"}, {"role": "user", "content": "task"}]
+
+
+def test_empty_stop_retries_once_with_nudge_then_succeeds():
+    from opencollab.application.session_run import _EMPTY_STOP_NUDGE, _EMPTY_STOP_PLACEHOLDER
+
+    state = SessionState(messages=_convo())
+    llm = FakeLLM(
+        [
+            llm_response(content=None),  # empty-stop
+            llm_response(content="recovered", total_tokens=4),
+        ]
+    )
+    runner = build_runner(state=state, llm=llm)
+
+    result = run(runner.run_loop())
+
+    assert result == "recovered"
+    assert state.phase is SessionPhase.DONE
+    assert len(llm.calls) == 2  # initial empty turn + one retry
+    # The retry call saw the nudge as a user message...
+    assert {"role": "user", "content": _EMPTY_STOP_NUDGE} in llm.calls[1]["messages"]
+    # ...preceded by an assistant placeholder so roles still alternate (no two
+    # consecutive user messages, which Anthropic rejects).
+    assert _no_consecutive_same_role(state.messages)
+    assert {"role": "assistant", "content": _EMPTY_STOP_PLACEHOLDER} in state.messages
+    # No bare empty assistant message was ever appended.
+    assert all(
+        not (m["role"] == "assistant" and not m.get("content") and not m.get("tool_calls"))
+        for m in state.messages
+    )
+    assert state.messages[-1] == {"role": "assistant", "content": "recovered"}
+
+
+def test_empty_stop_retries_at_most_once_then_gives_up():
+    # Two consecutive empty-stops: retry fires once, then the session finishes
+    # cleanly rather than looping. A 3rd LLM call would make FakeLLM raise.
+    state = SessionState(messages=_convo())
+    llm = FakeLLM([llm_response(content=None), llm_response(content=None)])
+    runner = build_runner(state=state, llm=llm)
+
+    result = run(runner.run_loop())
+
+    assert result == ""  # placeholder is filtered out, never returned as an answer
+    assert state.phase is SessionPhase.DONE
+    assert len(llm.calls) == 2  # bounded: initial + exactly one retry
+
+
+def test_empty_stop_retry_is_recorded_in_trajectory():
+    # The retry must leave a grep-able trace entry, since the injected
+    # nudge/placeholder messages are never persisted to the trajectory.
+    state = SessionState(messages=_convo())
+    llm = FakeLLM([llm_response(content=None), llm_response(content="ok", total_tokens=4)])
+    tracer = FakeTracer()
+    runner = build_runner(state=state, llm=llm, tracer=tracer)
+
+    run(runner.run_loop())
+
+    retries = [s for s in tracer.steps if s["step_type"] == "empty_stop_retry"]
+    assert len(retries) == 1
+    assert retries[0]["payload"] == {"finish_reason": "stop", "had_reasoning": False}
+
+
+def test_llm_trace_records_reasoning_when_present():
+    state = SessionState(messages=_convo())
+    llm = FakeLLM([llm_response(content="answer", reasoning="step-by-step thoughts")])
+    tracer = FakeTracer()
+    runner = build_runner(state=state, llm=llm, tracer=tracer)
+
+    run(runner.run_loop())
+
+    llm_calls = [s for s in tracer.steps if s["step_type"] == "llm_call"]
+    assert llm_calls[0]["payload"]["reasoning"] == "step-by-step thoughts"
+
+
+def test_llm_trace_omits_reasoning_when_absent():
+    state = SessionState(messages=_convo())
+    llm = FakeLLM([llm_response(content="answer")])  # reasoning defaults to None
+    tracer = FakeTracer()
+    runner = build_runner(state=state, llm=llm, tracer=tracer)
+
+    run(runner.run_loop())
+
+    llm_calls = [s for s in tracer.steps if s["step_type"] == "llm_call"]
+    assert "reasoning" not in llm_calls[0]["payload"]
+
+
+def test_empty_stop_with_length_finish_reason_does_not_retry():
+    # A truncated turn (finish_reason="length") with empty content is NOT an
+    # empty-stop: a nudge cannot un-truncate it, so we must not waste a retry.
+    state = SessionState(messages=_convo())
+    llm = FakeLLM([llm_response(content=None, finish_reason="length")])
+    runner = build_runner(state=state, llm=llm)
+
+    result = run(runner.run_loop())
+
+    assert result == ""
+    assert state.phase is SessionPhase.DONE
+    assert len(llm.calls) == 1  # no retry attempted
+
+
+def test_empty_stop_retry_budget_resets_across_turns():
+    # The once-per-turn flag must reset on a new turn, or a long-lived session
+    # that hit an empty-stop in turn 1 would never retry again.
+    state = SessionState(messages=_convo())
+    llm = FakeLLM(
+        [
+            llm_response(content=None),  # turn 1 empty-stop
+            llm_response(content="answer-1", total_tokens=4),
+            llm_response(content=None),  # turn 2 empty-stop
+            llm_response(content="answer-2", total_tokens=4),
+        ]
+    )
+    runner = build_runner(state=state, llm=llm)
+
+    assert run(runner.run_loop()) == "answer-1"
+    assert len(llm.calls) == 2
+
+    # Start a fresh user turn on the SAME runner instance.
+    state.reset_for_user_turn()
+    state.append_message({"role": "user", "content": "follow-up"})
+    assert run(runner.run_loop()) == "answer-2"
+    assert len(llm.calls) == 4  # turn 2 retried too — flag was reset
 
 
 def test_deferred_spawn_suspends_then_resumes_after_fill():

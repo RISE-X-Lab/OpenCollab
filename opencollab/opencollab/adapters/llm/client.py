@@ -63,12 +63,16 @@ class LLMClient:
         temperature: float = 0.0,
         thinking: bool = False,
         thinking_params: dict[str, Any] | None = None,
+        tool_choice: str | None = None,
     ) -> LLMResponse:
         """Single-shot completion. Returns full response.
 
         ``thinking`` is OFF by default, so existing callers are unaffected. When
         on, ``thinking_params`` is the provider-specific reasoning payload (sent
         as ``extra_body`` on the OpenAI-compatible path).
+
+        ``tool_choice`` is ``None`` by default (provider default, i.e. "auto");
+        a caller may pass ``"required"`` to force the model to emit a tool call.
         """
         if self._anthropic:
             return await complete_anthropic(
@@ -80,6 +84,7 @@ class LLMClient:
                 self.max_retries,
                 thinking=thinking,
                 thinking_params=thinking_params,
+                tool_choice=tool_choice,
             )
         return await complete_openai(
             self._openai,
@@ -90,4 +95,5 @@ class LLMClient:
             self.max_retries,
             thinking=thinking,
             thinking_params=thinking_params,
+            tool_choice=tool_choice,
         )
