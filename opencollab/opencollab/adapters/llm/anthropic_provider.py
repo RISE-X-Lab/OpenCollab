@@ -13,6 +13,21 @@ from opencollab.adapters.llm.retry import with_retry
 from opencollab.adapters.llm.types import DEFAULT_MAX_OUTPUT_TOKENS, LLMResponse, Usage
 
 
+def _anthropic_tool_choice(tool_choice: str | None) -> dict[str, Any] | None:
+    """Map an OpenAI-style ``tool_choice`` string to Anthropic's dict form.
+
+    Anthropic expects ``{"type": "auto"|"any"|"tool"}``; OpenAI's ``"required"``
+    (force *some* tool) maps to ``"any"``. ``None`` keeps the API default.
+    """
+    if tool_choice is None:
+        return None
+    if tool_choice == "required":
+        return {"type": "any"}
+    if tool_choice == "auto":
+        return {"type": "auto"}
+    return None
+
+
 def _build_request_kwargs(
     model: str,
     messages: list[dict],
@@ -20,6 +35,7 @@ def _build_request_kwargs(
     temperature: float,
     thinking: bool = False,
     thinking_params: dict | None = None,
+    tool_choice: str | None = None,
 ) -> dict[str, Any]:
     system_parts, anthropic_messages = convert_to_anthropic_messages(messages)
 
@@ -33,6 +49,9 @@ def _build_request_kwargs(
         kwargs["system"] = "\n\n".join(system_parts)
     if tools:
         kwargs["tools"] = [_convert_tool(tool) for tool in tools]
+        choice = _anthropic_tool_choice(tool_choice)
+        if choice is not None:
+            kwargs["tool_choice"] = choice
     # Thinking passthrough (minimal, flag-guarded). This native-Anthropic path is
     # unused here (DashScope compatible mode runs the OpenAI path), so keep it
     # behind the flag: default-off changes nothing. ``thinking_params`` is the
@@ -62,21 +81,31 @@ async def complete_anthropic(
     max_retries: int,
     thinking: bool = False,
     thinking_params: dict | None = None,
+    tool_choice: str | None = None,
 ) -> LLMResponse:
     """Single-shot completion against the Anthropic API."""
     kwargs = _build_request_kwargs(
-        model, messages, tools, temperature, thinking, thinking_params
+        model, messages, tools, temperature, thinking, thinking_params, tool_choice
     )
     resp = await with_retry(
         lambda: client.messages.create(**kwargs),
         max_retries=max_retries,
     )
+    return _parse_response(resp)
 
+
+def _parse_response(resp: Any) -> LLMResponse:
     content = ""
+    thinking_text = ""
     tool_calls = []
     for block in resp.content:
         if block.type == "text":
             content += block.text
+        elif block.type == "thinking":
+            # Only plain thinking blocks carry usable text. ``redacted_thinking``
+            # blocks hold encrypted ``data`` (not human-readable), so they are
+            # intentionally not harvested as answer content.
+            thinking_text += getattr(block, "thinking", "")
         elif block.type == "tool_use":
             tool_calls.append({
                 "id": block.id,
@@ -84,11 +113,20 @@ async def complete_anthropic(
                 "function": {"name": block.name, "arguments": json.dumps(block.input)},
             })
 
+    # Mirror of the OpenAI provider: keep the thinking text for trajectory
+    # observability, and only rescue a genuinely empty turn (no text and no tool
+    # calls) by falling back to it, so an empty-stop never silently ends the
+    # session.
+    reasoning = thinking_text or None
+    if not content and not tool_calls and reasoning:
+        content = reasoning
+
     return LLMResponse(
         content=content or None,
         tool_calls=tool_calls,
         usage=_parse_usage(resp.usage),
         finish_reason=resp.stop_reason,
+        reasoning=reasoning,
     )
 
 

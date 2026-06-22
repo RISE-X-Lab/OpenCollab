@@ -24,6 +24,7 @@ from typing import Any
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.trace import Tracer
+from opencollab.adapters.working_tree import EnvWorkingTreeProbe
 from opencollab.application.ports import (
     EventPublisherPort,
     TracePort,
@@ -141,6 +142,7 @@ class WorkflowSessionFactory:
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
         label: str | None = None,
+        tool_choice: str | None = None,
     ) -> Any:
         agent = Agent(
             name="workflow_agent",
@@ -153,6 +155,7 @@ class WorkflowSessionFactory:
             temperature=self._temperature,
             thinking=self._thinking,
             thinking_params=self._thinking_params,
+            tool_choice=tool_choice,
         )
         env = LocalEnvironment(self._workspace) if self._workspace else LocalEnvironment()
         return build_session(
@@ -202,12 +205,16 @@ def build_workflow_context(
         save_dir=save_dir,
     )
     budget_total = budget if budget is not None else cfg.get("budget")
+    # Working-tree probe over the same workspace the sessions edit, so the
+    # workflow can verify a real edit landed before declaring success.
+    probe_env = LocalEnvironment(workspace) if workspace else LocalEnvironment()
     return WorkflowContext(
         factory,
         event_sink=event_sink,
         tracer=tracer,
         max_concurrency=max_concurrency,
         budget_total=budget_total,
+        tree_probe=EnvWorkingTreeProbe(probe_env),
     )
 
 

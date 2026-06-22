@@ -226,6 +226,16 @@ class FileWriteTool(Tool):
         if not old_str:
             return "Error: old_str is required for str_replace mode."
 
+        # A no-op replacement (old_str == new_str) would write the file back
+        # unchanged and report a misleading success — the classic "the edit
+        # silently did nothing" trap. Surface it as an explicit error so the
+        # model knows nothing changed and must supply a real edit.
+        if new_str == old_str:
+            return (
+                f"Error: str_replace was a no-op — old_str and new_str are "
+                f"identical; nothing changed in {path}."
+            )
+
         current = await env.read_file(path)
 
         # Check uniqueness (ref: claude-code Edit — must be unique)
@@ -240,8 +250,16 @@ class FileWriteTool(Tool):
             return f"Error: old_str found {count} times in {path}. Provide more context to make it unique."
 
         updated = current.replace(old_str, new_str, 1)
+        if updated == current:
+            # Defensive: old_str matched but the resulting content is byte-for-byte
+            # identical (e.g. a degenerate overlap). Report no change rather than a
+            # misleading success.
+            return (
+                f"Error: str_replace produced no change in {path} — the file "
+                "content is identical after the replacement."
+            )
         await env.write_file(path, updated)
-        return f"Replaced in {path}: {len(old_str)} chars → {len(new_str)} chars"
+        return f"Replaced in {path}: {len(old_str)} chars → {len(new_str)} chars (content changed)"
 
 
 class GrepTool(Tool):

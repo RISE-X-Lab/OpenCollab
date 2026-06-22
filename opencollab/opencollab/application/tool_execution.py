@@ -108,6 +108,11 @@ class ToolExecutionUseCase:
             try:
                 args = self.parse_tool_args(func)
             except json.JSONDecodeError:
+                self._trace_short_circuit(
+                    "tool_error",
+                    tool_name,
+                    {"error": "invalid_json_args", "args": func.get("arguments", "")[:200]},
+                )
                 result.messages_to_append.append({
                     "role": "tool",
                     "tool_call_id": tool_id,
@@ -127,6 +132,9 @@ class ToolExecutionUseCase:
                     f"[Loop detected: tool '{tool_name}' called {recent_same} times with identical arguments. "
                     f"You are stuck in a loop. Try a completely different approach or ask for help.]"
                 )
+                self._trace_short_circuit(
+                    "loop_blocked", tool_name, {"args": args, "count": recent_same}
+                )
                 result.messages_to_append.append({"role": "tool", "tool_call_id": tool_id, "content": warning})
                 result.loop_detections.append(LoopDetection(tool=tool_name, count=recent_same))
                 await self.event_publisher.emit(self.event_factory.loop_detected(tool_name, recent_same))
@@ -134,6 +142,9 @@ class ToolExecutionUseCase:
 
             tool = self.find_tool(tool_name)
             if not tool:
+                self._trace_short_circuit(
+                    "tool_error", tool_name, {"error": "unknown_tool", "args": args}
+                )
                 result.messages_to_append.append({
                     "role": "tool",
                     "tool_call_id": tool_id,
@@ -246,6 +257,26 @@ class ToolExecutionUseCase:
         if isinstance(outcome, DeferredCall):
             return outcome.ref, None
         return None, str(outcome)
+
+    def _trace_short_circuit(self, step_type: str, tool_name: str, detail: dict[str, Any]) -> None:
+        """Record a tracer step for a pre-execution short-circuit.
+
+        The three branches that answer a tool call without ever executing it
+        (malformed JSON args, unknown tool, loop-detection block) previously left
+        no trajectory trace, so a run could short-circuit silently. This logs a
+        distinct ``step_type`` ("tool_error"/"loop_blocked") with the attempted
+        tool and a small args snapshot. Observability only — no behavior change;
+        a no-op when no tracer is wired.
+        """
+        if not self.tracer:
+            return
+        payload: dict[str, Any] = {"tool": tool_name}
+        payload.update(detail)
+        # Cap any args snapshot so a trace record can't balloon.
+        if isinstance(payload.get("args"), dict):
+            snapshot = json.dumps(payload["args"], default=str)[:500]
+            payload["args"] = snapshot
+        self.tracer.log_step(step_type=step_type, payload=payload)
 
     def trace_payload(self, tool_name: str, args: dict, tool_output: str) -> dict[str, Any]:
         # Cap result in trace to 4k to keep trajectory files manageable.

@@ -7,6 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from opencollab.adapters.llm.anthropic_provider import _build_request_kwargs as build_anthropic_kwargs
+from opencollab.adapters.llm.anthropic_provider import _parse_response as parse_anthropic_response
 from opencollab.adapters.llm.anthropic_provider import _parse_usage as parse_anthropic_usage
 from opencollab.adapters.llm.openai_provider import _build_request_kwargs as build_openai_kwargs
 from opencollab.adapters.llm.openai_provider import _parse_response as parse_openai_response
@@ -206,6 +208,39 @@ def test_openai_thinking_off_adds_no_extra_body():
     assert "extra_body" not in kwargs
 
 
+def test_openai_tool_choice_defaults_to_auto():
+    """No tool_choice -> the request keeps the prior 'auto' default."""
+    kwargs = build_openai_kwargs(
+        "gpt-4o",
+        [{"role": "user", "content": "hi"}],
+        [{"type": "function", "function": {"name": "f", "parameters": {}}}],
+        0.0,
+    )
+    assert kwargs["tool_choice"] == "auto"
+
+
+def test_openai_tool_choice_required_is_passed_through():
+    """tool_choice='required' overrides the 'auto' default for the forced-write path."""
+    kwargs = build_openai_kwargs(
+        "gpt-4o",
+        [{"role": "user", "content": "hi"}],
+        [{"type": "function", "function": {"name": "f", "parameters": {}}}],
+        0.0,
+        tool_choice="required",
+    )
+    assert kwargs["tool_choice"] == "required"
+
+
+def test_anthropic_tool_choice_required_maps_to_any():
+    """Anthropic wants a dict form; 'required' -> {'type': 'any'}, None omits it."""
+    tools = [{"function": {"name": "f", "parameters": {}}}]
+    msgs = [{"role": "user", "content": "hi"}]
+    forced = build_anthropic_kwargs("claude", msgs, tools, 0.0, tool_choice="required")
+    assert forced["tool_choice"] == {"type": "any"}
+    default = build_anthropic_kwargs("claude", msgs, tools, 0.0)
+    assert "tool_choice" not in default
+
+
 def test_openai_estimates_output_from_tool_calls_when_no_content():
     """Output estimate falls back to tool-call args when content is empty."""
     tool_call = SimpleNamespace(
@@ -219,3 +254,95 @@ def test_openai_estimates_output_from_tool_calls_when_no_content():
 
     assert result.usage.output_tokens > 0
     assert result.usage.estimated is True
+
+
+# ---------------------------------------------------------------------------
+# reasoning_content harvest — rescue a genuinely empty thinking turn
+# ---------------------------------------------------------------------------
+
+
+def _openai_resp_with_reasoning(content, reasoning_content, tool_calls=None):
+    message = SimpleNamespace(
+        content=content, tool_calls=tool_calls, reasoning_content=reasoning_content
+    )
+    choice = SimpleNamespace(message=message, finish_reason="stop")
+    return SimpleNamespace(choices=[choice], usage=None)
+
+
+def test_openai_harvests_reasoning_content_when_content_empty():
+    """An empty-content, no-tool-call turn falls back to reasoning_content."""
+    resp = _openai_resp_with_reasoning(content=None, reasoning_content="the answer is 42")
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+    assert result.content == "the answer is 42"
+    assert result.reasoning == "the answer is 42"  # also recorded for the trajectory
+
+
+def test_openai_keeps_real_content_over_reasoning():
+    """When content is present it wins — but reasoning is still recorded."""
+    resp = _openai_resp_with_reasoning(content="real answer", reasoning_content="scratch work")
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+    assert result.content == "real answer"
+    assert result.reasoning == "scratch work"  # kept for trajectory observability
+
+
+def test_openai_does_not_harvest_reasoning_on_tool_call_turn():
+    """A tool-call turn legitimately has empty content; don't inject reasoning."""
+    tc = SimpleNamespace(id="c1", function=SimpleNamespace(name="run", arguments="{}"))
+    resp = _openai_resp_with_reasoning(content=None, reasoning_content="thinking", tool_calls=[tc])
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+    assert result.content is None
+    assert result.tool_calls and result.tool_calls[0]["function"]["name"] == "run"
+
+
+# ---------------------------------------------------------------------------
+# Anthropic thinking-block harvest — mirror of the OpenAI reasoning harvest
+# ---------------------------------------------------------------------------
+
+
+def _anthropic_resp(blocks, stop_reason="end_turn"):
+    usage = SimpleNamespace(input_tokens=10, output_tokens=5)
+    return SimpleNamespace(content=blocks, usage=usage, stop_reason=stop_reason)
+
+
+def _text_block(text):
+    return SimpleNamespace(type="text", text=text)
+
+
+def _thinking_block(text):
+    return SimpleNamespace(type="thinking", thinking=text)
+
+
+def _tool_use_block(name="run", input=None):
+    return SimpleNamespace(type="tool_use", id="c1", name=name, input=input or {})
+
+
+def test_anthropic_harvests_thinking_when_no_text():
+    """An empty-text, no-tool turn falls back to the thinking-block text."""
+    resp = _anthropic_resp([_thinking_block("the answer is 42")])
+    result = parse_anthropic_response(resp)
+    assert result.content == "the answer is 42"
+    assert result.reasoning == "the answer is 42"  # also recorded for the trajectory
+
+
+def test_anthropic_keeps_real_text_over_thinking():
+    """When a text block is present it wins — but thinking is still recorded."""
+    resp = _anthropic_resp([_thinking_block("scratch"), _text_block("real answer")])
+    result = parse_anthropic_response(resp)
+    assert result.content == "real answer"
+    assert result.reasoning == "scratch"  # kept for trajectory observability
+
+
+def test_anthropic_does_not_harvest_thinking_on_tool_call_turn():
+    """A tool-call turn legitimately has empty text; don't inject thinking."""
+    resp = _anthropic_resp([_thinking_block("plan"), _tool_use_block(name="run")])
+    result = parse_anthropic_response(resp)
+    assert result.content is None
+    assert result.tool_calls and result.tool_calls[0]["function"]["name"] == "run"
+
+
+def test_anthropic_redacted_thinking_is_not_harvested():
+    """redacted_thinking holds encrypted data, not text — must not become content."""
+    redacted = SimpleNamespace(type="redacted_thinking", data="encrypted-bytes")
+    resp = _anthropic_resp([redacted])
+    result = parse_anthropic_response(resp)
+    assert result.content is None

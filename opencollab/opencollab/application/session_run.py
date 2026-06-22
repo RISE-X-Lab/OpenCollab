@@ -44,6 +44,21 @@ class PendingStep:
     latency: float
 
 
+# Re-prompt used when a turn returns neither text nor a tool call (an
+# "empty-stop"). Without this the session would silently transition to DONE,
+# recording a clean completion that produced no answer and took no action.
+_EMPTY_STOP_NUDGE = (
+    "Your previous response was empty — no message and no tool call. "
+    "If the task is finished, say so briefly. Otherwise continue now by "
+    "calling the appropriate tool or giving your answer."
+)
+
+# Stand-in for the empty assistant turn, inserted before the nudge so the retry
+# request never sends two consecutive user messages (Anthropic rejects that).
+# Filtered out of ``run_loop``'s answer scan so it is never mistaken for output.
+_EMPTY_STOP_PLACEHOLDER = "[no output produced this turn]"
+
+
 class SessionRunUseCase:
     """Application use case for the session run loop.
 
@@ -97,6 +112,9 @@ class SessionRunUseCase:
         # behaviour for callers that don't wire it.
         self._is_context_overflow = is_context_overflow or (lambda _exc: False)
         self._pending: PendingStep | None = None
+        # Guards the once-per-session retry on an empty-stop turn (see
+        # ``handle_pending_response``).
+        self._empty_stop_retried = False
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
@@ -114,6 +132,10 @@ class SessionRunUseCase:
                 self._resume_from_awaiting()
             elif self.state.phase is not SessionPhase.DONE:
                 self.state.resume_to_idle()
+                # A fresh turn (or re-run) restores the once-per-turn empty-stop
+                # retry budget. A deferred-resume (AWAITING_EVENTS, above) is the
+                # same turn and must keep the flag as-is.
+                self._empty_stop_retried = False
             while not self._should_suspend():
                 await self.advance(cancel_event)
 
@@ -126,8 +148,9 @@ class SessionRunUseCase:
             raise
 
         for msg in reversed(self.state.messages):
-            if msg["role"] == "assistant" and msg.get("content"):
-                return msg["content"]
+            content = msg.get("content")
+            if msg["role"] == "assistant" and content and content != _EMPTY_STOP_PLACEHOLDER:
+                return content
         return ""
 
     def is_terminal_phase(self) -> bool:
@@ -267,6 +290,39 @@ class SessionRunUseCase:
 
         if response.tool_calls:
             self.state.transition_to(SessionPhase.EXECUTING_TOOLS)
+            return
+
+        # Empty-stop: a clean ``stop`` turn that produced neither text nor a tool
+        # call. Falling straight through to DONE would silently record a clean
+        # completion that answered nothing. Retry once with a nudge before giving
+        # up; the once-per-turn flag (plus the budget/step limits) bounds it. The
+        # AUTOSAVING handler finishes the step and loops back to PRECHECK.
+        # ``finish_reason`` is gated to "stop": a "length" truncation will only
+        # truncate again, so a nudge cannot help there.
+        empty_stop = not response.content and not response.tool_calls
+        if empty_stop and response.finish_reason in (None, "stop") and not self._empty_stop_retried:
+            self._empty_stop_retried = True
+            # Record the retry to the trajectory so empty-stops are measurable
+            # (the injected nudge/placeholder messages are never persisted).
+            if self.tracer:
+                self.tracer.log_step(
+                    step_type="empty_stop_retry",
+                    payload={
+                        "finish_reason": response.finish_reason,
+                        "had_reasoning": bool(getattr(response, "reasoning", None)),
+                    },
+                    latency=pending.latency,
+                )
+            # The empty assistant turn was not appended, so the history may end
+            # with a user/tool message. Insert a short assistant placeholder
+            # before the nudge so the retry request never sends two consecutive
+            # user messages (which Anthropic rejects).
+            if self.state.messages and self.state.messages[-1]["role"] in ("user", "tool"):
+                self.state.append_message(
+                    {"role": "assistant", "content": _EMPTY_STOP_PLACEHOLDER}
+                )
+            self.state.append_message({"role": "user", "content": _EMPTY_STOP_NUDGE})
+            self.state.transition_to(SessionPhase.AUTOSAVING)
             return
 
         await self.finish_step(pending.latency)
@@ -438,15 +494,58 @@ class SessionRunUseCase:
     async def _complete(
         self, messages: list[dict], tools: list[dict] | None
     ) -> CompletionResponse:
+        # ``tool_choice`` is read defensively (getattr) so duck-typed agent stubs
+        # without the field keep working; ``None`` (the default) keeps the
+        # provider's "auto", so the surface is unchanged for ordinary agents.
+        # When an agent requests "required" (the forced-write coder) but the
+        # provider rejects it (some OpenAI-compatible endpoints don't support
+        # it), fall back ONCE to "auto" — the explicit forced prompt and the
+        # diff-gate still push the model to write.
+        tool_choice = getattr(self.agent, "tool_choice", None)
+        try:
+            return await self._complete_with_choice(messages, tools, tool_choice)
+        except Exception as exc:
+            if tool_choice in (None, "auto") or self._is_context_overflow(exc):
+                raise
+            # Only degrade to "auto" when the provider plainly REJECTED the
+            # parameter — a 4xx request-validation error, or a message naming
+            # tool_choice. A transient/auth/server error would fail "auto"
+            # identically, so re-raise it instead of masking a real fault behind
+            # a second call. Duck-typed so the application layer needs no
+            # provider-specific exception imports.
+            status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+            msg = str(exc).lower()
+            if status != 400 and "tool_choice" not in msg and "tool choice" not in msg:
+                raise
+            logger.warning(
+                "tool_choice=%r rejected on aid=%s (%s); retrying once with 'auto'",
+                tool_choice,
+                self.state.aid,
+                type(exc).__name__,
+            )
+            return await self._complete_with_choice(messages, tools, "auto")
+
+    async def _complete_with_choice(
+        self, messages: list[dict], tools: list[dict] | None, tool_choice: str | None
+    ) -> CompletionResponse:
         # ``thinking`` is read defensively (getattr) so duck-typed agent stubs
         # without the field keep working. When OFF (the default) the call is made
         # exactly as before — the thinking kwargs are omitted entirely so the LLM
         # surface is byte-for-byte unchanged for every existing caller.
+        #
+        # ``tool_choice`` is included ONLY when set: an ordinary agent
+        # (tool_choice=None) calls ``complete`` with exactly the prior kwargs, so
+        # duck-typed LLM stubs that never added the param keep working; only a
+        # forcing agent passes it through.
+        extra: dict[str, Any] = {}
+        if tool_choice is not None:
+            extra["tool_choice"] = tool_choice
         if not getattr(self.agent, "thinking", False):
             return await self.llm.complete(
                 messages=messages,
                 tools=tools,
                 temperature=self.agent.temperature,
+                **extra,
             )
         return await self.llm.complete(
             messages=messages,
@@ -454,6 +553,7 @@ class SessionRunUseCase:
             temperature=self.agent.temperature,
             thinking=True,
             thinking_params=getattr(self.agent, "thinking_params", None),
+            **extra,
         )
 
     async def _stop_on_context_overflow(self) -> None:
@@ -490,19 +590,30 @@ class SessionRunUseCase:
                     }
                     for tc in response.tool_calls
                 ]
+            payload = {
+                "model": self.agent.model,
+                "finish_reason": response.finish_reason,
+                "content": response.content,
+                "tool_calls": tool_calls_log,
+            }
+            # Record provider chain-of-thought to the trajectory when present
+            # (omitted otherwise, so non-thinking traces keep their prior shape).
+            reasoning = getattr(response, "reasoning", None)
+            if reasoning:
+                payload["reasoning"] = reasoning
             self.tracer.log_step(
                 step_type="llm_call",
-                payload={
-                    "model": self.agent.model,
-                    "finish_reason": response.finish_reason,
-                    "content": response.content,
-                    "tool_calls": tool_calls_log,
-                },
+                payload=payload,
                 tokens=response.usage.total_tokens,
                 latency=latency,
             )
 
     def append_assistant_message(self, response: CompletionResponse) -> None:
+        # An empty-stop turn (no content, no tool calls) would append a bare
+        # ``{"role": "assistant"}`` message that some providers reject on the
+        # next request. Skip it — handle_pending_response decides retry-vs-DONE.
+        if not response.content and not response.tool_calls:
+            return
         assistant_msg: dict[str, Any] = {"role": "assistant"}
         if response.content:
             assistant_msg["content"] = response.content

@@ -41,6 +41,10 @@ class LLMResponse:
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
     usage: Usage = field(default_factory=lambda: Usage())
     finish_reason: str | None = None
+    # Provider chain-of-thought (OpenAI ``reasoning_content`` / Anthropic
+    # ``thinking`` blocks), kept for trajectory observability. ``None`` when the
+    # provider/turn produced no thinking.
+    reasoning: str | None = None
 
 
 # ---------------------------------------------------------------------------

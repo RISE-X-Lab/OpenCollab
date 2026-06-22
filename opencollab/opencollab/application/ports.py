@@ -34,6 +34,27 @@ class DiffCapablePort(Protocol):
         ...
 
 
+@runtime_checkable
+class WorkingTreeProbe(Protocol):
+    """Read-only probe answering "has the working tree changed?".
+
+    Lets an application-layer workflow verify that an agent actually edited the
+    tree before it declares a phase/run successful — without importing an
+    Environment. The concrete impl (env-backed ``git status --porcelain``) is
+    wired in ``adapters``/``bootstrap``/the harness where the env exists; when no
+    probe is wired the workflow treats the answer as "unknown" and must not
+    hard-block on it.
+    """
+
+    async def changed(self) -> bool:
+        """True when the working tree has uncommitted changes."""
+        ...
+
+    async def diff(self) -> str:
+        """The current working-tree diff (best-effort, may be empty)."""
+        ...
+
+
 class SafetyPolicyPort(Protocol):
     def check_path(self, target_path: str) -> str:
         ...
@@ -207,6 +228,7 @@ class WorkflowSessionFactoryPort(Protocol):
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
         label: str | None = None,
+        tool_choice: str | None = None,
     ) -> Any:
         ...
 
@@ -299,6 +321,15 @@ class CompletionResponse(Protocol):
     def finish_reason(self) -> str | None:
         ...
 
+    @property
+    def reasoning(self) -> str | None:
+        """Provider chain-of-thought, if any (recorded to the trajectory).
+
+        Optional: implementations may omit it (the run loop reads it
+        defensively via ``getattr``).
+        """
+        ...
+
 
 class LLMPort(Protocol):
     """LLM client surface used by the session run loop and compaction."""
@@ -311,6 +342,7 @@ class LLMPort(Protocol):
         temperature: float = 0.0,
         thinking: bool = False,
         thinking_params: dict[str, Any] | None = None,
+        tool_choice: str | None = None,
     ) -> CompletionResponse:
         ...
 

@@ -24,6 +24,7 @@ def _build_request_kwargs(
     temperature: float,
     thinking: bool = False,
     thinking_params: dict | None = None,
+    tool_choice: str | None = None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": model,
@@ -32,7 +33,8 @@ def _build_request_kwargs(
     }
     if tools:
         kwargs["tools"] = tools
-        kwargs["tool_choice"] = "auto"
+        # Default "auto"; a caller may force "required" (forced-write step).
+        kwargs["tool_choice"] = tool_choice or "auto"
     # Thinking passthrough: when on, the provider-specific reasoning params ride
     # along as ``extra_body`` (a valid OpenAI SDK create() kwarg) — for DashScope
     # compatible mode this is ``{"enable_thinking": True}``. When off, nothing is
@@ -62,11 +64,21 @@ def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
             })
 
     usage = _parse_usage(resp, request_messages, message)
+    # Thinking providers (e.g. kimi-k2.6 with ``enable_thinking``) put the
+    # chain-of-thought in ``reasoning_content`` and the answer in ``content``.
+    # Keep the reasoning for trajectory observability. Belt-and-suspenders: if a
+    # turn ever returns content=None with neither an answer nor a tool call,
+    # fall back to the reasoning rather than emit a silent empty-stop turn.
+    reasoning = getattr(message, "reasoning_content", None) or None
+    content = message.content
+    if not content and not tool_calls:
+        content = reasoning
     return LLMResponse(
-        content=message.content,
+        content=content,
         tool_calls=tool_calls,
         usage=usage,
         finish_reason=choice.finish_reason,
+        reasoning=reasoning,
     )
 
 
@@ -121,10 +133,11 @@ async def complete_openai(
     max_retries: int,
     thinking: bool = False,
     thinking_params: dict | None = None,
+    tool_choice: str | None = None,
 ) -> LLMResponse:
     """Single-shot completion against an OpenAI-compatible endpoint."""
     kwargs = _build_request_kwargs(
-        model, messages, tools, temperature, thinking, thinking_params
+        model, messages, tools, temperature, thinking, thinking_params, tool_choice
     )
     resp = await with_retry(
         lambda: client.chat.completions.create(**kwargs),
