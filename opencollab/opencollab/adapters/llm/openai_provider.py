@@ -6,6 +6,8 @@ Ollama, vLLM, etc.) via the OpenAI SDK.
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any
 
 from opencollab.adapters.llm.retry import with_retry
@@ -47,6 +49,73 @@ def _build_request_kwargs(
     return kwargs
 
 
+# kimi (DashScope OpenAI-compat) sometimes emits tool calls as literal text in
+# ``message.content`` using these special-token delimiters, with
+# finish_reason='stop' and an EMPTY parsed ``tool_calls`` list. Parse the markup
+# back into a normal tool-call response so the intended tool actually runs.
+_MARKUP_SECTION_BEGIN = "<|tool_calls_section_begin|>"
+_MARKUP_SECTION_END = "<|tool_calls_section_end|>"
+_MARKUP_CALL_BEGIN = "<|tool_call_begin|>"
+_MARKUP_CALL_END = "<|tool_call_end|>"
+_MARKUP_ARG_BEGIN = "<|tool_call_argument_begin|>"
+
+# One tool-call block: header (functions.NAME:ID) then JSON args, between the
+# call-begin and call-end markers. Non-greedy so multiple blocks parse cleanly.
+_MARKUP_CALL_RE = re.compile(
+    re.escape(_MARKUP_CALL_BEGIN)
+    + r"\s*functions\.(?P<name>[^:\s]+):(?P<id>\S+?)\s*"
+    + re.escape(_MARKUP_ARG_BEGIN)
+    + r"(?P<args>.*?)"
+    + re.escape(_MARKUP_CALL_END),
+    re.DOTALL,
+)
+
+
+def _extract_markup_tool_calls(
+    content: str,
+) -> tuple[list[dict[str, Any]], str | None]:
+    """Parse kimi's literal tool-call markup out of ``content``.
+
+    Returns ``(tool_calls, cleaned_content)``. ``tool_calls`` uses the same dict
+    shape this module builds from ``message.tool_calls``. ``cleaned_content`` is
+    the surrounding prose with the markup section removed (``None`` if nothing
+    meaningful remains). On any structural problem returns ``([], content)`` so
+    the caller keeps its current behaviour.
+    """
+    if not content or _MARKUP_SECTION_BEGIN not in content:
+        return [], content
+
+    tool_calls: list[dict[str, Any]] = []
+    for match in _MARKUP_CALL_RE.finditer(content):
+        raw_args = match.group("args").strip()
+        try:
+            json.loads(raw_args)
+        except (ValueError, TypeError):
+            continue  # not valid JSON args -> skip this malformed block
+        tool_calls.append({
+            "id": match.group("id"),
+            "type": "function",
+            "function": {
+                "name": match.group("name"),
+                "arguments": raw_args,
+            },
+        })
+
+    if not tool_calls:
+        return [], content  # no well-formed block found -> fall back
+
+    # Strip the whole markup section (begin..end inclusive) from the prose. The
+    # end marker may be absent on a truncated stream; strip from begin onward.
+    start = content.index(_MARKUP_SECTION_BEGIN)
+    end_idx = content.find(_MARKUP_SECTION_END)
+    if end_idx == -1:
+        cleaned = content[:start]
+    else:
+        cleaned = content[:start] + content[end_idx + len(_MARKUP_SECTION_END):]
+    cleaned = cleaned.strip()
+    return tool_calls, (cleaned or None)
+
+
 def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
     choice = resp.choices[0]
     message = choice.message
@@ -63,14 +132,30 @@ def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
                 },
             })
 
+    content = message.content
+    reasoning = getattr(message, "reasoning_content", None) or None
+    # kimi (DashScope compat) sometimes emits tool calls as literal special-token
+    # markup instead of structured ``tool_calls`` — in ``content`` or, under
+    # thinking mode, inside ``reasoning_content`` (finish_reason='stop', empty
+    # ``message.tool_calls``). Recover them so the tool actually runs instead of
+    # being treated as a prose stop.
+    if not tool_calls:
+        markup_calls, cleaned = _extract_markup_tool_calls(content)
+        if markup_calls:
+            tool_calls = markup_calls
+            content = cleaned
+        elif reasoning:
+            markup_calls, cleaned_reasoning = _extract_markup_tool_calls(reasoning)
+            if markup_calls:
+                tool_calls = markup_calls
+                reasoning = cleaned_reasoning
+
     usage = _parse_usage(resp, request_messages, message)
     # Thinking providers (e.g. kimi-k2.6 with ``enable_thinking``) put the
     # chain-of-thought in ``reasoning_content`` and the answer in ``content``.
     # Keep the reasoning for trajectory observability. Belt-and-suspenders: if a
     # turn ever returns content=None with neither an answer nor a tool call,
     # fall back to the reasoning rather than emit a silent empty-stop turn.
-    reasoning = getattr(message, "reasoning_content", None) or None
-    content = message.content
     if not content and not tool_calls:
         content = reasoning
     return LLMResponse(
