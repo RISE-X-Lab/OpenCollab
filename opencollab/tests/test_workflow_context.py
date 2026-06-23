@@ -341,6 +341,28 @@ async def test_budget_exceeded_raises_before_next_call():
 
 
 @pytest.mark.asyncio
+async def test_over_budget_ok_bypasses_the_pre_call_raise():
+    """``over_budget_ok=True`` lets the budget-floor's forced write run past zero.
+
+    The single guaranteed final write must execute even with the meter already
+    exhausted — otherwise it self-aborts on the pre-call gate and no patch lands
+    (the sympy-11400 regression). It is bounded instead by ``thinking=False`` +
+    a wall-clock ``timeout``, not by this budget gate. The default path stays
+    gated. The pre-call raise fires before any session is consumed, so the gated
+    attempt does not eat ``s2``.
+    """
+    s1 = FakeSession(reply="a", tokens=500)
+    s2 = FakeSession(reply="forced", tokens=0)
+    ctx = WorkflowContext(FakeFactory([s1, s2]), budget_total=500)
+
+    assert await ctx.agent("first") == "a"  # spends 500, exhausting the budget
+    assert ctx.budget.remaining() <= 0
+    with pytest.raises(WorkflowBudgetExceeded):
+        await ctx.agent("default is still gated")
+    assert await ctx.agent("forced write", over_budget_ok=True) == "forced"
+
+
+@pytest.mark.asyncio
 async def test_budget_none_never_raises():
     s1 = FakeSession(reply="a", tokens=10_000_000)
     s2 = FakeSession(reply="b", tokens=10_000_000)

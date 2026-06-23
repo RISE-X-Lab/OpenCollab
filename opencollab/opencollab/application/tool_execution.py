@@ -21,6 +21,16 @@ from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, LoopDetection, ToolPro
 # Loop detection (ref: opencode doom_loop detection — 3 identical calls)
 MAX_SIMILAR_CALLS = 3
 
+# Read-only, range-parameterized tools whose loop key is the FILE PATH alone, not
+# the full args. A model thrashing on one file re-reads it with SHIFTING line
+# ranges (sympy-11400 read ccode.py ~135 times), so each exact-arg hash is unique
+# and the MAX_SIMILAR_CALLS counter never trips. Collapsing these tools to a
+# path-only hash makes the re-reads collide so the loop is caught — at the more
+# lenient MAX_SAME_FILE_READS, since a file is legitimately re-read a handful of
+# times during distill-as-you-read but dozens of times is a stall.
+_PATH_NORMALIZED_TOOLS = frozenset({"file_read"})
+MAX_SAME_FILE_READS = 8
+
 
 @dataclass(frozen=True)
 class DeferredCall:
@@ -127,9 +137,21 @@ class ToolExecutionUseCase:
                 recent_call_hashes = recent_call_hashes[-MAX_CALL_HASH_WINDOW:]
 
             recent_same = self.count_recent_similar_calls(recent_call_hashes, call_hash)
-            if recent_same >= MAX_SIMILAR_CALLS:
+            # Read tools collide on the path alone, so they get a more lenient
+            # threshold than the exact-arg loop limit (a few re-reads are normal).
+            limit = (
+                MAX_SAME_FILE_READS
+                if tool_name in _PATH_NORMALIZED_TOOLS
+                else MAX_SIMILAR_CALLS
+            )
+            if recent_same >= limit:
+                detail = (
+                    "on the same file (any line range)"
+                    if tool_name in _PATH_NORMALIZED_TOOLS
+                    else "with identical arguments"
+                )
                 warning = (
-                    f"[Loop detected: tool '{tool_name}' called {recent_same} times with identical arguments. "
+                    f"[Loop detected: tool '{tool_name}' called {recent_same} times {detail}. "
                     f"You are stuck in a loop. Try a completely different approach or ask for help.]"
                 )
                 self._trace_short_circuit(
@@ -176,7 +198,15 @@ class ToolExecutionUseCase:
         return json.loads(args_str) if args_str else {}
 
     def tool_call_hash(self, tool_name: str, args: dict) -> str:
-        return hashlib.md5(json.dumps({"name": tool_name, "args": args}, sort_keys=True).encode()).hexdigest()
+        # Path-normalized read tools key on the file path alone so re-reads of one
+        # file with different line ranges collide (see _PATH_NORMALIZED_TOOLS);
+        # every other tool keys on its full args.
+        key_args = (
+            {"path": args.get("path")} if tool_name in _PATH_NORMALIZED_TOOLS else args
+        )
+        return hashlib.md5(
+            json.dumps({"name": tool_name, "args": key_args}, sort_keys=True).encode()
+        ).hexdigest()
 
     def count_recent_similar_calls(self, recent_call_hashes: list[str], call_hash: str) -> int:
         # Count identical calls across the WHOLE per-turn window (already capped at

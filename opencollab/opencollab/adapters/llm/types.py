@@ -27,6 +27,12 @@ class Usage:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     estimated: bool = False
+    # Observability counter: 1 when this completion leaked kimi tool-call markup
+    # as literal text (in ``content`` or ``reasoning_content``) that the provider
+    # recovered into structured ``tool_calls`` (P6), else 0. Summed up the chain
+    # so a run's metrics surface how often the recovery fired — a regression alarm
+    # if it spikes or (after a provider fix) silently drops to zero.
+    markup_recovered: int = 0
 
     @property
     def total_tokens(self) -> int:

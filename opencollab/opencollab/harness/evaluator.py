@@ -31,7 +31,7 @@ from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.adapters.trace import Tracer
 from opencollab.adapters.working_tree import EnvWorkingTreeProbe
 from opencollab.application.session import Session
-from opencollab.application.workflow import WorkflowContext
+from opencollab.application.workflow import WorkflowBudgetExceeded, WorkflowContext
 from opencollab.application.workflow_registry import WorkflowFn
 from opencollab.bootstrap import build_session
 from opencollab.bootstrap.config import (
@@ -58,6 +58,11 @@ class EvalResult:
     duration: float
     error: str | None = None
     trajectory_path: str | None = None
+    # Observability: count of LLM calls whose kimi tool-call markup was recovered
+    # from literal text (P6), summed across every session of the run. Surfaces in
+    # metrics.jsonl via asdict() — a regression alarm if it spikes (provider
+    # quirk worsening) or drops to zero unexpectedly (recovery silently broke).
+    markup_recovered: int = 0
 
 
 @dataclass
@@ -337,7 +342,30 @@ async def _run_workflow_mode(
         args.pop("fail_to_pass", None)
     else:
         args["injected_test_paths"] = list(injected_paths)
-    await asyncio.wait_for(workflow(ctx, args), timeout=task.timeout)
+    # ALWAYS return the ctx, even when the workflow ends abnormally. The ctx is
+    # already fully built (above) and its ``.sessions`` accumulate token+step
+    # metrics as agents run, so by the time the body raises it holds the real
+    # cost of the run AND a partial patch sits on disk. Letting the exception
+    # propagate to the caller would leave ``workflow_ctx`` None there and zero out
+    # both — the regression that lost django-11564 (an outer-wall timeout) and the
+    # sympy budget-floor runs. Catch the controlled-stop cases here and return ctx.
+    try:
+        await asyncio.wait_for(workflow(ctx, args), timeout=task.timeout)
+    except WorkflowBudgetExceeded as exc:
+        # Budget floor stopping the run is BY DESIGN, not a failure: prior coder
+        # rounds / the forced final write have already written a real patch, and
+        # ctx holds every session's metrics. Not surfaced as an error.
+        await ctx.log(f"workflow stopped at budget floor — {exc}")
+    except Exception as exc:  # noqa: BLE001 — the harness must never lose a run
+        # Outer wall (asyncio.TimeoutError) or an unexpected crash: keep the ctx so
+        # the partial on-disk patch + accumulated metrics survive. Record the cause
+        # for observability; patch_produced stays honest off the real on-disk diff.
+        ctx.workflow_error = (  # type: ignore[attr-defined] — harness seam
+            f"Task timed out after {task.timeout}s"
+            if isinstance(exc, asyncio.TimeoutError)
+            else f"{type(exc).__name__}: {exc}"
+        )
+        await ctx.log(f"workflow ended early — {ctx.workflow_error}")
     return ctx
 
 
@@ -347,6 +375,10 @@ def _aggregate_tokens(sessions: Sequence[Any]) -> int:
 
 def _aggregate_steps(sessions: Sequence[Any]) -> int:
     return sum(int(getattr(s, "step_count", 0)) for s in sessions)
+
+
+def _aggregate_markup_recovery(sessions: Sequence[Any]) -> int:
+    return sum(int(getattr(s, "markup_recovered", 0)) for s in sessions)
 
 
 async def run_eval_task(
@@ -494,19 +526,30 @@ async def run_eval_task(
         sessions = workflow_ctx.sessions
         tokens_used = _aggregate_tokens(sessions)
         steps = _aggregate_steps(sessions)
+        markup_recovered = _aggregate_markup_recovery(sessions)
+        # _run_workflow_mode now swallows abnormal endings to preserve metrics; it
+        # stashes any genuine fault here so it still surfaces in the result.
+        if error is None:
+            error = getattr(workflow_ctx, "workflow_error", None)
     else:
         tokens_used = session.used_tokens if session else 0
         steps = session.step_count if session else 0
+        markup_recovered = getattr(session, "markup_recovered", 0) if session else 0
 
     return EvalResult(
         task_id=task.task_id,
         patch=patch,
-        patch_produced=bool(patch.strip()) and error is None,
+        # An on-disk diff is a real, submittable patch regardless of how the run
+        # ended — a budget-floor stop or an outer-wall timeout still produces the
+        # patch we grade (django-11564 was graded RESOLVED yet reported
+        # patch_produced=false under the old ``and error is None`` guard).
+        patch_produced=bool(patch.strip()),
         tokens_used=tokens_used,
         steps=steps,
         duration=duration,
         error=error,
         trajectory_path=tracer.path,
+        markup_recovered=markup_recovered,
     )
 
 

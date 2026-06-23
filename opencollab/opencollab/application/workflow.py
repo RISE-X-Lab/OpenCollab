@@ -247,12 +247,18 @@ class WorkflowContext:
         tool_choice: str | None = None,
         thinking: bool | None = None,
         timeout: float | None = None,
+        over_budget_ok: bool = False,
     ) -> str | dict | None:
         """Run one one-shot session and return its final assistant text.
 
         Returns ``None`` if the session errors — one dead agent never kills the
         fleet. Raises ``WorkflowBudgetExceeded`` only when the shared budget is
-        already exhausted before the call starts. When ``schema=`` is given the
+        already exhausted before the call starts, UNLESS ``over_budget_ok=True``
+        is passed: the budget floor's single forced final write must be allowed to
+        run even at/below zero (it is bounded instead by ``thinking=False`` plus a
+        wall-clock ``timeout``), so skipping the pre-call raise is what GUARANTEES
+        a patch lands rather than the call self-aborting on an exhausted meter.
+        When ``schema=`` is given the
         agent must finish by calling ``structured_output``; the validated dict
         is returned (with one corrective retry on the same session before
         giving up and returning ``None``).
@@ -275,7 +281,7 @@ class WorkflowContext:
         controlled way inside the workflow (its on-disk edits survive) rather than
         being truncated by the outer wall.
         """
-        if self.budget.remaining() <= 0:
+        if not over_budget_ok and self.budget.remaining() <= 0:
             raise WorkflowBudgetExceeded(
                 f"workflow budget exhausted: spent {self.budget.spent()} "
                 f"of {self.budget.total}"

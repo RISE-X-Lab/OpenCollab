@@ -276,6 +276,7 @@ class SessionRunUseCase:
             return
         latency = time.monotonic() - start
         self.state.add_used_tokens(response.usage.total_tokens)
+        self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
         self.state.set_context_tokens(response.usage.input_tokens)
 
         self.record_llm_trace(response, latency)
