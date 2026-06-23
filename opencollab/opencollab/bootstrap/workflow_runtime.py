@@ -143,7 +143,9 @@ class WorkflowSessionFactory:
         isolation: bool = False,
         label: str | None = None,
         tool_choice: str | None = None,
+        thinking: bool | None = None,
     ) -> Any:
+        use_thinking = self._thinking if thinking is None else thinking
         agent = Agent(
             name="workflow_agent",
             system_prompt=WORKFLOW_AGENT_PROMPT,
@@ -153,7 +155,7 @@ class WorkflowSessionFactory:
             api_key=self._api_key,
             base_url=self._base_url,
             temperature=self._temperature,
-            thinking=self._thinking,
+            thinking=use_thinking,
             thinking_params=self._thinking_params,
             tool_choice=tool_choice,
         )

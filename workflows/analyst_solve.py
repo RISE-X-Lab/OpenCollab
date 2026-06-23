@@ -383,13 +383,28 @@ def _tester_tools() -> list[Any]:
     return [BashTool(), FileReadTool(), RunTestsTool(), GrepTool()]
 
 
+def _time_low(ctx: Any) -> bool:
+    """True when the run is within the deadline margin (wall-clock-aware).
+
+    Defensive: a ctx without ``time_low`` (unbounded CLI runs, older test stubs)
+    reports False so behavior is unchanged where no deadline is wired.
+    """
+    time_low = getattr(ctx, "time_low", None)
+    return bool(time_low()) if callable(time_low) else False
+
+
 def _budget_ok(ctx: Any) -> bool:
-    """True while there is enough budget left for another full coder/tester step.
+    """True while there is BOTH enough token budget AND enough wall-clock time
+    left for another full coder/tester step.
 
     Keeps ``RESERVE_TOKENS`` in hand so the run can always afford one final
-    forced-write coder. ``remaining()`` is ``inf`` for an unbounded budget.
+    forced-write coder (``remaining()`` is ``inf`` for an unbounded budget), and
+    bails early once ``ctx.time_low()`` reports the hard deadline is near so the
+    reserve is spent on the forced write BEFORE the wall truncates the run (P7 /
+    django-11564 — the edit was located but never written because forced-write
+    only checked tokens).
     """
-    return ctx.budget.remaining() > RESERVE_TOKENS
+    return ctx.budget.remaining() > RESERVE_TOKENS and not _time_low(ctx)
 
 
 async def _recon(ctx: Any, goal: str, dims: list[dict[str, Any]]) -> str:
@@ -449,7 +464,10 @@ async def _run_phase(
     rounds = 0
     for round_no in range(1, MAX_ROUNDS_PER_PHASE + 1):
         if not _budget_ok(ctx):
-            await ctx.log(f"phase {idx}: budget below reserve before round {round_no} — stopping for forced write")
+            why = "deadline near" if _time_low(ctx) else "budget below reserve"
+            await ctx.log(
+                f"phase {idx}: {why} before round {round_no} — stopping for forced write"
+            )
             return {"goal": phase_goal, "status": "budget_low", "rounds": rounds}
         rounds = round_no
         findings_block = FINDINGS_BLOCK.format(findings=findings) if findings else ""
@@ -553,6 +571,16 @@ async def _run_phase(
     return {"goal": phase_goal, "status": "failed", "rounds": rounds, "last_findings": findings}
 
 
+def _seconds_left(ctx: Any) -> float:
+    """Wall-clock seconds left before the hard deadline; ``inf`` when unbounded.
+
+    Defensive: a ctx without ``seconds_left`` (unbounded CLI runs, older test
+    stubs) reports ``inf`` so no timeout is imposed where no deadline is wired.
+    """
+    seconds_left = getattr(ctx, "seconds_left", None)
+    return float(seconds_left()) if callable(seconds_left) else float("inf")
+
+
 async def _forced_final_write(
     ctx: Any, goal: str, root_cause: str, approach: str, progress: str, *, reason: str
 ) -> str:
@@ -562,6 +590,15 @@ async def _forced_final_write(
     after implement"). The coder runs with ``tool_choice="required"`` so the
     provider forces a tool call — the session layer falls back to "auto" once if
     the endpoint rejects "required".
+
+    This is the last action of the run and its whole job is to GUARANTEE a patch
+    lands before the hard wall, so it is hardened two ways (P7 timing gap):
+    ``thinking=False`` forces reasoning off so the generation is fast and cannot
+    blow the deadline margin even when the run-wide default is thinking-on
+    (analyst-solve eval runs with OPENCOLLAB_THINKING=1); and ``timeout`` clamps
+    the call to whatever wall-clock time is left, so a stalled call is cancelled
+    inside the workflow — its on-disk edits survive — instead of being truncated
+    by the outer wall (which lost django-11564).
     """
     await ctx.log(f"forced write: {reason} — landing a best-effort patch")
     return await ctx.agent(
@@ -575,6 +612,8 @@ async def _forced_final_write(
         label="coder:forced-write",
         tools=_coder_tools(),
         tool_choice="required",
+        thinking=False,
+        timeout=_seconds_left(ctx),
     )
 
 

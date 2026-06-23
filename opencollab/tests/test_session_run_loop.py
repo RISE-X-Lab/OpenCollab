@@ -727,6 +727,59 @@ def test_overflow_classifier_off_propagates_as_error():
     assert len(llm.calls) == 1
 
 
+# ---------------------------------------------------------------------------
+# Per-call generation timeout (P7): one slow generation can't eat the whole wall
+# ---------------------------------------------------------------------------
+
+
+class SlowLLM:
+    """A provider whose ``complete`` awaits ``delay`` seconds before answering.
+
+    Stands in for a death-slow thinking generation; with a small
+    ``per_call_timeout`` the run loop must surface ``asyncio.TimeoutError``.
+    """
+
+    def __init__(self, response, delay):
+        self.response = response
+        self.delay = delay
+        self.calls = []
+
+    async def complete(self, messages, tools=None, temperature=0.0):
+        self.calls.append(copy.deepcopy(messages))
+        await asyncio.sleep(self.delay)
+        return self.response
+
+
+def test_per_call_timeout_raises_on_slow_generation():
+    import pytest
+
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    llm = SlowLLM(llm_response(content="too late"), delay=1.0)
+    runner = build_runner(state=state, llm=llm, per_call_timeout=0.01)
+
+    # The single generation exceeds the 0.01s ceiling -> the run loop marks the
+    # session failed and re-raises the TimeoutError.
+    with pytest.raises(asyncio.TimeoutError):
+        run(runner.run_loop())
+
+    assert state.phase is SessionPhase.ERROR
+    assert len(llm.calls) == 1  # the call was attempted (then cancelled)
+
+
+def test_per_call_timeout_none_does_not_bound_the_call():
+    # With no ceiling wired (the default), a generation that takes longer than
+    # any small timeout still completes — regression guard that the ceiling is
+    # additive and off by default.
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    llm = SlowLLM(llm_response(content="finished", total_tokens=4), delay=0.05)
+    runner = build_runner(state=state, llm=llm)  # per_call_timeout defaults to None
+
+    result = run(runner.run_loop())
+
+    assert result == "finished"
+    assert state.phase is SessionPhase.DONE
+
+
 def test_shaper_bounds_model_view_but_leaves_state_messages_full():
     from opencollab.application.shaping import PerToolResultBudgetShaper
 

@@ -166,7 +166,12 @@ class _EvalSessionFactory:
         isolation: bool = False,
         label: str | None = None,
         tool_choice: str | None = None,
+        thinking: bool | None = None,
     ) -> Session:
+        # ``thinking`` None -> run-wide default; an explicit value (False for the
+        # schema-only structured agents) overrides it to shorten their slow
+        # reasoning generations.
+        use_thinking = self._thinking if thinking is None else thinking
         agent = Agent(
             name="eval_agent",
             system_prompt=self._prompt,
@@ -176,7 +181,7 @@ class _EvalSessionFactory:
             api_key=self._api_key,
             base_url=self._base_url,
             temperature=self._temperature,
-            thinking=self._thinking,
+            thinking=use_thinking,
             thinking_params=self._thinking_params,
             tool_choice=tool_choice,
         )
@@ -302,11 +307,18 @@ async def _run_workflow_mode(
         thinking=thinking,
         thinking_params=thinking_params,
     )
+    # Wall-clock deadline on the monotonic clock: the workflow checks
+    # ``ctx.time_low()`` and bails to a forced final write before the
+    # ``asyncio.wait_for`` wall below truncates the run (P7). ``task.timeout`` is
+    # the hard wall (1800s for analyst-solve); the workflow leaves itself
+    # ``DEFAULT_DEADLINE_MARGIN_SECONDS`` of head-room inside it.
+    deadline = time.monotonic() + task.timeout
     ctx = WorkflowContext(
         factory,
         tracer=tracer,
         budget_total=task.max_tokens,
         tree_probe=EnvWorkingTreeProbe(env),
+        deadline_monotonic=deadline,
     )
     ctx.env = env  # type: ignore[attr-defined] — harness seam for workflows
     args = {"task_id": task.task_id, "description": task.description}

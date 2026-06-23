@@ -85,6 +85,7 @@ class FakeFactory:
         isolation: bool = False,
         label: str | None = None,
         tool_choice: str | None = None,
+        thinking: bool | None = None,
     ) -> FakeSession:
         self.builds.append(
             {
@@ -94,6 +95,7 @@ class FakeFactory:
                 "isolation": isolation,
                 "label": label,
                 "tool_choice": tool_choice,
+                "thinking": thinking,
             }
         )
         session = self._sessions[self._idx]
@@ -565,3 +567,47 @@ async def test_agent_threads_tool_choice_to_factory():
     # Forced call: tool_choice="required" reaches the factory build.
     await ctx.agent("forced", tool_choice="required")
     assert factory.builds[-1]["tool_choice"] == "required"
+
+
+# --------------------------------------------------------------------------- #
+# free-text path: thinking override + per-call timeout clamp (P7 timing gap)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_agent_threads_thinking_to_factory_on_free_text_path():
+    factory = FakeFactory([FakeSession(reply="ok"), FakeSession(reply="ok")])
+    ctx = WorkflowContext(factory)
+    # Default: thinking left None so the factory's run-wide default applies.
+    await ctx.agent("normal")
+    assert factory.builds[-1]["thinking"] is None
+    # Forced write: thinking=False reaches the factory build (fast generation).
+    await ctx.agent("forced", thinking=False)
+    assert factory.builds[-1]["thinking"] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_timeout_bounds_run_loop_and_returns_none():
+    # A run_loop held open past the timeout is cancelled by asyncio.wait_for; the
+    # call returns None (one dead agent never kills the fleet) and logs the timeout.
+    gate = asyncio.Event()  # never set -> run_loop would block forever
+    session = FakeSession(reply="ok", gate=gate)
+    sink = RecordingSink()
+    ctx = WorkflowContext(FakeFactory([session]), event_sink=sink)
+
+    result = await ctx.agent("slow", timeout=0.01)
+
+    assert result is None
+    assert any("timed out" in e.message for e in sink.events)
+
+
+@pytest.mark.asyncio
+async def test_agent_infinite_timeout_does_not_bound_run_loop():
+    # An infinite timeout (the unbounded-deadline default from seconds_left) must
+    # not wrap the loop in wait_for — the call completes normally.
+    session = FakeSession(reply="ok")
+    ctx = WorkflowContext(FakeFactory([session]))
+
+    result = await ctx.agent("normal", timeout=float("inf"))
+
+    assert result == "ok"

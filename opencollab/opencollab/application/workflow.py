@@ -25,6 +25,7 @@ Pure application layer: domain + stdlib imports only.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -39,6 +40,13 @@ from opencollab.application.structured_output import StructuredOutputTool
 
 DEFAULT_MAX_CONCURRENCY = 4
 
+# Seconds of head-room kept before the run's hard wall (``deadline_monotonic``).
+# Once ``time.monotonic()`` is within this margin of the deadline, ``time_low()``
+# returns True so a wall-clock-aware workflow bails to a forced final write while
+# it can still land a patch — the decisive fix for runs that locate the edit but
+# die on the 1800s wall before any write (django-11564).
+DEFAULT_DEADLINE_MARGIN_SECONDS = 120.0
+
 # Appended to a schema= prompt: the agent must finish by emitting structured
 # output via the injected tool rather than free-text.
 _STRUCTURED_INSTRUCTION = (
@@ -46,12 +54,36 @@ _STRUCTURED_INSTRUCTION = (
     "with your final result. Do not answer in free text."
 )
 
-# Corrective message appended to the same session before the single retry when
-# the first run produced no valid structured payload.
+# Corrective message that seeds the forced-commit retry session when the first
+# run produced no valid structured payload. The retry session is restricted to
+# the single capture tool with a named-function ``tool_choice`` (force exactly
+# ``structured_output``) — graceful, not guaranteed: an endpoint may 400-reject
+# the forced choice and degrade to ``auto``, after which the model can still
+# answer in prose. This prompt leads with an explicit MUST-call / no-prose
+# imperative and tells it to commit its final result NOW from what it already
+# gathered rather than answer in free text.
 _STRUCTURED_RETRY = (
-    "You did not produce a valid structured_output result. Call the "
-    "`structured_output` tool now with arguments that conform to the schema."
+    "You MUST call the `structured_output` tool now. Do NOT answer in prose. "
+    "You did not commit a structured_output result. Do NOT explore further and "
+    "do NOT answer in free text. Call the `structured_output` tool now, exactly "
+    "once, with your final result based on what you have already gathered, "
+    "conforming to the required schema."
 )
+
+
+def _named_tool_choice(tool_name: str) -> dict[str, Any]:
+    """OpenAI-style named-function ``tool_choice`` forcing exactly ``tool_name``.
+
+    More precise than the bare ``"required"`` (force *some* tool) string: it
+    names the single tool the corrective turn must call. Stricter
+    OpenAI-compatible endpoints (observed: DashScope 400-rejects a bare
+    ``"required"`` for several repos and silently degrades to ``auto``) are more
+    likely to honour this explicit dict. It rides through the LLM stack
+    unchanged (the OpenAI SDK accepts a dict ``tool_choice``); if an endpoint
+    still rejects it, ``SessionRunUseCase._complete`` degrades it ONCE to
+    ``"auto"`` on a 400 exactly as it does for ``"required"`` today.
+    """
+    return {"type": "function", "function": {"name": tool_name}}
 
 # Per-agent token budget handed to a session when the workflow budget is
 # unbounded (``budget_total is None``). The session still needs a finite cap.
@@ -62,6 +94,25 @@ Thunk = Callable[[], Awaitable[Any]]
 
 # A pipeline stage receives (previous result, original item, item index).
 Stage = Callable[[Any, Any, int], Awaitable[Any]]
+
+
+def _schema_satisfied(captured: Any, schema: dict[str, Any]) -> bool:
+    """Minimal acceptance check for a captured structured payload.
+
+    The ``StructuredOutputTool`` already validated the payload against the full
+    schema before storing it, so this is light hardening, not a re-validation:
+    it rejects a missing capture and a dict that omits any of the schema's
+    required top-level keys (e.g. an empty ``{}`` that slipped through), which
+    are treated like a miss so the forced corrective turn runs.
+    """
+    if not isinstance(captured, dict):
+        return False
+    required = schema.get("required") if isinstance(schema, dict) else None
+    if not required:
+        # No required keys: the tool already validated the payload, so any
+        # captured dict (even ``{}``) is an accepted commit, not a miss.
+        return True
+    return all(key in captured for key in required)
 
 
 class WorkflowBudgetExceeded(Exception):
@@ -117,6 +168,8 @@ class WorkflowContext:
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
         budget_total: int | None = None,
         tree_probe: WorkingTreeProbe | None = None,
+        deadline_monotonic: float | None = None,
+        deadline_margin_seconds: float = DEFAULT_DEADLINE_MARGIN_SECONDS,
     ) -> None:
         self._factory = factory
         self._event_sink = event_sink
@@ -125,6 +178,10 @@ class WorkflowContext:
         self._sessions: list[Any] = []
         self.budget = WorkflowBudget(budget_total, self._sessions)
         self._tree_probe = tree_probe
+        # Absolute wall-clock deadline on the ``time.monotonic()`` clock (None =
+        # unbounded: no wall, e.g. CLI runs and tests). ``time_low()`` reads it.
+        self._deadline_monotonic = deadline_monotonic
+        self._deadline_margin_seconds = deadline_margin_seconds
 
     # -- working-tree verification ---------------------------------------- #
 
@@ -153,6 +210,30 @@ class WorkflowContext:
         """
         return tuple(self._sessions)
 
+    # -- wall clock -------------------------------------------------------- #
+
+    def seconds_left(self) -> float:
+        """Seconds remaining until the hard deadline; ``inf`` when unbounded.
+
+        Uses ``time.monotonic()`` (immune to wall-clock jumps). ``inf`` whenever
+        no deadline was wired (CLI / tests), so callers that gate on it behave
+        exactly as before.
+        """
+        if self._deadline_monotonic is None:
+            return float("inf")
+        return self._deadline_monotonic - time.monotonic()
+
+    def time_low(self) -> bool:
+        """True once within ``deadline_margin_seconds`` of the hard deadline.
+
+        A wall-clock-aware workflow checks this alongside its token-budget floor
+        and, when True, abandons further loops to spend its head-room on one
+        forced final write — the fix for runs that die on the wall after locating
+        the edit but before writing it (P7 / django-11564). Always False when no
+        deadline is wired, preserving today's behavior.
+        """
+        return self.seconds_left() <= self._deadline_margin_seconds
+
     # -- agent ------------------------------------------------------------- #
 
     async def agent(
@@ -164,6 +245,8 @@ class WorkflowContext:
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
         tool_choice: str | None = None,
+        thinking: bool | None = None,
+        timeout: float | None = None,
     ) -> str | dict | None:
         """Run one one-shot session and return its final assistant text.
 
@@ -176,8 +259,21 @@ class WorkflowContext:
 
         ``tool_choice`` (e.g. ``"required"``) forces the model to emit a tool
         call on the non-structured path — used by a forced-write step that MUST
-        land an edit. It is ignored on the structured path (which already pins
-        ``structured_output``).
+        land an edit. On the structured path it is unused: that path runs free
+        exploration on the first pass (``tool_choice`` left at the endpoint
+        default), then forces a ``structured_output`` commit on the corrective
+        turn by restricting the toolset to the capture tool and pinning a
+        named-function ``tool_choice`` (best-effort; an endpoint may reject it
+        and degrade to ``auto``).
+
+        ``thinking`` (free-text path only) overrides the run-wide reasoning
+        default for this one session: ``None`` keeps the factory default, ``False``
+        forces reasoning off so a deadline-sensitive step (the forced final write)
+        generates fast and cannot blow the deadline margin. ``timeout`` bounds the
+        whole session's run loop with ``asyncio.wait_for`` — pass
+        ``ctx.seconds_left()`` so a near-deadline forced write is cancelled in a
+        controlled way inside the workflow (its on-disk edits survive) rather than
+        being truncated by the outer wall.
         """
         if self.budget.remaining() <= 0:
             raise WorkflowBudgetExceeded(
@@ -191,7 +287,13 @@ class WorkflowContext:
                     prompt, schema=schema, label=label, tools=tools, isolation=isolation
                 )
             return await self._run_agent(
-                prompt, label=label, tools=tools, isolation=isolation, tool_choice=tool_choice
+                prompt,
+                label=label,
+                tools=tools,
+                isolation=isolation,
+                tool_choice=tool_choice,
+                thinking=thinking,
+                timeout=timeout,
             )
 
     async def _run_agent(
@@ -202,6 +304,8 @@ class WorkflowContext:
         tools: Sequence[Any] | None,
         isolation: bool,
         tool_choice: str | None = None,
+        thinking: bool | None = None,
+        timeout: float | None = None,
     ) -> str | None:
         session_budget = self._session_budget()
         try:
@@ -212,6 +316,7 @@ class WorkflowContext:
                 isolation=isolation,
                 label=label,
                 tool_choice=tool_choice,
+                thinking=thinking,
             )
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             await self.log(f"agent build failed ({label or 'agent'}): {exc}")
@@ -222,7 +327,18 @@ class WorkflowContext:
         self._sessions.append(session)
         try:
             await session.add_user_message(prompt)
+            # ``timeout`` (e.g. ``ctx.seconds_left()``) bounds the run loop so a
+            # near-deadline forced write is cancelled here, inside the workflow,
+            # rather than by the outer ``asyncio.wait_for`` wall. Any tool edits
+            # already written to disk before the cancel survive in the env, so the
+            # patch is still extractable. A non-positive timeout is treated as "no
+            # bound" — the caller is already past the deadline; let the call run.
+            if timeout is not None and timeout != float("inf") and timeout > 0:
+                return await asyncio.wait_for(session.run_loop(), timeout=timeout)
             return await session.run_loop()
+        except asyncio.TimeoutError:
+            await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
+            return None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             await self.log(f"agent failed ({label or 'agent'}): {exc}")
             return None
@@ -238,9 +354,24 @@ class WorkflowContext:
     ) -> dict | None:
         """Run a schema-bound session, returning the validated payload or None.
 
-        Injects a ``StructuredOutputTool`` into the toolset and instructs the
-        agent to finish by calling it. After the first ``run_loop`` a missing or
-        invalid capture triggers ONE corrective retry on the same session; a
+        First pass — free exploration: the full toolset
+        ``[capture_tool, *tools]`` is offered with ``tool_choice`` left at the
+        endpoint default so the agent can grep/read before committing, and it is
+        instructed to finish by calling ``structured_output``.
+
+        Corrective pass — forced commit: the trigger is a genuinely-empty
+        capture (``_schema_satisfied(captured)`` is False after the first pass),
+        NOT a free-text stop reason — so a markup-leaked tool call that the
+        parser already resolved into ``captured`` does NOT spuriously fire it.
+        When it fires, a second session restricted to ONLY the capture tool with
+        a named-function ``tool_choice`` (``_named_tool_choice``) is built,
+        seeded with the first pass's conversation (its exploration is copied
+        over) and an explicit 'you MUST call structured_output, do not answer in
+        prose' instruction, so it commits from what was actually gathered rather
+        than the bare prompt. This raises the odds of a commit but does NOT
+        guarantee one: some OpenAI-compatible endpoints (observed: DashScope)
+        400-reject a forced ``tool_choice`` and ``session_run`` degrades it once
+        to ``auto``, after which the model may still answer in prose — a
         still-missing capture yields ``None``.
 
         A successful capture sets a cancel event that the session's precheck
@@ -261,6 +392,7 @@ class WorkflowContext:
                 tools=combined_tools,
                 isolation=isolation,
                 label=label,
+                thinking=False,
             )
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             await self.log(f"structured agent build failed ({label or 'agent'}): {exc}")
@@ -271,15 +403,104 @@ class WorkflowContext:
         try:
             await session.add_user_message(seeded_prompt)
             await session.run_loop(capture_done)
-            if capture_tool.captured is not None:
+            if _schema_satisfied(capture_tool.captured, schema):
                 return capture_tool.captured
-            # Single corrective retry on the same session.
-            await session.add_user_message(_STRUCTURED_RETRY)
-            await session.run_loop(capture_done)
-            return capture_tool.captured
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             await self.log(f"structured agent failed ({label or 'agent'}): {exc}")
             return None
+
+        # Corrective pass (only when the capture is genuinely empty above): force
+        # the structured commit on a single-tool session pinned to a
+        # named-function ``tool_choice`` — graceful, NOT guaranteed (an endpoint
+        # may 400-reject it and degrade to ``auto``). Reusing the same
+        # capture_tool keeps ``captured`` and the cancel event live across both
+        # passes; the first session is handed in so its exploration history is
+        # carried into the corrective turn.
+        return await self._forced_structured_commit(
+            prompt,
+            session,
+            capture_tool,
+            capture_done,
+            schema=schema,
+            label=label,
+            isolation=isolation,
+        )
+
+    async def _forced_structured_commit(
+        self,
+        prompt: str,
+        prior_session: Any,
+        capture_tool: StructuredOutputTool,
+        capture_done: asyncio.Event,
+        *,
+        schema: dict[str, Any],
+        label: str | None,
+        isolation: bool,
+    ) -> dict | None:
+        """Build a single-tool, forced-``tool_choice`` corrective session.
+
+        The session is pinned to a named-function ``tool_choice`` (force exactly
+        ``structured_output``) and seeded with an explicit 'you MUST call the
+        tool, do not answer in prose' instruction. This strongly pushes — but,
+        on endpoints that 400-reject a forced choice and degrade to ``auto``,
+        does not guarantee — a structured commit.
+
+        The first pass's conversation (its grep/file_read tool results and the
+        understanding the model built) is copied from ``prior_session`` into the
+        corrective session before the retry message is added, so the forced
+        commit fills the schema from real exploration rather than from the bare
+        prompt — without this carry-over the ``_STRUCTURED_RETRY`` instruction to
+        commit "based on what you have already gathered" would address a blank
+        session that gathered nothing.
+        """
+        retry_prompt = prompt + "\n\n" + _STRUCTURED_RETRY
+        session_budget = self._session_budget()
+        try:
+            session = self._factory.build_workflow_session(
+                prompt=retry_prompt,
+                budget=session_budget,
+                tools=[capture_tool],
+                isolation=isolation,
+                label=label,
+                tool_choice=_named_tool_choice(capture_tool.name),
+                thinking=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
+            await self.log(f"structured retry build failed ({label or 'agent'}): {exc}")
+            return None
+
+        self._sessions.append(session)
+        try:
+            self._carry_exploration(prior_session, session)
+            await session.add_user_message(retry_prompt)
+            await session.run_loop(capture_done)
+        except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
+            await self.log(f"structured retry failed ({label or 'agent'}): {exc}")
+            return None
+        return capture_tool.captured if _schema_satisfied(capture_tool.captured, schema) else None
+
+    @staticmethod
+    def _carry_exploration(prior_session: Any, session: Any) -> None:
+        """Copy the first pass's conversation into the corrective session.
+
+        The corrective session is built fresh (seeded only with the system
+        prompt), so without this it would have none of the first pass's
+        exploration. We copy a *shallow list copy* of the prior messages — the
+        new list is independent (so the corrective turn's own appends don't
+        mutate the first session's history) while the message dicts are shared,
+        which is safe because neither side mutates a message in place.
+
+        Defensive: a session shape that lacks a settable ``messages`` (e.g. the
+        very first pass having failed before any message landed) must not abort
+        the corrective turn — the worst case is the pre-fix bare-prompt commit.
+        """
+        prior = getattr(prior_session, "messages", None)
+        if prior is None:
+            return
+        try:
+            session.messages = list(prior)
+        except Exception:  # noqa: BLE001 — carry-over is best-effort, never fatal
+            pass
 
     def _session_budget(self) -> int:
         remaining = self.budget.remaining()

@@ -43,7 +43,9 @@ class ScriptedCtx:
         self._tree = tree
 
     async def agent(self, prompt, *, schema=None, label=None, tools=None, **kw):
-        self.agent_calls.append({"prompt": prompt, "label": label, "schema": schema})
+        self.agent_calls.append(
+            {"prompt": prompt, "label": label, "schema": schema, **kw}
+        )
         return self._replies.pop(0) if self._replies else None
 
     async def parallel(self, thunks):
@@ -256,3 +258,145 @@ def test_final_verified_true_when_gate_clears():
 
     assert _f2p_gate()(result["final_verdict"], F2P) is None
     assert result["status"] == "done"
+
+
+# --------------------------------------------------------------------------- #
+# P7: wall-clock-aware forced write — fire near the deadline regardless of tokens
+# --------------------------------------------------------------------------- #
+
+
+class _TimeLowCtx(ScriptedCtx):
+    """ScriptedCtx whose budget is healthy but the hard deadline is near.
+
+    Reproduces django-11564: token budget plentiful (``remaining() == inf``) yet
+    ``time_low()`` is True, so the run must bail to a forced write BEFORE the wall
+    truncates it — the old token-only ``_budget_ok`` never fired here.
+
+    ``seconds_left`` returns the small remaining head-room (default 90s, inside the
+    120s deadline margin) so the forced-write step can clamp its per-call timeout
+    to it — the P7 timing-gap hardening.
+    """
+
+    def __init__(self, *args: Any, seconds_left: float = 90.0, **kw: Any) -> None:
+        super().__init__(*args, **kw)
+        self._seconds_left = seconds_left
+
+    def time_low(self) -> bool:
+        return True
+
+    def seconds_left(self) -> float:
+        return self._seconds_left
+
+
+def _forced_prompts(ctx) -> list[str]:
+    return [
+        c["prompt"]
+        for c in ctx.agent_calls
+        if (c["label"] or "").startswith("coder:forced-write")
+    ]
+
+
+def _forced_calls(ctx) -> list[dict[str, Any]]:
+    return [
+        c for c in ctx.agent_calls if (c["label"] or "").startswith("coder:forced-write")
+    ]
+
+
+def test_deadline_near_bails_to_forced_write_despite_healthy_budget():
+    # Recon + plan succeed; then the very first phase round sees time_low() True
+    # (budget still infinite) -> the phase returns status="budget_low" and the run
+    # fires the forced-write coder. No coder/tester round for the phase runs.
+    ctx = _TimeLowCtx(
+        replies=[
+            DIMS,
+            "scout",
+            PLAN,
+            "forced-write patch landed",  # the forced-write coder's reply
+        ],
+        tree=True,
+    )
+    result = asyncio.run(_run(ctx, {"description": "fix the widget", "fail_to_pass": F2P}))
+
+    # The phase bailed for the wall, not the token budget.
+    assert result["phases"][0]["status"] == "budget_low"
+    assert result["forced_final_write"] is True
+    # The honest log names the deadline (not the token budget) as the reason.
+    assert any("deadline near" in m for m in ctx.logs)
+    # A forced-write coder actually ran.
+    assert len(_forced_prompts(ctx)) == 1
+
+
+# --------------------------------------------------------------------------- #
+# P7 timing-gap: the forced final write is thinking-off AND wall-clamped.
+# --------------------------------------------------------------------------- #
+
+
+def test_forced_write_is_thinking_off_and_clamped_to_seconds_left():
+    # The forced write is the LAST action and must GUARANTEE a patch lands before
+    # the wall: it runs with thinking forced OFF (so its generation is fast even
+    # when the run-wide default is thinking-on, e.g. OPENCOLLAB_THINKING=1) and
+    # its per-call timeout is clamped to whatever wall-clock time is left, so a
+    # stalled call is cancelled inside the workflow (its on-disk edits survive)
+    # rather than truncated by the outer wall (which lost django-11564).
+    ctx = _TimeLowCtx(
+        replies=[DIMS, "scout", PLAN, "forced-write patch landed"],
+        tree=True,
+        seconds_left=90.0,
+    )
+    result = asyncio.run(_run(ctx, {"description": "fix the widget", "fail_to_pass": F2P}))
+
+    assert result["forced_final_write"] is True
+    forced = _forced_calls(ctx)
+    assert len(forced) == 1
+    call = forced[0]
+    # change #1 — reasoning forced off for the deadline-sensitive write.
+    assert call["thinking"] is False
+    # change #2 — per-call timeout clamped to the remaining wall-clock head-room.
+    assert call["timeout"] == 90.0
+    # still forces a tool call so the write is not skipped (unchanged behavior).
+    assert call["tool_choice"] == "required"
+
+
+class _NoDeadlineTimeLowCtx(_TimeLowCtx):
+    """time_low True (bails to forced write) but no real deadline wired, so
+    ``seconds_left`` is infinite — models CLI / unbounded runs."""
+
+    def __init__(self, *args: Any, **kw: Any) -> None:
+        super().__init__(*args, seconds_left=float("inf"), **kw)
+
+
+def test_forced_write_timeout_is_inf_when_no_deadline_wired():
+    # CLI / unbounded runs must not impose a timeout — _seconds_left reports inf,
+    # which _run_agent treats as "no bound", preserving today's behavior. thinking
+    # is still forced off (that protection is unconditional).
+    ctx = _NoDeadlineTimeLowCtx(
+        replies=[DIMS, "scout", PLAN, "forced-write landed"],
+        tree=True,
+    )
+    asyncio.run(_run(ctx, {"description": "fix the widget"}))
+
+    forced = _forced_calls(ctx)
+    assert len(forced) == 1
+    assert forced[0]["thinking"] is False
+    assert forced[0]["timeout"] == float("inf")
+
+
+def test_healthy_budget_without_time_low_runs_the_phase():
+    # Control: the plain ScriptedCtx has no time_low -> _budget_ok treats time as
+    # ok, so the phase runs its coder/tester round normally (no early bail).
+    ctx = ScriptedCtx(
+        replies=[
+            DIMS,
+            "scout",
+            PLAN,
+            "coded",
+            _pass(tests_run=F2P, failed_count=0),  # phase PASS stands
+            _pass(tests_run=F2P, failed_count=0),  # final verify
+        ],
+        tree=True,
+    )
+    result = asyncio.run(_run(ctx, {"description": "fix the widget", "fail_to_pass": F2P}))
+
+    assert result["phases"][0]["status"] == "passed"
+    assert result["forced_final_write"] is False
+    assert not any("deadline near" in m for m in ctx.logs)

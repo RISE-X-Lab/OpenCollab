@@ -83,6 +83,7 @@ class SessionRunUseCase:
         shaper: ShaperPort | None = None,
         team_budget_exhausted: Callable[[], bool] | None = None,
         is_context_overflow: Callable[[Exception], bool] | None = None,
+        per_call_timeout: float | None = None,
     ):
         self.agent = agent
         self.state = state
@@ -111,6 +112,12 @@ class SessionRunUseCase:
         # means "never an overflow", preserving the prior propagate-as-ERROR
         # behaviour for callers that don't wire it.
         self._is_context_overflow = is_context_overflow or (lambda _exc: False)
+        # Hard ceiling (seconds) on a SINGLE model generation. The provider's own
+        # httpx ``request_timeout`` does not bound a slow streaming/thinking
+        # generation cooperatively; this wraps the call in ``asyncio.wait_for`` so
+        # one ~595s generation cannot consume the whole run wall (P7). ``None``
+        # disables it, preserving prior behavior for callers that don't wire it.
+        self._per_call_timeout = per_call_timeout
         self._pending: PendingStep | None = None
         # Guards the once-per-session retry on an empty-stop turn (see
         # ``handle_pending_response``).
@@ -541,19 +548,36 @@ class SessionRunUseCase:
         if tool_choice is not None:
             extra["tool_choice"] = tool_choice
         if not getattr(self.agent, "thinking", False):
-            return await self.llm.complete(
+            return await self._invoke_llm(
                 messages=messages,
                 tools=tools,
                 temperature=self.agent.temperature,
                 **extra,
             )
-        return await self.llm.complete(
+        return await self._invoke_llm(
             messages=messages,
             tools=tools,
             temperature=self.agent.temperature,
             thinking=True,
             thinking_params=getattr(self.agent, "thinking_params", None),
             **extra,
+        )
+
+    async def _invoke_llm(self, **kwargs: Any) -> CompletionResponse:
+        """Call the provider, bounding a single generation by ``_per_call_timeout``.
+
+        Without a per-call ceiling one slow generation (a 595s thinking turn was
+        observed) can consume the entire run wall, so the outer
+        ``asyncio.wait_for`` on the whole workflow truncates everything before any
+        patch lands. ``asyncio.wait_for`` cancels the in-flight ``complete`` call
+        on expiry; the resulting ``TimeoutError`` propagates and is handled by the
+        workflow/agent wrapper as a dead step (the run continues with whatever is
+        already in the working tree). ``None`` disables the ceiling.
+        """
+        if self._per_call_timeout is None:
+            return await self.llm.complete(**kwargs)
+        return await asyncio.wait_for(
+            self.llm.complete(**kwargs), timeout=self._per_call_timeout
         )
 
     async def _stop_on_context_overflow(self) -> None:
