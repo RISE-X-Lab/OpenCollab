@@ -58,6 +58,15 @@ _EMPTY_STOP_NUDGE = (
 # Filtered out of ``run_loop``'s answer scan so it is never mistaken for output.
 _EMPTY_STOP_PLACEHOLDER = "[no output produced this turn]"
 
+# Closed-loop steering: a lean per-turn block (budget self-awareness + a
+# reads-without-write escalation) appended to the SHAPED copy only — never
+# persisted — so an open-loop run stops drifting (e.g. django-11564 read 107
+# times and wrote 0). Soft: advise a write; hard: demand it + force a tool call.
+_READ_TOOLS = frozenset({"file_read", "grep"})
+_WRITE_TOOLS = frozenset({"file_write", "apply_patch"})
+READS_NUDGE_SOFT = 8
+READS_NUDGE_HARD = 16
+
 
 class SessionRunUseCase:
     """Application use case for the session run loop.
@@ -372,6 +381,10 @@ class SessionRunUseCase:
         if immediate:
             proc = await self.tool_execution.process(immediate)
             proc.apply_hashes_to(self.state)  # hashes now; messages buffered
+            # The reads/edit steering counter must still fold in even though the
+            # result MESSAGES are buffered into the pending table (a mixed batch of
+            # immediate reads + a deferred spawn would otherwise lose its reads).
+            proc.apply_read_write_counter_to(self.state)
             for message in proc.messages_to_append:
                 tid = message["tool_call_id"]
                 table.add(
@@ -453,6 +466,57 @@ class SessionRunUseCase:
     def build_tool_schemas(self) -> list[dict] | None:
         return self.agent.tool_schemas() or None
 
+    def _build_steering_block(
+        self, messages: list[dict]
+    ) -> tuple[dict | None, str | None]:
+        """Build the per-turn closed-loop steering message + any tool_choice force.
+
+        Returns ``(message_or_None, tool_choice_override_or_None)``. The message
+        is a lean ``role:"user"`` block carrying budget self-awareness plus, when
+        the session can edit and has read without writing, a write nudge (soft) or
+        a hard demand (with ``tool_choice="required"``). Returns ``(None, None)``
+        when the shaped history already ends with a ``user`` message — appending
+        another would send two consecutive user turns (Anthropic rejects that),
+        and that case (turn 1 / post empty-stop) needs no steering anyway.
+
+        Caller appends the message to the SHAPED COPY only; it is never persisted
+        to ``state.messages`` (rebuilt fresh each turn, kept out of the transcript
+        and the eager-clear index, and placed last so it cannot bust a cached
+        prefix).
+        """
+        if messages and messages[-1].get("role") == "user":
+            return None, None
+
+        total = self.max_budget_tokens or 0
+        spent_k = self.state.used_tokens // 1000
+        total_k = total // 1000
+        steps_left = max(0, self.max_steps - self.state.step_count)
+        status = (
+            f"[Status: {spent_k}k/{total_k}k tokens used, ~{steps_left} steps left. "
+            "Spend them landing and verifying a fix, not exploring.]"
+        )
+
+        reads = self.state.reads_since_last_edit
+        has_write = any(
+            getattr(t, "name", None) in _WRITE_TOOLS
+            for t in getattr(self.agent, "tools", []) or []
+        )
+        override: str | None = None
+        extra = ""
+        if has_write and reads >= READS_NUDGE_HARD:
+            extra = (
+                f" You have read {reads} times without making an edit. STOP reading"
+                " — your next action MUST be a file_write or apply_patch edit."
+            )
+            override = "required"
+        elif has_write and reads >= READS_NUDGE_SOFT:
+            extra = (
+                f" You have read {reads} files/searches without making an edit. If"
+                " you can describe the fix, make it now with file_write or"
+                " apply_patch before reading more."
+            )
+        return {"role": "user", "content": status + extra}, override
+
     async def call_llm(self, tools: list[dict] | None) -> CompletionResponse:
         """Complete against the shaped view of history.
 
@@ -473,8 +537,13 @@ class SessionRunUseCase:
             if self.shaper is not None
             else self.state.messages
         )
+        # Closed-loop steering: append a fresh per-turn block to the SHAPED COPY
+        # only (a new list — never mutate state.messages even when shaper is None).
+        steering, tool_choice_override = self._build_steering_block(messages)
+        if steering is not None:
+            messages = [*messages, steering]
         try:
-            return await self._complete(messages, tools)
+            return await self._complete(messages, tools, tool_choice_override)
         except Exception as exc:
             if not self._is_context_overflow(exc):
                 raise
@@ -485,6 +554,8 @@ class SessionRunUseCase:
             if self.shaper is not None
             else self.state.messages
         )
+        # No steering on the emergency-shrink retry: this path is fighting for
+        # token space, so it stays byte-identical to the pre-steering behaviour.
         logger.warning(
             "context overflow on aid=%s: recompacting (%d -> %d messages) and retrying once",
             self.state.aid,
@@ -500,7 +571,10 @@ class SessionRunUseCase:
             raise
 
     async def _complete(
-        self, messages: list[dict], tools: list[dict] | None
+        self,
+        messages: list[dict],
+        tools: list[dict] | None,
+        tool_choice_override: str | None = None,
     ) -> CompletionResponse:
         # ``tool_choice`` is read defensively (getattr) so duck-typed agent stubs
         # without the field keep working; ``None`` (the default) keeps the
@@ -509,7 +583,9 @@ class SessionRunUseCase:
         # provider rejects it (some OpenAI-compatible endpoints don't support
         # it), fall back ONCE to "auto" — the explicit forced prompt and the
         # diff-gate still push the model to write.
-        tool_choice = getattr(self.agent, "tool_choice", None)
+        # ``tool_choice_override`` (the steering hard-rung) wins when set, so a
+        # read-without-write escalation can force a tool call this turn.
+        tool_choice = tool_choice_override or getattr(self.agent, "tool_choice", None)
         try:
             return await self._complete_with_choice(messages, tools, tool_choice)
         except Exception as exc:

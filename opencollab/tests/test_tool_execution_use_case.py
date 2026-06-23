@@ -230,6 +230,43 @@ def test_tool_execution_use_case_allows_a_few_legitimate_rereads():
     assert tool.runtime_calls  # the third read executed normally
 
 
+def test_reads_without_write_counter_accumulates_and_resets():
+    # Closed-loop steering signal: successful reads accumulate
+    # reads_since_last_edit; a successful write zeroes it.
+    state = SessionState(messages=[])
+    read_tool = RuntimeNativeTool()
+    read_tool.name = "file_read"
+    write_tool = RuntimeNativeTool(output="Created/wrote a.py (10 chars)")
+    write_tool.name = "file_write"
+    agent = FakeAgent(tools=[read_tool, write_tool])
+    use_case, _ = build_use_case(state=state, agent=agent)
+
+    def call(name, cid, args):
+        return {"id": cid, "function": {"name": name, "arguments": args}}
+
+    run(use_case.process([call("file_read", "c1", '{"path": "a.py"}')])).apply_to(state)
+    run(use_case.process([call("file_read", "c2", '{"path": "b.py"}')])).apply_to(state)
+    assert state.reads_since_last_edit == 2
+
+    run(use_case.process([call("file_write", "c3", '{"path": "a.py"}')])).apply_to(state)
+    assert state.reads_since_last_edit == 0  # a landed edit resets the counter
+
+
+def test_reads_counter_ignores_failed_writes():
+    # A write whose result is an error must NOT reset the counter.
+    state = SessionState(messages=[], reads_since_last_edit=3)
+    bad_write = RuntimeNativeTool(output="Error: old_str not found in a.py.")
+    bad_write.name = "file_write"
+    agent = FakeAgent(tools=[bad_write])
+    use_case, _ = build_use_case(state=state, agent=agent)
+
+    result = run(use_case.process([
+        {"id": "c1", "function": {"name": "file_write", "arguments": '{"path": "a.py"}'}}
+    ]))
+    result.apply_to(state)
+    assert state.reads_since_last_edit == 3  # failed write does not count as an edit
+
+
 def test_tool_execution_use_case_executes_runtime_native_tool_and_events():
     tool = RuntimeNativeTool()
     agent = FakeAgent(tools=[tool])

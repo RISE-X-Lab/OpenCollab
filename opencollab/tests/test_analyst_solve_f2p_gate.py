@@ -331,6 +331,22 @@ def test_deadline_near_bails_to_forced_write_despite_healthy_budget():
 # --------------------------------------------------------------------------- #
 
 
+def test_rung_c_forces_a_commit_when_coder_lands_no_edit():
+    # django-11564 step-235 mode: the coder analyzes but writes nothing, so the
+    # working tree stays clean. The round must re-issue a commit-now forced write
+    # (tool_choice="required") BEFORE running the tester, rather than burning a
+    # tester round verifying nothing.
+    ctx = ScriptedCtx(
+        replies=[DIMS, "scout", PLAN, "analyzed but wrote nothing", "forced commit done"],
+        tree=False,  # no edit ever lands -> Rung C fires each round
+    )
+    asyncio.run(_run(ctx, {"description": "fix the widget"}))
+
+    commit_calls = [c for c in ctx.agent_calls if (c["label"] or "").endswith("-commit")]
+    assert commit_calls, "Rung C should re-issue a commit-now forced write"
+    assert commit_calls[0]["tool_choice"] == "required"
+
+
 def test_forced_write_is_thinking_off_and_clamped_to_seconds_left():
     # The forced write is the LAST action and must GUARANTEE a patch lands before
     # the wall: it runs with thinking forced OFF (so its generation is fast even

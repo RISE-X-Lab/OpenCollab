@@ -35,11 +35,29 @@ class ToolProcessingResult:
     messages_to_append: list[dict[str, Any]] = field(default_factory=list)
     recent_hash_updates: list[str] = field(default_factory=list)
     loop_detections: list[LoopDetection] = field(default_factory=list)
+    # Closed-loop steering counters for this batch: how many read-only tool calls
+    # executed, and whether a write landed. A successful write RESETS
+    # ``reads_since_last_edit``; otherwise the reads accumulate onto it.
+    reads_executed: int = 0
+    write_succeeded: bool = False
 
     def apply_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         for message in self.messages_to_append:
             state.append_message(message)
         self.apply_hashes_to(state, max_window=max_window)
+        self.apply_read_write_counter_to(state)
+
+    def apply_read_write_counter_to(self, state: SessionState) -> None:
+        """Fold this batch's read/write activity into ``reads_since_last_edit``.
+
+        A landed edit zeroes the counter (the model committed); a batch with no
+        edit adds its read calls so the steering layer can escalate when the
+        model keeps reading without writing.
+        """
+        if self.write_succeeded:
+            state.reads_since_last_edit = 0
+        else:
+            state.reads_since_last_edit += self.reads_executed
 
     def apply_hashes_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         """Apply only the loop-detection hashes, not the result messages.

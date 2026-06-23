@@ -131,6 +131,11 @@ class SessionState:
     # session-lifetime tally and is NOT reset by ``reset_for_user_turn``.
     markup_recovered: int = 0
     recent_call_hashes: list[str] = field(default_factory=list)
+    # Closed-loop steering signal: how many read-only tool calls (file_read/grep)
+    # have run since the last successful edit. Drives the reads-without-write
+    # nudge/escalation in the steering block. Per-turn like ``recent_call_hashes``
+    # (reset by ``reset_for_user_turn``); reset to 0 on a successful write.
+    reads_since_last_edit: int = 0
     phase: SessionPhase = SessionPhase.IDLE
     # Human-readable detail for the current terminal phase (e.g. the exception
     # for ERROR, the token/step counts for the resource caps). ``None`` while
@@ -291,6 +296,7 @@ class SessionState:
         """
         self.resume_to_idle()
         self.clear_recent_tool_hashes()
+        self.reads_since_last_edit = 0
 
     def remember_tool_call_hash(self, call_hash: str, max_window: int | None = None) -> None:
         self.recent_call_hashes.append(call_hash)

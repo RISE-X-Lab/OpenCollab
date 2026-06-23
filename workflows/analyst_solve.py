@@ -313,6 +313,28 @@ Approach:
 Work already attempted (for context):
 {progress}"""
 
+COMMIT_PROMPT = """\
+You are a Coder. You have analyzed this phase but the working tree is still \
+unchanged — no edit has landed. STOP investigating and implement the fix NOW: \
+based on the confirmed root cause and approach, make the single most likely \
+correct edit with file_write or apply_patch this turn. A concrete attempt is far \
+better than more analysis; you can refine it after the tester runs. Then report \
+in <=5 lines.
+
+{rules}
+
+Goal:
+{goal}
+
+Confirmed root cause:
+{root_cause}
+
+Approach:
+{approach}
+
+Progress so far:
+{progress}"""
+
 # Whole-goal definition of done for the final verification pass.
 FINAL_DONE = (
     "The issue described in the goal is resolved at its root cause; the named "
@@ -486,6 +508,32 @@ async def _run_phase(
             label=f"coder:p{idx}r{round_no}",
             tools=_coder_tools(),
         )
+        # Rung C — early commit (django-11564 step-235 failure mode): a coder that
+        # ends having landed NO edit at all this phase (tree still clean) analyzed
+        # without committing. Don't spend a tester round verifying nothing —
+        # re-issue ONCE with the commit-now forced prompt and a forced tool call,
+        # then verify that. Budget-gated (the round top already checked) and
+        # bounded to once per round; complements the session-level read-without-
+        # write escalation (which can't fire once a coder turn has already
+        # stop-ped) and the budget-floor forced write (still the last resort).
+        if (await ctx.tree_changed()) is False:
+            await ctx.log(
+                f"phase {idx} round {round_no}: coder landed no edit — forcing a commit before testing"
+            )
+            forced_summary = await ctx.agent(
+                COMMIT_PROMPT.format(
+                    rules=SHARED_RULES,
+                    goal=goal,
+                    root_cause=root_cause,
+                    approach=approach,
+                    progress=f"Round {round_no} coder analyzed but wrote nothing; commit the fix now.",
+                ),
+                label=f"coder:p{idx}r{round_no}-commit",
+                tools=_coder_tools(),
+                tool_choice="required",
+            )
+            if forced_summary is not None:
+                summary = forced_summary
         # Disambiguate a dead coder (None) from an empty-output coder (""): the
         # `or` idiom collapsed both, hiding which failure occurred. Pass distinct
         # context to the tester each way.
