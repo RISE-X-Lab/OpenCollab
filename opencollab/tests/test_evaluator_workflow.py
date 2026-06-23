@@ -16,6 +16,7 @@ Three concerns:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 from opencollab.adapters.env import Environment, ExecResult
@@ -144,6 +145,115 @@ def test_workflow_mode_aggregates_tokens_across_sessions(tmp_path):
 
     assert result.tokens_used == 14
     assert result.steps == 2
+
+
+# --------------------------------------------------------------------------- #
+# workflow mode: abnormal endings must NOT zero metrics or drop the patch
+# --------------------------------------------------------------------------- #
+
+
+@contextlib.contextmanager
+def _token_bearing_factory(env: Any, tokens: int = 7):
+    """Patch the eval session factory so workflow agents report fixed tokens/steps.
+
+    Mirrors the inline patch in ``test_workflow_mode_aggregates_tokens_across_sessions``
+    so abnormal-exit tests can assert metrics survived (each agent -> 1 session,
+    ``tokens`` tokens, 1 step).
+    """
+    import opencollab.harness.evaluator as evaluator_mod
+
+    original = evaluator_mod._build_eval_session_factory
+
+    def patched_factory(*args, **kwargs):
+        factory = original(*args, **kwargs)
+
+        def build(
+            *, prompt, budget, tools=None, isolation=False, label=None,
+            tool_choice=None, thinking=None,
+        ):
+            return FakeSession(env=env, tokens=tokens)
+
+        factory.build_workflow_session = build  # type: ignore[attr-defined]
+        return factory
+
+    evaluator_mod._build_eval_session_factory = patched_factory
+    try:
+        yield
+    finally:
+        evaluator_mod._build_eval_session_factory = original
+
+
+def test_workflow_budget_exceeded_preserves_metrics_and_patch(tmp_path):
+    """A budget-floor stop still reports real metrics AND submits the on-disk patch.
+
+    Regression: when the workflow raised ``WorkflowBudgetExceeded`` the caller's
+    ``workflow_ctx`` stayed None, zeroing tokens/steps; and ``patch_produced`` was
+    gated on ``error is None``. Now ``_run_workflow_mode`` returns the ctx (whose
+    sessions hold the metrics) and the on-disk diff is a real patch regardless of
+    how the run ended. Budget-floor exhaustion is BY DESIGN -> no error.
+    """
+    from opencollab.application.workflow import WorkflowBudgetExceeded
+
+    env = FakeEnv()
+
+    async def env_factory(task):
+        return env
+
+    async def wf(ctx, args):
+        await ctx.agent("did some work")  # one session: 7 tokens, 1 step
+        raise WorkflowBudgetExceeded("workflow budget exhausted: spent 9 of 5")
+
+    with _token_bearing_factory(env):
+        result = run(
+            run_eval_task(
+                EvalTask(task_id="b1", description="x"),
+                output_dir=str(tmp_path),
+                tools_factory=list,
+                env_factory=env_factory,
+                workflow=wf,
+            )
+        )
+
+    assert result.tokens_used == 7  # not zeroed
+    assert result.steps == 1  # not zeroed
+    assert result.patch == env.diff
+    assert result.patch_produced is True
+    assert result.error is None  # budget floor is controlled, not a failure
+
+
+def test_workflow_abnormal_exit_records_error_but_keeps_metrics(tmp_path):
+    """An outer-wall timeout / crash keeps the partial patch + metrics, records cause.
+
+    The lost django-11564 run was an outer-wall ``asyncio.TimeoutError``. Such an
+    ending must still surface real metrics and the on-disk patch, with the cause
+    recorded in ``error`` for observability (``patch_produced`` stays honest off
+    the real diff, no longer gated on ``error is None``).
+    """
+    env = FakeEnv()
+
+    async def env_factory(task):
+        return env
+
+    async def wf(ctx, args):
+        await ctx.agent("did some work")  # one session: 7 tokens, 1 step
+        raise asyncio.TimeoutError()
+
+    with _token_bearing_factory(env):
+        result = run(
+            run_eval_task(
+                EvalTask(task_id="b2", description="x", timeout=123),
+                output_dir=str(tmp_path),
+                tools_factory=list,
+                env_factory=env_factory,
+                workflow=wf,
+            )
+        )
+
+    assert result.tokens_used == 7  # not zeroed
+    assert result.steps == 1  # not zeroed
+    assert result.patch == env.diff
+    assert result.patch_produced is True  # real patch regardless of the error
+    assert result.error is not None and "timed out" in result.error.lower()
 
 
 # --------------------------------------------------------------------------- #

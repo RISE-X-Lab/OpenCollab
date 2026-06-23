@@ -381,6 +381,7 @@ def test_openai_markup_single_tool_call_is_synthesized():
     assert tc["function"]["name"] == "grep"
     assert json.loads(tc["function"]["arguments"]) == {"pattern": "foo"}
     assert result.content is None
+    assert result.usage.markup_recovered == 1  # P6 recovery counter fires
 
 
 def test_openai_markup_two_tool_calls_are_synthesized():
@@ -427,6 +428,7 @@ def test_openai_malformed_markup_falls_back_gracefully():
 
     assert result.tool_calls == []
     assert result.content == content  # unchanged fallback
+    assert result.usage.markup_recovered == 0  # nothing recovered -> counter stays 0
 
 
 def test_openai_real_tool_calls_skip_markup_parsing():
@@ -439,6 +441,7 @@ def test_openai_real_tool_calls_skip_markup_parsing():
     assert len(result.tool_calls) == 1
     assert result.tool_calls[0]["function"]["name"] == "run"
     assert result.content == "irrelevant"
+    assert result.usage.markup_recovered == 0  # structured calls -> no recovery
 
 
 def test_openai_markup_in_reasoning_content_is_synthesized():
@@ -456,6 +459,7 @@ def test_openai_markup_in_reasoning_content_is_synthesized():
     # the markup must NOT leak into content via the reasoning rescue
     assert result.content is None
     assert result.reasoning is None  # whole reasoning was markup -> stripped
+    assert result.usage.markup_recovered == 1  # recovered from reasoning_content
 
 
 def test_openai_markup_buried_in_reasoning_preserves_thinking():

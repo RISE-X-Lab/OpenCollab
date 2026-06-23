@@ -126,6 +126,10 @@ class Session:
         self.state.set_step_count(value)
 
     @property
+    def markup_recovered(self) -> int:
+        return self.state.markup_recovered
+
+    @property
     def is_done(self) -> bool:
         return self.state.is_done
 

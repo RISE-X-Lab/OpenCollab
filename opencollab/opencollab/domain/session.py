@@ -126,6 +126,10 @@ class SessionState:
     # ``reset_for_user_turn`` (see that method), so ``max_steps`` is a
     # lifetime cap mirroring the ``used_tokens`` budget.
     step_count: int = 0
+    # Lifetime count of LLM calls whose kimi tool-call markup was recovered from
+    # literal text (P6). Observability only; like ``used_tokens`` it is a
+    # session-lifetime tally and is NOT reset by ``reset_for_user_turn``.
+    markup_recovered: int = 0
     recent_call_hashes: list[str] = field(default_factory=list)
     phase: SessionPhase = SessionPhase.IDLE
     # Human-readable detail for the current terminal phase (e.g. the exception
@@ -207,6 +211,9 @@ class SessionState:
 
     def add_used_tokens(self, tokens: int) -> None:
         self.used_tokens += tokens
+
+    def add_markup_recovered(self, count: int) -> None:
+        self.markup_recovered += count
 
     def set_used_tokens(self, tokens: int) -> None:
         self.used_tokens = tokens

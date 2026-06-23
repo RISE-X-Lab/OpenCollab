@@ -139,18 +139,24 @@ def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
     # thinking mode, inside ``reasoning_content`` (finish_reason='stop', empty
     # ``message.tool_calls``). Recover them so the tool actually runs instead of
     # being treated as a prose stop.
+    markup_recovered = False
     if not tool_calls:
         markup_calls, cleaned = _extract_markup_tool_calls(content)
         if markup_calls:
             tool_calls = markup_calls
             content = cleaned
+            markup_recovered = True
         elif reasoning:
             markup_calls, cleaned_reasoning = _extract_markup_tool_calls(reasoning)
             if markup_calls:
                 tool_calls = markup_calls
                 reasoning = cleaned_reasoning
+                markup_recovered = True
 
     usage = _parse_usage(resp, request_messages, message)
+    # Surface the P6 recovery as an observability counter (summed up the chain
+    # into the run metrics) without altering the recovered response itself.
+    usage.markup_recovered = 1 if markup_recovered else 0
     # Thinking providers (e.g. kimi-k2.6 with ``enable_thinking``) put the
     # chain-of-thought in ``reasoning_content`` and the answer in ``content``.
     # Keep the reasoning for trajectory observability. Belt-and-suspenders: if a

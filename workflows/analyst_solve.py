@@ -561,8 +561,16 @@ async def _run_phase(
             blocker = verdict.get("findings", "") or "environmental blocker (unspecified)"
             await ctx.log(f"phase {idx} round {round_no} BLOCKED: {blocker[:200]}")
             return {"goal": phase_goal, "status": "blocked", "rounds": rounds, "blocker": blocker}
-        if not isinstance(verdict, dict):
-            await ctx.log(f"phase {idx} round {round_no} tester died — substituting generic findings")
+        if verdict is None:
+            await ctx.log(
+                f"phase {idx} round {round_no} tester subagent DIED "
+                "(no verdict — agent error/timeout/budget) — substituting generic findings"
+            )
+        elif not isinstance(verdict, dict):
+            await ctx.log(
+                f"phase {idx} round {round_no} tester returned an UNEXPECTED type "
+                f"({type(verdict).__name__}) — substituting generic findings"
+            )
         # Never re-issue an identical task: the next round carries the findings.
         findings = (
             verdict.get("findings", "") if isinstance(verdict, dict) else ""
@@ -592,7 +600,10 @@ async def _forced_final_write(
     the endpoint rejects "required".
 
     This is the last action of the run and its whole job is to GUARANTEE a patch
-    lands before the hard wall, so it is hardened two ways (P7 timing gap):
+    lands before the hard wall, so it is hardened three ways:
+    ``over_budget_ok=True`` skips ``WorkflowContext.agent``'s pre-call budget raise
+    so the write still runs after the meter hits zero — without it the forced write
+    self-aborted on an exhausted budget and no coder round ran at all (sympy-11400);
     ``thinking=False`` forces reasoning off so the generation is fast and cannot
     blow the deadline margin even when the run-wide default is thinking-on
     (analyst-solve eval runs with OPENCOLLAB_THINKING=1); and ``timeout`` clamps
@@ -601,7 +612,7 @@ async def _forced_final_write(
     by the outer wall (which lost django-11564).
     """
     await ctx.log(f"forced write: {reason} — landing a best-effort patch")
-    return await ctx.agent(
+    result = await ctx.agent(
         FORCED_PROMPT.format(
             rules=SHARED_RULES,
             goal=goal,
@@ -614,7 +625,23 @@ async def _forced_final_write(
         tool_choice="required",
         thinking=False,
         timeout=_seconds_left(ctx),
+        over_budget_ok=True,
     )
+    # Post-attempt outcome so the trajectory distinguishes a patch that LANDED from
+    # one that ABORTED (coder died / timed out / budget). Prefer the tree probe —
+    # ground truth that an edit reached disk — and fall back to the coder's return
+    # value when no probe is wired (CLI / older stubs report None).
+    probe = getattr(ctx, "tree_changed", None)
+    changed = await probe() if callable(probe) else None
+    if changed is True:
+        await ctx.log(f"forced write: {reason} — LANDED a patch (working tree changed)")
+    elif changed is False:
+        await ctx.log(f"forced write: {reason} — ABORTED: no edit reached disk")
+    elif result is not None:
+        await ctx.log(f"forced write: {reason} — coder returned (tree change unverified)")
+    else:
+        await ctx.log(f"forced write: {reason} — ABORTED: coder died before writing")
+    return result
 
 
 @workflow(
