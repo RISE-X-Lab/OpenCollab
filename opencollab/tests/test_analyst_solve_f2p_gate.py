@@ -33,14 +33,27 @@ class _FakeBudget:
 
 
 class ScriptedCtx:
-    """WorkflowContext stand-in scripting agent() replies; tree_changed is fixed."""
+    """WorkflowContext stand-in scripting agent() replies; tree/source are fixed.
 
-    def __init__(self, replies: list[Any], *, tree: bool | None = True) -> None:
+    ``tree`` is the whole-tree answer (``tree_changed`` / empty-exclude
+    ``source_changed``); ``source`` is the source-scoped answer returned by
+    ``source_changed`` when an exclude list is passed (the harness path). When
+    ``source`` is left unset it mirrors ``tree`` so old tests are unchanged.
+    """
+
+    def __init__(
+        self,
+        replies: list[Any],
+        *,
+        tree: bool | None = True,
+        source: bool | None = None,
+    ) -> None:
         self._replies = list(replies)
         self.agent_calls: list[dict[str, Any]] = []
         self.logs: list[str] = []
         self.budget = _FakeBudget()
         self._tree = tree
+        self._source = source if source is not None else tree
 
     async def agent(self, prompt, *, schema=None, label=None, tools=None, **kw):
         self.agent_calls.append(
@@ -59,6 +72,11 @@ class ScriptedCtx:
 
     async def tree_changed(self):
         return self._tree
+
+    async def source_changed(self, exclude_paths=()) -> bool | None:
+        # With an exclude list (the SWE-bench harness path) report the
+        # source-scoped answer; with none, behave exactly like tree_changed.
+        return self._source if exclude_paths else self._tree
 
 
 DIMS = {"dimensions": [{"aspect": "bug", "question": "where?", "hints": []}]}
@@ -395,6 +413,89 @@ def test_forced_write_timeout_is_inf_when_no_deadline_wired():
     assert len(forced) == 1
     assert forced[0]["thinking"] is False
     assert forced[0]["timeout"] == float("inf")
+
+
+# --------------------------------------------------------------------------- #
+# Bug A — the working-tree gates are SOURCE-scoped (exclude injected tests)
+# --------------------------------------------------------------------------- #
+
+
+def test_rung_c_fires_when_source_clean_despite_dirty_injected_tree():
+    # The SWE-bench harness git-applied the FAIL_TO_PASS test (tree dirty the whole
+    # run) but the coder landed no SOURCE edit. tree=True would make the OLD
+    # tree_changed gate see "dirty" and skip Rung C; the source-scoped gate sees
+    # source=False and re-issues the commit-now forced write (tool_choice required).
+    ctx = ScriptedCtx(
+        replies=[DIMS, "scout", PLAN, "analyzed but wrote nothing", "forced commit done"],
+        tree=True,      # whole tree dirty: injected test is applied
+        source=False,   # but the coder wrote no source -> Rung C must fire
+    )
+    asyncio.run(
+        _run(
+            ctx,
+            {
+                "description": "fix the widget",
+                "injected_test_paths": ["tests/test_widget.py"],
+            },
+        )
+    )
+
+    commit_calls = [c for c in ctx.agent_calls if (c["label"] or "").endswith("-commit")]
+    assert commit_calls, "Rung C should fire on a source-clean tree even when injected tests dirty it"
+    assert commit_calls[0]["tool_choice"] == "required"
+
+
+def test_p0_2_forced_write_fires_on_source_clean_injected_tree():
+    # The SOURCE stays clean (no agent edit) while the tree is dirty the whole run
+    # from the injected test. Every round's source-scoped gates (Rung C + diff
+    # guard) see source=False, so the phase ends "empty_tree" and a forced final
+    # write fires. The OLD whole-tree gate would have seen "dirty" (tree=True),
+    # skipped all of this, and reported "done" with no real edit (the Bug A bug).
+    # ``"x"`` replies are coder/forced-commit strings; PASS dicts are tester
+    # verdicts (overridden by the diff guard each round). Enough replies to reach
+    # the empty_tree forced write.
+    ctx = ScriptedCtx(
+        replies=[
+            DIMS,
+            "scout",
+            PLAN,
+            *(["x", "x", _pass(tests_run=F2P, failed_count=0)] * 4),  # 4 rounds
+            "forced-write patch landed",  # the empty_tree forced-write coder
+        ],
+        tree=True,
+        source=False,
+    )
+    result = asyncio.run(
+        _run(
+            ctx,
+            {
+                "description": "fix the widget",
+                "fail_to_pass": F2P,
+                "injected_test_paths": ["tests/test_widget.py::test_empty"],
+            },
+        )
+    )
+
+    assert result["forced_final_write"] is True
+    assert result["phases"][0]["status"] == "empty_tree"
+    forced = _forced_calls(ctx)
+    assert len(forced) == 1
+
+
+def test_cli_no_injected_paths_unchanged():
+    # Regression guard: with no injected_test_paths, source_changed(()) behaves as
+    # tree_changed byte-for-byte. tree=False, source=anything -> the empty-exclude
+    # path returns tree, so Rung C fires exactly as today on a clean tree.
+    ctx = ScriptedCtx(
+        replies=[DIMS, "scout", PLAN, "analyzed but wrote nothing", "forced commit done"],
+        tree=False,    # clean tree, no injection
+        source=True,   # must be IGNORED on the empty-exclude (CLI) path
+    )
+    asyncio.run(_run(ctx, {"description": "fix the widget"}))  # no injected_test_paths
+
+    commit_calls = [c for c in ctx.agent_calls if (c["label"] or "").endswith("-commit")]
+    assert commit_calls, "with no injected paths the gate must behave as tree_changed (Rung C fires on clean tree)"
+    assert commit_calls[0]["tool_choice"] == "required"
 
 
 def test_healthy_budget_without_time_low_runs_the_phase():

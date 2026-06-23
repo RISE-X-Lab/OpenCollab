@@ -48,6 +48,9 @@ class ScriptedCtx:
     async def tree_changed(self):
         return True  # something was edited -> no forced write
 
+    async def source_changed(self, exclude_paths=()):
+        return True  # source edited -> no forced write
+
 
 DIMS = {"dimensions": [{"aspect": "bug", "question": "where?", "hints": []}]}
 PLAN = {

@@ -329,7 +329,7 @@ def test_steering_status_line_built_from_budget_and_steps():
         messages=[{"role": "tool", "content": "r"}], used_tokens=120_000, step_count=10
     )
     runner = build_runner(state=state, max_budget_tokens=500_000, max_steps=40)
-    msg, override = runner._build_steering_block(state.messages)
+    msg, override, _level = runner._build_steering_block(state.messages)
     assert override is None
     assert msg["role"] == "user"
     assert "120k/500k tokens used" in msg["content"]
@@ -341,7 +341,7 @@ def test_steering_skipped_when_history_ends_with_user():
     # (Anthropic rejects that); turn 1 / post-empty-stop needs no steering anyway.
     state = SessionState(messages=[{"role": "user", "content": "task"}])
     runner = build_runner(state=state)
-    msg, override = runner._build_steering_block(state.messages)
+    msg, override, _level = runner._build_steering_block(state.messages)
     assert msg is None and override is None
 
 
@@ -350,7 +350,7 @@ def test_steering_soft_nudge_when_reads_without_write():
         messages=[{"role": "tool", "content": "r"}], reads_since_last_edit=READS_NUDGE_SOFT
     )
     runner = build_runner(state=state, agent=_agent_with_tools("file_read", "file_write"))
-    msg, override = runner._build_steering_block(state.messages)
+    msg, override, _level = runner._build_steering_block(state.messages)
     assert override is None  # soft rung does not force a tool call
     assert "without making an edit" in msg["content"]
     assert "file_write or apply_patch" in msg["content"]
@@ -361,7 +361,7 @@ def test_steering_hard_rung_forces_a_tool_call():
         messages=[{"role": "tool", "content": "r"}], reads_since_last_edit=READS_NUDGE_HARD
     )
     runner = build_runner(state=state, agent=_agent_with_tools("apply_patch"))
-    msg, override = runner._build_steering_block(state.messages)
+    msg, override, _level = runner._build_steering_block(state.messages)
     assert override == "required"
     assert "STOP reading" in msg["content"]
     assert "MUST be a file_write or apply_patch" in msg["content"]
@@ -374,7 +374,7 @@ def test_steering_no_write_nudge_for_readonly_session():
         messages=[{"role": "tool", "content": "r"}], reads_since_last_edit=99
     )
     runner = build_runner(state=state, agent=_agent_with_tools("file_read", "grep"))
-    msg, override = runner._build_steering_block(state.messages)
+    msg, override, _level = runner._build_steering_block(state.messages)
     assert override is None
     assert "without" not in msg["content"]
     assert msg["content"].startswith("[Status:")
@@ -412,6 +412,140 @@ def test_steering_is_ephemeral_and_reaches_the_provider():
 
     sent = llm.calls[0]["messages"]
     assert any(m["role"] == "user" and "Status:" in (m.get("content") or "") for m in sent)
+    assert not any("Status:" in (m.get("content") or "") for m in state.messages)
+
+
+# --------------------------------------------------------------------------- #
+# P0 observability — trace steering nudges on upward crossings
+# --------------------------------------------------------------------------- #
+
+
+def _steering_steps(tracer):
+    return [s for s in tracer.steps if s["step_type"] == "steering_nudge"]
+
+
+def _steering_runner(reads, *, tools=("file_read", "apply_patch"), tracer=None, aid=7):
+    # History ends with a tool message (not user) so the steering block is built.
+    state = SessionState(
+        messages=[{"role": "tool", "content": "r"}],
+        used_tokens=1_000,
+        step_count=3,
+        reads_since_last_edit=reads,
+        aid=aid,
+    )
+    llm = FakeLLM([llm_response(content="done") for _ in range(8)])
+    return build_runner(
+        state=state,
+        llm=llm,
+        tracer=tracer,
+        agent=_agent_with_tools(*tools),
+        max_budget_tokens=100_000,
+        max_steps=40,
+    ), state
+
+
+def test_steering_nudge_traced_on_soft_crossing():
+    tracer = FakeTracer()
+    runner, state = _steering_runner(READS_NUDGE_SOFT, tracer=tracer)
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    steps = _steering_steps(tracer)
+    assert len(steps) == 1
+    p = steps[0]["payload"]
+    assert p["level"] == "soft"
+    assert p["tool_choice_override"] is False
+    assert p["reads_since_last_edit"] == READS_NUDGE_SOFT
+    assert p["aid"] == state.aid
+
+
+def test_steering_nudge_traced_on_hard_crossing():
+    tracer = FakeTracer()
+    runner, _ = _steering_runner(READS_NUDGE_HARD, tracer=tracer)
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    steps = _steering_steps(tracer)
+    assert len(steps) == 1
+    assert steps[0]["payload"]["level"] == "hard"
+    assert steps[0]["payload"]["tool_choice_override"] is True
+
+
+def test_steering_nudge_fires_once_per_level_not_every_turn():
+    # Two turns at the SAME (soft) level -> exactly ONE trace step (high-water mark,
+    # not per-turn). reads stays >= SOFT and < HARD across both calls.
+    tracer = FakeTracer()
+    runner, _ = _steering_runner(READS_NUDGE_SOFT, tracer=tracer)
+    run(runner.call_llm(runner.build_tool_schemas()))
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    assert len(_steering_steps(tracer)) == 1
+
+
+def test_steering_nudge_fires_on_soft_then_hard_escalation():
+    # Turn 1 at soft, turn 2 jumps PAST hard -> two steps, in order.
+    tracer = FakeTracer()
+    runner, state = _steering_runner(READS_NUDGE_SOFT, tracer=tracer)
+    run(runner.call_llm(runner.build_tool_schemas()))
+    state.reads_since_last_edit = READS_NUDGE_HARD + 5  # jump past the hard rung
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    levels = [s["payload"]["level"] for s in _steering_steps(tracer)]
+    assert levels == ["soft", "hard"]
+
+
+def test_steering_nudge_rearms_after_write():
+    # Escalate to hard; a write resets reads to 0 (level None -> re-arm); a later
+    # re-escalation to soft traces again -> ['hard', 'soft'].
+    tracer = FakeTracer()
+    runner, state = _steering_runner(READS_NUDGE_HARD, tracer=tracer)
+    run(runner.call_llm(runner.build_tool_schemas()))
+    state.reads_since_last_edit = 0  # a landed edit reset the counter
+    run(runner.call_llm(runner.build_tool_schemas()))  # level None -> re-arm, no step
+    state.reads_since_last_edit = READS_NUDGE_SOFT  # read again without writing
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    levels = [s["payload"]["level"] for s in _steering_steps(tracer)]
+    assert levels == ["hard", "soft"]
+
+
+def test_steering_nudge_does_not_refire_after_high_level_skip():
+    # Regression: `level is None` has TWO causes — a write reset (reads < SOFT) and
+    # the ends-with-user early-out (reads may still be HIGH, e.g. a post-empty-stop
+    # turn). Only the former may re-arm the high-water mark; the latter must leave it
+    # intact, else the next still-high turn re-fires a DUPLICATE steering_nudge,
+    # breaking the once-per-upward-crossing invariant.
+    tracer = FakeTracer()
+    runner, state = _steering_runner(READS_NUDGE_HARD, tracer=tracer)
+    run(runner.call_llm(runner.build_tool_schemas()))  # turn 1: hard -> 1 trace
+
+    # A turn whose shaped history ends with a user message -> _build_steering_block
+    # early-returns None while reads is still HARD (no write happened).
+    state.messages = [*state.messages, {"role": "user", "content": "nudge"}]
+    run(runner.call_llm(runner.build_tool_schemas()))  # early-out, mark must stay 'hard'
+
+    # Back to a tool-terminated history, reads UNCHANGED -> must NOT re-fire.
+    state.messages = [*state.messages, {"role": "tool", "content": "r"}]
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    assert [s["payload"]["level"] for s in _steering_steps(tracer)] == ["hard"]
+
+
+def test_no_steering_nudge_trace_for_readonly_session():
+    # A read-only agent (no write tool) gets no write nudge, so no trace even at a
+    # very high read count.
+    tracer = FakeTracer()
+    runner, _ = _steering_runner(99, tools=("file_read", "grep"), tracer=tracer)
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    assert _steering_steps(tracer) == []
+
+
+def test_steering_nudge_not_persisted_to_messages():
+    # The nudge text reaches the provider but is NEVER written to state.messages.
+    tracer = FakeTracer()
+    runner, state = _steering_runner(READS_NUDGE_HARD, tracer=tracer)
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    assert not any("STOP reading" in (m.get("content") or "") for m in state.messages)
     assert not any("Status:" in (m.get("content") or "") for m in state.messages)
 
 

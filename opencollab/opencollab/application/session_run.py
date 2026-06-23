@@ -131,6 +131,10 @@ class SessionRunUseCase:
         # Guards the once-per-session retry on an empty-stop turn (see
         # ``handle_pending_response``).
         self._empty_stop_retried = False
+        # High-water mark of the steering nudge level emitted so far
+        # (None|'soft'|'hard'). Drives _maybe_trace_steering to log only UPWARD
+        # crossings, re-arming on a write reset. Never persisted.
+        self._last_steering_level: str | None = None
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
@@ -468,16 +472,18 @@ class SessionRunUseCase:
 
     def _build_steering_block(
         self, messages: list[dict]
-    ) -> tuple[dict | None, str | None]:
+    ) -> tuple[dict | None, str | None, str | None]:
         """Build the per-turn closed-loop steering message + any tool_choice force.
 
-        Returns ``(message_or_None, tool_choice_override_or_None)``. The message
-        is a lean ``role:"user"`` block carrying budget self-awareness plus, when
-        the session can edit and has read without writing, a write nudge (soft) or
-        a hard demand (with ``tool_choice="required"``). Returns ``(None, None)``
-        when the shaped history already ends with a ``user`` message — appending
-        another would send two consecutive user turns (Anthropic rejects that),
-        and that case (turn 1 / post empty-stop) needs no steering anyway.
+        Returns ``(message_or_None, tool_choice_override_or_None, level)`` where
+        ``level`` is ``'hard'``/``'soft'``/``None`` — the trace seam reads it to
+        log upward crossings. The message is a lean ``role:"user"`` block carrying
+        budget self-awareness plus, when the session can edit and has read without
+        writing, a write nudge (soft) or a hard demand (with
+        ``tool_choice="required"``). Returns ``(None, None, None)`` when the shaped
+        history already ends with a ``user`` message — appending another would send
+        two consecutive user turns (Anthropic rejects that), and that case (turn 1
+        / post empty-stop) needs no steering anyway.
 
         Caller appends the message to the SHAPED COPY only; it is never persisted
         to ``state.messages`` (rebuilt fresh each turn, kept out of the transcript
@@ -485,7 +491,7 @@ class SessionRunUseCase:
         prefix).
         """
         if messages and messages[-1].get("role") == "user":
-            return None, None
+            return None, None, None
 
         total = self.max_budget_tokens or 0
         spent_k = self.state.used_tokens // 1000
@@ -502,6 +508,7 @@ class SessionRunUseCase:
             for t in getattr(self.agent, "tools", []) or []
         )
         override: str | None = None
+        level: str | None = None
         extra = ""
         if has_write and reads >= READS_NUDGE_HARD:
             extra = (
@@ -509,13 +516,15 @@ class SessionRunUseCase:
                 " — your next action MUST be a file_write or apply_patch edit."
             )
             override = "required"
+            level = "hard"
         elif has_write and reads >= READS_NUDGE_SOFT:
             extra = (
                 f" You have read {reads} files/searches without making an edit. If"
                 " you can describe the fix, make it now with file_write or"
                 " apply_patch before reading more."
             )
-        return {"role": "user", "content": status + extra}, override
+            level = "soft"
+        return {"role": "user", "content": status + extra}, override, level
 
     async def call_llm(self, tools: list[dict] | None) -> CompletionResponse:
         """Complete against the shaped view of history.
@@ -539,9 +548,10 @@ class SessionRunUseCase:
         )
         # Closed-loop steering: append a fresh per-turn block to the SHAPED COPY
         # only (a new list — never mutate state.messages even when shaper is None).
-        steering, tool_choice_override = self._build_steering_block(messages)
+        steering, tool_choice_override, steering_level = self._build_steering_block(messages)
         if steering is not None:
             messages = [*messages, steering]
+        self._maybe_trace_steering(steering_level)
         try:
             return await self._complete(messages, tools, tool_choice_override)
         except Exception as exc:
@@ -678,6 +688,42 @@ class SessionRunUseCase:
         await self.event_publisher.emit(self.event_factory.error("context_overflow"))
         self.clear_pending_step()
         self.state.transition_to(SessionPhase.CONTEXT_OVERFLOW, reason=reason)
+
+    def _maybe_trace_steering(self, level: str | None) -> None:
+        """Emit a ``steering_nudge`` trace step on an UPWARD level crossing.
+
+        ``reads_since_last_edit`` can jump past 8/16 in one batch, so the high-
+        water mark (``_last_steering_level``), not equality, decides whether this
+        is a new escalation. A genuine write reset re-arms so a later re-escalation
+        traces again. The mark advances even when no tracer is wired, so the next
+        escalation still computes correctly.
+        """
+        rank = {None: 0, "soft": 1, "hard": 2}
+        if level is None:
+            # ``level is None`` has two causes: (a) a write reset dropped reads
+            # below the soft rung — re-arm so a later re-escalation traces again;
+            # (b) steering was SKIPPED this turn via the ends-with-user / post-
+            # empty-stop early-out in _build_steering_block while reads is still
+            # high — the escalation has NOT de-escalated, so leave the mark intact
+            # (re-arming would let the next still-high turn re-fire a duplicate).
+            if self.state.reads_since_last_edit < READS_NUDGE_SOFT:
+                self._last_steering_level = None
+            return
+        if rank[level] > rank[self._last_steering_level] and self.tracer is not None:
+            self.tracer.log_step(
+                step_type="steering_nudge",
+                payload={
+                    "aid": self.state.aid,
+                    "agent": getattr(self.agent, "role", None)
+                    or getattr(self.agent, "label", None)
+                    or self.agent.model,
+                    "reads_since_last_edit": self.state.reads_since_last_edit,
+                    "level": level,
+                    "tool_choice_override": level == "hard",
+                    "step": self.state.step_count,
+                },
+            )
+        self._last_steering_level = level  # update high-water mark even with no tracer
 
     def record_llm_trace(self, response: CompletionResponse, latency: float) -> None:
         if self.tracer:

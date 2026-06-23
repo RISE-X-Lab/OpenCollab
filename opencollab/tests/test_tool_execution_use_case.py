@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -265,6 +266,59 @@ def test_reads_counter_ignores_failed_writes():
     ]))
     result.apply_to(state)
     assert state.reads_since_last_edit == 3  # failed write does not count as an edit
+
+
+def _bash_tool(output: str = "ok"):
+    tool = RuntimeNativeTool(output=output)
+    tool.name = "bash"
+    return tool
+
+
+def test_bash_mutation_resets_counter():
+    # Bug B (OPTION 2): the coder lands real source edits via bash (sed -i,
+    # heredoc redirect). Such a mutating bash must reset reads_since_last_edit the
+    # same as file_write — otherwise the counter climbs forever and the hard
+    # "STOP reading" nudge mis-fires at a model already writing. FAILS pre-edit.
+    mutating = (
+        "sed -i 's/a/b/' x.py",
+        "cat > x.py <<'EOF'\nbody\nEOF",
+        # idiomatic pathlib read-modify-write shapes the coder commonly emits
+        "python -c \"from pathlib import Path; Path('x.py').write_text(src)\"",
+        "python -c \"Path('x.py').write_bytes(b)\"",
+    )
+    for cmd in mutating:
+        state = SessionState(messages=[], reads_since_last_edit=5)
+        agent = FakeAgent(tools=[_bash_tool(output="done")])
+        use_case, _ = build_use_case(state=state, agent=agent)
+        run(use_case.process([
+            {"id": "c1", "function": {"name": "bash", "arguments": json.dumps({"command": cmd})}}
+        ])).apply_to(state)
+        assert state.reads_since_last_edit == 0, f"mutating bash should reset: {cmd!r}"
+
+
+def test_bash_repro_does_not_reset_counter():
+    # A bash repro (python -c print) and a grep-style read are NOT edits — the
+    # heuristic must not reset on them (guards against over-firing). Passes today.
+    for cmd in ("python -c 'print(1)'", "grep -rn foo x.py", "pytest x.py 2>&1"):
+        state = SessionState(messages=[], reads_since_last_edit=5)
+        agent = FakeAgent(tools=[_bash_tool(output="output")])
+        use_case, _ = build_use_case(state=state, agent=agent)
+        run(use_case.process([
+            {"id": "c1", "function": {"name": "bash", "arguments": json.dumps({"command": cmd})}}
+        ])).apply_to(state)
+        assert state.reads_since_last_edit == 5, f"non-mutating bash must not reset: {cmd!r}"
+
+
+def test_bash_mutation_error_output_does_not_reset():
+    # A mutating-shaped bash whose OUTPUT is an error did not actually edit — it
+    # must NOT reset (mirrors test_reads_counter_ignores_failed_writes).
+    state = SessionState(messages=[], reads_since_last_edit=4)
+    agent = FakeAgent(tools=[_bash_tool(output="Error: sed: no such file")])
+    use_case, _ = build_use_case(state=state, agent=agent)
+    run(use_case.process([
+        {"id": "c1", "function": {"name": "bash", "arguments": json.dumps({"command": "sed -i s/a/b/ x.py"})}}
+    ])).apply_to(state)
+    assert state.reads_since_last_edit == 4  # error output -> no reset
 
 
 def test_tool_execution_use_case_executes_runtime_native_tool_and_events():

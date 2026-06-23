@@ -201,6 +201,23 @@ class WorkflowContext:
             await self.log(f"tree_changed probe failed: {exc}")
             return None
 
+    async def source_changed(self, exclude_paths: Sequence[str] = ()) -> bool | None:
+        """Whether the tree has SOURCE changes — changes outside ``exclude_paths``.
+
+        Same True/False/None ("cannot verify") contract as :meth:`tree_changed`:
+        ``None`` when no probe is wired or a probe error is swallowed, so callers
+        must never hard-block on it. ``exclude_paths`` lets a workflow ignore
+        harness-injected test files (which dirty the tree the whole run but are
+        not the agent's edit); empty excludes is byte-for-byte ``tree_changed``.
+        """
+        if self._tree_probe is None:
+            return None
+        try:
+            return await self._tree_probe.changed_excluding(exclude_paths)
+        except Exception as exc:  # noqa: BLE001 — verification must never abort the run
+            await self.log(f"source_changed probe failed: {exc}")
+            return None
+
     @property
     def sessions(self) -> Sequence[Any]:
         """Read-only view of every session created so far (newest last).
