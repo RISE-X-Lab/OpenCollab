@@ -539,17 +539,41 @@ async def test_phase_and_log_noop_without_sink():
 
 
 class FakeProbe:
-    """A scripted WorkingTreeProbe recording how often it is asked."""
+    """A scripted WorkingTreeProbe recording how often it is asked.
 
-    def __init__(self, *, changed: bool = True, boom: bool = False) -> None:
+    ``changed`` is the whole-tree answer. ``changed_excluding`` honors a
+    ``{path: dirty}`` map when given (a path present in ``excludes`` whose only
+    dirt is itself drops out): with no map it falls back to a scripted
+    ``excluded_changed`` bool so tests can assert "tree dirty but source clean".
+    """
+
+    def __init__(
+        self,
+        *,
+        changed: bool = True,
+        boom: bool = False,
+        excluded_changed: bool | None = None,
+    ) -> None:
         self._changed = changed
         self._boom = boom
+        self._excluded_changed = excluded_changed
         self.calls = 0
+        self.exclude_calls: list[tuple[str, ...]] = []
 
     async def changed(self) -> bool:
         self.calls += 1
         if self._boom:
             raise RuntimeError("git unavailable")
+        return self._changed
+
+    async def changed_excluding(self, paths) -> bool:
+        self.exclude_calls.append(tuple(paths))
+        if self._boom:
+            raise RuntimeError("git unavailable")
+        if not paths:
+            return self._changed
+        if self._excluded_changed is not None:
+            return self._excluded_changed
         return self._changed
 
     async def diff(self) -> str:
@@ -576,6 +600,38 @@ async def test_tree_changed_swallows_probe_error_to_none():
     # A flaky git call must never abort the run: error -> None.
     ctx = WorkflowContext(FakeFactory([]), tree_probe=FakeProbe(boom=True))
     assert await ctx.tree_changed() is None
+
+
+# --------------------------------------------------------------------------- #
+# source-scoped probe (Bug A): excludes harness-injected test paths
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_source_changed_excludes_injected_paths():
+    # The whole tree is dirty (changed=True) only because the harness git-applied
+    # an injected test; with that path excluded the SOURCE is clean -> False, while
+    # tree_changed still reports True. This is the core of Bug A.
+    probe = FakeProbe(changed=True, excluded_changed=False)
+    ctx = WorkflowContext(FakeFactory([]), tree_probe=probe)
+
+    assert await ctx.tree_changed() is True
+    assert await ctx.source_changed(["t/test_x.py"]) is False
+    assert probe.exclude_calls == [("t/test_x.py",)]
+
+
+@pytest.mark.asyncio
+async def test_source_changed_is_none_without_probe():
+    # No probe wired -> "cannot verify" -> None (callers must not hard-block).
+    ctx = WorkflowContext(FakeFactory([]))
+    assert await ctx.source_changed(["t/test_x.py"]) is None
+
+
+@pytest.mark.asyncio
+async def test_source_changed_swallows_probe_error_to_none():
+    # A flaky git call must never abort the run: probe error -> None.
+    ctx = WorkflowContext(FakeFactory([]), tree_probe=FakeProbe(boom=True))
+    assert await ctx.source_changed(["t/test_x.py"]) is None
 
 
 @pytest.mark.asyncio

@@ -50,6 +50,11 @@ class WorkingTreeProbe(Protocol):
         """True when the working tree has uncommitted changes."""
         ...
 
+    async def changed_excluding(self, paths: Sequence[str]) -> bool:
+        """True when the tree has changes OUTSIDE ``paths`` (e.g. harness-injected
+        test files). Empty ``paths`` is equivalent to :meth:`changed`."""
+        ...
+
     async def diff(self) -> str:
         """The current working-tree diff (best-effort, may be empty)."""
         ...

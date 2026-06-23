@@ -469,6 +469,7 @@ async def _run_phase(
     idx: int,
     target_tests: str = "",
     fail_to_pass: list[str] | None = None,
+    injected_test_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """Drive one plan phase through the coder -> tester loop, best-effort.
 
@@ -482,6 +483,12 @@ async def _run_phase(
     files = "\n".join(ph.get("files") or []) or "(analyst did not pin files — keep the change minimal)"
     done = ph.get("done", FINAL_DONE)
     f2p = fail_to_pass or []
+    # Source-scope the working-tree gates: the SWE-bench harness ``git apply``s
+    # the FAIL_TO_PASS test_patch WITHOUT committing, so the tree is dirty the
+    # whole run. Excluding those injected paths makes the gates fire on the
+    # AGENT's edit, not the harness's. Empty (CLI / non-SWE-bench) -> behaves as
+    # ``tree_changed`` byte-for-byte.
+    _inj = injected_test_paths or []
     findings = ""
     rounds = 0
     for round_no in range(1, MAX_ROUNDS_PER_PHASE + 1):
@@ -516,7 +523,7 @@ async def _run_phase(
         # bounded to once per round; complements the session-level read-without-
         # write escalation (which can't fire once a coder turn has already
         # stop-ped) and the budget-floor forced write (still the last resort).
-        if (await ctx.tree_changed()) is False:
+        if (await ctx.source_changed(_inj)) is False:
             await ctx.log(
                 f"phase {idx} round {round_no}: coder landed no edit — forcing a commit before testing"
             )
@@ -561,7 +568,7 @@ async def _run_phase(
         # verifiably unchanged this round — no edit means nothing to pass. Seed
         # the next round so the coder is told it MUST write; on the final round
         # signal the run to force a write.
-        tree = await ctx.tree_changed()
+        tree = await ctx.source_changed(_inj)
         passed = isinstance(verdict, dict) and verdict.get("verdict") == "PASS"
         if passed and tree is False:
             await ctx.log(
@@ -638,7 +645,14 @@ def _seconds_left(ctx: Any) -> float:
 
 
 async def _forced_final_write(
-    ctx: Any, goal: str, root_cause: str, approach: str, progress: str, *, reason: str
+    ctx: Any,
+    goal: str,
+    root_cause: str,
+    approach: str,
+    progress: str,
+    *,
+    reason: str,
+    injected_test_paths: list[str] | None = None,
 ) -> str:
     """Spend the reserved headroom on one coder that MUST land an edit.
 
@@ -676,11 +690,12 @@ async def _forced_final_write(
         over_budget_ok=True,
     )
     # Post-attempt outcome so the trajectory distinguishes a patch that LANDED from
-    # one that ABORTED (coder died / timed out / budget). Prefer the tree probe —
-    # ground truth that an edit reached disk — and fall back to the coder's return
-    # value when no probe is wired (CLI / older stubs report None).
-    probe = getattr(ctx, "tree_changed", None)
-    changed = await probe() if callable(probe) else None
+    # one that ABORTED (coder died / timed out / budget). Prefer the SOURCE probe —
+    # ground truth that an edit reached disk OUTSIDE the harness-injected tests —
+    # and fall back to the coder's return value when no probe is wired (CLI / older
+    # stubs report None).
+    probe = getattr(ctx, "source_changed", None)
+    changed = await probe(injected_test_paths or []) if callable(probe) else None
     if changed is True:
         await ctx.log(f"forced write: {reason} — LANDED a patch (working tree changed)")
     elif changed is False:
@@ -713,6 +728,11 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     # is bypassed, preserving today's behavior.
     target_tests = _target_tests_block(args)
     fail_to_pass = list(args.get("fail_to_pass") or [])
+    # Paths the harness ``git apply``ed (FAIL_TO_PASS test files) but did NOT
+    # commit — the tree is dirty with them the whole run. The working-tree gates
+    # exclude these so they fire on the agent's SOURCE edit, not the harness's
+    # injected tests. Empty for CLI / non-SWE-bench runs (gates == tree_changed).
+    injected_test_paths = list(args.get("injected_test_paths") or [])
 
     # Phase 1 — analyst frames the investigation.
     await ctx.phase("scope")
@@ -759,13 +779,17 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     forced = False
     for idx, ph in enumerate(phases):
         report = await _run_phase(
-            ctx, goal, root_cause, approach, ph, idx, target_tests, fail_to_pass
+            ctx, goal, root_cause, approach, ph, idx, target_tests, fail_to_pass,
+            injected_test_paths,
         )
         phase_reports.append(report)
         if report["status"] in ("budget_low", "empty_tree"):
             progress = "\n".join(f"- phase {i}: {r['status']}" for i, r in enumerate(phase_reports))
             reason = "budget low" if report["status"] == "budget_low" else "empty tree after phase"
-            await _forced_final_write(ctx, goal, root_cause, approach, progress, reason=reason)
+            await _forced_final_write(
+                ctx, goal, root_cause, approach, progress, reason=reason,
+                injected_test_paths=injected_test_paths,
+            )
             forced = True
             break
         # Best-effort: a failed/blocked phase does NOT stop the run.
@@ -776,10 +800,11 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     # working tree is still verifiably empty, land a best-effort patch before the
     # final verify rather than reporting "done" with no edit. ``None`` (no probe
     # wired) is treated as "cannot verify" and does NOT trigger a forced write.
-    if not forced and (await ctx.tree_changed()) is False:
+    if not forced and (await ctx.source_changed(injected_test_paths)) is False:
         progress = "\n".join(f"- phase {i}: {r['status']}" for i, r in enumerate(phase_reports))
         await _forced_final_write(
-            ctx, goal, root_cause, approach, progress, reason="empty tree after implement"
+            ctx, goal, root_cause, approach, progress, reason="empty tree after implement",
+            injected_test_paths=injected_test_paths,
         )
         forced = True
 
@@ -848,11 +873,12 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     )
     self_reported_done = verified or (not forced and passed_phases == len(phases) and phases)
 
-    # A run cannot be "done" unless the working tree actually changed. The probe
-    # answers True/False when wired, or None when it cannot verify. On None we
-    # keep the self-reported outcome but flag it as unverified so the caller
-    # knows the success was not corroborated by a real diff.
-    tree = await ctx.tree_changed()
+    # A run cannot be "done" unless the working tree actually changed in SOURCE
+    # (excluding harness-injected tests). The probe answers True/False when wired,
+    # or None when it cannot verify. On None we keep the self-reported outcome but
+    # flag it as unverified so the caller knows the success was not corroborated by
+    # a real diff.
+    tree = await ctx.source_changed(injected_test_paths)
     if self_reported_done and tree is False:
         await ctx.log("run marked incomplete — working tree is empty despite a PASS self-report")
         status = "incomplete"
@@ -869,6 +895,8 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         "forced_final_write": forced,
         "repaired": repaired,
         "final_verdict": final_verdict,
+        # Key name retained for back-compat; its meaning is now SOURCE-scoped
+        # (changes outside injected_test_paths), not whole-tree. No external consumer.
         "tree_changed": tree,
         "tokens_spent": ctx.budget.spent(),
     }
