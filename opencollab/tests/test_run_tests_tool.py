@@ -214,9 +214,100 @@ def test_run_tests_honors_runner_options_and_safety_policy():
         )
     )
 
-    expected = "bin/test --tb=short -rfE -rA -p no:cacheprovider -q -k smoke"
+    expected = "bin/test -k smoke"
     assert env.exec_calls == [(expected, 30)]
     assert safety.cmd_calls == [(expected, None)]
+
+
+def test_run_tests_pytest_path_emits_green_verdict():
+    env = FakeEnv(stdout=PASS_OUTPUT)
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    result = run(RunTestsTool().execute_with_runtime({"target": "tests/test_x.py"}, runtime))
+    assert "Verdict: GREEN" in result
+
+
+def test_run_tests_pytest_failure_emits_red_verdict_and_hint():
+    env = FakeEnv(stdout=FAIL_OUTPUT, returncode=1)
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    result = run(RunTestsTool().execute_with_runtime({}, runtime))
+    assert "Verdict: RED" in result
+    assert "Hint (expected vs got):" in result
+
+
+class ScriptedEnv:
+    """Env returning queued ExecResults matched by command substring."""
+
+    def __init__(self, responses):
+        # responses: list of (substring, returncode, stdout)
+        self._responses = responses
+        self.exec_calls = []
+
+    async def exec_cmd(self, cmd: str, timeout: float = 120.0):
+        self.exec_calls.append((cmd, timeout))
+        for sub, rc, out in self._responses:
+            if sub in cmd:
+                return SimpleNamespace(returncode=rc, stdout=out, stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+
+def test_run_tests_falls_back_to_native_runner_when_pytest_missing():
+    env = ScriptedEnv([
+        ("python -m pytest", 1, "No module named pytest"),
+        ("test -x bin/test", 0, ""),
+        ("python bin/test", 0, "tests passed"),
+    ])
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    result = run(
+        RunTestsTool().execute_with_runtime(
+            {"target": "tests/test_x.py::test_two"}, runtime
+        )
+    )
+    cmds = [c for c, _ in env.exec_calls]
+    assert any("python bin/test" in c for c in cmds)
+    native = next(c for c in cmds if "python bin/test" in c)
+    assert "::" not in native and "test_two" in native
+    assert "Verdict: GREEN" in result
+
+
+def test_run_tests_pinned_runner_suppresses_autodetect():
+    env = ScriptedEnv([("bin/test", 0, "ok")])
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    run(RunTestsTool().execute_with_runtime({"runner": "bin/test"}, runtime))
+    cmds = [c for c, _ in env.exec_calls]
+    assert not any(c.startswith("test -x") for c in cmds)
+
+
+def test_run_tests_native_green_without_summary_line():
+    env = ScriptedEnv([
+        ("python -m pytest", 1, "No module named pytest"),
+        ("test -f tox.ini", 0, ""),
+        ("tox", 0, "all environments succeeded"),
+    ])
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    result = run(RunTestsTool().execute_with_runtime({}, runtime))
+    assert "Verdict: GREEN" in result
+    assert "could not parse" not in result
+
+
+def test_run_tests_escalates_after_repeated_same_target_failures():
+    tool = RunTestsTool()
+    env = FakeEnv(stdout=FAIL_OUTPUT, returncode=1)
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    last = ""
+    for _ in range(3):
+        last = run(tool.execute_with_runtime({"target": "tests/test_x.py"}, runtime))
+    assert "Escalation:" in last
+    green_env = FakeEnv(stdout=PASS_OUTPUT)
+    green_runtime = ToolRuntime(environment=green_env, safety_policy=None, permission_policy=None)
+    after = run(tool.execute_with_runtime({"target": "tests/test_x.py"}, green_runtime))
+    assert "Escalation:" not in after
+
+
+def test_build_command_native_runner_omits_pytest_flags_and_translates():
+    from opencollab.adapters.tools.run_tests import _build_command
+    cmd = _build_command("python bin/test", "tests/test_x.py::test_two", "")
+    assert "--tb=short" not in cmd and "-rA" not in cmd
+    assert "::" not in cmd and "test_two" in cmd
 
 
 def test_run_tests_requires_execution_environment():
