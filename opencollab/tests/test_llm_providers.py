@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from types import SimpleNamespace
 
@@ -345,4 +346,140 @@ def test_anthropic_redacted_thinking_is_not_harvested():
     redacted = SimpleNamespace(type="redacted_thinking", data="encrypted-bytes")
     resp = _anthropic_resp([redacted])
     result = parse_anthropic_response(resp)
+    assert result.content is None
+
+
+# ---------------------------------------------------------------------------
+# P6 — kimi literal tool-call markup recovery (finish_reason='stop', no
+# parsed tool_calls; the call is embedded as special-token text in content)
+# ---------------------------------------------------------------------------
+
+
+def _markup(name, call_id, args_json):
+    return (
+        "<|tool_calls_section_begin|>"
+        "<|tool_call_begin|>"
+        f"functions.{name}:{call_id}"
+        "<|tool_call_argument_begin|>"
+        f"{args_json}"
+        "<|tool_call_end|>"
+        "<|tool_calls_section_end|>"
+    )
+
+
+def test_openai_markup_single_tool_call_is_synthesized():
+    """A single markup tool call -> one synthesized tool_call, content cleared."""
+    content = _markup("grep", "call_1", '{"pattern": "foo"}')
+    resp = _openai_resp(usage=None, content=content)
+
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+
+    assert len(result.tool_calls) == 1
+    tc = result.tool_calls[0]
+    assert tc["id"] == "call_1"
+    assert tc["type"] == "function"
+    assert tc["function"]["name"] == "grep"
+    assert json.loads(tc["function"]["arguments"]) == {"pattern": "foo"}
+    assert result.content is None
+
+
+def test_openai_markup_two_tool_calls_are_synthesized():
+    """Two markup blocks -> two synthesized tool_calls in order."""
+    content = (
+        "<|tool_calls_section_begin|>"
+        "<|tool_call_begin|>functions.grep:c1"
+        '<|tool_call_argument_begin|>{"pattern": "a"}<|tool_call_end|>'
+        "<|tool_call_begin|>functions.read_file:c2"
+        '<|tool_call_argument_begin|>{"path": "x.py"}<|tool_call_end|>'
+        "<|tool_calls_section_end|>"
+    )
+    resp = _openai_resp(usage=None, content=content)
+
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+
+    assert [tc["function"]["name"] for tc in result.tool_calls] == ["grep", "read_file"]
+    assert [tc["id"] for tc in result.tool_calls] == ["c1", "c2"]
+    assert result.content is None
+
+
+def test_openai_markup_preserves_surrounding_prose():
+    """Genuine prose around the markup is preserved; the call is still synthesized."""
+    content = "Let me search the repo. " + _markup("grep", "c1", '{"pattern": "foo"}')
+    resp = _openai_resp(usage=None, content=content)
+
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0]["function"]["name"] == "grep"
+    assert result.content == "Let me search the repo."
+
+
+def test_openai_malformed_markup_falls_back_gracefully():
+    """Partial markup / non-JSON args -> no crash, no synthesized call, content kept."""
+    content = (
+        "<|tool_calls_section_begin|>"
+        "<|tool_call_begin|>functions.grep:c1"
+        "<|tool_call_argument_begin|>not-json-args"  # truncated, invalid JSON
+    )
+    resp = _openai_resp(usage=None, content=content)
+
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+
+    assert result.tool_calls == []
+    assert result.content == content  # unchanged fallback
+
+
+def test_openai_real_tool_calls_skip_markup_parsing():
+    """When the SDK already parsed tool_calls, markup recovery is not attempted."""
+    tc = SimpleNamespace(id="c1", function=SimpleNamespace(name="run", arguments="{}"))
+    resp = _openai_resp(usage=None, content="irrelevant", tool_calls=[tc])
+
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0]["function"]["name"] == "run"
+    assert result.content == "irrelevant"
+
+
+def test_openai_markup_in_reasoning_content_is_synthesized():
+    """Under thinking mode kimi puts the tool-call markup in reasoning_content
+    (content empty). Recover it from reasoning, not just content."""
+    resp = _openai_resp_with_reasoning(
+        content=None, reasoning_content=_markup("file_read", "2", '{"path": "a.py"}')
+    )
+
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0]["function"]["name"] == "file_read"
+    assert result.tool_calls[0]["id"] == "2"
+    # the markup must NOT leak into content via the reasoning rescue
+    assert result.content is None
+    assert result.reasoning is None  # whole reasoning was markup -> stripped
+
+
+def test_openai_markup_buried_in_reasoning_preserves_thinking():
+    """Real thinking prose followed by buried markup -> call synthesized, the
+    genuine chain-of-thought is preserved in reasoning."""
+    reasoning = "Let me check the test.\n\n" + _markup("grep", "1", '{"pattern": "X"}')
+    resp = _openai_resp_with_reasoning(content=None, reasoning_content=reasoning)
+
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+
+    assert len(result.tool_calls) == 1
+    assert result.tool_calls[0]["function"]["name"] == "grep"
+    assert result.content is None
+    assert result.reasoning == "Let me check the test."
+
+
+def test_openai_content_markup_takes_precedence_over_reasoning():
+    """If markup is in content, parse there; don't double-parse reasoning."""
+    resp = _openai_resp_with_reasoning(
+        content=_markup("grep", "c1", '{"pattern": "a"}'),
+        reasoning_content=_markup("read_file", "c2", '{"path": "x"}'),
+    )
+
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+
+    assert [tc["function"]["name"] for tc in result.tool_calls] == ["grep"]
     assert result.content is None
