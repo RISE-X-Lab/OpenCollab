@@ -229,8 +229,9 @@ class WorkflowSessionFactoryPort(Protocol):
         isolation: bool = False,
         label: str | None = None,
         tool_choice: str | None = None,
+        thinking: bool | None = None,
     ) -> Any:
-        ...
+        ...    # ``thinking`` None -> factory default; False -> force reasoning off.
 
 
 class SchedulerPort(Protocol):

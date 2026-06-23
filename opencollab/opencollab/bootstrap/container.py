@@ -273,6 +273,10 @@ def build_session_runtime(
         # boundary pattern as the team-budget predicate). Enables the
         # force-compact-and-retry + graceful-stop safety net in ``call_llm``.
         is_context_overflow=is_context_overflow_error,
+        # Cooperative per-generation ceiling: bound a single model call to the
+        # configured provider timeout so one slow (thinking) generation cannot
+        # eat the whole run wall (P7).
+        per_call_timeout=llm_timeout,
     )
 
     return SessionRuntime(

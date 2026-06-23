@@ -2,12 +2,15 @@
 
 Covers the stdlib JSON-schema validator, the pure ``StructuredOutputTool``
 (capture on valid / error-list on invalid), and ``WorkflowContext.agent``'s
-``schema=`` path: returns a dict on capture, retries once then yields ``None``,
-and counts retry-run tokens in the budget.
+``schema=`` path: a free-exploration first pass, a forced-commit corrective
+pass (a fresh single-tool session pinned to a named-function ``tool_choice``)
+when the first pass answers in free text, returns a dict on capture, yields
+``None`` when both passes miss, and counts both passes' tokens in the budget.
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 from typing import Any
 
@@ -16,7 +19,10 @@ import pytest
 from opencollab.application.schema_validate import validate
 from opencollab.application.structured_output import StructuredOutputTool
 from opencollab.application.tool_execution import ToolRuntime
-from opencollab.application.workflow import WorkflowContext
+from opencollab.application.workflow import (
+    DEFAULT_DEADLINE_MARGIN_SECONDS,
+    WorkflowContext,
+)
 
 # --------------------------------------------------------------------------- #
 # validator
@@ -173,18 +179,35 @@ class FakeState:
         self.messages: list[dict[str, Any]] = []
 
 
+class _Cursor:
+    """Shared payload cursor across the sessions a single agent(schema=) call
+    builds — the first (free-exploration) session and the corrective
+    forced-commit session draw from one ordered payload stream, so a payload
+    consumed on the first pass is not replayed on the retry."""
+
+    def __init__(self, payloads: list[Any]) -> None:
+        self._payloads = list(payloads)
+        self.idx = 0
+
+    def next(self) -> Any:
+        if self.idx >= len(self._payloads):
+            self.idx += 1
+            return _NO_CALL
+        payload = self._payloads[self.idx]
+        self.idx += 1
+        return payload
+
+
 class CapturingSession:
     """Session whose run_loop calls structured_output with a scripted payload.
 
-    ``payloads`` is a list of payloads to feed on successive rounds. Each round
-    locates the injected StructuredOutputTool from ``tools`` and invokes it with
-    the next payload, simulating the model self-correcting.
+    Draws successive payloads from a shared ``_Cursor`` and invokes the injected
+    StructuredOutputTool with each, simulating the model self-correcting.
 
     Models the real ``Session.run_loop`` DONE short-circuit (session_run.py):
     once a turn finishes, a bare re-run does NOT re-invoke the tool — it just
     returns the prior answer. Only an intervening ``add_user_message`` (which
-    resets DONE -> IDLE) lets the next run_loop produce a fresh payload. So a
-    retry test fails if production forgets the corrective ``add_user_message``.
+    resets DONE -> IDLE) lets the next run_loop produce a fresh payload.
 
     ``max_rounds`` models the post-capture runaway seen live: a single
     run_loop keeps issuing rounds (the model re-calling the tool) until the
@@ -196,13 +219,12 @@ class CapturingSession:
     def __init__(
         self,
         tools: Sequence[Any],
-        payloads: list[Any],
+        cursor: _Cursor,
         tokens_each: int = 0,
         max_rounds: int = 1,
     ) -> None:
         self._tools = list(tools)
-        self._payloads = list(payloads)
-        self._call = 0
+        self._cursor = cursor
         self._tokens_each = tokens_each
         self._max_rounds = max_rounds
         self.state = FakeState()
@@ -211,6 +233,17 @@ class CapturingSession:
         self.cancel_events: list[Any] = []
         # True once a turn has finished; cleared by add_user_message.
         self._done = False
+
+    @property
+    def messages(self) -> list[dict[str, Any]]:
+        # Mirrors the real ``Session.messages`` property (getter -> state.messages,
+        # setter -> replace) so the engine can carry first-pass exploration into
+        # the corrective session.
+        return self.state.messages
+
+    @messages.setter
+    def messages(self, value: list[dict[str, Any]]) -> None:
+        self.state.messages = list(value)
 
     def _structured_tool(self) -> StructuredOutputTool | None:
         for t in self._tools:
@@ -234,11 +267,9 @@ class CapturingSession:
             # The real loop checks the event in precheck, BEFORE each LLM call.
             if cancel_event is not None and cancel_event.is_set():
                 break
-            if tool is not None and self._call < len(self._payloads):
-                payload = self._payloads[self._call]
-                if payload is not _NO_CALL:
-                    await tool.execute_with_runtime(payload, _runtime())
-            self._call += 1
+            payload = self._cursor.next()
+            if tool is not None and payload is not _NO_CALL:
+                await tool.execute_with_runtime(payload, _runtime())
             self.rounds += 1
         self._done = True
         return "assistant text"
@@ -252,13 +283,20 @@ _NO_CALL = object()
 
 
 class ScriptedFactory:
-    """Builds a single CapturingSession, capturing the injected tools."""
+    """Builds CapturingSessions sharing one payload cursor, recording builds.
+
+    A single ``agent(schema=)`` call can build two sessions: the first free
+    exploration pass and the corrective forced-commit pass. ``session`` is the
+    first session built; ``sessions`` holds them all in build order; ``builds``
+    records the kwargs each was built with (prompt/tools/isolation/tool_choice).
+    """
 
     def __init__(self, payloads: list[Any], tokens_each: int = 0, max_rounds: int = 1) -> None:
-        self._payloads = payloads
+        self._cursor = _Cursor(payloads)
         self._tokens_each = tokens_each
         self._max_rounds = max_rounds
         self.session: CapturingSession | None = None
+        self.sessions: list[CapturingSession] = []
         self.builds: list[dict[str, Any]] = []
 
     def build_workflow_session(
@@ -270,12 +308,24 @@ class ScriptedFactory:
         isolation: bool = False,
         label: str | None = None,
         tool_choice: str | None = None,
+        thinking: bool | None = None,
     ) -> CapturingSession:
-        self.builds.append({"prompt": prompt, "tools": tools, "isolation": isolation})
-        self.session = CapturingSession(
-            tools or [], self._payloads, self._tokens_each, self._max_rounds
+        self.builds.append(
+            {
+                "prompt": prompt,
+                "tools": tools,
+                "isolation": isolation,
+                "tool_choice": tool_choice,
+                "thinking": thinking,
+            }
         )
-        return self.session
+        session = CapturingSession(
+            tools or [], self._cursor, self._tokens_each, self._max_rounds
+        )
+        self.sessions.append(session)
+        if self.session is None:
+            self.session = session
+        return session
 
 
 SCHEMA = {"type": "object", "required": ["x"], "properties": {"x": {"type": "integer"}}}
@@ -298,17 +348,18 @@ async def test_agent_schema_returns_dict_on_capture():
 
 @pytest.mark.asyncio
 async def test_agent_schema_retries_once_then_succeeds():
-    # first run produces an invalid payload, second (after corrective msg) valid
+    # first (free) pass produces an invalid payload; the forced corrective pass
+    # (a second session) lands a valid one.
     factory = ScriptedFactory(payloads=[{"x": "bad"}, {"x": 9}])
     ctx = WorkflowContext(factory)
 
     result = await ctx.agent("give me x", schema=SCHEMA)
 
     assert result == {"x": 9}
-    assert factory.session.run_count == 2
-    # a corrective user message was appended before the retry
-    user_msgs = [m for m in factory.session.state.messages if m["role"] == "user"]
-    assert len(user_msgs) >= 2
+    # two sessions built: free exploration, then forced commit.
+    assert len(factory.sessions) == 2
+    assert factory.sessions[0].run_count == 1
+    assert factory.sessions[1].run_count == 1
 
 
 @pytest.mark.asyncio
@@ -319,19 +370,19 @@ async def test_agent_schema_returns_none_after_failed_retry():
     result = await ctx.agent("give me x", schema=SCHEMA)
 
     assert result is None
-    assert factory.session.run_count == 2  # exactly one retry
+    assert len(factory.sessions) == 2  # exactly one corrective retry session
 
 
 @pytest.mark.asyncio
 async def test_agent_schema_no_call_at_all_returns_none():
-    # model never calls structured_output on either run -> None after retry
+    # model never calls structured_output on either pass -> None after retry
     factory = ScriptedFactory(payloads=[_NO_CALL, _NO_CALL])
     ctx = WorkflowContext(factory)
 
     result = await ctx.agent("give me x", schema=SCHEMA)
 
     assert result is None
-    assert factory.session.run_count == 2
+    assert len(factory.sessions) == 2
 
 
 @pytest.mark.asyncio
@@ -404,3 +455,221 @@ async def test_agent_schema_appends_instruction_to_prompt():
     seeded = factory.builds[0]["prompt"]
     assert "base prompt" in seeded
     assert "structured_output" in seeded
+
+
+# --------------------------------------------------------------------------- #
+# forced corrective commit (free-text stop -> tool_choice="required" retry)
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.asyncio
+async def test_agent_schema_free_text_stop_triggers_forced_retry():
+    """(a) The first pass ends with content + no structured_output call (the
+    free-text stop seen live under tool_choice=auto + thinking). The forced
+    corrective pass then lands a valid payload, so the call returns the dict."""
+    # first pass: model answers in free text (no tool call); retry: valid commit
+    factory = ScriptedFactory(payloads=[_NO_CALL, {"x": 7}])
+    ctx = WorkflowContext(factory)
+
+    result = await ctx.agent("give me x", schema=SCHEMA, tools=[object()])
+
+    assert result == {"x": 7}  # not None — the forced retry rescued it
+    assert len(factory.sessions) == 2
+    # the corrective turn carries an explicit MUST-call / no-prose instruction
+    corrective_prompt = factory.builds[1]["prompt"]
+    assert "MUST call" in corrective_prompt
+    assert "prose" in corrective_prompt
+    assert "structured_output" in corrective_prompt
+
+
+@pytest.mark.asyncio
+async def test_agent_schema_first_pass_capture_skips_forced_retry():
+    """(b) The first pass calls structured_output directly -> returns
+    immediately, no forced corrective session built."""
+    factory = ScriptedFactory(payloads=[{"x": 5}])
+    ctx = WorkflowContext(factory)
+
+    result = await ctx.agent("give me x", schema=SCHEMA)
+
+    assert result == {"x": 5}
+    assert len(factory.sessions) == 1  # no forced retry session
+    # the lone session ran the free first pass with no forced tool_choice
+    assert factory.builds[0]["tool_choice"] is None
+
+
+@pytest.mark.asyncio
+async def test_forced_retry_session_is_single_tool_and_required():
+    """(c) The corrective turn's session is built with tool_choice="required"
+    and a toolset of exactly [capture_tool] (so "required" can only resolve to
+    structured_output), while the first pass keeps free exploration."""
+    extra_tool = object()
+    # first pass misses, forcing the corrective build; payload there is irrelevant
+    factory = ScriptedFactory(payloads=[_NO_CALL, _NO_CALL])
+    ctx = WorkflowContext(factory)
+
+    await ctx.agent("give me x", schema=SCHEMA, tools=[extra_tool])
+
+    assert len(factory.builds) == 2
+    first, corrective = factory.builds
+
+    # first pass: free exploration — full toolset, no forced tool_choice
+    assert first["tool_choice"] is None
+    first_tools = list(first["tools"])
+    assert extra_tool in first_tools
+    assert any(isinstance(t, StructuredOutputTool) for t in first_tools)
+
+    # corrective pass: forced single-tool commit with a named-function choice
+    assert corrective["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "structured_output"},
+    }
+    corrective_tools = list(corrective["tools"])
+    assert len(corrective_tools) == 1
+    assert isinstance(corrective_tools[0], StructuredOutputTool)
+    # the SAME capture tool instance is reused so its capture/event stay live
+    assert corrective_tools[0] is next(
+        t for t in first_tools if isinstance(t, StructuredOutputTool)
+    )
+
+
+@pytest.mark.asyncio
+async def test_forced_retry_carries_first_pass_exploration():
+    """(e) The corrective session starts seeded with the first pass's
+    conversation (its exploration history), not blank, so the forced commit
+    fills the schema from what was actually gathered. Without the carry-over the
+    retry session would hold ONLY its own retry message."""
+    factory = ScriptedFactory(payloads=[_NO_CALL, {"x": 7}])
+    ctx = WorkflowContext(factory)
+
+    # First pass explores: seed a couple of tool-result messages onto the first
+    # session before it answers in free text and triggers the corrective build.
+    # CapturingSession.add_user_message appends the seeded prompt on pass 1, so
+    # we inject the "exploration" directly into its message list.
+    original_build = factory.build_workflow_session
+    exploration = [
+        {"role": "assistant", "content": "let me grep"},
+        {"role": "tool", "content": "grep result: foo.py:10"},
+    ]
+
+    def build_with_exploration(**kwargs: Any) -> CapturingSession:
+        session = original_build(**kwargs)
+        if len(factory.sessions) == 1:  # the first (exploration) session
+            session.state.messages.extend(exploration)
+        return session
+
+    factory.build_workflow_session = build_with_exploration  # type: ignore[method-assign]
+
+    result = await ctx.agent("give me x", schema=SCHEMA, tools=[object()])
+
+    assert result == {"x": 7}
+    assert len(factory.sessions) == 2
+    corrective = factory.sessions[1]
+    # the first pass's exploration is present in the corrective session...
+    assert exploration[0] in corrective.messages
+    assert exploration[1] in corrective.messages
+    # ...alongside its own retry message (added after the carry-over).
+    assert any(
+        m.get("role") == "user" and "structured_output" in str(m.get("content", ""))
+        for m in corrective.messages
+    )
+    # carry-over is an independent list copy: the corrective session's appends
+    # did not mutate the first session's history length.
+    assert len(factory.sessions[0].messages) == len(exploration) + 1  # +seeded prompt
+
+
+@pytest.mark.asyncio
+async def test_structured_agent_forces_thinking_off():
+    """PART 3: both sessions a schema= call builds (free exploration + forced
+    corrective commit) must carry ``thinking=False`` — these are the death-slow
+    generations whose reasoning is disabled regardless of the run-wide default."""
+    # First pass misses (_NO_CALL) so the corrective commit session is also built.
+    factory = ScriptedFactory(payloads=[_NO_CALL, {"x": 7}])
+    ctx = WorkflowContext(factory)
+
+    await ctx.agent("give me x", schema=SCHEMA, tools=[object()])
+
+    assert len(factory.builds) == 2
+    assert factory.builds[0]["thinking"] is False  # free-exploration pass
+    assert factory.builds[1]["thinking"] is False  # forced corrective commit
+
+
+@pytest.mark.asyncio
+async def test_non_structured_agent_leaves_thinking_default():
+    """A plain (non-schema) agent call must NOT force thinking off — it leaves
+    ``thinking`` as None so the factory's run-wide default applies."""
+    factory = ScriptedFactory(payloads=[])
+    ctx = WorkflowContext(factory)
+
+    await ctx.agent("just do it")
+
+    assert factory.builds[0]["thinking"] is None
+
+
+# --------------------------------------------------------------------------- #
+# wall-clock deadline (time_low / seconds_left)
+# --------------------------------------------------------------------------- #
+
+
+def test_time_low_true_when_within_margin():
+    factory = ScriptedFactory(payloads=[])
+    # Deadline only 10s out, margin 120s -> already "low".
+    ctx = WorkflowContext(
+        factory,
+        deadline_monotonic=time.monotonic() + 10.0,
+        deadline_margin_seconds=120.0,
+    )
+    assert ctx.time_low() is True
+    assert ctx.seconds_left() <= 10.0
+
+
+def test_time_low_false_when_ample_time():
+    factory = ScriptedFactory(payloads=[])
+    # Deadline far out (1000s) with the default 120s margin -> not low.
+    ctx = WorkflowContext(
+        factory,
+        deadline_monotonic=time.monotonic() + 1000.0,
+        deadline_margin_seconds=DEFAULT_DEADLINE_MARGIN_SECONDS,
+    )
+    assert ctx.time_low() is False
+    assert ctx.seconds_left() > 120.0
+
+
+def test_time_low_false_unbounded():
+    # No deadline wired (CLI / tests) -> never low, seconds_left is infinite.
+    factory = ScriptedFactory(payloads=[])
+    ctx = WorkflowContext(factory)
+    assert ctx.time_low() is False
+    assert ctx.seconds_left() == float("inf")
+
+
+@pytest.mark.asyncio
+async def test_forced_retry_keys_off_empty_capture_not_prose():
+    """(d) The corrective pass fires only on a genuinely-empty capture. A first
+    pass that DID capture a valid payload (e.g. a markup-leaked call the parser
+    resolved into ``captured``) must NOT spuriously trigger the forced retry,
+    even though run_loop also returns assistant prose text."""
+    factory = ScriptedFactory(payloads=[{"x": 11}])
+    ctx = WorkflowContext(factory)
+
+    result = await ctx.agent("give me x", schema=SCHEMA, tools=[object()])
+
+    assert result == {"x": 11}
+    assert len(factory.sessions) == 1  # no corrective session built
+
+
+def test_schema_satisfied_predicate():
+    """(d) Unit-pin the minimal acceptance check that decides a real miss.
+
+    A capture missing a required top-level key is treated like a miss (so the
+    forced corrective turn runs); a no-required schema accepts any captured dict
+    (the tool already validated it).
+    """
+    from opencollab.application.workflow import _schema_satisfied
+
+    schema = {"type": "object", "required": ["x"], "properties": {"x": {"type": "integer"}}}
+    assert _schema_satisfied({"x": 1}, schema) is True
+    assert _schema_satisfied({}, schema) is False  # missing required key -> miss
+    assert _schema_satisfied(None, schema) is False  # no capture -> miss
+    assert _schema_satisfied("not a dict", schema) is False
+    # no required keys: any captured dict (even {}) is an accepted commit
+    assert _schema_satisfied({}, {"type": "object"}) is True
