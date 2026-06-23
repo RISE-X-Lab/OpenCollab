@@ -5,7 +5,11 @@ import copy
 from types import SimpleNamespace
 
 from opencollab.application.event_bus import EventBus
-from opencollab.application.session_run import SessionRunUseCase
+from opencollab.application.session_run import (
+    READS_NUDGE_HARD,
+    READS_NUDGE_SOFT,
+    SessionRunUseCase,
+)
 from opencollab.domain.pending import RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
 from opencollab.domain.tools import ToolProcessingResult
@@ -56,12 +60,13 @@ class FakeLLM:
         self.responses = list(responses)
         self.calls = []
 
-    async def complete(self, messages, tools=None, temperature=0.0):
+    async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
         self.calls.append(
             {
                 "messages": copy.deepcopy(messages),
                 "tools": copy.deepcopy(tools),
                 "temperature": temperature,
+                **kwargs,  # tool_choice / thinking ride here when set
             }
         )
         if not self.responses:
@@ -303,6 +308,113 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
     }
 
 
+# ---------------------------------------------------------------------------
+# Closed-loop steering block (budget self-awareness + reads-without-write)
+# ---------------------------------------------------------------------------
+
+
+class _ToolStub:
+    def __init__(self, name):
+        self.name = name
+
+
+def _agent_with_tools(*names):
+    agent = FakeAgent()
+    agent.tools = [_ToolStub(n) for n in names]
+    return agent
+
+
+def test_steering_status_line_built_from_budget_and_steps():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "r"}], used_tokens=120_000, step_count=10
+    )
+    runner = build_runner(state=state, max_budget_tokens=500_000, max_steps=40)
+    msg, override = runner._build_steering_block(state.messages)
+    assert override is None
+    assert msg["role"] == "user"
+    assert "120k/500k tokens used" in msg["content"]
+    assert "~30 steps left" in msg["content"]
+
+
+def test_steering_skipped_when_history_ends_with_user():
+    # Appending another user message would send two consecutive user turns
+    # (Anthropic rejects that); turn 1 / post-empty-stop needs no steering anyway.
+    state = SessionState(messages=[{"role": "user", "content": "task"}])
+    runner = build_runner(state=state)
+    msg, override = runner._build_steering_block(state.messages)
+    assert msg is None and override is None
+
+
+def test_steering_soft_nudge_when_reads_without_write():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "r"}], reads_since_last_edit=READS_NUDGE_SOFT
+    )
+    runner = build_runner(state=state, agent=_agent_with_tools("file_read", "file_write"))
+    msg, override = runner._build_steering_block(state.messages)
+    assert override is None  # soft rung does not force a tool call
+    assert "without making an edit" in msg["content"]
+    assert "file_write or apply_patch" in msg["content"]
+
+
+def test_steering_hard_rung_forces_a_tool_call():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "r"}], reads_since_last_edit=READS_NUDGE_HARD
+    )
+    runner = build_runner(state=state, agent=_agent_with_tools("apply_patch"))
+    msg, override = runner._build_steering_block(state.messages)
+    assert override == "required"
+    assert "STOP reading" in msg["content"]
+    assert "MUST be a file_write or apply_patch" in msg["content"]
+
+
+def test_steering_no_write_nudge_for_readonly_session():
+    # A scout/tester/planner has no write tool — the write nudge would be nonsense,
+    # so only the status line is shown even at a high read count.
+    state = SessionState(
+        messages=[{"role": "tool", "content": "r"}], reads_since_last_edit=99
+    )
+    runner = build_runner(state=state, agent=_agent_with_tools("file_read", "grep"))
+    msg, override = runner._build_steering_block(state.messages)
+    assert override is None
+    assert "without" not in msg["content"]
+    assert msg["content"].startswith("[Status:")
+
+
+def test_steering_hard_rung_forces_tool_choice_through_run_loop():
+    # End-to-end: a write-capable session at the hard read threshold must send
+    # tool_choice="required" to the provider through the real _complete path.
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_HARD,
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state, llm=llm, agent=_agent_with_tools("file_read", "apply_patch")
+    )
+
+    run(runner.run_loop())
+
+    assert llm.calls[0]["tool_choice"] == "required"
+
+
+def test_steering_is_ephemeral_and_reaches_the_provider():
+    # The steering block must be SENT to the model but NEVER persisted to
+    # state.messages (rebuilt fresh each turn; out of transcript / eager-clear).
+    state = SessionState(
+        messages=[{"role": "system", "content": "sys"}], used_tokens=1_000, step_count=1
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(state=state, llm=llm, max_budget_tokens=100_000, max_steps=10)
+
+    run(runner.run_loop())
+
+    sent = llm.calls[0]["messages"]
+    assert any(m["role"] == "user" and "Status:" in (m.get("content") or "") for m in sent)
+    assert not any("Status:" in (m.get("content") or "") for m in state.messages)
+
+
 def test_run_loop_without_tool_calls_marks_done():
     events, bus = collect_events()
     state = SessionState(messages=[{"role": "system", "content": "sys"}])
@@ -533,6 +645,33 @@ def test_mixed_batch_buffers_immediate_and_resumes_in_order():
         {"role": "tool", "tool_call_id": "b1", "content": "bash ok"},
         {"role": "tool", "tool_call_id": "s1", "content": "child done"},
     ]
+
+
+def test_mixed_batch_folds_in_reads_counter_for_immediate_reads():
+    # Regression: a mixed batch (immediate read + deferred spawn) buffers its
+    # result messages, so the reads-without-write counter must still fold in via
+    # apply_read_write_counter_to — not be lost because only apply_hashes_to ran.
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    batch = [
+        tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}'),
+        tool_call(call_id="s1", name="spawn_agent", arguments="{}"),
+    ]
+    llm = FakeLLM(
+        [llm_response(content="mixed", tool_calls=batch, finish_reason="tool_calls")]
+    )
+    te = FakeToolExecutionDeferred(
+        process_result=ToolProcessingResult(
+            messages_to_append=[{"role": "tool", "tool_call_id": "r1", "content": "file body"}],
+            reads_executed=1,
+        ),
+        deferred_outcomes={"s1": (9, None)},
+    )
+    runner = build_runner(state=state, llm=llm, tool_execution=te)
+
+    run(runner.run_loop())
+
+    assert state.phase is SessionPhase.AWAITING_EVENTS
+    assert state.reads_since_last_edit == 1  # immediate read counted despite buffering
 
 
 def test_deferred_rejected_synchronously_does_not_suspend():

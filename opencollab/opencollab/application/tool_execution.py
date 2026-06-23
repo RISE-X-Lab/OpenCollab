@@ -31,6 +31,16 @@ MAX_SIMILAR_CALLS = 3
 _PATH_NORMALIZED_TOOLS = frozenset({"file_read"})
 MAX_SAME_FILE_READS = 8
 
+# Read-only vs edit tools, for the reads-without-write steering signal. Reads
+# accumulate ``reads_since_last_edit``; a successful write zeroes it. bash is
+# excluded (it can read OR write — counting it would misfire both ways).
+_READ_TOOLS = frozenset({"file_read", "grep"})
+_WRITE_TOOLS = frozenset({"file_write", "apply_patch"})
+# A tool result is an error (not a real edit/read) when it starts with one of
+# these prefixes — see execute_tool's PermissionError/Exception mapping and the
+# tools' own "Error: ..." returns.
+_TOOL_ERROR_PREFIXES = ("Error", "Tool execution error", "Permission denied")
+
 
 @dataclass(frozen=True)
 class DeferredCall:
@@ -179,6 +189,14 @@ class ToolExecutionUseCase:
             tool_output, tool_latency = await self.execute_tool(tool, args)
             # The full result is persisted; a per-tool-result budget shaper caps
             # what the model sees at call time (see application.shaping).
+
+            # Closed-loop steering signal: a successful read accumulates the
+            # reads-without-write counter; a successful edit resets it (recorded on
+            # the result; applied to state by ToolProcessingResult.apply_to).
+            if tool_name in _READ_TOOLS:
+                result.reads_executed += 1
+            elif tool_name in _WRITE_TOOLS and not tool_output.startswith(_TOOL_ERROR_PREFIXES):
+                result.write_succeeded = True
 
             if self.tracer:
                 self.tracer.log_step(
