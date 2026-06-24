@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import re
 import uuid
 from collections.abc import Sequence
 from typing import Any
@@ -36,7 +35,13 @@ from opencollab.bootstrap.config import (
     DEFAULT_THINKING,
     DEFAULT_THINKING_PARAMS,
 )
-from opencollab.bootstrap.session_factory import build_session
+from opencollab.bootstrap.session_factory import (
+    ORCHESTRATION_FILENAME,
+    WORKFLOW_MANIFEST_FILENAME,
+    build_session,
+    slug_label,
+    workflow_transcript_path,
+)
 from opencollab.domain.agent import Agent
 
 # System prompt seeded into every one-shot workflow agent. Deliberately terse:
@@ -47,26 +52,9 @@ WORKFLOW_AGENT_PROMPT = (
     "Be concise and finish with a clear final answer."
 )
 
-# Longest slug kept from an agent label when naming its transcript file.
-_MAX_SLUG_LEN = 40
-
-# Tracer run_id for an auto-wired workflow trajectory; yields ``trajectory.jsonl``
-# in the run folder (the Tracer writes ``<output_dir>/<run_id>.jsonl``).
-WORKFLOW_TRACE_RUN_ID = "trajectory"
-
-
-def _slug(label: str | None) -> str:
-    """Filename-safe slug from an agent label (``coder:s1r2`` -> ``coder-s1r2``).
-
-    Collapses any run of characters outside ``[A-Za-z0-9._-]`` to a single dash,
-    trims separators, and caps length so a label can never produce an unsafe or
-    unbounded filename. Empty / falsy labels yield ``""`` (caller omits the
-    suffix entirely).
-    """
-    if not label:
-        return ""
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-._")
-    return cleaned[:_MAX_SLUG_LEN]
+# Back-compat alias: the slug helper now lives in ``session_factory`` so the
+# eval harness can share it. Kept under its original private name here.
+_slug = slug_label
 
 
 class WorkflowSessionFactory:
@@ -109,15 +97,16 @@ class WorkflowSessionFactory:
             thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
         )
         # Run folder where each one-shot session's transcript is autosaved. When
-        # set, every ``build_workflow_session`` gets its own ``session_<n>.json``
+        # set, every ``build_workflow_session`` gets its own ``<seq>_<role>.json``
         # so the AutoSaveSubscriber (wired by ``build_session`` once an
-        # ``auto_save_path`` is present) persists it — the same mechanism chat
-        # sessions use. ``None`` keeps sessions ephemeral (the prior behaviour).
+        # ``auto_save_path`` is present) persists it — the same per-role mechanism
+        # chat/team sessions use. ``None`` keeps sessions ephemeral (the prior
+        # behaviour).
         self._save_dir = save_dir
         self._session_seq = 0
 
     def _next_save_path(self, label: str | None) -> str | None:
-        """Per-session transcript path: ``<save_dir>/session_<seq>[_<label>].json``.
+        """Per-session transcript path: ``<save_dir>/<seq>_<role>.json``.
 
         Returns ``None`` when no run folder is configured. The sequence number
         orders sessions by creation and guarantees uniqueness; incrementing it
@@ -130,9 +119,7 @@ class WorkflowSessionFactory:
             return None
         seq = self._session_seq
         self._session_seq += 1
-        slug = _slug(label)
-        stem = f"session_{seq:03d}_{slug}" if slug else f"session_{seq:03d}"
-        return os.path.join(self._save_dir, f"{stem}.json")
+        return workflow_transcript_path(self._save_dir, seq, label)
 
     def build_workflow_session(
         self,
@@ -254,24 +241,29 @@ async def run_workflow(
 
     Every other exception still propagates to the caller.
 
-    When ``save_dir`` is given, each session's transcript is autosaved there and
-    a ``workflow.json`` manifest (workflow name, args, session count, spend) is
-    written on completion — grouping the run's one-shot sessions the way the
-    team manifest groups a chat run's agents.
+    When ``save_dir`` is given the run folder mirrors a team run folder: each
+    session's conversation is autosaved per role (``<seq>_<role>.json``) and a
+    ``workflow.json`` manifest (workflow name, args, session count, spend) ties
+    them together the way the team manifest groups a chat run's agents.
 
-    A saved run also records a fine-grained JSONL trajectory
-    (``<save_dir>/trajectory.jsonl``: one ``llm_call`` / ``tool_exec`` /
-    ``workflow_phase`` / ``workflow_log`` record per step, with tokens and
-    latency) via an auto-wired :class:`Tracer`, mirroring the eval harness's
-    "running produces a trajectory" behaviour. Pass ``trace=False`` to opt out,
-    or supply your own ``tracer`` to keep ownership (it is then not auto-closed).
+    A saved run also records the run's orchestration signals to a single
+    ``<save_dir>/orchestration.jsonl`` (one ``workflow_phase`` / ``workflow_log``
+    /  ``llm_call`` / ``tool_exec`` record per step, with tokens and latency) via
+    an auto-wired :class:`Tracer` — the scheduling/step trace kept out of the
+    per-role conversations. Pass ``trace=False`` to opt out, or supply your own
+    ``tracer`` to keep ownership (it is then not auto-closed).
     """
+    fn = _resolve_spec_fn(spec_or_fn)
+    name = spec_or_fn.name if isinstance(spec_or_fn, WorkflowSpec) else getattr(fn, "__name__", "workflow")
+
     # Own a Tracer only when saving, not opted out, and the caller didn't bring
     # one; close it in the finally below so the file handle is released even if
-    # the workflow raises. A caller-supplied tracer keeps its own lifecycle.
+    # the workflow raises. A caller-supplied tracer keeps its own lifecycle. The
+    # ``run_id`` is the workflow name (meaningful in each record); the on-disk
+    # file is always ``orchestration.jsonl`` in the run folder.
     owns_tracer = tracer is None and save_dir is not None and trace
     if owns_tracer:
-        tracer = Tracer(run_id=WORKFLOW_TRACE_RUN_ID, output_dir=save_dir)
+        tracer = Tracer(run_id=name, output_dir=save_dir, filename=ORCHESTRATION_FILENAME)
 
     ctx = build_workflow_context(
         cfg=cfg,
@@ -282,8 +274,6 @@ async def run_workflow(
         max_concurrency=max_concurrency,
         save_dir=save_dir,
     )
-    fn = _resolve_spec_fn(spec_or_fn)
-    name = spec_or_fn.name if isinstance(spec_or_fn, WorkflowSpec) else getattr(fn, "__name__", "workflow")
     try:
         try:
             result = await fn(ctx, args)
@@ -311,7 +301,7 @@ def _write_workflow_manifest(
 ) -> None:
     """Write ``<save_dir>/workflow.json`` summarising the run.
 
-    Ties the run folder's anonymous ``session_<n>.json`` transcripts to the
+    Ties the run folder's per-role ``<seq>_<role>.json`` transcripts to the
     workflow that produced them, mirroring the chat ``team.json`` manifest.
     """
     manifest = {
@@ -321,7 +311,9 @@ def _write_workflow_manifest(
         "tokens_spent": ctx.budget.spent(),
         "budget_total": ctx.budget.total,
     }
-    SessionStore().save_manifest(os.path.join(save_dir, "workflow.json"), manifest)
+    SessionStore().save_manifest(
+        os.path.join(save_dir, WORKFLOW_MANIFEST_FILENAME), manifest
+    )
 
 
 def discover_workflows(directory: str) -> Registry:

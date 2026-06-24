@@ -114,6 +114,21 @@ def test_make_run_dir_is_timestamped_and_collision_safe(tmp_path):
     assert b != a  # same-second collision gets a suffix
 
 
+def test_make_run_dir_prefix_distinguishes_workflow_from_team(tmp_path):
+    from opencollab.bootstrap.session_factory import WORKFLOW_RUN_PREFIX
+
+    base = os.path.join(str(tmp_path), ".opencollab", "sessions")
+    team = make_run_dir(str(tmp_path))
+    workflow = make_run_dir(str(tmp_path), prefix=WORKFLOW_RUN_PREFIX)
+
+    # Both share the sessions/ parent, but the workflow folder name carries the
+    # prefix so an ``ls`` tells the two apart at a glance.
+    assert os.path.dirname(team) == base
+    assert os.path.dirname(workflow) == base
+    assert os.path.basename(workflow).startswith(WORKFLOW_RUN_PREFIX)
+    assert not os.path.basename(team).startswith(WORKFLOW_RUN_PREFIX)
+
+
 # --------------------------------------------------------------------------
 # Per-message timestamps (clean in-memory sidecar, merged on save)
 # --------------------------------------------------------------------------
