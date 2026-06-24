@@ -349,6 +349,7 @@ class LLMPort(Protocol):
         thinking: bool = False,
         thinking_params: dict[str, Any] | None = None,
         tool_choice: str | None = None,
+        top_p: float | None = None,
     ) -> CompletionResponse:
         ...
 

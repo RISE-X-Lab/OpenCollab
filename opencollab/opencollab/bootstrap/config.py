@@ -12,6 +12,8 @@ Supported variables:
     OPENCOLLAB_BASE_URL   — API base URL (also reads OPENAI_BASE_URL)
     OPENCOLLAB_BUDGET     — default token budget
     OPENCOLLAB_TEMPERATURE — LLM sampling temperature (default 0.2)
+    OPENCOLLAB_TOP_P      — LLM nucleus-sampling top_p (0..1; unset/empty → None,
+                            i.e. the provider default, so the request is unchanged)
     OPENCOLLAB_THINKING   — enable provider "thinking"/reasoning passthrough (bool, default off)
     OPENCOLLAB_THINKING_PARAMS — JSON object of extra request params sent when
                             thinking is on (default {"enable_thinking": true})
@@ -37,6 +39,13 @@ from opencollab.adapters.llm.providers import is_anthropic, required_env_key
 # runtime, and the headless evaluator.
 DEFAULT_TEMPERATURE = 0.2
 
+# Authoritative top_p (nucleus-sampling) default. ``None`` means "do not send a
+# top_p" so every existing request stays byte-for-byte unchanged — only an
+# explicit OPENCOLLAB_TOP_P (or per-call override) adds the knob. Mirrors the
+# temperature flow: resolved once here, threaded through the LLM client / both
+# providers / the headless evaluator.
+DEFAULT_TOP_P: float | None = None
+
 # Provider "thinking"/reasoning passthrough. OFF by default so every existing
 # runtime path is byte-for-byte unchanged. When enabled, ``DEFAULT_THINKING_PARAMS``
 # is the request payload sent to the OpenAI-compatible API as ``extra_body`` (for
@@ -55,6 +64,21 @@ def _parse_bool(value: str | None, *, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in _TRUTHY
+
+
+def _parse_top_p(value: str | None) -> float | None:
+    """Parse the top_p env string to ``float`` or ``None``.
+
+    Unset or empty/whitespace-only → ``None`` (the provider default, request
+    unchanged). A real number is returned as a float; range validation is left
+    to the pydantic field so an out-of-range value fails loudly.
+    """
+    if value is None:
+        return None
+    stripped = value.strip()
+    if not stripped:
+        return None
+    return float(stripped)
 
 
 def _parse_thinking_params(value: str | None) -> dict[str, Any]:
@@ -85,10 +109,21 @@ class OpenCollabConfig(BaseModel):
     base_url: str | None = None
     budget: int = Field(default=200_000, ge=1)
     temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0.0, le=2.0)
+    top_p: float | None = Field(default=DEFAULT_TOP_P, ge=0.0, le=1.0)
     thinking: bool = Field(default=DEFAULT_THINKING)
     thinking_params: dict[str, Any] = Field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
     llm_timeout: float = Field(default=600.0, gt=0)
     filter_messages: bool = Field(default=False)
+
+    @field_validator("top_p", mode="before")
+    @classmethod
+    def _coerce_top_p(cls, value: Any) -> Any:
+        # Accept the env/.env string form: empty/whitespace → None (unchanged
+        # request), a real number → float. Mirrors temperature accepting its
+        # string form, but defaults to None rather than a numeric default.
+        if isinstance(value, str):
+            return _parse_top_p(value)
+        return value
 
     @field_validator("thinking", mode="before")
     @classmethod
@@ -296,6 +331,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         "base_url": base_url_value,
         "budget": resolve("OPENCOLLAB_BUDGET", default="200000"),
         "temperature": resolve("OPENCOLLAB_TEMPERATURE", default=str(DEFAULT_TEMPERATURE)),
+        "top_p": resolve("OPENCOLLAB_TOP_P", default=None),
         "thinking": resolve("OPENCOLLAB_THINKING", default=str(DEFAULT_THINKING)),
         "thinking_params": resolve("OPENCOLLAB_THINKING_PARAMS"),
         "llm_timeout": resolve("OPENCOLLAB_LLM_TIMEOUT", default="600"),

@@ -232,6 +232,58 @@ def test_openai_tool_choice_required_is_passed_through():
     assert kwargs["tool_choice"] == "required"
 
 
+# ---------------------------------------------------------------------------
+# top_p nucleus sampling — included only when set, omitted (request unchanged)
+# when None. Mirrors the temperature/thinking conditional flow.
+# ---------------------------------------------------------------------------
+
+
+def test_openai_top_p_included_when_set():
+    """top_p set -> the request carries the knob with that exact value."""
+    kwargs = build_openai_kwargs(
+        "gpt-4o",
+        [{"role": "user", "content": "hi"}],
+        None,
+        0.2,
+        top_p=0.9,
+    )
+    assert kwargs["top_p"] == 0.9
+
+
+def test_openai_top_p_omitted_when_none():
+    """top_p None (default) -> no top_p key, so the request is unchanged."""
+    kwargs = build_openai_kwargs(
+        "gpt-4o",
+        [{"role": "user", "content": "hi"}],
+        None,
+        0.2,
+    )
+    assert "top_p" not in kwargs
+
+
+def test_anthropic_top_p_included_when_set():
+    """Anthropic parity: top_p set -> the payload carries it."""
+    kwargs = build_anthropic_kwargs(
+        "claude",
+        [{"role": "user", "content": "hi"}],
+        None,
+        0.2,
+        top_p=0.8,
+    )
+    assert kwargs["top_p"] == 0.8
+
+
+def test_anthropic_top_p_omitted_when_none():
+    """Anthropic parity: top_p None -> no top_p key (request unchanged)."""
+    kwargs = build_anthropic_kwargs(
+        "claude",
+        [{"role": "user", "content": "hi"}],
+        None,
+        0.2,
+    )
+    assert "top_p" not in kwargs
+
+
 def test_anthropic_tool_choice_required_maps_to_any():
     """Anthropic wants a dict form; 'required' -> {'type': 'any'}, None omits it."""
     tools = [{"function": {"name": "f", "parameters": {}}}]

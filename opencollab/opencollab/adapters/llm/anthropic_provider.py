@@ -36,6 +36,7 @@ def _build_request_kwargs(
     thinking: bool = False,
     thinking_params: dict | None = None,
     tool_choice: str | None = None,
+    top_p: float | None = None,
 ) -> dict[str, Any]:
     system_parts, anthropic_messages = convert_to_anthropic_messages(messages)
 
@@ -45,6 +46,10 @@ def _build_request_kwargs(
         "max_tokens": DEFAULT_MAX_OUTPUT_TOKENS,
         "temperature": temperature,
     }
+    # Nucleus sampling rides along ONLY when explicitly set; when None the key is
+    # omitted so the request is byte-for-byte identical to today's behavior.
+    if top_p is not None:
+        kwargs["top_p"] = top_p
     if system_parts:
         kwargs["system"] = "\n\n".join(system_parts)
     if tools:
@@ -82,10 +87,11 @@ async def complete_anthropic(
     thinking: bool = False,
     thinking_params: dict | None = None,
     tool_choice: str | None = None,
+    top_p: float | None = None,
 ) -> LLMResponse:
     """Single-shot completion against the Anthropic API."""
     kwargs = _build_request_kwargs(
-        model, messages, tools, temperature, thinking, thinking_params, tool_choice
+        model, messages, tools, temperature, thinking, thinking_params, tool_choice, top_p
     )
     resp = await with_retry(
         lambda: client.messages.create(**kwargs),

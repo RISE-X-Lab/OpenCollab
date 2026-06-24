@@ -38,6 +38,7 @@ from opencollab.bootstrap.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_THINKING,
     DEFAULT_THINKING_PARAMS,
+    DEFAULT_TOP_P,
 )
 from opencollab.domain.agent import Agent
 from opencollab.harness.test_injection import apply_test_patch
@@ -144,6 +145,7 @@ class _EvalSessionFactory:
         max_steps: int,
         default_toolset: Sequence[Tool],
         temperature: float = DEFAULT_TEMPERATURE,
+        top_p: float | None = DEFAULT_TOP_P,
         thinking: bool = DEFAULT_THINKING,
         thinking_params: dict | None = None,
     ) -> None:
@@ -157,6 +159,7 @@ class _EvalSessionFactory:
         self._max_steps = max_steps
         self._default_toolset = list(default_toolset)
         self._temperature = temperature
+        self._top_p = top_p
         self._thinking = thinking
         self._thinking_params = (
             thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
@@ -186,6 +189,7 @@ class _EvalSessionFactory:
             api_key=self._api_key,
             base_url=self._base_url,
             temperature=self._temperature,
+            top_p=self._top_p,
             thinking=use_thinking,
             thinking_params=self._thinking_params,
             tool_choice=tool_choice,
@@ -211,6 +215,7 @@ def _build_eval_session_factory(
     max_steps: int,
     default_toolset: Sequence[Tool],
     temperature: float = DEFAULT_TEMPERATURE,
+    top_p: float | None = DEFAULT_TOP_P,
     thinking: bool = DEFAULT_THINKING,
     thinking_params: dict | None = None,
 ) -> _EvalSessionFactory:
@@ -226,6 +231,7 @@ def _build_eval_session_factory(
         max_steps=max_steps,
         default_toolset=default_toolset,
         temperature=temperature,
+        top_p=top_p,
         thinking=thinking,
         thinking_params=thinking_params,
     )
@@ -244,6 +250,7 @@ async def _run_single_session(
     base_url: str | None,
     max_steps: int,
     temperature: float = DEFAULT_TEMPERATURE,
+    top_p: float | None = DEFAULT_TOP_P,
     thinking: bool = DEFAULT_THINKING,
     thinking_params: dict | None = None,
 ) -> Session:
@@ -257,6 +264,7 @@ async def _run_single_session(
         api_key=api_key,
         base_url=base_url,
         temperature=temperature,
+        top_p=top_p,
         thinking=thinking,
         thinking_params=thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS),
     )
@@ -287,6 +295,7 @@ async def _run_workflow_mode(
     workflow: WorkflowFn,
     injected_paths: Sequence[str] | None = None,
     temperature: float = DEFAULT_TEMPERATURE,
+    top_p: float | None = DEFAULT_TOP_P,
     thinking: bool = DEFAULT_THINKING,
     thinking_params: dict | None = None,
 ) -> WorkflowContext:
@@ -309,6 +318,7 @@ async def _run_workflow_mode(
         max_steps=max_steps,
         default_toolset=tools,
         temperature=temperature,
+        top_p=top_p,
         thinking=thinking,
         thinking_params=thinking_params,
     )
@@ -394,6 +404,7 @@ async def run_eval_task(
     max_steps: int = DEFAULT_MAX_STEPS,
     workflow: WorkflowFn | None = None,
     temperature: float = DEFAULT_TEMPERATURE,
+    top_p: float | None = DEFAULT_TOP_P,
     thinking: bool = DEFAULT_THINKING,
     thinking_params: dict | None = None,
 ) -> EvalResult:
@@ -453,6 +464,7 @@ async def run_eval_task(
                 base_url=base_url,
                 max_steps=max_steps,
                 temperature=temperature,
+                top_p=top_p,
                 thinking=thinking,
                 thinking_params=thinking_params,
             )
@@ -471,6 +483,7 @@ async def run_eval_task(
                 workflow=workflow,
                 injected_paths=injected_paths,
                 temperature=temperature,
+                top_p=top_p,
                 thinking=thinking,
                 thinking_params=thinking_params,
             )

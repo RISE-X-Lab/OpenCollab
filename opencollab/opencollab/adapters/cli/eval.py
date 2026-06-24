@@ -35,7 +35,7 @@ def eval_cmd(
         tasks_file=tasks_file, model=cfg["model"], provider=cfg["provider"],
         api_key=cfg["api_key"], base_url=cfg["base_url"], output_dir=output_dir,
         concurrency=concurrency, max_tokens=max_tokens, timeout=timeout,
-        temperature=cfg["temperature"],
+        temperature=cfg["temperature"], top_p=cfg.get("top_p"),
         thinking=cfg["thinking"], thinking_params=cfg["thinking_params"],
     ))
 
@@ -46,6 +46,7 @@ async def _eval(
     output_dir: str, concurrency: int,
     max_tokens: int, timeout: float,
     temperature: float,
+    top_p: float | None = None,
     thinking: bool = False,
     thinking_params: dict | None = None,
 ):
@@ -78,6 +79,7 @@ async def _eval(
         base_url=base_url,
         output_dir=output_dir,
         temperature=temperature,
+        top_p=top_p,
         thinking=thinking,
         thinking_params=thinking_params,
     )

@@ -64,6 +64,7 @@ class LLMClient:
         thinking: bool = False,
         thinking_params: dict[str, Any] | None = None,
         tool_choice: str | None = None,
+        top_p: float | None = None,
     ) -> LLMResponse:
         """Single-shot completion. Returns full response.
 
@@ -73,6 +74,9 @@ class LLMClient:
 
         ``tool_choice`` is ``None`` by default (provider default, i.e. "auto");
         a caller may pass ``"required"`` to force the model to emit a tool call.
+
+        ``top_p`` is ``None`` by default (provider default); when set it is sent
+        as the nucleus-sampling knob. Unset == byte-identical request as today.
         """
         if self._anthropic:
             return await complete_anthropic(
@@ -85,6 +89,7 @@ class LLMClient:
                 thinking=thinking,
                 thinking_params=thinking_params,
                 tool_choice=tool_choice,
+                top_p=top_p,
             )
         return await complete_openai(
             self._openai,
@@ -96,4 +101,5 @@ class LLMClient:
             thinking=thinking,
             thinking_params=thinking_params,
             tool_choice=tool_choice,
+            top_p=top_p,
         )
