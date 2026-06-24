@@ -332,7 +332,8 @@ def test_steering_status_line_built_from_budget_and_steps():
     msg, override, _level = runner._build_steering_block(state.messages)
     assert override is None
     assert msg["role"] == "user"
-    assert "120k/500k tokens used" in msg["content"]
+    # 120k of 500k used -> 380k left; 40 - 10 steps -> ~30 left.
+    assert "380k/500k tokens left" in msg["content"]
     assert "~30 steps left" in msg["content"]
 
 
@@ -347,7 +348,7 @@ def test_steering_status_built_even_when_history_ends_with_user():
     msg, override, _level = runner._build_steering_block(state.messages)
     assert override is None
     assert msg["role"] == "user"
-    assert "tokens used" in msg["content"]
+    assert "tokens left" in msg["content"]
     assert "without" not in msg["content"]  # status-line only, no read nudge
 
 
@@ -383,7 +384,7 @@ def test_steering_no_write_nudge_for_readonly_session():
     msg, override, _level = runner._build_steering_block(state.messages)
     assert override is None
     assert "without" not in msg["content"]
-    assert msg["content"].startswith("[Status:")
+    assert msg["content"].startswith("[Budget:")
 
 
 def test_steering_hard_rung_forces_tool_choice_through_run_loop():
@@ -405,11 +406,17 @@ def test_steering_hard_rung_forces_tool_choice_through_run_loop():
     assert llm.calls[0]["tool_choice"] == "required"
 
 
-def test_steering_is_ephemeral_and_reaches_the_provider():
-    # The steering block must be SENT to the model but NEVER persisted to
-    # state.messages (rebuilt fresh each turn; out of transcript / eager-clear).
+def test_steering_reaches_provider_and_is_persisted():
+    # The steering block is SENT to the model AND persisted to state.messages, so
+    # the budget the model saw is saved to the transcript. History ends on a user
+    # turn, so the block is folded into it IN PLACE (no extra message).
     state = SessionState(
-        messages=[{"role": "system", "content": "sys"}], used_tokens=1_000, step_count=1
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "go"},
+        ],
+        used_tokens=1_000,
+        step_count=1,
     )
     llm = FakeLLM([llm_response(content="done")])
     runner = build_runner(state=state, llm=llm, max_budget_tokens=100_000, max_steps=10)
@@ -417,8 +424,10 @@ def test_steering_is_ephemeral_and_reaches_the_provider():
     run(runner.run_loop())
 
     sent = llm.calls[0]["messages"]
-    assert any(m["role"] == "user" and "Status:" in (m.get("content") or "") for m in sent)
-    assert not any("Status:" in (m.get("content") or "") for m in state.messages)
+    assert any(m["role"] == "user" and "Budget:" in (m.get("content") or "") for m in sent)
+    # Persisted by folding into the user turn — no new message added.
+    assert any("Budget:" in (m.get("content") or "") for m in state.messages)
+    assert "go" in state.messages[1]["content"] and "Budget:" in state.messages[1]["content"]
 
 
 def test_steering_folds_into_last_user_message_no_double_user():
@@ -433,7 +442,6 @@ def test_steering_folds_into_last_user_message_no_double_user():
         used_tokens=50_000,
         step_count=2,
     )
-    original_last_content = state.messages[-1]["content"]
     llm = FakeLLM([llm_response(content="done")])
     runner = build_runner(state=state, llm=llm, max_budget_tokens=200_000, max_steps=20)
 
@@ -443,18 +451,18 @@ def test_steering_folds_into_last_user_message_no_double_user():
     # (a) the outgoing prompt's LAST message is the user turn carrying the status.
     assert sent[-1]["role"] == "user"
     assert "fix the bug" in sent[-1]["content"]  # original content preserved
-    assert "tokens used" in sent[-1]["content"]  # status folded in
+    assert "tokens left" in sent[-1]["content"]  # status folded in
     # (b) no two consecutive user messages (Anthropic's alternation contract).
     assert _no_consecutive_same_role(sent)
-    # (c) state.messages is NOT mutated — the persisted user message stays pristine.
-    assert state.messages[-1]["content"] == original_last_content
-    assert "tokens used" not in state.messages[-1]["content"]
-    assert not any("tokens used" in (m.get("content") or "") for m in state.messages)
+    # (c) state.messages IS updated — the budget is persisted into the user turn,
+    #     preserving its original text.
+    assert "fix the bug" in state.messages[-1]["content"]
+    assert "tokens left" in state.messages[-1]["content"]
 
 
 def test_steering_folds_into_list_content_user_message():
-    # Provider content-parts form: the fold appends a text part instead of mutating
-    # the existing list, leaving state.messages untouched.
+    # Provider content-parts form: the fold appends a text part as a NEW list and
+    # persists it into state.messages (the original ``parts`` list is left intact).
     parts = [{"type": "text", "text": "fix the bug"}]
     state = SessionState(
         messages=[
@@ -472,11 +480,13 @@ def test_steering_folds_into_list_content_user_message():
     sent_last = llm.calls[0]["messages"][-1]
     assert sent_last["role"] == "user"
     assert isinstance(sent_last["content"], list)
-    assert any("tokens used" in p.get("text", "") for p in sent_last["content"])
-    # state.messages list-content is pristine: same length, no status text leaked.
-    assert len(state.messages[-1]["content"]) == 1
-    assert state.messages[-1]["content"] is parts  # not replaced
-    assert all("tokens used" not in p.get("text", "") for p in parts)
+    assert any("tokens left" in p.get("text", "") for p in sent_last["content"])
+    # state.messages list-content now carries the persisted budget part (the new
+    # list does not mutate the caller's original ``parts`` object).
+    assert len(state.messages[-1]["content"]) == 2
+    assert state.messages[-1]["content"][0] == {"type": "text", "text": "fix the bug"}
+    assert any("tokens left" in p.get("text", "") for p in state.messages[-1]["content"])
+    assert parts == [{"type": "text", "text": "fix the bug"}]  # original untouched
 
 
 # --------------------------------------------------------------------------- #
@@ -603,14 +613,22 @@ def test_no_steering_nudge_trace_for_readonly_session():
     assert _steering_steps(tracer) == []
 
 
-def test_steering_nudge_not_persisted_to_messages():
-    # The nudge text reaches the provider but is NEVER written to state.messages.
+def test_steering_block_ephemeral_on_continuation_step():
+    # On a continuation step (history ends with a tool message, not a user turn)
+    # the steering block (status + hard write-nudge) reaches the provider in the
+    # shaped copy, but stays OUT of the persisted state.messages — there is no
+    # user turn to fold it into, and a standalone block would pollute the
+    # transcript / break role alternation.
     tracer = FakeTracer()
     runner, state = _steering_runner(READS_NUDGE_HARD, tracer=tracer)
     run(runner.call_llm(runner.build_tool_schemas()))
 
+    sent = runner.llm.calls[0]["messages"]
+    assert any("STOP reading" in (m.get("content") or "") for m in sent)
+    assert any("Budget:" in (m.get("content") or "") for m in sent)
+    # Not persisted: the model saw it, the transcript did not gain it.
     assert not any("STOP reading" in (m.get("content") or "") for m in state.messages)
-    assert not any("Status:" in (m.get("content") or "") for m in state.messages)
+    assert not any("Budget:" in (m.get("content") or "") for m in state.messages)
 
 
 def test_run_loop_without_tool_calls_marks_done():
@@ -673,11 +691,17 @@ def test_empty_stop_retries_once_with_nudge_then_succeeds():
         for m in retry_sent
     )
     assert _no_consecutive_same_role(retry_sent)
-    # The nudge is persisted to state.messages as its own pristine dict (the fold
-    # only ever touches the shaped copy) preceded by an assistant placeholder so
-    # roles still alternate (no two consecutive user messages, which Anthropic
-    # rejects).
-    assert {"role": "user", "content": _EMPTY_STOP_NUDGE} in state.messages
+    # The nudge is persisted to state.messages, preceded by an assistant
+    # placeholder so roles still alternate (no two consecutive user messages,
+    # which Anthropic rejects). The retry's per-turn budget block folds into that
+    # same user turn, so the nudge now leads a user message rather than standing
+    # alone as a bare dict.
+    assert any(
+        m["role"] == "user"
+        and isinstance(m.get("content"), str)
+        and m["content"].startswith(_EMPTY_STOP_NUDGE)
+        for m in state.messages
+    )
     assert _no_consecutive_same_role(state.messages)
     assert {"role": "assistant", "content": _EMPTY_STOP_PLACEHOLDER} in state.messages
     # No bare empty assistant message was ever appended.

@@ -33,11 +33,15 @@ self-awareness + a reads-without-write escalation.
    last stable *system* message). Placed before the breakpoint it would bust the
    prefix cache every turn. No `cache_control` is wired today, but the placement
    must be cache-ready now so it doesn't have to move later.
-2. **Ephemeral.** Steering is appended to the **shaped copy** of the message list
-   at send time and is **never** written to `state.messages`. This keeps it out
-   of the transcript/replay, out of the eager-clear index, and rebuilt fresh each
-   turn (mirrors the `_EMPTY_STOP_NUDGE` placeholder discipline,
-   `session_run.py` ~305-332, which never persists the nudge).
+2. **Persist on user turns, ephemeral on continuations.** At the *start* of a
+   turn (history ends on a `user` message) the block is folded into that message
+   **in place** — no new message, indices and the timestamp sidecar unchanged —
+   so the budget the model saw is saved to `state.messages`/the transcript. On a
+   *continuation* step (history ends on a `tool`/`assistant` message) there is no
+   user turn to fold into, so the block rides in the **shaped copy** only and is
+   not persisted. Either way the block is rebuilt fresh from the live counters
+   each turn; a continuation block never lands in the transcript/replay or the
+   eager-clear index (mirrors the `_EMPTY_STOP_NUDGE` placeholder discipline).
 3. **Role/position.** A `role:"user"` message appended last (matches the existing
    nudge; recency-weighted; valid after a `role:"tool"` batch).
 
@@ -45,8 +49,10 @@ self-awareness + a reads-without-write escalation.
 
 `application/session_run.py :: SessionRunUseCase.call_llm()` — AFTER
 `self.shaper.shape(self.state.messages)` (~line 472), BEFORE `self._complete(...)`
-(~line 477). A new `_build_steering_block()` returns the message (or `None`); the
-caller appends it to the shaped list only. All session creation flows
+(~line 477). `_build_steering_block()` returns the message; the caller folds it
+into the trailing `user` message of `state.messages` in place when the turn
+starts there (persisted), otherwise appends it to the shaped copy only
+(ephemeral). All session creation flows
 (single-session, analyst-solve spawned coder/tester/scout) go through the same
 `build_session()` factory, so the seam serves **every** mode uniformly.
 
@@ -82,7 +88,7 @@ reads_since_last_edit: int = 0   # reset on a successful file_write/apply_patch
 
 **Always (every session, every turn):** budget self-awareness.
 ```
-[Status: {spent_k}k/{total_k}k tokens used, ~{steps_left} steps left. Spend them landing and verifying a fix, not exploring.]
+[Budget: ~{remaining_k}k/{total_k}k tokens left, ~{steps_left} steps left.]
 ```
 
 **Conditional — soft write-nudge.** Appended ONLY when BOTH (a) the session's
@@ -147,8 +153,9 @@ Composition rules:
   `apply_to()` applies it.
 - `application/tool_execution.py`: `_READ_TOOLS`/`_WRITE_TOOLS` constants;
   increment/reset in `process()`.
-- `application/session_run.py`: `_build_steering_block()`; append in `call_llm()`
-  after shape; set `tool_choice="required"` for Rung B.
+- `application/session_run.py`: `_build_steering_block()`; in `call_llm()` fold
+  into the trailing `user` turn (persisted) or append to the shaped copy on a
+  continuation step (ephemeral); set `tool_choice="required"` for Rung B.
 - `workflows/analyst_solve.py` (P1): Rung C in `_run_phase`; thresholds as
   constants.
 
@@ -156,8 +163,9 @@ Composition rules:
 
 Mirror `tests/test_session_run_loop.py` / `test_eager_tool_clear_shaper.py`:
 - steering block built with correct budget/steps numbers;
-- steering is **never** persisted to `state.messages` (ephemeral);
-- steering appended **last** in the shaped list;
+- steering folded into the trailing `user` turn (persisted, in place) when the
+  turn starts there; ephemeral (shaped copy only) on a continuation step;
+- steering appears **last** in the shaped list;
 - write-nudge fires only when a write tool is present AND reads ≥ soft;
 - hard rung sets `tool_choice="required"` at reads ≥ hard;
 - `reads_since_last_edit` increments on file_read/grep, resets on file_write/
@@ -167,8 +175,9 @@ Mirror `tests/test_session_run_loop.py` / `test_eager_tool_clear_shaper.py`:
 
 ## Risks & mitigations
 
-- **Cache bust** → steering is last + ephemeral (see constraints). Verified: no
-  `cache_control` wired yet; placement is cache-ready.
+- **Cache bust** → steering is last (folded into the trailing user turn, or
+  appended to the shaped copy; see constraints). Verified: no `cache_control`
+  wired yet; placement is cache-ready.
 - **Token bloat** → cap the block at ~200 tokens; budget line is ~25 tokens.
 - **Tool-name drift** → `_READ_TOOLS`/`_WRITE_TOOLS` constants, one place.
 - **Read-only sessions mis-nudged** → write-nudge gated on write-tool presence.

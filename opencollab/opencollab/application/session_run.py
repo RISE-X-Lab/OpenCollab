@@ -59,9 +59,10 @@ _EMPTY_STOP_NUDGE = (
 _EMPTY_STOP_PLACEHOLDER = "[no output produced this turn]"
 
 # Closed-loop steering: a lean per-turn block (budget self-awareness + a
-# reads-without-write escalation) appended to the SHAPED copy only — never
-# persisted — so an open-loop run stops drifting (e.g. django-11564 read 107
-# times and wrote 0). Soft: advise a write; hard: demand it + force a tool call.
+# reads-without-write escalation) injected each turn. At the start of a turn it
+# is folded into the trailing user message IN PLACE, so the budget the model saw
+# is saved to the transcript; on continuation steps it rides in the shaped copy
+# only (ephemeral). Soft: advise a write; hard: demand it + force a tool call.
 _READ_TOOLS = frozenset({"file_read", "grep"})
 _WRITE_TOOLS = frozenset({"file_write", "apply_patch"})
 READS_NUDGE_SOFT = 8
@@ -484,22 +485,17 @@ class SessionRunUseCase:
         post-user turn ``reads_since_last_edit`` is ~0 so only the status line is
         returned, which is correct.
 
-        The caller folds this content into the SHAPED COPY's last message when the
-        shaped history ends with a ``user`` message (appending a separate ``user``
-        block there would send two consecutive user turns, which Anthropic
-        rejects); otherwise it appends the message as a new block. Either way it is
-        never persisted to ``state.messages`` (rebuilt fresh each turn, kept out of
-        the transcript and the eager-clear index, and placed last so it cannot bust
-        a cached prefix).
+        The caller folds this content into ``state.messages``' last message when
+        the history ends with a ``user`` message (the start of a turn), persisting
+        the budget to the transcript without adding a message; on a continuation
+        step (non-user tail) it rides in the shaped copy only. A fresh block is
+        rebuilt each turn from the live counters either way.
         """
         total = self.max_budget_tokens or 0
-        spent_k = self.state.used_tokens // 1000
+        remaining_k = max(0, total - self.state.used_tokens) // 1000
         total_k = total // 1000
         steps_left = max(0, self.max_steps - self.state.step_count)
-        status = (
-            f"[Status: {spent_k}k/{total_k}k tokens used, ~{steps_left} steps left. "
-            "Spend them landing and verifying a fix, not exploring.]"
-        )
+        status = f"[Budget: ~{remaining_k}k/{total_k}k tokens left, ~{steps_left} steps left.]"
 
         reads = self.state.reads_since_last_edit
         has_write = any(
@@ -525,6 +521,20 @@ class SessionRunUseCase:
             level = "soft"
         return {"role": "user", "content": status + extra}, override, level
 
+    def _fold_steering(self, last_user_msg: dict, steering_text: str) -> dict:
+        """Return a copy of a trailing ``user`` message with the steering line
+        folded into its content (string concat, or content-part append for the
+        provider list form). The original dict is not mutated.
+        """
+        content = last_user_msg.get("content")
+        if isinstance(content, str):
+            folded = f"{content}\n\n{steering_text}" if content else steering_text
+        elif isinstance(content, list):
+            folded = [*content, {"type": "text", "text": steering_text}]
+        else:
+            folded = steering_text
+        return {**last_user_msg, "content": folded}
+
     async def call_llm(self, tools: list[dict] | None) -> CompletionResponse:
         """Complete against the shaped view of history.
 
@@ -540,33 +550,33 @@ class SessionRunUseCase:
         e.g. the pinned identity/team/task seed alone exceeds the window — raise
         ``_ContextOverflowStop`` so the caller stops the session gracefully.
         """
+        # Closed-loop steering: build a fresh per-turn block from the live
+        # counters. When history ends on a USER turn (the start of a turn) the
+        # block is folded into that message IN PLACE — no new message, so indices
+        # and the timestamp sidecar are unchanged — and thus SAVED to the
+        # transcript. On a continuation step the tail is a tool/assistant message
+        # with no user turn to fold into, so the block rides in the shaped copy
+        # only: the model still sees it, but it stays out of the persisted history.
+        steering, tool_choice_override, steering_level = self._build_steering_block(
+            self.state.messages
+        )
+        self._maybe_trace_steering(steering_level)
+        persisted = (
+            steering is not None
+            and bool(self.state.messages)
+            and self.state.messages[-1].get("role") == "user"
+        )
+        if persisted:
+            self.state.messages[-1] = self._fold_steering(
+                self.state.messages[-1], steering["content"]
+            )
         messages = (
             self.shaper.shape(self.state.messages)
             if self.shaper is not None
             else self.state.messages
         )
-        # Closed-loop steering: a fresh per-turn block is folded into / appended to
-        # the SHAPED COPY only (a new list, new dicts — never mutate state.messages
-        # even when shaper is None, so no budget text leaks into the transcript or
-        # the cacheable prefix). It always stays last to keep that prefix unchanged.
-        steering, tool_choice_override, steering_level = self._build_steering_block(messages)
-        if steering is not None and messages:
-            steering_text = steering["content"]
-            last = messages[-1]
-            if last.get("role") == "user":
-                content = last.get("content")
-                if isinstance(content, str):
-                    folded = f"{content}\n\n{steering_text}" if content else steering_text
-                elif isinstance(content, list):
-                    folded = [*content, {"type": "text", "text": steering_text}]
-                else:
-                    folded = steering_text
-                messages = [*messages[:-1], {**last, "content": folded}]
-            else:
-                messages = [*messages, steering]
-        elif steering is not None:
+        if steering is not None and not persisted:
             messages = [*messages, steering]
-        self._maybe_trace_steering(steering_level)
         try:
             return await self._complete(messages, tools, tool_choice_override)
         except Exception as exc:
@@ -579,8 +589,9 @@ class SessionRunUseCase:
             if self.shaper is not None
             else self.state.messages
         )
-        # No steering on the emergency-shrink retry: this path is fighting for
-        # token space, so it stays byte-identical to the pre-steering behaviour.
+        # No FRESH steering on the emergency-shrink retry: this path is fighting
+        # for token space. Any budget folded into a trailing user turn already
+        # rides along in history; no new block is added here.
         logger.warning(
             "context overflow on aid=%s: recompacting (%d -> %d messages) and retrying once",
             self.state.aid,
