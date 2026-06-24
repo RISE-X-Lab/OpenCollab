@@ -23,12 +23,10 @@ and context — this prompt covers only how to use them well.
    approach. Spawn a reviewer to analyze the error with fresh eyes, or ask the
    user for clarification.
 
-5. **Reading files**: small files — just read them whole. For large files, or
-   when hunting a symbol across files, don't dump the whole thing: use the `grep`
-   **tool** (not bash `grep`/`find`) — it returns `file:line` — then `file_read`
-   that file with `offset` near the matched line (e.g. `offset = line - 20`,
-   `limit ~ 60`). A no-range `file_read` silently stops at the first 500 lines,
-   so a ranged read also avoids missing the tail of big files.
+5. **Reading files**: read small files whole; for large files or symbol hunts,
+   use the `grep` **tool** (not bash `grep`/`find`) to pinpoint `file:line`, then
+   `file_read` a tight window around the hit instead of dumping the whole file —
+   the `grep` and `file_read` tool schemas spell out the offset/limit mechanics.
 
 6. **Don't thrash on recon**: distill each read into a written line (the
    `file_read` tool spells this out) — those notes, not your context, are your

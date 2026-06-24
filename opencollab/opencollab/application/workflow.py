@@ -50,8 +50,8 @@ DEFAULT_DEADLINE_MARGIN_SECONDS = 120.0
 # Appended to a schema= prompt: the agent must finish by emitting structured
 # output via the injected tool rather than free-text.
 _STRUCTURED_INSTRUCTION = (
-    "\n\nYou MUST finish by calling the `structured_output` tool exactly once "
-    "with your final result. Do not answer in free text."
+    "\n\nFinish by calling the `structured_output` tool — do not answer in "
+    "free text."
 )
 
 # Corrective message that seeds the forced-commit retry session when the first
@@ -63,11 +63,9 @@ _STRUCTURED_INSTRUCTION = (
 # imperative and tells it to commit its final result NOW from what it already
 # gathered rather than answer in free text.
 _STRUCTURED_RETRY = (
-    "You MUST call the `structured_output` tool now. Do NOT answer in prose. "
-    "You did not commit a structured_output result. Do NOT explore further and "
-    "do NOT answer in free text. Call the `structured_output` tool now, exactly "
-    "once, with your final result based on what you have already gathered, "
-    "conforming to the required schema."
+    "You MUST call the `structured_output` tool now, exactly once, with your "
+    "final result based on what you have already gathered, conforming to the "
+    "required schema. Do not explore further or answer in prose."
 )
 
 
