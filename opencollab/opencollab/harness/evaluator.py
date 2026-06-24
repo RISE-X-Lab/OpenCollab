@@ -22,6 +22,7 @@ from typing import Any
 
 from opencollab.adapters.env import DockerEnvironment, Environment, LocalEnvironment
 from opencollab.adapters.repo_map import build_repo_map_via_env
+from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.base import Tool
 from opencollab.adapters.tools.bash import BashTool
@@ -39,6 +40,11 @@ from opencollab.bootstrap.config import (
     DEFAULT_THINKING,
     DEFAULT_THINKING_PARAMS,
     DEFAULT_TOP_P,
+)
+from opencollab.bootstrap.session_factory import (
+    ORCHESTRATION_FILENAME,
+    WORKFLOW_MANIFEST_FILENAME,
+    workflow_transcript_path,
 )
 from opencollab.domain.agent import Agent
 from opencollab.harness.test_injection import apply_test_patch
@@ -130,6 +136,11 @@ class _EvalSessionFactory:
     the *same* task ``Environment`` (so each workflow agent sees the cumulative
     working-tree changes and the final ``git diff`` aggregates them) and the same
     tracer. The caller's ``tools`` override the default eval toolset when given.
+
+    When ``save_dir`` is set, each session's conversation is autosaved per role
+    (``<seq>_<role>.json``) into the task's run folder — mirroring the team /
+    CLI-workflow layout so an eval workflow reads as its roles, not one flat
+    trajectory. ``None`` keeps sessions ephemeral (the prior behaviour).
     """
 
     def __init__(
@@ -148,6 +159,7 @@ class _EvalSessionFactory:
         top_p: float | None = DEFAULT_TOP_P,
         thinking: bool = DEFAULT_THINKING,
         thinking_params: dict | None = None,
+        save_dir: str | None = None,
     ) -> None:
         self._env = env
         self._tracer = tracer
@@ -164,6 +176,22 @@ class _EvalSessionFactory:
         self._thinking_params = (
             thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
         )
+        self._save_dir = save_dir
+        self._session_seq = 0
+
+    def _next_save_path(self, label: str | None) -> str | None:
+        """Per-session transcript path within the task run folder, or ``None``.
+
+        ``<save_dir>/<seq>_<role>.json``. The sequence counter orders sessions
+        by creation and disambiguates a role that runs more than once; bumping
+        it has no ``await`` so it is atomic under cooperative scheduling even
+        when ``parallel``/``pipeline`` build many sessions concurrently.
+        """
+        if self._save_dir is None:
+            return None
+        seq = self._session_seq
+        self._session_seq += 1
+        return workflow_transcript_path(self._save_dir, seq, label)
 
     def build_workflow_session(
         self,
@@ -200,6 +228,7 @@ class _EvalSessionFactory:
             tracer=self._tracer,
             max_budget_tokens=budget,
             max_steps=self._max_steps,
+            auto_save_path=self._next_save_path(label),
         )
 
 
@@ -218,6 +247,7 @@ def _build_eval_session_factory(
     top_p: float | None = DEFAULT_TOP_P,
     thinking: bool = DEFAULT_THINKING,
     thinking_params: dict | None = None,
+    save_dir: str | None = None,
 ) -> _EvalSessionFactory:
     """Construct the per-task workflow session factory (seam for tests)."""
     return _EvalSessionFactory(
@@ -234,6 +264,7 @@ def _build_eval_session_factory(
         top_p=top_p,
         thinking=thinking,
         thinking_params=thinking_params,
+        save_dir=save_dir,
     )
 
 
@@ -298,6 +329,7 @@ async def _run_workflow_mode(
     top_p: float | None = DEFAULT_TOP_P,
     thinking: bool = DEFAULT_THINKING,
     thinking_params: dict | None = None,
+    save_dir: str | None = None,
 ) -> WorkflowContext:
     """Run ``workflow`` over a task-bound context; return the context.
 
@@ -306,6 +338,9 @@ async def _run_workflow_mode(
     them. The shared env is attached as ``ctx.env`` (a harness convention) so
     harness-layer workflows can read the working-tree diff. ``tokens_used`` /
     ``steps`` are aggregated by the caller across every session created.
+
+    ``save_dir`` (the task's run folder) is threaded to the factory so each
+    session's conversation is autosaved per role (``<seq>_<role>.json``).
     """
     factory = _build_eval_session_factory(
         env=env,
@@ -321,6 +356,7 @@ async def _run_workflow_mode(
         top_p=top_p,
         thinking=thinking,
         thinking_params=thinking_params,
+        save_dir=save_dir,
     )
     # Wall-clock deadline on the monotonic clock: the workflow checks
     # ``ctx.time_low()`` and bails to a forced final write before the
@@ -391,6 +427,34 @@ def _aggregate_markup_recovery(sessions: Sequence[Any]) -> int:
     return sum(int(getattr(s, "markup_recovered", 0)) for s in sessions)
 
 
+def _write_eval_workflow_manifest(
+    run_dir: str,
+    *,
+    task: EvalTask,
+    workflow: WorkflowFn,
+    ctx: WorkflowContext,
+) -> None:
+    """Write ``<run_dir>/workflow.json`` summarising an eval workflow run.
+
+    Best-effort: a manifest-write failure must never drop the result we just
+    computed, so any error is swallowed (the trajectory + transcripts are
+    already on disk).
+    """
+    manifest = {
+        "workflow": getattr(workflow, "__name__", "workflow"),
+        "task_id": task.task_id,
+        "sessions": len(ctx.sessions),
+        "tokens_spent": ctx.budget.spent(),
+        "budget_total": ctx.budget.total,
+    }
+    try:
+        SessionStore().save_manifest(
+            os.path.join(run_dir, WORKFLOW_MANIFEST_FILENAME), manifest
+        )
+    except Exception:  # noqa: BLE001 — manifest is observability, never fatal
+        pass
+
+
 async def run_eval_task(
     task: EvalTask,
     model: str = "gpt-4o",
@@ -421,7 +485,19 @@ async def run_eval_task(
     """
     os.makedirs(output_dir, exist_ok=True)
     start = time.monotonic()
-    tracer = Tracer(run_id=task.task_id, output_dir=os.path.join(output_dir, "trajectories"))
+    trajectories_dir = os.path.join(output_dir, "trajectories")
+    # Workflow mode gets its own per-task run folder (mirroring a team / CLI
+    # workflow run): per-role ``<seq>_<role>.json`` conversations + one
+    # ``orchestration.jsonl`` for the scheduling/step signals + a ``workflow.json``
+    # manifest. Single-session mode is unchanged — one flat ``<task_id>.jsonl``.
+    run_dir: str | None = None
+    if workflow is None:
+        tracer = Tracer(run_id=task.task_id, output_dir=trajectories_dir)
+    else:
+        run_dir = os.path.join(trajectories_dir, task.task_id)
+        tracer = Tracer(
+            run_id=task.task_id, output_dir=run_dir, filename=ORCHESTRATION_FILENAME
+        )
 
     env: Environment | None = None
     session: Session | None = None
@@ -486,6 +562,7 @@ async def run_eval_task(
                 top_p=top_p,
                 thinking=thinking,
                 thinking_params=thinking_params,
+                save_dir=run_dir,
             )
 
     except asyncio.TimeoutError:
@@ -540,6 +617,10 @@ async def run_eval_task(
         tokens_used = _aggregate_tokens(sessions)
         steps = _aggregate_steps(sessions)
         markup_recovered = _aggregate_markup_recovery(sessions)
+        # Tie the run folder's per-role transcripts to the workflow that produced
+        # them, mirroring the team ``team.json`` / CLI ``workflow.json`` manifest.
+        if run_dir is not None:
+            _write_eval_workflow_manifest(run_dir, task=task, workflow=workflow, ctx=workflow_ctx)
         # _run_workflow_mode now swallows abnormal endings to preserve metrics; it
         # stashes any genuine fault here so it still surfaces in the result.
         if error is None:
