@@ -1,82 +1,45 @@
 # OpenCollab
 
-OpenCollab is a minimal multi-agent software development framework with chat,
-team, and headless evaluation modes.
+**Run LLM coding agents three ways — as a single interactive agent, an
+autonomous team, or a deterministic workflow.**
 
-OpenCollab follows a strict clean architecture. For the layer map and
-contribution guidance, see `CLAUDE.md` and `opencollab/README.md`.
+OpenCollab turns an LLM into a software engineer that reads, edits, and tests a
+real repository. It's built to separate what the *model* contributes from what
+the *scaffolding* (context, tools, orchestration) contributes — so everything
+but the model sits behind swappable ports.
 
-## Repository Guide
+> SWE-bench Lite (n=300), team + `kimi-k2.6`, graded by the official harness:
+> **185 / 300 = 61.7% resolved**.
 
-| Path | What it is | Read next |
-|------|------------|-----------|
-| `opencollab/` | The installable Python package and `opencollab` CLI. | `opencollab/README.md` |
-| `configs/` | Runtime configuration templates and config loading notes. | `configs/README.md` |
-| `scripts/` | Repository-level launcher and benchmark helper scripts. | `scripts/README.md` |
-| `swebench/` | Docker-based SWE-bench runner. | `swebench/README.md` |
-| `docs/archive/` | Historical record: completed refactor plans, architecture surveys, and the old code map. | files within |
+## What you can run
 
-Untracked local state (gitignored, safe to ignore when reading the code):
-`evals/` (prediction outputs), `logs/`, `swe_workdir/`.
+| Mode | Command | What it is |
+|------|---------|------------|
+| **Interactive** | `opencollab` | A lead agent you chat with in the terminal; it can spawn helpers. Add a `configs/team.yaml` to run a full multi-agent team. |
+| **Workflow** | `opencollab workflow run <name>` | Deterministic multi-agent orchestration — control flow is Python, not the LLM's choice. |
+| **Eval** | `opencollab eval <tasks.jsonl>` | Headless benchmark runner (SWE-bench, etc.). |
 
-## Start Here
+## Quick start
 
-1. Create local runtime configuration from `configs/.env.example`.
-2. Start OpenCollab from the repository root with `scripts/start_opencollab.sh`.
-3. Use the nested READMEs above for setup details, CLI modes, evaluation, and
-   benchmark tooling.
+```bash
+cp configs/.env.example configs/.env   # then set OPENCOLLAB_API_KEY
+scripts/start_opencollab.sh            # bootstraps the venv, then starts the agent
+```
 
-Do not commit real API keys or local runtime state.
+Point `configs/.env` at any OpenAI-compatible (or Anthropic) endpoint. To run as
+a team, also `cp configs/team.example.yaml configs/team.yaml`. **Never commit
+real API keys.**
 
-## Context layering
+## Learn more
 
-An agent's context is not one concatenated string but an editable bundle of
-*sources*. Each `ContextSource`
-(`opencollab/opencollab/domain/context.py:55`) is tagged with three axes: which
-`ContextLayer` it belongs to, when it loads (`LoadTiming`), and where it lands
-structurally (`ContextPosition` — the system prompt vs. a user-context message).
+| You want… | Read |
+|-----------|------|
+| Install, CLI, how it works, architecture | [`opencollab/README.md`](opencollab/README.md) |
+| Configuration (model, team, sampling) | [`configs/README.md`](configs/README.md) |
+| Deterministic workflows | [`workflows/README.md`](workflows/README.md) |
+| Skills (on-demand instruction sets) | [`skills/README.md`](skills/README.md) |
+| SWE-bench eval | [`scripts/README.md`](scripts/README.md) · [`swebench/README.md`](swebench/README.md) |
+| Design docs & reviews | [`docs/`](docs/) |
 
-The layers (`domain/context.py:27`) are:
-
-| Layer | Holds |
-|-------|-------|
-| `IDENTITY` | Who the agent is — its role prompt. |
-| `TEAM` | The topology-aware "your team" section (who this role may spawn or message). |
-| `PROJECT` | Repo/project conventions (reserved; registered, loaded later). |
-| `MEMORY` | Recalled cross-session memory (reserved; registered, loaded later). |
-| `TASK` | The concrete assignment — the rendered `DelegationTask` / first turn. |
-| `TOOL_META` | Tool schemas / usage notes. |
-
-`ContextBuilder.build_plan` (`opencollab/opencollab/bootstrap/context_builder.py:70`)
-is the editorial step: it emits an ordered `ContextPlan` of these sources. The
-plan's assembly is generic over `ContextPosition` and never special-cases a
-layer, so adding a new kind of context is just registering a new source.
-`ContextPlan.system_prompt()` (`domain/context.py:94`) folds every
-`STARTUP`+`SYSTEM` source — identity and team — into the single system message,
-which `build_agent` hands to `Agent.system_prompt`. The task, project, and
-memory layers carry `USER_CONTEXT` position and are seeded as their own user
-messages instead.
-
-`TOOL_META` is registered but deferred: tool schemas already reach the model via
-function-calling, so that layer is *not* injected as prose
-(`context_builder.py:137-147`). Likewise the reserved `PROJECT`/`MEMORY` sources
-are registered now with a `loader_key` for a future lazy-loading pass but
-contribute no content at startup.
-
-The layers are **load-bearing under pressure**, not just labels. Each layer has
-a keep/shed priority (`LAYER_PRIORITY` in `domain/context.py`): identity/team/task
-rank high, project/memory low. When a `USER_CONTEXT` source is seeded it is
-stamped with an internal `_ctx` tag (layer + resolved priority) that rides along
-on the message — the same convention as `tool_call_id`, so providers ignore it.
-Sources at or above `PIN_FLOOR` (`application/shaping/pipeline.py`) are **pinned**:
-the compaction chain will never clear, snip, or summarize them, so an agent's own
-task can no longer be folded into a summary.
-
-At runtime, history is trimmed by a reactive compaction chain
-(`opencollab/opencollab/application/shaping/reactive.py`): it no-ops until the
-estimated context crosses a trigger, then degrades progressively — shed the
-lowest-priority context sources first (`LowPriorityContextShedShaper`; dormant
-until project/memory carry content), then clear old tool output, snip whole old
-tool-exchange turns, and (default-off) auto-compact the remaining non-pinned span
-to a model-generated summary. Every step is a read-time projection over a copy,
-leaving the persisted transcript intact.
+Contributing: see [`CLAUDE.md`](CLAUDE.md). Conventional commits; `refactor:`
+commits stay behavior-preserving.
