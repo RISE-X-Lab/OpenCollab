@@ -475,24 +475,23 @@ class SessionRunUseCase:
     ) -> tuple[dict | None, str | None, str | None]:
         """Build the per-turn closed-loop steering message + any tool_choice force.
 
-        Returns ``(message_or_None, tool_choice_override_or_None, level)`` where
-        ``level`` is ``'hard'``/``'soft'``/``None`` — the trace seam reads it to
-        log upward crossings. The message is a lean ``role:"user"`` block carrying
-        budget self-awareness plus, when the session can edit and has read without
+        Returns ``(message, tool_choice_override_or_None, level)`` where ``level``
+        is ``'hard'``/``'soft'``/``None`` — the trace seam reads it to log upward
+        crossings. The message is a lean ``role:"user"`` block carrying budget
+        self-awareness plus, when the session can edit and has read without
         writing, a write nudge (soft) or a hard demand (with
-        ``tool_choice="required"``). Returns ``(None, None, None)`` when the shaped
-        history already ends with a ``user`` message — appending another would send
-        two consecutive user turns (Anthropic rejects that), and that case (turn 1
-        / post empty-stop) needs no steering anyway.
+        ``tool_choice="required"``). The message is always built; on a fresh
+        post-user turn ``reads_since_last_edit`` is ~0 so only the status line is
+        returned, which is correct.
 
-        Caller appends the message to the SHAPED COPY only; it is never persisted
-        to ``state.messages`` (rebuilt fresh each turn, kept out of the transcript
-        and the eager-clear index, and placed last so it cannot bust a cached
-        prefix).
+        The caller folds this content into the SHAPED COPY's last message when the
+        shaped history ends with a ``user`` message (appending a separate ``user``
+        block there would send two consecutive user turns, which Anthropic
+        rejects); otherwise it appends the message as a new block. Either way it is
+        never persisted to ``state.messages`` (rebuilt fresh each turn, kept out of
+        the transcript and the eager-clear index, and placed last so it cannot bust
+        a cached prefix).
         """
-        if messages and messages[-1].get("role") == "user":
-            return None, None, None
-
         total = self.max_budget_tokens or 0
         spent_k = self.state.used_tokens // 1000
         total_k = total // 1000
@@ -546,10 +545,26 @@ class SessionRunUseCase:
             if self.shaper is not None
             else self.state.messages
         )
-        # Closed-loop steering: append a fresh per-turn block to the SHAPED COPY
-        # only (a new list — never mutate state.messages even when shaper is None).
+        # Closed-loop steering: a fresh per-turn block is folded into / appended to
+        # the SHAPED COPY only (a new list, new dicts — never mutate state.messages
+        # even when shaper is None, so no budget text leaks into the transcript or
+        # the cacheable prefix). It always stays last to keep that prefix unchanged.
         steering, tool_choice_override, steering_level = self._build_steering_block(messages)
-        if steering is not None:
+        if steering is not None and messages:
+            steering_text = steering["content"]
+            last = messages[-1]
+            if last.get("role") == "user":
+                content = last.get("content")
+                if isinstance(content, str):
+                    folded = f"{content}\n\n{steering_text}" if content else steering_text
+                elif isinstance(content, list):
+                    folded = [*content, {"type": "text", "text": steering_text}]
+                else:
+                    folded = steering_text
+                messages = [*messages[:-1], {**last, "content": folded}]
+            else:
+                messages = [*messages, steering]
+        elif steering is not None:
             messages = [*messages, steering]
         self._maybe_trace_steering(steering_level)
         try:
@@ -707,12 +722,12 @@ class SessionRunUseCase:
         """
         rank = {None: 0, "soft": 1, "hard": 2}
         if level is None:
-            # ``level is None`` has two causes: (a) a write reset dropped reads
-            # below the soft rung — re-arm so a later re-escalation traces again;
-            # (b) steering was SKIPPED this turn via the ends-with-user / post-
-            # empty-stop early-out in _build_steering_block while reads is still
-            # high — the escalation has NOT de-escalated, so leave the mark intact
-            # (re-arming would let the next still-high turn re-fire a duplicate).
+            # ``level is None`` means no active write nudge this turn. Re-arm the
+            # high-water mark only when a write reset actually dropped reads below
+            # the soft rung; if reads is still high (e.g. a read-only session that
+            # never escalates), the escalation has NOT de-escalated, so leave the
+            # mark intact (re-arming would let a later still-high turn re-fire a
+            # duplicate steering_nudge).
             if self.state.reads_since_last_edit < READS_NUDGE_SOFT:
                 self._last_steering_level = None
             return
