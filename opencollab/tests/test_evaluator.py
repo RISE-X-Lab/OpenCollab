@@ -121,6 +121,92 @@ def test_run_eval_task_honors_injected_params(monkeypatch, tmp_path):
     assert captured["temperature"] == 0.55
 
 
+class CapturingLLMClient:
+    """Fake LLM client that records every kwarg passed to ``complete``.
+
+    Accepts ``**kwargs`` so a forwarded ``top_p`` (or ``thinking`` etc.) does
+    not raise — lets a test assert the sampling knob reaches the provider call.
+    """
+
+    last_kwargs: dict = {}
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+        CapturingLLMClient.last_kwargs = {"temperature": temperature, **kwargs}
+        return LLMResponse(
+            content="done",
+            tool_calls=[],
+            usage=Usage(input_tokens=3, output_tokens=2),
+            finish_reason="stop",
+        )
+
+
+def test_run_eval_task_forwards_top_p_to_agent_and_provider(monkeypatch, tmp_path):
+    # The eval path must put top_p on the Agent AND carry it into the provider
+    # ``complete`` call, mirroring temperature. This is the latent eval-gap fix:
+    # a configured top_p (like OPENCOLLAB_TOP_P) actually takes effect.
+    CapturingLLMClient.last_kwargs = {}
+    monkeypatch.setattr(container, "LLMClient", CapturingLLMClient)
+    captured = {}
+
+    real_build_session = evaluator.build_session
+
+    def spy_build_session(*, agent, max_steps, **kwargs):
+        captured["temperature"] = agent.temperature
+        captured["top_p"] = agent.top_p
+        return real_build_session(agent=agent, max_steps=max_steps, **kwargs)
+
+    monkeypatch.setattr(evaluator, "build_session", spy_build_session)
+
+    async def env_factory(task):
+        return FakeEnv()
+
+    run(run_eval_task(
+        EvalTask(task_id="tp", description="task"),
+        output_dir=str(tmp_path),
+        tools_factory=list,
+        env_factory=env_factory,
+        temperature=0.3,
+        top_p=0.85,
+    ))
+
+    assert captured["temperature"] == 0.3
+    assert captured["top_p"] == 0.85
+    # And it actually reached the provider call (not just stored on the Agent).
+    assert CapturingLLMClient.last_kwargs.get("top_p") == 0.85
+
+
+def test_run_eval_task_top_p_unset_omits_it_from_provider_call(monkeypatch, tmp_path):
+    # Default top_p (None) leaves the Agent default None and is NOT forwarded to
+    # the provider call — so the request is byte-identical to today's behavior.
+    CapturingLLMClient.last_kwargs = {}
+    monkeypatch.setattr(container, "LLMClient", CapturingLLMClient)
+    captured = {}
+
+    real_build_session = evaluator.build_session
+
+    def spy_build_session(*, agent, max_steps, **kwargs):
+        captured["top_p"] = agent.top_p
+        return real_build_session(agent=agent, max_steps=max_steps, **kwargs)
+
+    monkeypatch.setattr(evaluator, "build_session", spy_build_session)
+
+    async def env_factory(task):
+        return FakeEnv()
+
+    run(run_eval_task(
+        EvalTask(task_id="tp0", description="task"),
+        output_dir=str(tmp_path),
+        tools_factory=list,
+        env_factory=env_factory,
+    ))
+
+    assert captured["top_p"] is None
+    assert "top_p" not in CapturingLLMClient.last_kwargs
+
+
 def test_default_tools_match_curated_team_surface():
     # The headless eval agent must exercise the same curated toolset as team
     # roles — in particular run_tests/git_diff/apply_patch, which the bash

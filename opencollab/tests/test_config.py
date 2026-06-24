@@ -25,6 +25,7 @@ def _isolate_config_env(monkeypatch, tmp_path):
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     monkeypatch.delenv("OPENCOLLAB_LLM_TIMEOUT", raising=False)
     monkeypatch.delenv("OPENCOLLAB_TEMPERATURE", raising=False)
+    monkeypatch.delenv("OPENCOLLAB_TOP_P", raising=False)
 
 
 def test_filter_messages_defaults_off(monkeypatch):
@@ -84,6 +85,42 @@ def test_temperature_surfaces_in_get_config_dict(monkeypatch):
 
     monkeypatch.setenv("OPENCOLLAB_TEMPERATURE", "0.9")
     assert get_config()["temperature"] == 0.9
+
+
+def test_top_p_defaults_to_none(monkeypatch):
+    # Unset → None so the provider default is used and the request is unchanged.
+    assert build_config().top_p is None
+
+
+def test_top_p_reads_env(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_TOP_P", "0.9")
+    assert build_config().top_p == 0.9
+
+
+def test_top_p_empty_env_is_none(monkeypatch):
+    # An empty/whitespace value must collapse to None (not crash, not 0.0).
+    monkeypatch.setenv("OPENCOLLAB_TOP_P", "  ")
+    assert build_config().top_p is None
+
+
+def test_top_p_allows_zero(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_TOP_P", "0")
+    assert build_config().top_p == 0.0
+
+
+def test_top_p_rejects_out_of_range(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_TOP_P", "1.5")
+    with pytest.raises(Exception):
+        build_config()
+
+
+def test_top_p_surfaces_in_get_config_dict(monkeypatch):
+    from opencollab.bootstrap.config import get_config
+
+    # Unset surfaces as None in the dict so cfg.get("top_p") is a clean None.
+    assert get_config()["top_p"] is None
+    monkeypatch.setenv("OPENCOLLAB_TOP_P", "0.85")
+    assert get_config()["top_p"] == 0.85
 
 
 def test_dashscope_api_key_is_supported_as_fallback(monkeypatch):

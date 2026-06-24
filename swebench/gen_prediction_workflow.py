@@ -141,6 +141,8 @@ async def generate(
             env_factory=env_factory,
             max_steps=args.max_steps,
             workflow=workflow_fn,
+            temperature=cfg["temperature"],
+            top_p=cfg.get("top_p"),
             thinking=cfg.get("thinking", False),
             thinking_params=cfg.get("thinking_params") or None,
         )

@@ -634,6 +634,13 @@ class SessionRunUseCase:
         extra: dict[str, Any] = {}
         if tool_choice is not None:
             extra["tool_choice"] = tool_choice
+        # ``top_p`` is read defensively and included ONLY when set, mirroring
+        # ``tool_choice``: an agent without it (or with top_p=None) calls
+        # ``complete`` with exactly the prior kwargs, so duck-typed LLM stubs that
+        # never added the param keep working and the request is unchanged.
+        top_p = getattr(self.agent, "top_p", None)
+        if top_p is not None:
+            extra["top_p"] = top_p
         if not getattr(self.agent, "thinking", False):
             return await self._invoke_llm(
                 messages=messages,
