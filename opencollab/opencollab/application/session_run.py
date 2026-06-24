@@ -514,7 +514,7 @@ class SessionRunUseCase:
             level = "hard"
         elif has_write and reads >= READS_NUDGE_SOFT:
             extra = (
-                f" You have read {reads} files/searches without making an edit. If"
+                f" You have read {reads} times without making an edit. If"
                 " you can describe the fix, make it now with file_write or"
                 " apply_patch before reading more."
             )
@@ -710,13 +710,7 @@ class SessionRunUseCase:
         """
         reason = "context overflow: prompt exceeds the model context window even after compaction"
         self.state.append_message(
-            {
-                "role": "system",
-                "content": (
-                    "[Context overflow: prompt exceeds the model context window "
-                    "even after compaction. Session stopped.]"
-                ),
-            }
+            {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
         )
         await self.event_publisher.emit(self.event_factory.error("context_overflow"))
         self.clear_pending_step()

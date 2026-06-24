@@ -31,10 +31,7 @@ NO_TOOLS_PREAMBLE = """CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
 
 """
 
-NO_TOOLS_TRAILER = (
-    "\n\nREMINDER: Do NOT call any tools. Respond with plain text only — "
-    "an <analysis> block followed by a <summary> block."
-)
+NO_TOOLS_TRAILER = "\n\nREMINDER: text only — do NOT call any tools."
 
 _ANALYSIS_INSTRUCTION = """Before providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts. In your analysis:
 
