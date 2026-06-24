@@ -96,7 +96,21 @@ def start_container(image: str, name: str) -> str:
 
 
 def remove_container(cid: str) -> None:
-    _docker("rm", "-f", cid, timeout=30)
+    """Best-effort teardown of a throwaway container.
+
+    Cleanup must NEVER lose an already-computed result: under heavy daemon load
+    ``docker rm`` can exceed its timeout and raise ``TimeoutExpired``, which —
+    when this runs in a ``finally`` after the workflow has finished and the patch
+    has been extracted — would propagate and abort the caller before the
+    prediction is persisted (observed: a healthy run lost to a 30s ``rm`` timeout
+    at load ~42). A leaked container is recoverable; a dropped prediction is not.
+    Swallow any failure with a warning instead.
+    """
+    try:
+        _docker("rm", "-f", cid, timeout=30)
+    except Exception as exc:  # noqa: BLE001 — teardown must never propagate
+        print(f"  warning: container cleanup failed for {cid}: {exc!r} "
+              f"(best-effort, continuing)")
 
 
 def build_task(instance: dict) -> str:
