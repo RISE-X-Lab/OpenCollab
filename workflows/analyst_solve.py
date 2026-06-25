@@ -101,8 +101,12 @@ tool covers (e.g. a one-line `python -c` repro).
 - Never assume a package is available: confirm the repo already imports it \
 (grep / check the manifest) before using it, and verify your own imports \
 resolve before reporting done.
-- Keep reports tight: <=8 lines — changed files + what changed, why, and the \
-verification result. No preamble or postamble.
+- Keep reports free of preamble and postamble. A STATUS report (what changed, \
+why, the verification result) stays under ~8 lines. But when your job is to \
+surface EVIDENCE — a scout answering its dimension, or a coder citing exactly \
+what it changed — give the next agent the full detail it needs: exact file \
+paths, line numbers, and the quotes that matter. Never drop evidence to fit a \
+line count.
 - Do NOT grep for a FAIL_TO_PASS test that does not exist yet — the task may \
 require creating it; chasing a missing test wastes budget."""
 
