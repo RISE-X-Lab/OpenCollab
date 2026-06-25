@@ -48,8 +48,46 @@ from opencollab.application.workflow_registry import workflow
 MAX_ROUNDS_PER_PHASE = 4
 # Token headroom kept in reserve. Once the remaining budget drops below this, the
 # run abandons further loops and spends the reserve on one forced-write coder so
-# the working tree is never left empty. Size it for one full coder session.
+# the working tree is never left empty. Sized for one forced write PLUS a final
+# verify (FORCED_WRITE_BUDGET + TESTER_BUDGET), so verify is never starved.
 RESERVE_TOKENS = 350_000
+
+# Per-call token caps passed as ``budget=`` to each ctx.agent. Anchored on the
+# real per-role spend measured from instrumented runs (healthy scouts 140-230k;
+# scope/plan analysts ~90-130k; the implement coder needs the bulk). Each cap
+# bounds a SINGLE runaway session — e.g. a non-converging scout that snowballs
+# its context past 700k and drains the whole pool — without throttling a
+# legitimately hard step; the framework clamps every cap to the live global
+# remaining, so the shared pool is never overshot. Allocation is per CALL, not
+# per role: analyst:scope and analyst:plan are the same role yet get separate
+# caps, which is what lets us throttle the scope call (it snowballed to 400k)
+# without touching plan.
+SCOPE_BUDGET = 200_000
+SCOUT_BUDGET = 250_000
+PLAN_BUDGET = 150_000
+CODER_BUDGET = 350_000
+TESTER_BUDGET = 200_000
+FORCED_WRITE_BUDGET = 120_000
+REPAIR_BUDGET = 200_000
+# Cap on parallel recon scouts so recon's total is bounded no matter how many
+# dimensions the scope analyst invents.
+MAX_SCOUTS = 4
+
+# Budget the recon phase MUST leave untouched for the rest of the run (plan +
+# implement/forced-write + verify). Recon scouts are read-only, so the
+# reads_since_last_edit write-nudge never brakes them; each fills its cap
+# exploring. With a FIXED per-scout cap their sum (SCOUT_BUDGET * MAX_SCOUTS ~=
+# 1M) drains a 1M pool inside recon before implement/verify ever run — measured:
+# recon ate 66-92% of a 1M budget, 7/8 instances ended with empty completions.
+# Fix: derive the scout cap from the LIVE remaining minus this floor, so the
+# scouts collectively can never dip below it:
+#     scout_cap = min(SCOUT_BUDGET, (remaining - RECON_FLOOR) // n_scouts)
+# At 2M the SCOUT_BUDGET ceiling binds and the tail is naturally safe; at 1M the
+# floor binds and throttles scouts so plan/implement/verify always keep this
+# reserve (which exceeds RESERVE_TOKENS, leaving room for plan + a forced write +
+# a final verify). This is the "deduct recon, guarantee the tail" rule — it makes
+# the steering hint's per-call-cap blindness harmless because recon is bounded.
+RECON_FLOOR = 400_000
 
 # Shared rules — every role gets them (lifted from configs/team.self.collab.yaml,
 # the SWE-bench-tuned variant: it warns off chasing not-yet-existing tests).
@@ -415,23 +453,42 @@ def _time_low(ctx: Any) -> bool:
     return bool(time_low()) if callable(time_low) else False
 
 
-def _budget_ok(ctx: Any) -> bool:
+def _budget_ok(ctx: Any, reserve: int = RESERVE_TOKENS) -> bool:
     """True while there is BOTH enough token budget AND enough wall-clock time
     left for another full coder/tester step.
 
-    Keeps ``RESERVE_TOKENS`` in hand so the run can always afford one final
-    forced-write coder (``remaining()`` is ``inf`` for an unbounded budget), and
-    bails early once ``ctx.time_low()`` reports the hard deadline is near so the
-    reserve is spent on the forced write BEFORE the wall truncates the run (P7 /
-    django-11564 — the edit was located but never written because forced-write
-    only checked tokens).
+    ``reserve`` is the headroom that must remain AFTER this step. The implement
+    loop uses the default ``RESERVE_TOKENS`` so it always leaves room for a
+    forced write plus a final verify; the wrap-up verify/repair pass it ``0`` so
+    it runs on whatever the reserve preserved (a forced write capped at
+    ``FORCED_WRITE_BUDGET`` cannot eat it all). Bails early once
+    ``ctx.time_low()`` reports the hard deadline is near so the reserve is spent
+    BEFORE the wall truncates the run (P7 / django-11564 — the edit was located
+    but never written because forced-write only checked tokens).
     """
-    return ctx.budget.remaining() > RESERVE_TOKENS and not _time_low(ctx)
+    return ctx.budget.remaining() > reserve and not _time_low(ctx)
 
 
 async def _recon(ctx: Any, goal: str, dims: list[dict[str, Any]]) -> str:
     """Fan the dimensions out to parallel read-only scouts; return a combined,
     labelled findings document for the planning analyst."""
+    if len(dims) > MAX_SCOUTS:
+        await ctx.log(
+            f"recon: scope produced {len(dims)} dimensions — capping to {MAX_SCOUTS} scouts"
+        )
+        dims = dims[:MAX_SCOUTS]
+    # Deduct recon from a reserved tail: scouts share only (remaining -
+    # RECON_FLOOR), so plan/implement/verify always keep RECON_FLOOR no matter how
+    # greedily the read-only scouts explore. min() keeps the SCOUT_BUDGET ceiling
+    # binding when the pool is large (e.g. a 2M run).
+    n = len(dims)
+    recon_pool = max(0, ctx.budget.remaining() - RECON_FLOOR)
+    scout_cap = min(SCOUT_BUDGET, recon_pool // n) if n else SCOUT_BUDGET
+    await ctx.log(
+        f"recon: {n} scout(s), {ctx.budget.remaining() // 1000}k remaining, "
+        f"holding {RECON_FLOOR // 1000}k for plan/implement/verify → "
+        f"scout cap {scout_cap // 1000}k each"
+    )
     reports = await ctx.parallel(
         [
             (
@@ -445,6 +502,7 @@ async def _recon(ctx: Any, goal: str, dims: list[dict[str, Any]]) -> str:
                     ),
                     label=f"scout:{i}:{(d.get('aspect') or '').strip().replace(' ', '-')[:24] or 'dim'}",
                     tools=_read_tools(),
+                    budget=scout_cap,
                 )
             )
             for i, d in enumerate(dims)
@@ -514,6 +572,7 @@ async def _run_phase(
             ),
             label=f"coder:p{idx}r{round_no}",
             tools=_coder_tools(),
+            budget=CODER_BUDGET,
         )
         # Rung C — early commit (django-11564 step-235 failure mode): a coder that
         # ends having landed NO edit at all this phase (tree still clean) analyzed
@@ -538,6 +597,7 @@ async def _run_phase(
                 label=f"coder:p{idx}r{round_no}-commit",
                 tools=_coder_tools(),
                 tool_choice="required",
+                budget=CODER_BUDGET,
             )
             if forced_summary is not None:
                 summary = forced_summary
@@ -563,6 +623,7 @@ async def _run_phase(
             schema=VERDICT_SCHEMA,
             label=f"tester:p{idx}r{round_no}",
             tools=_tester_tools(),
+            budget=TESTER_BUDGET,
         )
         # Diff guard: a tester PASS must NOT stand if the working tree is
         # verifiably unchanged this round — no edit means nothing to pass. Seed
@@ -688,6 +749,7 @@ async def _forced_final_write(
         thinking=False,
         timeout=_seconds_left(ctx),
         over_budget_ok=True,
+        budget=FORCED_WRITE_BUDGET,
     )
     # Post-attempt outcome so the trajectory distinguishes a patch that LANDED from
     # one that ABORTED (coder died / timed out / budget). Prefer the SOURCE probe —
@@ -741,6 +803,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         schema=DIMENSIONS_SCHEMA,
         label="analyst:scope",
         tools=_read_tools(),
+        budget=SCOPE_BUDGET,
     )
     dims = scope.get("dimensions") if isinstance(scope, dict) else None
 
@@ -761,6 +824,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         schema=PLAN_SCHEMA,
         label="analyst:plan",
         tools=_read_tools(),
+        budget=PLAN_BUDGET,
     )
     if isinstance(plan, dict) and plan.get("phases"):
         root_cause = plan.get("root_cause", "")
@@ -812,7 +876,12 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     await ctx.phase("verify")
     final_verdict: dict[str, Any] | None = None
     repaired = False
-    if not forced and _budget_ok(ctx):
+    # Run verify EVEN AFTER a forced write: the forced-write coder lands an
+    # un-reviewed patch on budget-low, so verifying (and repairing) it is exactly
+    # when it matters most. The implement loop reserved RESERVE_TOKENS for this
+    # wrap-up and FORCED_WRITE_BUDGET caps the forced write, so a verify slice
+    # always survives — hence the light ``reserve=0`` gate (any budget + time).
+    if _budget_ok(ctx, 0):
         final_verdict = await ctx.agent(
             TESTER_PROMPT.format(
                 rules=SHARED_RULES,
@@ -824,11 +893,12 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             schema=VERDICT_SCHEMA,
             label="tester:final",
             tools=_tester_tools(),
+            budget=TESTER_BUDGET,
         )
         if (
             isinstance(final_verdict, dict)
             and final_verdict.get("verdict") == "FAIL"
-            and _budget_ok(ctx)
+            and _budget_ok(ctx, 0)
         ):
             await ctx.log("final verify FAILED — one repair round")
             repaired = True
@@ -846,6 +916,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                 ),
                 label="coder:repair",
                 tools=_coder_tools(),
+                budget=REPAIR_BUDGET,
             )
             final_verdict = await ctx.agent(
                 TESTER_PROMPT.format(
@@ -858,6 +929,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                 schema=VERDICT_SCHEMA,
                 label="tester:final2",
                 tools=_tester_tools(),
+                budget=TESTER_BUDGET,
             )
 
     passed_phases = sum(1 for r in phase_reports if r["status"] == "passed")
