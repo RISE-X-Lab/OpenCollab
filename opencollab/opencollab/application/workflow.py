@@ -263,8 +263,16 @@ class WorkflowContext:
         thinking: bool | None = None,
         timeout: float | None = None,
         over_budget_ok: bool = False,
+        budget: int | None = None,
     ) -> str | dict | None:
         """Run one one-shot session and return its final assistant text.
+
+        ``budget`` caps THIS call's session at a per-call token allocation
+        (``max_budget_tokens``), clamped to the live global remaining so it can
+        never overshoot the shared pool. ``None`` keeps the prior behaviour
+        (the session may use the entire remaining pool). A per-call cap is what
+        stops a single runaway session — e.g. a non-converging scout that
+        snowballs its context to 700k+ — from starving every later phase.
 
         Returns ``None`` if the session errors — one dead agent never kills the
         fleet. Raises ``WorkflowBudgetExceeded`` only when the shared budget is
@@ -305,7 +313,8 @@ class WorkflowContext:
         async with self._semaphore:
             if schema is not None:
                 return await self._run_structured_agent(
-                    prompt, schema=schema, label=label, tools=tools, isolation=isolation
+                    prompt, schema=schema, label=label, tools=tools,
+                    isolation=isolation, budget=budget,
                 )
             return await self._run_agent(
                 prompt,
@@ -315,6 +324,7 @@ class WorkflowContext:
                 tool_choice=tool_choice,
                 thinking=thinking,
                 timeout=timeout,
+                budget=budget,
             )
 
     async def _run_agent(
@@ -327,8 +337,9 @@ class WorkflowContext:
         tool_choice: str | None = None,
         thinking: bool | None = None,
         timeout: float | None = None,
+        budget: int | None = None,
     ) -> str | None:
-        session_budget = self._session_budget()
+        session_budget = self._capped_session_budget(budget)
         try:
             session = self._factory.build_workflow_session(
                 prompt=prompt,
@@ -372,6 +383,7 @@ class WorkflowContext:
         label: str | None,
         tools: Sequence[Any] | None,
         isolation: bool,
+        budget: int | None = None,
     ) -> dict | None:
         """Run a schema-bound session, returning the validated payload or None.
 
@@ -405,7 +417,7 @@ class WorkflowContext:
         capture_tool = StructuredOutputTool(schema, on_capture=capture_done.set)
         seeded_prompt = prompt + _STRUCTURED_INSTRUCTION
         combined_tools = [capture_tool, *(tools or [])]
-        session_budget = self._session_budget()
+        session_budget = self._capped_session_budget(budget)
         try:
             session = self._factory.build_workflow_session(
                 prompt=seeded_prompt,
@@ -531,6 +543,14 @@ class WorkflowContext:
         # budget gate and this call, driving ``remaining`` negative. A negative
         # per-session budget is nonsensical, so floor it at 0.
         return max(0, int(remaining))
+
+    def _capped_session_budget(self, cap: int | None) -> int:
+        """Session budget = the live global remaining, optionally lowered to a
+        caller-supplied per-call ``cap``. ``min`` keeps a per-call allocation
+        from overshooting the shared pool while the cap bounds a single runaway
+        session; ``None`` reproduces the prior whole-pool behaviour."""
+        base = self._session_budget()
+        return min(cap, base) if cap is not None else base
 
     # -- parallel ---------------------------------------------------------- #
 
