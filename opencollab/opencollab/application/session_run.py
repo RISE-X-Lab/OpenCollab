@@ -14,6 +14,12 @@ from opencollab.application.ports import (
     ShaperPort,
     TracePort,
 )
+from opencollab.application.extension_valve import (
+    EXTENSION_DENIED_NUDGE,
+    EXTENSION_GRANTED_NUDGE,
+    EXTENSION_OFFER_NUDGE,
+    judge_extension_reason,
+)
 from opencollab.application.shaping import forced_shape
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
@@ -68,6 +74,114 @@ _WRITE_TOOLS = frozenset({"file_write", "apply_patch"})
 READS_NUDGE_SOFT = 8
 READS_NUDGE_HARD = 16
 
+# Enforcement strength (STEP 0). ``off`` is the self-regulating default: every
+# wind-down branch below is gated on enforcement being on, so with ``off`` the
+# FSM is byte-for-byte identical to the pre-enforcement code. ``needs-enforcement``
+# turns on the structural commit brake for budget-myopic models.
+ENFORCEMENT_OFF = "off"
+ENFORCEMENT_ON = "needs-enforcement"
+
+# Default name of the structured submit tool the wind-down narrows the toolset to
+# (overridable per session). Kept as a string so this application module need not
+# import the tool itself.
+SUBMIT_TOOL_NAME = "submit_findings"
+
+# Reserve (carved FROM the cap, never additive) held back so the single protected
+# submit turn fits: ``explore_threshold = max_budget_tokens - DEFAULT_COMMIT_RESERVE``.
+DEFAULT_COMMIT_RESERVE = 25_000
+
+# Progress watchdog + low-yield brake (STEP 3). Two ADDITIONAL triggers into the
+# SAME forced-commit actuator (``_enter_wind_down``) — the budget-threshold
+# wind-down is the first. Both catch a scout spinning while budget is still
+# plentiful (the real pathology) and route it to the non-degradable tool-removal
+# commit. They key STRICTLY on the STEP-1 information-gain sensor (consecutive
+# no-progress steps / low-yield results), never on ``has_write`` — which is
+# overloaded as "agent mutates the repo" and would leak into verify/diff/integrity
+# accounting if reused as the brake key.
+#
+# WATCHDOG_K: ``steps_since_progress`` (no-progress tool STEPS) reaching this trips
+# the brake. LOW_YIELD_M: ``low_yield_since_progress`` (consecutive low-yield tool
+# RESULTS) reaching this trips it. Both default conservative so a normal
+# distill-as-you-read scout is never braked mid-stride.
+DEFAULT_WATCHDOG_K = 4
+DEFAULT_LOW_YIELD_M = 3
+
+# Predictive overshoot guard (STEP 4a). The agreed ~80% wind-down trips on
+# ``used_tokens >= explore_threshold`` — but the very turn meant to submit can BE
+# the single-turn overshoot that gets chopped. So we maintain an EWMA of per-turn
+# token cost (the post-call ``add_used_tokens`` deltas) and trip the wind-down ONE
+# turn EARLY when ``used_tokens + ewma_turn_cost`` would breach the threshold, so
+# the protected submit turn still fits inside the reserve.
+#
+# DEFAULT_EWMA_ALPHA: smoothing factor (recent turns weighted more); the first
+# sample seeds the EWMA. The EWMA's influence is CAPPED (``predictive_cap``,
+# defaulting to ``commit_reserve``) so one anomalous expensive turn cannot wind the
+# scout down far too early — the cap is also the DEADLINE BAND: the predictive term
+# can only flip the trigger once ``used_tokens >= explore_threshold - cap``, i.e.
+# near the deadline, never across the whole run.
+DEFAULT_EWMA_ALPHA = 0.3
+
+# STEP 2C (Phase 2) — predictive-overshoot RELAXATION. The bare guard tripped
+# whenever ``used + ewma_term >= explore_threshold`` (i.e. whenever the predicted
+# next turn would merely *reach* the threshold), which severed a live lead with
+# 6-10k of slack still left even though that turn would land near the threshold and
+# leave nearly the full reserve for the submit. The margin shifts the predictive
+# trigger to ``>= explore_threshold + margin``: a NORMAL-sized turn (ewma <= margin)
+# is no longer pre-empted — the plain ``used >= explore_threshold`` wind-down still
+# catches it at the deadline with the full reserve intact — while a turn large
+# enough to consume more than ``margin`` of the reserve (the genuine single-turn
+# overshoot Step 4 exists to stop) still trips early. The margin is the slice of the
+# reserve we are willing to let one straddling exploration turn spend; ``reserve -
+# margin`` is therefore guaranteed to the protected submit turn. ``None`` -> 40% of
+# ``commit_reserve`` (10k of the default 25k reserve, leaving 15k for the submit).
+DEFAULT_PREDICTIVE_MARGIN_FRACTION = 0.4
+
+# Single-justified-extension valve (STEP 4b). Hard cap on bounded extensions a
+# scout may earn at a wind-down trip. Exactly one: a genuinely-deep dimension gets
+# one more justified read; everything else is force-committed as before.
+DEFAULT_MAX_EXTENSIONS = 1
+
+# Injected as a system message the instant a scout crosses the explore threshold.
+# Its next action must be the structured submit; cite-or-abstain, never fabricate.
+# STEP 2A (Phase 2): the toolset is narrowed to submit-only AT this same trip, so
+# the notice states it UP FRONT — without it a DeepSeek-class model reflexively
+# re-issues its prior exploration tool (grep/file_read/bash, now unknown) and burns
+# a whole turn on the "unknown tool" error before the provider-compat retry
+# (``_WIND_DOWN_RETRY``) recovers it. Telling the model here pre-empts that dead
+# turn; the retry backstop stays as the second line of defense.
+_WIND_DOWN_NUDGE = (
+    "Exploration budget spent — all exploration tools (grep/file_read/bash) have now "
+    "been removed; ONLY submit_findings is available. Your NEXT action MUST be "
+    "submit_findings with the evidence you already have; do not call any other tool. "
+    "Cite file:line / exact matched strings from your real tool results; mark each "
+    "finding verified|unverified; if you lack evidence for a dimension, set "
+    "insufficient_evidence — do NOT fabricate."
+)
+
+# Provider-compat backstop (re-injected for the SINGLE wind-down retry). A model
+# that ignored the forced tool_choice and reflexively re-issued its prior tool
+# (grep/bash/file_read — now unknown, since the toolset is submit-only) gets one
+# more turn with this explicit instruction before the loop goes terminal.
+_WIND_DOWN_RETRY = (
+    "Only submit_findings is available. Call submit_findings now with the evidence you "
+    "have; do not call any other tool. Cite file:line / exact matched strings; mark each "
+    "finding verified|unverified; set insufficient_evidence if you lack evidence — do NOT "
+    "fabricate."
+)
+
+
+def _submit_tool_choice(name: str) -> dict[str, Any]:
+    """OpenAI-style named-function ``tool_choice`` forcing exactly ``name``.
+
+    Constrained decoding for the wind-down turn: more precise than the bare
+    ``"required"`` string and more likely honoured by stricter OpenAI-compatible
+    endpoints. It rides through the LLM stack unchanged (the OpenAI SDK accepts a
+    dict ``tool_choice``); if an endpoint still 400-rejects it, ``_complete``
+    degrades it ONCE to ``"auto"`` and the wind-down retry (text instruction +
+    submit-only toolset) is the remaining guarantee.
+    """
+    return {"type": "function", "function": {"name": name}}
+
 
 class SessionRunUseCase:
     """Application use case for the session run loop.
@@ -94,6 +208,16 @@ class SessionRunUseCase:
         team_budget_exhausted: Callable[[], bool] | None = None,
         is_context_overflow: Callable[[Exception], bool] | None = None,
         per_call_timeout: float | None = None,
+        enforcement_strength: str = ENFORCEMENT_OFF,
+        commit_reserve: int = DEFAULT_COMMIT_RESERVE,
+        submit_tool_name: str = SUBMIT_TOOL_NAME,
+        watchdog_k: int = DEFAULT_WATCHDOG_K,
+        low_yield_m: int = DEFAULT_LOW_YIELD_M,
+        ewma_alpha: float = DEFAULT_EWMA_ALPHA,
+        predictive_cap: int | None = None,
+        predictive_margin: int | None = None,
+        max_extensions: int = DEFAULT_MAX_EXTENSIONS,
+        extension_tool: Any | None = None,
     ):
         self.agent = agent
         self.state = state
@@ -136,6 +260,47 @@ class SessionRunUseCase:
         # (None|'soft'|'hard'). Drives _maybe_trace_steering to log only UPWARD
         # crossings, re-arming on a write reset. Never persisted.
         self._last_steering_level: str | None = None
+        # Enforcement wind-down (STEP 0). Off by default: when ``off`` the precheck
+        # wind-down branch is never taken, so the FSM is byte-for-byte identical to
+        # the pre-enforcement code. ``commit_reserve`` is carved FROM the cap (not
+        # additive), so the single protected submit turn fits inside the budget.
+        self._enforcement_strength = enforcement_strength
+        self._commit_reserve = commit_reserve
+        self._submit_tool_name = submit_tool_name
+        # Progress watchdog + low-yield brake knobs (STEP 3). Inert unless
+        # ``enforcement_strength`` is on (the brake gate); they then route a
+        # spinning scout into the SAME ``_enter_wind_down`` actuator the budget
+        # threshold uses.
+        self._watchdog_k = watchdog_k
+        self._low_yield_m = low_yield_m
+        # Predictive overshoot guard (STEP 4a). The EWMA of per-turn token cost,
+        # folded post-call from ``add_used_tokens`` deltas. Always maintained
+        # (cheap, observational); only the precheck predictive TRIGGER that reads it
+        # is gated behind enforcement, so a self-regulating run is byte-for-byte
+        # unchanged. ``predictive_cap`` (None -> use ``commit_reserve``) caps the
+        # EWMA's influence and defines the deadline band.
+        self._ewma_alpha = ewma_alpha
+        self._predictive_cap = predictive_cap
+        # STEP 2C (Phase 2). The slack the predictive guard tolerates before tripping
+        # (``None`` -> 40% of ``commit_reserve``). On the enforcement path only; with
+        # enforcement off ``_predictive_overshoot`` is never consulted, so this knob
+        # cannot affect the reference (off==reference) behavior.
+        self._predictive_margin = predictive_margin
+        self._ewma_turn_cost = 0.0
+        # Single-justified-extension valve (STEP 4b). ``_extension_tool`` is the
+        # ``request_extension`` capture tool injected ONLY at the offer turn (never
+        # in the scout's normal toolset). The valve is inert unless this is wired
+        # (so STEP 0/3 sessions, which carry no such tool, are unchanged) AND
+        # enforcement is on. ``_max_extensions`` is the hard cap.
+        self._max_extensions = max_extensions
+        self._extension_tool = extension_tool
+        # Snapshot of the scout's exploration toolset taken at an offer trip, so a
+        # GRANT can restore it verbatim for the single extra read turn.
+        self._scout_tools_snapshot: list[Any] | None = None
+        # Guards the once-per-session provider-compat retry on the wind-down turn
+        # (a model that ignored the forced tool_choice and called another/unknown
+        # tool gets exactly ONE more turn before going terminal).
+        self._wind_down_retried = False
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
@@ -223,6 +388,248 @@ class SessionRunUseCase:
                 self.state.fail()
                 raise RuntimeError(f"Cannot advance terminal phase: {self.state.phase.value}")
 
+    def configure_enforcement(
+        self,
+        *,
+        enforcement_strength: str,
+        commit_reserve: int | None = None,
+        extension_tool: Any | None = None,
+        max_extensions: int | None = None,
+    ) -> None:
+        """Turn the enforcement wind-down on/off post-construction.
+
+        The workflow engine calls this on the scout's session (the agent already
+        carries the submit tool) instead of threading the flag through every
+        factory layer. ``commit_reserve`` is carved FROM the cap, never added.
+        ``extension_tool`` (STEP 4b) arms the single-justified-extension valve: the
+        ``request_extension`` capture tool, injected only at the offer turn. Leaving
+        it ``None`` keeps the valve off (the wind-down force-commits as in STEP 0/3).
+        """
+        self._enforcement_strength = enforcement_strength
+        if commit_reserve is not None:
+            self._commit_reserve = commit_reserve
+        if extension_tool is not None:
+            self._extension_tool = extension_tool
+        if max_extensions is not None:
+            self._max_extensions = max_extensions
+
+    def _enforcement_on(self) -> bool:
+        return self._enforcement_strength != ENFORCEMENT_OFF
+
+    def _brake_on(self) -> bool:
+        """DISTINCT gate for the STEP-3 watchdog / low-yield brakes.
+
+        Deliberately a separate predicate from the ``has_write``-driven write-nudge
+        in ``_build_steering_block``: the write-nudge keys on repo-mutation
+        (``has_write``) and is disabled for read-only scouts, whereas these brakes
+        MUST fire for scouts. They are gated on enforcement (on only for scouts) and
+        keyed on the STEP-1 information-gain sensor — never on ``has_write``, whose
+        flip would leak into verify/diff/integrity accounting.
+        """
+        return self._enforcement_on()
+
+    def _enter_wind_down(self) -> None:
+        """Trip the single protected submit turn: latch the flag, mark the token
+        cost baseline, narrow the toolset to submit-only, FORCE ``tool_choice`` to
+        the submit function (constrained decoding — without it DeepSeek-class models
+        reflexively re-issue their prior tool, now unknown, and are chopped on the
+        error), and inject the commit instruction. The agent is per-session here, so
+        mutating its tools / tool_choice cannot leak across sessions. If the submit
+        tool is somehow absent the toolset is left as-is (the injected message + the
+        one allowed turn still apply)."""
+        self.state.wind_down_done = True
+        self.state.wind_down_token_mark = self.state.used_tokens
+        finder = getattr(self.agent, "find_tool", None)
+        submit = finder(self._submit_tool_name) if callable(finder) else None
+        if submit is not None:
+            self.agent.tools = [submit]
+            # Force the submit function specifically (not "auto"/"required"). Persists
+            # for the retry turn too; ``_complete`` degrades it once to "auto" on a
+            # 400, after which the retry's text instruction is the guarantee.
+            self.agent.tool_choice = _submit_tool_choice(self._submit_tool_name)
+        self.state.append_message({"role": "system", "content": _WIND_DOWN_NUDGE})
+
+    def _trace_brake_trip(
+        self,
+        budget_spent: bool,
+        predicted_spent: bool,
+        watchdog_tripped: bool,
+        low_yield_tripped: bool,
+    ) -> None:
+        """Trace which trigger routed the scout into the forced-commit actuator
+        (STEP 3 + STEP 4a). No-op without a tracer; only reachable with enforcement
+        on, so the reference (off) path is untouched. ``trigger`` is the
+        highest-signal cause so the STEP-6 control-health scorecard can attribute
+        spin-brakes vs the budget threshold vs the predictive early-trip (the
+        watchdog/low-yield triggers catch spin; ``predictive`` catches the
+        single-turn overshoot blind spot)."""
+        if self.tracer is None:
+            return
+        if budget_spent:
+            trigger = "budget"
+        elif predicted_spent:
+            trigger = "predictive"
+        elif watchdog_tripped:
+            trigger = "watchdog"
+        else:
+            trigger = "low_yield"
+        self.tracer.log_step(
+            step_type="commit_brake",
+            payload={
+                "aid": self.state.aid,
+                "trigger": trigger,
+                "budget_spent": budget_spent,
+                "predicted_spent": predicted_spent,
+                "watchdog_tripped": watchdog_tripped,
+                "low_yield_tripped": low_yield_tripped,
+                "ewma_turn_cost": round(self._ewma_turn_cost, 1),
+                "steps_since_progress": self.state.steps_since_progress,
+                "low_yield_since_progress": self.state.low_yield_since_progress,
+                "used_tokens": self.state.used_tokens,
+                "step": self.state.step_count,
+            },
+        )
+
+    def _update_turn_cost_ewma(self, delta: int) -> None:
+        """Fold one per-turn token delta into the EWMA used by the predictive
+        overshoot guard (STEP 4a). The first positive sample seeds the EWMA; later
+        samples are exponentially smoothed. Non-positive deltas are ignored (a
+        cached/zero-cost turn must not drag the estimate down). Pure runner state —
+        no message/event/persisted-state change, so off==reference is preserved."""
+        if delta <= 0:
+            return
+        if self._ewma_turn_cost <= 0:
+            self._ewma_turn_cost = float(delta)
+        else:
+            a = self._ewma_alpha
+            self._ewma_turn_cost = a * float(delta) + (1.0 - a) * self._ewma_turn_cost
+
+    def _predictive_overshoot(self, explore_threshold: int) -> bool:
+        """STEP 4a (+ STEP 2C relaxation): would the NEXT turn, at the running per-turn
+        EWMA, overshoot the explore threshold by more than the tolerated ``margin``?
+        Trips the wind-down one turn early so a genuinely large turn cannot straddle
+        the threshold and eat the reserve out from under the protected submit turn.
+
+        The EWMA's influence is capped (``predictive_cap`` / ``commit_reserve``),
+        which both bounds how early an anomalous expensive turn can wind the scout
+        down AND limits the predictive term to the deadline band. STEP 2C adds the
+        ``margin``: the guard fires only when the predicted landing exceeds
+        ``explore_threshold + margin`` — so a normal-sized turn (ewma <= margin) is no
+        longer pre-empted with comfortable slack (the plain ``used >=
+        explore_threshold`` wind-down still catches it at the deadline with the full
+        reserve), while a turn big enough to spend more than ``margin`` of the reserve
+        still trips early. Equivalently, the guard now fires only when the predicted
+        next-turn cost exceeds the slack-to-threshold by more than ``margin``. Inert
+        until a per-turn cost has actually been measured. Reached only on the
+        enforcement path, so off==reference is preserved regardless of ``margin``."""
+        if self._ewma_turn_cost <= 0:
+            return False
+        cap = self._predictive_cap if self._predictive_cap is not None else self._commit_reserve
+        ewma_term = min(self._ewma_turn_cost, float(cap))
+        margin = (
+            self._predictive_margin
+            if self._predictive_margin is not None
+            else int(self._commit_reserve * DEFAULT_PREDICTIVE_MARGIN_FRACTION)
+        )
+        return (self.state.used_tokens + ewma_term) >= explore_threshold + margin
+
+    def _extension_available(self) -> bool:
+        """STEP 4b: is the single-justified-extension valve armed for THIS trip?
+
+        Only when a ``request_extension`` capture tool is wired (so STEP 0/3
+        sessions without one are byte-for-byte unchanged), no offer is already
+        outstanding, and the hard cap has not been reached. Enforcement is already
+        checked by the caller (this only runs inside the enforcement block)."""
+        return (
+            self._extension_tool is not None
+            and not self.state.extension_offered
+            and self.state.extensions_granted < self._max_extensions
+        )
+
+    def _offer_extension(self) -> None:
+        """STEP 4b: instead of immediately force-committing, give the scout ONE
+        decision turn — commit (submit_findings) OR justify one more read
+        (request_extension). Snapshot the exploration toolset (to restore on a
+        grant), narrow the toolset to {submit_findings, request_extension}, force a
+        tool choice between the two, and inject the offer. The agent is per-session,
+        so mutating its tools cannot leak across sessions."""
+        self.state.extension_offered = True
+        self._scout_tools_snapshot = list(getattr(self.agent, "tools", []) or [])
+        finder = getattr(self.agent, "find_tool", None)
+        submit = finder(self._submit_tool_name) if callable(finder) else None
+        offer_tools = [t for t in (submit, self._extension_tool) if t is not None]
+        if offer_tools:
+            self.agent.tools = offer_tools
+            # Force a choice between the two offered tools (commit or justify). If the
+            # provider rejects "required" it degrades to "auto" in ``_complete``; the
+            # injected message is then the remaining steer.
+            self.agent.tool_choice = "required"
+        self.state.append_message({"role": "system", "content": EXTENSION_OFFER_NUDGE})
+
+    def _restore_scout_tools(self) -> None:
+        """STEP 4b: on a GRANT, restore the exploration toolset for the single extra
+        read turn — minus ``request_extension`` so the granted turn cannot re-request
+        (the hard cap also enforces this). Tool choice returns to the provider
+        default so the model explores freely for one turn before the re-fired brake
+        force-commits it."""
+        if self._scout_tools_snapshot is None:
+            return
+        ext_name = getattr(self._extension_tool, "name", None)
+        self.agent.tools = [
+            t for t in self._scout_tools_snapshot if getattr(t, "name", None) != ext_name
+        ]
+        self.agent.tool_choice = None
+
+    def _resolve_extension_offer(self) -> None:
+        """STEP 4b: act on the scout's response to an extension offer. Reached at the
+        precheck AFTER an offer turn (a committed submit_findings instead sets the
+        cancel event and is caught as CANCELLED before this runs). Reads the recorded
+        ``request_extension`` reason and judges it: a concrete, falsifiable, NOVEL
+        reason GRANTS exactly one bounded extension (restore tools, one more read);
+        an absent / vacuous / duplicate reason DENIES it and routes straight to the
+        forced submit-only wind-down. Always transitions to CALLING_LLM."""
+        self.state.extension_offered = False
+        reason = ""
+        tool = self._extension_tool
+        requested = getattr(tool, "requested", None) if tool is not None else None
+        if requested:
+            reason = str(requested.get("reason") or "")
+            tool.requested = None  # consume; the hard cap is the real limiter
+        granted, why = (False, "absent")
+        if reason:
+            granted, why = judge_extension_reason(reason, self.state.extension_reasons)
+        if granted:
+            self.state.extensions_granted += 1
+            self.state.extension_reasons.append(reason)
+            self._trace_extension_decision(reason, granted=True, why=why)
+            self._restore_scout_tools()
+            self.state.append_message({"role": "system", "content": EXTENSION_GRANTED_NUDGE})
+        else:
+            self._trace_extension_decision(reason, granted=False, why=why)
+            # Denied -> the STEP 0/3 forced-commit actuator (submit-only + forced
+            # tool_choice), with the denial reason in the injected nudge.
+            self._enter_wind_down()
+            self.state.messages[-1] = {"role": "system", "content": EXTENSION_DENIED_NUDGE}
+        self.state.transition_to(SessionPhase.CALLING_LLM)
+
+    def _trace_extension_decision(self, reason: str, *, granted: bool, why: str) -> None:
+        """Trace one ``extension_decision`` event (STEP 4b) so the STEP-6 scorecard
+        can audit grant rate / denial reasons. No-op without a tracer."""
+        if self.tracer is None:
+            return
+        self.tracer.log_step(
+            step_type="extension_decision",
+            payload={
+                "aid": self.state.aid,
+                "granted": granted,
+                "why": why,
+                "reason": (reason or "")[:200],
+                "extensions_granted": self.state.extensions_granted,
+                "used_tokens": self.state.used_tokens,
+                "step": self.state.step_count,
+            },
+        )
+
     async def precheck(self, cancel_event: asyncio.Event | None) -> None:
         """Gate the next LLM call: cancellation, token budget, step limit.
 
@@ -234,6 +641,89 @@ class SessionRunUseCase:
             await self.event_publisher.emit(self.event_factory.error("cancelled"))
             self.state.transition_to(SessionPhase.CANCELLED, reason="interrupted by user")
             return
+
+        # Enforcement wind-down (STEP 0) — gated; with enforcement OFF this whole
+        # block is skipped and the budget trip below runs exactly as before. When
+        # ON, at ~80% of the cap we force a single structured submit instead of
+        # letting the scout get chopped mid-exploration.
+        if self._enforcement_on():
+            # STEP 4b: an extension OFFER from last turn takes priority — resolve the
+            # scout's commit-or-justify choice before any other gate. (A committed
+            # submit_findings on the offer turn sets the cancel event and is caught
+            # above as CANCELLED, so reaching here means it did not commit.)
+            if self.state.extension_offered:
+                self._resolve_extension_offer()
+                return
+            if self.state.wind_down_done:
+                # We only reach here when the protected submit turn did NOT commit —
+                # a successful capture sets the cancel event and is caught above as
+                # CANCELLED. Provider-compat backstop: a model that ignored the
+                # forced tool_choice and called another/unknown tool (or emitted an
+                # invalid submit) gets EXACTLY ONE more turn — re-stating that only
+                # submit_findings is available — before the loop goes terminal. The
+                # toolset stays submit-only and tool_choice stays forced from the
+                # initial trip, so the retry turn is constrained too. Capped at one
+                # retry (no loop); after it the harvest backstop salvages whatever
+                # was gathered. terminus only reaches "forced" if submit_findings
+                # actually fires (captured) — never recorded off the unknown-tool error.
+                if not self._wind_down_retried:
+                    self._wind_down_retried = True
+                    # Anti-windup (STEP 3): the forced-commit turn was issued but the
+                    # agent did NOT commit (a successful capture sets the cancel event
+                    # and is caught as CANCELLED above). Latch that the physical
+                    # tool-removal actuator went unsatisfied on the first forced turn;
+                    # the retry below is the single escalation before terminal.
+                    self.state.forced_unsatisfied = True
+                    self.state.append_message(
+                        {"role": "system", "content": _WIND_DOWN_RETRY}
+                    )
+                    self.state.transition_to(SessionPhase.CALLING_LLM)
+                    return
+                reason = "wind-down complete: forced commit within reserve"
+                self.state.append_message(
+                    {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
+                )
+                await self.event_publisher.emit(self.event_factory.error("budget_exceeded"))
+                self.state.transition_to(SessionPhase.BUDGET_EXCEEDED, reason=reason)
+                return
+            explore_threshold = self.max_budget_tokens - self._commit_reserve
+            budget_spent = self.state.used_tokens >= explore_threshold
+            # STEP 4a predictive overshoot guard: an ADDITIONAL budget-class trigger
+            # that trips ONE turn early when the running per-turn EWMA predicts the
+            # next turn would breach the threshold, so the protected submit turn fits
+            # inside the reserve instead of being the overshoot that gets chopped.
+            predicted_spent = self._predictive_overshoot(explore_threshold)
+            # STEP 3 brakes: two ADDITIONAL triggers into the same actuator, keyed on
+            # the STEP-1 sensor (never on has_write) via the distinct ``_brake_on``
+            # gate. The watchdog catches a scout spinning through no-progress STEPS
+            # while budget is still plentiful (the real pathology); the low-yield
+            # brake catches a run of zero-gain RESULTS. Routing through
+            # ``_enter_wind_down`` makes the terminal rung the non-degradable physical
+            # tool-removal + forced tool_choice — provider 'required'→'auto' silent
+            # degradation cannot weaken it.
+            watchdog_tripped = (
+                self._brake_on() and self.state.steps_since_progress >= self._watchdog_k
+            )
+            low_yield_tripped = (
+                self._brake_on() and self.state.low_yield_since_progress >= self._low_yield_m
+            )
+            brake = budget_spent or predicted_spent or watchdog_tripped or low_yield_tripped
+            # RED-TEAM gate: never force-commit while a tool call's result is still
+            # un-ingested (pending table non-empty) — that would discard the read
+            # that just returned. precheck is normally reached with a drained table.
+            if brake and self.state.pending_events.is_empty():
+                self._trace_brake_trip(
+                    budget_spent, predicted_spent, watchdog_tripped, low_yield_tripped
+                )
+                # STEP 4b valve: on the FIRST trip with the valve armed, offer
+                # commit-or-justify instead of force-committing; otherwise (no valve,
+                # offer outstanding, or cap reached) force the submit as in STEP 0/3.
+                if self._extension_available():
+                    self._offer_extension()
+                else:
+                    self._enter_wind_down()
+                self.state.transition_to(SessionPhase.CALLING_LLM)
+                return
 
         if self.state.used_tokens >= self.max_budget_tokens:
             reason = f"budget exceeded: {self.state.used_tokens} tokens used"
@@ -290,6 +780,10 @@ class SessionRunUseCase:
             return
         latency = time.monotonic() - start
         self.state.add_used_tokens(response.usage.total_tokens)
+        # Predictive overshoot guard (STEP 4a): fold this turn's token delta into the
+        # per-turn-cost EWMA. Always maintained; the predictive precheck trigger that
+        # reads it is the only enforcement-gated consumer.
+        self._update_turn_cost_ewma(response.usage.total_tokens)
         self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
         self.state.set_context_tokens(response.usage.input_tokens)
 
@@ -390,6 +884,9 @@ class SessionRunUseCase:
             # result MESSAGES are buffered into the pending table (a mixed batch of
             # immediate reads + a deferred spawn would otherwise lose its reads).
             proc.apply_read_write_counter_to(self.state)
+            # Likewise the STEP 1 information-gain counters: a buffered immediate
+            # result is still a real tool result and must register its novelty.
+            proc.apply_evidence_counter_to(self.state)
             for message in proc.messages_to_append:
                 tid = message["tool_call_id"]
                 table.add(

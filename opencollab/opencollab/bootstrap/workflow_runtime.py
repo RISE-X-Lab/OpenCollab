@@ -204,6 +204,7 @@ def build_workflow_context(
         max_concurrency=max_concurrency,
         budget_total=budget_total,
         tree_probe=EnvWorkingTreeProbe(probe_env),
+        workspace_root=workspace,
     )
 
 

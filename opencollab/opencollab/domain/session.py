@@ -136,6 +136,72 @@ class SessionState:
     # nudge/escalation in the steering block. Per-turn like ``recent_call_hashes``
     # (reset by ``reset_for_user_turn``); reset to 0 on a successful write.
     reads_since_last_edit: int = 0
+    # Enforcement wind-down (STEP 0). ``wind_down_done`` flips True the first time
+    # the enforcement precheck forces a scout into its single protected submit
+    # turn; it is the latch that grants EXACTLY ONE more CALLING_LLM and then
+    # routes to a terminal. ``wind_down_token_mark`` records ``used_tokens`` at the
+    # trip so the commitment-terminus metric can report ``submit_turn_cost`` (the
+    # tokens the protected submit turn spent). Both are inert unless
+    # ``enforcement_strength`` is on, so a self-regulating run never touches them.
+    wind_down_done: bool = False
+    wind_down_token_mark: int = 0
+    # Information-gain sensor (STEP 1). A purely OBSERVATIONAL trio maintained on
+    # every executed tool result regardless of ``enforcement_strength`` (cheap; it
+    # feeds later brakes but adds NO control flow itself yet). A result is
+    # "informative" when its content is NOVEL — neither its content hash nor its
+    # path-normalized (tool, args) call hash has been seen before — AND it is not
+    # an empty read or a "No matches"-class result; otherwise it is "low-yield".
+    # ``low_yield_since_progress`` counts consecutive low-yield results since the
+    # last informative one (reset to 0 on any informative result);
+    # ``distinct_evidence_count`` tallies informative results in the current turn.
+    # ``_seen_result_hashes`` is the novelty memory (holds both content and call
+    # hashes). Keying on NOVELTY (not the literal "No matches" string) means a
+    # model re-reading a known file at a shifted range to dodge a string match
+    # still scores zero gain. All three reset on a fresh user turn, like the
+    # sibling per-turn signals ``reads_since_last_edit`` / ``recent_call_hashes``.
+    low_yield_since_progress: int = 0
+    distinct_evidence_count: int = 0
+    _seen_result_hashes: set[str] = field(default_factory=set)
+    # Harness-authored evidence ledger (STEP 2). A deterministic, ALWAYS-ON
+    # durable capture FLOOR: one compact card ``{tool, target, outcome, snippet}``
+    # appended per EXECUTED tool result, built purely from the tool-result envelope
+    # (no model involvement, so capture can never fail). ``outcome`` REUSES the
+    # STEP-1 classification — ``hit`` (novel informative), ``NO-MATCH`` (empty /
+    # "No matches"-class intrinsic low-yield), ``duplicate`` (seen-before content or
+    # path-normalized call). The harvest backstop reads this ledger to salvage a
+    # chopped scout, and the dead-scout synthesizer feeds it back to the model. Like
+    # the sibling observational counters it is per-turn (reset by
+    # ``reset_for_user_turn``) and adds NO control flow of its own.
+    scout_ledger: list[dict[str, Any]] = field(default_factory=list)
+    # Progress watchdog (STEP 3). ``steps_since_progress`` counts consecutive
+    # tool-executing STEPS (batches) that produced NO progress, where progress is a
+    # landed write OR a novel informative ("hit") result — the same signal the
+    # STEP-1 sensor / STEP-2 ledger record. It resets to 0 on any progress step and
+    # increments by 1 per no-progress tool batch. Maintained ALWAYS (cheap,
+    # observational, like the STEP-1 counters); only the precheck BRAKE that reads
+    # it is gated behind enforcement, so a self-regulating run is byte-for-byte
+    # unchanged. The watchdog brake trips when it reaches K even with budget
+    # remaining (catches spin while budget is plentiful). Per-turn — reset by
+    # ``reset_for_user_turn`` alongside its sibling sensor counters.
+    steps_since_progress: int = 0
+    # Anti-windup latch (STEP 3). Set True when a forced-commit turn (wind-down /
+    # watchdog / low-yield brake) was issued but the agent did NOT commit on it and
+    # the loop had to escalate to its single retry. Observability only — the actual
+    # escalation is the runner's ``_wind_down_retried`` latch; this records that the
+    # physical tool-removal actuator was not satisfied on the first forced turn. A
+    # session-lifetime latch like ``wind_down_done`` (not reset per user turn).
+    forced_unsatisfied: bool = False
+    # Single-justified-extension valve (STEP 4b). At a wind-down trip the scout is
+    # offered "commit OR justify one more read"; ``extension_offered`` latches that
+    # the offer turn is outstanding so the NEXT precheck resolves the model's choice
+    # before any other gate. ``extensions_granted`` counts the bounded grants (hard
+    # cap = 1) and ``extension_reasons`` records the granted reasons so a duplicate
+    # reason is denied as non-novel. All three are inert unless
+    # ``enforcement_strength`` is on AND a ``request_extension`` tool is wired; they
+    # are session-lifetime latches like ``wind_down_done`` (not reset per user turn).
+    extension_offered: bool = False
+    extensions_granted: int = 0
+    extension_reasons: list[str] = field(default_factory=list)
     phase: SessionPhase = SessionPhase.IDLE
     # Human-readable detail for the current terminal phase (e.g. the exception
     # for ERROR, the token/step counts for the resource caps). ``None`` while
@@ -297,6 +363,65 @@ class SessionState:
         self.resume_to_idle()
         self.clear_recent_tool_hashes()
         self.reads_since_last_edit = 0
+        self.low_yield_since_progress = 0
+        self.distinct_evidence_count = 0
+        self.steps_since_progress = 0
+        self._seen_result_hashes.clear()
+        self.scout_ledger.clear()
+
+    def record_evidence_signal(
+        self,
+        content_hash: str,
+        call_hash: str,
+        intrinsic_low_yield: bool,
+        *,
+        card: dict[str, Any] | None = None,
+    ) -> None:
+        """Fold one executed tool result into the information-gain counters (STEP 1)
+        and, when ``card`` is given, the evidence ledger (STEP 2).
+
+        ``intrinsic_low_yield`` flags an empty read or a "No matches"-class result
+        (low-yield regardless of novelty). A result is INFORMATIVE only when it is
+        not intrinsically low-yield AND at least one of its hashes is novel (an
+        unseen result content OR an unseen (tool, normalized-args) call key). An
+        informative result resets ``low_yield_since_progress`` and increments
+        ``distinct_evidence_count``; a low-yield result increments
+        ``low_yield_since_progress``. Both hashes are remembered, so a later exact
+        re-issue — or a re-read of the same file at a shifted range, caught by the
+        path-normalized call hash — scores zero gain. Observational only: STEP 1
+        wires no behavior to these counters.
+
+        STEP 2: the SAME novelty + intrinsic decision determines the ledger
+        ``outcome`` (``hit`` | ``NO-MATCH`` | ``duplicate``) — no second
+        classification. When ``card`` (carrying ``tool`` / ``target`` / ``snippet``
+        from the tool-result envelope) is supplied, a completed card is appended to
+        ``scout_ledger``. ``card=None`` keeps the pre-STEP-2 path (counters only),
+        so callers that do not produce cards are byte-for-byte unchanged.
+        """
+        already_seen = (
+            content_hash in self._seen_result_hashes
+            or call_hash in self._seen_result_hashes
+        )
+        self._seen_result_hashes.add(content_hash)
+        self._seen_result_hashes.add(call_hash)
+        if not intrinsic_low_yield and not already_seen:
+            self.low_yield_since_progress = 0
+            self.distinct_evidence_count += 1
+            outcome = "hit"
+        else:
+            # Same control flow as STEP 1 (low-yield bumps the counter); only the
+            # ledger label distinguishes an intrinsic no-result from a re-seen dup.
+            self.low_yield_since_progress += 1
+            outcome = "NO-MATCH" if intrinsic_low_yield else "duplicate"
+        if card is not None:
+            self.scout_ledger.append(
+                {
+                    "tool": card.get("tool", ""),
+                    "target": card.get("target", ""),
+                    "outcome": outcome,
+                    "snippet": card.get("snippet", ""),
+                }
+            )
 
     def remember_tool_call_hash(self, call_hash: str, max_window: int | None = None) -> None:
         self.recent_call_hashes.append(call_hash)
