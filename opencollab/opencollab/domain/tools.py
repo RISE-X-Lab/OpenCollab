@@ -40,12 +40,25 @@ class ToolProcessingResult:
     # ``reads_since_last_edit``; otherwise the reads accumulate onto it.
     reads_executed: int = 0
     write_succeeded: bool = False
+    # STEP 1 information-gain sensor: one ``(content_hash, call_hash,
+    # intrinsic_low_yield)`` tuple per EXECUTED tool result, in call order. Folded
+    # into SessionState's novelty counters by ``apply_evidence_counter_to``.
+    # Short-circuited calls (bad args / unknown tool / loop block) produce no real
+    # tool output and contribute no signal.
+    evidence_signals: list[tuple[str, str, bool]] = field(default_factory=list)
+    # STEP 2 evidence ledger: one ``{tool, target, snippet}`` raw card per EXECUTED
+    # tool result, index-aligned with ``evidence_signals`` (same producer loop). The
+    # ``outcome`` is decided at fold time (it needs SessionState's novelty memory),
+    # so the card here carries only the envelope facts. Additive to STEP 1 — a
+    # caller that never populates it folds counters exactly as before.
+    evidence_cards: list[dict[str, Any]] = field(default_factory=list)
 
     def apply_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         for message in self.messages_to_append:
             state.append_message(message)
         self.apply_hashes_to(state, max_window=max_window)
         self.apply_read_write_counter_to(state)
+        self.apply_evidence_counter_to(state)
 
     def apply_read_write_counter_to(self, state: SessionState) -> None:
         """Fold this batch's read/write activity into ``reads_since_last_edit``.
@@ -58,6 +71,44 @@ class ToolProcessingResult:
             state.reads_since_last_edit = 0
         else:
             state.reads_since_last_edit += self.reads_executed
+
+    def apply_evidence_counter_to(self, state: SessionState) -> None:
+        """Fold this batch's information-gain signals into the novelty counters
+        (STEP 1) and the evidence ledger (STEP 2).
+
+        Replays each executed result in call order through
+        ``state.record_evidence_signal`` so the within-batch ordering of
+        informative vs low-yield results is preserved (a duplicate that follows
+        its own first occurrence in the same batch scores low-yield). The
+        index-aligned ``evidence_cards`` ride along so the ledger's outcome label
+        is decided from the SAME novelty decision. Like
+        ``apply_read_write_counter_to`` it must be applied even on the deferred
+        path, where the result MESSAGES are buffered into the pending table.
+        Observational only — no control flow depends on the counters/ledger.
+
+        STEP 3 watchdog: also folds this batch's PER-STEP progress signal into
+        ``steps_since_progress``. A step makes progress when it lands a write OR a
+        novel informative ("hit") result (``distinct_evidence_count`` rose). A real
+        tool-executing batch with neither increments the counter by 1; a progress
+        batch resets it to 0. Counted per STEP (batch), not per result, so a single
+        turn that fired several low-yield reads still costs one watchdog step. Like
+        the counters above this is maintained ALWAYS — only the precheck brake that
+        reads it is gated, so the off path is unchanged.
+        """
+        distinct_before = state.distinct_evidence_count
+        for i, (content_hash, call_hash, intrinsic_low_yield) in enumerate(self.evidence_signals):
+            card = self.evidence_cards[i] if i < len(self.evidence_cards) else None
+            state.record_evidence_signal(
+                content_hash, call_hash, intrinsic_low_yield, card=card
+            )
+        if self.evidence_signals:
+            made_progress = (
+                self.write_succeeded or state.distinct_evidence_count > distinct_before
+            )
+            if made_progress:
+                state.steps_since_progress = 0
+            else:
+                state.steps_since_progress += 1
 
     def apply_hashes_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         """Apply only the loop-detection hashes, not the result messages.

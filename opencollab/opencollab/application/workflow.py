@@ -36,7 +36,17 @@ from opencollab.application.ports import (
     WorkflowSessionFactoryPort,
     WorkingTreeProbe,
 )
+from opencollab.application.extension_valve import RequestExtensionTool
+from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE, ENFORCEMENT_OFF
 from opencollab.application.structured_output import StructuredOutputTool
+from opencollab.application.submit_findings import (
+    SUBMIT_TOOL_NAME,
+    SubmitFindingsTool,
+    build_dead_scout_synthesis_prompt,
+    commitment_terminus_payload,
+    format_findings_report,
+    harvest_findings,
+)
 
 DEFAULT_MAX_CONCURRENCY = 4
 
@@ -168,6 +178,7 @@ class WorkflowContext:
         tree_probe: WorkingTreeProbe | None = None,
         deadline_monotonic: float | None = None,
         deadline_margin_seconds: float = DEFAULT_DEADLINE_MARGIN_SECONDS,
+        workspace_root: str | None = None,
     ) -> None:
         self._factory = factory
         self._event_sink = event_sink
@@ -176,6 +187,11 @@ class WorkflowContext:
         self._sessions: list[Any] = []
         self.budget = WorkflowBudget(budget_total, self._sessions)
         self._tree_probe = tree_probe
+        # Absolute path of the repo the sessions edit/read (the workspace passed to
+        # ``run_workflow``). Read-only metadata for workflows that need to run a
+        # static pass over the source (e.g. the STEP-5a pre-recon fact sheet); it
+        # changes no behavior on its own. ``None`` for unbounded CLI / tests.
+        self.workspace_root = workspace_root
         # Absolute wall-clock deadline on the ``time.monotonic()`` clock (None =
         # unbounded: no wall, e.g. CLI runs and tests). ``time_low()`` reads it.
         self._deadline_monotonic = deadline_monotonic
@@ -264,6 +280,9 @@ class WorkflowContext:
         timeout: float | None = None,
         over_budget_ok: bool = False,
         budget: int | None = None,
+        enforcement_strength: str = ENFORCEMENT_OFF,
+        commit_reserve: int = DEFAULT_COMMIT_RESERVE,
+        harvest_fallback: str | None = None,
     ) -> str | dict | None:
         """Run one one-shot session and return its final assistant text.
 
@@ -315,6 +334,24 @@ class WorkflowContext:
                 return await self._run_structured_agent(
                     prompt, schema=schema, label=label, tools=tools,
                     isolation=isolation, budget=budget,
+                )
+            # Enforcement wind-down (STEP 0): the scout path injects submit_findings
+            # and the structural commit brake. OFF (the default) routes to the
+            # unchanged ``_run_agent``, so every existing caller is byte-for-byte
+            # identical — the new path is reachable only when explicitly requested.
+            if enforcement_strength != ENFORCEMENT_OFF:
+                return await self._run_enforced_agent(
+                    prompt,
+                    label=label,
+                    tools=tools,
+                    isolation=isolation,
+                    tool_choice=tool_choice,
+                    thinking=thinking,
+                    timeout=timeout,
+                    budget=budget,
+                    enforcement_strength=enforcement_strength,
+                    commit_reserve=commit_reserve,
+                    harvest_fallback=harvest_fallback,
                 )
             return await self._run_agent(
                 prompt,
@@ -374,6 +411,263 @@ class WorkflowContext:
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             await self.log(f"agent failed ({label or 'agent'}): {exc}")
             return None
+
+    async def _run_enforced_agent(
+        self,
+        prompt: str,
+        *,
+        label: str | None,
+        tools: Sequence[Any] | None,
+        isolation: bool,
+        tool_choice: str | None,
+        thinking: bool | None,
+        timeout: float | None,
+        budget: int | None,
+        enforcement_strength: str,
+        commit_reserve: int,
+        harvest_fallback: str | None = None,
+    ) -> str | None:
+        """Run a scout under the enforcement wind-down (STEP 0).
+
+        Mirrors ``_run_agent`` but injects a ``submit_findings`` capture tool, arms
+        the runner's structural commit brake, and HARVESTS a usable report: the
+        captured payload if present, else the final text, else a "(partial …)"
+        salvage from the transcript — so a chopped scout never yields a bare
+        "(scout died)". A successful capture sets the cancel event so the loop halts
+        at once (commit-first friendly), exactly as the structured path does. Emits
+        one ``commitment_terminus`` metric per scout to the orchestration trace.
+        """
+        session_budget = self._capped_session_budget(budget)
+        capture_done = asyncio.Event()
+        submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
+        # STEP 4b single-justified-extension valve: the request_extension capture
+        # tool is held by the runner and injected ONLY at the wind-down offer turn
+        # (never in the scout's normal toolset), so normal exploration is unchanged.
+        extension_tool = RequestExtensionTool()
+        combined_tools = [*(tools or []), submit_tool]
+        try:
+            session = self._factory.build_workflow_session(
+                prompt=prompt,
+                budget=session_budget,
+                tools=combined_tools,
+                isolation=isolation,
+                label=label,
+                tool_choice=tool_choice,
+                thinking=thinking,
+            )
+        except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
+            await self.log(f"agent build failed ({label or 'agent'}): {exc}")
+            return None
+
+        self._sessions.append(session)
+        self._configure_session_enforcement(
+            session, enforcement_strength, commit_reserve, extension_tool
+        )
+        text: str | None = None
+        try:
+            await session.add_user_message(prompt)
+            if timeout is not None and timeout != float("inf") and timeout > 0:
+                text = await asyncio.wait_for(
+                    session.run_loop(capture_done), timeout=timeout
+                )
+            else:
+                text = await session.run_loop(capture_done)
+        except asyncio.TimeoutError:
+            await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
+        except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
+            await self.log(f"agent failed ({label or 'agent'}): {exc}")
+
+        # Harvest is the backstop even on a timeout/exception: whatever the scout
+        # already gathered (captured payload, prose, or the harness-authored
+        # evidence ledger) is salvaged — never a bare "(scout died)".
+        ledger = self._scout_ledger(session)
+        report = harvest_findings(
+            submit_tool.captured, text or "", self._session_messages(session), ledger=ledger,
+            draft=harvest_fallback,
+        )
+        # STEP 2 (rare-case backstop): a DEAD scout — no structured commit
+        # (``captured is None``) yet a non-empty ledger of what it gathered —
+        # triggers ONE bounded transcript-only synthesizer call (submit_findings
+        # only, forced, cite-or-abstain). With STEP 0's wind-down live this fires
+        # seldom (scouts are force-committed at ~80%); it salvages the chopped /
+        # errored / strayed tail. Gated by construction: this method only runs when
+        # enforcement is on.
+        if submit_tool.captured is None and ledger:
+            synthesized = await self._synthesize_dead_scout(
+                session, label, commit_reserve=commit_reserve
+            )
+            if synthesized and synthesized.strip():
+                report = synthesized
+        self._emit_commitment_terminus(session, label, submit_tool, report)
+        return report if report else text
+
+    async def _synthesize_dead_scout(
+        self, dead_session: Any, label: str | None, *, commit_reserve: int
+    ) -> str | None:
+        """Salvage a dead/empty scout with ONE bounded transcript-only LLM call.
+
+        Its ONLY input is the scout's harness-authored evidence ledger + raw tool
+        results; its ONLY tool is ``submit_findings`` with a forced (named-function)
+        ``tool_choice`` and the cite-or-abstain post-validation — NO exploration
+        tools, so the salvage cannot wander or fabricate. Returns the formatted
+        findings (or a valid ``insufficient_evidence`` abstention) on a successful
+        capture, else ``None`` so the caller keeps the harvested partial. Bounded by
+        ``commit_reserve`` (the reserve sized for a single submit turn) and clamped
+        to the live global remaining.
+        """
+        ledger = self._scout_ledger(dead_session)
+        messages = self._session_messages(dead_session)
+        prompt = build_dead_scout_synthesis_prompt(ledger, messages)
+        capture_done = asyncio.Event()
+        submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
+        synth_label = f"{label}:synth" if label else "synth"
+        session_budget = self._capped_session_budget(commit_reserve)
+        try:
+            session = self._factory.build_workflow_session(
+                prompt=prompt,
+                budget=session_budget,
+                tools=[submit_tool],
+                isolation=False,
+                label=synth_label,
+                tool_choice=_named_tool_choice(SUBMIT_TOOL_NAME),
+                thinking=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — a failed salvage must not abort the fleet
+            await self.log(f"dead-scout synth build failed ({synth_label}): {exc}")
+            return None
+
+        self._sessions.append(session)
+        try:
+            await session.add_user_message(prompt)
+            await session.run_loop(capture_done)
+        except Exception as exc:  # noqa: BLE001 — one dead salvage never kills the fleet
+            await self.log(f"dead-scout synth failed ({synth_label}): {exc}")
+            return None
+
+        captured = submit_tool.captured
+        report = format_findings_report(captured) if captured is not None else ""
+        self._emit_dead_scout_synthesis(synth_label, ledger, captured, bool(report.strip()))
+        return report if report.strip() else None
+
+    async def draft_findings(
+        self, prompt: str, *, label: str | None = None, budget: int | None = None
+    ) -> dict[str, Any] | None:
+        """STEP 5b commit-first: ONE bounded submit-only call that commits a
+        structured ``submit_findings`` DRAFT from STATIC context (the pre-recon fact
+        sheet) BEFORE any exploration, returning the captured payload (or ``None``).
+
+        Reuses the validated dead-scout-synth wiring exactly — ``tools=[submit_findings]``
+        only, a named-function (forced) ``tool_choice``, ``thinking=False`` — so the
+        draft cannot wander or fabricate and the call is a single constrained turn.
+        It touches NO part of the session FSM: the exploring scout that consumes this
+        draft runs the unchanged capture→cancel→harvest path. Cost is one bounded
+        call per scout, clamped to ``budget`` (sized to ``commit_reserve``) and to the
+        live global remaining. Skips gracefully (``None``) if the shared pool is spent
+        or the factory/session errors, so a failed draft never aborts the fleet.
+        """
+        if self.budget.remaining() <= 0:
+            return None
+        session_budget = self._capped_session_budget(budget)
+        capture_done = asyncio.Event()
+        submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
+        try:
+            session = self._factory.build_workflow_session(
+                prompt=prompt,
+                budget=session_budget,
+                tools=[submit_tool],
+                isolation=False,
+                label=label,
+                tool_choice=_named_tool_choice(SUBMIT_TOOL_NAME),
+                thinking=False,
+            )
+        except Exception as exc:  # noqa: BLE001 — a failed draft must not abort the fleet
+            await self.log(f"draft build failed ({label or 'draft'}): {exc}")
+            return None
+        self._sessions.append(session)
+        try:
+            await session.add_user_message(prompt)
+            await session.run_loop(capture_done)
+        except Exception as exc:  # noqa: BLE001 — one dead draft never kills the fleet
+            await self.log(f"draft failed ({label or 'draft'}): {exc}")
+            return None
+        return submit_tool.captured
+
+    @staticmethod
+    def _scout_ledger(session: Any) -> list[dict[str, Any]]:
+        """The scout's harness-authored evidence ledger (STEP 2), or [] when a
+        duck-typed session/state does not carry one."""
+        state = getattr(session, "state", None)
+        ledger = getattr(state, "scout_ledger", None)
+        return list(ledger) if ledger else []
+
+    def _emit_dead_scout_synthesis(
+        self, label: str | None, ledger: list[dict[str, Any]], captured: dict | None, salvaged: bool
+    ) -> None:
+        """Trace one ``dead_scout_synthesis`` event (no-op without a tracer) so the
+        rare salvage is auditable: how big the ledger was, whether a payload was
+        captured, and the anchor count of the salvaged findings."""
+        if self._tracer is None:
+            return
+        findings = (captured or {}).get("findings") or []
+        self._tracer.log_step(
+            step_type="dead_scout_synthesis",
+            payload={
+                "role": label,
+                "ledger_size": len(ledger),
+                "salvaged": salvaged,
+                "insufficient_evidence": bool((captured or {}).get("insufficient_evidence")),
+                "evidence_anchor_count": sum(
+                    1 for f in findings if str(f.get("evidence_anchor") or "").strip()
+                ),
+            },
+        )
+
+    @staticmethod
+    def _configure_session_enforcement(
+        session: Any,
+        enforcement_strength: str,
+        commit_reserve: int,
+        extension_tool: Any | None = None,
+    ) -> None:
+        """Arm the session runner's wind-down post-build (the agent already carries
+        the submit tool). ``extension_tool`` (STEP 4b) arms the single-justified-
+        extension valve. Defensive: a duck-typed session without a configurable
+        runner is left as-is rather than aborting the scout."""
+        runner = getattr(session, "runner", None)
+        configure = getattr(runner, "configure_enforcement", None)
+        if callable(configure):
+            configure(
+                enforcement_strength=enforcement_strength,
+                commit_reserve=commit_reserve,
+                extension_tool=extension_tool,
+            )
+
+    @staticmethod
+    def _session_messages(session: Any) -> list[dict[str, Any]]:
+        state = getattr(session, "state", None)
+        messages = getattr(state, "messages", None)
+        if messages is None:
+            messages = getattr(session, "messages", None)
+        return list(messages) if messages else []
+
+    def _emit_commitment_terminus(
+        self, session: Any, label: str | None, submit_tool: SubmitFindingsTool, report: str | None
+    ) -> None:
+        """Emit one ``commitment_terminus`` event per scout to orchestration.jsonl
+        (no-op when no tracer is wired)."""
+        if self._tracer is None:
+            return
+        state = getattr(session, "state", None)
+        payload = commitment_terminus_payload(
+            role=label,
+            captured=submit_tool.captured,
+            wind_down_done=bool(getattr(state, "wind_down_done", False)),
+            used_tokens=int(getattr(state, "used_tokens", 0) or 0),
+            max_budget_tokens=int(getattr(session, "max_budget_tokens", 0) or 0),
+            wind_down_token_mark=int(getattr(state, "wind_down_token_mark", 0) or 0),
+            artifact=report or "",
+        )
+        self._tracer.log_step(step_type="commitment_terminus", payload=payload)
 
     async def _run_structured_agent(
         self,

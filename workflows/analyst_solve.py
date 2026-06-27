@@ -42,6 +42,14 @@ from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.tools.run_tests import RunTestsTool
+from opencollab.application.fact_sheet import (
+    build_fact_sheet,
+    estimate_target_complexity,
+    format_fact_sheet_hint,
+    size_recon,
+)
+from opencollab.application.session_run import ENFORCEMENT_OFF
+from opencollab.application.submit_findings import format_findings_report
 from opencollab.application.workflow_registry import workflow
 
 # Rounds a single phase gets before the run moves on (best-effort, no stop).
@@ -87,7 +95,15 @@ MAX_SCOUTS = 4
 # reserve (which exceeds RESERVE_TOKENS, leaving room for plan + a forced write +
 # a final verify). This is the "deduct recon, guarantee the tail" rule — it makes
 # the steering hint's per-call-cap blindness harmless because recon is bounded.
-RECON_FLOOR = 400_000
+#
+# Raised 400k -> 600k so the implement loop's round-1 gate can actually FIRE:
+# after recon leaves this floor and plan spends PLAN_BUDGET (150k), the tail keeps
+# 600k - 150k = 450k > RESERVE_TOKENS (350k), so implement runs a real
+# coder/tester round instead of ALWAYS bailing to a forced write (at 400k the tail
+# was 400k-150k=250k < 350k -> gate never fired). This starves the measured
+# ~91%-over-funded scouts from 150k -> 100k each (recon_pool 600k -> 400k at 1M),
+# which they do not need (they re-read one core file 12-26x well under cap).
+RECON_FLOOR = 600_000
 
 # Shared rules — every role gets them (lifted from configs/team.self.collab.yaml,
 # the SWE-bench-tuned variant: it warns off chasing not-yet-existing tests).
@@ -236,7 +252,47 @@ Your dimension — {aspect}:
 {question}
 
 Where to start:
+{hints}{draft_block}"""
+
+# STEP 5b commit-first: the bounded submit-only prompt that produces a scout's
+# turn-0 DRAFT from the STATIC fact sheet alone (no reads). The draft anchors a
+# committed cite-or-abstain artifact BEFORE exploration; the scout then revises it.
+# Cite-or-abstain: fact-sheet-only, so every draft finding is verified=false until
+# the scout's own read confirms it (NOT fabrication — an honest unconfirmed draft).
+DRAFT_PROMPT = """\
+You are a Scout about to investigate ONE dimension of a problem. BEFORE you read \
+anything, commit a DRAFT of your findings based ONLY on the static fact sheet below — \
+call submit_findings now. This draft anchors your investigation; you will revise it \
+with real evidence in the next step.
+
+Cite-or-abstain: the fact sheet is STATIC and NOT YET confirmed by your own reads, so \
+mark EVERY draft finding verified=false and use lower confidence. You MAY set \
+evidence_anchor to a location the fact sheet lists (e.g. a file:line) as a POINTER to \
+check, but keep verified=false until one of your own reads confirms it. If the fact \
+sheet is too thin to draft anything for this dimension, set insufficient_evidence=true \
+— do NOT fabricate findings or anchors.
+
+Your dimension — {aspect}:
+{question}
+
+Static fact sheet:
+{fact_hint}
+
+Where you will look next:
 {hints}"""
+
+# Appended to SCOUT_PROMPT when a draft was committed: frame the reads as REVISION
+# of the committed draft (the scout's refined submit, not this draft, is harvested).
+DRAFT_REVISE_BLOCK = """
+
+Your committed draft (from the static fact sheet — a hypothesis, NOT a conclusion):
+{draft}
+
+Revise and STRENGTHEN this draft with real evidence: confirm each finding against the \
+actual source with your reads and upgrade confirmed ones to verified=true with a real \
+file:line / matched-string anchor, correct anything the fact sheet got wrong, and add \
+what it missed. Then re-commit your refined findings with submit_findings — that \
+refined submission, not the draft, is your report."""
 
 PLAN_PROMPT = """\
 You are the Analyst, now designing the solution. Reconnaissance is complete — the \
@@ -325,6 +381,48 @@ be surfaced upward instead of burning more rounds.
 Goal:
 {goal}
 {target_tests}
+
+Definition of done:
+{done}
+
+Coder's report:
+{summary}"""
+
+STATIC_TESTER_PROMPT = """\
+You are a Tester verifying a coder's change in an environment with NO runnable test \
+suite (no pytest, heavy deps like torch absent, grading tests withheld by design). Do \
+NOT call run_tests or pytest. You are GIVEN the plan the coder worked to and the \
+coder's report below — verify the edit against THOSE; do NOT go re-derive the spec by \
+exploring the codebase. Do EXACTLY these two things, then STOP and emit your verdict:
+
+A. STATIC CHECKS on the edited file(s):
+   - grep the edited source ONCE for `raise NotImplementedError` and once for \
+`# TODO: implement this function` — if the target body is still a stub, FAIL.
+   - run `python3 -m py_compile <edited_file>` once per edited file — any SyntaxError \
+is a FAIL (report file:line).
+   - signature: confirm the function name and parameters match the plan/goal; a \
+renamed/added/dropped param is a FAIL.
+B. PLAN CONSISTENCY: read the edited function ONCE and check it does what the PLAN's \
+approach and definition of done describe — every branch / behavior the plan names is \
+present and not contradicted. A missing or contradicted plan item is a FAIL (name it).
+
+That is ALL. Do NOT open unrelated files, do NOT re-grep a pattern you already ran, do \
+NOT run toy tests, do NOT re-derive the spec from scratch. The moment A and B resolve, \
+call structured_output: PASS when A is clean AND B is consistent; FAIL with SPECIFIC, \
+ACTIONABLE findings (which file, what is wrong or missing) so the coder can fix it. \
+Reserve BLOCKED for genuine infra breakage unrelated to the code — NEVER for \
+"pytest/torch missing", which is expected here. Set `tests_run` to [] and \
+`failed_count` to 0.
+
+{rules}
+
+Goal:
+{goal}
+{target_tests}
+
+The plan the coder implemented (verify the edit against THIS — do not re-derive it):
+- root cause: {root_cause}
+- approach: {approach}
 
 Definition of done:
 {done}
@@ -439,12 +537,106 @@ def _read_tools() -> list[Any]:
     return [BashTool(), FileReadTool(), GrepTool()]
 
 
-def _coder_tools() -> list[Any]:
-    return [BashTool(), FileReadTool(), FileWriteTool(), ApplyPatchTool(), RunTestsTool(), GrepTool()]
+# Enforced-mode prompt suffixes (Phase 1, 1D). Appended ONLY when enforcement is
+# on — the base PLAN_PROMPT/CODER_PROMPT/FORCED_PROMPT/COMMIT_PROMPT strings are
+# never edited, so the OFF prompt text stays byte-for-byte identical to reference.
+PLANNER_ENFORCED_SUFFIX = (
+    "\n\nYou have ONLY file_read + grep (no shell, no file editing). Confirm facts "
+    "by reading/grepping; never run commands or write files."
+)
+CODER_ENFORCED_SUFFIX = (
+    "\n\nYou have NO shell/bash and CANNOT create new files. Edit ONLY the existing "
+    "target via file_write str_replace (preferred) or apply_patch. Do NOT attempt "
+    "to run python/tests via shell or write helper/test scripts."
+)
+
+
+def _enforcement_on(enforcement_strength: str) -> bool:
+    """True when the structural toolset whitelist (Phase 1) is engaged.
+
+    Mirrors ``SessionRun._enforcement_on`` so the workflow can decide locally
+    whether to swap the toolset and append the enforced prompt suffix. ``off`` ->
+    False -> reference behavior.
+    """
+    return enforcement_strength != ENFORCEMENT_OFF
+
+
+def _planner_suffix(enforcement_strength: str) -> str:
+    return PLANNER_ENFORCED_SUFFIX if _enforcement_on(enforcement_strength) else ""
+
+
+def _coder_suffix(enforcement_strength: str) -> str:
+    return CODER_ENFORCED_SUFFIX if _enforcement_on(enforcement_strength) else ""
+
+
+def _final_verify_redundant(
+    enforcement_strength: str, forced: bool, phase_reports: list[dict[str, Any]]
+) -> bool:
+    """STEP 2B (Phase 2): is the whole-goal final tester redundant with the per-phase
+    testers that already ran?
+
+    The per-phase coder->tester loop already runs an adversarial tester after each
+    phase (``tester:p{idx}r{round}``); a phase only reaches ``status == "passed"``
+    once that tester PASSED on the cumulative tree AND cleared the FAIL_TO_PASS gate.
+    When EVERY phase passed and NO coder edit has touched the tree since (no forced
+    write — the only coder call between the last phase tester and the final verify),
+    the ``tester:final`` call would re-run near-identical static checks on a
+    byte-identical tree — pure waste (observed in 6/6 traces). Skip it then.
+
+    Conservative by construction: returns False (run the final tester, keeping the
+    repair loop intact) whenever any phase failed/blocked, a forced write landed an
+    un-reviewed patch, or there are no phase reports. Gated on enforcement, so with
+    enforcement OFF this always returns False and the verify path is byte-for-byte
+    the reference."""
+    if not _enforcement_on(enforcement_strength):
+        return False
+    if forced or not phase_reports:
+        return False
+    return all(r.get("status") == "passed" for r in phase_reports)
+
+
+def _planner_tools(enforcement_strength: str = ENFORCEMENT_OFF) -> list[Any]:
+    """Tools for the planning analyst (the PLAN call).
+
+    OFF == reference: returns the exact ``_read_tools()`` list. ON drops bash so
+    the planner is confined to read-only file_read + grep — it cannot run shell
+    commands or overwrite source via a ``cat >`` redirect (the CRITICAL
+    planner-overwrite vector).
+    """
+    if enforcement_strength == ENFORCEMENT_OFF:
+        return _read_tools()
+    return [FileReadTool(), GrepTool()]
+
+
+def _coder_tools(enforcement_strength: str = ENFORCEMENT_OFF) -> list[Any]:
+    """Tools for the implement/forced/repair coder calls.
+
+    OFF == reference: returns the exact current 6-tool list AND order. ON drops
+    bash (no shell test-theater / find / helper-script creation) and restricts
+    file_write to str_replace only (``allow_create=False``), keeping the coder's
+    habitual edit path plus apply_patch + run_tests + read/grep.
+    """
+    if enforcement_strength == ENFORCEMENT_OFF:
+        return [BashTool(), FileReadTool(), FileWriteTool(), ApplyPatchTool(), RunTestsTool(), GrepTool()]
+    return [FileReadTool(), GrepTool(), FileWriteTool(allow_create=False), ApplyPatchTool(), RunTestsTool()]
 
 
 def _tester_tools() -> list[Any]:
     return [BashTool(), FileReadTool(), RunTestsTool(), GrepTool()]
+
+
+def _static_tester_tools() -> list[Any]:
+    # No RunTestsTool: where no test runtime exists, run_tests can only waste
+    # budget. Static validation needs bash (py_compile), file_read, grep.
+    return [BashTool(), FileReadTool(), GrepTool()]
+
+
+def _tester_prompt(static_verify: bool) -> str:
+    return STATIC_TESTER_PROMPT if static_verify else TESTER_PROMPT
+
+
+def _tester_tools_for(static_verify: bool) -> list[Any]:
+    return _static_tester_tools() if static_verify else _tester_tools()
 
 
 def _time_low(ctx: Any) -> bool:
@@ -473,14 +665,76 @@ def _budget_ok(ctx: Any, reserve: int = RESERVE_TOKENS) -> bool:
     return ctx.budget.remaining() > reserve and not _time_low(ctx)
 
 
-async def _recon(ctx: Any, goal: str, dims: list[dict[str, Any]]) -> str:
+async def _recon(
+    ctx: Any,
+    goal: str,
+    dims: list[dict[str, Any]],
+    enforcement_strength: str = "off",
+    commit_reserve: int = 25_000,
+) -> str:
     """Fan the dimensions out to parallel read-only scouts; return a combined,
-    labelled findings document for the planning analyst."""
+    labelled findings document for the planning analyst.
+
+    ``enforcement_strength`` (default ``off``) threads the STEP-0 wind-down to each
+    scout: with ``off`` the scout runs exactly as before; with ``needs-enforcement``
+    it gets a submit_findings tool and the structural commit brake (forced to a
+    single structured submit at ~80% of its cap instead of being chopped)."""
     if len(dims) > MAX_SCOUTS:
         await ctx.log(
             f"recon: scope produced {len(dims)} dimensions — capping to {MAX_SCOUTS} scouts"
         )
         dims = dims[:MAX_SCOUTS]
+
+    # STEP 5a/5c (gated on enforcement). OFF -> ``fact_hint`` stays "" and
+    # ``depth_leash`` stays 1.0, so the scout count, per-scout cap and hints below
+    # are byte-for-byte identical to the reference path.
+    fact_hint = ""
+    depth_leash = 1.0
+    if enforcement_strength != "off":
+        # 5a — deterministic, NON-LLM pre-recon fact sheet over the in-workspace
+        # (stubbed) source ONLY. Degrade gracefully: a missing workspace root or an
+        # un-locatable target yields no manifest, the scouts keep today's hints, and
+        # 5c sizing is skipped. The extractor itself refuses to read any answer
+        # artifact (test_code/, func_implementation, *_result/_output.jsonl).
+        workspace_root = getattr(ctx, "workspace_root", None)
+        manifest = None
+        if workspace_root:
+            try:
+                manifest = build_fact_sheet(workspace_root, goal)
+            except Exception as exc:  # noqa: BLE001 — recon must never abort on the fact sheet
+                await ctx.log(f"recon: fact sheet skipped (extractor error: {exc})")
+                manifest = None
+        else:
+            await ctx.log("recon: fact sheet skipped — no workspace_root on ctx")
+        if manifest:
+            fact_hint = format_fact_sheet_hint(manifest)
+            await ctx.log(
+                f"recon: fact sheet built for {manifest['function_name']} "
+                f"({manifest['target_file']}): {manifest['call_site_count']} call site(s), "
+                f"{len(manifest['siblings'])} sibling(s), "
+                f"{len(manifest['referenced_types'])} type ref(s)"
+            )
+            # 5c — size the scout COUNT + per-scout depth leash from a cheap static
+            # complexity estimate, so a trivial target does not get the full fan-out.
+            complexity = estimate_target_complexity(manifest)
+            n_scouts, depth_leash = size_recon(len(dims), complexity, ceiling=MAX_SCOUTS)
+            if n_scouts < len(dims):
+                await ctx.log(
+                    f"recon: complexity={complexity} -> sizing {len(dims)} dimension(s) "
+                    f"down to {n_scouts} scout(s) (depth leash {depth_leash:.2f})"
+                )
+                dims = dims[:n_scouts]
+            else:
+                await ctx.log(
+                    f"recon: complexity={complexity} -> keeping {len(dims)} scout(s) "
+                    f"(depth leash {depth_leash:.2f})"
+                )
+        elif workspace_root:
+            await ctx.log(
+                "recon: fact sheet unavailable (goal names no target / file not found) "
+                "— scouts use scope hints unchanged, complexity sizing skipped"
+            )
+
     # Deduct recon from a reserved tail: scouts share only (remaining -
     # RECON_FLOOR), so plan/implement/verify always keep RECON_FLOOR no matter how
     # greedily the read-only scouts explore. min() keeps the SCOUT_BUDGET ceiling
@@ -488,11 +742,78 @@ async def _recon(ctx: Any, goal: str, dims: list[dict[str, Any]]) -> str:
     n = len(dims)
     recon_pool = max(0, ctx.budget.remaining() - RECON_FLOOR)
     scout_cap = min(SCOUT_BUDGET, recon_pool // n) if n else SCOUT_BUDGET
+    # 5c depth leash: shrink each scout's cap for simpler targets so a lone scout
+    # cannot just absorb the budget freed by dropping its peers. ``1.0`` (OFF, or
+    # the complex bucket) leaves scout_cap untouched.
+    if depth_leash < 1.0:
+        scout_cap = max(1, int(scout_cap * depth_leash))
     await ctx.log(
         f"recon: {n} scout(s), {ctx.budget.remaining() // 1000}k remaining, "
         f"holding {RECON_FLOOR // 1000}k for plan/implement/verify → "
         f"scout cap {scout_cap // 1000}k each"
     )
+    if enforcement_strength != "off":
+        # Reserve is carved FROM each scout's cap (explore_threshold =
+        # scout_cap - reserve_size), never additive — log it so the wind-down
+        # trip point is auditable against submit_turn_cost in the metric.
+        await ctx.log(
+            f"recon: enforcement={enforcement_strength}, reserve_size={commit_reserve} "
+            f"(explore_threshold ~{max(0, scout_cap - commit_reserve) // 1000}k of "
+            f"{scout_cap // 1000}k per scout)"
+        )
+
+    def _scout_label(d: dict[str, Any], i: int) -> str:
+        return f"scout:{i}:{(d.get('aspect') or '').strip().replace(' ', '-')[:24] or 'dim'}"
+
+    def _scout_hints(d: dict[str, Any]) -> str:
+        base = "\n".join(d.get("hints") or []) or "(no starting point given — search from the goal)"
+        # 5a injection: prepend the static fact sheet so scouts start from confirmed
+        # signatures/call-sites instead of re-discovering them. Empty when OFF or no
+        # manifest -> returns ``base`` byte-for-byte.
+        return f"{fact_hint}\n\n{base}" if fact_hint else base
+
+    # STEP 5b — commit-first (Design B, no FSM changes). Gated on enforcement AND a
+    # built fact sheet (``fact_hint`` non-empty) AND a ctx that can run a bounded
+    # submit-only draft call. For each scout, commit a turn-0 DRAFT from the static
+    # fact sheet (one bounded ``draft_findings`` call) BEFORE it explores; the scout
+    # then runs EXACTLY as today (capture→cancel→harvest unchanged), revising the
+    # draft into its own refined submit (which is what gets harvested). The draft is
+    # also passed as the per-scout HARVEST FALLBACK so a scout that dies/strays before
+    # refining never loses the fact-sheet anchors. OFF / no manifest / no draft_findings
+    # -> ``draft_texts`` stays all-None and every scout call is byte-for-byte reference.
+    draft_texts: list[str | None] = [None] * len(dims)
+    draft_fn = getattr(ctx, "draft_findings", None)
+    if fact_hint and callable(draft_fn):
+        await ctx.log(f"recon: commit-first — drafting {len(dims)} scout(s) from the fact sheet")
+        draft_payloads = await ctx.parallel(
+            [
+                (
+                    lambda d=d, i=i: draft_fn(
+                        DRAFT_PROMPT.format(
+                            aspect=d.get("aspect", f"dimension {i}"),
+                            question=d.get("question", ""),
+                            fact_hint=fact_hint,
+                            hints="\n".join(d.get("hints") or [])
+                            or "(no starting point given — search from the goal)",
+                        ),
+                        label=f"{_scout_label(d, i)}:draft",
+                        budget=commit_reserve,
+                    )
+                )
+                for i, d in enumerate(dims)
+            ]
+        )
+        for i, payload in enumerate(draft_payloads):
+            if isinstance(payload, dict):
+                rendered = format_findings_report(payload)
+                if rendered.strip():
+                    draft_texts[i] = rendered
+        drafted = sum(1 for t in draft_texts if t)
+        await ctx.log(f"recon: commit-first — {drafted}/{len(dims)} draft(s) committed")
+
+    def _draft_block(i: int) -> str:
+        return DRAFT_REVISE_BLOCK.format(draft=draft_texts[i]) if draft_texts[i] else ""
+
     reports = await ctx.parallel(
         [
             (
@@ -502,11 +823,15 @@ async def _recon(ctx: Any, goal: str, dims: list[dict[str, Any]]) -> str:
                         goal=goal,
                         aspect=d.get("aspect", f"dimension {i}"),
                         question=d.get("question", ""),
-                        hints="\n".join(d.get("hints") or []) or "(no starting point given — search from the goal)",
+                        hints=_scout_hints(d),
+                        draft_block=_draft_block(i),
                     ),
-                    label=f"scout:{i}:{(d.get('aspect') or '').strip().replace(' ', '-')[:24] or 'dim'}",
+                    label=_scout_label(d, i),
                     tools=_read_tools(),
                     budget=scout_cap,
+                    enforcement_strength=enforcement_strength,
+                    commit_reserve=commit_reserve,
+                    harvest_fallback=draft_texts[i],
                 )
             )
             for i, d in enumerate(dims)
@@ -532,6 +857,8 @@ async def _run_phase(
     target_tests: str = "",
     fail_to_pass: list[str] | None = None,
     injected_test_paths: list[str] | None = None,
+    static_verify: bool = False,
+    enforcement_strength: str = ENFORCEMENT_OFF,
 ) -> dict[str, Any]:
     """Drive one plan phase through the coder -> tester loop, best-effort.
 
@@ -573,9 +900,10 @@ async def _run_phase(
                 done=done,
                 target_tests=target_tests,
                 findings_block=findings_block,
-            ),
+            )
+            + _coder_suffix(enforcement_strength),
             label=f"coder:p{idx}r{round_no}",
-            tools=_coder_tools(),
+            tools=_coder_tools(enforcement_strength),
             budget=CODER_BUDGET,
         )
         # Rung C — early commit (django-11564 step-235 failure mode): a coder that
@@ -597,9 +925,10 @@ async def _run_phase(
                     root_cause=root_cause,
                     approach=approach,
                     progress=f"Round {round_no} coder analyzed but wrote nothing; commit the fix now.",
-                ),
+                )
+                + _coder_suffix(enforcement_strength),
                 label=f"coder:p{idx}r{round_no}-commit",
-                tools=_coder_tools(),
+                tools=_coder_tools(enforcement_strength),
                 tool_choice="required",
                 budget=CODER_BUDGET,
             )
@@ -617,16 +946,18 @@ async def _run_phase(
         else:
             coder_summary = summary
         verdict = await ctx.agent(
-            TESTER_PROMPT.format(
+            _tester_prompt(static_verify).format(
                 rules=SHARED_RULES,
                 goal=phase_goal,
                 done=done,
                 target_tests=target_tests,
                 summary=coder_summary,
+                root_cause=root_cause,
+                approach=approach,
             ),
             schema=VERDICT_SCHEMA,
             label=f"tester:p{idx}r{round_no}",
-            tools=_tester_tools(),
+            tools=_tester_tools_for(static_verify),
             budget=TESTER_BUDGET,
         )
         # Diff guard: a tester PASS must NOT stand if the working tree is
@@ -718,6 +1049,7 @@ async def _forced_final_write(
     *,
     reason: str,
     injected_test_paths: list[str] | None = None,
+    enforcement_strength: str = ENFORCEMENT_OFF,
 ) -> str:
     """Spend the reserved headroom on one coder that MUST land an edit.
 
@@ -746,9 +1078,10 @@ async def _forced_final_write(
             root_cause=root_cause,
             approach=approach,
             progress=progress or "(no prior coder edits recorded)",
-        ),
+        )
+        + _coder_suffix(enforcement_strength),
         label="coder:forced-write",
-        tools=_coder_tools(),
+        tools=_coder_tools(enforcement_strength),
         tool_choice="required",
         thinking=False,
         timeout=_seconds_left(ctx),
@@ -794,6 +1127,15 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     # is bypassed, preserving today's behavior.
     target_tests = _target_tests_block(args)
     fail_to_pass = list(args.get("fail_to_pass") or [])
+    # No in-loop test runtime (KOCO) -> tester validates statically instead of
+    # running tests. General flag; default False keeps SWE-bench/CLI identical.
+    static_verify = bool(args.get("static_verify"))
+    # Enforcement wind-down (STEP 0). Default ``off`` keeps every run byte-for-byte
+    # identical; ``needs-enforcement`` arms the structural commit brake for
+    # budget-myopic models so a read-only scout commits a structured submit at ~80%
+    # of its cap instead of being chopped mid-exploration.
+    enforcement_strength = str(args.get("enforcement_strength") or "off")
+    commit_reserve = int(args.get("commit_reserve") or 25_000)
     # Paths the harness ``git apply``ed (FAIL_TO_PASS test files) but did NOT
     # commit — the tree is dirty with them the whole run. The working-tree gates
     # exclude these so they fire on the agent's SOURCE edit, not the harness's
@@ -814,7 +1156,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     # Phase 2 — parallel reconnaissance (skipped gracefully if framing failed).
     await ctx.phase("recon")
     if dims:
-        findings_doc = await _recon(ctx, goal, dims)
+        findings_doc = await _recon(ctx, goal, dims, enforcement_strength, commit_reserve)
     else:
         await ctx.log("recon skipped — analyst produced no dimensions")
         findings_doc = "(reconnaissance skipped — proceed from the goal itself)"
@@ -824,10 +1166,11 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     plan = await ctx.agent(
         PLAN_PROMPT.format(
             rules=SHARED_RULES, goal=goal, target_tests=target_tests, findings=findings_doc
-        ),
+        )
+        + _planner_suffix(enforcement_strength),
         schema=PLAN_SCHEMA,
         label="analyst:plan",
-        tools=_read_tools(),
+        tools=_planner_tools(enforcement_strength),
         budget=PLAN_BUDGET,
     )
     if isinstance(plan, dict) and plan.get("phases"):
@@ -848,7 +1191,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     for idx, ph in enumerate(phases):
         report = await _run_phase(
             ctx, goal, root_cause, approach, ph, idx, target_tests, fail_to_pass,
-            injected_test_paths,
+            injected_test_paths, static_verify, enforcement_strength,
         )
         phase_reports.append(report)
         if report["status"] in ("budget_low", "empty_tree"):
@@ -857,6 +1200,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             await _forced_final_write(
                 ctx, goal, root_cause, approach, progress, reason=reason,
                 injected_test_paths=injected_test_paths,
+                enforcement_strength=enforcement_strength,
             )
             forced = True
             break
@@ -873,6 +1217,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
         await _forced_final_write(
             ctx, goal, root_cause, approach, progress, reason="empty tree after implement",
             injected_test_paths=injected_test_paths,
+            enforcement_strength=enforcement_strength,
         )
         forced = True
 
@@ -880,23 +1225,36 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     await ctx.phase("verify")
     final_verdict: dict[str, Any] | None = None
     repaired = False
+    # STEP 2B (Phase 2): skip the whole-goal final tester when every phase already
+    # passed its own adversarial tester on the current tree and no forced write has
+    # touched it since — re-running it would be near-identical checks on the same
+    # tree (pure waste). Enforcement-gated, so OFF runs the final tester exactly as
+    # the reference. The repair loop stays intact for any failed/blocked phase.
+    skip_final_verify = _final_verify_redundant(enforcement_strength, forced, phase_reports)
+    if skip_final_verify:
+        await ctx.log(
+            "verify: skipping redundant final tester — all phases passed and no "
+            "intervening coder edit (enforcement on)"
+        )
     # Run verify EVEN AFTER a forced write: the forced-write coder lands an
     # un-reviewed patch on budget-low, so verifying (and repairing) it is exactly
     # when it matters most. The implement loop reserved RESERVE_TOKENS for this
     # wrap-up and FORCED_WRITE_BUDGET caps the forced write, so a verify slice
     # always survives — hence the light ``reserve=0`` gate (any budget + time).
-    if _budget_ok(ctx, 0):
+    if _budget_ok(ctx, 0) and not skip_final_verify:
         final_verdict = await ctx.agent(
-            TESTER_PROMPT.format(
+            _tester_prompt(static_verify).format(
                 rules=SHARED_RULES,
                 goal=goal,
                 done=FINAL_DONE,
                 target_tests=target_tests,
                 summary="\n".join(f"- phase {i}: {r['status']}" for i, r in enumerate(phase_reports)),
+                root_cause=root_cause,
+                approach=approach,
             ),
             schema=VERDICT_SCHEMA,
             label="tester:final",
-            tools=_tester_tools(),
+            tools=_tester_tools_for(static_verify),
             budget=TESTER_BUDGET,
         )
         if (
@@ -917,22 +1275,25 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                     done=FINAL_DONE,
                     target_tests=target_tests,
                     findings_block=FINDINGS_BLOCK.format(findings=final_verdict.get("findings", "")),
-                ),
+                )
+                + _coder_suffix(enforcement_strength),
                 label="coder:repair",
-                tools=_coder_tools(),
+                tools=_coder_tools(enforcement_strength),
                 budget=REPAIR_BUDGET,
             )
             final_verdict = await ctx.agent(
-                TESTER_PROMPT.format(
+                _tester_prompt(static_verify).format(
                     rules=SHARED_RULES,
                     goal=goal,
                     done=FINAL_DONE,
                     target_tests=target_tests,
                     summary="(post-repair re-check)",
+                    root_cause=root_cause,
+                    approach=approach,
                 ),
                 schema=VERDICT_SCHEMA,
                 label="tester:final2",
-                tools=_tester_tools(),
+                tools=_tester_tools_for(static_verify),
                 budget=TESTER_BUDGET,
             )
 
@@ -978,4 +1339,8 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     }
     if tree is None:
         result["tree_unverified"] = True
+    # STEP 2B: surface the skip for trace auditing. Added ONLY when it fired, so the
+    # off-path (and the non-skipped on-path) result shape is unchanged.
+    if skip_final_verify:
+        result["final_verify_skipped"] = True
     return result
