@@ -5,6 +5,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
+import signal
 import subprocess
 import sys
 import threading
@@ -78,6 +79,7 @@ def run_one(
     namespace: str,
     cache_level: str,
     clean: str,
+    outer_timeout: int,
     env: dict[str, str],
     print_lock: threading.Lock,
 ) -> tuple[str, int]:
@@ -118,14 +120,40 @@ def run_one(
         print(f"[{ordinal}/{total}] evaluating {iid}", flush=True)
     with log_path.open("a", encoding="utf-8") as log_file:
         log_file.write("\n\n$ " + " ".join(cmd) + "\n")
-        completed = subprocess.run(cmd, cwd=work_dir, env=env, stdout=log_file, stderr=subprocess.STDOUT)
-    if completed.returncode == 0:
+        log_file.write(f"# outer_timeout={outer_timeout}s\n")
+        process = subprocess.Popen(
+            cmd,
+            cwd=work_dir,
+            env=env,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+        try:
+            returncode = process.wait(timeout=outer_timeout)
+        except subprocess.TimeoutExpired:
+            log_file.write(f"\nouter timeout after {outer_timeout}s; terminating process group\n")
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                log_file.write("process did not terminate after SIGTERM; sending SIGKILL\n")
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+            returncode = 124
+    if returncode == 0:
         with print_lock:
             print(f"done {iid}", flush=True)
     else:
         with print_lock:
-            print(f"failed {iid} exit={completed.returncode}; see {log_path}", flush=True)
-    return iid, completed.returncode
+            print(f"failed {iid} exit={returncode}; see {log_path}", flush=True)
+    return iid, returncode
 
 
 def main() -> int:
@@ -140,6 +168,12 @@ def main() -> int:
     parser.add_argument("--cache-level", default="instance")
     parser.add_argument("--clean", default="False")
     parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument(
+        "--outer-timeout",
+        type=int,
+        default=0,
+        help="Wall-clock timeout per subprocess in seconds. Defaults to --timeout + 900.",
+    )
     args = parser.parse_args()
 
     dataset_path = Path(args.dataset).resolve()
@@ -159,6 +193,7 @@ def main() -> int:
     env.setdefault("DOCKER_DEFAULT_PLATFORM", "linux/amd64")
 
     workers = max(1, args.workers)
+    outer_timeout = args.outer_timeout if args.outer_timeout > 0 else args.timeout + 900
     print_lock = threading.Lock()
     failures: list[tuple[str, int]] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -177,6 +212,7 @@ def main() -> int:
                 namespace=args.namespace,
                 cache_level=args.cache_level,
                 clean=args.clean,
+                outer_timeout=outer_timeout,
                 env=env,
                 print_lock=print_lock,
             )

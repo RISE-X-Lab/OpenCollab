@@ -43,7 +43,7 @@ def main() -> int:
     args = parser.parse_args()
 
     instances_dir = Path(args.instances_dir)
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     output_path = output_dir / "predictions.jsonl"
@@ -53,9 +53,16 @@ def main() -> int:
         raise SystemExit(f"No instance JSON files found in {instances_dir}")
 
     env = os.environ.copy()
-    env.setdefault("TMPDIR", "/Volumes/GKM/SSG/OpenCollab/tmp")
-    env.setdefault("HF_HOME", "/Volumes/GKM/SSG/OpenCollab/hf-cache")
-    env.setdefault("HF_DATASETS_CACHE", "/Volumes/GKM/SSG/OpenCollab/datasets-cache")
+    default_cache_root = output_dir / ".cache"
+    default_cache_paths = {
+        "TMPDIR": default_cache_root / "tmp",
+        "HF_HOME": default_cache_root / "hf",
+        "HF_DATASETS_CACHE": default_cache_root / "datasets",
+    }
+    for key, path in default_cache_paths.items():
+        if not env.get(key):
+            path.mkdir(parents=True, exist_ok=True)
+            env[key] = str(path)
     env.setdefault("DOCKER_DEFAULT_PLATFORM", "linux/amd64")
     env.setdefault("OPENCOLLAB_DOCKER_TIMEOUT", "900")
     env.setdefault("OPENCOLLAB_TEMPERATURE", "0")

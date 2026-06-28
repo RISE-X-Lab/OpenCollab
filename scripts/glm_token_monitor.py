@@ -8,6 +8,10 @@ import time
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_TRAJECTORIES_DIR = REPO_ROOT / ".opencollab" / "logs" / "trajectories"
+
+
 def _float_env(name: str) -> float | None:
     value = os.environ.get(name)
     if value in (None, ""):
@@ -133,7 +137,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Summarize GLM token usage from OpenCollab trajectory logs")
     parser.add_argument(
         "--trajectories-dir",
-        default="/Volumes/GKM/SSG/OpenCollab/logs/trajectories",
+        default=os.environ.get("OPENCOLLAB_TRAJECTORIES_DIR", str(DEFAULT_TRAJECTORIES_DIR)),
     )
     parser.add_argument("--model", default="glm-5.2")
     parser.add_argument("--total-price-per-mtok", type=float, default=_float_env("GLM_TOTAL_USD_PER_MTOK"))
