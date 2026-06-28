@@ -311,3 +311,68 @@ def test_forced_write_required_holds_on_with_restricted_tools():
     fw = [t for t in forced["tools"] if type(t).__name__ == "FileWriteTool"][0]
     assert fw.allow_create is False
     assert "You have NO shell/bash and CANNOT create new files" in forced["prompt"]
+
+
+# --------------------------------------------------------------------------- #
+# Lever 1 (recon pass-through to the coder) + Lever 2 (verify-identifier suffix)
+# --------------------------------------------------------------------------- #
+def test_recon_block_pure_on_off_and_skipped():
+    rb = _g("_recon_block")
+    hdr = _g("RECON_FACTS_HEADER")
+    # off == reference: nothing appended.
+    assert rb("scout confirmed field penalty_factor", OFF) == ""
+    # on: header + the findings verbatim.
+    out = rb("scout confirmed field penalty_factor", ON)
+    assert hdr in out
+    assert "scout confirmed field penalty_factor" in out
+    # on but recon was empty / skipped: no real facts -> "".
+    assert rb("", ON) == ""
+    assert rb("(reconnaissance skipped — proceed from the goal itself)", ON) == ""
+
+
+def _marker_replies(marker):
+    # scope -> scout(=marker) -> plan -> coder -> phase PASS -> final verify PASS
+    return [DIMS, marker, PLAN, "coded", _pass(), _pass()]
+
+
+def test_on_coder_carries_full_recon_findings_and_verify_discipline():
+    marker = "SCOUTFACT_penalty_factor_is_the_real_field"
+    ctx = ScriptedCtx(_marker_replies(marker))
+    asyncio.run(_wf_fn()(ctx, {"description": "fix it", "fail_to_pass": F2P, "enforcement_strength": ON}))
+    coder = _call(ctx, "coder:p0")["prompt"]
+    # the scout's confirmed fact reached the coder VERBATIM (survives plan compression)
+    assert marker in coder
+    assert "Reconnaissance findings" in coder
+    # lever 2: the verify-identifier-before-use instruction is present
+    assert "confirm its EXACT name" in coder
+
+
+def test_off_coder_has_no_recon_block_or_verify_suffix():
+    marker = "SCOUTFACT_penalty_factor_is_the_real_field"
+    ctx = ScriptedCtx(_marker_replies(marker))
+    asyncio.run(_wf_fn()(ctx, {"description": "fix it", "fail_to_pass": F2P}))  # off
+    coder = _call(ctx, "coder:p0")["prompt"]
+    # off == reference: scout findings are NOT appended to the coder, no verify suffix
+    assert marker not in coder
+    assert "Reconnaissance findings" not in coder
+    assert "confirm its EXACT name" not in coder
+
+
+def test_on_forced_write_also_carries_recon_findings():
+    marker = "SCOUTFACT_overlong_buffer_len_formula"
+    # time_low -> _run_phase bails to forced write before the coder; forced write
+    # must STILL carry the recon facts (it re-implements from scratch).
+    ctx = ScriptedCtx([DIMS, marker, PLAN, "forced patch"], tree=True, time_low=True)
+    asyncio.run(_wf_fn()(ctx, {"description": "fix it", "enforcement_strength": ON}))
+    forced = _call(ctx, "coder:forced-write")["prompt"]
+    assert marker in forced
+    assert "Reconnaissance findings" in forced
+
+
+def test_off_forced_write_has_no_recon_block():
+    marker = "SCOUTFACT_overlong_buffer_len_formula"
+    ctx = ScriptedCtx([DIMS, marker, PLAN, "forced patch"], tree=True, time_low=True)
+    asyncio.run(_wf_fn()(ctx, {"description": "fix it"}))  # off
+    forced = _call(ctx, "coder:forced-write")["prompt"]
+    assert marker not in forced
+    assert "Reconnaissance findings" not in forced

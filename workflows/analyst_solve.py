@@ -548,7 +548,11 @@ PLANNER_ENFORCED_SUFFIX = (
 CODER_ENFORCED_SUFFIX = (
     "\n\nYou have NO shell/bash and CANNOT create new files. Edit ONLY the existing "
     "target via file_write str_replace (preferred) or apply_patch. Do NOT attempt "
-    "to run python/tests via shell or write helper/test scripts."
+    "to run python/tests via shell or write helper/test scripts. "
+    "Before you USE any config attribute, field name, method, or function signature "
+    "you are not certain of, file_read/grep the defining source to confirm its EXACT "
+    "name — never invent or guess an attribute/field name (a wrong attribute crashes "
+    "at runtime). If the reconnaissance findings name it, copy that name verbatim."
 )
 
 
@@ -568,6 +572,36 @@ def _planner_suffix(enforcement_strength: str) -> str:
 
 def _coder_suffix(enforcement_strength: str) -> str:
     return CODER_ENFORCED_SUFFIX if _enforcement_on(enforcement_strength) else ""
+
+
+# Enforced-mode RECON PASS-THROUGH (lever 1). The coder normally sees only the
+# planner's distilled root_cause/approach — a LOSSY compression that drops the
+# concrete facts the scouts paid real tokens to confirm (exact config field names,
+# formulas, signatures). Observed failure: a scout found the canonical DAPO overlong
+# formula + field `penalty_factor`, the plan compressed it to "follow the documented
+# algorithm", and the coder — never given the finding — invented a nonexistent
+# attribute and crashed. This carries the FULL findings document through to the coder
+# so those facts survive. Appended (never edits the base CODER_PROMPT); OFF -> "".
+RECON_FACTS_HEADER = (
+    "\n\nReconnaissance findings — the scouts already read the actual source/docs and "
+    "confirmed the facts below; this cost real exploration and is authoritative (the "
+    "planner's summary above may have dropped specifics). Use the EXACT names, "
+    "signatures, config field names, formulas, and values stated here VERBATIM — do NOT "
+    "re-derive or invent them. Where a finding gives a concrete identifier or formula, "
+    "copy it; do not substitute your own:\n"
+)
+
+
+def _recon_block(recon_findings: str, enforcement_strength: str) -> str:
+    """Enforced-mode ONLY: full scout findings appended to a coder prompt so concrete
+    recon facts survive the planner's compression. OFF -> "" (reference byte-identical).
+    Returns "" for the recon-skipped placeholder (no real facts to carry)."""
+    if not _enforcement_on(enforcement_strength):
+        return ""
+    body = (recon_findings or "").strip()
+    if not body or body.startswith("(reconnaissance skipped"):
+        return ""
+    return RECON_FACTS_HEADER + body
 
 
 def _final_verify_redundant(
@@ -879,6 +913,7 @@ async def _run_phase(
     injected_test_paths: list[str] | None = None,
     static_verify: bool = False,
     enforcement_strength: str = ENFORCEMENT_OFF,
+    recon_findings: str = "",
 ) -> dict[str, Any]:
     """Drive one plan phase through the coder -> tester loop, best-effort.
 
@@ -921,6 +956,7 @@ async def _run_phase(
                 target_tests=target_tests,
                 findings_block=findings_block,
             )
+            + _recon_block(recon_findings, enforcement_strength)
             + _coder_suffix(enforcement_strength),
             label=f"coder:p{idx}r{round_no}",
             tools=_coder_tools(enforcement_strength),
@@ -946,6 +982,7 @@ async def _run_phase(
                     approach=approach,
                     progress=f"Round {round_no} coder analyzed but wrote nothing; commit the fix now.",
                 )
+                + _recon_block(recon_findings, enforcement_strength)
                 + _coder_suffix(enforcement_strength),
                 label=f"coder:p{idx}r{round_no}-commit",
                 tools=_coder_tools(enforcement_strength),
@@ -1070,6 +1107,7 @@ async def _forced_final_write(
     reason: str,
     injected_test_paths: list[str] | None = None,
     enforcement_strength: str = ENFORCEMENT_OFF,
+    recon_findings: str = "",
 ) -> str:
     """Spend the reserved headroom on one coder that MUST land an edit.
 
@@ -1099,6 +1137,7 @@ async def _forced_final_write(
             approach=approach,
             progress=progress or "(no prior coder edits recorded)",
         )
+        + _recon_block(recon_findings, enforcement_strength)
         + _coder_suffix(enforcement_strength),
         label="coder:forced-write",
         tools=_coder_tools(enforcement_strength),
@@ -1211,7 +1250,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     for idx, ph in enumerate(phases):
         report = await _run_phase(
             ctx, goal, root_cause, approach, ph, idx, target_tests, fail_to_pass,
-            injected_test_paths, static_verify, enforcement_strength,
+            injected_test_paths, static_verify, enforcement_strength, findings_doc,
         )
         phase_reports.append(report)
         if report["status"] in ("budget_low", "empty_tree"):
@@ -1221,6 +1260,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                 ctx, goal, root_cause, approach, progress, reason=reason,
                 injected_test_paths=injected_test_paths,
                 enforcement_strength=enforcement_strength,
+                recon_findings=findings_doc,
             )
             forced = True
             break
@@ -1238,6 +1278,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             ctx, goal, root_cause, approach, progress, reason="empty tree after implement",
             injected_test_paths=injected_test_paths,
             enforcement_strength=enforcement_strength,
+            recon_findings=findings_doc,
         )
         forced = True
 
@@ -1296,6 +1337,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                     target_tests=target_tests,
                     findings_block=FINDINGS_BLOCK.format(findings=final_verdict.get("findings", "")),
                 )
+                + _recon_block(findings_doc, enforcement_strength)
                 + _coder_suffix(enforcement_strength),
                 label="coder:repair",
                 tools=_coder_tools(enforcement_strength),
