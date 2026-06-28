@@ -53,13 +53,13 @@
     },
     {
       "path": "report/final_report.pdf",
-      "bytes": 242898,
-      "sha256": "4c986736983319d472024f205615cbcd0f3942328aba6d12c2c13d9912448bcd"
+      "bytes": 230412,
+      "sha256": "e4833f871cf04e0c14f23114e620ec3f14d5369ca8520ee611d4802fba4af8fc"
     },
     {
       "path": "report/final_report.tex",
-      "bytes": 36612,
-      "sha256": "e53c39f29b4bcc01c4d07727598f036379464c69281442452a89953c5923792b"
+      "bytes": 31904,
+      "sha256": "77bbb9844ee5533ab9f1251bee4de3c6cc52f8b04f7039ead1bfc47c27e7322d"
     },
     {
       "path": "summaries/django14238_repair_official_summary.json",
