@@ -24,6 +24,7 @@ from opencollab.application.fact_sheet import (
     estimate_target_complexity,
     format_fact_sheet_hint,
     is_answer_path,
+    recon_pool_is_ample,
     size_recon,
 )
 from opencollab.bootstrap.workflow_runtime import discover_workflows
@@ -248,6 +249,22 @@ def test_t2_sizing_never_exceeds_dims():
     assert size_recon(1, estimate_target_complexity(complex_), ceiling=4)[0] == 1
 
 
+def test_t2_recon_pool_is_ample_gates_on_binding_constraint():
+    """5c rationing should fire ONLY when the pool is the binding constraint."""
+    floor, scout_budget = 600_000, 250_000
+    # 1M budget, 4 dims: pool 400k // 4 = 100k < 250k -> NOT ample (ration).
+    assert not recon_pool_is_ample(1_000_000, floor, 4, scout_budget)
+    # 1M budget, even 1 dim: pool 400k < 250k? 400k >= 250k -> ample for a lone dim.
+    assert recon_pool_is_ample(1_000_000, floor, 1, scout_budget)
+    # 2M budget, 4 dims: pool 1.4M // 4 = 350k >= 250k -> ample (full fan-out).
+    assert recon_pool_is_ample(2_000_000, floor, 4, scout_budget)
+    # Exact boundary: pool // n == scout_budget is ample; one token less is not.
+    assert recon_pool_is_ample(floor + 4 * scout_budget, floor, 4, scout_budget)
+    assert not recon_pool_is_ample(floor + 4 * scout_budget - 4, floor, 4, scout_budget)
+    # Degenerate dim count never claims amplitude.
+    assert not recon_pool_is_ample(10_000_000, floor, 0, scout_budget)
+
+
 # -- _recon parity / behavior harness --------------------------------------- #
 
 
@@ -328,6 +345,27 @@ def test_t2_recon_on_trivial_trims_scouts_and_injects_fact_sheet(tmp_path):
     # The fact sheet was injected into the surviving scout.
     assert "Pre-recon fact sheet" in scouts[0]["prompt"]
     assert scouts[0]["enforcement_strength"] == "needs-enforcement"
+
+
+def test_t2_recon_on_ample_budget_runs_full_fanout_at_full_depth(tmp_path):
+    """enforcement on + a trivial target BUT an ample (2M) pool: 5c down-sizing is
+    skipped — every scope dimension still gets a scout at the full, un-leashed cap.
+    The body-blind complexity proxy must not under-recon when budget is plentiful."""
+    recon = _recon_fn()
+    root, goal = _build_trivial_repo(tmp_path)
+    ctx = _ReconCtx(workspace_root=root, remaining=2_000_000)
+    asyncio.run(recon(ctx, goal, _THREE_DIMS, "needs-enforcement"))
+
+    scouts = _scout_calls(ctx)
+    assert len(scouts) == 3  # full fan-out: no complexity trimming under an ample pool
+    # Full-depth cap: min(250k, (2M-600k)//3) = 250k, NO leash applied.
+    expected_cap = min(250_000, (2_000_000 - 600_000) // 3)
+    assert all(c["budget"] == expected_cap for c in scouts)
+    # Still enforcement-on and still carrying the static fact sheet.
+    assert all("Pre-recon fact sheet" in c["prompt"] for c in scouts)
+    assert all(c["enforcement_strength"] == "needs-enforcement" for c in scouts)
+    # The log records WHY it kept the full fan-out (auditable against the metric).
+    assert any("pool ample" in m for m in ctx.logs)
 
 
 def test_format_fact_sheet_hint_is_compact_and_safe(tmp_path):

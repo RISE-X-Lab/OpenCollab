@@ -484,3 +484,24 @@ def size_recon(n_dims: int, complexity: int, *, ceiling: int) -> tuple[int, floa
     cap = min(cap, ceiling)
     n_scouts = max(1, min(n_dims, cap))
     return n_scouts, leash
+
+
+def recon_pool_is_ample(
+    remaining: int, recon_floor: int, n_dims: int, scout_budget: int
+) -> bool:
+    """True when the recon pool can fund EVERY scope dimension at the full per-scout
+    ceiling — i.e. the token pool is NOT the binding constraint.
+
+    :func:`size_recon` exists to ration scouts when the pool is scarce (splitting a
+    small pool across many scouts starves each one). When the pool is large enough
+    that ``pool // n_dims`` already meets ``scout_budget``, there is nothing to
+    ration: the caller should run the full fan-out at full depth and let the
+    in-loop info-gain wind-down / commit-first brake stop any scout that has nothing
+    left to find — a far better signal than a static, body-blind complexity proxy,
+    which systematically under-reads a hard target whose surface looks thin (no type
+    annotations, in-workspace-only call sites). Returns ``False`` for ``n_dims<=0``.
+    """
+    if n_dims <= 0:
+        return False
+    pool = max(0, remaining - recon_floor)
+    return (pool // n_dims) >= scout_budget

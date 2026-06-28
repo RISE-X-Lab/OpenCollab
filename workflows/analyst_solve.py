@@ -46,6 +46,7 @@ from opencollab.application.fact_sheet import (
     build_fact_sheet,
     estimate_target_complexity,
     format_fact_sheet_hint,
+    recon_pool_is_ample,
     size_recon,
 )
 from opencollab.application.session_run import ENFORCEMENT_OFF
@@ -715,16 +716,35 @@ async def _recon(
                 f"{len(manifest['referenced_types'])} type ref(s)"
             )
             # 5c — size the scout COUNT + per-scout depth leash from a cheap static
-            # complexity estimate, so a trivial target does not get the full fan-out.
+            # complexity estimate, so a trivial target does not get the full fan-out
+            # WHEN THE RECON POOL IS THE BINDING CONSTRAINT. With an ample budget
+            # (e.g. a 2M run) the pool can fund every scope dimension at the full
+            # SCOUT_BUDGET ceiling, so there is nothing to ration: run the full
+            # fan-out at full depth and let the in-loop info-gain wind-down /
+            # commit-first brake (not a body-blind static proxy) stop a scout that
+            # has nothing left to find. This avoids under-reconning a hard target
+            # whose static surface reads "simple" (thin/untyped signature,
+            # in-workspace-only call sites) — the dominant KOCO failure mode.
             complexity = estimate_target_complexity(manifest)
-            n_scouts, depth_leash = size_recon(len(dims), complexity, ceiling=MAX_SCOUTS)
-            if n_scouts < len(dims):
+            n_scouts, sized_leash = size_recon(len(dims), complexity, ceiling=MAX_SCOUTS)
+            if recon_pool_is_ample(
+                int(ctx.budget.remaining()), RECON_FLOOR, len(dims), SCOUT_BUDGET
+            ):
+                depth_leash = 1.0
+                await ctx.log(
+                    f"recon: complexity={complexity} but pool ample "
+                    f"(≥{SCOUT_BUDGET // 1000}k/scout fundable) — keeping full "
+                    f"{len(dims)} scout(s) at full depth (5c down-size skipped)"
+                )
+            elif n_scouts < len(dims):
+                depth_leash = sized_leash
                 await ctx.log(
                     f"recon: complexity={complexity} -> sizing {len(dims)} dimension(s) "
                     f"down to {n_scouts} scout(s) (depth leash {depth_leash:.2f})"
                 )
                 dims = dims[:n_scouts]
             else:
+                depth_leash = sized_leash
                 await ctx.log(
                     f"recon: complexity={complexity} -> keeping {len(dims)} scout(s) "
                     f"(depth leash {depth_leash:.2f})"
