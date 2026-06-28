@@ -65,6 +65,16 @@ EOF
 die() { echo "error: $*" >&2; exit 1; }
 require_cmd() { command -v "$1" >/dev/null 2>&1 || die "missing dependency: $1"; }
 
+find_timeout_bin() {
+    if command -v timeout >/dev/null 2>&1; then
+        command -v timeout
+    elif command -v gtimeout >/dev/null 2>&1; then
+        command -v gtimeout
+    else
+        printf ''
+    fi
+}
+
 normalize_mount() {
     local spec="$1"
     local host=""
@@ -141,7 +151,11 @@ main() {
     esac
 
     require_cmd docker
-    require_cmd timeout
+    local timeout_bin
+    timeout_bin="$(find_timeout_bin)"
+    if [ -z "$timeout_bin" ]; then
+        echo "warn: neither timeout nor gtimeout is installed; running without a wall-clock wrapper" >&2
+    fi
 
     local oc_bin="$VENV_DIR/bin/opencollab"
     [ -x "$oc_bin" ] || die "missing $oc_bin — run scripts/start_opencollab.sh once to build the venv."
@@ -260,18 +274,32 @@ PY
         -e OPENCOLLAB_CONFIG_FILE="$DEFAULT_ENV_FILE"
         -e TERM="${TERM:-xterm-256color}"
     )
+    # Allow secret-bearing runtime config to be supplied by the caller's
+    # environment instead of writing configs/.env into the repository.
+    for _ocv in \
+        OPENCOLLAB_PROVIDER OPENCOLLAB_BASE_URL OPENCOLLAB_MODEL \
+        OPENCOLLAB_API_KEY OPENCOLLAB_BUDGET OPENCOLLAB_TEMPERATURE \
+        OPENCOLLAB_TOP_P OPENCOLLAB_THINKING OPENCOLLAB_THINKING_PARAMS \
+        OPENCOLLAB_LLM_TIMEOUT OPENAI_API_KEY OPENAI_BASE_URL \
+        ANTHROPIC_API_KEY ANTHROPIC_BASE_URL DASHSCOPE_API_KEY; do
+        if [ -n "${!_ocv:-}" ]; then
+            docker_args+=(-e "${_ocv}")
+        fi
+    done
     # Forward proxy settings so openai/anthropic SDKs can reach the API
     # even when the host's direct route is down.  With --network host the
     # container shares the host network namespace, so 127.0.0.1 proxies work.
     for _pv in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY; do
         if [ -n "${!_pv:-}" ]; then
-            docker_args+=(-e "${_pv}=${!_pv}")
+            docker_args+=(-e "${_pv}")
         fi
     done
     local mount_spec
-    for mount_spec in "${extra_mounts[@]}"; do
-        docker_args+=(-v "$(normalize_mount "$mount_spec")")
-    done
+    if [ "${#extra_mounts[@]}" -gt 0 ]; then
+        for mount_spec in "${extra_mounts[@]}"; do
+            docker_args+=(-v "$(normalize_mount "$mount_spec")")
+        done
+    fi
     docker_args+=("$image" tail -f /dev/null)
 
     local cid
@@ -327,8 +355,12 @@ PY
     fi
 
     set +e
-    timeout --foreground "$timeout" \
+    if [ -n "$timeout_bin" ]; then
+        "$timeout_bin" --foreground "$timeout" \
+            docker exec $docker_exec_flags -w /testbed "$cid" bash -lc "$inner"
+    else
         docker exec $docker_exec_flags -w /testbed "$cid" bash -lc "$inner"
+    fi
     local rc=$?
     set -e
     if [ "$rc" -eq 124 ]; then

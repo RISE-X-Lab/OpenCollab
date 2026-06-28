@@ -156,6 +156,12 @@ def _parse_usage(usage: Any) -> Usage:
         output_tokens=getattr(usage, "output_tokens", 0) or 0,
         cache_read_tokens=cache_read,
         cache_creation_tokens=cache_creation,
+        raw_usage={
+            "input_tokens": uncached_input,
+            "output_tokens": getattr(usage, "output_tokens", 0) or 0,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_creation,
+        },
     )
 
 
