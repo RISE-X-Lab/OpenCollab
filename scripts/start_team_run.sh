@@ -283,7 +283,7 @@ PY
         OPENCOLLAB_LLM_TIMEOUT OPENAI_API_KEY OPENAI_BASE_URL \
         ANTHROPIC_API_KEY ANTHROPIC_BASE_URL DASHSCOPE_API_KEY; do
         if [ -n "${!_ocv:-}" ]; then
-            docker_args+=(-e "${_ocv}=${!_ocv}")
+            docker_args+=(-e "${_ocv}")
         fi
     done
     # Forward proxy settings so openai/anthropic SDKs can reach the API
@@ -291,7 +291,7 @@ PY
     # container shares the host network namespace, so 127.0.0.1 proxies work.
     for _pv in http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY; do
         if [ -n "${!_pv:-}" ]; then
-            docker_args+=(-e "${_pv}=${!_pv}")
+            docker_args+=(-e "${_pv}")
         fi
     done
     local mount_spec

@@ -73,8 +73,8 @@
     },
     {
       "path": "summaries/first100_empty_patch_research.md",
-      "bytes": 24527,
-      "sha256": "b37ef11e8d25dac9fc4ed8af198b367caefa84cc4c19170c45c21e408dfe0456"
+      "bytes": 24526,
+      "sha256": "7dd1f9c3c85bf5d0b2b56c8f0fbf174589ff2348004ce7cade37cb82b5ca2fa1"
     },
     {
       "path": "summaries/first100_error_deep_dive.md",
