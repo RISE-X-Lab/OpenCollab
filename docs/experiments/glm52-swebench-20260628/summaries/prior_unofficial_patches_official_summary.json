@@ -1,0 +1,344 @@
+{
+  "total_reports": 17,
+  "resolved": 6,
+  "unresolved": 11,
+  "patch_apply_failures": [],
+  "by_source": {
+    "empty_patch_rerun_nonempty15": {
+      "total": 15,
+      "resolved": 5,
+      "unresolved": 10
+    },
+    "loopcheck_glm2": {
+      "total": 2,
+      "resolved": 1,
+      "unresolved": 1
+    }
+  },
+  "rows": [
+    {
+      "instance_id": "astropy__astropy-7746",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-astropy__astropy-7746",
+      "patch_chars": 999,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "f2p_success_count": 0,
+      "f2p_failure_count": 1,
+      "p2p_success_count": 56,
+      "p2p_failure_count": 0,
+      "f2p_failures": [
+        "astropy/wcs/tests/test_wcs.py::test_zero_size_input"
+      ],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-astropy__astropy-7746/astropy__astropy-7746/report.json"
+    },
+    {
+      "instance_id": "django__django-10924",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-10924",
+      "patch_chars": 815,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": true,
+      "f2p_success_count": 1,
+      "f2p_failure_count": 0,
+      "p2p_success_count": 1,
+      "p2p_failure_count": 0,
+      "f2p_failures": [],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-10924/django__django-10924/report.json"
+    },
+    {
+      "instance_id": "django__django-11019",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-11019",
+      "patch_chars": 912,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "f2p_success_count": 0,
+      "f2p_failure_count": 16,
+      "p2p_success_count": 58,
+      "p2p_failure_count": 0,
+      "f2p_failures": [
+        "test_combine_media (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_construction (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_form_media (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_media_deduplication (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_media_inheritance (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_media_inheritance_extends (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_media_property_parent_references (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_merge (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_merge_css_three_way (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_merge_js_three_way (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_merge_js_three_way2 (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_merge_warning (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_multi_widget (forms_tests.tests.test_media.FormsMediaTestCase)",
+        "test_media (admin_widgets.test_autocomplete_widget.AutocompleteMixinTests)",
+        "test_render_options (admin_widgets.test_autocomplete_widget.AutocompleteMixinTests)",
+        "test_inline_media_only_inline (admin_inlines.tests.TestInlineMedia)"
+      ],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-11019/django__django-11019/report.json"
+    },
+    {
+      "instance_id": "django__django-11133",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-11133",
+      "patch_chars": 762,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": true,
+      "f2p_success_count": 1,
+      "f2p_failure_count": 0,
+      "p2p_success_count": 64,
+      "p2p_failure_count": 0,
+      "f2p_failures": [],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-11133/django__django-11133/report.json"
+    },
+    {
+      "instance_id": "django__django-12113",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-12113",
+      "patch_chars": 672,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": true,
+      "f2p_success_count": 1,
+      "f2p_failure_count": 0,
+      "p2p_success_count": 0,
+      "p2p_failure_count": 0,
+      "f2p_failures": [],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-12113/django__django-12113/report.json"
+    },
+    {
+      "instance_id": "django__django-13028",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-13028",
+      "patch_chars": 1040,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "f2p_success_count": 2,
+      "f2p_failure_count": 0,
+      "p2p_success_count": 271,
+      "p2p_failure_count": 5,
+      "f2p_failures": [],
+      "p2p_failures": [
+        "test_ticket_22429 (queries.tests.Ticket22429Tests)",
+        "test_exclude_reverse_fk_field_ref (queries.tests.ExcludeTests)",
+        "test_exclude_with_circular_fk_relation (queries.tests.ExcludeTests)",
+        "test_subquery_exclude_outerref (queries.tests.ExcludeTests)",
+        "test_excluded_intermediary_m2m_table_joined (queries.tests.Queries1Tests)"
+      ],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-13028/django__django-13028/report.json"
+    },
+    {
+      "instance_id": "django__django-13158",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-13158",
+      "patch_chars": 628,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "f2p_success_count": 0,
+      "f2p_failure_count": 1,
+      "p2p_success_count": 29,
+      "p2p_failure_count": 0,
+      "f2p_failures": [
+        "test_union_none (queries.test_qs_combinators.QuerySetSetOperationTests)"
+      ],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-13158/django__django-13158/report.json"
+    },
+    {
+      "instance_id": "django__django-13590",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-13590",
+      "patch_chars": 714,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "f2p_success_count": 1,
+      "f2p_failure_count": 0,
+      "p2p_success_count": 140,
+      "p2p_failure_count": 5,
+      "f2p_failures": [],
+      "p2p_failures": [
+        "test_complex_expressions_do_not_introduce_sql_injection_via_untrusted_string_inclusion (expressions.tests.IterableLookupInnerExpressionsTests)",
+        "test_expressions_in_lookups_join_choice (expressions.tests.IterableLookupInnerExpressionsTests)",
+        "test_in_lookup_allows_F_expressions_and_expressions_for_datetimes (expressions.tests.IterableLookupInnerExpressionsTests)",
+        "test_in_lookup_allows_F_expressions_and_expressions_for_integers (expressions.tests.IterableLookupInnerExpressionsTests)",
+        "test_range_lookup_allows_F_expressions_and_expressions_for_integers (expressions.tests.IterableLookupInnerExpressionsTests)"
+      ],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-13590/django__django-13590/report.json"
+    },
+    {
+      "instance_id": "django__django-13964",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-13964",
+      "patch_chars": 1333,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "f2p_success_count": 0,
+      "f2p_failure_count": 1,
+      "p2p_success_count": 36,
+      "p2p_failure_count": 0,
+      "f2p_failures": [
+        "test_save_fk_after_parent_with_non_numeric_pk_set_on_child (many_to_one.tests.ManyToOneTests)"
+      ],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-13964/django__django-13964/report.json"
+    },
+    {
+      "instance_id": "django__django-14017",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-14017",
+      "patch_chars": 1712,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "f2p_success_count": 0,
+      "f2p_failure_count": 2,
+      "p2p_success_count": 147,
+      "p2p_failure_count": 0,
+      "f2p_failures": [
+        "test_boolean_expression_combined (expressions.tests.BasicExpressionsTests)",
+        "test_boolean_expression_combined_with_empty_Q (expressions.tests.BasicExpressionsTests)"
+      ],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-14017/django__django-14017/report.json"
+    },
+    {
+      "instance_id": "django__django-14667",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-14667",
+      "patch_chars": 1171,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "f2p_success_count": 0,
+      "f2p_failure_count": 1,
+      "p2p_success_count": 28,
+      "p2p_failure_count": 1,
+      "f2p_failures": [
+        "test_defer_only_chaining (defer.tests.DeferTests)"
+      ],
+      "p2p_failures": [
+        "test_defer_only_clear (defer.tests.DeferTests)"
+      ],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-14667/django__django-14667/report.json"
+    },
+    {
+      "instance_id": "django__django-14997",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-14997",
+      "patch_chars": 574,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "f2p_success_count": 0,
+      "f2p_failure_count": 3,
+      "p2p_success_count": 144,
+      "p2p_failure_count": 0,
+      "f2p_failures": [
+        "test_rename_table_references_without_alias (backends.test_ddl_references.ExpressionsTests)",
+        "test_alter_field_with_func_index (migrations.test_operations.OperationTests)",
+        "test_alter_field_with_func_unique_constraint (migrations.test_operations.OperationTests)"
+      ],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-14997/django__django-14997/report.json"
+    },
+    {
+      "instance_id": "django__django-15213",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-15213",
+      "patch_chars": 554,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "f2p_success_count": 0,
+      "f2p_failure_count": 3,
+      "p2p_success_count": 71,
+      "p2p_failure_count": 0,
+      "f2p_failures": [
+        "test_aggregate_over_full_expression_annotation (annotations.tests.NonAggregateAnnotationTestCase)",
+        "test_full_expression_annotation (annotations.tests.NonAggregateAnnotationTestCase)",
+        "test_full_expression_annotation_with_aggregation (annotations.tests.NonAggregateAnnotationTestCase)"
+      ],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-15213/django__django-15213/report.json"
+    },
+    {
+      "instance_id": "django__django-15498",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-15498",
+      "patch_chars": 568,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": true,
+      "f2p_success_count": 1,
+      "f2p_failure_count": 0,
+      "p2p_success_count": 25,
+      "p2p_failure_count": 0,
+      "f2p_failures": [],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-15498/django__django-15498/report.json"
+    },
+    {
+      "instance_id": "django__django-15814",
+      "source": "empty_patch_rerun_nonempty15",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-15814",
+      "patch_chars": 705,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": true,
+      "f2p_success_count": 1,
+      "f2p_failure_count": 0,
+      "p2p_success_count": 29,
+      "p2p_failure_count": 0,
+      "f2p_failures": [],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-15814/django__django-15814/report.json"
+    },
+    {
+      "instance_id": "psf__requests-2148",
+      "source": "loopcheck_glm2",
+      "model_name_or_path": "opencollab-glm52-loopcheck-thinking-t0",
+      "patch_chars": 1242,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "f2p_success_count": 9,
+      "f2p_failure_count": 1,
+      "p2p_success_count": 118,
+      "p2p_failure_count": 0,
+      "f2p_failures": [
+        "test_requests.py::RequestsTestCase::test_iter_content_handles_socket_error"
+      ],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-loopcheck-thinking-t0/psf__requests-2148/report.json"
+    },
+    {
+      "instance_id": "sympy__sympy-11400",
+      "source": "loopcheck_glm2",
+      "model_name_or_path": "opencollab-glm52-loopcheck-thinking-t0",
+      "patch_chars": 1060,
+      "patch_exists": true,
+      "patch_successfully_applied": true,
+      "resolved": true,
+      "f2p_success_count": 2,
+      "f2p_failure_count": 0,
+      "p2p_success_count": 29,
+      "p2p_failure_count": 0,
+      "f2p_failures": [],
+      "p2p_failures": [],
+      "report_path": "eval_work/prior_unofficial_patches_official_eval_20260627/official_eval/logs/run_evaluation/prior_unofficial_patches_official_20260627/opencollab-glm52-loopcheck-thinking-t0/sympy__sympy-11400/report.json"
+    }
+  ]
+}

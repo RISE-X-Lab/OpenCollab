@@ -1,0 +1,23 @@
+{
+  "total_reports": 1,
+  "resolved": 1,
+  "unresolved": 0,
+  "patch_apply_failures": [],
+  "rows": [
+    {
+      "instance_id": "django__django-14238",
+      "model_name_or_path": "opencollab-glm52-empty-rerun-monitored-django__django-14238",
+      "prediction_file": "eval_work/empty_patch_rerun_batch/django14238_repaired_glm52_t1_s24_20260627/instances/01_django--django-14238/prediction.jsonl",
+      "patch_chars": 651,
+      "patch_successfully_applied": true,
+      "resolved": true,
+      "f2p_success_count": 2,
+      "f2p_failure_count": 0,
+      "p2p_success_count": 39,
+      "p2p_failure_count": 0,
+      "f2p_failures": [],
+      "p2p_failures": [],
+      "report_path": "eval_work/django14238_repair_generate_eval_20260627/official_eval/logs/run_evaluation/django14238_repaired_official_20260627/opencollab-glm52-empty-rerun-monitored-django__django-14238/django__django-14238/report.json"
+    }
+  ]
+}
