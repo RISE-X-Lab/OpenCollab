@@ -27,7 +27,7 @@ from opencollab.adapters.cli.config_resolve import (
 )
 from opencollab.application.ports import EventPublisherPort
 from opencollab.application.workflow_registry import Registry
-from opencollab.bootstrap.session_factory import make_run_dir
+from opencollab.bootstrap.session_factory import WORKFLOW_RUN_PREFIX, make_run_dir
 from opencollab.bootstrap.workflow_runtime import discover_workflows, run_workflow
 
 app = typer.Typer(name="workflow", help="Run deterministic Python workflows.")
@@ -94,8 +94,8 @@ def run_cmd(
     trace: bool = typer.Option(
         True,
         "--trace/--no-trace",
-        help="Record a fine-grained JSONL trajectory (llm_call/tool_exec, tokens, "
-        "latency) at <run>/trajectory.jsonl. Requires --save.",
+        help="Record the run's orchestration signals (phases/logs + per-step "
+        "tokens/latency) at <run>/orchestration.jsonl. Requires --save.",
     ),
 ) -> None:
     """Run a workflow and print its result as JSON."""
@@ -128,7 +128,7 @@ def run_cmd(
     if budget is None:
         cfg["budget"] = max(cfg["budget"], 500_000)
 
-    save_dir = make_run_dir(workspace) if save else None
+    save_dir = make_run_dir(workspace, prefix=WORKFLOW_RUN_PREFIX) if save else None
 
     event_sink: EventPublisherPort = _ConsoleEventSink(console)
     result = asyncio.run(
@@ -147,8 +147,8 @@ def run_cmd(
     if save_dir is not None:
         console.print(f"[dim]== sessions saved to {save_dir}[/dim]")
         if trace:
-            trace_path = os.path.join(save_dir, "trajectory.jsonl")
-            console.print(f"[dim]== trajectory at {trace_path}[/dim]")
+            trace_path = os.path.join(save_dir, "orchestration.jsonl")
+            console.print(f"[dim]== orchestration at {trace_path}[/dim]")
     console.print(json.dumps(result, indent=2, default=str))
 
 

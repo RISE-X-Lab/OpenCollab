@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import os
 from typing import Any
 
 from opencollab.adapters.env import Environment, ExecResult
@@ -145,6 +147,131 @@ def test_workflow_mode_aggregates_tokens_across_sessions(tmp_path):
 
     assert result.tokens_used == 14
     assert result.steps == 2
+
+
+# --------------------------------------------------------------------------- #
+# workflow mode: per-task run folder layout (per-role + orchestration + manifest)
+# --------------------------------------------------------------------------- #
+
+
+def test_workflow_mode_writes_per_task_run_folder(tmp_path):
+    """Workflow mode lands a per-task folder: orchestration.jsonl + workflow.json.
+
+    Mirrors a team / CLI workflow run: the scheduling signals go to one
+    ``orchestration.jsonl`` and a ``workflow.json`` manifest ties the run folder
+    together. The legacy flat ``trajectories/<task_id>.jsonl`` must NOT appear.
+    """
+    env = FakeEnv()
+
+    async def env_factory(task):
+        return env
+
+    async def wf(ctx, args):
+        await ctx.phase("implement")
+        await ctx.agent("do the work")  # one session via the token-bearing factory
+        return "done"
+
+    with _token_bearing_factory(env):
+        result = run(
+            run_eval_task(
+                EvalTask(task_id="wf1", description="x"),
+                output_dir=str(tmp_path),
+                tools_factory=list,
+                env_factory=env_factory,
+                workflow=wf,
+            )
+        )
+
+    run_dir = tmp_path / "trajectories" / "wf1"
+    orch = run_dir / "orchestration.jsonl"
+    manifest_path = run_dir / "workflow.json"
+    assert orch.exists()
+    # The flat single-file trajectory is gone for workflow mode.
+    assert not (tmp_path / "trajectories" / "wf1.jsonl").exists()
+    # EvalResult.trajectory_path points at the orchestration file in the folder.
+    assert result.trajectory_path == str(orch)
+
+    types = [json.loads(line)["type"] for line in orch.read_text().splitlines() if line.strip()]
+    assert "workflow_phase" in types
+
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["workflow"] == "wf"
+    assert manifest["task_id"] == "wf1"
+    assert manifest["sessions"] == 1
+
+
+def test_eval_factory_threads_per_role_transcript_path(monkeypatch, tmp_path):
+    """The eval factory autosaves each session per role: ``<seq>_<role>.json``."""
+    import opencollab.harness.evaluator as evaluator_mod
+
+    calls: list[dict[str, Any]] = []
+
+    def fake_build_session(*, agent, **kwargs):
+        calls.append(kwargs)
+        return FakeSession(env=FakeEnv(), tokens=0)
+
+    monkeypatch.setattr(evaluator_mod, "build_session", fake_build_session)
+
+    save_dir = str(tmp_path / "trajectories" / "t")
+    factory = evaluator_mod._build_eval_session_factory(
+        env=FakeEnv(),
+        tracer=None,
+        prompt="sys",
+        model="m",
+        provider="p",
+        api_key=None,
+        base_url=None,
+        max_steps=10,
+        default_toolset=[],
+        save_dir=save_dir,
+    )
+
+    factory.build_workflow_session(prompt="a", budget=100, label="analyst")
+    factory.build_workflow_session(prompt="b", budget=100, label="coder:s1r2")
+
+    assert [c["auto_save_path"] for c in calls] == [
+        os.path.join(save_dir, "000_analyst.json"),
+        os.path.join(save_dir, "001_coder-s1r2.json"),
+    ]
+
+
+def test_single_session_mode_keeps_flat_trajectory(monkeypatch, tmp_path):
+    """workflow=None is unchanged: one flat ``trajectories/<task_id>.jsonl``."""
+    from opencollab.adapters.llm import LLMResponse, Usage
+    from opencollab.bootstrap import container
+
+    class FakeLLMClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def complete(self, messages, tools=None, temperature=0.0):
+            return LLMResponse(
+                content="done",
+                tool_calls=[],
+                usage=Usage(input_tokens=3, output_tokens=2),
+                finish_reason="stop",
+            )
+
+    monkeypatch.setattr(container, "LLMClient", FakeLLMClient)
+    env = FakeEnv()
+
+    async def env_factory(task):
+        return env
+
+    result = run(
+        run_eval_task(
+            EvalTask(task_id="flat1", description="fix"),
+            output_dir=str(tmp_path),
+            tools_factory=list,
+            env_factory=env_factory,
+        )
+    )
+
+    flat = tmp_path / "trajectories" / "flat1.jsonl"
+    assert flat.exists()
+    assert result.trajectory_path == str(flat)
+    # No per-task folder is created in single-session mode.
+    assert not (tmp_path / "trajectories" / "flat1").is_dir()
 
 
 # --------------------------------------------------------------------------- #

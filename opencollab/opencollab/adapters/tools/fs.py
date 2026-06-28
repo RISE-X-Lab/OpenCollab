@@ -159,6 +159,14 @@ class FileWriteTool(Tool):
         "required": ["path", "mode"],
     }
 
+    def __init__(self, allow_create: bool = True):
+        # ``allow_create=True`` is the reference behavior (both modes available).
+        # When False, the ``create`` / whole-file-overwrite vector is disabled and
+        # only ``str_replace`` edits of existing files are permitted — used by the
+        # enforcement-on coder toolset so the model cannot create new files or
+        # overwrite an existing target wholesale, only edit it in place.
+        self.allow_create = allow_create
+
     async def execute_with_runtime(
         self,
         params: dict[str, Any],
@@ -171,6 +179,12 @@ class FileWriteTool(Tool):
 
         if not env:
             return "Error: no execution environment available."
+
+        if not self.allow_create and mode == "create":
+            return (
+                "Error: file creation disabled in this phase; edit the existing "
+                "target via str_replace (or apply_patch for a content-anchored diff)."
+            )
 
         if safety_policy:
             path = safety_policy.check_path(path)

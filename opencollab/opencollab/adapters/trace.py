@@ -28,11 +28,21 @@ class Tracer:
         tracer.flush()
     """
 
-    def __init__(self, run_id: str, output_dir: str = "trajectories"):
+    def __init__(
+        self,
+        run_id: str,
+        output_dir: str = "trajectories",
+        *,
+        filename: str | None = None,
+    ):
         self.run_id = run_id
         self._output_dir = output_dir
         os.makedirs(output_dir, exist_ok=True)
-        self._path = os.path.join(output_dir, f"{run_id}.jsonl")
+        # ``filename`` decouples the on-disk name from ``run_id``: the workflow
+        # run folder writes ``orchestration.jsonl`` while each record still
+        # carries the meaningful ``run_id`` (e.g. the SWE-bench task id). When
+        # omitted the name falls back to ``<run_id>.jsonl`` (the prior behaviour).
+        self._path = os.path.join(output_dir, filename or f"{run_id}.jsonl")
         self._file = open(self._path, "a", encoding="utf-8")
         self._step_counter = 0
 
