@@ -15,11 +15,9 @@ class Usage:
     """Token accounting for one completion.
 
     ``input_tokens`` is the *true* total input the model processed for the
-    call. For providers with prompt caching (Anthropic), the provider folds
-    cached read/creation tokens into ``input_tokens`` so the budget meter and
-    ``total_tokens`` reflect everything the API actually billed/processed.
-    ``cache_read_tokens`` / ``cache_creation_tokens`` are retained purely for
-    observability (tracing) and are already included in ``input_tokens``.
+    call. Cached-token fields are retained for observability and pricing
+    reports; they are already included in ``input_tokens`` and must not be
+    added again to compute the budget total.
     """
 
     input_tokens: int = 0
@@ -27,6 +25,7 @@ class Usage:
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
     estimated: bool = False
+    raw_usage: dict[str, Any] = field(default_factory=dict)
     # Observability counter: 1 when this completion leaked kimi tool-call markup
     # as literal text (in ``content`` or ``reasoning_content``) that the provider
     # recovered into structured ``tool_calls`` (P6), else 0. Summed up the chain
