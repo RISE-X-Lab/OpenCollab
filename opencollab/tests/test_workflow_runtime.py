@@ -203,7 +203,7 @@ async def test_no_save_dir_keeps_sessions_ephemeral(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_save_dir_threads_sequential_per_session_paths(monkeypatch, tmp_path):
-    """With a save_dir, each session gets its own ordered session_<n>.json path."""
+    """With a save_dir, each session gets its own ordered <seq>.json path."""
     calls = _patch_build_session(monkeypatch)
     save_dir = str(tmp_path / "run")
     ctx = workflow_runtime.build_workflow_context(cfg=_cfg(), save_dir=save_dir)
@@ -212,14 +212,19 @@ async def test_save_dir_threads_sequential_per_session_paths(monkeypatch, tmp_pa
     await ctx.agent("two")
 
     assert [c["auto_save_path"] for c in calls] == [
-        os.path.join(save_dir, "session_000.json"),
-        os.path.join(save_dir, "session_001.json"),
+        os.path.join(save_dir, "000.json"),
+        os.path.join(save_dir, "001.json"),
     ]
 
 
 @pytest.mark.asyncio
 async def test_save_dir_slugs_agent_label_into_filename(monkeypatch, tmp_path):
-    """A caller label is slugged into the transcript filename for readability."""
+    """A caller label becomes the role in the per-role transcript filename.
+
+    Mirrors a team run folder's ``agent_<aid>_<role>.json``: ``<seq>_<role>.json``
+    so the run folder reads as its roles, and the seq prefix disambiguates a role
+    that runs more than once.
+    """
     calls = _patch_build_session(monkeypatch)
     save_dir = str(tmp_path / "run")
     ctx = workflow_runtime.build_workflow_context(cfg=_cfg(), save_dir=save_dir)
@@ -228,8 +233,8 @@ async def test_save_dir_slugs_agent_label_into_filename(monkeypatch, tmp_path):
     await ctx.agent("write the fix", label="coder:s1r2")
 
     assert [c["auto_save_path"] for c in calls] == [
-        os.path.join(save_dir, "session_000_analyst.json"),
-        os.path.join(save_dir, "session_001_coder-s1r2.json"),
+        os.path.join(save_dir, "000_analyst.json"),
+        os.path.join(save_dir, "001_coder-s1r2.json"),
     ]
 
 
@@ -269,12 +274,12 @@ async def test_run_workflow_writes_manifest(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_workflow_writes_trajectory(monkeypatch, tmp_path):
-    """A saved run records a trajectory.jsonl via the auto-wired Tracer.
+async def test_run_workflow_writes_orchestration_signals(monkeypatch, tmp_path):
+    """A saved run records orchestration.jsonl via the auto-wired Tracer.
 
     The workflow only emits phase/log events (which flow straight through the
-    context's tracer), so this exercises the trajectory wiring without a real
-    LLM — build_session is monkeypatched away.
+    context's tracer), so this exercises the orchestration-signals wiring without
+    a real LLM — build_session is monkeypatched away.
     """
     _patch_build_session(monkeypatch)
     save_dir = str(tmp_path / "run")
@@ -291,8 +296,11 @@ async def test_run_workflow_writes_trajectory(monkeypatch, tmp_path):
     )
 
     assert result == "ok"
-    path = os.path.join(save_dir, "trajectory.jsonl")
+    path = os.path.join(save_dir, "orchestration.jsonl")
     assert os.path.exists(path)
+    # The legacy single flat trajectory.jsonl is gone — signals live in
+    # orchestration.jsonl, per-role conversations in <seq>_<role>.json.
+    assert not os.path.exists(os.path.join(save_dir, "trajectory.jsonl"))
     with open(path) as f:
         types = [json.loads(line)["type"] for line in f if line.strip()]
     assert "workflow_phase" in types
@@ -300,8 +308,8 @@ async def test_run_workflow_writes_trajectory(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_run_workflow_trace_false_skips_trajectory(monkeypatch, tmp_path):
-    """``trace=False`` suppresses the trajectory even when the run is saved."""
+async def test_run_workflow_trace_false_skips_orchestration(monkeypatch, tmp_path):
+    """``trace=False`` suppresses orchestration.jsonl even when the run is saved."""
     _patch_build_session(monkeypatch)
     save_dir = str(tmp_path / "run")
     from opencollab.application.workflow_registry import workflow
@@ -315,12 +323,12 @@ async def test_run_workflow_trace_false_skips_trajectory(monkeypatch, tmp_path):
         fn.__workflow_spec__, {}, cfg=_cfg(), save_dir=save_dir, trace=False
     )
 
-    assert not os.path.exists(os.path.join(save_dir, "trajectory.jsonl"))
+    assert not os.path.exists(os.path.join(save_dir, "orchestration.jsonl"))
 
 
 @pytest.mark.asyncio
-async def test_run_workflow_no_save_dir_skips_trajectory(monkeypatch, tmp_path):
-    """Without a save_dir there is no run folder, so no trajectory is written."""
+async def test_run_workflow_no_save_dir_skips_orchestration(monkeypatch, tmp_path):
+    """Without a save_dir there is no run folder, so no orchestration file."""
     _patch_build_session(monkeypatch)
     from opencollab.application.workflow_registry import workflow
 
@@ -332,4 +340,4 @@ async def test_run_workflow_no_save_dir_skips_trajectory(monkeypatch, tmp_path):
     result = await workflow_runtime.run_workflow(fn.__workflow_spec__, {}, cfg=_cfg())
 
     assert result == "ok"
-    assert not os.path.exists(os.path.join(str(tmp_path), "trajectory.jsonl"))
+    assert not os.path.exists(os.path.join(str(tmp_path), "orchestration.jsonl"))

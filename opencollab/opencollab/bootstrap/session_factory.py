@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import copy
 import os
+import re
 import uuid
 from datetime import datetime
 from typing import Any, Callable
@@ -55,14 +56,64 @@ def agent_save_path(save_dir: str, aid: int, role: str) -> str:
     return os.path.join(save_dir, f"agent_{aid}_{role}.json")
 
 
-def make_run_dir(workspace: str) -> str:
+# A workflow run folder groups one workflow's per-role conversation transcripts
+# (``<seq>_<role>.json``) the way a team run folder groups ``agent_<aid>_<role>``
+# transcripts. Its orchestration signals (phases, logs, step metrics) go to one
+# ``orchestration.jsonl``; a ``workflow.json`` manifest ties the folder together.
+ORCHESTRATION_FILENAME = "orchestration.jsonl"
+WORKFLOW_MANIFEST_FILENAME = "workflow.json"
+
+# Prefix on a workflow run folder's name so ``ls .opencollab/sessions/`` tells a
+# workflow run (``wf-<timestamp>``) apart from a team run (``<timestamp>``) at a
+# glance — both share the same parent dir. The manifest filename
+# (``workflow.json`` vs ``team.json``) is the in-folder discriminator.
+WORKFLOW_RUN_PREFIX = "wf-"
+
+# Longest slug kept from an agent label when naming its transcript file.
+_MAX_LABEL_SLUG_LEN = 40
+
+
+def slug_label(label: str | None) -> str:
+    """Filename-safe slug from an agent label (``coder:s1r2`` -> ``coder-s1r2``).
+
+    Collapses any run of characters outside ``[A-Za-z0-9._-]`` to a single dash,
+    trims separators, and caps length so a label can never produce an unsafe or
+    unbounded filename. Empty / falsy labels yield ``""`` (caller omits the
+    suffix entirely).
+    """
+    if not label:
+        return ""
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "-", label).strip("-._")
+    return cleaned[:_MAX_LABEL_SLUG_LEN]
+
+
+def workflow_transcript_path(save_dir: str, seq: int, label: str | None) -> str:
+    """Per-session transcript path within a workflow run folder.
+
+    ``<save_dir>/<seq>_<role>.json`` (e.g. ``000_analyst.json``,
+    ``001_coder-p1r2.json``), mirroring how a team run folder names agents
+    ``agent_<aid>_<role>.json``. The ``seq`` prefix orders sessions by creation
+    and guarantees uniqueness when one role runs more than once; the slugged
+    ``label`` carries the role so a run folder reads as its phases at a glance.
+    A labelless session falls back to ``<seq>.json``.
+    """
+    slug = slug_label(label)
+    stem = f"{seq:03d}_{slug}" if slug else f"{seq:03d}"
+    return os.path.join(save_dir, f"{stem}.json")
+
+
+def make_run_dir(workspace: str, *, prefix: str = "") -> str:
     """A timestamped run folder under ``<workspace>/.opencollab/sessions``.
 
-    A 4-char suffix is appended if a same-second folder already exists, so two
-    runs started within the same second do not collide.
+    The folder is named ``<prefix><timestamp>``; teams pass no prefix while
+    workflow runs pass ``WORKFLOW_RUN_PREFIX`` so the two are distinguishable at
+    a glance even though they share this parent dir. A 4-char suffix is appended
+    if a same-second folder already exists, so two runs started within the same
+    second do not collide.
     """
     base = os.path.join(workspace, ".opencollab", "sessions")
-    run_dir = os.path.join(base, datetime.now().strftime("%Y-%m-%dT%H-%M-%S"))
+    stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    run_dir = os.path.join(base, f"{prefix}{stamp}")
     if os.path.exists(run_dir):
         run_dir = f"{run_dir}-{uuid.uuid4().hex[:4]}"
     return run_dir
@@ -325,11 +376,16 @@ class DefaultSessionFactory:
 
 
 __all__ = [
+    "ORCHESTRATION_FILENAME",
+    "WORKFLOW_MANIFEST_FILENAME",
+    "WORKFLOW_RUN_PREFIX",
     "DefaultSessionFactory",
     "agent_save_path",
     "build_session",
     "build_spawn_session",
     "load_session",
     "make_run_dir",
+    "slug_label",
     "snapshot_session",
+    "workflow_transcript_path",
 ]

@@ -41,6 +41,79 @@ _WRITE_TOOLS = frozenset({"file_write", "apply_patch"})
 # tools' own "Error: ..." returns.
 _TOOL_ERROR_PREFIXES = ("Error", "Tool execution error", "Permission denied")
 
+# Information-gain sensor (STEP 1). Each EXECUTED tool result is classified as
+# informative vs low-yield so later brakes can key on information GAIN, not raw
+# tokens. Low-yield = an exact duplicate (same result CONTENT hash OR same
+# path-normalized (tool, args) call hash seen before — novelty is the PRIMARY
+# signal), an empty/zero-byte read, or a "No matches found"-class result. Keying
+# on the content/call HASH (not the literal "No matches" string) means a model
+# re-reading a known file to dodge a string match still scores zero gain. Novelty
+# itself is decided by SessionState (it owns the seen-hash memory); this module
+# only computes the two cheap, stateless inputs below. STEP 1 adds NO braking —
+# behavior gating lives in a later step; here the counters are observational.
+#
+# "No matches"-class markers, matched case-insensitively at the start of the
+# stripped output. A SECONDARY refinement catching a FIRST-occurrence no-result
+# that would otherwise look novel; the grep tool emits
+# "No matches found for pattern: ...".
+_NO_MATCH_MARKERS = (
+    "no matches found",
+    "no files found",
+    "no results found",
+)
+
+
+def _result_content_hash(output: str) -> str:
+    """Stable hash of a tool result's content, for novelty detection."""
+    return hashlib.md5((output or "").encode()).hexdigest()
+
+
+# Evidence ledger (STEP 2). The harness records one compact card per executed
+# scout tool call, built purely from the (tool, args, output) envelope. ``target``
+# is the thing the call examined (a file path, a grep pattern, a bash command);
+# ``snippet`` is a short, single-lined slice of the result so the planner /
+# dead-scout synthesizer sees WHAT was found without re-reading the raw transcript.
+_LEDGER_SNIPPET_CHARS = 240
+
+
+def _card_target(tool_name: str, args: dict) -> str:
+    """The salient subject of a tool call for the evidence ledger, off the args
+    envelope: a read's path, a grep's pattern, a bash command, else a compact
+    args dump. Never raises on odd args (defensive str())."""
+    args = args or {}
+    if tool_name == "grep":
+        target = args.get("pattern") or args.get("query") or ""
+        path = args.get("path") or args.get("dir")
+        return f"{target} in {path}" if path else str(target)
+    if tool_name in _READ_TOOLS:
+        return str(args.get("path") or args.get("file") or "")
+    if tool_name == "bash":
+        return str(args.get("command") or "")[:_LEDGER_SNIPPET_CHARS]
+    path = args.get("path")
+    return str(path) if path else json.dumps(args, default=str, sort_keys=True)[:_LEDGER_SNIPPET_CHARS]
+
+
+def _card_snippet(output: str) -> str:
+    """A short, whitespace-collapsed slice of a tool result for the ledger card."""
+    norm = " ".join((output or "").split())
+    return norm[:_LEDGER_SNIPPET_CHARS]
+
+
+def _intrinsic_low_yield(tool_name: str, output: str) -> bool:
+    """Low-yield regardless of novelty: an empty read or a 'No matches'-class
+    result. The empty check is restricted to read-class tools — an empty
+    write/bash result is not inherently low-yield."""
+    norm = (output or "").strip()
+    if any(norm.lower().startswith(marker) for marker in _NO_MATCH_MARKERS):
+        return True
+    if tool_name in _READ_TOOLS:
+        if not norm:
+            return True
+        # file_read of an empty / zero-line file returns only its header line.
+        if "(0 lines total" in norm:
+            return True
+    return False
+
 
 def _bash_likely_mutates(args: dict) -> bool:
     """Heuristic: does this bash command write to a file on disk? Narrow allow-list so
@@ -251,6 +324,31 @@ class ToolExecutionUseCase:
                 # real edit the same as file_write/apply_patch — reuse the reset
                 # path so the reads-without-write counter zeroes (Bug B, OPTION 2).
                 result.write_succeeded = True
+
+            # Information-gain sensor (STEP 1): record this result's novelty
+            # signals for the caller to fold into SessionState's counters. The
+            # call hash (path-normalized for re-reads) and the content hash both
+            # gate novelty; an empty read / "No matches"-class result is
+            # intrinsically low-yield. Observational — no behavior change here.
+            result.evidence_signals.append(
+                (
+                    _result_content_hash(tool_output),
+                    call_hash,
+                    _intrinsic_low_yield(tool_name, tool_output),
+                )
+            )
+            # STEP 2 evidence ledger: the index-aligned raw card (tool/target/
+            # snippet). Its outcome (hit | NO-MATCH | duplicate) is decided at fold
+            # time from the SAME novelty signals above, so capture cannot disagree
+            # with the sensor. Always recorded (durable capture floor), like the
+            # STEP 1 signals — purely observational here.
+            result.evidence_cards.append(
+                {
+                    "tool": tool_name,
+                    "target": _card_target(tool_name, args),
+                    "snippet": _card_snippet(tool_output),
+                }
+            )
 
             if self.tracer:
                 self.tracer.log_step(
