@@ -68,7 +68,7 @@ class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
         worktree_pool: WorktreePoolPort,
         event_sink: EventPublisherPort,
         tracer: TracePort | None = None,
-        max_budget_tokens: int = 500_000,
+        max_budget_tokens: int = 1_000_000,
         permission_policy: PermissionPort | None = None,
         topology: Topology | None = None,
         roles: tuple[str, ...] = (),

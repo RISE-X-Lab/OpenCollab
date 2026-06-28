@@ -83,7 +83,7 @@ def run_cmd(
     budget: Optional[int] = typer.Option(
         None,
         "--budget",
-        help="Max token budget (default: max(config budget, 500000); workflows fan out many sessions)",
+        help="Max token budget (default: max(config budget, 1000000); workflows fan out many sessions)",
     ),
     concurrency: int = typer.Option(4, "--concurrency", "-c", help="Max concurrent agent sessions"),
     save: bool = typer.Option(
@@ -126,7 +126,7 @@ def run_cmd(
     # explicit budget arg stays None below, so run_workflow falls back to this
     # raised cfg["budget"].
     if budget is None:
-        cfg["budget"] = max(cfg["budget"], 500_000)
+        cfg["budget"] = max(cfg["budget"], 1_000_000)
 
     save_dir = make_run_dir(workspace, prefix=WORKFLOW_RUN_PREFIX) if save else None
 

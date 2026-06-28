@@ -55,7 +55,7 @@ auto-approves risky commands.
 The eval command reads JSONL tasks. Each line describes one task:
 
 ```json
-{"task_id":"example","description":"Fix the bug described here.","repo_path":"/path/to/repo","timeout":600,"max_tokens":100000}
+{"task_id":"example","description":"Fix the bug described here.","repo_path":"/path/to/repo","timeout":600,"max_tokens":1000000}
 ```
 
 The harness writes `results.jsonl` and trajectory logs under the output

@@ -26,7 +26,7 @@ def eval_cmd(
     base_url: Optional[str] = typer.Option(None, "--base-url", help="API base URL (default from config)"),
     output_dir: str = typer.Option("eval_results", "--output", "-o"),
     concurrency: int = typer.Option(4, "--concurrency", "-c", help="Parallel tasks"),
-    max_tokens: int = typer.Option(100_000, "--max-tokens"),
+    max_tokens: int = typer.Option(1_000_000, "--max-tokens"),
     timeout: float = typer.Option(600.0, "--timeout"),
 ):
     """Headless evaluation mode for benchmarks (SWE-bench, etc.)."""

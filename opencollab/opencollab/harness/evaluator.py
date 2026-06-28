@@ -81,7 +81,7 @@ class EvalTask:
     repo_path: str | None = None  # Path to repo (for local env)
     docker_image: str | None = None  # Docker image (for container env)
     timeout: float = 600.0  # Max seconds per task
-    max_tokens: int = 100_000
+    max_tokens: int = 1_000_000
     # Generic benchmark passthrough — never interpreted by the harness core, only
     # forwarded into the workflow args. SWE-bench uses it to thread the
     # ``test_patch`` (injected before the run) and parsed ``fail_to_pass`` ids.

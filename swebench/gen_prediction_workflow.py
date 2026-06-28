@@ -51,9 +51,9 @@ from opencollab.bootstrap.workflow_runtime import discover_workflows  # noqa: E4
 from opencollab.harness.evaluator import EvalTask, run_eval_task  # noqa: E402
 from opencollab.harness.workflows import generate_review_fix  # noqa: E402
 
-# Team-baseline parity: 500k tokens per instance was the binding constraint in
-# the oc-team run this A/B compares against.
-DEFAULT_BUDGET = 500_000
+# Team-baseline parity: use the current default per-instance cap for comparable
+# OpenCollab SWE-bench runs.
+DEFAULT_BUDGET = 1_000_000
 DEFAULT_MAX_STEPS = 60  # per workflow session; 60 proved enough to act, 40 did not
 DEFAULT_TIMEOUT = 1800.0  # the workflow runs up to 3 sequential sessions
 
