@@ -223,8 +223,11 @@ def _parse_usage(resp: Any, request_messages: list[dict], message: Any) -> Usage
     would double-count. The additive cache fix applies only to Anthropic.
     """
     usage = getattr(resp, "usage", None)
-    input_tokens = getattr(usage, "prompt_tokens", 0) or 0 if usage else 0
-    output_tokens = getattr(usage, "completion_tokens", 0) or 0 if usage else 0
+    raw_usage = _usage_to_dict(usage)
+    input_tokens = _usage_int(raw_usage, "prompt_tokens")
+    output_tokens = _usage_int(raw_usage, "completion_tokens")
+    prompt_details = raw_usage.get("prompt_tokens_details") or {}
+    cached_tokens = _usage_int(prompt_details, "cached_tokens")
 
     estimated = False
     if input_tokens <= 0:
@@ -237,8 +240,53 @@ def _parse_usage(resp: Any, request_messages: list[dict], message: Any) -> Usage
     return Usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        cache_read_tokens=cached_tokens,
         estimated=estimated,
+        raw_usage=raw_usage,
     )
+
+
+def _usage_int(source: Any, key: str) -> int:
+    if not isinstance(source, dict):
+        return 0
+    value = source.get(key)
+    if value in (None, ""):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _usage_to_dict(value: Any) -> dict[str, Any]:
+    plain = _usage_to_plain(value)
+    return plain if isinstance(plain, dict) else {}
+
+
+def _usage_to_plain(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _usage_to_plain(v) for k, v in value.items() if v is not None}
+    if isinstance(value, (list, tuple)):
+        return [_usage_to_plain(v) for v in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return _usage_to_plain(value.model_dump(exclude_none=True))
+        except TypeError:
+            return _usage_to_plain(value.model_dump())
+    if hasattr(value, "dict"):
+        try:
+            return _usage_to_plain(value.dict(exclude_none=True))
+        except TypeError:
+            return _usage_to_plain(value.dict())
+    if hasattr(value, "__dict__"):
+        return {
+            str(k): _usage_to_plain(v)
+            for k, v in vars(value).items()
+            if not k.startswith("_") and v is not None
+        }
+    return str(value)
 
 
 def _estimate_output_tokens(message: Any) -> int:

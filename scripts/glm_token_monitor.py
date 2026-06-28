@@ -10,12 +10,15 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TRAJECTORIES_DIR = REPO_ROOT / ".opencollab" / "logs" / "trajectories"
+DEFAULT_GLM52_INPUT_USD_PER_MTOK = 1.4
+DEFAULT_GLM52_CACHED_INPUT_USD_PER_MTOK = 0.26
+DEFAULT_GLM52_OUTPUT_USD_PER_MTOK = 4.4
 
 
-def _float_env(name: str) -> float | None:
+def _float_env(name: str, default: float | None = None) -> float | None:
     value = os.environ.get(name)
     if value in (None, ""):
-        return None
+        return default
     return float(value)
 
 
@@ -39,9 +42,13 @@ def collect(trajectories_dir: Path, model_filter: str | None) -> dict:
         "runs": set(),
         "calls": 0,
         "input_tokens": 0,
+        "uncached_input_tokens": 0,
+        "cached_input_tokens": 0,
         "output_tokens": 0,
         "split_total_tokens": 0,
         "unknown_split_tokens": 0,
+        "unknown_cache_input_tokens": 0,
+        "unknown_cache_calls": 0,
         "estimated_calls": 0,
         "latency_s": 0.0,
     }
@@ -60,14 +67,30 @@ def collect(trajectories_dir: Path, model_filter: str | None) -> dict:
             input_tokens = int(usage.get("input_tokens") or 0)
             output_tokens = int(usage.get("output_tokens") or 0)
             total_tokens = int(usage.get("total_tokens") or metrics.get("tokens") or 0)
+            cached_input_tokens = int(usage.get("cache_read_tokens") or 0)
+            if "uncached_input_tokens" in usage:
+                uncached_input_tokens = int(usage.get("uncached_input_tokens") or 0)
+            else:
+                uncached_input_tokens = max(input_tokens - cached_input_tokens, 0)
+            has_cache_accounting = (
+                "cache_read_tokens" in usage
+                or "cache_creation_tokens" in usage
+                or bool(usage.get("raw_usage"))
+                or bool(usage.get("estimated"))
+            )
 
             totals["runs"].add(record.get("run_id") or path.stem)
             totals["calls"] += 1
             totals["input_tokens"] += input_tokens
+            totals["uncached_input_tokens"] += uncached_input_tokens
+            totals["cached_input_tokens"] += cached_input_tokens
             totals["output_tokens"] += output_tokens
             totals["latency_s"] += float(metrics.get("latency_s") or 0.0)
             if usage.get("estimated"):
                 totals["estimated_calls"] += 1
+            if input_tokens and not has_cache_accounting:
+                totals["unknown_cache_calls"] += 1
+                totals["unknown_cache_input_tokens"] += input_tokens
             if input_tokens or output_tokens:
                 totals["split_total_tokens"] += total_tokens
             else:
@@ -83,12 +106,20 @@ def estimate_cost(
     totals: dict,
     total_price_per_mtok: float | None,
     input_price_per_mtok: float | None,
+    cached_input_price_per_mtok: float | None,
     output_price_per_mtok: float | None,
 ) -> tuple[float | None, str]:
     split_cost = 0.0
-    has_split_price = input_price_per_mtok is not None or output_price_per_mtok is not None
+    has_split_price = (
+        input_price_per_mtok is not None
+        or cached_input_price_per_mtok is not None
+        or output_price_per_mtok is not None
+    )
     if has_split_price:
-        split_cost += totals["input_tokens"] / 1_000_000 * (input_price_per_mtok or 0.0)
+        if totals["cached_input_tokens"] and cached_input_price_per_mtok is None:
+            return None, "missing_cached_price"
+        split_cost += totals["uncached_input_tokens"] / 1_000_000 * (input_price_per_mtok or 0.0)
+        split_cost += totals["cached_input_tokens"] / 1_000_000 * (cached_input_price_per_mtok or 0.0)
         split_cost += totals["output_tokens"] / 1_000_000 * (output_price_per_mtok or 0.0)
 
     unknown_tokens = totals["unknown_split_tokens"]
@@ -111,6 +142,7 @@ def print_report(args: argparse.Namespace) -> None:
         totals,
         args.total_price_per_mtok,
         args.input_price_per_mtok,
+        args.cached_input_price_per_mtok,
         args.output_price_per_mtok,
     )
 
@@ -119,18 +151,37 @@ def print_report(args: argparse.Namespace) -> None:
     print(
         "tokens: "
         f"input={totals['input_tokens']} "
+        f"uncached_input={totals['uncached_input_tokens']} "
+        f"cached_input={totals['cached_input_tokens']} "
         f"output={totals['output_tokens']} "
         f"unknown_split={totals['unknown_split_tokens']} "
         f"total={total_tokens}"
     )
-    print(f"latency_s: {totals['latency_s']:.1f}  estimated_calls: {totals['estimated_calls']}")
+    print(
+        f"latency_s: {totals['latency_s']:.1f}  "
+        f"estimated_calls: {totals['estimated_calls']}  "
+        f"legacy_unknown_cache_calls: {totals['unknown_cache_calls']}"
+    )
     if cost is None:
-        if mode == "unknown_split":
+        if mode == "missing_cached_price":
+            print("cost_usd: unknown because cached input tokens were logged but no cached-input price was provided.")
+        elif mode == "unknown_split":
             print("cost_usd: unknown because older logs only contain total tokens; set GLM_TOTAL_USD_PER_MTOK to price those logs.")
         else:
-            print("cost_usd: set GLM_TOTAL_USD_PER_MTOK, or GLM_INPUT_USD_PER_MTOK and GLM_OUTPUT_USD_PER_MTOK")
+            print("cost_usd: set GLM_TOTAL_USD_PER_MTOK, or GLM input/cached-input/output prices.")
     else:
-        print(f"cost_usd_estimate: ${cost:.6f} ({mode})")
+        exact_from_log = (
+            totals["estimated_calls"] == 0
+            and totals["unknown_cache_input_tokens"] == 0
+            and totals["unknown_split_tokens"] == 0
+        )
+        label = "cost_usd_from_logged_usage" if exact_from_log else "cost_usd_estimate"
+        print(f"{label}: ${cost:.6f} ({mode})")
+        if totals["unknown_cache_input_tokens"]:
+            print(
+                "cost_note: legacy logs without cache fields were priced as uncached input; "
+                "provider billing is needed for exact historical cache discounts."
+            )
 
 
 def main() -> int:
@@ -141,8 +192,21 @@ def main() -> int:
     )
     parser.add_argument("--model", default="glm-5.2")
     parser.add_argument("--total-price-per-mtok", type=float, default=_float_env("GLM_TOTAL_USD_PER_MTOK"))
-    parser.add_argument("--input-price-per-mtok", type=float, default=_float_env("GLM_INPUT_USD_PER_MTOK"))
-    parser.add_argument("--output-price-per-mtok", type=float, default=_float_env("GLM_OUTPUT_USD_PER_MTOK"))
+    parser.add_argument(
+        "--input-price-per-mtok",
+        type=float,
+        default=_float_env("GLM_INPUT_USD_PER_MTOK", DEFAULT_GLM52_INPUT_USD_PER_MTOK),
+    )
+    parser.add_argument(
+        "--cached-input-price-per-mtok",
+        type=float,
+        default=_float_env("GLM_CACHED_INPUT_USD_PER_MTOK", DEFAULT_GLM52_CACHED_INPUT_USD_PER_MTOK),
+    )
+    parser.add_argument(
+        "--output-price-per-mtok",
+        type=float,
+        default=_float_env("GLM_OUTPUT_USD_PER_MTOK", DEFAULT_GLM52_OUTPUT_USD_PER_MTOK),
+    )
     parser.add_argument("--watch", type=float, default=0.0, help="Refresh interval in seconds")
     args = parser.parse_args()
 

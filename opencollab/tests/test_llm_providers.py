@@ -174,6 +174,8 @@ def test_openai_normal_usage_unchanged_and_no_double_count():
 
     assert result.usage.input_tokens == 1000  # exactly prompt_tokens, no +800
     assert result.usage.output_tokens == 50
+    assert result.usage.cache_read_tokens == 800
+    assert result.usage.raw_usage["prompt_tokens_details"]["cached_tokens"] == 800
     assert result.usage.total_tokens == 1050
     assert result.usage.estimated is False
 
