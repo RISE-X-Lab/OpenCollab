@@ -1,0 +1,175 @@
+{
+  "generated_for": "glm52-swebench-20260628",
+  "files": [
+    {
+      "path": "README.md",
+      "bytes": 3457,
+      "sha256": "dd47001b94ced917d6cb57a9b2e2bde4516ba3c9d83574abc39dd0996f368bf8"
+    },
+    {
+      "path": "predictions/django14238_repaired_prediction.jsonl",
+      "bytes": 808,
+      "sha256": "60481c9b8978b88abb4f056c0ec920c6d2358e9a6e59a49d1bc0ccc16e458296"
+    },
+    {
+      "path": "predictions/first100_predictions.jsonl",
+      "bytes": 85073,
+      "sha256": "6bb5ea39060098b625064d57d0141731fefbf8554d10955d5d79562af4c1bd42"
+    },
+    {
+      "path": "predictions/prior_unofficial17_predictions.jsonl",
+      "bytes": 18277,
+      "sha256": "c4aa41b65a991df9db8c3230e2080d9c470b8d4db5ac87da7570265480f550ae"
+    },
+    {
+      "path": "predictions/team_unresolved10_predictions.jsonl",
+      "bytes": 11863,
+      "sha256": "f9926ec1b5bdd2765cf5b1f2639b16013008bff2f4762f4d5dcc575a3b93820e"
+    },
+    {
+      "path": "predictions/team_unresolved34_final_predictions.jsonl",
+      "bytes": 51247,
+      "sha256": "2fd91023bdfe7c92cb829a9023dbf74c4ed250b4f3af7a5c3797b5318bc952ca"
+    },
+    {
+      "path": "predictions/temp00_budget1m_four_predictions.jsonl",
+      "bytes": 13085,
+      "sha256": "796e364de1e560d325dd89d73f95ec15b57f03230194f44724b509a2089af737"
+    },
+    {
+      "path": "predictions/temp00_django15738_retry_predictions.jsonl",
+      "bytes": 2629,
+      "sha256": "d620c0787c9d47aadd4be172c93939de98face49fc7a3be35e1151eb5e0e6996"
+    },
+    {
+      "path": "predictions/temp00_prev21_predictions.jsonl",
+      "bytes": 32529,
+      "sha256": "96d042403b5dd507c231eefc3fb34266aaeb2c7ce903cdb3121bd740af23e448"
+    },
+    {
+      "path": "predictions/temp02_unresolved4_predictions.jsonl",
+      "bytes": 9200,
+      "sha256": "139dc717ef170efa2f73dc0260a858bc033ebc0c55f57b78fbb04459fe0bd587"
+    },
+    {
+      "path": "report/final_report.pdf",
+      "bytes": 242898,
+      "sha256": "4c986736983319d472024f205615cbcd0f3942328aba6d12c2c13d9912448bcd"
+    },
+    {
+      "path": "report/final_report.tex",
+      "bytes": 36612,
+      "sha256": "e53c39f29b4bcc01c4d07727598f036379464c69281442452a89953c5923792b"
+    },
+    {
+      "path": "summaries/django14238_repair_official_summary.json",
+      "bytes": 917,
+      "sha256": "fbb6911d61f6e237015852912640038a4d580e0693871d7a89fbb887e61683b5"
+    },
+    {
+      "path": "summaries/django14238_repair_official_summary.md",
+      "bytes": 353,
+      "sha256": "8296ab38d33f9cc853200bbe48ea0bc083738a9475af8deca5b199dfc38e6b1d"
+    },
+    {
+      "path": "summaries/first100_empty_patch_research.md",
+      "bytes": 24527,
+      "sha256": "b37ef11e8d25dac9fc4ed8af198b367caefa84cc4c19170c45c21e408dfe0456"
+    },
+    {
+      "path": "summaries/first100_error_deep_dive.md",
+      "bytes": 55119,
+      "sha256": "ce4631a6a9856d7678915b3139a24d59e444eb784060069cdc64ecfc33dff027"
+    },
+    {
+      "path": "summaries/first100_official_summary.json",
+      "bytes": 3694,
+      "sha256": "632bf2203d5c81dd71537c0c3c7dafcfbb3cc65084f6d2e0b9efb0c3a6a3003a"
+    },
+    {
+      "path": "summaries/prior_unofficial_patches_official_summary.json",
+      "bytes": 16525,
+      "sha256": "a7ef85bdec4560bc6ac190a58bd2fb4ce51d6f472af8807c9f7a4eba005ef740"
+    },
+    {
+      "path": "summaries/prior_unofficial_patches_official_summary.md",
+      "bytes": 3636,
+      "sha256": "6d1cd0280ec59a6667259ac88b0fc0baeecb2716f1bb69eff736b32f0cd6a98e"
+    },
+    {
+      "path": "summaries/team_unresolved10_official_summary.json",
+      "bytes": 8841,
+      "sha256": "86cf05a09b15f7f814043c2da1c2c32d22d65e1ee8ccc0e9ea0a45358f9abf50"
+    },
+    {
+      "path": "summaries/team_unresolved10_official_summary.md",
+      "bytes": 1056,
+      "sha256": "556daa9e02c7538740c97bc83520bf5dee6fc2f6245cbae49888b6b8b3b3ff75"
+    },
+    {
+      "path": "summaries/team_unresolved34_official_summary.json",
+      "bytes": 25396,
+      "sha256": "67543d919eb5718da5f631d715c91ea0e8f2edc7c379c3907292ead274a2b5fd"
+    },
+    {
+      "path": "summaries/team_unresolved34_official_summary.md",
+      "bytes": 4447,
+      "sha256": "74345132ffb3020f481cee1a099c933f5ca0a4251b84e4496682120c71f8f033"
+    },
+    {
+      "path": "summaries/temp00_budget1m_four_official_summary.json",
+      "bytes": 4769,
+      "sha256": "3aee4ebc2c4d49d0b7c2c6b7e564ba1a789225992835f96b69306f59294de80f"
+    },
+    {
+      "path": "summaries/temp00_budget1m_four_official_summary.md",
+      "bytes": 935,
+      "sha256": "404161cab241cafa9a96fe072811a7bfb744bc6b0e8af92788a10bc4f24d9f50"
+    },
+    {
+      "path": "summaries/temp00_budget1m_four_results.md",
+      "bytes": 2832,
+      "sha256": "f1f4b01b39ad74afe5c1cabffd6a65f234d9b235dcf1b9956b9ad1a0a98c3aa6"
+    },
+    {
+      "path": "summaries/temp00_correctness_and_anomalies.md",
+      "bytes": 3313,
+      "sha256": "4d469771dfd91650c5cb69acf22202d88cae22a137a3c3e5d54c630f09c96f6a"
+    },
+    {
+      "path": "summaries/temp00_django15738_retry_official_summary.json",
+      "bytes": 1079,
+      "sha256": "322cdb4c0a3927cf47d6dd8e77c461be913f464dde38a1337c496a27b6ba52be"
+    },
+    {
+      "path": "summaries/temp00_django15738_retry_official_summary.md",
+      "bytes": 524,
+      "sha256": "3389d903a02bbeef6b36c1d262ea0ce3ed2b818781c438bd07890b1961cd9044"
+    },
+    {
+      "path": "summaries/temp00_loop_repetition_analysis.md",
+      "bytes": 2884,
+      "sha256": "d68fae0e968de5cb31f8fd231d63d7122a579f38eb99d0a7b00992c629cb4cd4"
+    },
+    {
+      "path": "summaries/temp00_prev21_official_summary.json",
+      "bytes": 21141,
+      "sha256": "0cd1392b66457d9dd702a040e7f2749c603b4282833c9ba41b5bcf85501f7d12"
+    },
+    {
+      "path": "summaries/temp00_prev21_official_summary.md",
+      "bytes": 3372,
+      "sha256": "a95303e59ca0579919284c7feb5cf1350021f8213167a1a42d0e70b744a0bc5d"
+    },
+    {
+      "path": "summaries/temp02_unresolved4_official_summary.json",
+      "bytes": 5768,
+      "sha256": "42f9e53d5443233757a5e83999eaba98baf33310b6322c6ecf91f0b284ce3a80"
+    },
+    {
+      "path": "summaries/temp02_unresolved4_official_summary.md",
+      "bytes": 836,
+      "sha256": "176a79f5ff2f5a9c5110dcc95a371b6551b58b796cc52732dadf7d798e85b2ad"
+    }
+  ]
+}
