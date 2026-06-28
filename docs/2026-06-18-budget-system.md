@@ -60,22 +60,22 @@ which is what the aggregate ceiling (§5) enforces.
 
 ## 3. The limit — defaults and override chain
 
-1. **Config default `200_000`** — `Settings.budget`
+1. **Config default `1_000_000`** — `Settings.budget`
    (`opencollab/opencollab/bootstrap/config.py`), env var `OPENCOLLAB_BUDGET`
-   (default `"200000"`).
+   (default `"1000000"`).
 2. **CLI `--budget`** (`opencollab/opencollab/adapters/cli/main.py`) — default
    `None`.
 3. **The interactive/team bump:** when `--budget` is *not* passed, agent 0 can
    spawn a whole team, so the CLI raises the effective budget:
-   `cfg["budget"] = max(cfg["budget"], 500_000)`. **So the effective default for
-   an interactive/team run is 500k, not the 200k in config.** An explicit
+   `cfg["budget"] = max(cfg["budget"], 1_000_000)`. **So the effective default for
+   an interactive/team run is 1M.** An explicit
    `--budget N` is respected verbatim.
 4. The resolved value is handed to the scheduler as `max_budget_tokens`
    (`opencollab/opencollab/bootstrap/scheduler_factory.py`).
 
 Defaults differ by entry point (only the resolved value at the composition root
-matters in practice): `Scheduler` defaults to `500_000`, `SessionRunUseCase`
-to `200_000`. The workflow engine uses its own model: unbounded sessions get
+matters in practice): `Scheduler` and `SessionRunUseCase` both default to
+`1_000_000`. The workflow engine uses its own model: unbounded sessions get
 `UNBOUNDED_SESSION_BUDGET = 1_000_000` and the pool is genuinely shared, raising
 `WorkflowBudgetExceeded` at the run boundary
 (`opencollab/opencollab/application/workflow.py`).
@@ -102,7 +102,7 @@ The scheduler (`opencollab/opencollab/application/scheduler.py`) tracks a runnin
 `_allocated_tokens`:
 
 - At Lead registration it is **seeded with `lead_reserve(total)`**, so the first
-  child is granted `total - total//4` (e.g. 375k of a 500k pool).
+  child is granted `total - total//4` (e.g. 750k of a 1M pool).
 - `_reserve_child_budget(aid)` grants `split_budget(total, _allocated_tokens)`
   and books it **synchronously, before the first `await`** in `spawn`
   (`opencollab/opencollab/application/scheduler_lifecycle.py`) — so a *batched or
@@ -121,7 +121,8 @@ pool.
 > **History:** before 2026-06-18, `split_budget` divided against live *spend*,
 > so concurrent spawns all saw `used≈0` and each received ~75% of the pool —
 > the global budget was not a real ceiling under fan-out (3 children × 375k vs a
-> 500k cap). The reserve-at-allocation model fixed this (commit `158820b`).
+> 500k cap in that historical run). The reserve-at-allocation model fixed this
+> (commit `158820b`).
 
 ---
 

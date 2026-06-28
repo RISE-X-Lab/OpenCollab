@@ -206,7 +206,7 @@ def build_session_runtime(
     agent: Agent,
     env: Environment | None = None,
     tracer: TracePort | None = None,
-    max_budget_tokens: int = 200_000,
+    max_budget_tokens: int = 1_000_000,
     max_steps: int = 100,
     auto_save_path: str | None = None,
     event_sink: EventPublisherPort | None = None,
