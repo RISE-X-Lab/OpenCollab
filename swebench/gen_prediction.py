@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import uuid
@@ -77,10 +78,19 @@ Rules:
 """
 
 
-def _docker(*args: str, timeout: int = 60) -> subprocess.CompletedProcess:
+def _docker(*args: str, timeout: int | None = None) -> subprocess.CompletedProcess:
+    if timeout is None:
+        timeout = int(os.environ.get("OPENCOLLAB_DOCKER_TIMEOUT", "60"))
     return subprocess.run(
         ["docker", *args], capture_output=True, text=True, timeout=timeout, check=False
     )
+
+
+def _check_docker(res: subprocess.CompletedProcess, action: str) -> None:
+    if res.returncode == 0:
+        return
+    detail = (res.stderr or res.stdout).strip()
+    raise RuntimeError(f"{action} failed (exit {res.returncode}): {detail}")
 
 
 def start_container(image: str, name: str) -> str:
@@ -90,8 +100,9 @@ def start_container(image: str, name: str) -> str:
         raise RuntimeError(f"docker run failed: {res.stderr.strip()}")
     cid = res.stdout.strip()[:12]
     # Repo is owned by root in the image; allow git to operate on it.
-    _docker("exec", cid, "bash", "-lc",
-            f"git config --global --add safe.directory {DOCKER_WORKDIR}")
+    safe_dir = _docker("exec", cid, "bash", "-lc",
+                       f"git config --global --add safe.directory {DOCKER_WORKDIR}")
+    _check_docker(safe_dir, "docker git safe.directory setup")
     return cid
 
 
@@ -171,9 +182,17 @@ async def run_agent(task: str, cid: str, cfg: dict, max_steps: int, budget: int,
 
 def extract_patch(cid: str) -> str:
     # Stage everything so new files are included, then diff against HEAD.
-    _docker("exec", "-w", DOCKER_WORKDIR, cid, "bash", "-lc", "git add -A")
+    add_result = _docker("exec", "-w", DOCKER_WORKDIR, cid, "bash", "-lc", "git add -A")
+    _check_docker(add_result, "git add -A before patch extraction")
     res = _docker("exec", "-w", DOCKER_WORKDIR, cid, "bash", "-lc",
                   "git diff --cached")
+    _check_docker(res, "git diff --cached during patch extraction")
+    if not res.stdout.strip():
+        status = _docker("exec", "-w", DOCKER_WORKDIR, cid, "bash", "-lc",
+                         "git status --short")
+        _check_docker(status, "git status --short after empty patch")
+        print("  patch extraction: staged diff empty")
+        print(f"  git status --short: {status.stdout.strip() or '(clean)'}")
     return res.stdout
 
 

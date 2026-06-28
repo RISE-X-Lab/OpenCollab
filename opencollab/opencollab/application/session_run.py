@@ -764,6 +764,12 @@ class SessionRunUseCase:
                 "finish_reason": response.finish_reason,
                 "content": response.content,
                 "tool_calls": tool_calls_log,
+                "usage": {
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": response.usage.output_tokens,
+                    "total_tokens": response.usage.total_tokens,
+                    "estimated": response.usage.estimated,
+                },
             }
             # Record provider chain-of-thought to the trajectory when present
             # (omitted otherwise, so non-thinking traces keep their prior shape).

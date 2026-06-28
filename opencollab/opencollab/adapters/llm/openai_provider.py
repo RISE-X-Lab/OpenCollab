@@ -31,7 +31,7 @@ def _build_request_kwargs(
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": model,
-        "messages": messages,
+        "messages": _normalize_request_messages(messages),
         "temperature": temperature,
     }
     # Nucleus sampling rides along ONLY when explicitly set; when None the key is
@@ -52,6 +52,23 @@ def _build_request_kwargs(
         extra_body.update(thinking_params)
         kwargs["extra_body"] = extra_body
     return kwargs
+
+
+def _normalize_request_messages(messages: list[dict]) -> list[dict]:
+    """Make message payloads acceptable to stricter OpenAI-compatible gateways."""
+    normalized: list[dict] = []
+    for message in messages:
+        item = {
+            key: value
+            for key, value in message.items()
+            if key in {"role", "content", "tool_calls", "tool_call_id", "name"}
+        }
+        if item.get("content") is None:
+            item["content"] = ""
+        if item.get("role") == "assistant" and item.get("tool_calls") and item.get("content") == "":
+            item["content"] = " "
+        normalized.append(item)
+    return normalized
 
 
 # kimi (DashScope OpenAI-compat) sometimes emits tool calls as literal text in
@@ -121,6 +138,18 @@ def _extract_markup_tool_calls(
     return tool_calls, (cleaned or None)
 
 
+def _normalize_tool_arguments(arguments: str | None) -> str:
+    raw = (arguments or "").strip()
+    if raw.startswith("{}{"):
+        candidate = raw[2:].strip()
+        try:
+            json.loads(candidate)
+        except (TypeError, ValueError):
+            return raw
+        return candidate
+    return raw
+
+
 def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
     choice = resp.choices[0]
     message = choice.message
@@ -133,7 +162,7 @@ def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
                 "type": "function",
                 "function": {
                     "name": tool_call.function.name,
-                    "arguments": tool_call.function.arguments,
+                    "arguments": _normalize_tool_arguments(tool_call.function.arguments),
                 },
             })
 
