@@ -203,42 +203,6 @@ Team 模式没解出来的题，patch 同样都能正常 apply，卡点全在测
 
 真正有价值的是 \code{django__django-13590}。\code{temperature=1.0} 的 Team 版当时是目标测试过了、却带了 P2P 回归（见前文失败模式归因），降到 \code{0.2} 之后这次官方评测直接通过了。另外三题没能靠低温救回来。从过程看，\code{0.2} 确实更保守，但并不一定更快——\code{django__django-11019} 反而出现了局部反复加预算耗尽。
 
-\section{Token 使用与费用折算}
-
-GLM-5.2 的官方评测阶段不调用模型，所以这里统计的都是 patch 生成阶段。Z.AI 价格按用户给定口径折算：缓存命中输入为 \textdollar 0.26/百万 tokens，普通输入为 \textdollar 1.4/百万 tokens，输出为 \textdollar 4.4/百万 tokens。多数本地 metrics 只记录总 token，没有稳定拆出输入、缓存命中输入和输出，因此表里给出三种价格情形。它们是同一批 token 的不同计价参照，真实账单取决于调用时的实际 usage split。
-
-第一轮前 100 题的原始生成日志没有保留下逐题 \code{session.used_tokens} 或 provider usage，因此这部分不能补出可信的精确 token。后续空 patch 复跑、Team 运行、temperature=0.2 和 temperature=0.0 实验都留下了 \code{generation.log} 或 metrics 文件，可以精确汇总。就前 100 题本身而言，当前能审计的后续补齐成本是 1,468,989 tokens；第一轮 100 题生成成本缺原始 usage 记录。
-
-\begin{center}
-{\scriptsize
-\begin{longtable}{L{3.5cm} C{1.7cm} rrrr L{3.6cm}}
-\toprule
-批次 & 样本/尝试 & token & 缓存价 & 输入价 & 输出价 & 说明 \\
-\midrule
-\endfirsthead
-\toprule
-批次 & 样本/尝试 & token & 缓存价 & 输入价 & 输出价 & 说明 \\
-\midrule
-\endhead
-前 100 题第一轮 & 100 题 & -- & -- & -- & -- & 原始 usage 未保留 \\
-空 patch 12 步复跑 & 19 次 & 970,009 & \textdollar 0.25 & \textdollar 1.36 & \textdollar 4.27 & 全部有 \code{generation.log} \\
-空 patch 24 步补跑 & 3 次 & 460,794 & \textdollar 0.12 & \textdollar 0.65 & \textdollar 2.03 & 11797、12589、15738 \\
-\code{django__django-14238} 修复补跑 & 1 次 & 38,186 & \textdollar 0.01 & \textdollar 0.05 & \textdollar 0.17 & 镜像修复后通过 \\
-Team 代表 10 题 & 10 次 & 2,620,341 & \textdollar 0.68 & \textdollar 3.67 & \textdollar 11.53 & 单 Agent 未解样本 \\
-Team 剩余 34 题 & 44 次 & 8,660,985 & \textdollar 2.25 & \textdollar 12.13 & \textdollar 38.11 & 34 题含掉盘恢复重试 \\
-temperature=0.2 & 4 次 & 1,163,175 & \textdollar 0.30 & \textdollar 1.63 & \textdollar 5.12 & 4 题低温对照 \\
-temperature=0.0 成功记录 & 22 次 & 6,535,787 & \textdollar 1.70 & \textdollar 9.15 & \textdollar 28.76 & 22 题均有 metrics 行 \\
-temperature=0.0 已知失败尝试 & 1 次 & 504,236 & \textdollar 0.13 & \textdollar 0.71 & \textdollar 2.22 & 第 22 题掉盘前失败尝试 \\
-\midrule
-有文件证据的合计 & -- & 20,953,513 & \textdollar 5.45 & \textdollar 29.33 & \textdollar 92.20 & 不含第一轮 100 题缺失 usage \\
-\bottomrule
-\caption{GLM-5.2 相关实验 token 与美元折算}
-\end{longtable}
-}
-\end{center}
-
-如果只看 Team temperature=1.0 的 44 题补强实验，代表 10 题与剩余 34 题合计为 11,281,326 tokens，按普通输入价约 \textdollar 15.79，按输出价约 \textdollar 49.64。temperature=0.0 的 22 题实验含一次已知失败尝试，共 7,040,023 tokens，按普通输入价约 \textdollar 9.86，按输出价约 \textdollar 30.98。
-
 \section{低温对照实验（temperature=0.0）}
 
 最后一组实验把 Team 模式的温度降到 \code{0.0}，对象是 Team temperature=1.0 仍未解的 22 题。生成阶段 22 题都留下了 metrics，成功记录合计 6,535,787 tokens；第 22 题 \code{django__django-15738} 先经历一次掉盘前失败尝试，已知额外 token 为 504,236，重连后又生成了一个 2,367 字节的非空 patch。
@@ -325,8 +289,6 @@ temperature=0.0 已知失败尝试 & 1 次 & 504,236 & \textdollar 0.13 & \textd
 }
 \end{center}
 
-\noindent 详细产物为 \code{official_eval_21_side/summary_official_eval_prev21.md} 和 \code{official_eval_22_retry_side/summary_official_eval_django15738_retry.md}，本节表格摘录其中的关键字段。
-
 \section{重复句直到预算耗尽的取证}
 
 重新抽取 \code{events.jsonl} 后，可以确认上一轮确实出现了一次非常典型的“同一句判断反复输出，直到预算耗尽”的模式。最核心的个案是 temperature=0.0 的 \code{django__django-15738}。在第 468 到 572 行之间，coder 连续 25 次重复同一个核心判断：\code{The edit was already applied successfully earlier}。其中 16 次还带着同一段解释：\code{The bash/file_read errors are due to a docker socket wrapper issue in this environment}；21 次带着同一个动作计划：\code{Let me verify the file state and run tests using a different approach}。这段之后，事件日志第 575 行记录 coder \code{budget_exceeded}，第 578 行记录 lead \code{budget_exceeded}。同一题后续重启后又在第 842 和 845 行再次触发预算耗尽。
@@ -365,7 +327,7 @@ temperature=0.0 已知失败尝试 & 1 次 & 504,236 & \textdollar 0.13 & \textd
 
 \section{1M token 预算复跑}
 
-前面 temperature=0.0 的 22 题实验里，有 4 题触发 \code{budget_exceeded} 或接近预算边界。为了区分“模型能力不够”和“预算太短导致来不及完成”，我们把这 4 题单独拿出来，把 \code{OPENCOLLAB_BUDGET} 调到 1,000,000，其他关键设置保持 \code{OPENCOLLAB_TEMPERATURE=0.0}、\code{OPENCOLLAB_THINKING=false}。有效 runner 是 \code{run_team_temp00_budget1m_four.py}；早先一次直接调用 workflow 产生的 \code{predictions_budget1m_four.jsonl} 与 \code{metrics_budget1m_four.jsonl} 不用于官方评测。
+前面 temperature=0.0 的实验里，有 4 题触发 \code{budget_exceeded}，我们把这 4 题单独拿出来，把 \code{OPENCOLLAB_BUDGET} 调到 1,000,000
 
 这次 4 题全部生成了非空 patch，官方 SWE-bench 评测通过 1 题、未通过 3 题，没有 patch apply failure。\code{django__django-14017} 在 1M 预算下通过，说明它此前确实存在预算不足或过早停止的影响。\code{django__django-11019}、\code{django__django-15213} 和 \code{django__django-15252} 继续未通过，且失败都来自 F2P 残留；这些样本加预算后仍没解决，说明瓶颈已经更接近语义修复本身。
 
@@ -390,10 +352,6 @@ temperature=0.0 已知失败尝试 & 1 次 & 504,236 & \textdollar 0.13 & \textd
 \end{longtable}
 }
 \end{center}
-
-4 题合计 2,693,318 tokens。由于本地 metrics 仍然没有可靠拆分普通输入、缓存命中输入和输出，费用只能按区间估算：全部按普通输入计价约 \textdollar 3.771，全部按输出计价约 \textdollar 11.851；如果极端地全按缓存命中输入计算，理论下界约 \textdollar 0.700。这里的区间和前文 token 表口径一致，不能直接当成真实账单。
-
-这组复跑还补了一条重要过程证据。有效复跑日志中没有显式 \code{loop_detected} 事件，但 \code{django__django-15213} 的 tester 阶段出现过短暂自然语言重复：同一句以 \code{I have a clear picture of the bug} 开头的判断出现 5 次，同时伴随对 \code{django/db/models/sql/where.py} 的 4 次近邻读取。之后会话恢复了有效工作，并产出非空 patch。这说明自然语言层面的短重复并不一定会被当前 loop detector 捕获，也不一定会导致任务终止；但它确实是值得记录的早期信号。
 
 \section{Loop detect 的全局作用评估}
 
