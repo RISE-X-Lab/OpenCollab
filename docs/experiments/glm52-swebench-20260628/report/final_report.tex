@@ -36,13 +36,13 @@
 
 \title{\textbf{OpenCollab + GLM-5.2}\\SWE-bench Lite 本地评测与 Team 模式实验总结}
 \author{实验整理}
-\date{2026-06-28}
+\date{2026-06-29}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-本报告汇总了 OpenCollab 接入 GLM-5.2 后，在 SWE-bench Lite 前 100 题上的一系列本地实验，并纳入后续 Team 模式、空 patch 复跑、temperature=0.2 与 temperature=0.0 对照实验的官方评测结果。
+本报告汇总了 OpenCollab 接入 GLM-5.2 后，在 SWE-bench Lite 前 100 题上的一系列本地实验，并纳入后续 Team 模式、空 patch 复跑、temperature=0.2、temperature=0.0、1M 预算补测、更新仓库补测与外部方法对照结果。
 \end{abstract}
 
 \section{实验对象与口径}
@@ -352,6 +352,70 @@ Team 模式没解出来的题，patch 同样都能正常 apply，卡点全在测
 \end{longtable}
 }
 \end{center}
+
+\section{更新仓库补测与 \texttt{django\_\_django-15738} 救回}
+
+在上述 1M 预算复跑之后，前 100 题的可审计状态是 83/100。随后我们把剩余未通过题放到更新后的 OpenCollab 仓库上，用 Team 模式、temperature=0.0、thinking 关闭的配置重新生成 patch。更新仓库这轮 17 题中，16 题产出了非空 patch 并进入官方评测，其中 \code{django__django-11742}、\code{django__django-12470} 和 \code{django__django-15202} 通过。它们的共同点是新版运行日志里 tester 更认真地构造了接近隐藏测试的局部验证，生成出的 patch 也正好修掉了旧评测的首个失败信号。因此，这三题更像是 harness 的验证和交互行为帮助模型走对了，而不能简单归为官方评测随机波动。固定 patch 的 SWE-bench 判定本身基本确定，变化来自生成出的 patch 不同。
+
+\code{django__django-15738} 在这轮更新仓库运行里仍然先出现空 patch。第一次记录为 516,691 tokens、41 个 lead steps，日志已经定位到迁移排序和 \code{MigrationOptimizer} 抵消 \code{AddField}/\code{RemoveField} 的机制，但在真正写源码前触发预算停止。随后我们把全局预算上限调到 1,000,000，并单独重跑这一题。第二次运行实际消耗 1,007,995 tokens，lead 在第 58 步把根因交给 coder，coder 成功修改了 \code{django/db/migrations/autodetector.py}，但外置盘在 patch 抽取阶段掉线，导致 runner 的 \code{git add} 失败，产物文件仍显示 \code{error\_rc1} 和 \code{patch\_bytes=0}。
+
+硬盘恢复后，我们重启保留下来的容器 \code{b69d01ae757b}，从容器内抽出了真实源码 diff。该 diff 只包含两处生产代码改动：\code{\_generate\_added\_field()} 增加可选 \code{dependencies} 参数，并在 m2m 与 concrete field 同名转换分支里让 \code{AddField} 依赖同名 \code{RemoveField}。临时复现文件 \code{tests/migrations/test\_repro\_tmp.py} 是未追踪文件，没有放进 prediction。救出的 patch 长度为 1,565 字符，官方 SWE-bench 评测结果为 \code{resolved=true}，F2P 为 2/2，P2P 为 139/139，patch apply 成功。
+
+\begin{center}
+{\small
+\begin{tabular}{L{4.9cm} C{2.1cm} C{2.0cm} L{6.0cm}}
+\toprule
+阶段 & 新增通过 & 累计通过 & 说明 \\
+\midrule
+Team temperature=1.0 后 & -- & 78/100 & 原 Team 模式累计结果 \\
+temperature=0.0 22 题 & +5 & 83/100 & 22 个旧未解样本官方评测通过 5 题 \\
+更新仓库 17 题 & +3 & 86/100 & \code{11742}、\code{12470}、\code{15202} 通过 \\
+\code{django__django-15738} 1M 救回 & +1 & 87/100 & 容器内 diff 救出后官方评测通过 \\
+\bottomrule
+\end{tabular}
+\par\smallskip{\footnotesize 表：后续补测后的前 100 题累计状态}
+}
+\end{center}
+
+这次 \code{django__django-15738} 个案把两个问题分开得很清楚。预算上限确实影响了它：1M 仍然触发 \code{budget\_exceeded}，若追求一份没有预算停止痕迹的干净生成日志，可以临时把这道题升到 2M 再跑。但从评测角度看，1M 运行已经产生了有效源码 patch，真正让 runner 第一时间没有产物的是外置盘掉线导致的 Docker socket 消失和 patch 抽取失败。因此，当前不需要把这题算成模型未完成；在官方评测口径下，它已经补入通过集合。
+
+\section{外部方法在 SWE-bench Lite 上的公开表现}
+
+为了给本地结果找参照，我们从 SWE-bench 官网截至 2026-06-29 可见的 \code{leaderboard-data} JSON 中抽取了 Lite 条目，并结合 SWE-bench Lite 官方页面的说明整理代表性数字。数据源是 SWE-bench 官网首页 \url{https://www.swebench.com/} 和 Lite 页面 \url{https://www.swebench.com/lite.html}。SWE-bench Lite 一共 300 题，官网每个条目的 \code{\% Resolved} 都按 300 题口径计算。本报告的 OpenCollab + GLM-5.2 结果只覆盖 Lite 前 100 题，因此不能直接当作完整 Lite 榜单成绩；它只能说明这 100 个实例上的局部表现。
+
+\begin{center}
+{\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{L{4.8cm} C{1.6cm} C{1.7cm} L{6.1cm}}
+\toprule
+方法 & 日期 & Lite 通过率 & 备注 \\
+\midrule
+\endfirsthead
+\toprule
+方法 & 日期 & Lite 通过率 & 备注 \\
+\midrule
+\endhead
+RAG + ChatGPT 3.5 & 2023-10-10 & 0.33\% & 早期 RAG 基线 \\
+RAG + SWE-Llama 7B & 2023-10-10 & 1.33\% & 早期开权重模型基线 \\
+RAG + Claude 2 & 2023-10-10 & 3.00\% & 早期闭源模型基线 \\
+SWE-agent + GPT-4 (1106) & 2024-04-02 & 18.00\% & 早期 agent 化方法 \\
+Aider + GPT-4o/Claude 3 Opus & 2024-05-23 & 26.33\% & 编辑器式 agent \\
+Agentless + GPT-4o & 2024-06-30 & 27.33\% & 无 agent scaffold 的检索和修复方法 \\
+AutoCodeRover v20240620 + GPT-4o & 2024-06-21 & 30.67\% & 自动定位与修复 agent \\
+OpenHands CodeAct v2.1 + Claude 3.5 Sonnet & 2024-10-25 & 41.67\% & CodeAct/OpenHands 系列 \\
+Agentless-1.5 + Claude 3.5 Sonnet & 2024-12-02 & 40.67\% & Agentless 后续版本 \\
+SWE-agent + Claude 3.7 Sonnet & 2025-02-26 & 48.00\% & SWE-agent 新模型版本 \\
+Refact.ai Agent & 2025-04-25 & 60.00\% & 官网 Lite 榜单头部方法之一 \\
+SWE-agent + Claude 4 Sonnet & 2025-05-26 & 56.67\% & SWE-agent + Claude 4 Sonnet \\
+KGCompass + Claude 4 Sonnet & 2025-09-06 & 58.33\% & 两次以上尝试配置 \\
+ExpeRepair-v1.0 + Claude 4 Sonnet & 2025-06-25 & 60.33\% & 当前抽取表中的最高 Lite 条目 \\
+\bottomrule
+\caption{SWE-bench 官网 Lite 条目的代表性外部方法表现}
+\end{longtable}
+}
+\end{center}
+
+从这些数字看，SWE-bench Lite 的公开成绩大致经历了三个阶段。2023 年的 RAG 基线只有 0--3\% 左右；2024 年上半年，SWE-agent、Agentless、AutoCodeRover、Aider 等方法把成绩推到 18--31\%；到 2024 年底和 2025 年，OpenHands、Agentless-1.5、SWE-agent 新模型、Refact、KGCompass 和 ExpeRepair 等系统把公开 Lite 成绩推到 40--60\% 区间。本地 OpenCollab + GLM-5.2 当前在前 100 题达到 87/100，看起来数值很高，但它只覆盖前 100 个实例，并且经历了多轮重跑、低温重试、更新仓库和人工恢复掉盘后的 patch 救回，口径和官网完整 300 题单次提交不同。后续如果要和公开方法严肃比较，需要在完整 300 题上固定一次实验配置，保留所有 prediction 和官方 report，再按 300 题 \code{\% Resolved} 汇报。
 
 \section{Loop detect 的全局作用评估}
 
