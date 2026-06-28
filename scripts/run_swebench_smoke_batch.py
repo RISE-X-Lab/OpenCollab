@@ -65,7 +65,7 @@ def main() -> int:
             env[key] = str(path)
     env.setdefault("DOCKER_DEFAULT_PLATFORM", "linux/amd64")
     env.setdefault("OPENCOLLAB_DOCKER_TIMEOUT", "900")
-    env.setdefault("OPENCOLLAB_TEMPERATURE", "0")
+    env.setdefault("OPENCOLLAB_TEMPERATURE", "0.2")
     env.setdefault("OPENCOLLAB_THINKING", "false")
     env.setdefault("OPENCOLLAB_LLM_TIMEOUT", "240")
 
