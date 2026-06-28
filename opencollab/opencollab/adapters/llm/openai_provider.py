@@ -31,7 +31,7 @@ def _build_request_kwargs(
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": model,
-        "messages": messages,
+        "messages": _normalize_request_messages(messages),
         "temperature": temperature,
     }
     # Nucleus sampling rides along ONLY when explicitly set; when None the key is
@@ -52,6 +52,23 @@ def _build_request_kwargs(
         extra_body.update(thinking_params)
         kwargs["extra_body"] = extra_body
     return kwargs
+
+
+def _normalize_request_messages(messages: list[dict]) -> list[dict]:
+    """Make message payloads acceptable to stricter OpenAI-compatible gateways."""
+    normalized: list[dict] = []
+    for message in messages:
+        item = {
+            key: value
+            for key, value in message.items()
+            if key in {"role", "content", "tool_calls", "tool_call_id", "name"}
+        }
+        if item.get("content") is None:
+            item["content"] = ""
+        if item.get("role") == "assistant" and item.get("tool_calls") and item.get("content") == "":
+            item["content"] = " "
+        normalized.append(item)
+    return normalized
 
 
 # kimi (DashScope OpenAI-compat) sometimes emits tool calls as literal text in
@@ -121,6 +138,18 @@ def _extract_markup_tool_calls(
     return tool_calls, (cleaned or None)
 
 
+def _normalize_tool_arguments(arguments: str | None) -> str:
+    raw = (arguments or "").strip()
+    if raw.startswith("{}{"):
+        candidate = raw[2:].strip()
+        try:
+            json.loads(candidate)
+        except (TypeError, ValueError):
+            return raw
+        return candidate
+    return raw
+
+
 def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
     choice = resp.choices[0]
     message = choice.message
@@ -133,7 +162,7 @@ def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
                 "type": "function",
                 "function": {
                     "name": tool_call.function.name,
-                    "arguments": tool_call.function.arguments,
+                    "arguments": _normalize_tool_arguments(tool_call.function.arguments),
                 },
             })
 
@@ -194,8 +223,11 @@ def _parse_usage(resp: Any, request_messages: list[dict], message: Any) -> Usage
     would double-count. The additive cache fix applies only to Anthropic.
     """
     usage = getattr(resp, "usage", None)
-    input_tokens = getattr(usage, "prompt_tokens", 0) or 0 if usage else 0
-    output_tokens = getattr(usage, "completion_tokens", 0) or 0 if usage else 0
+    raw_usage = _usage_to_dict(usage)
+    input_tokens = _usage_int(raw_usage, "prompt_tokens")
+    output_tokens = _usage_int(raw_usage, "completion_tokens")
+    prompt_details = raw_usage.get("prompt_tokens_details") or {}
+    cached_tokens = _usage_int(prompt_details, "cached_tokens")
 
     estimated = False
     if input_tokens <= 0:
@@ -208,8 +240,53 @@ def _parse_usage(resp: Any, request_messages: list[dict], message: Any) -> Usage
     return Usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
+        cache_read_tokens=cached_tokens,
         estimated=estimated,
+        raw_usage=raw_usage,
     )
+
+
+def _usage_int(source: Any, key: str) -> int:
+    if not isinstance(source, dict):
+        return 0
+    value = source.get(key)
+    if value in (None, ""):
+        return 0
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _usage_to_dict(value: Any) -> dict[str, Any]:
+    plain = _usage_to_plain(value)
+    return plain if isinstance(plain, dict) else {}
+
+
+def _usage_to_plain(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _usage_to_plain(v) for k, v in value.items() if v is not None}
+    if isinstance(value, (list, tuple)):
+        return [_usage_to_plain(v) for v in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return _usage_to_plain(value.model_dump(exclude_none=True))
+        except TypeError:
+            return _usage_to_plain(value.model_dump())
+    if hasattr(value, "dict"):
+        try:
+            return _usage_to_plain(value.dict(exclude_none=True))
+        except TypeError:
+            return _usage_to_plain(value.dict())
+    if hasattr(value, "__dict__"):
+        return {
+            str(k): _usage_to_plain(v)
+            for k, v in vars(value).items()
+            if not k.startswith("_") and v is not None
+        }
+    return str(value)
 
 
 def _estimate_output_tokens(message: Any) -> int:

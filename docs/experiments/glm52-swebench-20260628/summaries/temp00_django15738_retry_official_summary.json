@@ -1,0 +1,26 @@
+{
+  "total_reports": 1,
+  "resolved": 0,
+  "unresolved": 1,
+  "patch_apply_failures": [],
+  "rows": [
+    {
+      "instance_id": "django__django-15738",
+      "model_name_or_path": "opencollab-team-glm52-temp00-django15738-retry-20260628",
+      "prediction_file": "eval_work/team_temp00_unresolved22_glm52_20260627/official_eval_22_retry_side/predictions_22_retry_raw.jsonl",
+      "patch_chars": 2367,
+      "patch_successfully_applied": true,
+      "resolved": false,
+      "f2p_success_count": 0,
+      "f2p_failure_count": 2,
+      "p2p_success_count": 139,
+      "p2p_failure_count": 0,
+      "f2p_failures": [
+        "test_alter_unique_together_fk_to_m2m (migrations.test_autodetector.AutodetectorTests)",
+        "#23938 - Changing a ManyToManyField into a concrete field"
+      ],
+      "p2p_failures": [],
+      "report_path": "eval_work/team_temp00_unresolved22_glm52_20260627/official_eval_22_retry_side/official_eval/logs/run_evaluation/django15738_retry_official/opencollab-team-glm52-temp00-django15738-retry-20260628/django__django-15738/report.json"
+    }
+  ]
+}

@@ -301,11 +301,23 @@ class DockerEnvironment(Environment):
         import base64
         encoded = base64.b64encode(content.encode()).decode()
         quoted_path = shlex.quote(path)
-        await self.exec_cmd(
+        result = await self.exec_cmd(
             f"base64 -d > {quoted_path} <<'__OPENCOLLAB_B64__'\n"
             f"{encoded}\n"
             "__OPENCOLLAB_B64__"
         )
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout).strip()
+            raise OSError(
+                f"docker write failed for {path} "
+                f"(exit {result.returncode}): {detail}"
+            )
+        written = await self.read_file(path)
+        if written != content:
+            raise OSError(
+                f"docker write verification failed for {path}: "
+                f"expected {len(content)} chars, read back {len(written)} chars"
+            )
 
     async def cleanup(self) -> None:
         if self._attached:

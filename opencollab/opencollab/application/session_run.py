@@ -1266,7 +1266,24 @@ class SessionRunUseCase:
                 "finish_reason": response.finish_reason,
                 "content": response.content,
                 "tool_calls": tool_calls_log,
+                "usage": {
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": response.usage.output_tokens,
+                    "total_tokens": response.usage.total_tokens,
+                    "cache_read_tokens": getattr(response.usage, "cache_read_tokens", 0),
+                    "cache_creation_tokens": getattr(response.usage, "cache_creation_tokens", 0),
+                    "uncached_input_tokens": max(
+                        response.usage.input_tokens
+                        - getattr(response.usage, "cache_read_tokens", 0)
+                        - getattr(response.usage, "cache_creation_tokens", 0),
+                        0,
+                    ),
+                    "estimated": response.usage.estimated,
+                },
             }
+            raw_usage = getattr(response.usage, "raw_usage", None)
+            if raw_usage:
+                payload["usage"]["raw_usage"] = raw_usage
             # Record provider chain-of-thought to the trajectory when present
             # (omitted otherwise, so non-thinking traces keep their prior shape).
             reasoning = getattr(response, "reasoning", None)
