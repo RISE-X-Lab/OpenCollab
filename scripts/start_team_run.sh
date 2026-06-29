@@ -188,6 +188,8 @@ PY
     [ -n "$session_root" ] || session_root="$REPO_ROOT/.opencollab/swebench/$iid"
     mkdir -p "$session_root"
     session_root="$(readlink -f "$session_root")"
+    rm -f "$session_root/events.jsonl" "$session_root/loop_monitor.json"
+    rm -rf "$session_root/loop_monitor_artifacts"
 
     local task_file
     task_file="$(mktemp -t oc_task.XXXXXX)"
@@ -272,6 +274,7 @@ PY
         -e PYTHONDONTWRITEBYTECODE=1
         -e OPENCOLLAB_TEAM_FILE="$team_file"
         -e OPENCOLLAB_CONFIG_FILE="$DEFAULT_ENV_FILE"
+        -e OPENCOLLAB_EVENTS_FILE="/testbed/.opencollab/events.jsonl"
         -e TERM="${TERM:-xterm-256color}"
     )
     # Allow secret-bearing runtime config to be supplied by the caller's
@@ -395,6 +398,18 @@ PY
     else
         echo ""
         echo "WARNING: empty patch (team made no tracked changes)"
+    fi
+
+    local monitor_file="$session_root/loop_monitor.json"
+    if "$py_bin" "$REPO_ROOT/scripts/swebench_loop_monitor.py" \
+        --instance-id "$iid" \
+        --session-root "$session_root" \
+        --events-file "$session_root/events.jsonl" \
+        --diff-file "$patch_file" \
+        --output "$monitor_file"; then
+        echo "Loop monitor: $monitor_file"
+    else
+        echo "warn: loop monitor failed for $iid" >&2
     fi
 
     cleanup

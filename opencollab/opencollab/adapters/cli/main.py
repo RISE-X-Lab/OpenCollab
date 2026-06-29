@@ -208,6 +208,8 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
         TuiEventSink,
         TuiPermissionPolicy,
     )
+    from opencollab.adapters.event_log import JsonlEventSink
+    from opencollab.application.event_bus import EventBus
     from opencollab.bootstrap import build_runtime_context, build_scheduler
 
     tui = TUI(console, filter_messages=cfg["filter_messages"])
@@ -225,9 +227,16 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
         permission_policy = TuiPermissionPolicy(render=tui, read_line=_read_line)
     ask_policy = TuiAskUserPolicy(render=tui, read_line=_read_line)
 
+    event_sink = TuiEventSink(tui)
+    events_file = os.environ.get("OPENCOLLAB_EVENTS_FILE")
+    if events_file:
+        bus = EventBus(event_sink)
+        bus.subscribe(JsonlEventSink(events_file))
+        event_sink = bus
+
     ctx = build_runtime_context(
         workspace, cfg, trace=trace,
-        event_sink=TuiEventSink(tui),
+        event_sink=event_sink,
         permission_policy=permission_policy,
         ask_policy=ask_policy,
         run_id_prefix="scheduler-",
