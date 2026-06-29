@@ -35,8 +35,6 @@ roles:
       You are a Coder agent. 
 
   reviewer:
-    # A reviewer benefits from determinism; pin its temperature to 0.0.
-    temperature: 0.0
     tools: [bash, file_read, run_tests, git_diff, grep]
     prompt: |
       You are a Reviewer agent.
@@ -55,4 +53,3 @@ topology:
 #   run_tests: { max_traceback_chars: 6000 }
 #   file_read: { max_read_chars: 30000 }
 #   grep: { max_grep_chars: 10000 }
-

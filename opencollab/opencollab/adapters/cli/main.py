@@ -92,7 +92,7 @@ def main_callback(
     api_key: Optional[str] = typer.Option(None, "--api-key", help="API key (default from config)"),
     base_url: Optional[str] = typer.Option(None, "--base-url", help="API base URL (default from config)"),
     workspace: str = typer.Option(".", "--workspace", "-w", help="Working directory"),
-    budget: Optional[int] = typer.Option(None, "--budget", help="Max token budget (default from config or 500000)"),
+    budget: Optional[int] = typer.Option(None, "--budget", help="Max token budget (default from config or 1000000)"),
     session_file: Optional[str] = typer.Option(
         None, "--session", "-s", help="Resume from a saved agent JSON (or legacy JSONL)"
     ),
@@ -115,7 +115,7 @@ def main_callback(
 
     # Agent 0 can spawn, so default to the higher budget.
     if budget is None:
-        cfg["budget"] = max(cfg["budget"], 500_000)
+        cfg["budget"] = max(cfg["budget"], 1_000_000)
     asyncio.run(_run(workspace=workspace, cfg=cfg, session_file=session_file,
                      trace=trace, yolo=yolo, use_worktrees=not no_worktrees,
                      one_shot_prompt=one_shot))
@@ -208,6 +208,8 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
         TuiEventSink,
         TuiPermissionPolicy,
     )
+    from opencollab.adapters.event_log import JsonlEventSink
+    from opencollab.application.event_bus import EventBus
     from opencollab.bootstrap import build_runtime_context, build_scheduler
 
     tui = TUI(console, filter_messages=cfg["filter_messages"])
@@ -225,9 +227,16 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
         permission_policy = TuiPermissionPolicy(render=tui, read_line=_read_line)
     ask_policy = TuiAskUserPolicy(render=tui, read_line=_read_line)
 
+    event_sink = TuiEventSink(tui)
+    events_file = os.environ.get("OPENCOLLAB_EVENTS_FILE")
+    if events_file:
+        bus = EventBus(event_sink)
+        bus.subscribe(JsonlEventSink(events_file))
+        event_sink = bus
+
     ctx = build_runtime_context(
         workspace, cfg, trace=trace,
-        event_sink=TuiEventSink(tui),
+        event_sink=event_sink,
         permission_policy=permission_policy,
         ask_policy=ask_policy,
         run_id_prefix="scheduler-",

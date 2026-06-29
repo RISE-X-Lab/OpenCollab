@@ -6,6 +6,9 @@
 \usepackage{tabularx}
 \usepackage{array}
 \usepackage{ragged2e}
+\usepackage{float}
+\usepackage[section]{placeins}
+\usepackage{flafter}
 \usepackage{xcolor}
 \PassOptionsToPackage{obeyspaces}{url}
 \usepackage{xurl}
@@ -26,6 +29,8 @@
 \setlength{\parskip}{0.45em}
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.18}
+\floatplacement{table}{H}
+\floatplacement{figure}{H}
 \tolerance=1200
 \emergencystretch=2em
 
@@ -36,13 +41,13 @@
 
 \title{\textbf{OpenCollab + GLM-5.2}\\SWE-bench Lite 本地评测与 Team 模式实验总结}
 \author{实验整理}
-\date{2026-06-28}
+\date{2026-06-29}
 
 \begin{document}
 \maketitle
 
 \begin{abstract}
-本报告汇总了 OpenCollab 接入 GLM-5.2 后，在 SWE-bench Lite 前 100 题上的一系列本地实验，并纳入后续 Team 模式、空 patch 复跑、temperature=0.2 与 temperature=0.0 对照实验的官方评测结果。
+本报告汇总了 OpenCollab 接入 GLM-5.2 后，在 SWE-bench Lite 前 100 题上的一系列本地实验，并纳入后续 Team 模式、空 patch 复跑、temperature=0.2、temperature=0.0、1M 预算补测、更新仓库补测、四题过题原因复盘与外部方法对照结果。
 \end{abstract}
 
 \section{实验对象与口径}
@@ -50,9 +55,9 @@
 实验对象是 SWE-bench Lite 的前 100 个实例。patch 全部由本地 OpenCollab 仓库配合 GLM-5.2 生成，没有用任何线上服务。是否通过一律以 SWE-bench harness 给出的 \code{report.json} 为准，标准就是 \code{resolved=true}。
 \section{单 Agent 前 100 题结果}
 
-第一轮跑下来，100 题里有 81 题给出了非空 patch，官方评测过了 50 题、挂了 31 题。剩下 19 题最终 patch 为空。这 19 题我们没有直接放弃，而是做了监测复跑、24 步复查，并修好了 \code{django__django-14238} 这道题损坏的镜像，之后它们全部拿到了官方判定，通过 6 题、未通过 13 题。两部分合起来，前 100 题目前可审计的状态是 56 通过、44 未通过。
+单 Agent 前 100 题最终可审计结果为 56/100。初始非空 patch 组共有 81 题，官方评测通过 50 题、未通过 31 题；初始空 patch 组共有 19 题，经补充评测后通过 6 题、未通过 13 题。两组合并后，单 Agent 在前 100 题上的最终状态是 56 通过、44 未通过。
 
-\begin{table}[h]
+\begin{table}[H]
 \centering
 \begin{tabular}{lrrrr}
 \toprule
@@ -67,13 +72,13 @@
 \caption{单 Agent 前 100 题当前官方判定}
 \end{table}
 
-值得一提的是，那 31 道非空但未通过的题，patch 本身都能干净地 apply，问题出在目标测试还是不过、或者改出了回归。后来补齐的 19 道空 patch 题也都顺利进了官方评测。这两点放在一起其实说明，patch 的格式或应用已经退居次要位置，往后更该关注模型的编辑策略、写入是否可靠、步数怎么控制，以及镜像本身健不健康。
+值得一提的是，31 道非空但未通过的题里，patch 本身都能干净地 apply，失败来自目标测试仍未完全通过或少量 P2P 回归。初始空 patch 组在补充评测后也形成了完整官方判定。这个结果说明，前 100 题的主要瓶颈已经从 patch 格式转向语义修复质量、编辑策略和步数控制。
 
 \section{空 patch 研究}
 
-按旧记录，这 19 个空 patch 大致能分成三类。一类是改过但最终 diff 为空，一类是改到一半卡住或自己撤回，还有一类从头到尾压根没写入过有效内容。它们麻烦的地方都一样——最终 patch 字符串是空的，光看产物根本没法判断中间到底发生了什么。为此我们在复跑里加了更细的埋点，把每次文件写入的结果、最终 diff、循环检测、工具报错和 Docker 镜像状态都记了下来。
+按旧记录，这 19 个空 patch 大致能分成三类。一类是曾有编辑动作但最终 diff 归零，一类是在编辑过程中停滞或撤回，还有一类从头到尾没有形成有效写入。它们的共同困难是最终 patch 字符串为空，单看结果无法区分模型未行动、行动后撤回、步数不足，还是工具状态中断。为此，后续分析把文件写入结果、最终 diff、循环检测和工具错误信号作为判别依据。
 
-\begin{table}[h]
+\begin{table}[H]
 \centering
 \begin{tabular}{lrr}
 \toprule
@@ -87,13 +92,13 @@
 \caption{初始空 patch 的旧分类与复跑结果}
 \end{table}
 
-最有意思的证据来自 12 步复跑后仍然异常的那 4 个样本。\code{django__django-11797} 和 \code{django__django-15738} 只是 12 步之内没来得及真正落笔。\code{django__django-12589} 反复读同一个大文件，触发了 loop detector，卡在动手改之前。\code{django__django-14238} 竟然是镜像坏了。
+12 步复查后仍异常的样本提供了关键证据。\code{django__django-11797} 和 \code{django__django-15738} 更像是步数不足：会话已经接近定位根因，但还没有进入有效编辑。\code{django__django-12589} 反复读取同一大文件并触发 loop detector，说明部分空 patch 来自定位阶段原地打转。\code{django__django-14238} 则属于环境无效样本，经排除后纳入后续有效评测。
 
-复查的结论很清楚，步数上限太短，会把那些“想明白了但还没动手”的会话硬生生截成空 patch。把上限放宽到 24 步后，\code{django__django-11797}、\code{django__django-12589} 和 \code{django__django-15738} 都给出了非空 patch，尽管官方评测仍然没过。\code{django__django-14238} 在镜像修好之后生成了一个 651 字符的 patch，并顺利通过。这个个案的教训很直接，镜像健康检查必须放在调用模型之前，坏镜像导致的失败不该算到模型头上。
+复查结论很清楚：步数上限过短会把“已经接近根因但尚未编辑”的会话截成空 patch。把上限放宽到 24 步后，\code{django__django-11797}、\code{django__django-12589} 和 \code{django__django-15738} 都形成了非空 patch，尽管官方评测仍未通过。因此，空 patch 不应被简单解释成模型完全没有能力；它至少混合了步数预算、定位停滞、写入可靠性和少量环境有效性问题。
 
 \section{Team 模式结果}
 
-\begin{table}[h]
+\begin{table}[H]
 \centering
 \begin{tabular}{lrr}
 \toprule
@@ -176,7 +181,7 @@ Team 模式没解出来的题，patch 同样都能正常 apply，卡点全在测
 
 \section{重复行为与温度设置}
 
-\path{run_team_selected_batch.py} 和三份 recovery runner 里都写着 \code{OPENCOLLAB_TEMPERATURE=1.0}，构造 \code{SpawnConfig} 时也是 \code{temperature=cfg.get("temperature", 1.0)}。空 patch 复跑那三份 \code{env_snapshot.json} 同样记着 \code{args.temperature=1.0} 和 \code{OPENCOLLAB_TEMPERATURE=1.0}。另外，\code{OPENCOLLAB_THINKING=false} 也一并写进了环境。
+实验配置记录显示，早期 Team 运行使用 \code{temperature=1.0}，并关闭 thinking。这个设置沿用了仓库里为避免低温重复而设置的默认覆盖逻辑，也构成后续 \code{temperature=0.2} 和 \code{temperature=0.0} 对照实验的基线。
 
 我们对 \code{sessions/*/agent_*.json} 做了去空白后的精确比对，凡是长度超过 80 字符的 assistant 输出，没有一条是完全重复的。Kimi 旧日志里那些 \code{PROSE-STOP}、\code{unknown_tool}、\code{loop_blocked} 信号，这次也一个没见到。
 
@@ -184,9 +189,9 @@ Team 模式没解出来的题，patch 同样都能正常 apply，卡点全在测
 
 \section{低温对照实验（temperature=0.2）}
 
-前面的运行都用 \code{temperature=1.0}。为了看看降温能不能把那些"思路对、实现差一口气"的题救回来，随机挑了四道题做试验。
+前面的运行都用 \code{temperature=1.0}。为了观察降温能否提升那些"思路对、实现差一口气"样本的通过率，随机挑了四道题做试验。
 
-\begin{table}[h]
+\begin{table}[H]
 \centering
 \begin{tabular}{L{4.6cm} C{1.8cm} L{6.4cm}}
 \toprule
@@ -201,13 +206,13 @@ Team 模式没解出来的题，patch 同样都能正常 apply，卡点全在测
 \caption{低温 temperature=0.2 前 4 题官方评测}
 \end{table}
 
-真正有价值的是 \code{django__django-13590}。\code{temperature=1.0} 的 Team 版当时是目标测试过了、却带了 P2P 回归（见前文失败模式归因），降到 \code{0.2} 之后这次官方评测直接通过了。另外三题没能靠低温救回来。从过程看，\code{0.2} 确实更保守，但并不一定更快——\code{django__django-11019} 反而出现了局部反复加预算耗尽。
+真正有价值的是 \code{django__django-13590}。\code{temperature=1.0} 的 Team 版当时是目标测试过了、却带了 P2P 回归（见前文失败模式归因），降到 \code{0.2} 之后这次官方评测直接通过了。另外三题未因低温获得提升。从过程看，\code{0.2} 确实更保守，但并不一定更快——\code{django__django-11019} 反而出现了局部反复加预算耗尽。
 
 \section{低温对照实验（temperature=0.0）}
 
-最后一组实验把 Team 模式的温度降到 \code{0.0}，对象是 Team temperature=1.0 仍未解的 22 题。生成阶段 22 题都留下了 metrics，成功记录合计 6,535,787 tokens；第 22 题 \code{django__django-15738} 先经历一次掉盘前失败尝试，已知额外 token 为 504,236，重连后又生成了一个 2,367 字节的非空 patch。
+最后一组实验把 Team 模式的温度降到 \code{0.0}，对象是 Team temperature=1.0 仍未解的 22 题。生成阶段 22 题都留下了 metrics，成功记录合计 6,535,787 tokens。
 
-过程监测显示，22 题里有 14 题没有明显重复信号，4 题出现 \code{budget_exceeded}，4 题出现 \code{loop_detected} 或局部重复工具调用。第 22 题最值得注意：它最终生成了非空 patch，但 patch 只新增了 \code{repro.py}，没有修改 Django 源码。随后对这 22 个 patch 全部跑了 SWE-bench official eval，patch 全部能 apply。前 21 题补评通过 5 题、未通过 16 题；第 22 题 \code{django__django-15738} 也未通过。因此 temperature=0.0 这组最终官方成绩为 5/22。中途 \code{django__django-14155} 第一次评测因为 \code{raw.githubusercontent.com} 的 SSL EOF 下载错误失败，单题重跑后拿到有效官方判定。
+过程监测显示，22 题里有 14 题没有明显重复信号，4 题出现 \code{budget_exceeded}，4 题出现 \code{loop_detected} 或局部重复工具调用。所有 patch 都能 apply，官方评测最终通过 5 题、未通过 17 题，主要失败仍来自 F2P 残留。这个结果说明，\code{temperature=0.0} 能带来更强确定性，但也更容易放大局部重复和预算耗尽风险。
 
 \begin{center}
 {\scriptsize
@@ -291,7 +296,7 @@ Team 模式没解出来的题，patch 同样都能正常 apply，卡点全在测
 
 \section{重复句直到预算耗尽的取证}
 
-重新抽取 \code{events.jsonl} 后，可以确认上一轮确实出现了一次非常典型的“同一句判断反复输出，直到预算耗尽”的模式。最核心的个案是 temperature=0.0 的 \code{django__django-15738}。在第 468 到 572 行之间，coder 连续 25 次重复同一个核心判断：\code{The edit was already applied successfully earlier}。其中 16 次还带着同一段解释：\code{The bash/file_read errors are due to a docker socket wrapper issue in this environment}；21 次带着同一个动作计划：\code{Let me verify the file state and run tests using a different approach}。这段之后，事件日志第 575 行记录 coder \code{budget_exceeded}，第 578 行记录 lead \code{budget_exceeded}。同一题后续重启后又在第 842 和 845 行再次触发预算耗尽。
+事件日志确认，temperature=0.0 实验中确实出现过“同一句判断反复输出，直到预算耗尽”的模式。最核心的个案是 \code{django__django-15738}：coder 连续 25 次重复“编辑已经成功应用”的核心判断，16 次重复把工具失败解释为环境问题，21 次重复表示要换一种方式验证。随后同一会话触发 coder 与 lead 的 \code{budget_exceeded}。这个样本说明，低温下的重复可能表现为稳定判断被反复确认，也可能表现为自然语言整段复读。
 
 这个模式的关键不在于模型完全不知道自己在重复。它每次都认为“编辑已经成功，工具报错只是环境问题，所以再换一种方式验证”。问题是，每一次“换一种方式”实际仍然回到同一个验证动作附近，loop detector 也连续报出 \code{bash} 重复，计数从 3 增到 18。也就是说，这里出现的是\textbf{自我确认被工具失败放大}：模型把一次 \code{str_replace} 的成功信号当作锚点，随后把所有读文件和跑测试失败都解释成环境噪声，于是不断尝试证明同一个结论，最后耗光预算。
 
@@ -306,28 +311,22 @@ Team 模式没解出来的题，patch 同样都能正常 apply，卡点全在测
 实例 & 温度 & 重复证据 & 后果 \\
 \midrule
 \endhead
-\code{django__django-15738} & 0.0 & edit-applied 核心句 25 次；docker-wrapper 解释 16 次；different-approach 计划 21 次；事件日志 468--572；\code{bash} loop count 3--18。 & 第 575/578 行预算耗尽；重启后 842/845 行再次预算耗尽。已知失败尝试 504,236 tokens，重试 504,114 tokens。最终 patch 非空，但只带出 \code{repro.py}，官方评测未通过。 \\
+\code{django__django-15738} & 0.0 & edit-applied 核心句 25 次；工具失败解释 16 次；different-approach 计划 21 次；\code{bash} loop count 3--18。 & 重复判断与工具 loop 同时上升，最终触发预算耗尽；该轮 patch 未修改生产代码，官方评测未通过。 \\
 \code{django__django-13590} & 0.0 & list/tuple 句 17 次；handle-both 句 10 次；upstream-fix 句 10 次；stop-looping 自觉 3 次。 & 触发 9 条 loop detector，但没有预算耗尽；最终跳出循环并生成 patch。这个样本说明 loop detector 能发现问题，却没有强制改写策略。 \\
-\code{django__django-11019} & 0.0 & Docker connectivity 说法 3 次；retry 说法 6 次。 & 多个 agent 相继预算耗尽，第 175/267/270/418/455 行出现 \code{budget_exceeded}。这里以 Docker/路径失败引发的反复重试为主，纯文本复读成分较少。 \\
+\code{django__django-11019} & 0.0 & 工具访问失败说法 3 次；retry 说法 6 次。 & 多个 agent 相继预算耗尽。这里以工具访问失败引发的反复重试为主，纯文本复读成分较少。 \\
 \bottomrule
 \caption{temperature=0.0 中与重复输出和预算耗尽相关的主要证据}
 \end{longtable}
 }
 \end{center}
 
-这三个样本合在一起说明，temperature=0.0 确实更容易让 agent 固着在一个确定性解释上。它不一定表现为旧 Kimi 那种一整段自然语言无意义复述；更多时候是“同一个判断句 + 同一种工具尝试”循环出现。15738 是最严重版本，重复句、loop detector 和预算耗尽三者完全重合。13590 是中间状态，模型已经意识到自己在循环，但 loop detector 只记录信号，没有把它强制切换成新的行动策略。11019 则提醒我们，外部 Docker 或文件访问错误也会诱发相似的重试行为，不能把所有重复都归为模型语义能力问题。
+这三个样本合在一起说明，temperature=0.0 确实更容易让 agent 固着在一个确定性解释上。它不一定表现为旧 Kimi 那种一整段自然语言无意义复述；更多时候是“同一个判断句 + 同一种工具尝试”循环出现。15738 是最严重版本，重复句、loop detector 和预算耗尽三者完全重合。13590 是中间状态，模型已经意识到自己在循环，但 loop detector 只记录信号，没有把它强制切换成新的行动策略。11019 则提醒我们，工具访问失败也会诱发相似的重试行为，不能把所有重复都归为模型语义能力问题。
 
-对 harness 来说，单纯记录 \code{loop_detected} 还不够。更合适的处理是：当同一 agent 在短窗口内重复同一自然语言判断超过 3 次，同时工具 loop count 继续上升，就应该强制进入“停止验证、保存当前 diff、换角色复核”的分支。若重复句里含有“edit was already applied”“environment issue”“retry”等关键词，还应该把最近一次成功写入、最近一次 \code{git diff}、最近三次工具错误和当前 patch 一并保存。这样可以避免 15738 这种情况继续烧 token，也能保留足够证据判断到底是工具层故障、模型误判，还是 patch 提取出了问题。
-
-\section{对 OpenCollab 运行策略的建议}
-
-写入工具得留下更完整的审计痕迹。每次写入之后，把写前 hash、写后 hash、文件大小变化、\code{git diff --stat} 和写入时的 stderr 都存下来。一旦出现“中途明明写成功了、最终 patch 却是空的”这种情况，系统应该自动把工作区 diff、staged diff、最后几条模型消息和工具调用摘要一并保存。有了这些，下回就不用靠人去翻几千行日志，才能分清到底是模型自己撤回、工具失败，还是最后提取环节出了问题。
-
-评测侧还有一个小坑。\code{run_swebench_eval_per_instance.py} 现在只把 timeout 传给了 SWE-bench harness，外层的 \code{subprocess.run()} 自己却没有 timeout。建议给外层补一个 watchdog，免得 harness 在资源清理阶段悄无声息地干等下去。
+对 harness 来说，单纯记录 \code{loop_detected} 还不够。更合适的处理是：当同一 agent 在短窗口内重复同一自然语言判断超过 3 次，同时工具 loop count 继续上升，就强制进入“停止验证、保存当前 diff、换角色复核”的分支。若重复句里含有“edit was already applied”“environment issue”“retry”等关键词，还应保存最近一次成功写入、当前 diff、最近三次工具错误和当前 patch。这样可以减少 15738 这种预算消耗，同时保留足够证据判断到底是工具层故障、模型误判，还是 patch 提取出了问题。
 
 \section{1M token 预算复跑}
 
-前面 temperature=0.0 的实验里，有 4 题触发 \code{budget_exceeded}，我们把这 4 题单独拿出来，把 \code{OPENCOLLAB_BUDGET} 调到 1,000,000
+前面 temperature=0.0 的实验里，有 4 题触发 \code{budget_exceeded}。因此，我们对这 4 个预算耗尽样本设置 1M token 上限进行复测。
 
 这次 4 题全部生成了非空 patch，官方 SWE-bench 评测通过 1 题、未通过 3 题，没有 patch apply failure。\code{django__django-14017} 在 1M 预算下通过，说明它此前确实存在预算不足或过早停止的影响。\code{django__django-11019}、\code{django__django-15213} 和 \code{django__django-15252} 继续未通过，且失败都来自 F2P 残留；这些样本加预算后仍没解决，说明瓶颈已经更接近语义修复本身。
 
@@ -349,6 +348,307 @@ Team 模式没解出来的题，patch 同样都能正常 apply，卡点全在测
 \code{django__django-15252} & 531,489 & 915 & 477 & 未过 & 2/0 & TEST MIGRATE=False schema behavior \\
 \bottomrule
 \caption{temperature=0.0、1M 预算四题复跑}
+\end{longtable}
+}
+\end{center}
+
+\section{更新仓库补测结果}
+
+在上述 1M 预算复跑之后，前 100 题的可审计状态是 83/100。随后，我们在更新后的 OpenCollab 仓库上，用 Team 模式、temperature=0.0、thinking 关闭的配置，对剩余 17 个未通过样本重新生成 patch 并进行官方评测。最终 4 题通过、13 题仍未通过，前 100 题累计结果提升到 87/100。相比之前的旧版本，新增通过样本是 \code{django__django-11742}、\code{django__django-12470}、\code{django__django-15202} 和 \code{django__django-15738}。
+
+这四题的共同点是，新 patch 都能 apply，且官方评测中 F2P/P2P 均清零。与旧失败 patch 对比后可以看到，新增通过不能归因于官方评测随机波动，核心变化在于生成出的 patch 发生了实质变化：新版运行更频繁地构造接近隐藏测试的局部验证，coder/tester 对 lead 方案的纠偏也更充分。\code{django__django-15738} 的通过 patch 只包含 \code{django/db/migrations/autodetector.py} 的生产代码改动，关键是让 \code{AddField} 在 m2m/concrete 同名替换分支里依赖同名 \code{RemoveField}，从而满足迁移操作顺序断言。
+
+\section{四题从未过到通过的原因分析}
+
+这一轮需要单独回答的问题是：\code{django__django-11742}、\code{django__django-12470}、\code{django__django-15202} 和 \code{django__django-15738} 为什么现在可以通过，而旧仓库运行时没有通过。先看官方评测口径本身：旧候选和新候选的 patch 都能 apply；旧候选失败都来自 FAIL\_TO\_PASS 残留，新候选全部变成 F2P/P2P 双零。因此，差异不能由官方评测随机翻转解释，主要来自新旧运行实际生成了不同 patch，或者旧运行虽然找到方向但没有把正确 diff 保存出来。
+
+更关键的是，这里要判断的是 Harness 本身变厚以后有没有把模型从“会想但做不准”推到“能生成可过 patch”。从 git 历史看，新实验前上游合入了一组会直接改变 agent 行为的改动：per-call budget 与 steering budget、prompt 去重和压紧、\code{enforcement\_strength} 程序、角色工具白名单、证据型角色突破报告长度限制、recon 发现传递给 coder、identifier 使用前验证，以及按角色持久化运行轨迹。这些改动会改变 lead 给 coder/tester 的任务粒度、证据传递、验证强度和跑偏时的约束。与此同时，四题补测也混有温度从 1.0 到 0.0 的变化，以及更宽的预算设置。因此，本节只能做基于日志的归因强弱判断，不能把一次 A/B 外观差异直接当成严格因果实验。
+
+\begin{center}
+{\scriptsize
+\setlength{\tabcolsep}{2pt}
+\begin{longtable}{L{3.0cm} C{1.2cm} C{1.2cm} L{3.7cm} L{4.5cm}}
+\toprule
+实例 & 旧 F2P 失败 & 新 F2P 失败 & 旧 patch 问题 & 新通过原因 \\
+\midrule
+\endfirsthead
+\toprule
+实例 & 旧 F2P 失败 & 新 F2P 失败 & 旧 patch 问题 & 新通过原因 \\
+\midrule
+\endhead
+\code{django__django-11742} & 2 & 0 & 另起 \code{\_check\_choices\_max\_length()}，消息模板不符合隐藏测试，并且 named group 行为仍不对。 & 新 patch 把 E009 检查放进 \code{\_check\_choices()} 结构校验成功分支，使用 \code{flatchoices} 和官方消息模板；tester 明确复核 named group、边界相等和 6 字符错误消息。 \\
+\code{django__django-12470} & 1 & 0 & 旧 patch 只把递归参数从 \code{order} 改成 \code{default\_order}，仍未解决 inherited \code{-pk} shortcut 的根因。 & 新 patch 采用更接近上游的 guard：当字段名就是 \code{pk} 或 attname 时不递归到相关模型 ordering；coder 曾反驳 lead 的旧方向，并用 \code{queries} 回归验证说明旧方向会伤到 FK ordering。 \\
+\code{django__django-15202} & 2 & 0 & 旧 patch 已处理 \code{urlsplit()} 的 \code{ValueError}，但 \code{hostname is None} 时选择跳过长度检查，漏掉隐藏测试里的空 hostname。 & 新 patch 把 \code{hostname is None} 也判作非法 URL；tester 直接读取并运行 \code{test\_urlfield\_clean\_invalid} 和 \code{test\_urlfield\_clean\_not\_required}，还专门构造空 hostname 对抗样本。 \\
+\code{django__django-15738} & 1 & 0 & 旧版 Team/Harness 未触发预算上限，patch 能 apply，但只在 \code{\_generate\_added\_field()} 内泛化追加依赖，还带入 \code{repro.py}，官方 \code{\#23938} 仍失败。 & 当前 patch 只改 \code{autodetector.py}，让调用点传入依赖，并仅在 m2m/concrete 同名替换分支令 AddField 依赖同名 RemoveField，满足操作顺序断言。 \\
+\bottomrule
+\caption{四题新旧运行的官方结果和根因对比}
+\end{longtable}
+}
+\end{center}
+
+\begin{center}
+{\scriptsize
+\setlength{\tabcolsep}{2pt}
+\begin{longtable}{L{3.0cm} L{5.6cm} L{5.2cm}}
+\toprule
+实例 & Harness 工艺介入证据 & 归因判断 \\
+\midrule
+\endfirsthead
+\toprule
+实例 & Harness 工艺介入证据 & 归因判断 \\
+\midrule
+\endhead
+\code{django__django-11742} & 新日志把上游错误消息、\code{fields.E009}、\code{flatchoices}、named group 和边界样例直接传给 coder；tester 又模拟 \code{test\_choices\_in\_max\_length} 并跑完整 \code{invalid\_models\_tests}。 & 工艺作用较强。旧运行也找到方向，但任务拆分和验证目标不够贴近隐藏测试，最终消息模板和插入位置都偏了。 \\
+\code{django__django-12470} & 新 lead 起初仍提出旧方向，coder 用 \code{-note} FK ordering 回归风险反驳，并改用 \code{pk} shortcut guard；运行轨迹明确记录 coder pushback。 & 工艺作用中等偏强。真正关键是角色间纠偏和回归意识，但这题也可能受单次采样影响。 \\
+\code{django__django-15202} & 新 analyst 定位到 regex 成功分支里的两个未保护 \code{urlsplit()}；tester 明确复核两个 FAIL\_TO\_PASS、\code{required=False}、valid URL、\code{hostname is None} 和 validators 套件。 & 工艺作用较强。旧 patch 已包住 \code{ValueError}，但漏掉 \code{hostname is None}；新验证把这个边界直接打穿。 \\
+\code{django__django-15738} & 旧非空失败 patch 已理解同名替换排序问题，但依赖加法太泛化。当前通过 patch 把依赖改成调用点传入，并只在 m2m/concrete 分支绑定 \code{AddField} 到同名 \code{RemoveField}。 & 归因混合。更厚 Harness 和更长预算都可能有贡献；现有证据不能单独证明结构升级是主因。 \\
+\bottomrule
+\caption{四题从失败到通过时的 Harness 工艺归因}
+\end{longtable}
+}
+\end{center}
+
+逐题看，提升来源并不完全相同。\code{django__django-11742} 属于“方向对、细节错”的失败。旧日志里 tester 自己构造了行为样例并宣称 PASS，但官方隐藏补丁要求精确错误消息：\code{'max\_length' is too small to fit the longest value in 'choices' (\%d characters).}，同时要求 named group 只统计真实 choice value。旧 patch 的消息和插入位置都不够贴合官方断言。新运行的 analyst 先读了 E008 附近的错误编号和 \code{\_check\_choices()} 原始结构，coder 把检查放进结构校验成功后的 \code{else} 分支，tester 又跑了 \code{invalid\_models\_tests} 全套以及边界样例。这说明新版运行的验证更贴近隐藏测试，单纯的模型采样变化解释力有限。
+
+\code{django__django-12470} 是最能说明交互改进的一题。旧 patch 的一行修改看起来很合理，本地日志也跑了 ordering 相关套件，但官方仍挂 \code{test\_inherited\_ordering\_pk\_desc}。新运行里，lead 起初也倾向于类似旧方向；后续 coder 用证据指出这个方向会破坏 \code{-note} 一类 FK ordering，于是改用 guard 方案，让 \code{pk} shortcut 不再错误递归到相关模型的 \code{Meta.ordering}。这更像是 coder/tester 对 lead 方案的有效纠偏。官方通过来自 \code{compiler.py} 的生产代码改动。
+
+\code{django__django-15202} 的变化最小，也最能削弱“随机官方评测”解释。旧 patch 和新 patch 都处理了 malformed IPv6 触发的 \code{ValueError}，但旧 patch 对 \code{hostname is None} 使用 \code{hostname is not None and len(hostname) > 253}，这会让隐藏补丁中的 \code{\#@A.bO} 漏过去。新 patch 改为 \code{hostname is None or len(hostname) > 253}，正好覆盖空 hostname。这里的提升来自多一个边界条件，而这个边界条件在新 tester 日志中被明确点名并验证。
+
+\code{django__django-15738} 更合适的比较对象，是旧版 Team/Harness 中那次非空但未过的 patch。旧版运行没有触发预算上限，官方显示 patch apply 成功，但 \code{\#23938} 仍未过。旧 patch 的核心策略是在 \code{\_generate\_added\_field()} 里凡是发现 \code{from\_state} 里已有同名字段，就追加 \code{order\_wrt\_unset} 和 \code{foo\_together\_change} 依赖。这个 guard 看起来保护了同名替换场景，却没有把新 AddField 明确排在同名 RemoveField 之后。当前通过 patch 的关键差异是把依赖从调用点传入：\code{\_generate\_added\_field()} 接受可选 dependencies，只在 m2m/concrete 不能直接 alter 的分支里，把 \code{AddField} 绑定到同名 \code{RemoveField} 之后。这个改动直接对应隐藏测试要求的 \code{AlterUniqueTogether, RemoveField, AddField} 顺序。因此 15738 的提升主要来自修复策略更精确；它不能证明所有提升都来自 harness 结构，也不能归为官方随机波动。
+
+总体判断是：官方 SWE-bench 对固定 patch 的判定基本确定，本轮四题通过主要来自生成出来的 patch 与旧 patch 不同。这里确实可能有模型采样随机性参与，因为低温也不能保证每次走同一条推理路径；但更强的解释是新版运行在验证层面更接近隐藏测试，并且在 \code{11742}、\code{12470}、\code{15202} 这三题上都能看到任务分解、证据传递、对抗验证或角色纠偏的直接日志证据。换句话说，Harness 变厚很可能是前三题提升的重要原因；\code{15738} 的证据更混合，预算加长也可能影响了最终结果。后续若要严谨量化“harness 变强”本身，需要固定同一模型、同一温度、同一题集，在旧 harness 和新 harness 上各跑多次，再比较非空 patch 率、F2P 清零率和 tester 是否命中隐藏行为。
+
+\section{更新后仍失败的十三题}
+
+更新仓库补测后仍有 13 题失败。它们有一个共同点：patch 全部能 apply，P2P 回归全为 0，也没有官方 harness error 或空 patch。失败全部来自 FAIL\_TO\_PASS 残留，说明问题已经从“产物拿不到/patch 应用失败”转为“语义修复没完全对准隐藏测试”。
+
+严重度在这里按三件事估计：失败测试数量，涉及模块是否是核心路径，以及运行轨迹中是否已经出现 loop 或 budget 信号。\code{django__django-11019}、\code{django__django-13321}、\code{django__django-15252} 属于高严重度；前两者目标失败面很大，后一者涉及测试数据库创建和迁移表行为，并伴随预算耗尽。其余大多是中低严重度的局部语义偏差。
+
+\begin{center}
+{\scriptsize
+\setlength{\tabcolsep}{2pt}
+\begin{longtable}{L{3.3cm} C{1.0cm} C{1.0cm} L{3.1cm} L{6.0cm}}
+\toprule
+实例 & F2P 失败 & 严重度 & 风险信号 & 错误原因摘要 \\
+\midrule
+\endfirsthead
+\toprule
+实例 & F2P 失败 & 严重度 & 风险信号 & 错误原因摘要 \\
+\midrule
+\endhead
+\code{astropy__astropy-14365} & 1 & 低 & 无 & \code{qdp.py} 只加了命令解析大小写无关匹配，但 \code{test\_roundtrip[True]} 仍失败，说明 roundtrip 写回/读回语义没有完整覆盖。 \\
+\code{astropy__astropy-7746} & 1 & 中 & 无 & \code{wcs.py} 对零长度输入做了短路，但 \code{test\_zero\_size\_input} 仍失败，说明返回形状或不同调用形式的空数组语义仍不符合 WCS 测试契约。 \\
+\code{django__django-11019} & 13 & 高 & loop + budget & \code{widgets.py} 大改 media 合并算法后仍有 13 个 forms/admin media 测试失败；这是核心算法语义未收敛，且运行轨迹有 \code{file\_read} loop 和 lead \code{budget\_exceeded}。 \\
+\code{django__django-11283} & 1 & 中 & 无 & auth proxy permission 迁移仍挂已有目标 permission 的场景；patch 删除/复用冲突权限的策略没有完全匹配迁移测试对数据保留和更新顺序的要求。 \\
+\code{django__django-11564} & 2 & 低 & loop & \code{FileSystemStorage.url()} 加了 \code{SCRIPT\_NAME} 前缀，但 \code{test\_add\_script\_name\_prefix} 和 \code{test\_not\_prefixed} 仍失败，说明绝对/相对 URL 前缀判断边界不准。 \\
+\code{django__django-11630} & 2 & 中 & loop & duplicate \code{db\_table} 检查在有 \code{DATABASE\_ROUTERS} 时简单降为 warning，但路由器可分库场景和同库冲突场景没有区分清楚。 \\
+\code{django__django-11905} & 2 & 中 & 无 & \code{IsNull.as\_sql()} 加了布尔类型硬检查，但 \code{test\_isnull\_non\_boolean\_value} 和 iterator 场景仍不符，说明异常类型、触发时机或表达式 RHS 处理仍偏离预期。 \\
+\code{django__django-13321} & 18 & 高 & 无 & session legacy decode 只把 \code{base64.b64decode()} 放进 \code{try}，但 18 个 session backend 的 legacy decode 和安全日志用例仍失败，核心会话兼容路径没有真正修稳。 \\
+\code{django__django-13768} & 1 & 中 & 无 & \code{send\_robust()} 加了 \code{logger.exception()}，但 \code{test\_send\_robust\_fail} 仍失败，通常意味着 logger 名称、消息模板或异常记录对象不符合测试断言。 \\
+\code{django__django-14155} & 3 & 中 & budget & \code{ResolverMatch} partial 处理同时改了 \code{RoutePattern.__str__()}，但 repr 和 request 相关测试仍失败；当前 patch 对 partial unwrap、args/kwargs 合并和 route 字符串化的组合语义仍不一致。 \\
+\code{django__django-14730} & 1 & 中 & loop + budget & \code{ManyToManyField} 新增对 symmetrical \code{related\_name} 的硬错误，但官方仍挂 useless related name 测试；判断条件或错误等级不符合 Django 既有 check 体系。 \\
+\code{django__django-15252} & 2 & 高 & budget & \code{MigrationRecorder} 在 \code{allow\_migrate()} 为 false 时早退，但测试数据库创建和 \code{django\_migrations} 表不存在场景仍失败；这是迁移记录器与测试数据库初始化的核心交互问题。 \\
+\code{django__django-15695} & 1 & 中 & budget & \code{RenameIndex.database\_backwards()} 尝试恢复无名索引自动名，但 \code{test\_rename\_index\_unnamed\_index} 仍失败，说明反向重命名的状态选择、索引定位或名称生成仍有偏差。 \\
+\bottomrule
+\caption{更新仓库补测后仍未通过的 13 个实例}
+\end{longtable}
+}
+\end{center}
+
+从分布看，13 题里没有新的 patch apply 问题，也没有 P2P 回归，说明更新后的 Harness 至少把产物稳定性维持住了；真正剩下的是更细的语义对齐。高严重度样本集中在 media 合并、session decode、迁移记录器这些跨模块或核心生命周期路径；中严重度样本多是单个边界测试尚未命中；低严重度样本则更像局部格式、前缀或 roundtrip 行为没打透。风险信号层面，\code{11019}、\code{11564}、\code{11630}、\code{14730} 出现过 loop 信号，\code{11019}、\code{14155}、\code{14730}、\code{15252}、\code{15695} 出现过 \code{budget\_exceeded}。这说明 loop/budget 仍值得监控，但这批失败的主因仍然是 patch 语义不足，工具层崩溃的解释力较弱。
+
+\section{外部方法在 SWE-bench Lite 上的公开表现}
+
+\subsection{官网数据}
+为了给本地结果找参照，我们从 SWE-bench 官网截至 2026-06-29 可见的 \code{leaderboard-data} JSON 中抽取了 Lite 条目，并结合 SWE-bench Lite 官方页面的说明整理公开数字。数据源是 SWE-bench 官网首页 \url{https://www.swebench.com/} 和 Lite 页面 \url{https://www.swebench.com/lite.html}。SWE-bench Lite 一共 300 题，官网每个条目的 \code{\% Resolved} 都按 300 题口径计算。本报告的 OpenCollab + GLM-5.2 结果只覆盖 Lite 前 100 题，因此不能直接当作完整 Lite 榜单成绩；它只能说明这 100 个实例上的局部表现。官网首页已经有 2026 年的 Verified、bash-only、Multilingual 等榜单记录，但 Lite 分组当前可见的最新日期是 2025-09-11，其他分组的新日期不能直接并入 Lite 口径。下表列出官网 Lite 分组当前可见的全部 84 条记录，按日期倒序排列；同名方法的多次提交保留为多行，因为官网把它们作为独立条目记录。
+
+\begin{center}
+{\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{L{10.1cm} C{1.7cm} C{1.8cm}}
+\toprule
+方法 & 日期 & Lite 通过率 \\
+\midrule
+\endfirsthead
+\toprule
+方法 & 日期 & Lite 通过率 \\
+\midrule
+\endhead
+Isea & 2025-09-11 & 51.33\% \\
+KGCompass + Claude 4 Sonnet (20250514) & 2025-09-06 & 58.33\% \\
+EntroPO + R2E + Qwen3-Coder-30B-A3B-Instruct & 2025-09-01 & 49.67\% \\
+EntroPO + R2E + Qwen3-Coder-30B-A3B-Instruct & 2025-09-01 & 45.00\% \\
+MCTS-Refine-7B & 2025-06-27 & 16.33\% \\
+ExpeRepair-v1.0 + Claude 4 Sonnet & 2025-06-25 & 60.33\% \\
+SemAgent\_Multi-v1.0 & 2025-06-25 & 51.67\% \\
+KGCompass + Claude 3.5 Sonnet (20241022) & 2025-06-19 & 46.00\% \\
+ExpeRepair-v1.0 & 2025-06-13 & 48.33\% \\
+KGCompass + DeepSeek V3 & 2025-06-09 & 36.67\% \\
+Codev & 2025-05-28 & 49.00\% \\
+SWE-agent + Claude 4 Sonnet & 2025-05-26 & 56.67\% \\
+Codart AI & 2025-05-15 & 41.67\% \\
+Lingxi & 2025-05-09 & 42.67\% \\
+Refact.ai Agent & 2025-04-25 & 60.00\% \\
+CodeFuse-CGM & 2025-03-10 & 44.00\% \\
+SWE-Fixer (Qwen2.5-7b retriever + Qwen2.5-72b editor) & 2025-03-06 & 24.67\% \\
+SWE-agent + Claude 3.7 Sonnet & 2025-02-26 & 48.00\% \\
+Agentless Lite + O3 Mini (20250214) & 2025-02-14 & 32.33\% \\
+Aegis - o3-mini\_1.0 & 2025-02-07 & 30.33\% \\
+DARS Agent & 2025-02-05 & 47.00\% \\
+Isoform & 2025-01-14 & 55.00\% \\
+Moatless Tools + Claude 3.5 Sonnet (20241022) & 2025-01-14 & 39.00\% \\
+OrcaLoca + Agentless-1.5 + Claude-3.5 Sonnet (20241022) & 2025-01-13 & 41.00\% \\
+OpenCSG Starship Agentic Coder + GPT 4 (0806) & 2025-01-13 & 39.67\% \\
+Moatless Tools + Deepseek V3 & 2025-01-11 & 30.67\% \\
+Patched.Codes Patchwork & 2025-01-04 & 37.00\% \\
+CodeFuse-AAIS & 2025-01-04 & 35.67\% \\
+Blackbox AI Agent & 2024-12-20 & 49.00\% \\
+PatchKitty-0.9 + Claude-3.5 Sonnet (20241022) & 2024-12-20 & 41.33\% \\
+Gru(2024-12-08) & 2024-12-08 & 48.67\% \\
+Kodu-v1 + Claude-3.5 Sonnet (20241022) & 2024-12-07 & 44.67\% \\
+Kortix AI (claude-3-5-sonnet-20241022) & 2024-12-03 & 30.00\% \\
+Agentless-1.5 + Claude-3.5 Sonnet (20241022) & 2024-12-02 & 40.67\% \\
+SWE-Fixer (Qwen2.5-7b retriever + Qwen2.5-72b editor) 20241128 & 2024-11-28 & 23.33\% \\
+Globant Code Fixer Agent & 2024-11-27 & 48.33\% \\
+devlo & 2024-11-22 & 47.33\% \\
+Moatless Tools + Claude 3.5 Sonnet (20241022) & 2024-11-17 & 38.33\% \\
+reproducedRG & 2024-11-17 & 28.00\% \\
+AppMap Navie v2 & 2024-11-13 & 36.00\% \\
+CodeShellTester + GPT 4o (2024-05-13) & 2024-11-11 & 31.33\% \\
+Composio SWE-Kit (2024-10-30) & 2024-10-30 & 41.00\% \\
+Agentless-1.5 + GPT 4o (2024-05-13) & 2024-10-28 & 32.00\% \\
+OpenHands + CodeAct v2.1 (claude-3-5-sonnet-20241022) & 2024-10-25 & 41.67\% \\
+IBM AI Agent SWE-1.0 (with open LLMs) & 2024-10-16 & 23.67\% \\
+HyperAgent & 2024-09-25 & 25.33\% \\
+Bytedance MarsCode Agent & 2024-09-12 & 39.33\% \\
+AIGCode Infant-Coder(2024-08-30) & 2024-09-08 & 30.00\% \\
+Isoform & 2024-08-29 & 35.00\% \\
+Bytedance AutoSE (based on SWE-Agent) + GPT4/GPT4o Mixed (20240828) & 2024-08-28 & 21.67\% \\
+Honeycomb & 2024-08-20 & 38.33\% \\
+Gru(2024-08-11) & 2024-08-11 & 35.67\% \\
+Agentless + RepoGraph + GPT-4o & 2024-08-08 & 29.67\% \\
+SuperCoder2.0 & 2024-08-06 & 34.00\% \\
+SWE-agent + GPT 4o (2024-05-13) & 2024-07-28 & 18.33\% \\
+OpenHands + CodeAct v1.8 & 2024-07-25 & 26.67\% \\
+Bytedance MarsCode Agent + GPT 4o (2024-05-13) & 2024-07-23 & 34.00\% \\
+Amazon Q Developer Agent (v20240719-dev) & 2024-07-21 & 29.67\% \\
+SIMA + GPT 4o (2024-05-13) & 2024-07-06 & 27.67\% \\
+CodeStory Aide + Mixed Models & 2024-07-02 & 43.00\% \\
+Agentless + GPT 4o (2024-05-13) & 2024-06-30 & 27.33\% \\
+AbanteAI MentatBot + GPT 4o (2024-05-13) & 2024-06-27 & 38.00\% \\
+Moatless Tools + Claude 3.5 Sonnet & 2024-06-23 & 26.67\% \\
+Alibaba Lingma Agent & 2024-06-22 & 33.00\% \\
+AutoCodeRover (v20240620) + GPT 4o (2024-05-13) & 2024-06-21 & 30.67\% \\
+SWE-agent + Claude 3.5 Sonnet & 2024-06-20 & 23.00\% \\
+Factory Code Droid & 2024-06-17 & 31.33\% \\
+Moatless Tools + GPT 4o (2024-05-13) & 2024-06-17 & 24.67\% \\
+AppMap Navie + GPT 4o (2024-05-13) & 2024-06-15 & 21.67\% \\
+MASAI + GPT 4o (2024-05-13) & 2024-06-12 & 27.33\% \\
+IBM Research Agent-101 & 2024-06-12 & 26.67\% \\
+CodeR + GPT 4 (1106) & 2024-06-04 & 28.33\% \\
+AutoCodeRover (v20240408) + GPT 4 (0125) & 2024-05-30 & 19.00\% \\
+OpenCSG StarShip CodeGenAgent + GPT 4 (0613) & 2024-05-24 & 23.67\% \\
+Aider + GPT 4o \& Claude 3 Opus & 2024-05-23 & 26.33\% \\
+Amazon Q Developer Agent (v20240430-dev) & 2024-05-09 & 20.33\% \\
+SWE-agent + GPT 4 (1106) & 2024-04-02 & 18.00\% \\
+SWE-agent + Claude 3 Opus & 2024-04-02 & 11.67\% \\
+RAG + Claude 3 Opus & 2024-04-02 & 4.33\% \\
+RAG + GPT 4 (1106) & 2024-04-02 & 2.67\% \\
+RAG + Claude 2 & 2023-10-10 & 3.00\% \\
+RAG + SWE-Llama 7B & 2023-10-10 & 1.33\% \\
+RAG + SWE-Llama 13B & 2023-10-10 & 1.00\% \\
+RAG + ChatGPT 3.5 & 2023-10-10 & 0.33\% \\
+\bottomrule
+\caption{SWE-bench 官网 Lite 组当前可见全部条目}
+\end{longtable}
+}
+\end{center}
+
+\subsection{官网外近期论文和技术报告}
+
+只看官网会漏掉 2025 年 9 月之后的很多实验。我们额外搜索了 2025-10 至 2026-06 期间包含 \code{SWE-bench Lite}、\code{SWE-Lite}、\code{Pass@1}、\code{resolve rate} 等关键词的 arXiv 论文和技术报告，并下载 PDF 从正文表格抽取数字。下表只放作者明确报告为标准 SWE-bench Lite 300 题的结果；它们多数尚未出现在官网 Lite checked 榜单里，所以可复查性弱于官网，但能反映近期研究已经推进到的实验范围。来源包括 HGM \url{https://arxiv.org/abs/2510.21614}、ConRAD \url{https://arxiv.org/abs/2601.23257}、CodePilot \url{https://arxiv.org/abs/2602.00129}、RepoRepair \url{https://arxiv.org/abs/2603.01048}、SWE-Adept \url{https://arxiv.org/abs/2603.01327}、Agent-CoEvo \url{https://arxiv.org/abs/2604.04580}、AgentForge \url{https://arxiv.org/abs/2604.13120} 和 TACO \url{https://arxiv.org/abs/2604.19572}。
+
+\begin{center}
+{\scriptsize
+\setlength{\tabcolsep}{2.5pt}
+\begin{longtable}{L{4.25cm} C{1.55cm} L{2.65cm} C{1.75cm} L{5.05cm}}
+\toprule
+系统/论文 & 日期 & 模型/设置 & Lite 结果 & 口径说明 \\
+\midrule
+\endfirsthead
+\toprule
+系统/论文 & 日期 & 模型/设置 & Lite 结果 & 口径说明 \\
+\midrule
+\endhead
+HGM Best-belief SWE-Verified Agent & 2025-10-24 & GPT-5 & 57.00\% & 标准 300 题；论文称与当时官网最佳 checked 人工设计 agent 持平。 \\
+HGM Best-belief SWE-Verified Agent & 2025-10-24 & GPT-5-mini & 49.00\% & 标准 300 题；由 SWE-Verified 上搜索得到的 agent 转测 Lite。 \\
+SWE-agent baseline in HGM & 2025-10-24 & GPT-5-mini & 47.60\% & HGM 论文内部复现的对照组，用于隔离 agent 设计收益。 \\
+ConRAD & 2026-01-30 & GPT-5 & 40.00\% (120/300) & Agentless scaffold 上加入 outcome-conditioned repair plan。 \\
+ConRAD & 2026-01-30 & GPT-4o & 37.70\% (113/300) & 相比 Agentless GPT-4o 的 27.30\% 提升 10.4 个点。 \\
+ConRAD & 2026-01-30 & DeepSeek-V3 & 35.60\% (107/300) & 相比 Agentless DeepSeek-V3 的 27.00\% 提升 8.6 个点。 \\
+CodePilot & 2026-01-28 & Qwen3-8B & 24.67\% & 开权重模型；MCTS、thinking mode 和执行反馈结合。 \\
+RepoRepair & 2026-03-01 & DeepSeek-V3 + Claude-4 & 45.70\% (137/300) & 文档增强定位和修复；论文报告平均 \$0.44/题。 \\
+SWE-Adept & 2026-03-01 & Claude-4.5 & 71.30\% & 两 agent 深度定位加结构化修复；论文报告约 3119k tokens/题。 \\
+SWE-Adept & 2026-03-01 & GPT-5.2 & 58.80\% & 同一框架；论文报告约 703k tokens/题。 \\
+Agent-CoEvo & 2026-04-06 & DeepSeek-V3 & 41.33\% (124/300) & 代码 patch 与测试 patch 共同演化；论文报告平均 \$1.11/题。 \\
+AgentForge & 2026-04-13 & GPT-4o & 40.00\% & 多 agent + 沙箱执行验证；固定 retry 预算，论文估计全 300 题约 \$43.35。 \\
+TACO + terminal agent & 2026-04-21 & MiniMax-M2.5 & 57.12\% & 观测压缩框架；baseline 为 56.30\%，总 token 从 307.61M 降到 270.53M。 \\
+\bottomrule
+\caption{官网外近期论文中标准 SWE-bench Lite 300 题结果}
+\end{longtable}
+}
+\end{center}
+
+这张表说明，官网 Lite 榜单停在 2025-09 并不代表之后没有相关结果。2026 年的论文里已经出现了若干新模型、新 scaffold 和新推理策略的 Lite 评测，其中 SWE-Adept + Claude-4.5 报告了 71.30\%，明显高于官网当前可见最高的 60.33\%。这个数字需要谨慎读：论文内部实验、官方 checked 提交、我们本地多轮重跑的前 100 题，三者的可复查程度和提交协议不同。严肃比较时，官网 checked 结果仍然是最稳的参照；判断研究趋势时，官网外论文必须纳入，否则会系统性低估 2025 年 9 月之后的进展。
+
+围绕 GPT-5.5 和 Claude 4.6，我们又单独查了 SWE-bench 官网 JSON、Anthropic system card、OpenAI 发布页、CodeClash 官网和 Claw-SWE-Bench 论文。当前能确认的情况是：标准 SWE-bench Lite 300 题公开榜单里没有这两个模型的直接条目；Claude 4.6 的公开 SWE-bench 数字主要落在 Verified 和 Multilingual 口径；GPT-5.5 的公开 coding benchmark 数字主要来自 OpenAI 发布页的 SWE-Bench Pro、Terminal-Bench 2.0，以及 Claw-SWE-Bench 的 full-350 模型 sweep。CodeClash 官网截至 2025-11-03 的 leaderboard 只列到 Claude Sonnet 4.5、GPT-5、o3 等 8 个模型，没有 GPT-5.5 或 Claude 4.6；独立名为 \code{CBench} 或 \code{C-Bench} 的可引用公开成绩也未定位到。
+
+\begin{center}
+{\scriptsize
+\setlength{\tabcolsep}{2pt}
+\begin{longtable}{L{3.55cm} C{1.45cm} L{2.85cm} L{2.65cm} L{4.85cm}}
+\toprule
+来源 & 日期 & benchmark 口径 & 模型结果 & 解释 \\
+\midrule
+\endfirsthead
+\toprule
+来源 & 日期 & benchmark 口径 & 模型结果 & 解释 \\
+\midrule
+\endhead
+SWE-bench 官网 JSON & 2026-02-17 & SWE-bench Verified，500 题 & mini-SWE-agent + Claude Opus 4.6：75.6\% & 官网 \code{leaderboard-data} 的 Verified 条目；同一条目总成本 \$275.76，平均 \$0.55/题。 \\
+SWE-bench 官网 JSON & 2026-02-13 & SWE-bench Multilingual，300 题 & Claude 4.6 Opus：72.0\% & 官网 Multilingual 条目；同一条目总成本 \$198.89，平均 \$0.66/题。 \\
+Anthropic Sonnet 4.6 system card & 2026-02-17 & SWE-bench Verified / Multilingual & Sonnet 4.6：Verified 79.6\%，Multilingual 75.9\%；Opus 4.6：Verified 80.8\%；GPT-5.2：Verified 80.0\% & 厂商 system card 的横向表；脚注说明 Sonnet 分数为 10 次平均，prompt modification 后到 80.2\%。 \\
+Anthropic Opus 4.6 发布页 & 2026-02-05 & SWE-bench Verified & Opus 4.6：81.42\% & 发布页脚注说明该值来自 prompt modification；常规表中 Opus 4.6 为 80.8\%，25 次平均。 \\
+OpenAI GPT-5.5 发布页 & 2026-04-23 & SWE-Bench Pro / Terminal-Bench 2.0 & SWE-Bench Pro：58.6\%；Terminal-Bench 2.0：82.7\% & 官方发布页没有给标准 SWE-bench Lite 或 Verified 数字；它报告的是更难的 SWE-Bench Pro 和命令行任务口径。 \\
+Claw-SWE-Bench & 2026-06-10 & full-350 派生 benchmark & GPT 5.5：78.0\% (273/350)；Claude Opus 4.7：77.1\% (270/350) & 固定 OpenClaw scaffold 的九模型 sweep；未报告 Claude 4.6 正式成绩。GPT 5.5 全量成本 \$1399.1。 \\
+CodeClash 官网 & 2025-11-03 & 6 个 arena 的 goal-oriented software engineering ELO & Claude Sonnet 4.5：1385；GPT-5：1366 & 官网当前榜单没有 GPT-5.5 或 Claude 4.6；该 benchmark 按竞技场胜负给 ELO，与 SWE-bench resolved 率不同。 \\
+CBench / C-Bench 检索 & 2026-06-29 & 未确认到稳定公开口径 & 未定位到 GPT-5.5 或 Claude 4.6 成绩 & 公开搜索未找到可引用的原始榜单或论文结果；后续比较不把它计入数值表。 \\
+\bottomrule
+\caption{GPT-5.5 和 Claude 4.6 相关公开 coding benchmark 结果}
+\end{longtable}
+}
+\end{center}
+
+还有一批近期工作使用了 SWE-bench Lite 的子集、相关任务或派生 benchmark。这些数字不能折算成 300 题榜单成绩，但它们对理解“为什么同一模型在不同 harness 下差这么多”很有用。MarketBench \url{https://arxiv.org/abs/2604.23897} 在 93 题子集上比较了六个新模型的自我校准；Phoenix \url{https://arxiv.org/abs/2606.20243} 在 24 题 curated slice 上报告生产 webhook 路径表现；SWE-ContextBench \url{https://arxiv.org/abs/2602.08316} 从 SWE-bench Lite 构造了 300 个 base tasks 和 99 个 related tasks；Claw-SWE-Bench \url{https://arxiv.org/abs/2606.12344} 发布了另一个 80 题 Lite-80，来源为 SWE-bench Multilingual 和 Verified-Mini，口径不同于 SWE-bench Lite 300 题本身。
+
+\begin{center}
+{\scriptsize
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{L{4.3cm} C{1.55cm} L{3.5cm} L{6.0cm}}
+\toprule
+来源 & 日期 & 子集/派生口径 & 主要数字和解释 \\
+\midrule
+\endfirsthead
+\toprule
+来源 & 日期 & 子集/派生口径 & 主要数字和解释 \\
+\midrule
+\endhead
+MarketBench & 2026-04-26 & 93-task SWE-bench Lite subset；另有 50-task common slice & 93 题上 Claude Opus 4.5、Gemini 3 Pro Preview、GPT-5.2 均为 80.6\%；GPT-5.2-pro 为 79.6\%，Claude Sonnet 4.5 为 77.4\%，GPT-5-mini 为 75.3\%。50 题 common slice 上，external scaffold 的 Solo GPT-5.2 为 37/50，Codex + GPT-5.2 1800s 诊断为 35/50。 \\
+Phoenix & 2026-06-18 & 24-instance curated SWE-bench Lite slice & 18/24，即 75\% oracle-resolved；作者明确提醒该 slice 与完整 leaderboard 不可直接比较。 \\
+SWE-ContextBench Lite & 2026-02-09 & 300 base tasks + 99 related tasks；主要报告 99 related tasks & Claude Sonnet 4.5 的 no-context baseline 为 26.26\%，oracle summary learning 为 34.34\%；Supermemory 在相关任务上为 30.30\%。该实验评测上下文复用，口径不同于标准 Lite 300 题。 \\
+Claw-SWE-Bench Lite-80 & 2026-06-10 & 80-instance 另建 benchmark，来源为 Multilingual + Verified-Mini & 完整 350 题中 GPT 5.5 为 78.0\% (273/350)，Claude Opus 4.7 为 77.1\% (270/350)，GLM 5.1 为 73.4\% (257/350)；Lite-80 被设计为以约 23\% 成本近似 full-350，来源与 SWE-bench Lite 300 题不同。 \\
+\bottomrule
+\caption{近期子集或派生口径结果，不能直接折算为 SWE-bench Lite 300 题榜单成绩}
 \end{longtable}
 }
 \end{center}
@@ -377,38 +677,8 @@ OpenCollab 的 loop detector 工作在工具调用层。普通工具的完全相
 
 最典型的三类证据如下。\code{django__django-13590} 在 temperature=0.0 的 22 题实验中出现 9 次 loop 事件，\code{bash} 重复计数最高到 10，但后续仍跳出了局部循环，生成 patch，并且官方评测通过。这说明 loop detector 有时能当作有效的方向盘，把会话从重复工具尝试里推出来。\code{django__django-15738} 则是反例：同一轮 temperature=0.0 实验里，它出现 27 次 loop 事件，\code{file_read} 最高到 11，\code{bash} 最高到 18，随后触发 \code{budget_exceeded} 并没有产出可用修复。这里 loop detector 记录了灾情，也拦住了重复工具，但没有强到足以中断烧 token。\code{django__django-15213} 的 1M 预算复跑显示了另一种盲区：自然语言判断重复 5 次，却没有触发工具层 loop，因为它没有形成足够严格的同工具同参数重复。
 
-因此，在这批 GLM-5.2 实验里，Loop detect 的结论可以说得比较稳：通过率主要由语义修复质量决定；大多数没过的题仍然是语义修复差边界、漏改配套路径或写错实现。可是它确实是全量评测必须保留的护栏。没有它，大部分正常题可能照样能跑完，但低温、外置盘不稳定、Docker socket 报错、读文件原地打转这些场景会更容易把预算烧在重复动作上。尤其在 300 题级别运行时，少数 15738 这种样本足以造成明显 token 浪费和难排查的失败记录。
+因此，在这批 GLM-5.2 实验里，Loop detect 的结论可以说得比较稳：通过率主要由语义修复质量决定；大多数没过的题仍然是语义修复差边界、漏改配套路径或写错实现。可是它确实是全量评测必须保留的护栏。没有它，大部分正常题可能照样能跑完，但低温、工具访问失败、资源异常、读文件原地打转这些场景会更容易把预算烧在重复动作上。尤其在 300 题级别运行时，少数 15738 这种样本足以造成明显 token 浪费和难排查的失败记录。
 
 后续更合理的做法，是保留现有工具层 loop detector，同时再加一层实例级监控。当单个实例的 \code{loop_detected} 超过 5 次，应在 summary 里标红；超过 10 次或同一句自然语言判断重复超过 3 次，应自动保存最近一次成功写入、当前 \code{git diff}、最近三次工具错误、最近三段 assistant 文本，并建议停止当前验证动作，改由另一个角色复核。这样不会误伤偶尔重读文件的正常行为，也能避免 \code{django__django-15738} 那种“相信编辑已经成功、反复证明同一件事”的预算消耗。
-
-% \appendix
-% \section{主要产物路径}
-
-% 本报告依赖的关键产物都在仓库本地实验目录下。单 Agent 深入报告位于 \path{eval_work/first100_glm52/report/swebench_first100_error_deep_dive_report.pdf}。Team 10 题官方汇总位于 \path{eval_work/team_mode_unresolved10_glm52_20260627/summary_official_eval.md}。Team 34 题最终官方汇总位于 \path{eval_work/team_mode_unresolved34_glm52_20260627/summary_official_eval_parallel2b_final.md}。本报告的源文件和 PDF 位于 \path{eval_work/final_report_20260627/}。
-
-
-% \section{证据文件}
-
-% {\footnotesize
-% \begin{longtable}{L{4.4cm} L{9.8cm}}
-% \toprule
-% 用途 & 路径 \\
-% \midrule
-% \endfirsthead
-% \toprule
-% 用途 & 路径 \\
-% \midrule
-% \endhead
-% 空 patch 机制研究 & \path{eval_work/first100_glm52/harness_empty_patch_research.md} \\
-% 初始错误题归因 & \path{eval_work/first100_glm52/error_deep_dive_local.md} \\
-% 15 个旧空 patch 非空补跑官方评测 & \path{eval_work/prior_unofficial_patches_official_eval_20260627/summary_official_eval.md} \\
-% \code{django__django-14238} 镜像修复评测 & \path{eval_work/django14238_repair_generate_eval_20260627/summary_official_eval.md} \\
-% Team 10 题官方评测 & \path{eval_work/team_mode_unresolved10_glm52_20260627/summary_official_eval.md} \\
-% Team 34 题官方评测 & \path{eval_work/team_mode_unresolved34_glm52_20260627/summary_official_eval_parallel2b_final.md} \\
-% Team 34 题最终 predictions & \path{eval_work/team_mode_unresolved34_glm52_20260627/official_eval_input/predictions_team_unresolved34_final.jsonl} \\
-% Team 34 题监控快照 & \path{eval_work/team_mode_unresolved34_glm52_20260627/monitor_snapshots.jsonl} \\
-% \bottomrule
-% \end{longtable}
-% }
 
 \end{document}

@@ -166,7 +166,7 @@ Useful flags on `run`:
 |------|---------|---------|
 | `--args` | `{}` | JSON object of workflow arguments (must be an object) |
 | `-w`, `--workspace` | `.` | working directory the agents operate in |
-| `--budget` | `max(config, 500000)` | token ceiling (workflows fan out many sessions) |
+| `--budget` | `max(config, 1000000)` | token ceiling (workflows fan out many sessions) |
 | `-c`, `--concurrency` | `4` | max concurrent agent sessions |
 | `-m` / `-p` / `--api-key` / `--base-url` | from config | LLM overrides |
 | `--save` / `--no-save` | `--save` | persist each session transcript under `<workspace>/.opencollab/sessions/<run>/` |
