@@ -201,7 +201,7 @@ class SessionRunUseCase:
         event_factory: SessionEventFactory | None = None,
         tool_execution: ToolExecutionUseCase,
         tracer: TracePort | None = None,
-        max_budget_tokens: int = 200_000,
+        max_budget_tokens: int = 1_000_000,
         max_steps: int = 100,
         deferrable_tool_names: frozenset[str] = DEFAULT_DEFERRABLE_TOOLS,
         shaper: ShaperPort | None = None,

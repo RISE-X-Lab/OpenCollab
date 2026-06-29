@@ -124,7 +124,7 @@ def build_session(
     agent: Agent,
     env: Environment | None = None,
     tracer: Tracer | None = None,
-    max_budget_tokens: int = 200_000,
+    max_budget_tokens: int = 1_000_000,
     max_steps: int = 100,
     auto_save_path: str | None = None,
     event_sink: EventPublisherPort | None = None,

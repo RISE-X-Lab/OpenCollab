@@ -206,7 +206,7 @@ def main() -> None:
     ap.add_argument("--provider", default=None)
     ap.add_argument("--model-name", default=None, help="model_name_or_path in predictions")
     ap.add_argument("--max-steps", type=int, default=40)
-    ap.add_argument("--budget", type=int, default=200_000)
+    ap.add_argument("--budget", type=int, default=1_000_000)
     ap.add_argument("--timeout", type=float, default=900.0)
     ap.add_argument("--keep-container", action="store_true")
     args = ap.parse_args()

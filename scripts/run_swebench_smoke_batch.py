@@ -35,7 +35,7 @@ def main() -> int:
     parser.add_argument("--instances-dir", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--limit", type=int, default=5)
-    parser.add_argument("--budget", type=int, default=40_000)
+    parser.add_argument("--budget", type=int, default=1_000_000)
     parser.add_argument("--max-steps", type=int, default=100)
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--model-name", default="opencollab-glm52-single-smoke5")
@@ -65,7 +65,7 @@ def main() -> int:
             env[key] = str(path)
     env.setdefault("DOCKER_DEFAULT_PLATFORM", "linux/amd64")
     env.setdefault("OPENCOLLAB_DOCKER_TIMEOUT", "900")
-    env.setdefault("OPENCOLLAB_TEMPERATURE", "0")
+    env.setdefault("OPENCOLLAB_TEMPERATURE", "0.2")
     env.setdefault("OPENCOLLAB_THINKING", "false")
     env.setdefault("OPENCOLLAB_LLM_TIMEOUT", "240")
 

@@ -78,11 +78,11 @@ def test_workflow_run_prints_result_as_json(monkeypatch):
     assert captured["kwargs"]["max_concurrency"] == 2
 
 
-def test_workflow_run_default_budget_raised_to_500k(monkeypatch):
-    """With no --budget, run_cmd raises the workflow default to 500k.
+def test_workflow_run_default_budget_raised_to_1m(monkeypatch):
+    """With no --budget, run_cmd raises the workflow default to 1M.
 
     Workflows fan out many one-shot sessions (mirroring main.py's spawn-aware
-    default), so the config fallback budget is lifted to at least 500k and that
+    default), so the config fallback budget is lifted to at least 1M and that
     raised value reaches the context: ``--budget`` is None, so run_workflow falls
     back to ``cfg['budget']``.
     """
@@ -94,7 +94,7 @@ def test_workflow_run_default_budget_raised_to_500k(monkeypatch):
     reg.register(echo.__workflow_spec__)
     monkeypatch.setattr(workflow_cli, "load_registry", lambda: reg)
     monkeypatch.setattr(workflow_cli, "missing_api_key_for", lambda *a, **k: False)
-    # A small config fallback budget so the 500k floor is the value that wins.
+    # A small config fallback budget so the 1M floor is the value that wins.
     monkeypatch.setattr(
         workflow_cli,
         "resolve_config",
@@ -122,11 +122,11 @@ def test_workflow_run_default_budget_raised_to_500k(monkeypatch):
     # --budget was not given, so the explicit budget arg stays None and the
     # effective budget flows from the raised cfg fallback.
     assert captured["budget_arg"] is None
-    assert captured["cfg_budget"] == 500_000
+    assert captured["cfg_budget"] == 1_000_000
 
 
 def test_workflow_run_explicit_budget_not_raised(monkeypatch):
-    """An explicit --budget below 500k is honored verbatim, not floored up."""
+    """An explicit --budget below 1M is honored verbatim, not floored up."""
     @workflow(name="echo", description="echoes its args")
     async def echo(ctx, args):
         return {"ok": True}
@@ -151,7 +151,7 @@ def test_workflow_run_explicit_budget_not_raised(monkeypatch):
 
     assert result.exit_code == 0
     # Explicit budget is passed through and the cfg budget equals it (resolve_config
-    # uses the given value); the 500k floor only applies when --budget is omitted.
+    # uses the given value); the 1M floor only applies when --budget is omitted.
     assert captured["budget_arg"] == 12345
     assert captured["cfg_budget"] == 12345
 

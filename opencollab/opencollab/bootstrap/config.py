@@ -107,7 +107,7 @@ class OpenCollabConfig(BaseModel):
     provider: str = Field(default="openai", min_length=1)
     api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = None
-    budget: int = Field(default=200_000, ge=1)
+    budget: int = Field(default=1_000_000, ge=1)
     temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0.0, le=2.0)
     top_p: float | None = Field(default=DEFAULT_TOP_P, ge=0.0, le=1.0)
     thinking: bool = Field(default=DEFAULT_THINKING)
@@ -329,7 +329,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         "provider": provider_value,
         "api_key": api_key_value,
         "base_url": base_url_value,
-        "budget": resolve("OPENCOLLAB_BUDGET", default="200000"),
+        "budget": resolve("OPENCOLLAB_BUDGET", default="1000000"),
         "temperature": resolve("OPENCOLLAB_TEMPERATURE", default=str(DEFAULT_TEMPERATURE)),
         "top_p": resolve("OPENCOLLAB_TOP_P", default=None),
         "thinking": resolve("OPENCOLLAB_THINKING", default=str(DEFAULT_THINKING)),
