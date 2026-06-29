@@ -79,7 +79,24 @@ mkdir -p "$(dirname "$output")"
 [ -n "$logs_dir" ] || logs_dir="$REPO_ROOT/.opencollab/swebench/_batch_logs/$(date +%Y-%m-%dT%H-%M-%S)"
 mkdir -p "$logs_dir"
 summary="$logs_dir/batch.tsv"
-[ -f "$summary" ] || printf 'timestamp\tinstance_id\tstatus\tpatch_bytes\twall_seconds\n' > "$summary"
+[ -f "$summary" ] || printf 'timestamp\tinstance_id\tstatus\tpatch_bytes\twall_seconds\tloop_alert\n' > "$summary"
+if ! head -n 1 "$summary" | grep -q $'\tloop_alert$'; then
+    "$EVAL_VENV_PY" - "$summary" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+if not lines:
+    path.write_text("timestamp\tinstance_id\tstatus\tpatch_bytes\twall_seconds\tloop_alert\n", encoding="utf-8")
+    raise SystemExit
+lines[0] = lines[0] + "\tloop_alert"
+for index in range(1, len(lines)):
+    if lines[index].strip():
+        lines[index] = lines[index] + "\tunknown"
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+fi
 
 # Decide which instances to run. Emit instance JSON to <logs-dir>/<id>.json
 # and a TSV of (instance_id\tjson_path\timage_key) to stdout.
@@ -205,8 +222,31 @@ PY
     else
         status="error_rc${rc}"
     fi
-    printf '%s\t%s\t%s\t%s\t%s\n' "$started_iso" "$iid" "$status" "${patch_bytes:-0}" "$wall" >> "$summary"
-    printf '       → %s (%s bytes, %ss)\n' "$status" "${patch_bytes:-0}" "$wall"
+    loop_alert="$("$EVAL_VENV_PY" - "$REPO_ROOT" "$iid" "$log" <<'PY'
+import json
+import pathlib
+import re
+import sys
+
+repo, iid, log_path = sys.argv[1:4]
+monitor = pathlib.Path(repo) / ".opencollab" / "swebench" / iid / "loop_monitor.json"
+if monitor.exists():
+    try:
+        print(json.loads(monitor.read_text()).get("level") or "unknown")
+        raise SystemExit
+    except Exception:
+        pass
+try:
+    text = pathlib.Path(log_path).read_text(errors="ignore")
+except OSError:
+    print("unknown")
+    raise SystemExit
+matches = re.findall(r"level=(ok|warn|critical)", text)
+print(matches[-1] if matches else "unknown")
+PY
+    )"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$started_iso" "$iid" "$status" "${patch_bytes:-0}" "$wall" "$loop_alert" >> "$summary"
+    printf '       → %s (%s bytes, %ss, loop=%s)\n' "$status" "${patch_bytes:-0}" "$wall" "$loop_alert"
 done 3< "$list_file"
 
 echo

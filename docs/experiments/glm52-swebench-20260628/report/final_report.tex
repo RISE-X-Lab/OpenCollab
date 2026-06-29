@@ -6,6 +6,9 @@
 \usepackage{tabularx}
 \usepackage{array}
 \usepackage{ragged2e}
+\usepackage{float}
+\usepackage[section]{placeins}
+\usepackage{flafter}
 \usepackage{xcolor}
 \PassOptionsToPackage{obeyspaces}{url}
 \usepackage{xurl}
@@ -26,6 +29,8 @@
 \setlength{\parskip}{0.45em}
 \setlength{\tabcolsep}{4pt}
 \renewcommand{\arraystretch}{1.18}
+\floatplacement{table}{H}
+\floatplacement{figure}{H}
 \tolerance=1200
 \emergencystretch=2em
 
@@ -52,7 +57,7 @@
 
 单 Agent 前 100 题最终可审计结果为 56/100。初始非空 patch 组共有 81 题，官方评测通过 50 题、未通过 31 题；初始空 patch 组共有 19 题，经补充评测后通过 6 题、未通过 13 题。两组合并后，单 Agent 在前 100 题上的最终状态是 56 通过、44 未通过。
 
-\begin{table}[h]
+\begin{table}[H]
 \centering
 \begin{tabular}{lrrrr}
 \toprule
@@ -73,7 +78,7 @@
 
 按旧记录，这 19 个空 patch 大致能分成三类。一类是曾有编辑动作但最终 diff 归零，一类是在编辑过程中停滞或撤回，还有一类从头到尾没有形成有效写入。它们的共同困难是最终 patch 字符串为空，单看结果无法区分模型未行动、行动后撤回、步数不足，还是工具状态中断。为此，后续分析把文件写入结果、最终 diff、循环检测和工具错误信号作为判别依据。
 
-\begin{table}[h]
+\begin{table}[H]
 \centering
 \begin{tabular}{lrr}
 \toprule
@@ -93,7 +98,7 @@
 
 \section{Team 模式结果}
 
-\begin{table}[h]
+\begin{table}[H]
 \centering
 \begin{tabular}{lrr}
 \toprule
@@ -186,7 +191,7 @@ Team 模式没解出来的题，patch 同样都能正常 apply，卡点全在测
 
 前面的运行都用 \code{temperature=1.0}。为了观察降温能否提升那些"思路对、实现差一口气"样本的通过率，随机挑了四道题做试验。
 
-\begin{table}[h]
+\begin{table}[H]
 \centering
 \begin{tabular}{L{4.6cm} C{1.8cm} L{6.4cm}}
 \toprule
@@ -319,12 +324,6 @@ Team 模式没解出来的题，patch 同样都能正常 apply，卡点全在测
 
 对 harness 来说，单纯记录 \code{loop_detected} 还不够。更合适的处理是：当同一 agent 在短窗口内重复同一自然语言判断超过 3 次，同时工具 loop count 继续上升，就强制进入“停止验证、保存当前 diff、换角色复核”的分支。若重复句里含有“edit was already applied”“environment issue”“retry”等关键词，还应保存最近一次成功写入、当前 diff、最近三次工具错误和当前 patch。这样可以减少 15738 这种预算消耗，同时保留足够证据判断到底是工具层故障、模型误判，还是 patch 提取出了问题。
 
-\section{对 OpenCollab 运行策略的建议}
-
-运行策略上，最重要的是把实例级审计做厚。每次写入后应记录写入成功证据、当前 diff 摘要、工具错误摘要和预算耗尽前状态快照。一旦出现“中途有写入迹象、最终 patch 为空”的情况，系统应自动保存当前工作区 diff、最近几条模型消息和工具调用摘要，便于事后区分模型撤回、工具失败和提取失败。
-
-评测侧也应记录每个实例的外层运行时长、官方判定、失败测试集合和资源清理状态。这样可以把“生成失败”“评测失败”和“资源等待”三类问题分开，避免把运行层异常混入模型能力结论。
-
 \section{1M token 预算复跑}
 
 前面 temperature=0.0 的实验里，有 4 题触发 \code{budget_exceeded}。因此，我们对这 4 个预算耗尽样本设置 1M token 上限进行复测。
@@ -355,26 +354,9 @@ Team 模式没解出来的题，patch 同样都能正常 apply，卡点全在测
 
 \section{更新仓库补测结果}
 
-在上述 1M 预算复跑之后，前 100 题的可审计状态是 83/100。随后，我们在更新后的 OpenCollab 仓库上，用 Team 模式、temperature=0.0、thinking 关闭的配置，对剩余 17 个未通过样本重新生成 patch 并进行官方评测。最终 4 题通过、13 题仍未通过，前 100 题累计结果提升到 87/100。新增通过样本是 \code{django__django-11742}、\code{django__django-12470}、\code{django__django-15202} 和 \code{django__django-15738}。
+在上述 1M 预算复跑之后，前 100 题的可审计状态是 83/100。随后，我们在更新后的 OpenCollab 仓库上，用 Team 模式、temperature=0.0、thinking 关闭的配置，对剩余 17 个未通过样本重新生成 patch 并进行官方评测。最终 4 题通过、13 题仍未通过，前 100 题累计结果提升到 87/100。相比之前的旧版本，新增通过样本是 \code{django__django-11742}、\code{django__django-12470}、\code{django__django-15202} 和 \code{django__django-15738}。
 
 这四题的共同点是，新 patch 都能 apply，且官方评测中 F2P/P2P 均清零。与旧失败 patch 对比后可以看到，新增通过不能归因于官方评测随机波动，核心变化在于生成出的 patch 发生了实质变化：新版运行更频繁地构造接近隐藏测试的局部验证，coder/tester 对 lead 方案的纠偏也更充分。\code{django__django-15738} 的通过 patch 只包含 \code{django/db/migrations/autodetector.py} 的生产代码改动，关键是让 \code{AddField} 在 m2m/concrete 同名替换分支里依赖同名 \code{RemoveField}，从而满足迁移操作顺序断言。
-
-\begin{center}
-{\small
-\begin{tabular}{L{4.9cm} C{2.1cm} C{2.0cm} L{6.0cm}}
-\toprule
-阶段 & 新增通过 & 累计通过 & 说明 \\
-\midrule
-Team temperature=1.0 后 & -- & 78/100 & 原 Team 模式累计结果 \\
-temperature=0.0 22 题 & +5 & 83/100 & 22 个旧未解样本通过 5 题 \\
-更新仓库 17 题 & +4 & 87/100 & \code{11742}、\code{12470}、\code{15202}、\code{15738} 通过 \\
-\bottomrule
-\end{tabular}
-\par\smallskip{\footnotesize 表：后续补测后的前 100 题累计状态}
-}
-\end{center}
-
-这轮补测的结论可以直接按最终官方口径理解：17 题中 4 题通过，13 题仍失败。失败样本的共同点见后文；通过样本的细节见下一节。
 
 \section{四题从未过到通过的原因分析}
 
@@ -477,6 +459,7 @@ temperature=0.0 22 题 & +5 & 83/100 & 22 个旧未解样本通过 5 题 \\
 
 \section{外部方法在 SWE-bench Lite 上的公开表现}
 
+\subsection{官网数据}
 为了给本地结果找参照，我们从 SWE-bench 官网截至 2026-06-29 可见的 \code{leaderboard-data} JSON 中抽取了 Lite 条目，并结合 SWE-bench Lite 官方页面的说明整理公开数字。数据源是 SWE-bench 官网首页 \url{https://www.swebench.com/} 和 Lite 页面 \url{https://www.swebench.com/lite.html}。SWE-bench Lite 一共 300 题，官网每个条目的 \code{\% Resolved} 都按 300 题口径计算。本报告的 OpenCollab + GLM-5.2 结果只覆盖 Lite 前 100 题，因此不能直接当作完整 Lite 榜单成绩；它只能说明这 100 个实例上的局部表现。官网首页已经有 2026 年的 Verified、bash-only、Multilingual 等榜单记录，但 Lite 分组当前可见的最新日期是 2025-09-11，其他分组的新日期不能直接并入 Lite 口径。下表列出官网 Lite 分组当前可见的全部 84 条记录，按日期倒序排列；同名方法的多次提交保留为多行，因为官网把它们作为独立条目记录。
 
 \begin{center}
@@ -581,8 +564,6 @@ RAG + ChatGPT 3.5 & 2023-10-10 & 0.33\% \\
 }
 \end{center}
 
-从全量条目看，SWE-bench Lite 的公开成绩大致经历了三个阶段。2023 年的 RAG 基线只有 0--3\% 左右；2024 年上半年，SWE-agent、Agentless、AutoCodeRover、Aider 等方法把成绩推到 18--31\%；2024 年底到 2025 年，OpenHands、Agentless-1.5、SWE-agent 新模型、Refact、KGCompass、ExpeRepair、EntroPO 和 Isea 等系统把公开 Lite 成绩推到 40--60\% 区间。当前可见最高 Lite 条目是 \code{ExpeRepair-v1.0 + Claude 4 Sonnet} 的 60.33\%，较新的 2025 年 9 月条目里 \code{KGCompass + Claude 4 Sonnet} 为 58.33\%，\code{Isea} 为 51.33\%。Lite 组最新日期不代表全站最新日期，因为官网 2026 年的新结果主要落在 Verified、bash-only、Multilingual 等其他口径。本地 OpenCollab + GLM-5.2 当前在前 100 题达到 87/100，看起来数值很高，但它只覆盖前 100 个实例，而且属于多阶段探索性实验，不能等同于完整 300 题单次提交。后续如果要和公开方法严肃比较，需要在完整 300 题上固定一次实验配置，保留所有 prediction 和官方 report，再按 300 题 \code{\% Resolved} 汇报。
-
 \subsection{官网外近期论文和技术报告}
 
 只看官网会漏掉 2025 年 9 月之后的很多实验。我们额外搜索了 2025-10 至 2026-06 期间包含 \code{SWE-bench Lite}、\code{SWE-Lite}、\code{Pass@1}、\code{resolve rate} 等关键词的 arXiv 论文和技术报告，并下载 PDF 从正文表格抽取数字。下表只放作者明确报告为标准 SWE-bench Lite 300 题的结果；它们多数尚未出现在官网 Lite checked 榜单里，所以可复查性弱于官网，但能反映近期研究已经推进到的实验范围。来源包括 HGM \url{https://arxiv.org/abs/2510.21614}、ConRAD \url{https://arxiv.org/abs/2601.23257}、CodePilot \url{https://arxiv.org/abs/2602.00129}、RepoRepair \url{https://arxiv.org/abs/2603.01048}、SWE-Adept \url{https://arxiv.org/abs/2603.01327}、Agent-CoEvo \url{https://arxiv.org/abs/2604.04580}、AgentForge \url{https://arxiv.org/abs/2604.13120} 和 TACO \url{https://arxiv.org/abs/2604.19572}。
@@ -647,8 +628,6 @@ CBench / C-Bench 检索 & 2026-06-29 & 未确认到稳定公开口径 & 未定�
 \end{longtable}
 }
 \end{center}
-
-这张补充表对本报告的意义有两点。第一，近期公开结果已经明显从单一 SWE-bench Lite 300 题扩展到 Verified、Multilingual、SWE-Bench Pro、Terminal-Bench 和 Claw-SWE-Bench 等多种口径，模型能力和 harness 设计常常混在一个系统成绩里。第二，GPT-5.5 与 Claude 4.6 的强结果大多来自更强 scaffold、更长预算或厂商自测条件；它们可以说明前沿模型的大致位置，但不能替代完整 Lite 300 题的同口径提交。
 
 还有一批近期工作使用了 SWE-bench Lite 的子集、相关任务或派生 benchmark。这些数字不能折算成 300 题榜单成绩，但它们对理解“为什么同一模型在不同 harness 下差这么多”很有用。MarketBench \url{https://arxiv.org/abs/2604.23897} 在 93 题子集上比较了六个新模型的自我校准；Phoenix \url{https://arxiv.org/abs/2606.20243} 在 24 题 curated slice 上报告生产 webhook 路径表现；SWE-ContextBench \url{https://arxiv.org/abs/2602.08316} 从 SWE-bench Lite 构造了 300 个 base tasks 和 99 个 related tasks；Claw-SWE-Bench \url{https://arxiv.org/abs/2606.12344} 发布了另一个 80 题 Lite-80，来源为 SWE-bench Multilingual 和 Verified-Mini，口径不同于 SWE-bench Lite 300 题本身。
 
