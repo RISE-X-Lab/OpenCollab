@@ -22,7 +22,10 @@ class JsonlEventSink(EventPublisherPort):
         self._path = path
         parent = os.path.dirname(path)
         if parent:
-            os.makedirs(parent, exist_ok=True)
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except Exception:
+                pass
 
     async def emit(self, event: Any) -> None:
         try:
@@ -35,7 +38,7 @@ class JsonlEventSink(EventPublisherPort):
                 }
             payload.setdefault("timestamp", time.time())
             with open(self._path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(payload, ensure_ascii=False) + "\n")
+                f.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
         except Exception:
             return
 

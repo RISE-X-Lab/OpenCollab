@@ -221,7 +221,7 @@ def _tool_call_args(call: dict[str, Any]) -> Any:
 def _truncate_obj(value: Any, limit: int = 1600) -> Any:
     text = json.dumps(value, ensure_ascii=False, default=str)
     if len(text) <= limit:
-        return value
+        return json.loads(text)
     return text[:limit] + "...[truncated]"
 
 
@@ -333,7 +333,7 @@ def _write_critical_artifacts(
         "recent_assistant_texts": text_report.get("recent_assistant_texts"),
     }.items():
         dest = artifacts / f"{name}.json"
-        dest.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        dest.write_text(json.dumps(value, ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
         written[name] = str(dest)
     return written
 
