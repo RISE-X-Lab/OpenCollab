@@ -1,0 +1,113 @@
+\documentclass[UTF8,a4paper,11pt]{ctexart}
+
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{ragged2e}
+\usepackage{xcolor}
+\PassOptionsToPackage{obeyspaces}{url}
+\usepackage{xurl}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+
+\geometry{left=2.0cm,right=2.0cm,top=2.2cm,bottom=2.2cm}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue,citecolor=blue}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{SWE委员会模式补测结果}
+\rhead{\thepage/\pageref{LastPage}}
+\setlength{\headheight}{14pt}
+\setlength{\parindent}{2em}
+\setlength{\parskip}{0.45em}
+\setlength{\tabcolsep}{2pt}
+\renewcommand{\arraystretch}{1.16}
+\emergencystretch=3em
+\newcolumntype{L}[1]{>{\RaggedRight\arraybackslash}p{#1}}
+\newcolumntype{C}[1]{>{\Centering\arraybackslash}p{#1}}
+\DeclareUrlCommand\code{\urlstyle{tt}}
+\newcommand{\inst}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\pass}{\textcolor{green!45!black}{通过}}
+\newcommand{\fail}{\textcolor{red!65!black}{未通过}}
+\newcommand{\uneval}{\textcolor{orange!75!black}{未评测}}
+
+\title{\textbf{OpenCollab + GLM-5.2}\\SWE委员会模式补测结果}
+\author{实验整理}
+\date{2026-06-30}
+
+\begin{document}
+\maketitle
+
+\section{截止口径}
+
+本报告汇总 SWE 委员会模式引入后，对 SWE-bench Lite 前 100 题中剩余 13 个未解样本的补测结果。评测结论只采用官方 SWE-bench harness 生成的 \code{report.json}。2026-06-30 晚间使用恢复后的 GLM-5.2 API 继续补齐 \inst{django__django-11283}、\inst{django__django-15252} 和 \inst{django__django-15695}，三题均形成非空 patch 并完成官方评测。
+
+截至本次补齐后，13 个剩余样本全部形成非空 patch 并完成官方评测，结果为 2 个通过、11 个未通过。所有已评测 patch 都能成功 apply，且没有 P2P 回归；未通过样本的失败均来自 F2P 残留。
+
+在引入委员会模式之前，更新仓库补测后的前 100 题累计结果是 87/100。委员会模式本轮新增通过 \inst{django__django-11019} 和 \inst{django__django-14730} 两个样本。因此，前 100 题累计结果为 89/100。
+
+\begin{table}[h]
+\centering
+\begin{tabular}{L{5.6cm} C{2.4cm} C{2.4cm} C{2.4cm}}
+\toprule
+口径 & 已通过 & 未通过 & 未评测 \\
+\midrule
+委员会补测的 13 个剩余样本 & 2 & 11 & 0 \\
+前 100 题累计，委员会补测后最终口径 & 89 & 11 & 0 \\
+前 100 题累计，全部样本已有官方报告 & 89 & 11 & 0 \\
+\bottomrule
+\end{tabular}
+\caption{SWE委员会模式补测后的总体结果}
+\end{table}
+
+\section{逐题结果}
+
+\begin{center}
+{\scriptsize
+\begin{longtable}{L{4.2cm} C{1.25cm} C{1.15cm} C{1.15cm} C{1.15cm} C{1.35cm} L{3.7cm}}
+\toprule
+实例 & 状态 & apply & F2P失败 & P2P失败 & patch字符 & 首个失败信号或备注 \\
+\midrule
+\endfirsthead
+\toprule
+实例 & 状态 & apply & F2P失败 & P2P失败 & patch字符 & 首个失败信号或备注 \\
+\midrule
+\endhead
+\inst{astropy__astropy-14365} & \fail & 是 & 1 & 0 & 475 & \code{test_roundtrip[True]} \\
+\inst{astropy__astropy-7746} & \fail & 是 & 1 & 0 & 995 & \code{test_zero_size_input} \\
+\inst{django__django-11019} & \pass & 是 & 0 & 0 & 5063 & 新增通过样本 \\
+\inst{django__django-11283} & \fail & 是 & 1 & 0 & 921 & rescued patch；auth proxy permission 迁移仍有 F2P 残留 \\
+\inst{django__django-11564} & \fail & 是 & 2 & 0 & 948 & \code{SCRIPT_NAME} 下 static/media 前缀行为仍不完整 \\
+\inst{django__django-11630} & \fail & 是 & 2 & 0 & 1671 & duplicate db table checks 仍有残留失败 \\
+\inst{django__django-11905} & \fail & 是 & 2 & 0 & 1119 & \code{isnull} 非布尔值与 iterator 行为仍未覆盖 \\
+\inst{django__django-13321} & \fail & 是 & 18 & 0 & 787 & session decode 相关失败较重 \\
+\inst{django__django-13768} & \fail & 是 & 1 & 0 & 911 & \code{send_robust} logging 行为仍未满足 \\
+\inst{django__django-14155} & \fail & 是 & 3 & 0 & 1792 & \code{ResolverMatch} repr 对 partial 的处理仍不足 \\
+\inst{django__django-14730} & \pass & 是 & 0 & 0 & 1699 & 新增通过样本 \\
+\inst{django__django-15252} & \fail & 是 & 2 & 0 & 1391 & rescued patch；TEST MIGRATE=False schema 行为仍有 F2P 残留 \\
+\inst{django__django-15695} & \fail & 是 & 1 & 0 & 1993 & rescued patch；unnamed index rename 仍有 F2P 残留 \\
+\bottomrule
+\end{longtable}
+}
+\end{center}
+
+\section{补齐样本说明}
+
+\inst{django__django-11283} 的补齐运行围绕 \code{django/contrib/auth/migrations/0011_update_proxy_permissions.py} 形成 921 字符生产 patch。轨迹在 221 step、约 984,312 tokens 后已经完成结构化输出，但随后重新进入证据探索阶段。为控制成本，本次保留容器并抽取生产 diff 进入官方评测。官方评测结果为未通过，F2P 失败 1 个，P2P 失败 0 个。
+
+\inst{django__django-15252} 的补齐运行围绕 \code{django/db/migrations/recorder.py} 形成 1391 字符生产 patch。轨迹在 179 step、约 1,319,969 tokens 后已经完成结构化输出，但随后重新进入证据探索阶段。本次抽取生产 diff 后官方评测，结果为未通过，F2P 失败 2 个，P2P 失败 0 个。
+
+\inst{django__django-15695} 的补齐运行围绕 \code{django/db/migrations/operations/models.py} 形成 1993 字符生产 patch。轨迹在 137 step、约 677,096 tokens 后已经完成结构化输出，但随后重新进入证据探索阶段。本次抽取生产 diff 后官方评测，结果为未通过，F2P 失败 1 个，P2P 失败 0 个。
+
+\section{过度验证信号}
+
+三题都出现了同一种工作流现象：模型已经给出 \code{Your task is complete} 并留下可评测生产 diff 后，\code{validation-council-solve} 又进入新的证据探索或验证阶段。为避免继续消耗 GLM token，本次在保留容器后手动停止，并只抽取生产源码 diff 进入官方评测。该现象说明委员会模式的退出条件仍需要改进：当最终验证已经记录结构化完成信号且工作树只剩允许路径时，工作流应直接产出 patch，而不应重新启动下一轮证据探索。
+
+三题补齐运行的 token 与 loop 信号如下。\inst{django__django-11283} 使用约 984,312 tokens，loop mention 为 0；\inst{django__django-15695} 使用约 677,096 tokens，loop mention 为 4；\inst{django__django-15252} 使用约 1,319,969 tokens，loop mention 为 2。按 GLM-5.2 粗略价格下界缓存输入 0.26 美元/百万 token、上界全输出 4.4 美元/百万 token 估算，三题合计约 2,981,377 tokens，成本区间约为 0.775--13.118 美元。
+
+\section{可复查性}
+
+主要 artifact 位于以下目录。委员会主批次在 \code{eval_work/swe_committee_mode_remaining13_glm52_20260629}；第12、第13、第3、第4题 targeted 补跑在 \code{eval_work/swe_committee_targeted_12_34_8m_glm52_20260630}；本次第4、第13、第12题干净补齐在 \code{eval_work/swe_committee_clean_rerun_4_13_then_12_glm52_20260630}。第4/13官方评测摘要在 \code{official_eval_phase1_4_13/summary_official_eval.json}，第12官方评测摘要在 \code{official_eval_task12_rescued/summary_official_eval.json}。本报告的 PDF 与 TeX 文件位于 \code{docs/experiments/glm52-swebench-20260628/report}。
+
+\end{document}

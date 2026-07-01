@@ -16,10 +16,21 @@ is discovered automatically — no registry edit, no `__init__.py`.
 | `self-collab` | sequential phases | analyze → parallel plan review (2 lenses, one revision) | per-phase coder/tester, **stops** on first failed phase |
 | `split-solve` | independent subtasks | analyze → split into disjoint subtasks | per-subtask coder/tester (failures don't block others) → synthesize |
 | `scout-solve` | parallel reconnaissance | analyze into dimensions → parallel read-only scouts → synthesize a brief | single coder/tester loop from the brief |
+| `validation-council-solve` | blind validation council | localize → contract miner + test cartographer → validation judge + baseline triage | coder → patch validator → diff risk auditor → post-patch validation judge → final verifier, with one minimal retry |
+| `swe-committee-v2` | committee topology | localize → contract miner + test cartographer + observable inventory → tribunal + pre-validate | coder → existing tests + approved validation → diff-risk stage (branch/boundary/impact/diff review) → post-patch judge + triage → final skeptic → final verifier, with up to two minimal retries |
 
 Pick the front half by how the *uncertainty* is shaped: one linear path
 (`self-collab`), several disjoint fixes (`split-solve`), or one fix that first
 needs broad understanding (`scout-solve`).
+
+For SWE-bench-style blind evaluation, use `validation-council-solve` or
+`swe-committee-v2`. The `swebench/gen_prediction_workflow.py --workflow
+<workflow>` driver defaults to blind validation for these modes, so it withholds
+official `test_patch` and `FAIL_TO_PASS` ids. The workflow must infer validation
+from the issue, repository code, public tests, and public docs. For these
+workflows, the SWE prediction JSONL uses the guarded staged diff produced by
+`gen_prediction_workflow.py`; the generic `run_eval_task` patch remains a
+workflow observability field.
 
 ## How discovery works
 

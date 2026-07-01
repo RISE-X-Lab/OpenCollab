@@ -70,6 +70,10 @@ class EvalResult:
     # metrics.jsonl via asdict() — a regression alarm if it spikes (provider
     # quirk worsening) or drops to zero unexpectedly (recovery silently broke).
     markup_recovered: int = 0
+    # Structured workflow return payload, when workflow mode is used. This is
+    # observability plus a hook for outer SWE drivers that need workflow-level
+    # audit data when writing the final prediction patch.
+    workflow_result: Any | None = None
 
 
 @dataclass
@@ -396,7 +400,7 @@ async def _run_workflow_mode(
     # both — the regression that lost django-11564 (an outer-wall timeout) and the
     # sympy budget-floor runs. Catch the controlled-stop cases here and return ctx.
     try:
-        await asyncio.wait_for(workflow(ctx, args), timeout=task.timeout)
+        ctx.workflow_result = await asyncio.wait_for(workflow(ctx, args), timeout=task.timeout)  # type: ignore[attr-defined]
     except WorkflowBudgetExceeded as exc:
         # Budget floor stopping the run is BY DESIGN, not a failure: prior coder
         # rounds / the forced final write have already written a real patch, and
@@ -644,6 +648,7 @@ async def run_eval_task(
         error=error,
         trajectory_path=tracer.path,
         markup_recovered=markup_recovered,
+        workflow_result=getattr(workflow_ctx, "workflow_result", None) if workflow_ctx else None,
     )
 
 

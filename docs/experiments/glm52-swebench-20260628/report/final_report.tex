@@ -16,6 +16,9 @@
 \usepackage{enumitem}
 \usepackage{fancyhdr}
 \usepackage{lastpage}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric,fit,calc}
 
 \geometry{left=2.1cm,right=2.1cm,top=2.25cm,bottom=2.25cm}
 \hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue,citecolor=blue}
@@ -39,6 +42,24 @@
 \newcolumntype{Y}{>{\RaggedRight\arraybackslash}X}
 \DeclareUrlCommand\code{\urlstyle{tt}}
 
+\tikzset{
+  flowbox/.style={
+    draw,
+    rounded corners=2pt,
+    align=center,
+    minimum height=8mm,
+    inner sep=3pt,
+    font=\scriptsize
+  },
+  evidencebox/.style={flowbox, fill=blue!8, draw=blue!55},
+  judgebox/.style={flowbox, fill=orange!12, draw=orange!65},
+  coderbox/.style={flowbox, fill=green!10, draw=green!55!black},
+  riskbox/.style={flowbox, fill=red!7, draw=red!55},
+  finalbox/.style={flowbox, fill=gray!10, draw=gray!65},
+  flowarrow/.style={-{Latex[length=2.1mm]}, thick, draw=gray!75},
+  weakarrow/.style={-{Latex[length=2.1mm]}, dashed, thick, draw=gray!65},
+}
+
 \title{\textbf{OpenCollab + GLM-5.2}\\SWE-bench Lite 本地评测与 Team 模式实验总结}
 \author{实验整理}
 \date{2026-06-29}
@@ -47,7 +68,7 @@
 \maketitle
 
 \begin{abstract}
-本报告汇总了 OpenCollab 接入 GLM-5.2 后，在 SWE-bench Lite 前 100 题上的一系列本地实验，并纳入后续 Team 模式、空 patch 复跑、temperature=0.2、temperature=0.0、1M 预算补测、更新仓库补测、四题过题原因复盘与外部方法对照结果。
+本报告汇总了 OpenCollab 接入 GLM-5.2 后，在 SWE-bench Lite 前 100 题上的一系列本地实验，并纳入后续 Team 模式、SWE 委员会 V1/V2 架构、空 patch 复跑、temperature=0.2、temperature=0.0、1M 预算补测、更新仓库补测、四题过题原因复盘与外部方法对照结果。
 \end{abstract}
 
 \section{实验对象与口径}
@@ -110,6 +131,385 @@ Team & 78/100 & 78.0\% \\
 \end{tabular}
 \caption{单 Agent 与 Team 模式通过率对比}
 \end{table}
+
+\section{SWE 委员会模式架构}
+
+在原始团队模式之外，本实验后续设计了两代面向 SWE-bench 的显式工作流，分别记作 SWE 委员会 V1 和 SWE 委员会 V2。二者都遵守“盲验证”口径：生成补丁时只能使用问题文本、仓库源码、公开测试和公开文档，不能读取官方隐藏测试补丁，也不能读取官方注入的“失败转通过”测试节点或任何会泄露评分答案的信息。最朴素地说，委员会模式想解决一个问题：模型写代码前先要弄清“什么行为有证据、什么行为只是猜的”，写完代码后还要有人专门找边界、找回归、找没有证据支撑的改动。
+
+\begin{figure}[H]
+\centering
+\resizebox{0.92\textwidth}{!}{
+\begin{tikzpicture}[node distance=9mm and 11mm]
+\node[evidencebox, text width=2.0cm] (issue) {问题文本\\缺陷描述};
+\node[evidencebox, text width=2.0cm, below=of issue] (repo) {起始版本\\仓库源码};
+\node[evidencebox, text width=2.0cm, below=of repo] (public) {公开测试\\公开文档};
+\node[coderbox, text width=3.2cm, right=19mm of repo] (workflow) {OpenCollab 工作流\\生成阶段};
+\node[finalbox, text width=2.0cm, right=of workflow] (patch) {模型\\补丁};
+\node[judgebox, text width=3.0cm, right=of patch] (harness) {官方评测器\\评分阶段};
+\node[finalbox, text width=2.0cm, right=of harness] (resolved) {是否\\通过};
+\node[riskbox, text width=2.5cm, below=13mm of harness] (hidden) {隐藏测试补丁\\失败转通过};
+\draw[flowarrow] (issue.east) -- (workflow.west);
+\draw[flowarrow] (repo.east) -- (workflow.west);
+\draw[flowarrow] (public.east) -- (workflow.west);
+\draw[flowarrow] (workflow) -- (patch);
+\draw[flowarrow] (patch) -- (harness);
+\draw[flowarrow] (harness) -- (resolved);
+\draw[flowarrow] (hidden) -- node[right, font=\scriptsize] {只在最终评分时使用} (harness);
+\draw[weakarrow] (hidden.west) to[out=180,in=-50]
+  node[below, font=\scriptsize] {生成阶段不可见}
+  (workflow.south east);
+\end{tikzpicture}
+}
+\caption{从 SWE-bench 任务到模型补丁的盲验证闭环}
+\end{figure}
+
+上图先把输入边界讲清楚。OpenCollab 生成补丁时只能看到问题文本、起始版本源码、公开测试和公开文档。官方隐藏测试补丁和“失败转通过”信息只在最后的官方评测阶段使用，生成阶段的模型角色拿不到这些答案。因此，报告里说的“验证更强”，指的是工作流自己从公开信息中构造更好的验证，并没有提前读取官方评分测试。
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=8mm and 9mm]
+\node[finalbox, text width=2.0cm] (teamissue) {问题};
+\node[coderbox, text width=2.1cm, right=of teamissue] (lead) {负责人\\临场调度};
+\node[evidencebox, text width=1.8cm, above right=5mm and 9mm of lead] (tester) {测试员};
+\node[coderbox, text width=1.8cm, right=of lead] (coder1) {修复者};
+\node[judgebox, text width=1.8cm, below right=5mm and 9mm of lead] (reviewer) {评审者};
+\node[finalbox, text width=1.9cm, right=20mm of coder1] (teamout) {补丁};
+\draw[flowarrow] (teamissue) -- (lead);
+\draw[flowarrow] (lead) -- (tester);
+\draw[flowarrow] (lead) -- (coder1);
+\draw[flowarrow] (lead) -- (reviewer);
+\draw[flowarrow] (tester) -- (teamout);
+\draw[flowarrow] (coder1) -- (teamout);
+\draw[flowarrow] (reviewer) -- (teamout);
+\node[finalbox, text width=2.1cm, right=25mm of teamout] (wfissue) {问题};
+\node[evidencebox, text width=2.0cm, right=of wfissue] (wfevi) {固定证据节点};
+\node[judgebox, text width=2.0cm, right=of wfevi] (wfjudge) {固定判断节点};
+\node[coderbox, text width=1.8cm, right=of wfjudge] (wfcoder) {修复者};
+\node[riskbox, text width=2.0cm, right=of wfcoder] (wfrisk) {固定攻击节点};
+\node[finalbox, text width=2.0cm, right=of wfrisk] (wfout) {补丁};
+\draw[flowarrow] (wfissue) -- (wfevi);
+\draw[flowarrow] (wfevi) -- (wfjudge);
+\draw[flowarrow] (wfjudge) -- (wfcoder);
+\draw[flowarrow] (wfcoder) -- (wfrisk);
+\draw[flowarrow] (wfrisk) -- (wfout);
+\draw[weakarrow] (wfrisk.south) to[out=-90,in=-90,looseness=0.85]
+  node[below, font=\scriptsize] {分支条件由 Python 代码固定}
+  (wfjudge.south);
+\node[font=\small, above=8mm of lead] {团队模式：负责人决定调度};
+\node[font=\small, above=8mm of wfjudge] {工作流模式：代码决定控制流};
+\end{tikzpicture}
+}
+\caption{团队模式与 Python 工作流的控制权差异}
+\end{figure}
+
+团队模式的不确定性主要来自负责人的临场调度：它可以决定什么时候派测试员、什么时候让修复者继续、什么时候停止。工作流模式保留每个节点内部的模型推理，但节点顺序、最大重试次数和分支条件由 Python 代码固定。换句话说，同样是多角色协作，团队模式更像自由讨论，工作流模式更像一套有岗位说明和放行规则的实验协议。
+
+\begin{center}
+{\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{L{4.2cm} L{10.1cm}}
+\toprule
+术语 & 本报告中的含义 \\
+\midrule
+任务实例 & 一个 SWE-bench 软件缺陷修复任务，通常包含问题文本、目标仓库、起始版本和官方评分测试。 \\
+起始版本 & 模型开始修复时看到的原始代码版本。所有补丁都在这个版本上生成。 \\
+模型补丁 & 工作流最终交给官方评测器的差异文件。 \\
+官方评测器 & SWE-bench 官方评测程序，负责把补丁应用到仓库并运行隐藏测试，最后给出是否通过。 \\
+失败转通过测试 & 官方期望补丁后从失败变为通过的测试集合；盲验证下生成阶段不可见。 \\
+回归保护测试 & 官方期望补丁后继续通过的测试集合，用来检查修复有没有破坏原有行为。 \\
+临时验证 & 工作流自己从公开信息构造的临时检查，用来帮助修复者逼近隐藏行为。 \\
+行为契约 & 从问题文本、源码、公开测试或文档中抽出的行为约束，例如返回值、异常、排序、警告文本。 \\
+诊断信号 & 证据不足以写成硬断言，但能帮助定位风险或启发修复者的弱信号。 \\
+可见行为 & 外部用户或测试能观察到的行为，包括返回值、异常类型、错误消息、默认值、顺序和副作用。 \\
+小修重试 & 在已有证据和失败反馈下做小范围修补，避免重开完整探索。 \\
+\bottomrule
+\end{tabular}
+}
+\end{center}
+
+这件事可以用一个很简单的心智模型理解。普通团队模式更像一群人围着一个缺陷商量，最后让修复者改代码；委员会工作流先把“证据”“测试”“写代码”“攻击补丁”“最终放行”拆成固定岗位。每个岗位只做自己的事，下一步能不能走，由结构化状态决定。这样做的目的，是减少两类常见失败：一类是修复者凭直觉写了一个看似合理、但隐藏测试不接受的边界；另一类是测试角色把没有证据的猜测当成预期行为，反而把修复者带偏。
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=7mm and 8mm]
+\node[finalbox, text width=1.7cm] (issue) {问题\\缺陷描述};
+\node[evidencebox, text width=1.9cm, right=of issue] (loc) {定位者\\定位根因};
+\node[evidencebox, text width=2.4cm, right=of loc] (evi) {证据角色\\契约 + 测试地图};
+\node[judgebox, text width=2.4cm, right=of evi] (pre) {修复前验证\\生成并筛选检查};
+\node[coderbox, text width=1.7cm, right=of pre] (coder) {修复者\\写生产补丁};
+\node[riskbox, text width=2.2cm, right=of coder] (risk) {攻击与回归审查\\找边界风险};
+\node[judgebox, text width=2.2cm, right=of risk] (post) {修复后验证\\确认风险是否成真};
+\node[finalbox, text width=1.8cm, right=of post] (out) {模型\\补丁};
+\draw[flowarrow] (issue) -- (loc);
+\draw[flowarrow] (loc) -- (evi);
+\draw[flowarrow] (evi) -- (pre);
+\draw[flowarrow] (pre) -- (coder);
+\draw[flowarrow] (coder) -- (risk);
+\draw[flowarrow] (risk) -- (post);
+\draw[flowarrow] (post) -- (out);
+\draw[weakarrow] ($(post.south)+(0,-0.05)$) to[out=-90,in=-90,looseness=0.75]
+  node[below, font=\scriptsize] {有证据的失败才回到修复者或仲裁}
+  ($(coder.south)+(0,-0.05)$);
+\end{tikzpicture}
+}
+\caption{SWE 委员会模式的共同直觉：先建证据，再写补丁，再攻击补丁，最后放行}
+\end{figure}
+
+这张共同直觉图从左到右阅读。问题文本只是原始材料，它本身经常含糊、缺测试、甚至只描述一个用户症状；定位者负责把它变成可定位的根因假设。证据角色不写代码，只回答“我们到底知道哪些行为应该成立”。修复前验证把这些行为变成可运行或可诊断的临时检查。修复者只在这些证据约束下写生产补丁。写完以后，后半段角色关心补丁有没有改坏别的东西、有没有绕过某个边界、有没有把猜测写成事实。委员会模式的核心是固定模型角色的发言顺序和职责边界，多角色数量本身并非关键。
+
+\subsection{委员会 V1：验证委员会}
+
+委员会 V1 对应代码中的 \code{validation-council-solve}。后文以 SWE 委员会模式命名的剩余 13 题补测脚本，实际传入的也是这个工作流。它是第一版结构化验证工作流，重点是把“写代码”和“验证代码”分开。V1 先由定位者定位问题，再并行调用契约挖掘者和测试地图员。前者抽取行为契约，后者整理测试框架、测试夹具、相邻公开测试和临时验证建议。随后，修复前验证工厂根据契约提出候选验证，修复前验证裁判只保留少量有证据支撑的临时检查，起始版分诊器在起始版本上验证这些检查的可用性。进入修复阶段后，修复者生成最小生产补丁，补丁验证者检查补丁边界，补丁风险审计者依据差异寻找边界和回归风险，修复后验证工厂与修复后验证裁判再做一次补充验证，最后由最终验证者判断是否可以产出补丁。正文后续都使用中文岗位名；代码里的具体节点名保留在实现文件和测试文件中。
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=8mm and 8mm]
+\node[finalbox, text width=1.6cm] (issue) {问题};
+\node[evidencebox, text width=1.9cm, right=of issue] (loc) {定位者};
+\node[evidencebox, text width=2.2cm, above right=5mm and 8mm of loc] (cm) {契约\\挖掘者};
+\node[evidencebox, text width=2.2cm, below right=5mm and 8mm of loc] (tc) {测试\\地图员};
+\node[judgebox, text width=2.0cm, right=22mm of loc] (pre) {修复前\\验证};
+\node[judgebox, text width=1.9cm, right=of pre] (base) {起始版\\分诊};
+\node[coderbox, text width=1.6cm, right=of base] (coder) {修复者};
+\node[judgebox, text width=2.0cm, right=of coder] (pv) {补丁\\验证};
+\node[riskbox, text width=2.0cm, right=of pv] (risk) {补丁风险\\审计};
+\node[judgebox, text width=2.0cm, right=of risk] (post) {修复后\\验证};
+\node[finalbox, text width=1.9cm, right=of post] (fv) {最终\\验证};
+\node[finalbox, text width=1.6cm, right=of fv] (out) {补丁};
+\draw[flowarrow] (issue) -- (loc);
+\draw[flowarrow] (loc) -- (cm);
+\draw[flowarrow] (loc) -- (tc);
+\draw[flowarrow] (cm) -- (pre);
+\draw[flowarrow] (tc) -- (pre);
+\draw[flowarrow] (pre) -- (base);
+\draw[flowarrow] (base) -- (coder);
+\draw[flowarrow] (coder) -- (pv);
+\draw[flowarrow] (pv) -- (risk);
+\draw[flowarrow] (risk) -- (post);
+\draw[flowarrow] (post) -- (fv);
+\draw[flowarrow] (fv) -- (out);
+\draw[weakarrow] (fv.south) to[out=-95,in=-90,looseness=0.65]
+  node[below, font=\scriptsize] {失败：带反馈线性重试}
+  (coder.south);
+\end{tikzpicture}
+}
+\caption{委员会 V1：先抽契约和测试地图，再让修复者在验证反馈下线性重试}
+\end{figure}
+
+V1 的图可以按两层理解。上半段是“修之前先确认目标”：契约挖掘者告诉系统要修的行为是什么，测试地图员告诉系统怎么在这个仓库里观察行为，修复前验证裁判决定哪些验证值得信。下半段是“修之后再审查”：补丁验证者看差异边界，补丁风险审计者找可能漏掉的边界情况，修复后验证判断这些风险是否需要反馈给修复者。V1 的重试是线性的，最终验证者如果看到失败，就把失败反馈传给下一轮修复者；如果看到阻断，就停止。这个版本的优势是成本较低、结构清楚，适合作为从普通团队模式到结构化验证的过渡。
+
+\subsection{委员会 V2：严格图同构的 SWE 委员会}
+
+委员会 V2 对应代码中的 \code{swe-committee-v2}。它保留 V1 的盲验证约束，但把图结构进一步细化成严格的证据、仲裁、攻击和最终审查四段。第一段是证据阶段：定位者之后并行运行契约挖掘者、测试地图员和可见行为清单员。新增的可见行为清单员专门列出返回值、异常类型、警告文本、错误码、默认值、顺序等外部可见字段，防止修复者在没有证据的字段上写硬断言。第二段是契约仲裁庭，它把三路证据合并为强证据契约、弱证据契约、猜测字段和禁止硬断言字段。只有强证据契约适合进入硬测试，弱证据更多作为诊断信号。
+
+\begin{figure}[H]
+\centering
+\resizebox{0.92\textwidth}{!}{
+\begin{tikzpicture}[node distance=8mm and 11mm]
+\node[evidencebox, text width=2.2cm] (cm) {契约\\挖掘者};
+\node[evidencebox, text width=2.2cm, below=of cm] (tc) {测试\\地图员};
+\node[evidencebox, text width=2.4cm, below=of tc] (ci) {可见行为\\清单员};
+\node[judgebox, text width=2.4cm, right=18mm of tc] (ca) {契约\\仲裁庭};
+\node[coderbox, text width=2.4cm, above right=1mm and 18mm of ca] (strong) {强证据\\可写硬测试};
+\node[judgebox, text width=2.4cm, right=18mm of ca] (weak) {弱证据\\只做诊断};
+\node[finalbox, text width=2.4cm, below right=1mm and 18mm of ca] (spec) {猜测字段\\只保留假设};
+\node[riskbox, text width=2.4cm, below=of spec] (forbid) {禁止字段\\不可硬断言};
+\draw[flowarrow] (cm) -- (ca);
+\draw[flowarrow] (tc) -- (ca);
+\draw[flowarrow] (ci) -- (ca);
+\draw[flowarrow] (ca) -- (strong);
+\draw[flowarrow] (ca) -- (weak);
+\draw[flowarrow] (ca) -- (spec);
+\draw[flowarrow] (ca) -- (forbid);
+\end{tikzpicture}
+}
+\caption{委员会 V2 的证据分层：强证据、弱证据、猜测字段和禁止硬断言字段}
+\end{figure}
+
+这张证据分层图解释了 V2 的核心约束。强证据契约可以进入硬测试，因为它有问题文本、源码、公开测试或文档的直接证据。弱证据契约可以提醒修复者或测试员注意某个风险，但更适合写成诊断检查。猜测字段只能作为待确认假设保留，不能出现在预期行为里。禁止字段表示证据明确不足，后面的最终怀疑者会专门检查补丁有没有偷偷依赖这些字段。
+
+\begin{figure}[H]
+\centering
+\resizebox{\textwidth}{!}{
+\begin{tikzpicture}[node distance=7mm and 8mm]
+\node[finalbox, text width=1.4cm] (issue) {问题};
+\node[evidencebox, text width=1.8cm, right=of issue] (a) {定位者};
+\node[evidencebox, text width=1.9cm, above right=3mm and 8mm of a] (cm) {契约\\挖掘};
+\node[evidencebox, text width=1.9cm, right=of a] (tc) {测试\\地图};
+\node[evidencebox, text width=2.1cm, below right=3mm and 8mm of a] (ci) {可见行为\\清单};
+\node[judgebox, text width=2.1cm, right=17mm of tc] (ca) {契约\\仲裁};
+\node[judgebox, text width=2.0cm, right=of ca] (ptd) {修复前\\验证};
+\node[judgebox, text width=1.6cm, right=of ptd] (vj1) {前置\\裁判};
+\node[judgebox, text width=1.7cm, right=of vj1] (be) {起始版\\分诊};
+\node[coderbox, text width=1.5cm, right=of be] (coder) {修复者};
+\node[finalbox, text width=2.1cm, right=of coder] (etv) {已有测试\\+ 批准验证};
+\node[riskbox, text width=1.8cm, above right=3mm and 8mm of etv] (da) {分支\\攻击};
+\node[riskbox, text width=1.8cm, right=of etv] (rs) {回归\\扫描};
+\node[riskbox, text width=1.8cm, below right=3mm and 8mm of etv] (odr) {可见变化\\审查};
+\node[judgebox, text width=2.0cm, right=17mm of rs] (potd) {修复后\\验证};
+\node[judgebox, text width=1.7cm, right=of potd] (vj2) {后置\\裁判};
+\draw[flowarrow] (issue) -- (a);
+\draw[flowarrow] (a) -- (cm);
+\draw[flowarrow] (a) -- (tc);
+\draw[flowarrow] (a) -- (ci);
+\draw[flowarrow] (cm) -- (ca);
+\draw[flowarrow] (tc) -- (ca);
+\draw[flowarrow] (ci) -- (ca);
+\draw[flowarrow] (ca) -- (ptd);
+\draw[flowarrow] (ptd) -- (vj1);
+\draw[flowarrow] (vj1) -- (be);
+\draw[flowarrow] (be) -- (coder);
+\draw[flowarrow] (coder) -- (etv);
+\draw[flowarrow] (etv) -- (da);
+\draw[flowarrow] (etv) -- (rs);
+\draw[flowarrow] (etv) -- (odr);
+\draw[flowarrow] (da) -- (potd);
+\draw[flowarrow] (rs) -- (potd);
+\draw[flowarrow] (odr) -- (potd);
+\draw[flowarrow] (potd) -- (vj2);
+\end{tikzpicture}
+}
+\caption{委员会 V2 的证据与攻击阶段：三路证据先仲裁，补丁写完后三路攻击}
+\end{figure}
+
+这张 V2 主体图的左半边解决“证据从哪里来”：契约挖掘者负责行为契约，测试地图员负责仓库测试地形，可见行为清单员负责外部可见字段。三者都进入契约仲裁庭，由它决定哪些是强证据、哪些只是弱证据、哪些字段禁止硬断言。中间部分解决“什么时候可以写代码”：修复前验证和前置裁判只把证据足够的临时检查交给起始版分诊器，起始版本上的表现会告诉修复者哪些检查是有效复现、哪些只是诊断。右半边解决“补丁写完以后怎么被攻击”：已有测试和批准验证先检查当前补丁的基本状态，随后三路攻击角色分别从分支边界、邻近回归和可见行为变化三个角度找风险，再交给修复后验证和后置裁判。
+
+V2 的后半段比 V1 更关键，因为它把“失败该回到哪里”写成了状态机。这里有三种失败信号。第一种是有证据失败，对应代码常量 \code{FAIL\_WITH\_EVIDENCE}，意思是修复后验证发现一个有证据支撑的检查在当前补丁上失败，这时应该直接交给修复者小修重试。第二种是契约证据阻断，对应 \code{CONTRACT\_EVIDENCE\_BLOCKER}，意思是最终怀疑者发现当前补丁依赖的行为契约本身证据不足，这时不能继续让修复者猜，应回到契约仲裁庭重新仲裁证据。第三种是具体问题阻断，对应 \code{CONCRETE\_BLOCKER}，意思是最终验证者发现了具体可操作的问题，比如测试没过、差异边界不干净、临时文件没清理，这时也交给修复者小修重试，但不需要重开契约仲裁。
+
+\begin{figure}[H]
+\centering
+\resizebox{0.90\textwidth}{!}{
+\begin{tikzpicture}[node distance=10mm and 15mm]
+\node[judgebox, text width=1.8cm] (vj2) {后置\\裁判};
+\node[finalbox, text width=1.8cm, right=of vj2] (fs) {最终\\怀疑者};
+\node[finalbox, text width=1.8cm, right=of fs] (fv) {最终\\验证者};
+\node[finalbox, text width=1.8cm, right=of fv] (out) {模型\\补丁};
+\node[coderbox, text width=2.0cm, below=16mm of fs] (cr) {修复者\\小修重试};
+\node[finalbox, text width=2.4cm, below=16mm of vj2] (etv) {已有测试\\+ 批准验证};
+\node[judgebox, text width=2.1cm, above=16mm of fs] (ca) {契约\\仲裁庭};
+\node[judgebox, text width=2.6cm, above=16mm of fv] (pre) {修复前验证\\+ 起始版分诊};
+\draw[flowarrow] (vj2) -- node[above, font=\scriptsize] {通过} (fs);
+\draw[flowarrow] (fs) -- node[above, font=\scriptsize] {通过} (fv);
+\draw[flowarrow] (fv) -- node[above, font=\scriptsize] {通过} (out);
+\draw[flowarrow] (vj2.south) to[out=-90,in=180]
+  node[pos=0.35, left, font=\scriptsize] {有证据失败}
+  (cr.west);
+\draw[flowarrow] (fv.south) to[out=-90,in=0]
+  node[pos=0.35, right, font=\scriptsize] {具体问题阻断}
+  (cr.east);
+\draw[flowarrow] (cr) -- (etv);
+\draw[flowarrow] (etv) -- (vj2);
+\draw[flowarrow] (fs) -- node[left, font=\scriptsize] {契约证据阻断} (ca);
+\draw[flowarrow] (ca) -- (pre);
+\draw[flowarrow] (pre.south) to[out=-90,in=90] (cr.north);
+\end{tikzpicture}
+}
+\caption{委员会 V2 的后半段状态机：三种失败信号分别去不同地方}
+\end{figure}
+
+这张状态机图是 V2 最容易误解、也最重要的部分。后置裁判看到的是补丁后的临时检查结果；它只在“有证据的检查失败”时把任务送回修复者。最终怀疑者看的是证据本身；它不负责判断补丁写得漂亮不漂亮，只判断补丁是否建立在证据不足的行为假设上。最终验证者看的是最终可提交性；它负责拦截临时文件、测试没跑通、差异边界不干净这类具体问题。三者的职责分开后，工作流才能避免一种常见混乱：测试失败、证据不足、代码差异不干净全被混成“再让修复者改一下”。在 V2 中，只有具体修复问题走小修重试，契约证据问题必须回契约仲裁庭。
+
+\begin{center}
+{\small
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{L{2.8cm} L{2.3cm} L{4.5cm} L{4.7cm}}
+\toprule
+角色 & 权限 & 输入 & 输出 \\
+\midrule
+\endfirsthead
+\toprule
+角色 & 权限 & 输入 & 输出 \\
+\midrule
+\endhead
+定位者 & 只读 & 问题文本、源码、公开测试 & 根因假设、相关文件、完成条件 \\
+契约挖掘者 & 只读 & 问题文本、源码、公开测试、文档 & 期望行为、错误行为、无影响行为契约 \\
+测试地图员 & 只读 & 仓库测试结构 & 测试框架、测试夹具、可运行命令、临时验证建议 \\
+可见行为清单员 & 只读 & 问题文本、源码、公开接口 & 返回值、异常、警告文本、默认值、顺序等可见字段 \\
+契约仲裁庭 & 只读 & 三路证据 & 强证据、弱证据、猜测字段、禁止字段分层 \\
+验证生成者 & 只读 & 契约、测试地图、补丁风险 & 候选临时检查和诊断信号 \\
+裁判 / 分诊器 & 可运行测试 & 候选临时检查 & 接受、拒绝、诊断、起始版/补丁版状态 \\
+修复者 / 小修者 & 可写源码 & 契约、分诊结果、失败反馈 & 最小生产补丁 \\
+分支攻击者 & 只读 + 可运行测试 & 当前差异、契约 & 分支和边界风险 \\
+回归扫描者 & 只读 + 可运行测试 & 当前差异、相邻行为 & 可能回归点 \\
+可见变化审查者 & 只读 & 当前差异、可见字段清单 & 未经证据授权的可见行为变化 \\
+最终怀疑者 & 只读 & 补丁、契约分层、修复后验证 & 证据不足阻断或通过 \\
+最终验证者 & 只读 + 可运行测试 & 补丁、所有审查结果 & 模型补丁放行或具体阻断 \\
+\bottomrule
+\caption{委员会 V2 中各角色的职责、权限和产物}
+\end{longtable}
+}
+\end{center}
+
+\begin{center}
+{\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{L{3.4cm} L{4.7cm} L{5.8cm}}
+\toprule
+状态边 & 一个直观例子 & 为什么这样走 \\
+\midrule
+后置裁判到小修者 & 修复后检查发现公开证据支持的空字符串边界仍然失败。 & 失败已经足够具体，直接让修复者做最小修补。 \\
+最终怀疑者到仲裁庭 & 补丁改了异常类型，但问题文本、源码和公开测试都没有证据证明这个异常类型应当稳定。 & 问题出在契约证据层，继续让修复者改会变成猜测；应回到仲裁庭重分层。 \\
+最终验证者到小修者 & 最终检查发现差异里混入临时复现文件，或公开测试命令尚未通过。 & 这是具体可操作的提交质量问题，修复者删除临时文件或补跑验证即可。 \\
+最终验证者到产物 & 证据充分、修复后验证通过、最终怀疑者通过、最终差异也干净。 & 此时产物可以作为模型补丁交给 SWE-bench 官方评测器。 \\
+\bottomrule
+\end{tabular}
+}
+\end{center}
+
+\begin{center}
+{\small
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{L{3.0cm} L{5.4cm} L{6.0cm}}
+\toprule
+维度 & 委员会 V1 & 委员会 V2 \\
+\midrule
+前置证据 & 定位者之后并行抽取行为契约与测试地图。 & 定位者之后并行抽取行为契约、测试地图与可见行为清单。 \\
+契约处理 & 契约集合直接交给验证生成者与修复者。 & 契约仲裁庭把证据分成强证据、弱证据、猜测字段和禁止字段。 \\
+修复前验证 & 验证生成者、裁判、起始版分诊器三步串联。 & 同样保留，但硬预期只能来自强证据契约，弱证据只做诊断。 \\
+修复后审计 & 补丁验证者、补丁风险审计者、修复后验证、最终验证者。 & 已有测试和批准验证之后进入三路补丁攻击，再由后置裁判、最终怀疑者、最终验证者分流。 \\
+重试逻辑 & 最终验证者看到失败后线性重试，最多一轮修复者重试。 & “有证据失败”“契约证据阻断”“具体问题阻断”三条边显式分流，最多两轮小修重试。 \\
+主要目的 & 让 SWE 解题过程可审计，并减少凭空测试和临时文件。 & 把“证据不足”和“具体修复错误”分开处理，强化边界测试、回归扫描和可见行为审查。 \\
+\bottomrule
+\end{tabular}
+}
+\end{center}
+
+从科研角度看，V1 解决的是“让验证变成独立角色”的问题，V2 进一步解决的是“哪些失败应该回到契约仲裁，哪些失败应该直接交给修复者修”的问题。这个区别很重要：如果把所有失败都交给修复者，模型容易在证据不足的假设上反复修补；如果把所有失败都回到仲裁，流程又会过重。V2 通过有证据失败、契约证据阻断和具体问题阻断三种结构化状态，把修复后验证、最终怀疑者和最终验证者的职责边界固定下来。后续若继续评测剩余失败题，V2 更适合用来研究“更强验证数据”和“多角色审查”是否能减少只差一两个边界情况的失败。
+
+\subsection{装傻评审追问与澄清}
+
+为了检查这段方法说明是否足够清楚，我们用一个完全不了解 OpenCollab 的读者视角重新追问。下面这些问题都很基础，但正是这类问题最容易暴露方法章节有没有把机制讲透。
+
+\begin{center}
+{\small
+\setlength{\tabcolsep}{3pt}
+\begin{longtable}{L{4.2cm} L{10.1cm}}
+\toprule
+装傻评审问题 & 报告中的澄清回答 \\
+\midrule
+\endfirsthead
+\toprule
+装傻评审问题 & 报告中的澄清回答 \\
+\midrule
+\endhead
+为何要先建证据，再让修复者改代码？ & SWE-bench 的问题文本往往只描述症状，隐藏测试检查的是更精确的行为契约。直接改代码容易把“猜测”当成“事实”。委员会模式先抽契约、测试地图和可见行为字段，让修复者在有证据的边界里动手。 \\
+V1 和普通团队模式到底有什么差别？ & 普通团队模式的分工更多依赖负责人临场组织。V1 把定位者、契约挖掘者、测试地图员、验证裁判、修复者、补丁风险审计者、最终验证者固定成工作流节点，并且限制每个节点的工具和输出。差别在于控制流由代码决定，负责人不能随意跳过验证。 \\
+V2 为什么要多一个可见行为清单员？ & 很多失败来自外部可见行为没想全，例如异常类型、警告文本、排序、默认值和返回形状。可见行为清单员专门把这些字段列出来，后面的可见变化审查者才能判断补丁是否改了没有证据支撑的行为。 \\
+契约仲裁庭和普通评审者有什么差别？ & 它更像证据仲裁器。它的职责是契约分层：强证据可以写硬测试，弱证据只能诊断，猜测字段不能写成预期行为，禁止字段不能被补丁偷偷改变。 \\
+为什么后置裁判失败后不去最终验证者？ & 后置裁判的失败已经是“有证据的补丁后检查失败”。这时问题足够具体，继续交给最终验证者只会重复审查，直接让修复者做最小修补更合适。 \\
+为什么最终怀疑者有时回契约仲裁庭？ & 最终怀疑者处理的是证据不足。证据不足时，修复者再改也只是在猜；正确动作是回到契约仲裁庭，重新降低或修正契约，再重新生成修复前验证。 \\
+最终验证者回小修和后置裁判回小修有什么区别？ & 后置裁判回小修来自有证据临时检查的失败，说明某个行为没修好。最终验证者回小修来自最终可提交性问题，例如差异带了临时文件、测试边界不干净、补丁路径不合规。二者都回修复者，但反馈内容不同。 \\
+这套结构为什么可能帮助那种只差一两个边界情况的题？ & 这类失败通常说明主方向已经接近正确，只缺少某个边界验证。V2 在写补丁前强制抽契约，在写完后做分支攻击、回归扫描和可见变化审查，就是为了系统性制造这些边界验证。 \\
+\bottomrule
+\caption{装傻评审追问暴露出的关键澄清点}
+\end{longtable}
+}
+\end{center}
+
+最后需要说明这一节和前文数字之间的关系。前文的单智能体 56/100 与团队模式 78/100 是已经完成的本地评测结果；更新仓库补测把前 100 题累计提高到 87/100，使用的是当时更新后的团队模式和评测配置。随后剩余 13 题的 SWE 委员会补测使用的是 V1，也就是 \code{validation-council-solve}。V2 是在 V1 经验上继续细化出的图同构工作流，应单独作为新的委员会实验报告，和前面的团队模式及 V1 数字分开统计。
 
 \section{Team 模式失败案例分析}
 
