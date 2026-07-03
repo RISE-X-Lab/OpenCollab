@@ -1,5 +1,9 @@
 # OpenCollab
 
+[![CI](https://github.com/YihongDong/OpenCollab/actions/workflows/ci.yml/badge.svg)](https://github.com/YihongDong/OpenCollab/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)
+
 **Run LLM coding agents three ways — as a single interactive agent, an
 autonomous team, or a deterministic workflow.**
 
