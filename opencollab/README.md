@@ -118,9 +118,8 @@ The components you'd most likely swap, each behind a port:
 
 ## Status
 
-**Proven:** the 61.7% SWE-bench Lite baseline, and the core invariants
-(state-machine edges, budget reservation, context shaping, import boundaries)
-pinned by the fast test suite.
+**Proven:** the core invariants (state-machine edges, budget reservation,
+context shaping, import boundaries) pinned by the fast test suite.
 
 **In progress / honest gaps:** the port-level *ablations* this architecture was
 built to make cheap (hold the model fixed, swap one component, measure the delta)
