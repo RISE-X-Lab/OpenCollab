@@ -1,0 +1,67 @@
+# Contributing to OpenCollab
+
+Thanks for your interest in improving OpenCollab! This guide covers how to set
+up a development environment, the checks your change must pass, and the one
+architectural rule the codebase enforces.
+
+## Project layout
+
+OpenCollab follows a strict clean architecture — dependencies point inward only:
+
+```
+adapters  →  application  →  domain
+```
+
+- `opencollab/opencollab/domain/` — pure value objects + the session FSM. Standard library only, no I/O.
+- `opencollab/opencollab/application/` — use cases, scheduler, ports (`application/ports.py`). Imports `domain` + stdlib only.
+- `opencollab/opencollab/adapters/` — concrete implementations: `cli/`, `tui/`, `llm/`, `tools/`, environments, tracing, session store.
+- `opencollab/opencollab/bootstrap/` — composition root; the only layer that knows concrete types.
+- `swebench/`, `workflows/`, `scripts/` — headless evaluation, deterministic workflows, and tooling.
+
+## Development setup
+
+OpenCollab uses [uv](https://docs.astral.sh/uv/). From the package root:
+
+```bash
+cd opencollab
+uv sync --extra dev            # create .venv with runtime + dev dependencies
+```
+
+Copy the example config and point it at any OpenAI-compatible (or Anthropic)
+endpoint — **never commit real API keys**:
+
+```bash
+cp configs/.env.example configs/.env   # then set OPENCOLLAB_API_KEY
+```
+
+## Checks (must pass before a PR)
+
+```bash
+cd opencollab
+uv run pytest -q               # test suite
+uv run ruff check opencollab/  # lint
+```
+
+New behavior needs tests, and the suite must stay green.
+
+## The architecture rule (enforced by tests)
+
+`tests/test_*_boundaries.py` fail the build on any inward → outward import.
+
+- Never import an outer layer from an inner one (e.g. `domain` importing `adapters`).
+- Need an outer capability inside? Add a **port** in `application/ports.py`, then
+  wire the concrete implementation in `bootstrap/`.
+- When splitting a module, keep its public names re-exported so import paths stay stable.
+
+## Commits & pull requests
+
+- Use [Conventional Commits](https://www.conventionalcommits.org/): `feat`, `fix`,
+  `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
+- `refactor:` commits must stay behavior-preserving.
+- Keep pull requests focused; describe what changed and how you verified it.
+- All public-facing text (code, comments, docs, commit messages) should be in English.
+
+## Reporting issues
+
+- Functional bugs and feature requests: open a GitHub issue using the templates.
+- Security vulnerabilities: **do not** open a public issue — see [SECURITY.md](SECURITY.md).
