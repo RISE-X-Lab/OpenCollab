@@ -275,7 +275,7 @@ def _patch_paths_to_remove(
         if _looks_like_validation_artifact(normalized):
             remove.append(path)
             continue
-        if allowed_paths and normalized not in allowed_paths:
+        if allowed_paths is not None and normalized not in allowed_paths:
             remove.append(path)
     return remove
 
