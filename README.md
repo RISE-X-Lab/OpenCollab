@@ -1,5 +1,9 @@
 # OpenCollab
 
+[![CI](https://github.com/YihongDong/OpenCollab/actions/workflows/ci.yml/badge.svg)](https://github.com/YihongDong/OpenCollab/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg)
+
 **Run LLM coding agents three ways — as a single interactive agent, an
 autonomous team, or a deterministic workflow.**
 
@@ -7,9 +11,6 @@ OpenCollab turns an LLM into a software engineer that reads, edits, and tests a
 real repository. It's built to separate what the *model* contributes from what
 the *scaffolding* (context, tools, orchestration) contributes — so everything
 but the model sits behind swappable ports.
-
-> SWE-bench Lite (n=300), team + `kimi-k2.6`, graded by the official harness:
-> **185 / 300 = 61.7% resolved**.
 
 ## What you can run
 

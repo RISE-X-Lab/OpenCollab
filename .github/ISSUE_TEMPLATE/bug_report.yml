@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a problem with OpenCollab
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. For security vulnerabilities,
+        do **not** open an issue — see
+        [SECURITY.md](https://github.com/YihongDong/OpenCollab/blob/main/SECURITY.md).
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Configure ...
+        2. Run `opencollab ...`
+        3. See error
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Mode
+      options:
+        - Interactive (opencollab)
+        - Team
+        - Workflow (opencollab workflow run)
+        - Eval / SWE-bench
+        - Other / not sure
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model & provider
+      placeholder: e.g. glm-5.1 via DashScope compatible mode
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste any traceback or session output. Redact API keys and secrets.
+      render: shell
+  - type: input
+    id: version
+    attributes:
+      label: OpenCollab version / commit
+      placeholder: e.g. 0.1.0 or a git SHA

@@ -1,49 +1,47 @@
 # GLM-5.2 SWE-bench Lite Experiment Archive
 
-This directory is a compact, Git-trackable archive of the local OpenCollab + GLM-5.2 SWE-bench Lite experiments run in June 2026.
+A compact, Git-trackable archive of the OpenCollab + GLM-5.2 SWE-bench Lite
+experiments run in June 2026. It keeps only what is needed to read the outcome
+and re-check it against the official SWE-bench harness:
 
-It intentionally keeps only the artifacts needed to understand and re-check the experiment outcomes:
+- `report/final_report.pdf` — the canonical human-readable report, written in
+  Chinese (LaTeX source in `report/final_report.tex`).
+- `predictions/*.jsonl` — the prediction files fed to the official SWE-bench
+  evaluation, one per experiment slice.
 
-- `report/` contains the final LaTeX report and compiled PDF.
-- `summaries/` contains official evaluation summaries, empty-patch research notes, temperature-study summaries, token/cost notes, and loop/repetition analyses.
-- `predictions/` contains the prediction JSONL files used for the official SWE-bench evaluations.
+Raw working data (session transcripts, event logs, Docker snapshots, LaTeX
+build files) and the detailed per-slice analysis notes are intentionally not
+tracked here; earlier revisions of this directory remain in Git history if you
+need them.
 
-The raw working directory, `eval_work/`, is not tracked here. It contains session transcripts, event logs, Docker snapshots, command logs, LaTeX build files, and render-check images. Those files are useful for local forensic work, but they are too noisy for the repository history.
+## Main results
 
-## Main Results
-
-The final report in `report/final_report.pdf` is the canonical human-readable summary. Its headline numbers are:
+From `report/final_report.pdf`:
 
 | Experiment slice | Result |
 |---|---:|
-| Single-agent first 100, after empty-patch recovery | 56 / 100 resolved |
+| Single-agent, first 100, after empty-patch recovery | 56 / 100 resolved |
 | Team mode over the first-100 unresolved set | 78 / 100 resolved overall |
-| Team temperature=0.0 over 22 unresolved cases | 5 / 22 resolved |
-| Team temperature=0.0, 1M-token rerun over 4 budget-limited cases | 1 / 4 resolved |
+| Team, temperature=0.0, over 22 unresolved cases | 5 / 22 resolved |
+| Team, temperature=0.0, 1M-token rerun over 4 budget-limited cases | 1 / 4 resolved |
 
-Patch application was not the dominant failure mode in the later experiments. Most remaining failures were semantic: missed edge cases, incomplete paired edits, or incorrect implementations near the right location.
+Most remaining failures were semantic (missed edge cases, incomplete paired
+edits, or incorrect implementations near the right location) rather than patch
+application errors.
 
-## Reproducibility Notes
+## Predictions
 
-The JSONL files under `predictions/` are the compact inputs needed to re-run official SWE-bench evaluation for the corresponding slices, assuming the matching SWE-bench Lite dataset rows are available.
-
-The summaries under `summaries/` preserve the official pass/fail tables and selected analysis. The raw logs remain local under `eval_work/` and should be treated as experiment artifacts rather than source files.
-
-## Artifact Map
-
-| File | Meaning |
+| File | Slice |
 |---|---|
-| `report/final_report.pdf` | Final compiled experiment report. |
-| `report/final_report.tex` | LaTeX source for the final report. |
-| `summaries/first100_official_summary.json` | Machine-readable summary of the first 100 single-agent run. |
-| `summaries/first100_error_deep_dive.md` | Local deep dive into first-100 failure causes. |
-| `summaries/first100_empty_patch_research.md` | Empty-patch mechanism analysis. |
-| `summaries/team_unresolved10_official_summary.*` | Official result for the first 10 Team-mode samples. |
-| `summaries/team_unresolved34_official_summary.*` | Official result for the remaining 34 Team-mode samples. |
-| `summaries/temp02_unresolved4_official_summary.*` | Official result for temperature=0.2 samples. |
-| `summaries/temp00_prev21_official_summary.*` | Official result for the first 21 temperature=0.0 samples. |
-| `summaries/temp00_django15738_retry_official_summary.*` | Official result for the final retried temperature=0.0 sample. |
-| `summaries/temp00_budget1m_four_results.md` | Token/cost/process summary for the 1M-budget four-case rerun. |
-| `summaries/temp00_budget1m_four_official_summary.*` | Official result for the 1M-budget four-case rerun. |
-| `summaries/temp00_loop_repetition_analysis.md` | Repetition and budget-exhaustion analysis for temperature=0.0. |
-| `predictions/*.jsonl` | Prediction files corresponding to the official summaries. |
+| `first100_predictions.jsonl` | Single-agent first-100 run |
+| `prior_unofficial17_predictions.jsonl` | 17 prior unofficial-patch cases |
+| `team_unresolved10_predictions.jsonl` | First 10 Team-mode samples |
+| `team_unresolved34_final_predictions.jsonl` | Remaining 34 Team-mode samples |
+| `temp00_prev21_predictions.jsonl` | First 21 temperature=0.0 samples |
+| `temp00_django15738_retry_predictions.jsonl` | Final retried temperature=0.0 sample |
+| `temp02_unresolved4_predictions.jsonl` | Temperature=0.2 samples |
+| `temp00_budget1m_four_predictions.jsonl` | 1M-token budget four-case rerun |
+| `django14238_repaired_prediction.jsonl` | Repaired single case |
+
+Each JSONL is a compact input for re-running the official SWE-bench Lite
+evaluation on the matching dataset rows.
