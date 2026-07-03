@@ -12,9 +12,6 @@ real repository. It's built to separate what the *model* contributes from what
 the *scaffolding* (context, tools, orchestration) contributes — so everything
 but the model sits behind swappable ports.
 
-> SWE-bench Lite (n=300), team + `kimi-k2.6`, graded by the official harness:
-> **185 / 300 = 61.7% resolved**.
-
 ## What you can run
 
 | Mode | Command | What it is |
