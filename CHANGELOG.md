@@ -19,6 +19,7 @@ clean architecture where everything but the model sits behind swappable ports.
 ### Fixed
 - Guarded-workflow patch allowlist failed *open* when handed an empty allowlist; it now strips every path (fail-closed) as intended.
 - Cross-loop async test harness and a stale LLM-usage fake (test suite: 999 → 1009 passing).
+- Hook-timeout process reap could hang on Python 3.11+; the reap is now bounded so a timed-out hook cannot stall the caller.
 
 ### Changed
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
