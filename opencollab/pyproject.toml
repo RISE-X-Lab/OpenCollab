@@ -9,6 +9,18 @@ description = "Minimal multi-agent software development framework — first prin
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+authors = [{ name = "Yihong Dong", email = "dongyh@stu.pku.edu.cn" }]
+keywords = ["llm", "agent", "multi-agent", "coding-agent", "swe-bench", "software-engineering"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
 dependencies = [
     "openai>=1.30",
     "anthropic>=0.40",
@@ -28,6 +40,11 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.5"]
 
 [project.scripts]
 opencollab = "opencollab.adapters.cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/YihongDong/OpenCollab"
+Repository = "https://github.com/YihongDong/OpenCollab"
+Issues = "https://github.com/YihongDong/OpenCollab/issues"
 
 [tool.ruff]
 line-length = 120
