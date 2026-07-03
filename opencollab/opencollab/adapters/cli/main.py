@@ -202,13 +202,13 @@ async def _repl_loop(tui: Any, handle_turn, lead: Any, bottom_toolbar: Any = Non
 async def _run(workspace: str, cfg: dict, session_file: str | None,
                trace: bool, yolo: bool, use_worktrees: bool,
                one_shot_prompt: str | None = None):
+    from opencollab.adapters.event_log import JsonlEventSink
     from opencollab.adapters.tui import (
         TUI,
         TuiAskUserPolicy,
         TuiEventSink,
         TuiPermissionPolicy,
     )
-    from opencollab.adapters.event_log import JsonlEventSink
     from opencollab.application.event_bus import EventBus
     from opencollab.bootstrap import build_runtime_context, build_scheduler
 

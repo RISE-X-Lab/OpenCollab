@@ -22,6 +22,21 @@ def run(coro):
     return asyncio.run(coro)
 
 
+async def _spawn_and_settle(scheduler, *args, **kwargs):
+    """Spawn and await the resulting background task within one event loop.
+
+    ``Scheduler.spawn`` returns after creating a detached ``_drive_agent`` task;
+    awaiting that task in a *second* ``asyncio.run`` would bind it to a different
+    loop (``ValueError: future belongs to a different loop``). Doing both in one
+    coroutine keeps spawn and the await on the same loop.
+    """
+    aid = await scheduler.spawn(*args, **kwargs)
+    task = scheduler._tasks.get(aid)
+    if task is not None:
+        await asyncio.wait_for(task, timeout=1.0)
+    return aid
+
+
 class _FakeTeammateSession:
     """Minimal session stand-in: records messages and returns a canned result."""
 
@@ -105,10 +120,7 @@ def _scheduler_events(events: list[Any]) -> list[SchedulerEvent]:
 def test_spawn_emits_agent_spawned_then_completed(monkeypatch):
     scheduler, events = _build_scheduler(monkeypatch, {"coder": ["coder did it"]})
 
-    result = run(scheduler.spawn(0, "coder", "do the thing"))
-    # Wait for the spawned task to complete
-    if result in scheduler._tasks:
-        run(asyncio.wait_for(scheduler._tasks[result], timeout=1.0))
+    run(_spawn_and_settle(scheduler, 0, "coder", "do the thing"))
 
     seq = _scheduler_events(events)
     types = [e.type for e in seq]
@@ -146,8 +158,7 @@ def test_spawn_autosaves_parent_tool_call(monkeypatch, tmp_path):
         }
     )
 
-    aid = run(scheduler.spawn(0, "analyst", "investigate"))
-    run(asyncio.wait_for(scheduler._tasks[aid], timeout=1.0))
+    run(_spawn_and_settle(scheduler, 0, "analyst", "investigate"))
 
     with open(lead.auto_save_path) as f:
         saved = json.load(f)
@@ -171,9 +182,7 @@ def test_spawn_trims_task_field_to_100_chars(monkeypatch):
     scheduler, events = _build_scheduler(monkeypatch, {"coder": [""]})
     long_task = "x" * 250
 
-    aid = run(scheduler.spawn(0, "coder", long_task))
-    if aid in scheduler._tasks:
-        run(asyncio.wait_for(scheduler._tasks[aid], timeout=1.0))
+    run(_spawn_and_settle(scheduler, 0, "coder", long_task))
 
     seq = _scheduler_events(events)
     spawned = [e for e in seq if e.type == "agent_spawned"][0]
@@ -239,9 +248,7 @@ def test_spawn_does_not_emit_session_tool_events(monkeypatch):
     """Scheduler.spawn must not re-use session_runtime tool_start/tool_end semantics."""
     scheduler, events = _build_scheduler(monkeypatch, {"coder": ["ok"]})
 
-    aid = run(scheduler.spawn(0, "coder", "x"))
-    if aid in scheduler._tasks:
-        run(asyncio.wait_for(scheduler._tasks[aid], timeout=1.0))
+    run(_spawn_and_settle(scheduler, 0, "coder", "x"))
 
     # Every event from scheduler orchestration must be a SchedulerEvent now.
     types = [getattr(e, "type", None) for e in events]

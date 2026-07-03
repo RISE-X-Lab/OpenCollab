@@ -29,6 +29,20 @@ def run(coro):
     return asyncio.run(coro)
 
 
+async def _spawn_and_settle(scheduler, *args, **kwargs):
+    """Spawn and await the resulting background task within one event loop.
+
+    Splitting spawn and the task await across two ``asyncio.run`` calls binds the
+    ``_drive_agent`` task to a different loop than the one that awaits it. Keeping
+    both in one coroutine avoids the cross-loop ``ValueError``.
+    """
+    aid = await scheduler.spawn(*args, **kwargs)
+    task = scheduler._tasks.get(aid)
+    if task is not None:
+        await asyncio.wait_for(task, timeout=1.0)
+    return aid
+
+
 # --------------------------------------------------------------------------
 # SessionStore on-disk format
 # --------------------------------------------------------------------------
@@ -261,9 +275,7 @@ def test_manifest_records_spawned_child_parent_link(tmp_path):
     scheduler.set_manifest_writer(_write_manifest)
     scheduler.register_lead(_FakeLeadSession())
 
-    child_aid = run(scheduler.spawn(0, "coder", "do it"))
-    if child_aid in scheduler._tasks:
-        run(asyncio.wait_for(scheduler._tasks[child_aid], timeout=1.0))
+    child_aid = run(_spawn_and_settle(scheduler, 0, "coder", "do it"))
 
     with open(manifest_path) as f:
         manifest = json.load(f)
