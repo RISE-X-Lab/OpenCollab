@@ -7,18 +7,18 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
+from opencollab.application.extension_valve import (
+    EXTENSION_DENIED_NUDGE,
+    EXTENSION_GRANTED_NUDGE,
+    EXTENSION_OFFER_NUDGE,
+    judge_extension_reason,
+)
 from opencollab.application.ports import (
     CompletionResponse,
     EventPublisherPort,
     LLMPort,
     ShaperPort,
     TracePort,
-)
-from opencollab.application.extension_valve import (
-    EXTENSION_DENIED_NUDGE,
-    EXTENSION_GRANTED_NUDGE,
-    EXTENSION_OFFER_NUDGE,
-    judge_extension_reason,
 )
 from opencollab.application.shaping import forced_shape
 from opencollab.application.tool_execution import ToolExecutionUseCase
