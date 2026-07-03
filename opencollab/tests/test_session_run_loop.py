@@ -26,11 +26,17 @@ def llm_response(
     input_tokens=1,
     finish_reason="stop",
     reasoning=None,
+    output_tokens=0,
 ):
     return SimpleNamespace(
         content=content,
         tool_calls=tool_calls or [],
-        usage=SimpleNamespace(total_tokens=total_tokens, input_tokens=input_tokens),
+        usage=SimpleNamespace(
+            total_tokens=total_tokens,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            estimated=False,
+        ),
         finish_reason=finish_reason,
         reasoning=reasoning,
     )
@@ -302,6 +308,15 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
             "finish_reason": "tool_calls",
             "content": "need tool",
             "tool_calls": [{"id": "call-1", "name": "fake_tool", "arguments": '{"value": 1}'}],
+            "usage": {
+                "input_tokens": 1,
+                "output_tokens": 0,
+                "total_tokens": 9,
+                "cache_read_tokens": 0,
+                "cache_creation_tokens": 0,
+                "uncached_input_tokens": 1,
+                "estimated": False,
+            },
         },
         "tokens": 9,
         "latency": tracer.steps[0]["latency"],
