@@ -79,7 +79,11 @@ class _RendererEventsMixin:
         elif etype == "step_start":
             self._step = event.data.get("step", 0)
             self._clear_thinking_status()
-            self._emit_status(Text(f"{agent_label} thinking... step {self._step}", style=self._STYLE_MUTED))
+            # Drive the live view with the animated pulsing dot. A fresh bar
+            # resets the elapsed counter for this step; it keeps flowing on Live's
+            # refresh even while the model is silent, so it never looks frozen.
+            self._thinking = self._new_thinking_bar(f"{agent_label} thinking… · step {self._step}")
+            self._refresh()
 
         elif etype == "loop_detected":
             tool = event.data.get("tool", "?")
@@ -213,11 +217,12 @@ class _RendererEventsMixin:
         """Commit accumulated assistant text so later events appear in-order."""
         if not self._current_text:
             return
-        self._timeline_blocks.append(Markdown(self._current_text))
+        self._timeline_blocks.append(self._assistant_block(Markdown(self._current_text)))
         self._current_text = ""
 
     def _clear_thinking_status(self) -> None:
-        """Remove transient thinking hints before adding fresher progress."""
+        """Drop the transient LLM-wait indicator before fresher progress shows."""
+        self._thinking = None
         self._status_lines = [
-            s for s in self._status_lines if "thinking..." not in s.plain.lower()
+            s for s in self._status_lines if "thinking" not in s.plain.lower()
         ]

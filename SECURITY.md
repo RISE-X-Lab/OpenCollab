@@ -5,7 +5,7 @@
 Please report suspected security vulnerabilities **privately** — do not open a
 public issue. Use GitHub's
 [Report a vulnerability](https://github.com/YihongDong/OpenCollab/security/advisories/new)
-(Security Advisories), or email **dongyh@stu.pku.edu.cn**. We aim to acknowledge
+(Security Advisories), or email **EthanDongyh@gmail.com**. We aim to acknowledge
 reports within 72 hours.
 
 ## Risk surface
