@@ -119,8 +119,11 @@ def test_step_start_updates_step_counter_and_status():
 
     tui.event_handler(SessionRuntimeEvent("step_start", {"step": 4, "aid": -1}))
     assert tui._step == 4
-    statuses = _status_plains(tui)
-    assert any("thinking..." in s and "step 4" in s for s in statuses)
+    # The waiting indicator is now the animated pulsing dot; its label still
+    # carries the agent + step counter (rendered inline, not as a status line).
+    assert tui._thinking is not None
+    line = tui._thinking.render().plain
+    assert "thinking" in line and "step 4" in line
 
 
 def test_loop_detected_event_emits_warning_status():

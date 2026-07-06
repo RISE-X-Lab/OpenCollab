@@ -13,6 +13,7 @@ from rich.markdown import Markdown
 from rich.segment import Segment
 from rich.text import Text
 
+from opencollab.adapters.tui.brand_motion import MARK_HEX, PulseDot
 from opencollab.application.scheduler_types import roster_display_state
 
 
@@ -142,6 +143,25 @@ class _RendererDisplayMixin:
         )
         return Text.assemble((header, self._STYLE_HEADING), *chips)
 
+    def _new_thinking_bar(self, label: str) -> PulseDot:
+        """A labeled waiting indicator: a gently pulsing brand dot + ``label`` +
+        a live elapsed-seconds counter. Uses the muted chrome style so every
+        non-dot glyph stays an explicit, non-white color."""
+        return PulseDot(label, muted_style=self._STYLE_MUTED)
+
+    def _assistant_block(self, body: Any) -> Any:
+        """Wrap an assistant Markdown block with a brand ``◆`` gutter marker
+        aligned to its first line (matching the welcome banner wordmark). A
+        two-column ``Table.grid`` — a narrow marker column + the body column —
+        keeps the Markdown wrapping intact under the marker."""
+        from rich.table import Table
+
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column(no_wrap=True)   # narrow ◆ gutter (top-aligned by default)
+        grid.add_column(ratio=1)        # markdown body
+        grid.add_row(Text("◆", style=MARK_HEX), body)
+        return grid
+
     def _build_display(self) -> Any:
         """Build the Rich renderable for current state."""
         parts = []
@@ -151,16 +171,16 @@ class _RendererDisplayMixin:
             parts.extend(self._timeline_blocks)
             parts.append(Text("", style=""))
 
-        # Current streaming chunk.
+        # Current streaming chunk — fronted by the brand ◆ gutter marker.
         if self._current_text:
-            parts.append(Markdown(self._current_text))
+            parts.append(self._assistant_block(Markdown(self._current_text)))
             parts.append(Text("", style=""))
 
-        # Active tool spinners — animated, accent-hued. Each tool is a one-row
-        # Table.grid so the spinner cell and label cell stay on a single render
-        # line (the block is captured by render_lines in _build_live_display).
+        # Active tool spinners — the shared pulsing brand dot, one calm
+        # motion for every tool. Each tool is a one-row Table.grid so the spinner
+        # cell and label cell stay on a single render line (the block is captured
+        # by render_lines in _build_live_display).
         if self._active_tools:
-            from rich.spinner import Spinner
             from rich.table import Table
 
             parts.append(Text("Running", style=self._STYLE_HEADING))
@@ -174,7 +194,7 @@ class _RendererDisplayMixin:
                 row = Table.grid(padding=(0, 1))
                 row.add_column(no_wrap=True)            # spinner cell
                 row.add_column(ratio=1)                 # label + args cell
-                row.add_row(Spinner("dots", style=self._STYLE_ACCENT), label_text)
+                row.add_row(self._motion, label_text)
                 parts.append(row)
             parts.append(Text("", style=""))
 
@@ -182,12 +202,22 @@ class _RendererDisplayMixin:
             parts.extend(self._status_lines)
             parts.append(Text("", style=""))
 
+        # LLM-wait indicator: the animated pulsing dot (replaces the old static
+        # "thinking" line). Shown while waiting on the model; cleared as soon as
+        # text or tool progress arrives. Being time-driven, it keeps pulsing on
+        # Live's refresh even when no new events land — so it never looks frozen.
+        if self._thinking is not None:
+            parts.append(self._thinking)
+            parts.append(Text("", style=""))
+
         team_panel = self._build_team_panel()
         if team_panel is not None:
             parts.append(team_panel)
 
         if not parts:
-            return Text("Thinking...", style="dim")
+            # Nothing yet — still animate the wait so first-token latency doesn't
+            # look frozen. Route the placeholder through the same pulsing dot.
+            return self._thinking or self._new_thinking_bar("Thinking…")
 
         from rich.console import Group
         return Group(*parts)
