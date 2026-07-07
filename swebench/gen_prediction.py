@@ -78,6 +78,12 @@ Rules:
 """
 
 
+def unique_container_name(prefix: str, instance_id: str) -> str:
+    suffix = uuid.uuid4().hex[:8]
+    max_instance_chars = max(1, 63 - len(prefix) - len(suffix) - 1)
+    return f"{prefix}{instance_id[:max_instance_chars]}-{suffix}"
+
+
 def _docker(*args: str, timeout: int | None = None) -> subprocess.CompletedProcess:
     if timeout is None:
         timeout = int(os.environ.get("OPENCOLLAB_DOCKER_TIMEOUT", "60"))
@@ -258,7 +264,7 @@ def main() -> None:
     print(f"Image:    {image}")
     print(f"Model:    {cfg['model']} (provider={cfg['provider']})")
 
-    name = f"oc-gen-{iid}-{uuid.uuid4().hex[:6]}"[:60]
+    name = unique_container_name("oc-gen-", iid)
     cid = start_container(image, name)
     print(f"Container: {cid}")
     try:

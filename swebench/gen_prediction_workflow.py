@@ -369,7 +369,7 @@ async def generate(
 ) -> tuple[str, dict]:
     """Run the chosen workflow in a fresh container; return (patch, metrics)."""
     iid = instance["instance_id"]
-    name = f"oc-wf-{iid}-{uuid.uuid4().hex[:6]}"[:60]
+    name = gp.unique_container_name("oc-wf-", iid)
     cid = gp.start_container(image, name)
     print(f"Container: {cid}")
     try:
