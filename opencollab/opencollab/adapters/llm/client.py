@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
 
 import openai
@@ -11,6 +12,7 @@ from opencollab.adapters.llm.anthropic_provider import complete_anthropic
 from opencollab.adapters.llm.openai_provider import complete_openai
 from opencollab.adapters.llm.providers import is_anthropic, warn_provider_near_miss
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
+from opencollab.adapters.llm.usage_ledger import record_api_usage
 
 
 class LLMClient:
@@ -39,15 +41,20 @@ class LLMClient:
         if is_anthropic(provider):
             import anthropic
 
-            self._anthropic = anthropic.AsyncAnthropic(
-                api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"),
-                timeout=request_timeout,
-            )
+            self.base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL")
+            anthropic_kwargs: dict[str, Any] = {
+                "api_key": api_key or os.environ.get("ANTHROPIC_API_KEY"),
+                "timeout": request_timeout,
+            }
+            if self.base_url:
+                anthropic_kwargs["base_url"] = self.base_url
+            self._anthropic = anthropic.AsyncAnthropic(**anthropic_kwargs)
             self._openai = None
         else:
+            self.base_url = base_url or os.environ.get("OPENAI_BASE_URL")
             self._openai = openai.AsyncOpenAI(
                 api_key=api_key or os.environ.get("OPENAI_API_KEY"),
-                base_url=base_url or os.environ.get("OPENAI_BASE_URL"),
+                base_url=self.base_url,
                 timeout=request_timeout,
             )
             self._anthropic = None
@@ -63,7 +70,7 @@ class LLMClient:
         temperature: float = 0.0,
         thinking: bool = False,
         thinking_params: dict[str, Any] | None = None,
-        tool_choice: str | None = None,
+        tool_choice: Any = None,
         top_p: float | None = None,
     ) -> LLMResponse:
         """Single-shot completion. Returns full response.
@@ -78,28 +85,50 @@ class LLMClient:
         ``top_p`` is ``None`` by default (provider default); when set it is sent
         as the nucleus-sampling knob. Unset == byte-identical request as today.
         """
-        if self._anthropic:
-            return await complete_anthropic(
-                self._anthropic,
-                self.model,
-                messages,
-                tools,
-                temperature,
-                self.max_retries,
-                thinking=thinking,
-                thinking_params=thinking_params,
-                tool_choice=tool_choice,
-                top_p=top_p,
+        start = time.monotonic()
+        try:
+            if self._anthropic:
+                response = await complete_anthropic(
+                    self._anthropic,
+                    self.model,
+                    messages,
+                    tools,
+                    temperature,
+                    self.max_retries,
+                    thinking=thinking,
+                    thinking_params=thinking_params,
+                    tool_choice=tool_choice,
+                    top_p=top_p,
+                )
+            else:
+                response = await complete_openai(
+                    self._openai,
+                    self.model,
+                    messages,
+                    tools,
+                    temperature,
+                    self.max_retries,
+                    thinking=thinking,
+                    thinking_params=thinking_params,
+                    tool_choice=tool_choice,
+                    top_p=top_p,
+                )
+            record_api_usage(
+                provider=self.provider,
+                model=self.model,
+                base_url=self.base_url,
+                latency_s=time.monotonic() - start,
+                status="success",
+                response=response,
             )
-        return await complete_openai(
-            self._openai,
-            self.model,
-            messages,
-            tools,
-            temperature,
-            self.max_retries,
-            thinking=thinking,
-            thinking_params=thinking_params,
-            tool_choice=tool_choice,
-            top_p=top_p,
-        )
+            return response
+        except Exception as exc:
+            record_api_usage(
+                provider=self.provider,
+                model=self.model,
+                base_url=self.base_url,
+                latency_s=time.monotonic() - start,
+                status="error",
+                error=exc,
+            )
+            raise
