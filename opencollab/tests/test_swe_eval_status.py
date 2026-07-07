@@ -129,6 +129,36 @@ def test_done_metric_without_matching_eval_report_is_ready_for_eval():
     assert decision.ready_for_eval is True
 
 
+def test_eval_report_without_patch_sha_does_not_finish_current_patch():
+    prediction = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "model_patch": _patch("+current\n"),
+    }
+    metric = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "patch_sha256": row_patch_sha(prediction),
+        "workflow_status": "done",
+    }
+    reports = [
+        EvalReport(
+            task_id="task-1",
+            patch_sha="",
+            status="done",
+            resolved_count=1,
+            path="old-without-sha.json",
+        )
+    ]
+    snapshot = build_snapshots_from_rows([prediction], [metric], reports=reports)[0]
+
+    row = task_status_row(snapshot)
+
+    assert row["state"] == "ready_for_eval"
+    assert row["eval"]["done_count"] == 0
+    assert row["eval"]["ignored_patch_mismatch_count"] == 1
+
+
 def test_task_status_row_surfaces_checkpoint_result_from_metric():
     prediction = {
         "instance_id": "task-1",

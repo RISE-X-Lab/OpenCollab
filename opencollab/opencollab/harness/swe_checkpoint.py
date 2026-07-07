@@ -32,7 +32,7 @@ def _patch_sha(patch: str) -> str:
     return hashlib.sha256(patch.encode("utf-8", errors="surrogatepass")).hexdigest()
 
 
-def _diff_command(exclude_paths: Sequence[str] = ()) -> str:
+def worktree_diff_command(exclude_paths: Sequence[str] = ()) -> str:
     resets = ""
     for path in exclude_paths:
         if not str(path).strip():
@@ -97,7 +97,7 @@ class WorktreeCheckpoint:
     ) -> CheckpointResult:
         exclude_paths = tuple(exclude_paths) + self._artifact_exclude_paths(env)
         try:
-            result = await env.exec_cmd(_diff_command(exclude_paths), timeout=120)
+            result = await env.exec_cmd(worktree_diff_command(exclude_paths), timeout=120)
         except Exception as exc:  # noqa: BLE001
             return self._write_failure(reason=reason, error=f"{type(exc).__name__}: {exc}")
         if result.returncode != 0:
@@ -147,7 +147,7 @@ class WorktreeCheckpoint:
                 preserved_previous_patch=bool(meta.get("preserved_previous_patch")),
                 submission_eligible=False,
             )
-        precheck = await env.exec_cmd(_diff_command(self._artifact_exclude_paths(env)), timeout=120)
+        precheck = await env.exec_cmd(worktree_diff_command(self._artifact_exclude_paths(env)), timeout=120)
         if precheck.returncode != 0:
             return CheckpointResult(
                 status="failed",

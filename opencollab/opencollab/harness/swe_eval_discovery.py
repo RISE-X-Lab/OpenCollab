@@ -116,9 +116,10 @@ def summarize_eval_reports(
     for report in reports:
         if report.task_id != task_id:
             continue
-        if current_patch_sha and report.patch_sha and not patch_sha_matches(report.patch_sha, current_patch_sha):
-            ignored += 1
-            continue
+        if current_patch_sha:
+            if not report.patch_sha or not patch_sha_matches(report.patch_sha, current_patch_sha):
+                ignored += 1
+                continue
         if report.status == "done":
             done += 1
             resolved += report.resolved_count

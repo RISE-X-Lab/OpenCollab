@@ -30,6 +30,10 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def is_worktree_diff_cmd(cmd: str) -> bool:
+    return "git diff --cached --binary HEAD" in cmd
+
+
 class FakeEnv(Environment):
     def __init__(self, diff="diff --git a/x b/x\n+new\n"):
         self.diff = diff
@@ -38,7 +42,7 @@ class FakeEnv(Environment):
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         self.cmds.append(cmd)
-        if cmd.startswith("git diff"):
+        if is_worktree_diff_cmd(cmd) or cmd.startswith("git diff"):
             return ExecResult(returncode=0, stdout=self.diff, stderr="")
         return ExecResult(returncode=0, stdout="", stderr="")
 
@@ -54,7 +58,7 @@ class CheckpointEnv(FakeEnv):
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         self.cmds.append(cmd)
-        if "git diff --cached --binary HEAD" in cmd:
+        if is_worktree_diff_cmd(cmd):
             stdout = self.diff_outputs.pop(0) if self.diff_outputs else self.diff
             return ExecResult(returncode=0, stdout=stdout, stderr="")
         if cmd.startswith("git apply"):

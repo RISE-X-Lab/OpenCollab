@@ -48,7 +48,7 @@ from opencollab.bootstrap.session_factory import (
     workflow_transcript_path,
 )
 from opencollab.domain.agent import Agent
-from opencollab.harness.swe_checkpoint import WorktreeCheckpoint
+from opencollab.harness.swe_checkpoint import WorktreeCheckpoint, worktree_diff_command
 from opencollab.harness.test_injection import apply_test_patch
 
 EnvFactory = Callable[["EvalTask"], Awaitable[Environment]]
@@ -620,14 +620,14 @@ async def run_eval_task(
             except Exception:
                 pass
 
-    # Extract git patch (best-effort even after errors)
+    # Extract git patch (best-effort even after errors). Use a temporary index so
+    # new files are included without mutating the environment's real git index.
     if env:
         try:
-            patch_result = await env.exec_cmd("git diff")
+            patch_result = await env.exec_cmd(worktree_diff_command(injected_paths))
             patch = patch_result.stdout
-            if not patch.strip():
-                patch_result = await env.exec_cmd("git diff HEAD")
-                patch = patch_result.stdout
+            if patch_result.returncode != 0:
+                patch = ""
         except Exception:
             pass
 
