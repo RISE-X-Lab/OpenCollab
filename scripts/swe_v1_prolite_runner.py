@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tarfile
@@ -86,6 +87,36 @@ eval_timeout = int(cfg["eval_timeout"])
 checkpoint_interval = int(cfg["checkpoint_interval"])
 max_task_starts = int(cfg["max_task_starts"])
 dry_run = bool(cfg["dry_run"])
+ACTIVE_CHILD_PGIDS = set()
+
+
+def slice_label():
+    end_index = start_index + max(limit, 0) - 1
+    return str(start_index) if end_index <= start_index else f"{start_index}-{end_index}"
+
+
+def terminate_active_children(sig=signal.SIGTERM):
+    for pgid in list(ACTIVE_CHILD_PGIDS):
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            pass
+
+
+def signal_exit(signum, frame):
+    terminate_active_children(signal.SIGTERM)
+    raise SystemExit(128 + int(signum))
+
+
+def write_runner_pid():
+    base_run_dir.mkdir(parents=True, exist_ok=True)
+    (base_run_dir / "runner.pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
+
+
+for _sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+    signal.signal(_sig, signal_exit)
+
+write_runner_pid()
 
 
 def now():
@@ -489,30 +520,34 @@ def generation_for_task(row):
     with log_path.open("ab") as log:
         log.write(("\n===== generation start " + now() + " =====\n").encode())
         proc = subprocess.Popen(cmd, cwd=str(remote_root), env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-        fifo_write = write_fifo_with_timeout(fifo, token + "\n")
-        if not fifo_write.get("ok"):
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            return {"status": "fifo_write_failed", "task": task, "details": fifo_write, "log": str(log_path)}
+        ACTIVE_CHILD_PGIDS.add(proc.pid)
         try:
-            returncode = proc.wait(timeout=task_wall_timeout)
-        except subprocess.TimeoutExpired:
-            log.write(("\nouter generation timeout after " + str(task_wall_timeout) + "s\n").encode())
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
-            try:
-                proc.wait(timeout=30)
-            except subprocess.TimeoutExpired:
+            fifo_write = write_fifo_with_timeout(fifo, token + "\n")
+            if not fifo_write.get("ok"):
                 try:
-                    os.killpg(proc.pid, signal.SIGKILL)
+                    os.killpg(proc.pid, signal.SIGTERM)
                 except ProcessLookupError:
                     pass
-                proc.wait()
-            return {"status": "generation_timeout", "task": task, "returncode": 124, "log": str(log_path), "start_state": state}
+                return {"status": "fifo_write_failed", "task": task, "details": fifo_write, "log": str(log_path)}
+            try:
+                returncode = proc.wait(timeout=task_wall_timeout)
+            except subprocess.TimeoutExpired:
+                log.write(("\nouter generation timeout after " + str(task_wall_timeout) + "s\n").encode())
+                try:
+                    os.killpg(proc.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    proc.wait(timeout=30)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    proc.wait()
+                return {"status": "generation_timeout", "task": task, "returncode": 124, "log": str(log_path), "start_state": state}
+        finally:
+            ACTIVE_CHILD_PGIDS.discard(proc.pid)
     done, prediction, metric, pairing = generation_done(run_dir, task)
     return {
         "status": "generation_done" if done else "generation_failed",
@@ -708,7 +743,7 @@ exit 0
 
 def write_markdown(summary):
     lines = [
-        "# SWE V1 Pro-Lite 26-35 Report",
+        f"# SWE V1 Pro-Lite {summary.get('slice', slice_label())} Report",
         "",
         f"- generated_at: `{summary['generated_at']}`",
         f"- base_run_dir: `{summary['base_run_dir']}`",
@@ -752,6 +787,7 @@ def main():
             "schema": "opencollab.swe_v1_prolite_runner.v1",
             "status": "preflight_failed",
             "generated_at": now(),
+            "slice": slice_label(),
             "base_run_dir": str(base_run_dir),
             "remote_runtime_repo": str(remote_repo),
             "workflow": workflow,
@@ -804,6 +840,7 @@ def main():
         "schema": "opencollab.swe_v1_prolite_runner.v1",
         "status": status,
         "generated_at": now(),
+        "slice": slice_label(),
         "base_run_dir": str(base_run_dir),
         "remote_runtime_repo": str(remote_repo),
         "workflow": workflow,
@@ -1040,6 +1077,122 @@ def configure_run_paths(args: argparse.Namespace) -> None:
         args.remote_runtime_repo = str(Path(args.base_run_dir) / "_runtime" / "repo")
 
 
+def terminate_remote_run(
+    *,
+    ssh_command: list[str],
+    host: str,
+    base_run_dir: str,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    cleanup = r'''
+import json
+import os
+import pathlib
+import signal
+import subprocess
+import sys
+import time
+
+base = pathlib.Path(sys.argv[1])
+needle = str(base)
+me = os.getpid()
+parent = os.getppid()
+
+
+def send_pid(pid, sig):
+    try:
+        os.kill(pid, sig)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def send_pgid(pgid, sig):
+    if pgid <= 1:
+        return False
+    try:
+        os.killpg(pgid, sig)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def scan():
+    try:
+        output = subprocess.check_output(["ps", "-eo", "pid=,pgid=,args="], text=True)
+    except Exception:
+        return []
+    rows = []
+    for line in output.splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) < 3:
+            continue
+        try:
+            pid = int(parts[0])
+            pgid = int(parts[1])
+        except ValueError:
+            continue
+        args = parts[2]
+        if pid in {me, parent}:
+            continue
+        if needle in args:
+            rows.append((pid, pgid, args))
+    return rows
+
+
+killed = []
+runner_pid_path = base / "runner.pid"
+try:
+    runner_pid = int(runner_pid_path.read_text(encoding="utf-8").strip())
+except Exception:
+    runner_pid = 0
+if runner_pid > 1 and runner_pid not in {me, parent}:
+    try:
+        runner_pgid = os.getpgid(runner_pid)
+    except ProcessLookupError:
+        runner_pgid = runner_pid
+    if send_pgid(runner_pgid, signal.SIGTERM):
+        killed.append({"pid": runner_pid, "pgid": runner_pgid, "signal": "TERM"})
+    send_pid(runner_pid, signal.SIGTERM)
+
+for sig_name, sig_value, delay in (("TERM", signal.SIGTERM, 2.0), ("KILL", signal.SIGKILL, 0.0)):
+    for pid, pgid, _args in scan():
+        if send_pgid(pgid, sig_value) or send_pid(pid, sig_value):
+            killed.append({"pid": pid, "pgid": pgid, "signal": sig_name})
+    if delay:
+        time.sleep(delay)
+
+print(json.dumps({"killed": killed}, ensure_ascii=False))
+'''
+    result = subprocess.run(
+        [*ssh_command, host, "python3 -c " + shlex.quote(cleanup) + " " + shlex.quote(base_run_dir)],
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
+    )
+    try:
+        detail = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        detail = {"stdout": _redacted(result.stdout), "stderr": _redacted(result.stderr)}
+    return {"returncode": result.returncode, "detail": detail}
+
+
+def terminate_local_process_group(proc: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+
+
 def run_remote(args: argparse.Namespace) -> dict[str, Any]:
     ssh_command = shlex.split(args.ssh_command)
     proxy_summary = ensure_remote_proxy(
@@ -1077,13 +1230,35 @@ def run_remote(args: argparse.Namespace) -> dict[str, Any]:
     }
     encoded = base64.b64encode(REMOTE_RUNNER.encode("utf-8")).decode("ascii")
     wrapper = "import base64; exec(base64.b64decode(%r).decode('utf-8'))" % encoded
-    result = subprocess.run(
-        [*ssh_command, args.host, "python3 -c " + shlex.quote(wrapper)],
-        input=json.dumps(payload),
+    command = [*ssh_command, args.host, "python3 -c " + shlex.quote(wrapper)]
+    proc = subprocess.Popen(
+        command,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        capture_output=True,
-        timeout=args.total_timeout,
+        start_new_session=True,
     )
+    try:
+        stdout, stderr = proc.communicate(json.dumps(payload), timeout=args.total_timeout)
+    except subprocess.TimeoutExpired as exc:
+        cleanup = terminate_remote_run(
+            ssh_command=ssh_command,
+            host=args.host,
+            base_run_dir=args.base_run_dir,
+        )
+        terminate_local_process_group(proc)
+        raise RuntimeError(f"remote run timed out after {args.total_timeout}s; cleanup={cleanup}") from exc
+    except KeyboardInterrupt:
+        cleanup = terminate_remote_run(
+            ssh_command=ssh_command,
+            host=args.host,
+            base_run_dir=args.base_run_dir,
+        )
+        terminate_local_process_group(proc)
+        print("interrupted; remote cleanup requested: " + json.dumps(cleanup, ensure_ascii=False), file=sys.stderr)
+        raise
+    result = subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
     if result.returncode not in (0, 1, 2):
         raise RuntimeError(_redacted(result.stderr or result.stdout or f"ssh exited {result.returncode}"))
     try:
@@ -1138,7 +1313,10 @@ def main() -> int:
     args = parser.parse_args()
     configure_run_paths(args)
 
-    summary = run_remote(args)
+    try:
+        summary = run_remote(args)
+    except KeyboardInterrupt:
+        return 130
     write_local_report(summary, args.json_output, args.markdown_output)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if summary.get("status") in {"done", "dry_run"} else 1
