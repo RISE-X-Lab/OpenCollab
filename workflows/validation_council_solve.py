@@ -18,6 +18,7 @@ from typing import Any
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
+from opencollab.adapters.tools.git_diff import GitDiffTool
 from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.workflow_registry import workflow
 
@@ -536,7 +537,7 @@ Post-patch triage:
 
 
 def _read_tools() -> list[Any]:
-    return [BashTool(), FileReadTool(), GrepTool()]
+    return [FileReadTool(), GrepTool()]
 
 
 def _coder_tools() -> list[Any]:
@@ -544,7 +545,12 @@ def _coder_tools() -> list[Any]:
 
 
 def _tester_tools() -> list[Any]:
-    return [BashTool(), FileReadTool(), RunTestsTool(), GrepTool()]
+    return [
+        FileReadTool(),
+        RunTestsTool(allow_runner_override=False, allow_extra_args=False),
+        GrepTool(),
+        GitDiffTool(),
+    ]
 
 
 def _dump(value: Any) -> str:

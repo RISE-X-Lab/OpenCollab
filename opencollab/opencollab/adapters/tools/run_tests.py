@@ -108,8 +108,16 @@ class RunTestsTool(Tool):
         "required": [],
     }
 
-    def __init__(self, max_traceback_chars: int = MAX_TRACEBACK_CHARS):
+    def __init__(
+        self,
+        max_traceback_chars: int = MAX_TRACEBACK_CHARS,
+        *,
+        allow_runner_override: bool = True,
+        allow_extra_args: bool = True,
+    ):
         self.max_traceback_chars = max_traceback_chars
+        self.allow_runner_override = allow_runner_override
+        self.allow_extra_args = allow_extra_args
         # target -> consecutive RED count, for the escalation nudge. The tool
         # instance is shared across a task's workflow sessions (built once in
         # the eval toolset), so this survives across run_tests calls.
@@ -129,6 +137,10 @@ class RunTestsTool(Tool):
 
         if not env:
             return "Error: no execution environment available."
+        if pinned_runner and not self.allow_runner_override:
+            return "Error: runner override is disabled for this run_tests tool."
+        if extra_args and not self.allow_extra_args:
+            return "Error: extra_args is disabled for this run_tests tool."
 
         runner = pinned_runner or DEFAULT_RUNNER
         result, cmd, runner = await self._run(
@@ -196,20 +208,23 @@ def _is_pytest_runner(runner: str) -> bool:
     return "pytest" in runner
 
 
-def _translate_target(runner: str, target: str) -> str:
-    """Map a pytest node-id to what a native runner expects.
+def _translate_native_target_args(target: str) -> list[str]:
+    """Map a pytest node-id to safely quoted native-runner arguments.
 
     sympy ``bin/test`` and friends take a file path or test name, not a
     ``path::node`` id. Drop the ``::`` selector and keep the leaf node name
     (sympy/unittest match on it) alongside the path.
     """
-    if not target or _is_pytest_runner(runner):
-        return target
+    if not target:
+        return []
     path, sep, node = target.partition("::")
     if not sep:
-        return target
+        return [shlex.quote(target)]
     leaf = node.split("::")[-1]
-    return f"{path} {leaf}" if leaf else path
+    args = [shlex.quote(path)]
+    if leaf:
+        args.append(shlex.quote(leaf))
+    return args
 
 
 def _build_command(runner: str, target: str, extra_args: str) -> str:
@@ -225,9 +240,7 @@ def _build_command(runner: str, target: str, extra_args: str) -> str:
             parts.append(shlex.quote(target))
     else:
         parts = [runner]
-        native_target = _translate_target(runner, target)
-        if native_target:
-            parts.append(native_target)
+        parts.extend(_translate_native_target_args(target))
     if extra_args:
         parts.append(extra_args)
     return " ".join(parts)
