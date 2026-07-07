@@ -284,6 +284,22 @@ def ensure_image(image):
     return {"ok": False, "image": image, "alias": alias, "reason": "missing_image"}
 
 
+def image_repo_workdir_status(image):
+    script = r"""
+if [ -d /testbed/.git ] || [ -d /app/.git ] || [ -d /workspace/.git ] || [ -d /repo/.git ] || [ -d /src/.git ]; then
+  exit 0
+fi
+found=$(find / -maxdepth 3 -name .git -type d 2>/dev/null | head -1 || true)
+if [ -n "$found" ]; then
+  exit 0
+fi
+echo "no repository checkout found under common paths" >&2
+exit 2
+"""
+    result = run(["docker", "run", "--rm", "--entrypoint", "", image, "bash", "-lc", script], timeout=120)
+    return {"ok": result["returncode"] == 0, "image": image, "returncode": result["returncode"], "details": result["stderr"] or result["stdout"]}
+
+
 def task_session(task):
     issue = task.split("__", 1)[1] if "__" in task else task
     issue = re.sub(r"[^A-Za-z0-9_.-]+", "_", issue.replace("-", "_").replace("/", "_"))
@@ -438,7 +454,10 @@ def generation_for_task(row):
     if not image_status.get("ok"):
         return {"status": "blocked_missing_generation_image", "task": task, "image_status": image_status}
     if dry_run:
-        return {"status": "would_generate", "task": task, "image": image}
+        workdir_status = image_repo_workdir_status(image)
+        if not workdir_status.get("ok"):
+            return {"status": "blocked_bad_generation_workdir", "task": task, "image_status": image_status, "workdir_status": workdir_status}
+        return {"status": "would_generate", "task": task, "image": image, "workdir_status": workdir_status}
     fifo = pathlib.Path("/tmp") / f"opencollab_v1_{os.getpid()}_{int(time.time())}.fifo"
     os.mkfifo(fifo, 0o600)
     session = task_session(task)

@@ -99,6 +99,31 @@ def start_container(image: str, name: str) -> str:
     if res.returncode != 0:
         raise RuntimeError(f"docker run failed: {res.stderr.strip()}")
     cid = res.stdout.strip()[:12]
+    ensure_workdir = _docker(
+        "exec", cid, "bash", "-lc",
+        """
+set -e
+if [ -d /testbed/.git ]; then
+  exit 0
+fi
+if [ ! -e /testbed ]; then
+  for d in /app /workspace /repo /src; do
+    if [ -d "$d/.git" ]; then
+      ln -s "$d" /testbed
+      exit 0
+    fi
+  done
+  found=$(find / -maxdepth 3 -name .git -type d 2>/dev/null | head -1 || true)
+  if [ -n "$found" ]; then
+    ln -s "$(dirname "$found")" /testbed
+    exit 0
+  fi
+fi
+echo "unable to prepare /testbed: no repository checkout found" >&2
+exit 2
+""",
+    )
+    _check_docker(ensure_workdir, "docker /testbed workdir setup")
     # Repo is owned by root in the image; allow git to operate on it.
     safe_dir = _docker("exec", cid, "bash", "-lc",
                        f"git config --global --add safe.directory {DOCKER_WORKDIR}")
