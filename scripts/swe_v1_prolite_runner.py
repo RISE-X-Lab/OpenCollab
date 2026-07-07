@@ -20,6 +20,8 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -35,26 +37,17 @@ DEFAULT_MODEL_NAME = "opencollab-glm52-v1-16m-prolite26-35-20260707"
 DEFAULT_REPORT_JSON = REPO_ROOT / "docs" / "monitoring" / "swe_v1_16m_prolite26_35_report.json"
 DEFAULT_REPORT_MD = REPO_ROOT / "docs" / "monitoring" / "swe_v1_16m_prolite26_35_report.md"
 DEFAULT_PROXY_ENV_FILE = Path.home() / ".claude" / "glm52.env"
+DEFAULT_LOCAL_PROXY_BASE_URL = "http://127.0.0.1:8878"
 
 SYNC_FILES = [
     "scripts/run_swe_v2_one_from_fifo.sh",
     "swebench/gen_prediction.py",
     "swebench/gen_prediction_workflow.py",
     "workflows/validation_council_solve.py",
-    "opencollab/opencollab/harness/evaluator.py",
-    "opencollab/opencollab/harness/swe_checkpoint.py",
-    "opencollab/opencollab/harness/test_injection.py",
-    "opencollab/opencollab/harness/workflows.py",
-    "opencollab/opencollab/harness/swe_eval_records.py",
-    "opencollab/opencollab/harness/swe_eval_decision.py",
-    "opencollab/opencollab/harness/swe_eval_discovery.py",
-    "opencollab/opencollab/application/workflow.py",
-    "opencollab/opencollab/application/session_run.py",
-    "opencollab/opencollab/bootstrap/workflow_runtime.py",
-    "opencollab/opencollab/bootstrap/session_factory.py",
-    "opencollab/opencollab/adapters/llm/client.py",
-    "opencollab/opencollab/adapters/llm/anthropic_provider.py",
-    "opencollab/opencollab/adapters/llm/usage_ledger.py",
+]
+
+SYNC_DIRS = [
+    "opencollab/opencollab",
 ]
 
 
@@ -827,14 +820,6 @@ def run_checked(command: list[str], *, timeout: int = 120, input_text: str | Non
     return result
 
 
-def run_checked_bytes(command: list[str], *, timeout: int = 120, input_bytes: bytes = b"") -> subprocess.CompletedProcess[bytes]:
-    result = subprocess.run(command, input=input_bytes, capture_output=True, timeout=timeout)
-    if result.returncode != 0:
-        output = (result.stderr or result.stdout or b"").decode("utf-8", errors="replace")
-        raise RuntimeError(_redacted(output or f"{command[0]} exited {result.returncode}"))
-    return result
-
-
 def load_shell_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
     for raw in path.expanduser().read_text(encoding="utf-8", errors="replace").splitlines():
@@ -901,36 +886,130 @@ def get_proxy_token(proxy_env_file: Path) -> str:
     return match.group(1)
 
 
+def url_with_healthz(base_url: str) -> str:
+    return base_url.rstrip("/") + "/healthz"
+
+
+def local_http_ok(base_url: str, timeout: float = 5.0) -> bool:
+    try:
+        with urllib.request.urlopen(url_with_healthz(base_url), timeout=timeout) as response:
+            return 200 <= response.status < 400
+    except Exception:
+        return False
+
+
+def remote_http_ok(*, ssh_command: list[str], host: str, base_url: str, timeout: int = 10) -> bool:
+    probe = (
+        "import sys,urllib.request;"
+        "urllib.request.urlopen(sys.argv[1], timeout="
+        + str(timeout)
+        + ").read()"
+    )
+    try:
+        result = subprocess.run(
+            [*ssh_command, host, "python3 -c " + shlex.quote(probe) + " " + shlex.quote(url_with_healthz(base_url))],
+            text=True,
+            capture_output=True,
+            timeout=timeout + 10,
+        )
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def loopback_port(base_url: str, *, default: int) -> int:
+    parsed = urllib.parse.urlparse(base_url)
+    if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
+        raise RuntimeError(f"proxy URL must be loopback: {base_url}")
+    return int(parsed.port or default)
+
+
+def ensure_remote_proxy(
+    *,
+    ssh_command: list[str],
+    host: str,
+    local_proxy_base_url: str,
+    remote_proxy_base_url: str,
+    enabled: bool,
+) -> dict[str, Any]:
+    if not enabled:
+        return {"status": "disabled"}
+    if remote_http_ok(ssh_command=ssh_command, host=host, base_url=remote_proxy_base_url):
+        return {"status": "already_healthy", "remote_proxy_base_url": remote_proxy_base_url}
+    if not local_http_ok(local_proxy_base_url):
+        raise RuntimeError(f"local proxy health check failed: {url_with_healthz(local_proxy_base_url)}")
+    local_port = loopback_port(local_proxy_base_url, default=8878)
+    remote_port = loopback_port(remote_proxy_base_url, default=18788)
+    forward = f"127.0.0.1:{remote_port}:127.0.0.1:{local_port}"
+    command = [
+        *ssh_command,
+        "-fN",
+        "-o",
+        "ExitOnForwardFailure=yes",
+        "-o",
+        "ServerAliveInterval=30",
+        "-o",
+        "ServerAliveCountMax=3",
+        "-R",
+        forward,
+        host,
+    ]
+    run_checked(command, timeout=30)
+    for _ in range(20):
+        if remote_http_ok(ssh_command=ssh_command, host=host, base_url=remote_proxy_base_url, timeout=5):
+            return {
+                "status": "started",
+                "local_proxy_base_url": local_proxy_base_url,
+                "remote_proxy_base_url": remote_proxy_base_url,
+                "forward": forward,
+            }
+        time.sleep(0.5)
+    raise RuntimeError(f"remote proxy tunnel did not become healthy: {url_with_healthz(remote_proxy_base_url)}")
+
+
 def sync_runtime(*, ssh_command: list[str], host: str, remote_runtime_repo: str) -> dict[str, Any]:
     synced: list[str] = []
+    synced_dirs: list[str] = []
+    ssh_part = " ".join(shlex.quote(part) for part in ssh_command)
     with tempfile.TemporaryDirectory(prefix="swe-v1-runtime-") as tmp_dir:
         archive_path = Path(tmp_dir) / "runtime.tgz"
+
+        def archive_filter(tar_info: tarfile.TarInfo) -> tarfile.TarInfo | None:
+            parts = Path(tar_info.name).parts
+            if "__pycache__" in parts or tar_info.name.endswith((".pyc", ".pyo")):
+                return None
+            return tar_info
+
         with tarfile.open(archive_path, "w:gz") as archive:
             for rel in SYNC_FILES:
                 local_path = REPO_ROOT / rel
                 if not local_path.exists():
                     continue
-                archive.add(local_path, arcname=rel)
+                archive.add(local_path, arcname=rel, filter=archive_filter)
                 synced.append(rel)
+            for rel in SYNC_DIRS:
+                local_path = REPO_ROOT / rel
+                if not local_path.exists():
+                    continue
+                archive.add(local_path, arcname=rel, filter=archive_filter)
+                synced_dirs.append(rel)
         run_checked([*ssh_command, host, "mkdir -p " + shlex.quote(remote_runtime_repo)], timeout=60)
-        run_checked_bytes(
-            [*ssh_command, host, "tar -xzf - -C " + shlex.quote(remote_runtime_repo)],
-            input_bytes=archive_path.read_bytes(),
-            timeout=300,
-        )
+        remote_archive = remote_runtime_repo.rstrip("/") + "/runtime.tgz"
+        run_checked(["rsync", "-az", "-e", ssh_part, str(archive_path), f"{host}:{remote_archive}"], timeout=300)
+        run_checked([*ssh_command, host, "tar -xzf " + shlex.quote(remote_archive) + " -C " + shlex.quote(remote_runtime_repo)], timeout=300)
     sh_files = [rel for rel in synced if rel.endswith(".sh")]
     if sh_files:
         run_checked(
             [*ssh_command, host, "cd " + shlex.quote(remote_runtime_repo) + " && chmod +x " + " ".join(shlex.quote(rel) for rel in sh_files)],
             timeout=60,
         )
-    py_files = [rel for rel in synced if rel.endswith(".py")]
-    if py_files:
+    compile_targets = [rel for rel in ("scripts", "swebench", "workflows", *SYNC_DIRS) if rel in synced_dirs or any(item == rel or item.startswith(rel + "/") for item in synced)]
+    if compile_targets:
         run_checked(
-            [*ssh_command, host, "cd " + shlex.quote(remote_runtime_repo) + " && python3 -m py_compile " + " ".join(shlex.quote(rel) for rel in py_files)],
+            [*ssh_command, host, "cd " + shlex.quote(remote_runtime_repo) + " && python3 -m compileall -q " + " ".join(shlex.quote(rel) for rel in compile_targets)],
             timeout=180,
         )
-    return {"remote_runtime_repo": remote_runtime_repo, "synced": synced, "py_compiled": py_files}
+    return {"remote_runtime_repo": remote_runtime_repo, "synced": synced, "synced_dirs": synced_dirs, "compile_targets": compile_targets}
 
 
 def configure_run_paths(args: argparse.Namespace) -> None:
@@ -944,6 +1023,13 @@ def configure_run_paths(args: argparse.Namespace) -> None:
 
 def run_remote(args: argparse.Namespace) -> dict[str, Any]:
     ssh_command = shlex.split(args.ssh_command)
+    proxy_summary = ensure_remote_proxy(
+        ssh_command=ssh_command,
+        host=args.host,
+        local_proxy_base_url=args.local_proxy_base_url,
+        remote_proxy_base_url=args.remote_proxy_base_url,
+        enabled=not args.no_ensure_remote_proxy,
+    )
     sync_summary = {} if args.no_sync_runtime else sync_runtime(
         ssh_command=ssh_command,
         host=args.host,
@@ -986,6 +1072,7 @@ def run_remote(args: argparse.Namespace) -> dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise RuntimeError(_redacted(result.stdout[-4000:] or result.stderr[-4000:])) from exc
     summary["runtime_sync"] = sync_summary
+    summary["remote_proxy"] = proxy_summary
     return summary
 
 
@@ -1013,6 +1100,7 @@ def main() -> int:
     parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
     parser.add_argument("--session-prefix", default="swe_v1_pro35_16m")
     parser.add_argument("--remote-proxy-base-url", default="http://127.0.0.1:18788")
+    parser.add_argument("--local-proxy-base-url", default=DEFAULT_LOCAL_PROXY_BASE_URL)
     parser.add_argument("--proxy-env-file", type=Path, default=DEFAULT_PROXY_ENV_FILE)
     parser.add_argument("--budget", type=int, default=16_000_000)
     parser.add_argument("--max-steps", type=int, default=60)
@@ -1026,6 +1114,7 @@ def main() -> int:
     parser.add_argument("--json-output", type=Path, default=DEFAULT_REPORT_JSON)
     parser.add_argument("--markdown-output", type=Path, default=DEFAULT_REPORT_MD)
     parser.add_argument("--no-sync-runtime", action="store_true")
+    parser.add_argument("--no-ensure-remote-proxy", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     configure_run_paths(args)
