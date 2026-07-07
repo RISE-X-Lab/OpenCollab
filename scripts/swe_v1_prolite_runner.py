@@ -207,6 +207,49 @@ def prediction_patch(row):
     return str(row.get("model_patch") or row.get("patch") or "")
 
 
+def is_eval_test_path(path):
+    normalized = str(path or "").replace("\\", "/").lstrip("/")
+    parts = [part for part in normalized.split("/") if part]
+    name = parts[-1] if parts else normalized
+    if any(part in {"test", "tests", "__tests__"} for part in parts):
+        return True
+    return (
+        name.endswith("_test.go")
+        or name.startswith("test_") and name.endswith(".py")
+        or name.endswith("_test.py")
+        or ".test." in name
+        or ".spec." in name
+    )
+
+
+def filter_model_patch_for_eval(patch):
+    if not patch.strip():
+        return patch
+    blocks = []
+    current = []
+    for line in patch.splitlines(keepends=True):
+        if line.startswith("diff --git ") and current:
+            blocks.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        blocks.append(current)
+    kept = []
+    for block in blocks:
+        header = block[0] if block else ""
+        parts = header.strip().split()
+        path = ""
+        if len(parts) >= 4 and parts[3].startswith("b/"):
+            path = parts[3][2:]
+        elif len(parts) >= 3 and parts[2].startswith("a/"):
+            path = parts[2][2:]
+        if path and is_eval_test_path(path):
+            continue
+        kept.extend(block)
+    return "".join(kept)
+
+
 def row_task_id(row):
     if not isinstance(row, dict):
         return ""
@@ -604,7 +647,8 @@ def eval_for_task(row):
     input_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_dir.chmod(0o777)
-    model_patch = prediction_patch(prediction)
+    original_model_patch = prediction_patch(prediction)
+    model_patch = filter_model_patch_for_eval(original_model_patch)
     test_patch = str(row.get("test_patch") or "")
     fail_to_pass = parse_literal_list(row.get("fail_to_pass") or row.get("FAIL_TO_PASS"))
     pass_to_pass = parse_literal_list(row.get("pass_to_pass") or row.get("PASS_TO_PASS"))
@@ -629,7 +673,7 @@ if [ -s /eval_input/model.patch ]; then
   git apply --whitespace=nowarn /eval_input/model.patch > /eval_output/model_patch.log 2>&1
   model_status=$?
   if [ "$model_status" -ne 0 ] && command -v patch >/dev/null 2>&1; then
-    patch -p1 < /eval_input/model.patch >> /eval_output/model_patch.log 2>&1
+    patch --batch -p1 < /eval_input/model.patch >> /eval_output/model_patch.log 2>&1
     model_status=$?
   fi
 fi
@@ -639,7 +683,7 @@ if [ "$model_status" -eq 0 ] && [ -s /eval_input/test.patch ]; then
   git apply --whitespace=nowarn /eval_input/test.patch > /eval_output/test_patch.log 2>&1
   test_status=$?
   if [ "$test_status" -ne 0 ] && command -v patch >/dev/null 2>&1; then
-    patch -p1 < /eval_input/test.patch >> /eval_output/test_patch.log 2>&1
+    patch --batch -p1 < /eval_input/test.patch >> /eval_output/test_patch.log 2>&1
     test_status=$?
   fi
 fi
@@ -711,6 +755,8 @@ exit 0
         "docker_exit": docker_exit,
         "patch_sha256": row_patch_sha(prediction),
         "record_id": row_record_id(prediction),
+        "model_patch_chars": len(original_model_patch),
+        "eval_model_patch_chars": len(model_patch),
         "tests_status": {
             "before_repo_status": before_status,
             "model_patch_status": model_status,
@@ -734,6 +780,8 @@ exit 0
         "resolved": resolved,
         "patch_sha256": row_patch_sha(prediction),
         "record_id": row_record_id(prediction),
+        "model_patch_chars": len(original_model_patch),
+        "eval_model_patch_chars": len(model_patch),
         "report_path": str(report_path),
         "command_log": str(command_log),
         "tests_status": report["tests_status"],
