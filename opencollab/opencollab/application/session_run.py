@@ -1261,29 +1261,36 @@ class SessionRunUseCase:
                     }
                     for tc in response.tool_calls
                 ]
+            usage = response.usage
+            input_tokens = getattr(usage, "input_tokens", 0)
+            total_tokens = getattr(usage, "total_tokens", input_tokens)
             payload = {
                 "model": self.agent.model,
                 "finish_reason": response.finish_reason,
                 "content": response.content,
                 "tool_calls": tool_calls_log,
-                "usage": {
-                    "input_tokens": response.usage.input_tokens,
-                    "output_tokens": response.usage.output_tokens,
-                    "total_tokens": response.usage.total_tokens,
-                    "cache_read_tokens": getattr(response.usage, "cache_read_tokens", 0),
-                    "cache_creation_tokens": getattr(response.usage, "cache_creation_tokens", 0),
+            }
+            if all(hasattr(usage, name) for name in ("input_tokens", "output_tokens", "total_tokens", "estimated")):
+                output_tokens = getattr(usage, "output_tokens", max(total_tokens - input_tokens, 0))
+                cache_read_tokens = getattr(usage, "cache_read_tokens", 0)
+                cache_creation_tokens = getattr(usage, "cache_creation_tokens", 0)
+                payload["usage"] = {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
+                    "cache_read_tokens": cache_read_tokens,
+                    "cache_creation_tokens": cache_creation_tokens,
                     "uncached_input_tokens": max(
-                        response.usage.input_tokens
-                        - getattr(response.usage, "cache_read_tokens", 0)
-                        - getattr(response.usage, "cache_creation_tokens", 0),
+                        input_tokens
+                        - cache_read_tokens
+                        - cache_creation_tokens,
                         0,
                     ),
-                    "estimated": response.usage.estimated,
-                },
-            }
-            raw_usage = getattr(response.usage, "raw_usage", None)
-            if raw_usage:
-                payload["usage"]["raw_usage"] = raw_usage
+                    "estimated": getattr(usage, "estimated", False),
+                }
+                raw_usage = getattr(usage, "raw_usage", None)
+                if raw_usage:
+                    payload["usage"]["raw_usage"] = raw_usage
             # Record provider chain-of-thought to the trajectory when present
             # (omitted otherwise, so non-thinking traces keep their prior shape).
             reasoning = getattr(response, "reasoning", None)
@@ -1292,7 +1299,7 @@ class SessionRunUseCase:
             self.tracer.log_step(
                 step_type="llm_call",
                 payload=payload,
-                tokens=response.usage.total_tokens,
+                tokens=total_tokens,
                 latency=latency,
             )
 
