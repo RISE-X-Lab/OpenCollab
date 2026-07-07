@@ -176,10 +176,14 @@ def decide_task(snapshot: TaskSnapshot, *, allow_advisory_gap: bool = False) -> 
 def task_status_row(snapshot: TaskSnapshot, *, allow_advisory_gap: bool = False) -> dict[str, Any]:
     decision = decide_task(snapshot, allow_advisory_gap=allow_advisory_gap)
     row = decision.to_dict()
+    checkpoint_result = {}
+    if isinstance(snapshot.metric, dict) and isinstance(snapshot.metric.get("checkpoint_result"), dict):
+        checkpoint_result = snapshot.metric["checkpoint_result"]
     row.update(
         {
             "record_id": row_record_id(snapshot.prediction),
             "eval": snapshot.eval_summary.to_dict(),
+            "checkpoint_result": checkpoint_result,
         }
     )
     return row

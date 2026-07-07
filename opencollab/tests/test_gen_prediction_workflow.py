@@ -7,8 +7,10 @@ module from the repo-root ``swebench/`` dir, the same way the script bootstraps.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -252,3 +254,118 @@ def test_evaltask_contract_matches_non_blind_extras():
         "tests/test_widget.py::test_empty",
         "tests/test_widget.py::test_none",
     ]
+
+
+def test_generate_forwards_checkpoint_options(monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake_run_eval_task(task, **kwargs):
+        captured["task"] = task
+        captured["kwargs"] = kwargs
+        return EvalResult(
+            task_id=task.task_id,
+            patch="diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n",
+            patch_produced=True,
+            tokens_used=1,
+            steps=1,
+            duration=1.0,
+            workflow_result={"allowed_patch_paths": ["pkg/a.py"]},
+        )
+
+    monkeypatch.setattr(gpw, "run_eval_task", fake_run_eval_task)
+    monkeypatch.setattr(gpw.gp, "start_container", lambda image, name: "cid")
+    monkeypatch.setattr(gpw.gp, "remove_container", lambda cid: None)
+    monkeypatch.setattr(
+        gpw,
+        "extract_patch_guarded",
+        lambda *args, **kwargs: ("diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n", []),
+    )
+    args = SimpleNamespace(
+        timeout=10,
+        budget=1000,
+        max_steps=3,
+        keep_container=False,
+        blind_validation=False,
+        checkpoint_interval_seconds=300,
+        resume=True,
+    )
+    cfg = {
+        "model": "m",
+        "provider": "openai",
+        "api_key": "k",
+        "base_url": "http://local",
+        "temperature": 0.0,
+        "thinking": False,
+    }
+
+    patch, metrics = asyncio.run(
+        gpw.generate(FIXTURE, "image", cfg, args, gpw.generate_review_fix, "generate_review_fix")
+    )
+
+    assert patch.strip()
+    assert metrics["checkpoint_result"] is None
+    assert captured["kwargs"]["checkpoint_interval_seconds"] == 300
+    assert captured["kwargs"]["resume_from_checkpoint"] is True
+
+
+def test_generate_marks_non_error_patch_as_done(monkeypatch):
+    async def fake_run_eval_task(task, **kwargs):
+        return EvalResult(
+            task_id=task.task_id,
+            patch="diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n",
+            patch_produced=True,
+            tokens_used=1,
+            steps=1,
+            duration=1.0,
+            workflow_result={},
+        )
+
+    monkeypatch.setattr(gpw, "run_eval_task", fake_run_eval_task)
+    monkeypatch.setattr(gpw.gp, "start_container", lambda image, name: "cid")
+    monkeypatch.setattr(gpw.gp, "remove_container", lambda cid: None)
+    monkeypatch.setattr(
+        gpw,
+        "extract_patch_guarded",
+        lambda *args, **kwargs: ("diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n", []),
+    )
+    args = SimpleNamespace(
+        timeout=10,
+        budget=1000,
+        max_steps=3,
+        keep_container=False,
+        blind_validation=False,
+        checkpoint_interval_seconds=0,
+        resume=False,
+    )
+    cfg = {
+        "model": "m",
+        "provider": "openai",
+        "api_key": "k",
+        "base_url": "http://local",
+        "temperature": 0.0,
+        "thinking": False,
+    }
+
+    _patch, metrics = asyncio.run(
+        gpw.generate(FIXTURE, "image", cfg, args, gpw.generate_review_fix, "generate_review_fix")
+    )
+
+    assert metrics["workflow_status"] == "done"
+
+
+def test_output_records_share_record_id_and_patch_sha():
+    patch = "diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n"
+
+    prediction, metrics = gpw.build_output_records(
+        instance_id="task-1",
+        model_name="model",
+        patch=patch,
+        metrics={"workflow_status": "done"},
+        record_id="record-1",
+    )
+
+    assert prediction["record_id"] == "record-1"
+    assert metrics["record_id"] == "record-1"
+    assert prediction["patch_sha256"] == gpw._patch_sha256(patch)
+    assert metrics["patch_sha256"] == prediction["patch_sha256"]
+    assert metrics["instance_id"] == prediction["instance_id"]

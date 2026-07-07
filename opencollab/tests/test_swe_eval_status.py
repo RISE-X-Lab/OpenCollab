@@ -129,6 +129,27 @@ def test_done_metric_without_matching_eval_report_is_ready_for_eval():
     assert decision.ready_for_eval is True
 
 
+def test_task_status_row_surfaces_checkpoint_result_from_metric():
+    prediction = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "model_patch": _patch("+current\n"),
+    }
+    metric = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "patch_sha256": row_patch_sha(prediction),
+        "workflow_status": "done",
+        "checkpoint_result": {"final": {"status": "written", "loss_bound_seconds": 300}},
+    }
+    snapshot = build_snapshots_from_rows([prediction], [metric])[0]
+
+    row = task_status_row(snapshot)
+
+    assert row["checkpoint_result"]["final"]["status"] == "written"
+    assert row["checkpoint_result"]["final"]["loss_bound_seconds"] == 300
+
+
 def test_status_script_defaults_to_read_only_summary(tmp_path):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
@@ -198,6 +219,51 @@ def test_status_script_dry_run_requires_explicit_start_eval(tmp_path):
     summary = json.loads(result.stdout)
     assert summary["actions"][0]["action"] == "dry_run"
     assert summary["actions"][0]["command"][0] == "echo"
+
+
+def test_status_script_limits_eval_starts_by_default(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    predictions = []
+    metrics = []
+    for task in ("task-1", "task-2"):
+        prediction = {
+            "instance_id": task,
+            "record_id": f"{task}-r1",
+            "model_patch": _patch("+current\n"),
+        }
+        predictions.append(prediction)
+        metrics.append(
+            {
+                "instance_id": task,
+                "record_id": f"{task}-r1",
+                "patch_sha256": row_patch_sha(prediction),
+                "workflow_status": "done",
+            }
+        )
+    _write_jsonl(run_dir / "predictions.jsonl", predictions)
+    _write_jsonl(run_dir / "metrics.jsonl", metrics)
+    script = Path(__file__).resolve().parents[2] / "scripts" / "swe_auto_eval_driver.py"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--run-dir",
+            str(run_dir),
+            "--start-eval",
+            "--dry-run",
+            "--eval-command-template",
+            "echo {task}",
+        ],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    summary = json.loads(result.stdout)
+    assert summary["totals"]["ready_for_eval"] == 2
+    assert len(summary["actions"]) == 1
 
 
 def test_wave_watchdog_summarizes_runs_config_without_actions(tmp_path):

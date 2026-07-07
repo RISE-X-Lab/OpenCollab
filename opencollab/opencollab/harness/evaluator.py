@@ -18,6 +18,7 @@ import shlex
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from opencollab.adapters.env import DockerEnvironment, Environment, LocalEnvironment
@@ -47,6 +48,7 @@ from opencollab.bootstrap.session_factory import (
     workflow_transcript_path,
 )
 from opencollab.domain.agent import Agent
+from opencollab.harness.swe_checkpoint import WorktreeCheckpoint
 from opencollab.harness.test_injection import apply_test_patch
 
 EnvFactory = Callable[["EvalTask"], Awaitable[Environment]]
@@ -74,6 +76,7 @@ class EvalResult:
     # observability plus a hook for outer SWE drivers that need workflow-level
     # audit data when writing the final prediction patch.
     workflow_result: Any | None = None
+    checkpoint_result: Any | None = None
 
 
 @dataclass
@@ -475,6 +478,8 @@ async def run_eval_task(
     top_p: float | None = DEFAULT_TOP_P,
     thinking: bool = DEFAULT_THINKING,
     thinking_params: dict | None = None,
+    checkpoint_interval_seconds: float | None = None,
+    resume_from_checkpoint: bool = False,
 ) -> EvalResult:
     """Run a single evaluation task.
 
@@ -506,6 +511,8 @@ async def run_eval_task(
     env: Environment | None = None
     session: Session | None = None
     workflow_ctx: WorkflowContext | None = None
+    checkpoint: WorktreeCheckpoint | None = None
+    checkpoint_result: dict[str, Any] | None = None
     error: str | None = None
     patch = ""
     # Paths of any injected benchmark test files — checked out before patch
@@ -517,6 +524,14 @@ async def run_eval_task(
         env = await env_factory(task)
         tools = list(tools_factory())
 
+        if run_dir is not None and checkpoint_interval_seconds:
+            checkpoint = WorktreeCheckpoint(
+                Path(run_dir),
+                interval_seconds=checkpoint_interval_seconds,
+            )
+            if resume_from_checkpoint:
+                checkpoint_result = {"restore": (await checkpoint.restore_latest(env)).to_dict()}
+
         # SWE-bench test injection: apply the real FAIL_TO_PASS test into the
         # workspace BEFORE the workflow runs so the agent can verify against it.
         # Guarded on extras so single-session / non-SWE-bench paths are
@@ -525,6 +540,9 @@ async def run_eval_task(
         test_patch = (task.extras or {}).get("test_patch")
         if test_patch:
             injected_paths = await apply_test_patch(env, test_patch)
+
+        if checkpoint is not None:
+            await checkpoint.start(env, exclude_paths=injected_paths)
 
         # Orientation up front: a bounded repo map in the system prompt saves
         # the model its first N steps of ls/find exploration.
@@ -573,6 +591,12 @@ async def run_eval_task(
         error = f"Task timed out after {task.timeout}s"
     except Exception as e:
         error = f"{type(e).__name__}: {e}"
+
+    if env and checkpoint is not None:
+        final_checkpoint = await checkpoint.stop(env, exclude_paths=injected_paths)
+        if checkpoint_result is None:
+            checkpoint_result = {}
+        checkpoint_result["final"] = final_checkpoint.to_dict()
 
     # Diff-exclusion (load-bearing): revert any injected benchmark test files
     # before extracting the patch so the submitted model_patch NEVER contains the
@@ -649,6 +673,7 @@ async def run_eval_task(
         trajectory_path=tracer.path,
         markup_recovered=markup_recovered,
         workflow_result=getattr(workflow_ctx, "workflow_result", None) if workflow_ctx else None,
+        checkpoint_result=checkpoint_result,
     )
 
 
@@ -698,4 +723,6 @@ def save_results(results: list[EvalResult], output_path: str) -> None:
                 "patch_lines": len(r.patch.splitlines()),
                 "trajectory": r.trajectory_path,
             }
+            if r.checkpoint_result is not None:
+                record["checkpoint_result"] = r.checkpoint_result
             f.write(json.dumps(record) + "\n")

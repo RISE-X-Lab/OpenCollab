@@ -110,6 +110,8 @@ def maybe_start_eval(args: argparse.Namespace, summary: dict) -> list[dict]:
         raise SystemExit("--start-eval requires --eval-command-template")
     actions: list[dict] = []
     for row in summary["tasks"]:
+        if len(actions) >= args.max_eval_starts:
+            break
         if not row["ready_for_eval"]:
             continue
         command = _format_eval_command(args.eval_command_template, row)
@@ -133,6 +135,7 @@ def main() -> int:
     parser.add_argument("--markdown-output", type=Path, default=None)
     parser.add_argument("--start-eval", action="store_true")
     parser.add_argument("--eval-command-template", default="")
+    parser.add_argument("--max-eval-starts", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
