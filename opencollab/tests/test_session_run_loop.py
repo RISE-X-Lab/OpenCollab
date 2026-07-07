@@ -254,6 +254,24 @@ def test_run_loop_cancel_event_appends_interrupt_and_sets_phase():
     assert events == [("error", {"reason": "cancelled", "aid": -1})]
 
 
+def test_run_loop_loop_block_limit_stops_before_next_llm_call():
+    events, bus = collect_events()
+    state = SessionState(
+        messages=[{"role": "system", "content": "sys"}],
+        loop_blocked_since_progress=3,
+    )
+    llm = FakeLLM()
+    runner = build_runner(state=state, llm=llm, event_bus=bus)
+
+    result = run(runner.run_loop())
+
+    assert result == ""
+    assert llm.calls == []
+    assert state.phase is SessionPhase.STEP_LIMIT_EXCEEDED
+    assert state.terminal_reason == "loop block limit reached: 3 repeated tool calls"
+    assert events == [("error", {"reason": "loop_blocked", "aid": -1})]
+
+
 def test_run_loop_llm_step_events_trace_and_message_shape():
     events, bus = collect_events()
     schemas = [{"type": "function", "function": {"name": "fake_tool"}}]

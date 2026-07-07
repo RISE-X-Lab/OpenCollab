@@ -144,7 +144,7 @@ exit 2
     return cid
 
 
-def remove_container(cid: str) -> None:
+def remove_container(cid: str) -> bool:
     """Best-effort teardown of a throwaway container.
 
     Cleanup must NEVER lose an already-computed result: under heavy daemon load
@@ -156,10 +156,40 @@ def remove_container(cid: str) -> None:
     Swallow any failure with a warning instead.
     """
     try:
-        _docker("rm", "-f", cid, timeout=30)
+        result = _docker("rm", "-f", cid, timeout=30)
     except Exception as exc:  # noqa: BLE001 — teardown must never propagate
         print(f"  warning: container cleanup failed for {cid}: {exc!r} "
               f"(best-effort, continuing)")
+        return False
+    detail = (result.stderr or result.stdout or "").strip()
+    if result.returncode != 0 and "No such container" not in detail:
+        print(
+            f"  warning: container cleanup failed for {cid}: "
+            f"exit {result.returncode}: {detail[:500]} (best-effort, continuing)"
+        )
+        return False
+    return True
+
+
+def write_container_marker(run_dir: Path, cid: str, name: str) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "container.id").write_text(cid + "\n", encoding="utf-8")
+    (run_dir / "container.name").write_text(name + "\n", encoding="utf-8")
+
+
+def clear_container_marker(run_dir: Path) -> None:
+    for marker in ("container.id", "container.name"):
+        try:
+            (run_dir / marker).unlink()
+        except FileNotFoundError:
+            pass
+
+
+def remove_container_and_clear_marker(run_dir: Path, cid: str) -> bool:
+    removed = remove_container(cid)
+    if removed:
+        clear_container_marker(run_dir)
+    return removed
 
 
 def build_task(instance: dict) -> str:
@@ -266,6 +296,8 @@ def main() -> None:
 
     name = unique_container_name("oc-gen-", iid)
     cid = start_container(image, name)
+    run_dir = Path(args.output).parent
+    write_container_marker(run_dir, cid, name)
     print(f"Container: {cid}")
     try:
         task = build_task(instance)
@@ -273,7 +305,7 @@ def main() -> None:
         patch = extract_patch(cid)
     finally:
         if not args.keep_container:
-            remove_container(cid)
+            remove_container_and_clear_marker(run_dir, cid)
         else:
             print(f"  (left container {cid} running: {name})")
 

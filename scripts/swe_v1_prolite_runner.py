@@ -1219,6 +1219,14 @@ def scan():
 
 
 killed = []
+containers = []
+try:
+    for marker in base.rglob("container.id"):
+        cid = marker.read_text(encoding="utf-8", errors="replace").strip()
+        if cid:
+            containers.append(cid)
+except Exception:
+    pass
 runner_pid_path = base / "runner.pid"
 try:
     runner_pid = int(runner_pid_path.read_text(encoding="utf-8").strip())
@@ -1240,7 +1248,28 @@ for sig_name, sig_value, delay in (("TERM", signal.SIGTERM, 2.0), ("KILL", signa
     if delay:
         time.sleep(delay)
 
-print(json.dumps({"killed": killed}, ensure_ascii=False))
+container_results = []
+for cid in sorted(set(containers)):
+    try:
+        result = subprocess.run(
+            ["docker", "rm", "-f", cid],
+            text=True,
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+        container_results.append(
+            {
+                "cid": cid,
+                "returncode": result.returncode,
+                "stdout": result.stdout.strip()[:200],
+                "stderr": result.stderr.strip()[:200],
+            }
+        )
+    except Exception as exc:
+        container_results.append({"cid": cid, "error": repr(exc)})
+
+print(json.dumps({"killed": killed, "containers": container_results}, ensure_ascii=False))
 '''
     result = subprocess.run(
         [*ssh_command, host, "python3 -c " + shlex.quote(cleanup) + " " + shlex.quote(base_run_dir)],

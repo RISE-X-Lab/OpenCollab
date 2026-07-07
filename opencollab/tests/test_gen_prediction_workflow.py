@@ -274,7 +274,7 @@ def test_generate_forwards_checkpoint_options(monkeypatch, tmp_path):
 
     monkeypatch.setattr(gpw, "run_eval_task", fake_run_eval_task)
     monkeypatch.setattr(gpw.gp, "start_container", lambda image, name: "cid")
-    monkeypatch.setattr(gpw.gp, "remove_container", lambda cid: None)
+    monkeypatch.setattr(gpw.gp, "remove_container_and_clear_marker", lambda run_dir, cid: True)
     monkeypatch.setattr(
         gpw,
         "extract_patch_guarded",
@@ -288,6 +288,7 @@ def test_generate_forwards_checkpoint_options(monkeypatch, tmp_path):
         blind_validation=False,
         checkpoint_interval_seconds=300,
         resume=True,
+        output=str(tmp_path / "predictions.jsonl"),
     )
     cfg = {
         "model": "m",
@@ -322,7 +323,7 @@ def test_generate_marks_non_error_patch_as_done(monkeypatch):
 
     monkeypatch.setattr(gpw, "run_eval_task", fake_run_eval_task)
     monkeypatch.setattr(gpw.gp, "start_container", lambda image, name: "cid")
-    monkeypatch.setattr(gpw.gp, "remove_container", lambda cid: None)
+    monkeypatch.setattr(gpw.gp, "remove_container_and_clear_marker", lambda run_dir, cid: True)
     monkeypatch.setattr(
         gpw,
         "extract_patch_guarded",
@@ -336,6 +337,7 @@ def test_generate_marks_non_error_patch_as_done(monkeypatch):
         blind_validation=False,
         checkpoint_interval_seconds=0,
         resume=False,
+        output="predictions.jsonl",
     )
     cfg = {
         "model": "m",
@@ -351,6 +353,17 @@ def test_generate_marks_non_error_patch_as_done(monkeypatch):
     )
 
     assert metrics["workflow_status"] == "done"
+
+
+def test_container_marker_survives_failed_remove(monkeypatch, tmp_path):
+    gpw.gp.write_container_marker(tmp_path, "cid123", "name123")
+    monkeypatch.setattr(gpw.gp, "remove_container", lambda cid: False)
+
+    removed = gpw.gp.remove_container_and_clear_marker(tmp_path, "cid123")
+
+    assert removed is False
+    assert (tmp_path / "container.id").read_text(encoding="utf-8") == "cid123\n"
+    assert (tmp_path / "container.name").read_text(encoding="utf-8") == "name123\n"
 
 
 def test_output_records_share_record_id_and_patch_sha():

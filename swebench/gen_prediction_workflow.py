@@ -371,6 +371,8 @@ async def generate(
     iid = instance["instance_id"]
     name = gp.unique_container_name("oc-wf-", iid)
     cid = gp.start_container(image, name)
+    run_dir = Path(args.output).parent
+    gp.write_container_marker(run_dir, cid, name)
     print(f"Container: {cid}")
     try:
         # Attach mode: run_eval_task's internal env.cleanup() no-ops on attached
@@ -442,7 +444,7 @@ async def generate(
         )
     finally:
         if not args.keep_container:
-            gp.remove_container(cid)
+            gp.remove_container_and_clear_marker(run_dir, cid)
         else:
             print(f"  (left container {cid} running: {name})")
 

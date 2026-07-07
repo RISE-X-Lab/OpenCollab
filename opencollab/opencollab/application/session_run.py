@@ -105,6 +105,7 @@ DEFAULT_COMMIT_RESERVE = 25_000
 # distill-as-you-read scout is never braked mid-stride.
 DEFAULT_WATCHDOG_K = 4
 DEFAULT_LOW_YIELD_M = 3
+DEFAULT_LOOP_BLOCKED_LIMIT = 3
 
 # Predictive overshoot guard (STEP 4a). The agreed ~80% wind-down trips on
 # ``used_tokens >= explore_threshold`` — but the very turn meant to submit can BE
@@ -640,6 +641,18 @@ class SessionRunUseCase:
             self.state.append_message({"role": "system", "content": "[Session interrupted by user]"})
             await self.event_publisher.emit(self.event_factory.error("cancelled"))
             self.state.transition_to(SessionPhase.CANCELLED, reason="interrupted by user")
+            return
+
+        if self.state.loop_blocked_since_progress >= DEFAULT_LOOP_BLOCKED_LIMIT:
+            reason = (
+                "loop block limit reached: "
+                f"{self.state.loop_blocked_since_progress} repeated tool calls"
+            )
+            self.state.append_message(
+                {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
+            )
+            await self.event_publisher.emit(self.event_factory.error("loop_blocked"))
+            self.state.transition_to(SessionPhase.STEP_LIMIT_EXCEEDED, reason=reason)
             return
 
         # Enforcement wind-down (STEP 0) — gated; with enforcement OFF this whole
