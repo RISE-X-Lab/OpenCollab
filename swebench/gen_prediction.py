@@ -103,17 +103,20 @@ def start_container(image: str, name: str) -> str:
         "exec", cid, "bash", "-lc",
         """
 set -e
-if [ -d /testbed/.git ]; then
+if [ -e /testbed/.git ]; then
   exit 0
+fi
+if { [ -e /testbed ] || [ -L /testbed ]; } && [ ! -e /testbed/.git ]; then
+  rm -rf /testbed
 fi
 if [ ! -e /testbed ]; then
   for d in /app /workspace /repo /src; do
-    if [ -d "$d/.git" ]; then
+    if [ -e "$d/.git" ]; then
       ln -s "$d" /testbed
       exit 0
     fi
   done
-  found=$(find / -maxdepth 3 -name .git -type d 2>/dev/null | head -1 || true)
+  found=$(find / -maxdepth 3 -name .git 2>/dev/null | head -1 || true)
   if [ -n "$found" ]; then
     ln -s "$(dirname "$found")" /testbed
     exit 0
@@ -123,11 +126,15 @@ echo "unable to prepare /testbed: no repository checkout found" >&2
 exit 2
 """,
     )
-    _check_docker(ensure_workdir, "docker /testbed workdir setup")
-    # Repo is owned by root in the image; allow git to operate on it.
-    safe_dir = _docker("exec", cid, "bash", "-lc",
-                       f"git config --global --add safe.directory {DOCKER_WORKDIR}")
-    _check_docker(safe_dir, "docker git safe.directory setup")
+    try:
+        _check_docker(ensure_workdir, "docker /testbed workdir setup")
+        # Repo is owned by root in the image; allow git to operate on it.
+        safe_dir = _docker("exec", cid, "bash", "-lc",
+                           f"git config --global --add safe.directory {DOCKER_WORKDIR}")
+        _check_docker(safe_dir, "docker git safe.directory setup")
+    except Exception:
+        remove_container(cid)
+        raise
     return cid
 
 
