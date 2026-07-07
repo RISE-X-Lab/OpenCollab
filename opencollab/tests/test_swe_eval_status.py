@@ -200,6 +200,51 @@ def test_status_script_dry_run_requires_explicit_start_eval(tmp_path):
     assert summary["actions"][0]["command"][0] == "echo"
 
 
+def test_wave_watchdog_summarizes_runs_config_without_actions(tmp_path):
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    prediction = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "model_patch": _patch("+current\n"),
+    }
+    metric = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "patch_sha256": row_patch_sha(prediction),
+        "workflow_status": "done",
+    }
+    _write_jsonl(run_dir / "predictions.jsonl", [prediction])
+    _write_jsonl(run_dir / "metrics.jsonl", [metric])
+    runs_config = tmp_path / "runs.json"
+    runs_config.write_text(
+        json.dumps(
+            [
+                {
+                    "name": "local",
+                    "base_run_dir": str(run_dir),
+                    "tasks": ["task-1"],
+                    "workflow": "single-agent",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    script = Path(__file__).resolve().parents[2] / "scripts" / "swe_v3_wave_watchdog.py"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--runs-config", str(runs_config)],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    summary = json.loads(result.stdout)
+    assert summary["schema"] == "opencollab.swe_wave_status.v1"
+    assert summary["totals"]["ready_for_eval"] == 1
+    assert summary["runs"][0]["tasks"][0]["state"] == "ready_for_eval"
+
+
 def build_snapshots_from_rows(
     predictions: list[dict],
     metrics: list[dict],
