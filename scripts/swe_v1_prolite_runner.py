@@ -603,6 +603,7 @@ def eval_for_task(row):
     output_dir = report_path.parent
     input_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.chmod(0o777)
     model_patch = prediction_patch(prediction)
     test_patch = str(row.get("test_patch") or "")
     fail_to_pass = parse_literal_list(row.get("fail_to_pass") or row.get("FAIL_TO_PASS"))
@@ -1183,13 +1184,21 @@ def terminate_local_process_group(proc: subprocess.Popen[str]) -> None:
         os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
         return
+    except PermissionError:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            return
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        except (ProcessLookupError, PermissionError):
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
         proc.wait()
 
 
