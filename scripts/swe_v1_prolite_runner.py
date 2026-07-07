@@ -330,6 +330,20 @@ def generation_done(run_dir, task):
     return bool(patch.strip() and status in {"done", "done_with_timeout_patch"}), prediction, metric, pairing
 
 
+def generation_done_result(task, prediction, metric, pairing, **extra):
+    result = {
+        "status": "generation_done",
+        "task": task,
+        "pairing": pairing,
+        "patch_len": len(prediction_patch(prediction)),
+        "workflow_status": workflow_status(metric),
+        "record_id": row_record_id(prediction),
+        "patch_sha256": row_patch_sha(prediction),
+    }
+    result.update({key: value for key, value in extra.items() if value is not None})
+    return result
+
+
 def image_for_row(row):
     tag = str(row.get("dockerhub_tag") or row.get("image_tag") or "")
     if tag:
@@ -520,7 +534,7 @@ def generation_for_task(row):
     run_dir.mkdir(parents=True, exist_ok=True)
     done, prediction, metric, pairing = generation_done(run_dir, task)
     if done:
-        return {"status": "generation_done", "task": task, "pairing": pairing}
+        return generation_done_result(task, prediction, metric, pairing)
     if start_count(run_dir) >= max_task_starts:
         return {"status": "generation_start_limit_reached", "task": task, "start_count": start_count(run_dir)}
     image = image_for_row(row)
@@ -592,8 +606,18 @@ def generation_for_task(row):
         finally:
             ACTIVE_CHILD_PGIDS.discard(proc.pid)
     done, prediction, metric, pairing = generation_done(run_dir, task)
+    if done:
+        return generation_done_result(
+            task,
+            prediction,
+            metric,
+            pairing,
+            returncode=returncode,
+            log=str(log_path),
+            start_state=state,
+        )
     return {
-        "status": "generation_done" if done else "generation_failed",
+        "status": "generation_failed",
         "task": task,
         "returncode": returncode,
         "log": str(log_path),
@@ -810,6 +834,11 @@ def write_markdown(summary):
     ]
     for row in summary["rows"]:
         report = row.get("eval", {}).get("report_path") or ""
+        patch_sha = (
+            row.get("generation", {}).get("patch_sha256")
+            or row.get("eval", {}).get("summary", {}).get("patch_sha256")
+            or ""
+        )
         lines.append(
             "| {idx} | `{task}` | `{gen}` | `{ev}` | `{resolved}` | `{patch}` | `{report}` |".format(
                 idx=row["index"],
@@ -817,7 +846,7 @@ def write_markdown(summary):
                 gen=row.get("generation", {}).get("status", ""),
                 ev=row.get("eval", {}).get("status", ""),
                 resolved=row.get("eval", {}).get("summary", {}).get("resolved", ""),
-                patch=(row.get("generation", {}).get("patch_sha256") or "")[:12],
+                patch=patch_sha[:12],
                 report=report,
             )
         )
