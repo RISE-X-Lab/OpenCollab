@@ -230,7 +230,9 @@ def test_run_tests_can_disable_runner_override_before_exec():
         )
     )
 
-    assert result == "Error: runner override is disabled for this run_tests tool."
+    assert "runner override is disabled" in result
+    assert "Omit `runner`" in result
+    assert "Go go.mod" in result
     assert env.exec_calls == []
 
 
@@ -299,6 +301,46 @@ def test_run_tests_falls_back_to_native_runner_when_pytest_missing():
     assert "Verdict: GREEN" in result
 
 
+def test_run_tests_falls_back_to_go_runner_when_pytest_missing():
+    env = ScriptedEnv([
+        ("python -m pytest", 1, "No module named pytest"),
+        ("test -f go.mod", 0, ""),
+        ("go test ./internal/server", 0, "ok\tmodule/internal/server\t0.01s"),
+    ])
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        RunTestsTool(allow_runner_override=False, allow_extra_args=False).execute_with_runtime(
+            {"target": "internal/server"}, runtime
+        )
+    )
+
+    cmds = [c for c, _ in env.exec_calls]
+    assert "go test ./internal/server" in cmds
+    assert "runner override is disabled" not in result
+    assert "Verdict: GREEN" in result
+
+
+def test_run_tests_falls_back_to_go_runner_when_pytest_finds_no_tests():
+    env = ScriptedEnv([
+        ("python -m pytest", 5, "no tests ran in 0.01s"),
+        ("test -f go.mod", 0, ""),
+        ("go test ./internal/server", 0, "ok\tmodule/internal/server\t0.01s"),
+    ])
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        RunTestsTool(allow_runner_override=False, allow_extra_args=False).execute_with_runtime(
+            {"target": "internal/server"}, runtime
+        )
+    )
+
+    cmds = [c for c, _ in env.exec_calls]
+    assert "go test ./internal/server" in cmds
+    assert "no tests ran" not in result
+    assert "Verdict: GREEN" in result
+
+
 def test_run_tests_native_fallback_quotes_translated_target():
     env = ScriptedEnv([
         ("python -m pytest", 1, "No module named pytest"),
@@ -364,6 +406,12 @@ def test_build_command_native_runner_quotes_translated_target():
     from opencollab.adapters.tools.run_tests import _build_command
     cmd = _build_command("python bin/test", "tests/test_x.py::test_two; touch pwned", "")
     assert cmd == "python bin/test tests/test_x.py 'test_two; touch pwned'"
+
+
+def test_build_command_go_runner_translates_package_and_test_name():
+    from opencollab.adapters.tools.run_tests import _build_command
+    cmd = _build_command("go test", "internal/server/evaluator_test.go::TestEvaluate", "")
+    assert cmd == "go test ./internal/server -run TestEvaluate"
 
 
 def test_run_tests_requires_execution_environment():

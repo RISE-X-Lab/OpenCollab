@@ -9,10 +9,11 @@ makes an unverified "it passes" claim much harder to make by accident.
 
 Defaults to ``python -m pytest``; override ``runner`` for projects with a custom
 entry point (e.g. ``bin/test``). When the caller does NOT pin a runner, the tool
-probes the workspace for a project-native runner (sympy ``bin/test``, ``tox``,
-Django ``manage.py test``) and translates the pytest-style ``target`` node-id to
-the native invocation; it also auto-falls-back to the native runner if pytest is
-missing (``No module named pytest``). Output is truncated to protect the context.
+probes the workspace for a project-native runner (Go ``go test``, sympy
+``bin/test``, ``tox``, Django ``manage.py test``) and translates the pytest-style
+``target`` node-id to the native invocation; it also auto-falls-back to the
+native runner if pytest is missing (``No module named pytest``). Output is
+truncated to protect the context.
 
 Every run ALWAYS ends with a one-line ``Verdict: GREEN|RED`` (plus, on RED, a
 missing-substring hint and — when the same failing target keeps failing — an
@@ -48,6 +49,7 @@ ESCALATE_AFTER = 3
 _NATIVE_PROBES: tuple[tuple[str, str], ...] = (
     ("test -x bin/test", "python bin/test"),
     ("test -f manage.py", "python manage.py test"),
+    ("test -f go.mod", "go test"),
     ("test -f tox.ini", "tox"),
 )
 
@@ -74,10 +76,11 @@ class RunTestsTool(Tool):
         "the first traceback — not raw stdout. Use it to VERIFY a fix instead of "
         "guessing. Pass `target` (a path or node-id like 'tests/test_x.py::test_y') "
         "to focus the run. "
-        "The runner is auto-detected for non-pytest projects (sympy bin/test, "
-        "tox, Django manage.py test) and pytest node-ids are translated; override "
-        "`runner` only to force a specific command. Read the final 'Verdict: "
-        "GREEN|RED' line as the authoritative pass/fail signal. "
+        "The runner is auto-detected for non-pytest projects (Go go.mod, sympy "
+        "bin/test, tox, Django manage.py test) and pytest node-ids are translated; "
+        "override `runner` only to force a specific command. For Go, pass `target` "
+        "like './internal/server' or './internal/server::TestEvaluate'. Read the "
+        "final 'Verdict: GREEN|RED' line as the authoritative pass/fail signal. "
         "Prefer this over bash for running the test suite; it returns a structured "
         "pass/fail signal. Warnings are NOISE, not failures: the pass/fail decision "
         "is exit-code + failed/error counts only, and warnings are reported on a "
@@ -139,7 +142,13 @@ class RunTestsTool(Tool):
         if not env:
             return "Error: no execution environment available."
         if pinned_runner and not self.allow_runner_override:
-            return "Error: runner override is disabled for this run_tests tool."
+            return (
+                "Error: runner override is disabled for this run_tests tool. "
+                "Omit `runner`; run_tests auto-detects pytest and project-native "
+                "runners such as Go go.mod, sympy bin/test, Django manage.py, and "
+                "tox. For Go, pass `target` like './internal/server' or "
+                "'./internal/server::TestEvaluate'."
+            )
         if extra_args and not self.allow_extra_args:
             return "Error: extra_args is disabled for this run_tests tool."
 
@@ -150,10 +159,14 @@ class RunTestsTool(Tool):
         )
         combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
 
-        # Auto-fallback: if the caller did NOT pin a runner and pytest is absent,
-        # probe for a project-native runner and re-run once on the native path.
-        if pinned_runner is None and _pytest_missing(result.returncode, combined):
-            native = await _detect_native_runner(env)
+        # Auto-fallback: if the caller did NOT pin a runner and pytest is absent
+        # or unsuitable for a Go target, probe once and re-run on the native path.
+        if pinned_runner is None:
+            native = await _native_fallback_candidate(
+                env,
+                result.returncode,
+                combined,
+            )
             if native:
                 result, cmd, runner = await self._run(
                     env, native, target, extra_args, timeout, safety_policy,
@@ -209,6 +222,15 @@ def _is_pytest_runner(runner: str) -> bool:
     return "pytest" in runner
 
 
+def _is_go_runner(runner: str) -> bool:
+    """Whether ``runner`` invokes ``go test``."""
+    try:
+        parts = shlex.split(runner)
+    except ValueError:
+        return False
+    return len(parts) >= 2 and parts[0] == "go" and parts[1] == "test"
+
+
 def _translate_native_target_args(target: str) -> list[str]:
     """Map a pytest node-id to safely quoted native-runner arguments.
 
@@ -228,6 +250,28 @@ def _translate_native_target_args(target: str) -> list[str]:
     return args
 
 
+def _translate_go_target_args(target: str) -> list[str]:
+    """Map pytest-like targets to safe ``go test`` package and ``-run`` args."""
+    if not target:
+        return ["./..."]
+
+    package, sep, node = target.partition("::")
+    package = package.strip()
+    if not package:
+        package = "./..."
+    if package.endswith(".go"):
+        package = package.rsplit("/", 1)[0] if "/" in package else "."
+    if package not in {".", "./..."} and not package.startswith(("./", "../", "/")):
+        package = "./" + package.strip("/")
+
+    args = [shlex.quote(package)]
+    if sep and node.strip():
+        test_name = node.split("::")[-1].strip()
+        if test_name:
+            args.extend(["-run", shlex.quote(test_name)])
+    return args
+
+
 def _build_command(runner: str, target: str, extra_args: str) -> str:
     # --tb=short keeps tracebacks compact; -rfE forces a failed/error summary
     # block even under -q so we can list failing node-ids reliably. -rA adds a
@@ -239,6 +283,9 @@ def _build_command(runner: str, target: str, extra_args: str) -> str:
         parts = [runner, "--tb=short", "-rfE", "-rA", "-p", "no:cacheprovider", "-q"]
         if target:
             parts.append(shlex.quote(target))
+    elif _is_go_runner(runner):
+        parts = [runner]
+        parts.extend(_translate_go_target_args(target))
     else:
         parts = [runner]
         parts.extend(_translate_native_target_args(target))
@@ -259,9 +306,28 @@ async def _detect_native_runner(env: Any) -> str | None:
     return None
 
 
+async def _native_fallback_candidate(
+    env: Any,
+    returncode: int,
+    output: str,
+) -> str | None:
+    if _pytest_missing(returncode, output):
+        return await _detect_native_runner(env)
+    if _pytest_no_tests(returncode, output):
+        native = await _detect_native_runner(env)
+        if native and _is_go_runner(native):
+            return native
+    return None
+
+
 def _pytest_missing(returncode: int, output: str) -> bool:
     """Whether the run failed because pytest itself is absent."""
     return returncode == 127 or "No module named pytest" in output
+
+
+def _pytest_no_tests(returncode: int, output: str) -> bool:
+    """Whether pytest ran successfully enough to report an empty selection."""
+    return returncode == 5 and "no tests ran" in output.lower()
 
 
 def _summary_line(output: str) -> str | None:
@@ -374,12 +440,13 @@ def _format_report(
     if _pytest_missing(returncode, output):
         # Still emit a parseable verdict so the gate/model is never left without
         # a signal. pytest-missing is RED (the named tests could not run) and
-        # points the model at the native-runner override.
+        # points the model at auto-detected native runners.
         return (
             f"Command: {cmd}\nExit code: {returncode}\n"
             "Error: pytest not found and no project-native runner detected. "
-            "Set `runner` to the project's test entry point (e.g. 'python "
-            "bin/test', 'tox', 'python manage.py test').\n"
+            "Omit `runner` so run_tests can auto-detect Go go.mod, sympy "
+            "bin/test, Django manage.py, or tox. For Go, pass `target` like "
+            "'./internal/server' or './internal/server::TestEvaluate'.\n"
             "Verdict: RED (tests could not run)\n"
             f"{truncate(output.strip(), 1_000)}"
         )
