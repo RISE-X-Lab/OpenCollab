@@ -493,6 +493,60 @@ def test_steering_structured_hard_rung_forces_structured_output():
     assert "structured_output using" in llm.calls[0]["messages"][-1]["content"]
 
 
+def test_steering_structured_commit_gate_uses_soft_threshold():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_SOFT,
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas("structured_output", "file_read", "grep"),
+    )
+
+    run(runner.run_loop())
+
+    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
+    assert sent_tool_names == ["structured_output"]
+    assert llm.calls[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "structured_output"},
+    }
+
+
+def test_steering_structured_gate_wins_when_write_tools_are_also_present():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_SOFT,
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas(
+            "structured_output",
+            "file_read",
+            "grep",
+            "file_write",
+            "apply_patch",
+        ),
+    )
+
+    run(runner.run_loop())
+
+    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
+    assert sent_tool_names == ["structured_output"]
+    assert llm.calls[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "structured_output"},
+    }
+
+
 def test_steering_hard_rung_blocks_read_tool_call_before_execution():
     state = SessionState(
         messages=[{"role": "tool", "content": "prev"}],
