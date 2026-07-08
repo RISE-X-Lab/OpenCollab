@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import io
+import importlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import scripts.swe_v1_prolite_runner as runner
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+runner = importlib.import_module("scripts.swe_v1_prolite_runner")
 
 
 def _remote_namespace(tmp_path, **overrides):
