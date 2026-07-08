@@ -18,12 +18,23 @@ from typing import Any
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
+from opencollab.adapters.tools.git_diff import GitDiffTool
 from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.workflow_registry import workflow
 
 MAX_APPROVED_PRE_TESTS = 5
 MAX_APPROVED_POST_TESTS = 4
-MAX_CODER_ROUNDS = 2
+WORKFLOW_VARIANT = "G1.1"
+MAX_CODER_ROUNDS = 3
+LOCALIZER_BUDGET = 220_000
+EVIDENCE_BUDGET = 180_000
+VALIDATION_FACTORY_BUDGET = 160_000
+JUDGE_BUDGET = 100_000
+TRIAGE_BUDGET = 180_000
+RISK_BUDGET = 60_000
+VERIFIER_BUDGET = 220_000
+STRUCTURED_ROLE_TIMEOUT_SECONDS = 300
+CODER_ROLE_TIMEOUT_SECONDS = 1800
 EMPTY_POST_CANDIDATES = {
     "tests": [],
     "abstained": True,
@@ -54,8 +65,12 @@ Rules:
   file_write/apply_patch for edits. Use bash only when no dedicated tool fits.
 - Keep temporary validation outside the final diff. Do not edit tests unless the
   task explicitly asks for a test-only change.
-- If a validation probe needs a temporary file, write it only under
-  /tmp/opencollab-validation-* and remove it after use.
+- Only roles with command or write tools may create temporary validation files.
+  If your current tools cannot create or run a probe, report that limitation in
+  structured_output instead of searching for unavailable tools.
+- If a validation probe needs a temporary file and your role has a tool that can
+  create it, write it only under /tmp/opencollab-validation-* and remove it
+  after use.
 - Fix the source root cause with the smallest correct change.
 - Never run git commit; leave edits in the working tree."""
 
@@ -340,7 +355,8 @@ PRE_VALIDATION_FACTORY_PROMPT = """\
 You are the Pre-Patch Validation Factory. Propose candidate validation probes
 before coding. Each candidate must link to behavior contract ids and evidence.
 Prefer short repro, boundary, regression, or metamorphic probes. Mark weak or
-diagnostic-only probes as such. Do not edit files.
+diagnostic-only probes as such. Do not edit files, do not run probes, and do not
+look for write tools. If evidence is insufficient, set abstained=true.
 
 {rules}
 
@@ -361,7 +377,8 @@ You are the Validation Judge / Prioritizer for the {stage} stage. Apply hard
 evidence gates. Accept at most {cap} candidates. Reject a candidate if it lacks
 contract ids, lacks concrete evidence, asserts behavior only from a proposed
 implementation, or depends on hidden grader knowledge. Diagnostics may be kept
-separate, but they must not block final acceptance.
+separate, but they must not block final acceptance. Do not edit files, do not
+create temporary probes, and do not look for write tools.
 
 {rules}
 
@@ -378,7 +395,9 @@ BASELINE_TRIAGE_PROMPT = """\
 You are the Baseline Executor and Triage role. Run only accepted validation
 probes that are cheap and safe, using temporary files or one-shot commands that
 do not enter the final diff. If a file is needed, use /tmp/opencollab-validation-*
-only. Classify each accepted probe against the current base as base_fail_repro,
+only when the provided tools can create it. If the provided tools cannot run a
+probe exactly, classify it as not_run or weak instead of searching for missing
+tools. Classify each accepted probe against the current base as base_fail_repro,
 base_pass_regression, invalid, weak, or not_run. Record exact commands and
 observations.
 
@@ -394,6 +413,9 @@ CODER_PROMPT = """\
 You are the Coder. Implement a minimal source fix using the evidence package.
 Do not edit tests unless the task explicitly requires test-only changes.
 Run relevant public tests and accepted validation probes where practical.
+Once you can name the concrete source change, stop reading and call file_write
+or apply_patch in that turn. Do not announce an edit and then call file_read or
+grep.
 Your final message should name changed source files, explain the root cause,
 and summarize verification.
 
@@ -425,11 +447,12 @@ Previous attempt feedback:
 PATCH_VALIDATOR_PROMPT = """\
 You are the Patch Validator. Do not edit files. Verify the current working tree
 against the goal, public tests, accepted pre-patch validation, and baseline
-triage. Run tests or focused probes when practical. Verdict PASS only when the
-source change is present, minimal, and satisfies the approved validation. Run
-`git diff --name-only`; put legitimate source paths in allowed_patch_paths and
-all tests, temporary probes, caches, logs, notes, and generated artifacts in
-disallowed_patch_paths.
+triage. Run existing tests when practical; do not create new probe files and do
+not search for write tools. If a requested probe cannot be run with available
+tools, say so in findings. Verdict PASS only when the source change is present,
+minimal, and satisfies the approved validation. Run `git diff --name-only`; put
+legitimate source paths in allowed_patch_paths and all tests, temporary probes,
+caches, logs, notes, and generated artifacts in disallowed_patch_paths.
 
 {rules}
 
@@ -446,9 +469,13 @@ Baseline triage:
 {baseline_triage}"""
 
 DIFF_RISK_PROMPT = """\
-You are the Diff Risk Auditor. Do not edit files. Read the current git diff and
-identify semantic risks, missed contracts, neighboring behavior that may
-regress, and focused probes that would catch those risks.
+You are the Diff Risk Auditor. Do not edit files and do not run tools. Use only
+the contracts and patch validator verdict already provided below. Identify at
+most three semantic risks, missed contracts, neighboring behavior that may
+regress, and focused probes that would catch those risks. If the verdict already
+contains enough clean evidence, return an empty risks list with a concise
+summary. Do not inspect more repository files. Your next action must be
+structured_output.
 
 {rules}
 
@@ -465,7 +492,8 @@ POST_VALIDATION_FACTORY_PROMPT = """\
 You are the Post-Patch Validation Factory. Use the accepted contracts, current
 diff risks, and public repository behavior to propose additional post-patch
 probes. Do not derive assertions only from the implementation. Do not edit
-files.
+files, do not run probes, and do not look for write tools. If risks are empty or
+evidence is insufficient, set abstained=true.
 
 {rules}
 
@@ -482,7 +510,9 @@ POST_TRIAGE_PROMPT = """\
 You are the Post-Patch Validation Triage role. Run accepted post-patch probes
 when cheap and safe. Keep temporary probes outside the final diff. Classify each
 probe as patch_pass, patch_fail, invalid, weak, or not_run. If a file is needed,
-use /tmp/opencollab-validation-* only. Report exact commands and observations.
+use /tmp/opencollab-validation-* only when the provided tools can create it. If
+the provided tools cannot run a probe exactly, classify it as not_run or weak
+instead of searching for missing tools. Report exact commands and observations.
 
 {rules}
 
@@ -495,10 +525,11 @@ Accepted post-patch validation:
 FINAL_VERIFIER_PROMPT = """\
 You are the Final Verifier. Do not edit files. Inspect git diff, run relevant
 public tests and approved validation where practical, and check that temporary
-validation files are absent from the final diff. Run `git diff --name-only` and
-place legitimate source changes in allowed_patch_paths. Place all tests,
-temporary probes, caches, logs, notes, and generated artifacts in
-disallowed_patch_paths, and fail if any disallowed path remains in the diff.
+validation files are absent from the final diff. Run existing tests when
+practical; do not create new probe files and do not search for write tools. Run
+`git diff --name-only` and place legitimate source changes in allowed_patch_paths.
+Place all tests, temporary probes, caches, logs, notes, and generated artifacts
+in disallowed_patch_paths, and fail if any disallowed path remains in the diff.
 Verdict PASS only when the issue is fixed by source changes and the validation
 evidence is clean.
 
@@ -536,7 +567,7 @@ Post-patch triage:
 
 
 def _read_tools() -> list[Any]:
-    return [BashTool(), FileReadTool(), GrepTool()]
+    return [FileReadTool(), GrepTool()]
 
 
 def _coder_tools() -> list[Any]:
@@ -544,7 +575,16 @@ def _coder_tools() -> list[Any]:
 
 
 def _tester_tools() -> list[Any]:
-    return [BashTool(), FileReadTool(), RunTestsTool(), GrepTool()]
+    return [
+        FileReadTool(),
+        RunTestsTool(allow_runner_override=False, allow_extra_args=False),
+        GrepTool(),
+        GitDiffTool(),
+    ]
+
+
+def _risk_tools() -> list[Any]:
+    return []
 
 
 def _dump(value: Any) -> str:
@@ -609,6 +649,8 @@ async def _judge_candidates(
         schema=JUDGE_SCHEMA,
         label=f"{stage}-validation-judge",
         tools=_read_tools(),
+        budget=JUDGE_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     return _trim_judge(
         _dict_or(
@@ -650,6 +692,7 @@ async def _run_attempt(
         ),
         label=f"coder:r{attempt}",
         tools=_coder_tools(),
+        timeout=CODER_ROLE_TIMEOUT_SECONDS,
     )
     patch_verdict = await ctx.agent(
         PATCH_VALIDATOR_PROMPT.format(
@@ -662,6 +705,8 @@ async def _run_attempt(
         schema=VERDICT_SCHEMA,
         label=f"patch-validator:r{attempt}",
         tools=_tester_tools(),
+        budget=VERIFIER_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     patch_verdict = _dict_or(
         patch_verdict,
@@ -694,7 +739,9 @@ async def _run_attempt(
         ),
         schema=DIFF_RISK_SCHEMA,
         label=f"diff-risk-auditor:r{attempt}",
-        tools=_tester_tools(),
+        tools=_risk_tools(),
+        budget=RISK_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     risks = _dict_or(risks, {"risks": [], "summary": "Diff risk auditor returned no structured report."})
 
@@ -708,6 +755,8 @@ async def _run_attempt(
         schema=CANDIDATE_TESTS_SCHEMA,
         label=f"post-validation-factory:r{attempt}",
         tools=_read_tools(),
+        budget=VALIDATION_FACTORY_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     post_candidates = _dict_or(
         post_candidates,
@@ -732,6 +781,8 @@ async def _run_attempt(
         schema=TRIAGE_SCHEMA,
         label=f"post-validation-triage:r{attempt}",
         tools=_tester_tools(),
+        budget=TRIAGE_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     post_triage = _dict_or(
         post_triage,
@@ -756,6 +807,8 @@ async def _run_attempt(
         schema=VERDICT_SCHEMA,
         label=f"final-verifier:r{attempt}",
         tools=_tester_tools(),
+        budget=VERIFIER_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     final_verdict = _dict_or(
         final_verdict,
@@ -795,6 +848,8 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
         schema=LOCALIZATION_SCHEMA,
         label="analyst-localizer",
         tools=_read_tools(),
+        budget=LOCALIZER_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     localization = _dict_or(
         localization,
@@ -820,6 +875,8 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
                 schema=CONTRACT_SCHEMA,
                 label="contract-miner",
                 tools=_read_tools(),
+                budget=EVIDENCE_BUDGET,
+                timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
             ),
             lambda: ctx.agent(
                 TEST_CARTOGRAPHER_PROMPT.format(
@@ -830,6 +887,8 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
                 schema=TEST_CARTOGRAPHY_SCHEMA,
                 label="test-cartographer",
                 tools=_read_tools(),
+                budget=EVIDENCE_BUDGET,
+                timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
             ),
         ]
     )
@@ -858,6 +917,8 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
         schema=CANDIDATE_TESTS_SCHEMA,
         label="pre-validation-factory",
         tools=_read_tools(),
+        budget=VALIDATION_FACTORY_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     pre_candidates = _dict_or(
         pre_candidates,
@@ -880,6 +941,8 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
         schema=TRIAGE_SCHEMA,
         label="baseline-triage",
         tools=_tester_tools(),
+        budget=TRIAGE_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     baseline_triage = _dict_or(
         baseline_triage,
