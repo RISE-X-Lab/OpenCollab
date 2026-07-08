@@ -1044,7 +1044,7 @@ def remote_http_ok(*, ssh_command: list[str], host: str, base_url: str, timeout:
             [*ssh_command, host, "python3 -c " + shlex.quote(probe) + " " + shlex.quote(url_with_healthz(base_url))],
             text=True,
             capture_output=True,
-            timeout=timeout + 10,
+            timeout=max(5, timeout + 3),
         )
         return result.returncode == 0
     except subprocess.TimeoutExpired:
@@ -1131,8 +1131,8 @@ def ensure_remote_proxy(
                     }
                 continue
             raise
-        for _ in range(20):
-            if remote_http_ok(ssh_command=ssh_command, host=host, base_url=candidate_base_url, timeout=5):
+        for _ in range(6):
+            if remote_http_ok(ssh_command=ssh_command, host=host, base_url=candidate_base_url, timeout=2):
                 return {
                     "status": "started" if candidate_port == remote_port else "started_fallback_port",
                     "local_proxy_base_url": local_proxy_base_url,
