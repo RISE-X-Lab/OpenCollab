@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import subprocess
+from types import SimpleNamespace
+
 import scripts.swe_v1_prolite_runner as runner
 
 
@@ -49,3 +52,46 @@ def test_ensure_remote_proxy_falls_back_when_default_remote_port_is_busy():
     assert calls[0][calls[0].index("-R") + 1] == "127.0.0.1:18788:127.0.0.1:8878"
     assert calls[1][calls[1].index("-R") + 1] == "127.0.0.1:18789:127.0.0.1:8878"
 
+
+def test_remote_http_ok_keeps_ssh_outer_timeout_above_short_http_probe():
+    calls: list[dict] = []
+    old_run = runner.subprocess.run
+
+    def fake_run(command, **kwargs):
+        calls.append({"command": command, **kwargs})
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    try:
+        runner.subprocess.run = fake_run
+        ok = runner.remote_http_ok(
+            ssh_command=["ssh"],
+            host="jinan-aws",
+            base_url="http://127.0.0.1:18792",
+            timeout=2,
+        )
+    finally:
+        runner.subprocess.run = old_run
+
+    assert ok is True
+    assert calls[0]["timeout"] == runner.REMOTE_HEALTH_SSH_TIMEOUT_FLOOR
+    assert "http://127.0.0.1:18792/healthz" in calls[0]["command"][-1]
+
+
+def test_remote_http_ok_returns_false_on_outer_timeout():
+    old_run = runner.subprocess.run
+
+    def fake_run(command, **kwargs):
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    try:
+        runner.subprocess.run = fake_run
+        ok = runner.remote_http_ok(
+            ssh_command=["ssh"],
+            host="jinan-aws",
+            base_url="http://127.0.0.1:18792",
+            timeout=2,
+        )
+    finally:
+        runner.subprocess.run = old_run
+
+    assert ok is False

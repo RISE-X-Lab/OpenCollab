@@ -39,6 +39,7 @@ DEFAULT_REPORT_JSON = REPO_ROOT / "docs" / "monitoring" / "swe_v1_16m_prolite26_
 DEFAULT_REPORT_MD = REPO_ROOT / "docs" / "monitoring" / "swe_v1_16m_prolite26_35_report.md"
 DEFAULT_PROXY_ENV_FILE = Path.home() / ".claude" / "glm52.env"
 DEFAULT_LOCAL_PROXY_BASE_URL = "http://127.0.0.1:8878"
+REMOTE_HEALTH_SSH_TIMEOUT_FLOOR = 15
 
 SYNC_FILES = [
     "scripts/run_swe_v2_one_from_fifo.sh",
@@ -1044,7 +1045,7 @@ def remote_http_ok(*, ssh_command: list[str], host: str, base_url: str, timeout:
             [*ssh_command, host, "python3 -c " + shlex.quote(probe) + " " + shlex.quote(url_with_healthz(base_url))],
             text=True,
             capture_output=True,
-            timeout=max(5, timeout + 3),
+            timeout=max(REMOTE_HEALTH_SSH_TIMEOUT_FLOOR, timeout + 8),
         )
         return result.returncode == 0
     except subprocess.TimeoutExpired:
