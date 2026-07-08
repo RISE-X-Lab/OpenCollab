@@ -25,6 +25,13 @@ from opencollab.application.workflow_registry import workflow
 MAX_APPROVED_PRE_TESTS = 5
 MAX_APPROVED_POST_TESTS = 4
 MAX_CODER_ROUNDS = 2
+LOCALIZER_BUDGET = 220_000
+EVIDENCE_BUDGET = 180_000
+VALIDATION_FACTORY_BUDGET = 160_000
+JUDGE_BUDGET = 100_000
+TRIAGE_BUDGET = 180_000
+RISK_BUDGET = 150_000
+VERIFIER_BUDGET = 220_000
 EMPTY_POST_CANDIDATES = {
     "tests": [],
     "abstained": True,
@@ -618,6 +625,7 @@ async def _judge_candidates(
         schema=JUDGE_SCHEMA,
         label=f"{stage}-validation-judge",
         tools=_read_tools(),
+        budget=JUDGE_BUDGET,
     )
     return _trim_judge(
         _dict_or(
@@ -671,6 +679,7 @@ async def _run_attempt(
         schema=VERDICT_SCHEMA,
         label=f"patch-validator:r{attempt}",
         tools=_tester_tools(),
+        budget=VERIFIER_BUDGET,
     )
     patch_verdict = _dict_or(
         patch_verdict,
@@ -704,6 +713,7 @@ async def _run_attempt(
         schema=DIFF_RISK_SCHEMA,
         label=f"diff-risk-auditor:r{attempt}",
         tools=_tester_tools(),
+        budget=RISK_BUDGET,
     )
     risks = _dict_or(risks, {"risks": [], "summary": "Diff risk auditor returned no structured report."})
 
@@ -717,6 +727,7 @@ async def _run_attempt(
         schema=CANDIDATE_TESTS_SCHEMA,
         label=f"post-validation-factory:r{attempt}",
         tools=_read_tools(),
+        budget=VALIDATION_FACTORY_BUDGET,
     )
     post_candidates = _dict_or(
         post_candidates,
@@ -741,6 +752,7 @@ async def _run_attempt(
         schema=TRIAGE_SCHEMA,
         label=f"post-validation-triage:r{attempt}",
         tools=_tester_tools(),
+        budget=TRIAGE_BUDGET,
     )
     post_triage = _dict_or(
         post_triage,
@@ -765,6 +777,7 @@ async def _run_attempt(
         schema=VERDICT_SCHEMA,
         label=f"final-verifier:r{attempt}",
         tools=_tester_tools(),
+        budget=VERIFIER_BUDGET,
     )
     final_verdict = _dict_or(
         final_verdict,
@@ -804,6 +817,7 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
         schema=LOCALIZATION_SCHEMA,
         label="analyst-localizer",
         tools=_read_tools(),
+        budget=LOCALIZER_BUDGET,
     )
     localization = _dict_or(
         localization,
@@ -829,6 +843,7 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
                 schema=CONTRACT_SCHEMA,
                 label="contract-miner",
                 tools=_read_tools(),
+                budget=EVIDENCE_BUDGET,
             ),
             lambda: ctx.agent(
                 TEST_CARTOGRAPHER_PROMPT.format(
@@ -839,6 +854,7 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
                 schema=TEST_CARTOGRAPHY_SCHEMA,
                 label="test-cartographer",
                 tools=_read_tools(),
+                budget=EVIDENCE_BUDGET,
             ),
         ]
     )
@@ -867,6 +883,7 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
         schema=CANDIDATE_TESTS_SCHEMA,
         label="pre-validation-factory",
         tools=_read_tools(),
+        budget=VALIDATION_FACTORY_BUDGET,
     )
     pre_candidates = _dict_or(
         pre_candidates,
@@ -889,6 +906,7 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
         schema=TRIAGE_SCHEMA,
         label="baseline-triage",
         tools=_tester_tools(),
+        budget=TRIAGE_BUDGET,
     )
     baseline_triage = _dict_or(
         baseline_triage,

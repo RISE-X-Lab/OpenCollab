@@ -33,9 +33,9 @@ class ScriptedCtx:
         self.logs: list[str] = []
         self.budget = _FakeBudget()
 
-    async def agent(self, prompt, *, schema=None, label=None, tools=None, isolation=False):
+    async def agent(self, prompt, *, schema=None, label=None, tools=None, isolation=False, **kwargs):
         self.agent_calls.append(
-            {"prompt": prompt, "schema": schema, "label": label, "tools": tools}
+            {"prompt": prompt, "schema": schema, "label": label, "tools": tools, **kwargs}
         )
         return self._replies.pop(0)
 
@@ -211,6 +211,20 @@ async def test_happy_path_passes_first_round(validation_council_solve):
         "post-validation-triage:r1",
         "final-verifier:r1",
     ]
+    budgets = {call["label"]: call.get("budget") for call in ctx.agent_calls}
+    assert budgets["analyst-localizer"] == 220_000
+    assert budgets["contract-miner"] == 180_000
+    assert budgets["test-cartographer"] == 180_000
+    assert budgets["pre-validation-factory"] == 160_000
+    assert budgets["pre-validation-judge"] == 100_000
+    assert budgets["baseline-triage"] == 180_000
+    assert budgets["coder:r1"] is None
+    assert budgets["patch-validator:r1"] == 220_000
+    assert budgets["diff-risk-auditor:r1"] == 150_000
+    assert budgets["post-validation-factory:r1"] == 160_000
+    assert budgets["post-r1-validation-judge"] == 100_000
+    assert budgets["post-validation-triage:r1"] == 180_000
+    assert budgets["final-verifier:r1"] == 220_000
     assert ctx.phases == [
         "localize",
         "evidence",
@@ -231,6 +245,14 @@ async def test_failed_final_verifier_retries_with_feedback(validation_council_so
     assert result["status"] == "done"
     assert result["rounds"] == 2
     assert "edge case still fails" in ctx.agent_calls[13]["prompt"]
+    budgets = {call["label"]: call.get("budget") for call in ctx.agent_calls}
+    assert budgets["coder:r2"] is None
+    assert budgets["patch-validator:r2"] == 220_000
+    assert budgets["diff-risk-auditor:r2"] == 150_000
+    assert budgets["post-validation-factory:r2"] == 160_000
+    assert budgets["post-r2-validation-judge"] == 100_000
+    assert budgets["post-validation-triage:r2"] == 180_000
+    assert budgets["final-verifier:r2"] == 220_000
     assert any("attempt 1 failed" in message for message in ctx.logs)
 
 
