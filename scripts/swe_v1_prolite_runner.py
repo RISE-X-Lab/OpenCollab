@@ -1098,14 +1098,6 @@ def ensure_remote_proxy(
     attempts: list[str] = []
     for candidate_port in range(remote_port, remote_port + 21):
         candidate_base_url = loopback_url_with_port(remote_proxy_base_url, candidate_port)
-        if candidate_port != remote_port and remote_http_ok(
-            ssh_command=ssh_command, host=host, base_url=candidate_base_url
-        ):
-            return {
-                "status": "already_healthy",
-                "remote_proxy_base_url": candidate_base_url,
-                "selected_remote_port": candidate_port,
-            }
         forward = f"127.0.0.1:{candidate_port}:127.0.0.1:{local_port}"
         command = [
             *ssh_command,
@@ -1126,6 +1118,17 @@ def ensure_remote_proxy(
             message = str(exc)
             attempts.append(f"{candidate_port}: {message}")
             if remote_forward_port_conflict(message):
+                if remote_http_ok(
+                    ssh_command=ssh_command,
+                    host=host,
+                    base_url=candidate_base_url,
+                    timeout=2,
+                ):
+                    return {
+                        "status": "already_healthy",
+                        "remote_proxy_base_url": candidate_base_url,
+                        "selected_remote_port": candidate_port,
+                    }
                 continue
             raise
         for _ in range(20):
