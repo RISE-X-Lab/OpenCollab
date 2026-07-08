@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import shlex
@@ -60,6 +61,7 @@ from opencollab.harness.workflows import generate_review_fix  # noqa: E402
 DEFAULT_BUDGET = 1_000_000
 DEFAULT_MAX_STEPS = 60  # per workflow session; 60 proved enough to act, 40 did not
 DEFAULT_TIMEOUT = 1800.0  # the workflow runs up to 3 sequential sessions
+DEFAULT_CHECKPOINT_INTERVAL_SECONDS = 300.0
 BLIND_BY_DEFAULT_WORKFLOWS = {"validation-council-solve", "swe-committee-v2"}
 VALIDATION_ARTIFACT_MARKERS = (
     "opencollab-validation",
@@ -227,12 +229,45 @@ def _json_safe(value: object) -> object:
     return str(value)
 
 
+def _patch_sha256(patch: str) -> str:
+    if not patch:
+        return ""
+    return hashlib.sha256(patch.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
 def _result_metrics(result) -> dict:
     return {
         field.name: _json_safe(getattr(result, field.name))
         for field in fields(result)
         if field.name != "patch"
     }
+
+
+def build_output_records(
+    *,
+    instance_id: str,
+    model_name: str,
+    patch: str,
+    metrics: dict,
+    record_id: str | None = None,
+) -> tuple[dict, dict]:
+    record_id = record_id or uuid.uuid4().hex
+    patch_sha256 = _patch_sha256(patch)
+    prediction = {
+        "instance_id": instance_id,
+        "record_id": record_id,
+        "patch_sha256": patch_sha256,
+        "model_name_or_path": model_name,
+        "model_patch": patch,
+    }
+    metric_record = {
+        **metrics,
+        "instance_id": instance_id,
+        "record_id": record_id,
+        "patch_sha256": patch_sha256,
+        "model_name_or_path": model_name,
+    }
+    return prediction, metric_record
 
 
 def _looks_like_validation_artifact(path: str) -> bool:
@@ -283,13 +318,21 @@ def _patch_paths_to_remove(
 def _remove_patch_paths(cid: str, paths: list[str]) -> None:
     if not paths:
         return
-    quoted = " ".join(shlex.quote(path) for path in paths)
-    cmd = (
-        f"git restore --staged --worktree -- {quoted} 2>/dev/null || true; "
-        f"git clean -fdq -- {quoted}"
-    )
+    cmd = _cleanup_patch_paths_command(paths)
     res = gp._docker("exec", "-w", gp.DOCKER_WORKDIR, cid, "bash", "-lc", cmd)
     gp._check_docker(res, "remove validation artifacts before patch extraction")
+
+
+def _cleanup_patch_paths_command(paths: list[str]) -> str:
+    quoted = " ".join(shlex.quote(path) for path in paths)
+    return "\n".join(
+        [
+            f"git restore --staged --worktree -- {quoted} 2>/dev/null || true",
+            f"git reset -q HEAD -- {quoted} 2>/dev/null || true",
+            f"git checkout -- {quoted} 2>/dev/null || true",
+            f"git clean -fdq -- {quoted}",
+        ]
+    )
 
 
 def extract_patch_guarded(
@@ -334,8 +377,10 @@ async def generate(
 ) -> tuple[str, dict]:
     """Run the chosen workflow in a fresh container; return (patch, metrics)."""
     iid = instance["instance_id"]
-    name = f"oc-wf-{iid}-{uuid.uuid4().hex[:6]}"[:60]
+    name = gp.unique_container_name("oc-wf-", iid)
     cid = gp.start_container(image, name)
+    run_dir = Path(args.output).parent
+    gp.write_container_marker(run_dir, cid, name)
     print(f"Container: {cid}")
     try:
         # Attach mode: run_eval_task's internal env.cleanup() no-ops on attached
@@ -380,6 +425,12 @@ async def generate(
             top_p=cfg.get("top_p"),
             thinking=cfg.get("thinking", False),
             thinking_params=cfg.get("thinking_params") or None,
+            checkpoint_interval_seconds=(
+                args.checkpoint_interval_seconds
+                if args.checkpoint_interval_seconds > 0
+                else None
+            ),
+            resume_from_checkpoint=bool(args.resume),
         )
         print(
             f"  workflow: tokens={result.tokens_used} steps={result.steps} "
@@ -401,13 +452,20 @@ async def generate(
         )
     finally:
         if not args.keep_container:
-            gp.remove_container(cid)
+            gp.remove_container_and_clear_marker(run_dir, cid)
         else:
             print(f"  (left container {cid} running: {name})")
 
     metrics = _result_metrics(result)
     metrics["patch_produced"] = bool(patch.strip())
     metrics["submitted_patch_chars"] = len(patch)
+    if not metrics.get("workflow_status"):
+        if result.error and patch.strip():
+            metrics["workflow_status"] = "done_with_timeout_patch"
+        elif result.error:
+            metrics["workflow_status"] = "error"
+        elif patch.strip():
+            metrics["workflow_status"] = "done"
     if workflow_allowlist_missing:
         metrics["workflow_allowlist_missing"] = True
     if removed_validation_artifacts:
@@ -444,6 +502,17 @@ def main() -> None:
     ap.add_argument("--budget", type=int, default=DEFAULT_BUDGET,
                     help="Shared token budget across all workflow sessions")
     ap.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT)
+    ap.add_argument(
+        "--checkpoint-interval-seconds",
+        type=float,
+        default=DEFAULT_CHECKPOINT_INTERVAL_SECONDS,
+        help="Capture worktree checkpoint patches at this interval; 0 disables it",
+    )
+    ap.add_argument(
+        "--resume",
+        action="store_true",
+        help="Apply the latest checkpoint.worktree.patch before running",
+    )
     ap.add_argument("--keep-container", action="store_true")
     args = ap.parse_args()
 
@@ -478,22 +547,28 @@ def main() -> None:
     print(f"Workflow: {wf_label} (budget={args.budget}, "
           f"max_steps/session={args.max_steps})")
     print(f"Blind validation: {args.blind_validation}")
+    print(
+        "Checkpoint: "
+        f"{args.checkpoint_interval_seconds:g}s"
+        f"{' resume' if args.resume else ''}"
+    )
 
     patch, metrics = asyncio.run(generate(instance, image, cfg, args, workflow_fn, wf_label))
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        "instance_id": iid,
-        "model_name_or_path": model_name,
-        "model_patch": patch,
-    }
+    record, metric_record = build_output_records(
+        instance_id=iid,
+        model_name=model_name,
+        patch=patch,
+        metrics=metrics,
+    )
     with out_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
 
     metrics_path = Path(args.metrics or f"{args.output}.metrics.jsonl")
     with metrics_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({**metrics, "model_name_or_path": model_name}) + "\n")
+        f.write(json.dumps(metric_record) + "\n")
 
     if patch.strip():
         print(f"\nPatch ({len(patch)} chars) written to {out_path}")

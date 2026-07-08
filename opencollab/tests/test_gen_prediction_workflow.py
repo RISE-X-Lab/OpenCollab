@@ -7,8 +7,14 @@ module from the repo-root ``swebench/`` dir, the same way the script bootstraps.
 
 from __future__ import annotations
 
+import asyncio
+import os
+import shlex
+import shutil
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -211,6 +217,112 @@ def test_extract_patch_guarded_reextracts_after_cleanup(monkeypatch):
     assert patch == "diff --git a/pkg/widget.py b/pkg/widget.py"
 
 
+def test_cleanup_patch_paths_command_has_legacy_git_fallbacks():
+    cmd = gpw._cleanup_patch_paths_command(["yarn.lock", "tmp/check file.py"])
+
+    assert "git restore --staged --worktree --" in cmd
+    assert "git reset -q HEAD --" in cmd
+    assert "git checkout --" in cmd
+    assert "git clean -fdq --" in cmd
+    assert "'tmp/check file.py'" in cmd
+
+
+def test_cleanup_patch_paths_command_removes_tracked_noise_without_touching_allowed(tmp_path):
+    real_git = shutil.which("git")
+    if not real_git:
+        pytest.skip("git unavailable")
+
+    repo = tmp_path
+
+    def run(args):
+        return subprocess.run(args, cwd=repo, text=True, capture_output=True, check=True)
+
+    run(["git", "init"])
+    (repo / "pkg.py").write_text("old\n", encoding="utf-8")
+    (repo / "yarn.lock").write_text("lock\n", encoding="utf-8")
+    run(["git", "add", "pkg.py", "yarn.lock"])
+    run(["git", "-c", "user.name=OpenCollab", "-c", "user.email=test@example.com", "commit", "-m", "init"])
+
+    (repo / "pkg.py").write_text("new\n", encoding="utf-8")
+    (repo / "yarn.lock").write_text("rewritten\n", encoding="utf-8")
+    run(["git", "add", "pkg.py", "yarn.lock"])
+
+    subprocess.run(
+        ["bash", "-lc", gpw._cleanup_patch_paths_command(["yarn.lock"])],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    staged = run(["git", "diff", "--cached", "--name-only"]).stdout.splitlines()
+    assert staged == ["pkg.py"]
+    assert (repo / "pkg.py").read_text(encoding="utf-8") == "new\n"
+    assert (repo / "yarn.lock").read_text(encoding="utf-8") == "lock\n"
+
+
+def test_cleanup_patch_paths_command_falls_back_when_git_restore_is_missing(tmp_path):
+    real_git = shutil.which("git")
+    if not real_git:
+        pytest.skip("git unavailable")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "if [ \"$1\" = \"restore\" ]; then",
+                "  echo 'git restore unavailable' >&2",
+                "  exit 1",
+                "fi",
+                f"exec {shlex.quote(real_git)} \"$@\"",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    fake_env = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"}
+
+    def run(args, *, env=None):
+        return subprocess.run(
+            args,
+            cwd=repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+    run([real_git, "init"])
+    (repo / "pkg.py").write_text("old\n", encoding="utf-8")
+    (repo / "yarn.lock").write_text("lock\n", encoding="utf-8")
+    run([real_git, "add", "pkg.py", "yarn.lock"])
+    run([real_git, "-c", "user.name=OpenCollab", "-c", "user.email=test@example.com", "commit", "-m", "init"])
+
+    (repo / "pkg.py").write_text("new\n", encoding="utf-8")
+    (repo / "yarn.lock").write_text("rewritten\n", encoding="utf-8")
+    run([real_git, "add", "pkg.py", "yarn.lock"])
+
+    subprocess.run(
+        ["bash", "-lc", gpw._cleanup_patch_paths_command(["yarn.lock"])],
+        cwd=repo,
+        env=fake_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    staged = run([real_git, "diff", "--cached", "--name-only"]).stdout.splitlines()
+    assert staged == ["pkg.py"]
+    assert (repo / "pkg.py").read_text(encoding="utf-8") == "new\n"
+    assert (repo / "yarn.lock").read_text(encoding="utf-8") == "lock\n"
+
+
 def test_json_safe_degrades_unknown_objects():
     class Thing:
         def __str__(self):
@@ -252,3 +364,131 @@ def test_evaltask_contract_matches_non_blind_extras():
         "tests/test_widget.py::test_empty",
         "tests/test_widget.py::test_none",
     ]
+
+
+def test_generate_forwards_checkpoint_options(monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake_run_eval_task(task, **kwargs):
+        captured["task"] = task
+        captured["kwargs"] = kwargs
+        return EvalResult(
+            task_id=task.task_id,
+            patch="diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n",
+            patch_produced=True,
+            tokens_used=1,
+            steps=1,
+            duration=1.0,
+            workflow_result={"allowed_patch_paths": ["pkg/a.py"]},
+        )
+
+    monkeypatch.setattr(gpw, "run_eval_task", fake_run_eval_task)
+    monkeypatch.setattr(gpw.gp, "start_container", lambda image, name: "cid")
+    monkeypatch.setattr(gpw.gp, "remove_container_and_clear_marker", lambda run_dir, cid: True)
+    monkeypatch.setattr(
+        gpw,
+        "extract_patch_guarded",
+        lambda *args, **kwargs: ("diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n", []),
+    )
+    args = SimpleNamespace(
+        timeout=10,
+        budget=1000,
+        max_steps=3,
+        keep_container=False,
+        blind_validation=False,
+        checkpoint_interval_seconds=300,
+        resume=True,
+        output=str(tmp_path / "predictions.jsonl"),
+    )
+    cfg = {
+        "model": "m",
+        "provider": "openai",
+        "api_key": "k",
+        "base_url": "http://local",
+        "temperature": 0.0,
+        "thinking": False,
+    }
+
+    patch, metrics = asyncio.run(
+        gpw.generate(FIXTURE, "image", cfg, args, gpw.generate_review_fix, "generate_review_fix")
+    )
+
+    assert patch.strip()
+    assert metrics["checkpoint_result"] is None
+    assert captured["kwargs"]["checkpoint_interval_seconds"] == 300
+    assert captured["kwargs"]["resume_from_checkpoint"] is True
+
+
+def test_generate_marks_non_error_patch_as_done(monkeypatch):
+    async def fake_run_eval_task(task, **kwargs):
+        return EvalResult(
+            task_id=task.task_id,
+            patch="diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n",
+            patch_produced=True,
+            tokens_used=1,
+            steps=1,
+            duration=1.0,
+            workflow_result={},
+        )
+
+    monkeypatch.setattr(gpw, "run_eval_task", fake_run_eval_task)
+    monkeypatch.setattr(gpw.gp, "start_container", lambda image, name: "cid")
+    monkeypatch.setattr(gpw.gp, "remove_container_and_clear_marker", lambda run_dir, cid: True)
+    monkeypatch.setattr(
+        gpw,
+        "extract_patch_guarded",
+        lambda *args, **kwargs: ("diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n", []),
+    )
+    args = SimpleNamespace(
+        timeout=10,
+        budget=1000,
+        max_steps=3,
+        keep_container=False,
+        blind_validation=False,
+        checkpoint_interval_seconds=0,
+        resume=False,
+        output="predictions.jsonl",
+    )
+    cfg = {
+        "model": "m",
+        "provider": "openai",
+        "api_key": "k",
+        "base_url": "http://local",
+        "temperature": 0.0,
+        "thinking": False,
+    }
+
+    _patch, metrics = asyncio.run(
+        gpw.generate(FIXTURE, "image", cfg, args, gpw.generate_review_fix, "generate_review_fix")
+    )
+
+    assert metrics["workflow_status"] == "done"
+
+
+def test_container_marker_survives_failed_remove(monkeypatch, tmp_path):
+    gpw.gp.write_container_marker(tmp_path, "cid123", "name123")
+    monkeypatch.setattr(gpw.gp, "remove_container", lambda cid: False)
+
+    removed = gpw.gp.remove_container_and_clear_marker(tmp_path, "cid123")
+
+    assert removed is False
+    assert (tmp_path / "container.id").read_text(encoding="utf-8") == "cid123\n"
+    assert (tmp_path / "container.name").read_text(encoding="utf-8") == "name123\n"
+
+
+def test_output_records_share_record_id_and_patch_sha():
+    patch = "diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n"
+
+    prediction, metrics = gpw.build_output_records(
+        instance_id="task-1",
+        model_name="model",
+        patch=patch,
+        metrics={"workflow_status": "done"},
+        record_id="record-1",
+    )
+
+    assert prediction["record_id"] == "record-1"
+    assert metrics["record_id"] == "record-1"
+    assert prediction["patch_sha256"] == gpw._patch_sha256(patch)
+    assert metrics["patch_sha256"] == prediction["patch_sha256"]
+    assert metrics["instance_id"] == prediction["instance_id"]
