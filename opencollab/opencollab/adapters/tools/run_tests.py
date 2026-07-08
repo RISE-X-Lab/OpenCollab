@@ -67,6 +67,7 @@ class RunTestsTool(Tool):
     """
 
     name = "run_tests"
+    default_timeout = DEFAULT_TIMEOUT
     description = (
         "Run the project's test suite (pytest by default) and return a STRUCTURED "
         "result: pass/fail/error counts, the failing test node-ids, and the head of "

@@ -271,6 +271,7 @@ class DockerEnvironment(Environment):
         shell_flag = "-lc" if self._command_prefix is not None else "-c"
         exec_argv += [self._container_id, "bash", shell_flag, self._wrap_command(cmd)]
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *exec_argv,
@@ -284,11 +285,27 @@ class DockerEnvironment(Environment):
                 stderr=stderr.decode("utf-8", errors="replace"),
             )
         except asyncio.TimeoutError:
+            await self._terminate_exec_process(proc)
             return ExecResult(
                 returncode=self._timeout_returncode,
                 stdout="",
                 stderr=f"Command timed out after {timeout}s",
             )
+        except asyncio.CancelledError:
+            await self._terminate_exec_process(proc)
+            raise
+
+    async def _terminate_exec_process(self, proc: asyncio.subprocess.Process | None) -> None:
+        if proc is None:
+            return
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except (asyncio.TimeoutError, ProcessLookupError):
+            logger.warning("docker exec process did not exit after kill")
 
     async def read_file(self, path: str) -> str:
         quoted_path = shlex.quote(path)

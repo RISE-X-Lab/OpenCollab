@@ -44,6 +44,7 @@ class Tool:
     name: str = ""
     description: str = ""
     parameters: dict[str, Any] = {"type": "object", "properties": {}}
+    default_timeout: float | None = None
 
     def to_openai_schema(self) -> dict[str, Any]:
         """Convert to OpenAI function calling format."""
