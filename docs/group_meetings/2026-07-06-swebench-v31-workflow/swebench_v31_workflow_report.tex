@@ -1,0 +1,237 @@
+% !TEX program = xelatex
+\documentclass[11pt,fontset=fandol]{ctexart}
+
+\usepackage[a4paper,margin=2.0cm]{geometry}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,fit,calc}
+
+\definecolor{linkblue}{HTML}{2F6FAB}
+\definecolor{softblue}{HTML}{EAF3FF}
+\definecolor{softgreen}{HTML}{EAF7EF}
+\definecolor{softred}{HTML}{FDEDEC}
+\definecolor{softyellow}{HTML}{FFF7E6}
+\definecolor{lineblue}{HTML}{4E79A7}
+\definecolor{linegreen}{HTML}{2E8B57}
+\definecolor{linered}{HTML}{C0392B}
+\definecolor{muted}{HTML}{5D6D7E}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=linkblue,
+  urlcolor=linkblue
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.58em}
+\renewcommand{\arraystretch}{1.24}
+\emergencystretch=3em
+\urlstyle{same}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\agentname}[1]{\textbf{#1}}
+\newenvironment{promptblock}{\begin{quote}\small\setlength{\parskip}{0.38em}}{\end{quote}}
+
+\title{\bfseries OpenCollab SWE-bench 委员会 V3.1 设计与评测 Harness 报告}
+\author{Kai / Codex}
+\date{2026-07-06}
+
+\begin{document}
+\sloppy
+\maketitle
+
+\section{问题背景}
+
+过去三天的 V2/V3 实验暴露出一个很清楚的现象：完整委员会在理念上能提供更多审查视角，但结构化 agent 数量过多时，任一环节的 transport failure 都会把整题拖入 \code{infra_invalid}。这些失败集中在 \code{candidate-contracts}、\code{post-validation-factory}、\code{post-validation-judge-triage}、\code{final-verify} 等阶段，summary 里 \code{rate_limit_error_count=0}、\code{schema_failure_count=0}，说明主要来源是 \code{anthropic.APIConnectionError: Connection error} 一类传输失败。远端代理 \code{/healthz} 正常只说明代理端口存活，不能保证每次上游结构化调用都成功。
+
+另一个问题来自恢复语义。checkpoint 保存了 workflow 阶段，但旧实现遇到空 diff 时会删除之前的 worktree sidecar。这样一来，续跑时 workflow 以为可以从后段继续，容器文件系统却回到干净状态，最终日志出现 \code{workflow: tokens=0 steps=0}、\code{staged diff empty}、\code{git status clean}，并被写成 \code{empty_patch_invalid}。这种结果会把已经花掉的时间和 token 变成不可恢复成本。
+
+V3.1 的目标是降低结构化通信失败面，把契约裁决后置到有证据的阶段，并让所有可等待恢复的问题进入暂停或 advisory gap 状态。它仍然保留 V3 的核心想法：先读任务、盘点语义、复用仓库 helper、审查 diff、再交给 official eval；改变的是通信协议和错误语义。
+
+\section{V3.1 总体设计}
+
+V3.1 将前半段多个硬结构化阶段合并成一个证据卷宗。这个卷宗同时包含任务接入、语义盘点、helper 审查、候选契约和探针计划。求解器拿到卷宗后直接写 patch。补丁完成后，现有测试与批准验证官给出公开验证报告；补丁复核官把 diff 风险、后置验证和最终怀疑者合并为一份 advisory 复核；最终闸门只判断当前 patch 是否适合送 official eval。若 advisory 阶段断连，workflow 记录 \code{done_with_advisory_gap} 和 \code{advisory_transport_error_count}，patch 默认保留为 \code{diagnostic_only} 候选。
+
+\begin{center}
+\resizebox{\linewidth}{!}{%
+\begin{tikzpicture}[
+  node distance=10mm and 10mm,
+  box/.style={draw=lineblue, rounded corners=2pt, fill=softblue, align=center, minimum width=30mm, minimum height=11mm, font=\small},
+  gbox/.style={draw=linegreen, rounded corners=2pt, fill=softgreen, align=center, minimum width=32mm, minimum height=11mm, font=\small},
+  ybox/.style={draw=orange!70!black, rounded corners=2pt, fill=softyellow, align=center, minimum width=34mm, minimum height=11mm, font=\small},
+  rbox/.style={draw=linered, rounded corners=2pt, fill=softred, align=center, minimum width=34mm, minimum height=11mm, font=\small},
+  arr/.style={-{Latex[length=2.2mm]}, thick, draw=muted},
+  softarr/.style={-{Latex[length=2.2mm]}, thick, dashed, draw=linered}
+]
+\node[box] (dossier) {证据卷宗官\\Evidence Dossier};
+\node[gbox, right=of dossier] (coder) {求解器\\Solver};
+\node[ybox, right=of coder] (etv) {现有测试\\批准验证};
+\node[ybox, below=of etv] (review) {补丁复核官\\advisory};
+\node[box, right=of etv] (gate) {最终闸门\\Final Gate};
+\node[gbox, right=of gate] (official) {Official Eval};
+\node[rbox, below=of coder] (retry) {最小重试\\或暂停};
+\draw[arr] (dossier) -- node[above,font=\scriptsize]{卷宗} (coder);
+\draw[arr] (coder) -- node[above,font=\scriptsize]{patch + 报告} (etv);
+\draw[arr] (etv) -- node[right,font=\scriptsize]{验证报告} (review);
+\draw[arr] (review) -- node[above,font=\scriptsize]{复核意见} (gate);
+\draw[arr] (gate) -- node[above,font=\scriptsize]{候选 patch} (official);
+\draw[softarr] (review.west) -- ++(-24mm,0) |- node[pos=0.25,left,font=\scriptsize]{RETRY} (retry);
+\draw[softarr] (gate.south) |- node[pos=0.25,right,font=\scriptsize]{CONCRETE\_BLOCKER} (retry);
+\draw[arr] (retry.north) -- node[left,font=\scriptsize]{反馈} (coder.south);
+\node[draw=muted, rounded corners=2pt, fit=(dossier)(coder)(etv)(review)(gate)(official)(retry), inner sep=5mm, label={[font=\small]above:V3.1 通信图}] {};
+\end{tikzpicture}%
+}
+\end{center}
+
+图中的蓝色节点是结构化证据节点，绿色节点产生或消费真实 patch，黄色节点提供验证与 advisory 复核，红色节点代表需要修改代码或暂停等待的路径。V3.1 里只有求解器失败、final gate 给出具体阻断、official eval 判定 unresolved 会影响语义结果；advisory 结构化阶段的传输错误会变成可见缺口。
+
+\section{错误与恢复状态图}
+
+\begin{center}
+\resizebox{0.98\linewidth}{!}{%
+\begin{tikzpicture}[
+  state/.style={draw=muted, rounded corners=2pt, fill=white, align=center, minimum width=34mm, minimum height=12mm, font=\small},
+  good/.style={draw=linegreen, rounded corners=2pt, fill=softgreen, align=center, minimum width=34mm, minimum height=12mm, font=\small},
+  warn/.style={draw=orange!70!black, rounded corners=2pt, fill=softyellow, align=center, minimum width=36mm, minimum height=12mm, font=\small},
+  bad/.style={draw=linered, rounded corners=2pt, fill=softred, align=center, minimum width=34mm, minimum height=12mm, font=\small},
+  arr/.style={-{Latex[length=2.2mm]}, thick, draw=muted},
+  dashedarr/.style={-{Latex[length=2.2mm]}, thick, dashed, draw=linered}
+]
+\node[state] (running) at (0,0) {生成中\\tmux active};
+\node[warn] (paused) at (-4.2,-1.9) {infra\_paused\\等待恢复};
+\node[good] (ckpt) at (-4.2,-3.8) {recoverable\\checkpoint};
+\node[good] (patch) at (0,-3.8) {patch\_done\\或 advisory gap};
+\node[state] (eval) at (4.1,-3.8) {official eval};
+\node[good] (resolved) at (8.0,-2.8) {resolved};
+\node[bad] (unresolved) at (8.0,-4.9) {unresolved};
+\node[bad] (invalid) at (4.1,-1.9) {empty patch\\invalid};
+\draw[arr] (running) -- (paused);
+\draw[arr] (paused) -- (ckpt);
+\draw[arr] (ckpt) -- (patch);
+\draw[arr] (running) -- (patch);
+\draw[arr] (running) -- (invalid);
+\draw[arr] (patch) -- (eval);
+\draw[arr] (eval) -- (resolved);
+\draw[arr] (eval) -- (unresolved);
+\end{tikzpicture}%
+}
+\end{center}
+
+恢复状态的关键改动在 \code{WorkflowContext}：空 diff 捕获时，若已经存在非空 \code{checkpoint.worktree.patch}，metadata 会写成 \code{empty_worktree_preserved_previous_patch}，并保留旧 patch。watchdog 看到 \code{worktree_patch_bytes>0} 时把任务归入 \code{recoverable_checkpoint}。这使暂停、修复代理、恢复容器成为无损动作。
+
+\section{通信协议}
+
+\begin{longtable}{L{3.2cm}L{4.1cm}L{7.0cm}}
+\toprule
+消息 & 发送方到接收方 & 关键字段 \\
+\midrule
+\code{EvidenceDossier} & 证据卷宗官到求解器、验证官、复核官、最终闸门 & \code{task_frame} 记录问题目标、复现线索、相关路径、缺失信息；\code{semantic_inventory} 记录源码事实、证据路径、公开测试覆盖、兼容边界、未知项；\code{helper_audit} 记录可复用 helper、调用限制、复用优先级；\code{contract_hypotheses} 区分硬契约、有证据假设、未知项；\code{probe_plan} 只描述计划；\code{communication_notes} 记录对后续 agent 的提醒。\\
+\code{SolverReport} & 求解器到验证官与复核官 & 修改摘要、涉及文件、复用 helper 的理由、未复用 helper 的理由、准备运行的验证命令、已知风险。\\
+\code{ExistingTestsVerdict} & 现有测试与批准验证官到复核官与最终闸门 & \code{status}、\code{findings}、\code{checks}、\code{allowed_patch_paths}、\code{disallowed_patch_paths}。只有实际运行或源码检查形成的证据能写成失败。\\
+\code{PatchReview} & 补丁复核官到最终闸门与求解器 & \code{diff_risks}、\code{post_validation}、\code{skeptic}、\code{decision}、\code{retry_feedback}、\code{advisory_notes}。连接失败时写 \code{advisory_fallback=true}。\\
+\code{FinalGateVerdict} & 最终闸门到 watchdog 与 official eval driver & \code{verdict}、\code{findings}、\code{allowed_patch_paths}、\code{disallowed_patch_paths}、\code{retry_feedback}、\code{verification_coverage}、\code{done_with_advisory_gap}。\\
+\code{CheckpointSidecar} & Workflow runtime 到 watchdog 与恢复脚本 & \code{checkpoint.worktree.patch}、\code{checkpoint.worktree.json}、\code{patch_bytes}、\code{patch_sha256}、\code{capture_status}、\code{preserved_previous_patch}、\code{submission_eligible}。\\
+\code{OfficialEvalResult} & official eval driver 到 summary & \code{record_id}、patch sha、\code{resolved}、\code{unresolved}、失败摘要、report 路径。\\
+\bottomrule
+\end{longtable}
+
+\section{Agent Prompt 详稿}
+
+\subsection{证据卷宗官}
+
+\begin{promptblock}
+你是 V3.1 证据卷宗官。你的职责是一次性生成可供求解器使用的证据卷宗，避免把任务拆成许多硬结构化关卡。
+
+请输出六块内容。第一块是任务框架，包含问题目标、复现线索、相关路径、缺失信息和下一步阅读文件。第二块是语义盘点，包含源码事实、证据路径、公开测试覆盖、兼容边界、未知项和风险类别。第三块是原生工具审查，列出仓库内可复用 helper、调用限制、复用优先级和手写替代风险。第四块是候选契约，把硬契约、有证据假设和未知项分开。硬契约只能来自源码、公开测试、文档或稳定 API。第五块是探针计划，只描述建议探针，不能把未运行探针写成证据。第六块是通信备注，说明哪些信息可以约束求解器，哪些信息只适合作为提醒。
+
+这一步只做证据卷宗，不写补丁，不裁决最终通过。输出必须符合 \code{V31\_EVIDENCE\_DOSSIER\_SCHEMA}，字段包括 \code{task_frame}、\code{semantic_inventory}、\code{helper_audit}、\code{contract_hypotheses}、\code{probe_plan}、\code{communication_notes}。
+\end{promptblock}
+
+这个 agent 解决的是 V3 前半段“先局部裁决再理解代码”的问题。它只负责收集和分层证据，不能把契约假设升级成最终裁决。若它发生 transport failure，workflow 会生成 fallback dossier，并要求求解器自行补读关键文件。
+
+\subsection{求解器}
+
+\begin{promptblock}
+你是 V3.1 求解器。请根据证据卷宗做最小源码修改。
+
+执行规则如下。优先复用证据卷宗里列出的仓库原生 helper。未运行的探针只能当作验证计划，不能当作已经通过的证据。若证据卷宗来自 infra fallback，要先读取关键文件补足事实，再修改代码。修改范围只限源码和必要配置，不写临时测试文件到最终 diff。输出修改摘要、涉及文件、复用或手写理由、准备运行的验证命令。
+
+输入包含任务、证据卷宗、已有验证和上一轮反馈。若上一轮 final gate 或 patch review 给出具体阻断，先修那个阻断；若只有 advisory 缺口，优先补足公开验证证据。
+\end{promptblock}
+
+求解器是 V3.1 里最重要的硬执行节点。它的 transport failure 仍会暂停或进入 infra 状态，因为没有 solver 输出时无法构成 patch。它可以使用读写工具和 \code{apply_patch}，其他结构化审查节点没有写工具。
+
+\subsection{现有测试与批准验证官}
+
+\begin{promptblock}
+你是 V3.1 现有测试与批准验证官。请只使用公开仓库、公开测试、证据卷宗批准的探针计划和当前 diff 做验证。
+
+请输出结构化验证报告。字段 \code{status} 只能是 \code{PASS}、\code{FAIL_WITH_EVIDENCE} 或 \code{NOT_RUN}。字段 \code{checks} 写实际运行或实际检查过的命令、文件、结果和证据。字段 \code{allowed_patch_paths} 写当前问题允许修改的源码路径。字段 \code{disallowed_patch_paths} 写临时验证文件、越界文件或测试污染。
+
+只有真实运行失败、源码检查失败或路径越界可以触发 \code{FAIL_WITH_EVIDENCE}。未运行探针只能写进 findings，不能当成失败证据。
+\end{promptblock}
+
+这个节点把“验证计划”和“验证事实”分开。它支持 final gate 判断 patch 边界，也为 official eval 前的诊断提供证据。若该阶段 transport failure，V3.1 会写成 \code{advisory_fallback}，并把 \code{allowed_patch_paths} 留空；final gate 可将这个缺口写入 \code{coverage_gaps}。
+
+\subsection{补丁复核官}
+
+\begin{promptblock}
+你是 V3.1 补丁复核官。你合并三个原本独立的委员会职责：diff 风险、后置验证探针、最终怀疑者。
+
+请读取当前 diff、现有测试报告和证据卷宗，输出一份 advisory 复核。字段 \code{diff_risks} 写补丁改变了哪些可观察行为和边界。字段 \code{post_validation} 写哪些公开验证可以支持或反驳补丁；只有实际运行且有证据的失败才能触发 \code{RETRY}。字段 \code{skeptic} 写假设补丁错误时最可能的反例。字段 \code{decision} 可取 \code{PASS} 或 \code{RETRY}。\code{RETRY} 只用于有具体源码修复反馈；硬契约证据不足时，把证据缺口写进 \code{advisory_notes}，交给最终闸门和 official eval 做诊断判定。
+
+这一步是 advisory stage。连接失败时会被降级，不会单独让整题 invalid。
+\end{promptblock}
+
+补丁复核官减少了 V3 后半段的结构化调用数量。它的输出可以让求解器进行最小重试，也可以给 final gate 提供缺口说明。若它断连，fallback 输出 \code{decision=PASS}、\code{advisory_fallback=true}，最终结果会带 \code{done_with_advisory_gap=true}。
+
+\subsection{最终闸门}
+
+\begin{promptblock}
+你是 V3.1 最终闸门。你的职责是判断当前 patch 是否可以交给 official eval。
+
+请只根据证据卷宗、现有测试报告、补丁复核和当前 diff 边界作决定。若存在具体源码问题、测试失败、临时文件进入 diff、修改越界，请输出 \code{CONCRETE_BLOCKER} 并给出最小重试反馈。若只是 advisory stage 的网络失败或证据提示不完整，但已有 patch、路径边界清楚、没有观察到失败，请允许 \code{PASS}，并在 \code{verification_coverage.coverage_gaps} 中写清楚缺口，交由 official eval 做外部判定。
+\end{promptblock}
+
+最终闸门的语义是“是否值得送评”，并非“证明已解决”。它输出 \code{PASS} 时仍可能带 \code{coverage_gaps}。watchdog 看到 \code{done_with_advisory_gap} 后把任务归入 \code{patch_done_advisory_gap}，默认标为 \code{diagnostic_only}；只有显式打开 \code{--eval-advisory-gap} 时，才把这类 patch 送 official eval。
+
+\section{相对 V3 的具体调整}
+
+\begin{longtable}{L{4.1cm}L{5.4cm}L{5.4cm}}
+\toprule
+位置 & V3 行为 & V3.1 行为 \\
+\midrule
+任务接入与语义盘点 & 多个结构化 stage 串行调用，每个 stage 都可能成为 transport failure 点 & 合并成一个 \code{EvidenceDossier}，失败后生成 fallback dossier，并要求求解器补读源码。\\
+候选契约 & 早期生成候选契约并参与后续裁决 & 契约作为卷宗字段进入求解器和 final gate，裁决后置到 patch 已存在之后。\\
+后置验证与怀疑者 & diff-risk 三路、post-validation、final-skeptic 多次结构化调用 & 合并为 \code{PatchReview} advisory stage，失败时写 \code{advisory_fallback}。\\
+final verifier & 结构化失败会导致整题 infra invalid & final gate 失败时生成带 \code{coverage_gaps} 的 fallback verdict，结果标记 \code{done_with_advisory_gap}。\\
+checkpoint & 空 diff 会删除旧 sidecar & 空 diff 遇到旧非空 sidecar 时保留旧 patch，metadata 写 \code{empty_worktree_preserved_previous_patch}，并设置 \code{submission_eligible=false}。\\
+watchdog 分类 & patch done 和内部证据完整混在一起 & 新增 \code{official_eval_eligible} 与 \code{diagnostic_only}，advisory gap 默认只作诊断候选。\\
+\bottomrule
+\end{longtable}
+
+\section{实现位置}
+
+当前代码改动集中在五处。第一处是 \code{workflows/swe_committee_v2.py}，新增 \code{swe-committee-v3.1} workflow、V3.1 schema、中文 prompt、fallback helper、\code{_run_v31_attempt}，并把 advisory fallback 计数写入 workflow result。第二处是 \code{swebench/gen_prediction_workflow.py}，让 \code{swe-committee-v3.1} 默认开启 blind validation，并复用 V3/V3.1 专用 agent prompt；最终 patch 抽取只接受 \code{submission_eligible=true} 的 sidecar。第三处是 \code{opencollab/opencollab/application/workflow.py}，在空 diff 和 capture failure 时显式保留上一份可校验非空 worktree sidecar，同时把这类 sidecar 标记为不可直接提交。第四处是 \code{scripts/swe_v3_wave_watchdog.py}，新增 \code{patch_done_advisory_gap}、\code{official_eval_eligible}、\code{diagnostic_only}、\code{last_good_patch_*} 分类字段，并用当前 \code{record_id}+patch hash 双重绑定 prediction 与 metrics。第五处是 \code{scripts/swe_auto_eval_driver.py}，官方评测候选按 \code{record_id} 和 patch sha 锁定，还要反查同一 metrics 行确认 workflow eligible。
+
+相关测试覆盖了三个方向。V3.1 happy path 检查 agent label 序列为 \code{v31-evidence-dossier -> coder:r1 -> existing-tests-approved-validation:r1 -> v31-patch-review:r1 -> v31-final-gate:r1}，并确认非求解阶段没有写工具。transport fallback 测试模拟证据卷宗、补丁复核、最终闸门三个阶段连接失败，结果应为 \code{status=advisory_gap}、\code{done_with_advisory_gap=true}、\code{advisory_transport_error_count=3}。ETV 失败测试确认 \code{FAIL_WITH_EVIDENCE} 会在补丁复核前回到求解器；coverage 测试确认 final gate 的 \code{PASS} 若缺少判别性 probe、原生工具审查或 API 兼容检查，也会回到求解器。checkpoint 测试确认旧非空 sidecar 在空 diff 和 capture failure 时都被显式保留，auto-eval 测试确认没有同 \code{record_id} 且同 patch hash 的 eligible metrics 时不会启动 official eval。当前目标文件 83 个 pytest 已通过。
+
+\section{科研解释}
+
+V3 效果差时，最有价值的观察并非“委员会思想失败”。真正的信号在于复杂通信协议会把基础设施抖动放大成语义失败。V3.1 的启发是：在没有足够源码事实、公开测试和 helper 审查前，契约委员会不适合直接裁决。更合理的顺序是先形成可共享证据卷宗，让求解器基于证据做最小修改，再让审查节点围绕真实 diff 做 advisory 复核。最终判断交给 official eval 和带证据的 final gate，内部缺口以可读字段保存。
+
+因此 V3.1 更像“证据优先、裁决后置、失败可恢复”的委员会。它保留多视角讨论，但把每个视角从硬关卡改成有清楚输入输出的消息。这样能减少 transport failure 面，也能让未来做消融实验时分清模块价值：证据卷宗是否提高 patch rate，helper audit 是否降低 F2P 残留，patch review 是否减少越界修改，final gate 的 coverage gap 是否能预测 official eval。
+
+\section{下一步实验}
+
+建议用经典两题和 Pro Lite 小样本做 V3.1 smoke。第一轮只看三件事：结构化断连是否写成 \code{done_with_advisory_gap} 或 \code{infra_paused}，checkpoint 是否能恢复旧 diff，official eval 是否在 patch 产生后自动启动。第二轮再比较 V1、V3、V3.1，统计 resolved、unresolved、patch rate、workflow done rate、advisory gap rate、infra paused rate、empty patch invalid rate、token 输入输出与 official eval 一致性。
+
+如果 V3.1 在经典两题仍然输给 V1，重点分析求解器收到的证据卷宗是否过度约束了修改空间，helper audit 是否遗漏了 V1 使用的简单路径，final gate 是否把“证据不足”反馈得太抽象。若 official eval 通过率提升，则继续做模块消融，逐步比较证据卷宗、helper audit、patch review、final gate 对成本和成功率的贡献。
+
+\end{document}

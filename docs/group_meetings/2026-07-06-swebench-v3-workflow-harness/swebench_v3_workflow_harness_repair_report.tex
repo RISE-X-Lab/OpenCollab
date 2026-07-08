@@ -1,0 +1,240 @@
+% !TEX program = xelatex
+\documentclass[11pt,fontset=fandol]{ctexart}
+
+\usepackage[a4paper,margin=2.0cm]{geometry}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{enumitem}
+
+\definecolor{linkblue}{HTML}{2F6FAB}
+\definecolor{muted}{HTML}{5D6D7E}
+\definecolor{softred}{HTML}{B03A2E}
+\definecolor{softgreen}{HTML}{1E8449}
+\definecolor{softorange}{HTML}{A65F00}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=linkblue,
+  urlcolor=linkblue
+}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\emergencystretch=3em
+\renewcommand{\arraystretch}{1.23}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcommand{\code}[1]{\texttt{\detokenize{#1}}}
+\newcommand{\good}[1]{\textcolor{softgreen}{#1}}
+\newcommand{\bad}[1]{\textcolor{softred}{#1}}
+\newcommand{\warn}[1]{\textcolor{softorange}{#1}}
+\urlstyle{same}
+
+\title{\bfseries OpenCollab SWE-bench V3 类复杂 Workflow 评测与 Harness 修复报告}
+\author{Kai / Codex}
+\date{2026-07-06}
+
+\begin{document}
+\sloppy
+\maketitle
+
+\section{摘要}
+
+过去三天围绕 OpenCollab 在 SWE-bench 上的复杂 workflow 做了三件相互关联的工作。第一，复盘 V2 委员会和 V1 对比，确认 V2 的差结果里混入了结构化 agent 连接错误、schema 捕获失败、空 patch 与 official eval 自动化缺口。第二，设计并实现委员会 V3，把早期契约裁决后置，先做语义盘点、已有工具审查和判别性探针，再让求解器写补丁，最后由契约法庭裁决。第三，围绕 V3 16M 并发做题暴露出的异常，把评测 Harness 逐层补厚：模型代理断连、429、远端 tmux、Docker、SSH、checkpoint 恢复、sidecar patch、official eval 发现与状态分类都进入统一的可观测状态机。
+
+这次最重要的结论是：复杂 workflow 的实验结果必须先经过 Harness 分层，才有资格用于架构比较。V2 的 0 resolved 和 V3 16M 的大批 invalid 都不能直接解释为“委员会思想失败”。这些结果首先说明，复杂 workflow 一旦包含多个结构化阶段、远端容器、代理转发和 official eval，任何一个基础设施错误都可能伪装成语义失败。近期修复的目标就是把这种伪装拆掉，让可恢复错误进入暂停状态，让无法恢复的技术失败单列，让 official unresolved 只表示 patch 已被官方评测判为未解决。
+
+当前最新一轮 12 题 summary 来自 \code{docs/monitoring/swe_v3_16m_12_summary.md}，生成时间为 2026-07-06 04:29:50。记录显示 12 题中 official eval 完成 2 题，resolved 为 0，unresolved 为 2；Pro Lite 10 题没有进入 official eval，其中 6 题为运行层 infra invalid，4 题为空 patch invalid。代理账本窗口记录 input tokens 96,962,358，cached input tokens 74,813,952，output tokens 1,223,403，total tokens 98,185,761，估算费用 \$55.842369。12 题 checkpoint tokens\_spent 合计 58,736,780。这个 summary 记录的是修复前一波运行的结果，它直接推动了后续 checkpoint sidecar 和 infra pause 的加厚。
+
+\section{三天工作时间线}
+
+\begin{longtable}{L{2.8cm}L{4.2cm}L{8.0cm}}
+\toprule
+日期 & 主题 & 产出与证据 \\
+\midrule
+2026-07-03 & V2/V1 对比与 V3 方案形成 & V2 11 题已有 10 个有效 patch 官方评测，结果 0 resolved / 10 unresolved。确认 \code{django__django-15252} 旧 invalid 源于连接错误和空 staged diff。整理 \code{django__django-11019} 上 V1 通过、V2 失败的语义差异，提出 V3 的 delayed contract judgement 设计。组会文档位于 \code{docs/group_meetings/2026-07-03-swebench-v2-harness/}。\\
+\midrule
+2026-07-04 & V3 16M 并发与 checkpoint 试验 & 启动经典两题和 Swe Batch Pro Lite 前十题，连续暴露 DNS、容器名冲突、代理依赖本机、远端直连失败、容器现场无法恢复等问题。新增 \code{scripts/swe_parallel_start.py}、\code{scripts/swe_v3_wave_watchdog.py}、\code{scripts/swe_auto_eval_driver.py} 的多 run 监控与自动 official eval 能力。\\
+\midrule
+2026-07-05 & 单题强监督与 12 题 summary & 抽 \code{django__django-11019} 单题重新做，验证单题在强监督下能生成 patch 并完成 official eval，但 V3 patch official unresolved。随后尝试剩余 10 题并行，生成最终 summary：2 题 official eval unresolved，Pro Lite 10 题均未完成 official eval，暴露 checkpoint 恢复没有保存容器 diff 的关键缺陷。\\
+\midrule
+2026-07-06 & 可恢复暂停语义与 checkpoint 加厚 & 修改 workflow runtime、evaluator、gen prediction 和 watchdog。可恢复 infra 错误进入 \code{infra_paused}；checkpoint 写入 \code{checkpoint.worktree.patch} sidecar；异常捕获时强制保存 runtime checkpoint；恢复前探测当前 worktree；checkpoint diff 排除 SWE-bench 注入测试文件；旧格式 metrics 的 nested failure counts、429 pause reason 和 Docker/tmux infra 日志识别均已补上。\\
+\bottomrule
+\end{longtable}
+
+\section{实验状态与当前证据}
+
+\subsection{V2 十一题与 V1 对比}
+
+V2 11 题第一轮最醒目的数字是 10 个有效 patch 全部 official unresolved。更细的看板显示，这一轮不能直接用于 V1/V2 架构胜负判断，因为失败里混入了 infra invalid 和 workflow incomplete。V2 的多个 incomplete 样本在 final verifier、existing-tests、diff-risk、post-validation 等结构化阶段出现 Connection error。旧 runtime 把结构化输出缺失转成默认 blocker，导致基础设施错误伪装成 semantic blocker。
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{0.96\linewidth}{L{4.2cm}rY}
+\toprule
+指标 & 数值 & 解释 \\
+\midrule
+V2 目标样本 & 11 & 原始 V2 对比样本 \\
+有效 patch official eval & 10 & \code{django__django-15252} 原始为空 patch invalid \\
+official resolved / unresolved & 0 / 10 & 已评测 patch 均未解决 \\
+P2P fail & 0 & patch 均可 apply，失败集中在 F2P 残留 \\
+V1 主报告 & 2 pass / 8 fail / 3 uneval & 后续 rescued 的 3 个 uneval 均补评为 unresolved \\
+V1 solved 两题 & \code{django__django-11019}, \code{django__django-14730} & 后续作为经典两题用于 V2/V3 回归试验 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\code{django__django-11019} 是这三天最有解释力的样本。V1 使用 Django 内已有的 \code{stable_topological_sort()}，能满足稳定交错排序。V2/V3 多次手写合并或拓扑规则，能通过题面局部例子，却漏掉 \code{Media.merge([1,2],[3,4]) == [1,3,2,4]} 这一类判别性 probe。这个样本说明，增加评审角色会放大证据质量问题；如果早期没有足够多的语义盘点和已有工具审查，后续契约裁决会围绕错误假设形成稳定共识。
+
+\subsection{V3 16M 12 题结果}
+
+V3 16M 12 题由两道经典题和 Pro Lite 前十题组成。两道经典题各自单题运行并完成 official eval，结果均 unresolved。Pro Lite 前十题没有进入 official eval，其中 4 题最终为空 patch invalid，6 题为 infra invalid 且保留了非空 patch。这个结果的直接意义是：V3 的求解质量还没有得到有效评估，因为多数样本停在做题 Harness 层。
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{0.96\linewidth}{L{4.0cm}rrrrY}
+\toprule
+run & 题数 & eval 完成 & resolved & unresolved & 说明 \\
+\midrule
+\code{classic_single_django11019} & 1 & 1 & 0 & 1 & patch 6784 字符，workflow 侧仍带 infra invalid 标记，official unresolved \\
+\code{classic_single_django14730} & 1 & 1 & 0 & 1 & patch 1813 字符，official unresolved \\
+\code{prolite10_checkpoint} & 10 & 0 & 0 & 0 & 6 个 infra invalid，4 个 empty patch invalid，均未进入 official eval \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+Pro Lite 10 题的 token 使用很高，但没有得到对应的 official eval 结果。代理账本窗口显示 5,197 条记录，其中成功 4,695 条、错误 502 条，total tokens 接近 98.19M。这说明并行做题的瓶颈已经超出速度本身。只要 checkpoint、代理、容器恢复和 official eval 任一环节不稳，大规模并发会把错误放大成费用和时间浪费。
+
+\section{差结果带来的核心发现}
+
+\subsection{transport failure 会污染语义状态机}
+
+结构化 agent 是 V2/V3 复杂 workflow 的基本通信单元。每个 \code{ctx.agent(..., schema=..., label=...)} 都承担一个语义节点，例如 task intake、semantic inventory、helper audit、candidate contracts、post validation、skeptic、final tribunal。旧 runtime 遇到 Connection error、API timeout、代理不可达或反向隧道断开时，结构化结果常常变成 \code{None}。workflow 随后用默认 fallback 把 \code{None} 解释成 verifier fail 或 concrete blocker。这样，网络错误进入了语义状态机。
+
+修复后的原则是：只有模型成功返回结构化 verdict，workflow 才能走语义状态机边；transport 或 rate limit 错误先在同一个 label 原地重试，重试耗尽后进入 infra 类状态。这个原则后来也扩展到生成层：远端 Docker、tmux、SSH 这类可恢复基础设施错误也进入暂停状态，不能被当作最终失败。
+
+\subsection{checkpoint 只保存阶段名没有保存工作区}
+
+V3 16M 并发暴露了更严重的问题。旧 checkpoint 保存了 workflow 阶段和若干结构化产物，但没有可靠保存容器里的 worktree diff。watchdog 续跑时可能新起一个干净容器，workflow 从 checkpoint 认为自己已经进入后段，真实文件系统却没有前面 coder 写过的补丁。于是日志里出现 \code{workflow: tokens=0 steps=0}、\code{staged diff empty}、\code{git status clean}，最后变成 empty patch invalid。qutebrowser、teleport、navidrome 等 Pro Lite 样本都出现过这种症状。
+
+这次修复把 checkpoint 从“语义状态”扩展为“语义状态 + 工作区 diff”。\code{WorkflowContext.checkpoint_put()} 每次写 \code{checkpoint.json} 时，会用临时 index 捕获容器当前 diff，并写到 \code{checkpoint.worktree.patch}，同时保存 \code{checkpoint.worktree.json} 元数据，包括 sha256、字节数、stage、git status 和 HEAD。恢复时先探测当前 worktree，若当前 diff 为空才 apply sidecar；若当前 diff 已经非空，就跳过二次 apply，避免覆盖现场。
+
+\subsection{SWE-bench 注入测试会污染 checkpoint diff}
+
+更深一层的边界来自 SWE-bench 的测试注入。做题时 evaluator 会先把官方 \code{test_patch} 注入容器，让模型可以跑目标测试。最终抽 patch 前会把这些注入测试文件清掉，防止提交 patch 里混入测试。但 checkpoint diff 捕获发生在 workflow 中间，如果直接 \code{git add -A}，sidecar 会把注入测试也保存进去。
+
+这会造成恢复误判。下一次新容器启动后，测试文件会再次注入；恢复 sidecar 前探测到 worktree 非空，于是以为当前已经有模型修改，跳过 sidecar apply。结果真正的补丁没有恢复，后续仍可能得到空 patch。修复后，\code{WorkflowContext} 接收 \code{injected_paths}，checkpoint diff 命令在临时 index 中对这些路径执行 \code{git reset -q HEAD -- <path>}。这样 sidecar 只保存模型真实修改，不保存官方测试注入文件。
+
+\subsection{official eval 需要纳入做题状态}
+
+生成 patch 之后还没有完成一道题。official eval 发现、启动、状态刷新、report 读取和技术失败分类都必须由脚本管理。否则就会出现“有 patch 但没人评”“eval 已完成但 report 没找到”“tmux 已退出但状态仍 active”“dataset 单对象 JSON 触发 eval 启动失败”等实际问题。
+
+\code{scripts/swe_auto_eval_driver.py} 现在承担自动 official eval。它读取 \code{predictions.jsonl}，按 patch sha 创建 side-car，启动 official eval tmux，轮询 report，写 \code{status.json/status.md}。它也会识别活跃生成会话，避免 patch 未完成时抢跑 eval。对 Pro Lite 数据集，它支持 \code{instances.jsonl} 发现和单题 dataset 规范化。对 technical eval failure，它会有限重试，仍失败后保留日志和状态。
+
+\section{V3 复杂 Workflow 设计}
+
+V3 的关键改变是契约裁决后置。早期阶段只做观察、盘点和假设，不给最终裁决。只有当判别性探针、补丁后验证、diff 风险分析和最终怀疑者都给出证据后，最终契约法庭才输出通过、重试或 infra invalid。
+
+\begin{center}
+\begin{tabularx}{0.98\linewidth}{cYcYcY}
+\toprule
+阶段 & 输入 & 产物 & 约束 & 下一步 & 失败处理 \\
+\midrule
+任务接入 & issue 文本与 hints & 复现摘要、相关路径、未知点 & 只盘点，不裁决 & 语义盘点 & 缺结构化输出时重试 \\
+语义盘点 & 任务框架、仓库事实 & 行为事实、公开测试、兼容边界 & 证据必须指向文件或命令 & 工具审查 & transport 进入 infra \\
+已有工具审查 & 语义盘点 & 可复用 helper、手写风险 & 必须搜索仓库原生工具 & 候选契约 & 工具缺口进入 unknown \\
+候选契约 & 语义事实与 helper & 硬契约、假设、未知项 & 不能把未知项升级成硬契约 & 探针包 & 证据不足时后续回退 \\
+判别性探针 & 候选契约 & 能击败浅层错误解法的 probe & 至少覆盖一个反例扩展 & 求解器 & 探针不足触发重试 \\
+求解器 & 契约、探针、反馈 & 源码 patch & 可写代码 & 后置验证 & 写后保存 checkpoint \\
+最终法庭 & patch 与验证证据 & 通过、重试、infra invalid & 缺 coverage 禁止放行 & 输出 patch/report & 可恢复错误暂停 \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+这个设计直接来自 \code{django__django-11019}。如果先让契约委员会在信息不足时决定一切，系统很容易把题面局部例子当成完整契约。V3 改为先盘点文档、代码和现有工具，再生成候选契约，再用判别性 probe 反驳弱契约。最终裁决仍然存在，但它的输入必须包含覆盖证据，而非只听多个 agent 的口头赞成。
+
+\section{Harness 修复明细}
+
+\begin{longtable}{L{4.0cm}L{5.0cm}L{6.1cm}}
+\toprule
+修复点 & 旧问题 & 当前行为 \\
+\midrule
+结构化 stage retry & Connection error 后返回 \code{None}，被 workflow 当成 semantic blocker & 同一 label 原地重试 10/30/90 秒，耗尽后抛 \code{WorkflowInfraError} \\
+\midrule
+错误分类 & transport、schema、semantic blocker 混在一起 & metrics 记录 \code{transport_error_count}、\code{rate_limit_error_count}、\code{schema_failure_count}、\code{semantic_blocker_count} \\
+\midrule
+429 分类 & 429 被压成普通 transport & \code{_transport_infra_error_type()} 把 429 标成 \code{rate_limit_error}，pause reason 保留类型 \\
+\midrule
+checkpoint worktree sidecar & checkpoint 只保存 workflow 阶段，不保存容器 diff & 写 \code{checkpoint.worktree.patch} 与元数据，恢复时 apply sidecar \\
+\midrule
+异常时强制 checkpoint & coder 已改代码、后置验证断连时可能没走到 \code{_save("solve:r")} & evaluator 捕获 budget、infra、timeout、普通异常时写 \code{_runtime} checkpoint 并捕获当前 diff \\
+\midrule
+注入测试排除 & sidecar 可能保存官方 test patch，恢复时被注入测试误导 & checkpoint diff 命令对 injected paths 从临时 index 中 reset \\
+\midrule
+空 patch 覆盖保护 & 续跑后干净容器可能覆盖前面非空 patch & 抽 patch 为空时尝试 sidecar 恢复；sidecar 不可用时标记 \code{checkpoint_sidecar_unusable} \\
+\midrule
+暂停状态 & 可恢复错误会进入 invalid 或 technical failed & \code{infra_paused} 单列，watchdog 不把它计入完成数，健康恢复后 \code{--resume} \\
+\midrule
+Docker/tmux infra 识别 & 远端基础设施异常被写成 generation technical failed & generation log 中的 Docker daemon、tmux、SSH、端口冲突、磁盘不足等标成 infra kind，进入暂停 \\
+\midrule
+official eval 自动化 & 有 patch 后需要人工启动和查 report & \code{swe_auto_eval_driver.py} 自动发现 patch、启动 eval、刷新状态、处理 report 路径漂移 \\
+\bottomrule
+\end{longtable}
+
+\section{暂停与继续的真实边界}
+
+新的统一规则是：凡是修复后可以继续的情况，外层状态进入 \code{infra_paused}，不进入最终错误。日志会保留原始错误，但 summary 不能把它算成语义失败或最终技术失败。这个规则覆盖模型代理断连、429、远端代理健康检查失败、SSH 反向隧道断开、Docker daemon 连接失败、tmux 异常、端口冲突和磁盘不足等可恢复问题。
+
+\begin{table}[h]
+\centering
+\begin{tabularx}{0.96\linewidth}{L{4.2cm}Y Y}
+\toprule
+场景 & 当前状态 & 恢复方式 \\
+\midrule
+结构化 agent Connection error & \code{infra_paused} 或 \code{infra_invalid}，由 retryable 字段决定 & 代理健康后 watchdog 续跑同题，workflow 从 checkpoint 恢复 \\
+429 / rate limit & \code{infra_paused}，pause reason 为 \code{rate_limit_error} & 等待冷却窗口，随后 resume \\
+Docker daemon / tmux / SSH 异常 & \code{infra_paused} & watchdog 等待或修复远端代理后重新启动生成 \\
+已有 checkpoint 且有 sidecar patch & \code{recoverable_checkpoint} 或 \code{infra_paused} & 新容器恢复 sidecar diff，再继续 workflow \\
+sidecar apply 失败 & \code{checkpoint_sidecar_unusable}，保留日志 & 需要人工排查 base commit、注入测试或 patch 兼容性 \\
+官方评测 tests fail & \code{official_unresolved} & 这是 patch 语义结果，进入算法分析 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+需要诚实说明的是，当前恢复接近“checkpoint 后无损”，还不能覆盖所有物理中断。若 Python 进程被直接杀死、机器掉电、Docker 容器瞬间消失，且中断发生在任何 checkpoint 写入之前，那段 agent call 和尚未写入的 diff 仍可能丢失。若模型请求已经发出但响应未回来，token 流也无法从中间继续，只能从上一个 checkpoint 重新发起下一步。这个边界在报告中必须保留，因为它决定了下一轮是否需要更细粒度的工具级事件日志、周期性 worktree snapshot 或外部 supervisor。
+
+\section{V3 当前科研判断}
+
+V3 的设计方向仍然有意义，但当前 12 题结果无法证明 V3 求解能力。理由很直接：Pro Lite 10 题全部停在 Harness 层，两道经典题虽完成 official eval，但结果均 unresolved，其中 \code{django__django-11019} 继续暴露了“工具审查和判别性 probe 仍需加强”的问题。V3 的收益需要在 Harness 稳定后用消融实验验证，而非只看完整 V3 与 V1 的二元对比。
+
+下一轮建议比较五个条件：V1；V1 加 observable inventory；V1 加三路 diff-risk；V1 加 final skeptic；完整 V3。每个条件统计 resolved、F2P fail、P2P fail、patch rate、workflow done rate、infra paused/invalid rate、token input/output/cached、内部 verdict 与 official eval 的一致率。这样才能判断 V3 的哪个模块真正增加成功率，哪个模块只增加成本或失败面。
+
+\section{当前文件与证据路径}
+
+\begin{longtable}{L{5.0cm}L{10.2cm}}
+\toprule
+路径 & 内容 \\
+\midrule
+\code{docs/monitoring/swe_v3_16m_12_summary.md} & 12 题最终 summary，包含 98.19M token 窗口、2 题 official unresolved、Pro Lite 10 题 invalid 状态 \\
+\code{docs/monitoring/swe_v3_16m_wave_status.md} & Pro Lite 10 题 watchdog 状态，记录 active、patch、workflow status、error counts 与 proxy usage \\
+\code{docs/monitoring/swe_v2_11019_v1_v2_regression_analysis.md} & \code{django__django-11019} 上 V1/V2 语义差异分析 \\
+\code{opencollab/opencollab/application/workflow.py} & 结构化 retry、错误分类、checkpoint sidecar、rate-limit 分类、injected path 排除 \\
+\code{opencollab/opencollab/harness/evaluator.py} & workflow 异常捕获、runtime checkpoint、checkpoint 恢复接入 \\
+\code{swebench/gen_prediction_workflow.py} & sidecar patch 恢复、防空 patch 覆盖、metrics 状态拆分 \\
+\code{scripts/swe_v3_wave_watchdog.py} & V3 多 run watchdog，暂停/恢复状态、远端代理修复、summary 写入 \\
+\code{scripts/swe_auto_eval_driver.py} & patch 自动 official eval、side-car 管理、report 发现和状态刷新 \\
+\bottomrule
+\end{longtable}
+
+\section{结论}
+
+最近三天的主要进展集中在复杂 workflow 的评测系统升级：它从“靠人工盯跑的实验脚本”演进为“能区分语义失败、基础设施失败、可恢复暂停、空 patch 和官方评测结果的做题框架”。V2 的差结果揭示了结构化通信错误会污染语义判断；V3 的并发失败揭示了 checkpoint 不能只保存阶段名，还必须保存容器工作区 diff；经典两题揭示了委员会需要后置契约裁决和更强判别性 probe。
+
+现在可以继续推进下一轮实验，但前提是新 summary 中 \code{infra_paused} 不再被当作结束，checkpoint sidecar 可恢复性必须先通过单题 smoke。建议先用 \code{django__django-11019} 或 Pro Lite 中已有非空 patch 的一个样本做恢复测试：人为中断代理或 tmux，确认 watchdog 进入 \code{infra_paused}；恢复代理后确认 \code{--resume} 应用 \code{checkpoint.worktree.patch}；最终确认非空 patch 自动送入 official eval。这个 smoke 通过后，再重新跑 Pro Lite 10 题或更大的消融实验。
+
+\end{document}
