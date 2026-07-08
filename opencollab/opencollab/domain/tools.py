@@ -96,6 +96,7 @@ class ToolProcessingResult:
         reads it is gated, so the off path is unchanged.
         """
         distinct_before = state.distinct_evidence_count
+        made_progress = self.write_succeeded
         for i, (content_hash, call_hash, intrinsic_low_yield) in enumerate(self.evidence_signals):
             card = self.evidence_cards[i] if i < len(self.evidence_cards) else None
             state.record_evidence_signal(
@@ -109,6 +110,10 @@ class ToolProcessingResult:
                 state.steps_since_progress = 0
             else:
                 state.steps_since_progress += 1
+        if made_progress:
+            state.loop_blocked_since_progress = 0
+        elif self.loop_detections:
+            state.loop_blocked_since_progress += len(self.loop_detections)
 
     def apply_hashes_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         """Apply only the loop-detection hashes, not the result messages.

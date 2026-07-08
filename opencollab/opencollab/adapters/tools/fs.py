@@ -321,18 +321,23 @@ class GrepTool(Tool):
         pattern = params["pattern"]
         search_path = params.get("path", ".")
         glob_pattern = params.get("glob")
-        max_results = params.get("max_results", 50)
+        raw_max_results = params.get("max_results", 50)
         env = runtime.environment
 
         if not env:
             return "Error: no execution environment available."
+        try:
+            max_results = int(raw_max_results)
+        except (TypeError, ValueError):
+            return "Error: max_results must be an integer."
+        max_results = max(1, min(max_results, 500))
 
         quoted_pattern = shlex.quote(pattern)
         quoted_search_path = shlex.quote(search_path)
         rg_cmd = f"rg -n --max-count {max_results} "
         if glob_pattern:
             rg_cmd += f"-g {shlex.quote(glob_pattern)} "
-        rg_cmd += f"{quoted_pattern} {quoted_search_path} 2>/dev/null"
+        rg_cmd += f"-- {quoted_pattern} {quoted_search_path} 2>/dev/null"
         # Fallback when rg is missing from PATH: grep MUST use -E (ERE) so that
         # `a|b|c` alternation works. Plain grep is BRE, where `|` is a literal
         # character — an alternation pattern then silently matches nothing. Also
@@ -344,7 +349,7 @@ class GrepTool(Tool):
         )
         if glob_pattern:
             rg_cmd += f"--include={shlex.quote(glob_pattern)} "
-        rg_cmd += f"{quoted_pattern} {quoted_search_path} 2>/dev/null | head -n {max_results}"
+        rg_cmd += f"-- {quoted_pattern} {quoted_search_path} 2>/dev/null | head -n {max_results}"
 
         result = await env.exec_cmd(rg_cmd, timeout=30)
         if result.stdout.strip():

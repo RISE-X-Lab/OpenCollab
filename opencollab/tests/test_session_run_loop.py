@@ -8,6 +8,7 @@ from opencollab.application.event_bus import EventBus
 from opencollab.application.session_run import (
     READS_NUDGE_HARD,
     READS_NUDGE_SOFT,
+    PendingStep,
     SessionRunUseCase,
 )
 from opencollab.domain.pending import RowKind, RowStatus
@@ -260,6 +261,24 @@ def test_run_loop_cancel_event_appends_interrupt_and_sets_phase():
     assert events == [("error", {"reason": "cancelled", "aid": -1})]
 
 
+def test_run_loop_loop_block_limit_stops_before_next_llm_call():
+    events, bus = collect_events()
+    state = SessionState(
+        messages=[{"role": "system", "content": "sys"}],
+        loop_blocked_since_progress=3,
+    )
+    llm = FakeLLM()
+    runner = build_runner(state=state, llm=llm, event_bus=bus)
+
+    result = run(runner.run_loop())
+
+    assert result == ""
+    assert llm.calls == []
+    assert state.phase is SessionPhase.STEP_LIMIT_EXCEEDED
+    assert state.terminal_reason == "loop block limit reached: 3 repeated tool calls"
+    assert events == [("error", {"reason": "loop_blocked", "aid": -1})]
+
+
 def test_run_loop_llm_step_events_trace_and_message_shape():
     events, bus = collect_events()
     schemas = [{"type": "function", "function": {"name": "fake_tool"}}]
@@ -333,9 +352,26 @@ class _ToolStub:
         self.name = name
 
 
+def _tool_schema(name):
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": f"{name} tool",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+
 def _agent_with_tools(*names):
     agent = FakeAgent()
     agent.tools = [_ToolStub(n) for n in names]
+    return agent
+
+
+def _agent_with_tool_schemas(*names):
+    agent = FakeAgent([_tool_schema(name) for name in names])
+    agent.tools = [_ToolStub(name) for name in names]
     return agent
 
 
@@ -419,6 +455,225 @@ def test_steering_hard_rung_forces_tool_choice_through_run_loop():
     run(runner.run_loop())
 
     assert llm.calls[0]["tool_choice"] == "required"
+
+
+def test_steering_hard_rung_limits_provider_tools_to_writes():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_HARD,
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas(
+            "file_read",
+            "grep",
+            "file_write",
+            "apply_patch",
+            "run_tests",
+        ),
+    )
+
+    run(runner.run_loop())
+
+    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
+    assert llm.calls[0]["tool_choice"] == "required"
+    assert sent_tool_names == ["file_write", "apply_patch"]
+
+
+def test_steering_structured_hard_rung_forces_structured_output():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_HARD,
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas("structured_output", "file_read", "grep"),
+    )
+
+    run(runner.run_loop())
+
+    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
+    assert sent_tool_names == ["structured_output"]
+    assert llm.calls[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "structured_output"},
+    }
+    assert "structured_output using" in llm.calls[0]["messages"][-1]["content"]
+
+
+def test_steering_structured_commit_gate_uses_soft_threshold():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_SOFT,
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas("structured_output", "file_read", "grep"),
+    )
+
+    run(runner.run_loop())
+
+    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
+    assert sent_tool_names == ["structured_output"]
+    assert llm.calls[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "structured_output"},
+    }
+
+
+def test_steering_write_gate_wins_when_write_tools_are_also_present():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_HARD,
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas(
+            "structured_output",
+            "file_read",
+            "grep",
+            "file_write",
+            "apply_patch",
+        ),
+    )
+
+    run(runner.run_loop())
+
+    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
+    assert sent_tool_names == ["file_write", "apply_patch"]
+    assert llm.calls[0]["tool_choice"] == "required"
+    assert "MUST be a file_write or apply_patch edit" in llm.calls[0]["messages"][-1]["content"]
+
+
+def test_steering_hard_rung_blocks_read_tool_call_before_execution():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_HARD,
+    )
+    read_call = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
+    llm = FakeLLM(
+        [
+            llm_response(content="try read", tool_calls=[read_call], finish_reason="tool_calls"),
+            llm_response(content="done"),
+        ]
+    )
+    tool_execution = FakeToolExecution()
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        tool_execution=tool_execution,
+        agent=_agent_with_tool_schemas("file_read", "file_write", "apply_patch"),
+    )
+
+    result = run(runner.run_loop())
+
+    tool_messages = [
+        m for m in state.messages if m.get("role") == "tool" and m.get("tool_call_id")
+    ]
+    assert result == "done"
+    assert tool_execution.calls == []
+    assert len(tool_messages) == 1
+    assert tool_messages[0]["tool_call_id"] == "r1"
+    assert "not allowed during the hard write gate" in tool_messages[0]["content"]
+    assert state.reads_since_last_edit == READS_NUDGE_HARD
+
+
+def test_steering_structured_hard_rung_blocks_read_tool_call_before_execution():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_HARD,
+    )
+    read_call = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
+    llm = FakeLLM(
+        [
+            llm_response(content="try read", tool_calls=[read_call], finish_reason="tool_calls"),
+            llm_response(content="done"),
+        ]
+    )
+    tool_execution = FakeToolExecution()
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        tool_execution=tool_execution,
+        agent=_agent_with_tool_schemas("structured_output", "file_read", "grep"),
+    )
+
+    result = run(runner.run_loop())
+
+    tool_messages = [
+        m for m in state.messages if m.get("role") == "tool" and m.get("tool_call_id")
+    ]
+    assert result == "done"
+    assert tool_execution.calls == []
+    assert len(tool_messages) == 1
+    assert tool_messages[0]["tool_call_id"] == "r1"
+    assert "not allowed during the hard structured-output gate" in tool_messages[0]["content"]
+    assert state.reads_since_last_edit == READS_NUDGE_HARD
+
+
+def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_HARD,
+    )
+    read_call = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
+    write_call = tool_call(call_id="w1", name="apply_patch", arguments='{"patch": "..."}')
+    llm = FakeLLM(
+        [
+            llm_response(
+                content="mixed",
+                tool_calls=[read_call, write_call],
+                finish_reason="tool_calls",
+            ),
+            llm_response(content="done"),
+        ]
+    )
+    tool_execution = FakeToolExecution(
+        ToolProcessingResult(
+            messages_to_append=[{"role": "tool", "tool_call_id": "w1", "content": "patched"}],
+            write_succeeded=True,
+        )
+    )
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        tool_execution=tool_execution,
+        agent=_agent_with_tool_schemas("file_read", "file_write", "apply_patch"),
+    )
+
+    result = run(runner.run_loop())
+
+    tool_messages = [
+        m for m in state.messages if m.get("role") == "tool" and m.get("tool_call_id")
+    ]
+    assert result == "done"
+    assert tool_execution.calls == [[write_call]]
+    assert [m["tool_call_id"] for m in tool_messages] == ["r1", "w1"]
+    assert "not allowed during the hard write gate" in tool_messages[0]["content"]
+    assert tool_messages[1]["content"] == "patched"
+    assert state.reads_since_last_edit == 0
 
 
 def test_steering_reaches_provider_and_is_persisted():
@@ -895,6 +1150,34 @@ def test_mixed_batch_buffers_immediate_and_resumes_in_order():
     ]
 
 
+def test_deferred_batch_with_blocked_tool_uses_original_order():
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    state.phase = SessionPhase.EXECUTING_TOOLS
+    blocked_read = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
+    deferred_spawn = tool_call(call_id="s1", name="spawn_agent", arguments="{}")
+    te = FakeToolExecutionDeferred(deferred_outcomes={"s1": (9, None)})
+    runner = build_runner(state=state, tool_execution=te)
+    runner._pending = PendingStep(
+        response=llm_response(
+            content="mixed",
+            tool_calls=[blocked_read, deferred_spawn],
+            finish_reason="tool_calls",
+        ),
+        latency=0.0,
+    )
+    runner._pending_tool_allowlist = frozenset({"spawn_agent"})
+    runner._pending_tool_gate_label = "test gate"
+
+    run(runner.execute_pending_tools())
+
+    assert state.phase is SessionPhase.AWAITING_EVENTS
+    assert state.pending_events.rows["r1"].order == 0
+    assert state.pending_events.rows["s1"].order == 1
+    assert "not allowed during the test gate" in state.pending_events.rows["r1"].result
+    assert te.process_calls == []
+    assert te.deferred_calls == [deferred_spawn]
+
+
 def test_mixed_batch_folds_in_reads_counter_for_immediate_reads():
     # Regression: a mixed batch (immediate read + deferred spawn) buffers its
     # result messages, so the reads-without-write counter must still fold in via
@@ -1137,6 +1420,23 @@ class SlowLLM:
         return self.response
 
 
+class CancelCleanupLLM:
+    def __init__(self):
+        self.calls = []
+        self.cancel_seen = asyncio.Event()
+        self.release_cancel = asyncio.Event()
+
+    async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+        self.calls.append(copy.deepcopy(messages))
+        gate = asyncio.Event()
+        try:
+            await gate.wait()
+        except asyncio.CancelledError:
+            self.cancel_seen.set()
+            await self.release_cancel.wait()
+            raise
+
+
 def test_per_call_timeout_raises_on_slow_generation():
     import pytest
 
@@ -1151,6 +1451,28 @@ def test_per_call_timeout_raises_on_slow_generation():
 
     assert state.phase is SessionPhase.ERROR
     assert len(llm.calls) == 1  # the call was attempted (then cancelled)
+
+
+def test_per_call_timeout_returns_before_cancel_cleanup_finishes():
+    async def scenario():
+        state = SessionState(messages=[{"role": "system", "content": "sys"}])
+        llm = CancelCleanupLLM()
+        runner = build_runner(state=state, llm=llm, per_call_timeout=0.01)
+
+        raised = False
+        try:
+            await asyncio.wait_for(runner.run_loop(), timeout=0.5)
+        except asyncio.TimeoutError:
+            raised = True
+
+        assert raised is True
+        assert state.phase is SessionPhase.ERROR
+        assert "TimeoutError" in (state.terminal_reason or "")
+        llm.release_cancel.set()
+        await asyncio.sleep(0)
+        assert llm.cancel_seen.is_set()
+
+    run(scenario())
 
 
 def test_per_call_timeout_none_does_not_bound_the_call():

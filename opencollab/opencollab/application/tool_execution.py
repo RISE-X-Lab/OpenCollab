@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import os
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -20,6 +22,14 @@ from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, LoopDetection, ToolPro
 
 # Loop detection (ref: opencode doom_loop detection — 3 identical calls)
 MAX_SIMILAR_CALLS = 3
+
+# A single tool call must not be able to hold a session forever. Individual
+# tools still pass their own command timeout to the environment; this outer
+# guard catches hangs before that layer is reached, including approval hooks,
+# adapter bugs, or stuck subprocess creation.
+DEFAULT_TOOL_EXECUTION_TIMEOUT = float(os.environ.get("OPENCOLLAB_TOOL_EXECUTION_TIMEOUT", "180"))
+MAX_TOOL_EXECUTION_TIMEOUT = float(os.environ.get("OPENCOLLAB_TOOL_EXECUTION_MAX_TIMEOUT", "900"))
+TOOL_EXECUTION_TIMEOUT_GRACE = 10.0
 
 # Read-only, range-parameterized tools whose loop key is the FILE PATH alone, not
 # the full args. A model thrashing on one file re-reads it with SHIFTING line
@@ -304,7 +314,7 @@ class ToolExecutionUseCase:
 
             await self.event_publisher.emit(self.event_factory.tool_start(tool_name, args))
 
-            tool_output, tool_latency = await self.execute_tool(tool, args)
+            tool_output, tool_latency = await self.execute_tool(tool, args, tool_id=tool_id)
             # The full result is persisted; a per-tool-result budget shaper caps
             # what the model sees at call time (see application.shaping).
 
@@ -392,22 +402,60 @@ class ToolExecutionUseCase:
     def find_tool(self, tool_name: str):
         return self.agent.find_tool(tool_name)
 
-    async def execute_tool(self, tool, args: dict) -> tuple[str, float]:
+    async def execute_tool(
+        self,
+        tool,
+        args: dict,
+        *,
+        tool_id: str | None = None,
+    ) -> tuple[str, float]:
         """Run one tool, mapping any exception to an error string.
 
         Returns ``(output, latency_seconds)`` — never raises, so one failing
         tool cannot abort the rest of the batch.
         """
         start = time.monotonic()
-        runtime = self.tool_runtime()
+        runtime = self.tool_runtime(tool_call_id=tool_id)
+        timeout = self.tool_execution_timeout(tool, args)
         try:
-            result = await tool.execute_with_runtime(args, runtime)
+            result = await asyncio.wait_for(
+                tool.execute_with_runtime(args, runtime),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            tool_name = getattr(tool, "name", type(tool).__name__)
+            result = (
+                f"Tool execution timed out after {timeout:.1f}s "
+                f"while running '{tool_name}'."
+            )
         except PermissionError as e:
             result = f"Permission denied: {e}"
         except Exception as e:
             result = f"Tool execution error: {type(e).__name__}: {e}"
 
         return result, time.monotonic() - start
+
+    def tool_execution_timeout(self, tool: Any, args: dict) -> float:
+        requested = self._numeric_timeout((args or {}).get("timeout"))
+        base = requested if requested is not None else self._tool_default_timeout(tool)
+        return min(base + TOOL_EXECUTION_TIMEOUT_GRACE, MAX_TOOL_EXECUTION_TIMEOUT)
+
+    def _tool_default_timeout(self, tool: Any) -> float:
+        configured = self._numeric_timeout(getattr(tool, "default_timeout", None))
+        if configured is not None:
+            return configured
+        return DEFAULT_TOOL_EXECUTION_TIMEOUT
+
+    def _numeric_timeout(self, value: Any) -> float | None:
+        if value is None:
+            return None
+        try:
+            timeout = float(value)
+        except (TypeError, ValueError):
+            return None
+        if timeout <= 0:
+            return None
+        return timeout
 
     def tool_runtime(self, tool_call_id: str | None = None) -> ToolRuntime:
         return ToolRuntime(

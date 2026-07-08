@@ -271,6 +271,7 @@ class DockerEnvironment(Environment):
         shell_flag = "-lc" if self._command_prefix is not None else "-c"
         exec_argv += [self._container_id, "bash", shell_flag, self._wrap_command(cmd)]
 
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 *exec_argv,
@@ -284,11 +285,27 @@ class DockerEnvironment(Environment):
                 stderr=stderr.decode("utf-8", errors="replace"),
             )
         except asyncio.TimeoutError:
+            await self._terminate_exec_process(proc)
             return ExecResult(
                 returncode=self._timeout_returncode,
                 stdout="",
                 stderr=f"Command timed out after {timeout}s",
             )
+        except asyncio.CancelledError:
+            await self._terminate_exec_process(proc)
+            raise
+
+    async def _terminate_exec_process(self, proc: asyncio.subprocess.Process | None) -> None:
+        if proc is None:
+            return
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except (asyncio.TimeoutError, ProcessLookupError):
+            logger.warning("docker exec process did not exit after kill")
 
     async def read_file(self, path: str) -> str:
         quoted_path = shlex.quote(path)
@@ -298,19 +315,45 @@ class DockerEnvironment(Environment):
         return result.stdout
 
     async def write_file(self, path: str, content: str) -> None:
-        import base64
-        encoded = base64.b64encode(content.encode()).decode()
-        quoted_path = shlex.quote(path)
-        result = await self.exec_cmd(
-            f"base64 -d > {quoted_path} <<'__OPENCOLLAB_B64__'\n"
-            f"{encoded}\n"
-            "__OPENCOLLAB_B64__"
-        )
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
+        if not self._container_id:
+            raise RuntimeError("Container not started. Call setup() first.")
+
+        exec_argv = ["docker", "exec", "-i"]
+        if self._exec_workdir:
+            exec_argv += ["-w", self._exec_workdir]
+        exec_argv += [
+            self._container_id,
+            "bash",
+            "-c",
+            'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"',
+            "opencollab-write",
+            path,
+        ]
+
+        proc = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *exec_argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(input=content.encode("utf-8")),
+                timeout=120.0,
+            )
+        except asyncio.TimeoutError as exc:
+            await self._terminate_exec_process(proc)
+            raise OSError(f"docker write timed out for {path}") from exc
+        except asyncio.CancelledError:
+            await self._terminate_exec_process(proc)
+            raise
+
+        if (proc.returncode or 0) != 0:
+            detail = (stderr or stdout).decode("utf-8", errors="replace").strip()
             raise OSError(
                 f"docker write failed for {path} "
-                f"(exit {result.returncode}): {detail}"
+                f"(exit {proc.returncode}): {detail}"
             )
         written = await self.read_file(path)
         if written != content:
