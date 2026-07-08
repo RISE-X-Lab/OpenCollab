@@ -33,9 +33,9 @@ class ScriptedCtx:
         self.logs: list[str] = []
         self.budget = _FakeBudget()
 
-    async def agent(self, prompt, *, schema=None, label=None, tools=None, isolation=False):
+    async def agent(self, prompt, *, schema=None, label=None, tools=None, isolation=False, **kwargs):
         self.agent_calls.append(
-            {"prompt": prompt, "schema": schema, "label": label, "tools": tools}
+            {"prompt": prompt, "schema": schema, "label": label, "tools": tools, **kwargs}
         )
         return self._replies.pop(0)
 
@@ -211,6 +211,25 @@ async def test_happy_path_passes_first_round(validation_council_solve):
         "post-validation-triage:r1",
         "final-verifier:r1",
     ]
+    budgets = {call["label"]: call.get("budget") for call in ctx.agent_calls}
+    timeouts = {call["label"]: call.get("timeout") for call in ctx.agent_calls}
+    assert budgets["analyst-localizer"] == 220_000
+    assert budgets["contract-miner"] == 180_000
+    assert budgets["test-cartographer"] == 180_000
+    assert budgets["pre-validation-factory"] == 160_000
+    assert budgets["pre-validation-judge"] == 100_000
+    assert budgets["baseline-triage"] == 180_000
+    assert budgets["coder:r1"] is None
+    assert budgets["patch-validator:r1"] == 220_000
+    assert budgets["diff-risk-auditor:r1"] == 60_000
+    assert budgets["post-validation-factory:r1"] == 160_000
+    assert budgets["post-r1-validation-judge"] == 100_000
+    assert budgets["post-validation-triage:r1"] == 180_000
+    assert budgets["final-verifier:r1"] == 220_000
+    assert timeouts["coder:r1"] == 1800
+    for call in ctx.agent_calls:
+        if call["label"] != "coder:r1":
+            assert call.get("timeout") == 300
     assert ctx.phases == [
         "localize",
         "evidence",
@@ -221,6 +240,8 @@ async def test_happy_path_passes_first_round(validation_council_solve):
     ]
     all_prompts = "\n".join(call["prompt"] for call in ctx.agent_calls)
     assert "tests/hidden.py::test_secret" not in all_prompts
+    assert "If your current tools cannot create or run a probe" in all_prompts
+    assert "do not search for write tools" in all_prompts
 
 
 async def test_failed_final_verifier_retries_with_feedback(validation_council_solve):
@@ -231,7 +252,39 @@ async def test_failed_final_verifier_retries_with_feedback(validation_council_so
     assert result["status"] == "done"
     assert result["rounds"] == 2
     assert "edge case still fails" in ctx.agent_calls[13]["prompt"]
+    budgets = {call["label"]: call.get("budget") for call in ctx.agent_calls}
+    timeouts = {call["label"]: call.get("timeout") for call in ctx.agent_calls}
+    assert budgets["coder:r2"] is None
+    assert budgets["patch-validator:r2"] == 220_000
+    assert budgets["diff-risk-auditor:r2"] == 60_000
+    assert budgets["post-validation-factory:r2"] == 160_000
+    assert budgets["post-r2-validation-judge"] == 100_000
+    assert budgets["post-validation-triage:r2"] == 180_000
+    assert budgets["final-verifier:r2"] == 220_000
+    assert timeouts["coder:r2"] == 1800
+    assert timeouts["patch-validator:r2"] == 300
+    assert timeouts["diff-risk-auditor:r2"] == 300
+    assert timeouts["post-validation-factory:r2"] == 300
+    assert timeouts["post-r2-validation-judge"] == 300
+    assert timeouts["post-validation-triage:r2"] == 300
+    assert timeouts["final-verifier:r2"] == 300
     assert any("attempt 1 failed" in message for message in ctx.logs)
+
+
+async def test_failed_final_verifier_allows_three_coder_rounds(validation_council_solve):
+    ctx = ScriptedCtx(_base_replies(FAIL) + _base_replies(FAIL)[6:] + _base_replies(FAIL)[6:])
+
+    result = await validation_council_solve(ctx, {"goal": "fix empty widget"})
+
+    assert result["status"] == "incomplete"
+    assert result["rounds"] == 3
+    labels = [call["label"] for call in ctx.agent_calls]
+    assert "coder:r3" in labels
+    assert "final-verifier:r3" in labels
+    assert not any(label == "coder:r4" for label in labels)
+    assert any("attempt 1 failed" in message for message in ctx.logs)
+    assert any("attempt 2 failed" in message for message in ctx.logs)
+    assert len(result["attempts"]) == 3
 
 
 async def test_blocked_patch_validator_short_circuits_retry(validation_council_solve):
