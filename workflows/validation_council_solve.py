@@ -32,6 +32,8 @@ JUDGE_BUDGET = 100_000
 TRIAGE_BUDGET = 180_000
 RISK_BUDGET = 60_000
 VERIFIER_BUDGET = 220_000
+STRUCTURED_ROLE_TIMEOUT_SECONDS = 900
+CODER_ROLE_TIMEOUT_SECONDS = 1800
 EMPTY_POST_CANDIDATES = {
     "tests": [],
     "abstained": True,
@@ -633,6 +635,7 @@ async def _judge_candidates(
         label=f"{stage}-validation-judge",
         tools=_read_tools(),
         budget=JUDGE_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     return _trim_judge(
         _dict_or(
@@ -674,6 +677,7 @@ async def _run_attempt(
         ),
         label=f"coder:r{attempt}",
         tools=_coder_tools(),
+        timeout=CODER_ROLE_TIMEOUT_SECONDS,
     )
     patch_verdict = await ctx.agent(
         PATCH_VALIDATOR_PROMPT.format(
@@ -687,6 +691,7 @@ async def _run_attempt(
         label=f"patch-validator:r{attempt}",
         tools=_tester_tools(),
         budget=VERIFIER_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     patch_verdict = _dict_or(
         patch_verdict,
@@ -721,6 +726,7 @@ async def _run_attempt(
         label=f"diff-risk-auditor:r{attempt}",
         tools=_risk_tools(),
         budget=RISK_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     risks = _dict_or(risks, {"risks": [], "summary": "Diff risk auditor returned no structured report."})
 
@@ -735,6 +741,7 @@ async def _run_attempt(
         label=f"post-validation-factory:r{attempt}",
         tools=_read_tools(),
         budget=VALIDATION_FACTORY_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     post_candidates = _dict_or(
         post_candidates,
@@ -760,6 +767,7 @@ async def _run_attempt(
         label=f"post-validation-triage:r{attempt}",
         tools=_tester_tools(),
         budget=TRIAGE_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     post_triage = _dict_or(
         post_triage,
@@ -785,6 +793,7 @@ async def _run_attempt(
         label=f"final-verifier:r{attempt}",
         tools=_tester_tools(),
         budget=VERIFIER_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     final_verdict = _dict_or(
         final_verdict,
@@ -825,6 +834,7 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
         label="analyst-localizer",
         tools=_read_tools(),
         budget=LOCALIZER_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     localization = _dict_or(
         localization,
@@ -851,6 +861,7 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
                 label="contract-miner",
                 tools=_read_tools(),
                 budget=EVIDENCE_BUDGET,
+                timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
             ),
             lambda: ctx.agent(
                 TEST_CARTOGRAPHER_PROMPT.format(
@@ -862,6 +873,7 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
                 label="test-cartographer",
                 tools=_read_tools(),
                 budget=EVIDENCE_BUDGET,
+                timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
             ),
         ]
     )
@@ -891,6 +903,7 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
         label="pre-validation-factory",
         tools=_read_tools(),
         budget=VALIDATION_FACTORY_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     pre_candidates = _dict_or(
         pre_candidates,
@@ -914,6 +927,7 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
         label="baseline-triage",
         tools=_tester_tools(),
         budget=TRIAGE_BUDGET,
+        timeout=STRUCTURED_ROLE_TIMEOUT_SECONDS,
     )
     baseline_triage = _dict_or(
         baseline_triage,

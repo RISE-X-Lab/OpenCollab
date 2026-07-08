@@ -680,6 +680,49 @@ async def test_agent_timeout_bounds_run_loop_and_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_structured_agent_timeout_bounds_first_pass_and_returns_none():
+    gate = asyncio.Event()
+    session = FakeSession(reply="ok", gate=gate)
+    sink = RecordingSink()
+    ctx = WorkflowContext(FakeFactory([session]), event_sink=sink)
+
+    result = await ctx.agent(
+        "slow structured",
+        schema={
+            "type": "object",
+            "required": ["verdict"],
+            "properties": {"verdict": {"type": "string"}},
+        },
+        timeout=0.01,
+    )
+
+    assert result is None
+    assert any("structured agent timed out" in e.message for e in sink.events)
+
+
+@pytest.mark.asyncio
+async def test_structured_agent_timeout_bounds_forced_retry_and_returns_none():
+    first = FakeSession(reply="prose instead of structured output")
+    gate = asyncio.Event()
+    retry = FakeSession(reply="ok", gate=gate)
+    sink = RecordingSink()
+    ctx = WorkflowContext(FakeFactory([first, retry]), event_sink=sink)
+
+    result = await ctx.agent(
+        "needs structured",
+        schema={
+            "type": "object",
+            "required": ["verdict"],
+            "properties": {"verdict": {"type": "string"}},
+        },
+        timeout=0.01,
+    )
+
+    assert result is None
+    assert any("structured retry timed out" in e.message for e in sink.events)
+
+
+@pytest.mark.asyncio
 async def test_agent_infinite_timeout_does_not_bound_run_loop():
     # An infinite timeout (the unbounded-deadline default from seconds_left) must
     # not wrap the loop in wait_for — the call completes normally.
