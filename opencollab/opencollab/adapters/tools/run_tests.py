@@ -39,6 +39,7 @@ from opencollab.application.tool_execution import ToolRuntime
 MAX_TRACEBACK_CHARS = 6_000
 DEFAULT_RUNNER = "python -m pytest"
 DEFAULT_TIMEOUT = 300.0
+GO_PATH_PREFIX = "PATH=/usr/local/go/bin:/usr/lib/go/bin:/opt/go/bin:$PATH"
 # After this many consecutive failing runs of the SAME target, nudge the model
 # to change approach instead of re-running the identical failing assertion.
 ESCALATE_AFTER = 3
@@ -219,7 +220,11 @@ class RunTestsTool(Tool):
 
 def _is_pytest_runner(runner: str) -> bool:
     """Whether ``runner`` invokes pytest (so pytest-only flags are safe)."""
-    return "pytest" in runner
+    try:
+        parts = shlex.split(runner)
+    except ValueError:
+        return False
+    return any(part == "pytest" or part.endswith("/pytest") for part in parts)
 
 
 def _is_go_runner(runner: str) -> bool:
@@ -229,6 +234,11 @@ def _is_go_runner(runner: str) -> bool:
     except ValueError:
         return False
     return len(parts) >= 2 and parts[0] == "go" and parts[1] == "test"
+
+
+def _go_runner_command(runner: str) -> str:
+    """Return a Go runner command with common Go install paths visible."""
+    return f"{GO_PATH_PREFIX} {runner}" if runner.strip().startswith("go ") else runner
 
 
 def _translate_native_target_args(target: str) -> list[str]:
@@ -250,11 +260,7 @@ def _translate_native_target_args(target: str) -> list[str]:
     return args
 
 
-def _translate_go_target_args(target: str) -> list[str]:
-    """Map pytest-like targets to safe ``go test`` package and ``-run`` args."""
-    if not target:
-        return ["./..."]
-
+def _translate_go_single_target(target: str) -> list[str]:
     package, sep, node = target.partition("::")
     package = package.strip()
     if not package:
@@ -272,6 +278,24 @@ def _translate_go_target_args(target: str) -> list[str]:
     return args
 
 
+def _translate_go_target_args(target: str) -> list[str]:
+    """Map pytest-like targets to safe ``go test`` package and ``-run`` args."""
+    if not target:
+        return ["./..."]
+    if "::" not in target:
+        try:
+            targets = shlex.split(target)
+        except ValueError:
+            targets = []
+        if len(targets) > 1 and all(not item.startswith("-") for item in targets):
+            args: list[str] = []
+            for item in targets:
+                args.extend(_translate_go_single_target(item))
+            return args
+
+    return _translate_go_single_target(target)
+
+
 def _build_command(runner: str, target: str, extra_args: str) -> str:
     # --tb=short keeps tracebacks compact; -rfE forces a failed/error summary
     # block even under -q so we can list failing node-ids reliably. -rA adds a
@@ -284,7 +308,7 @@ def _build_command(runner: str, target: str, extra_args: str) -> str:
         if target:
             parts.append(shlex.quote(target))
     elif _is_go_runner(runner):
-        parts = [runner]
+        parts = [_go_runner_command(runner)]
         parts.extend(_translate_go_target_args(target))
     else:
         parts = [runner]
@@ -437,7 +461,7 @@ def _format_report(
 ) -> str:
     if green is None:
         green = _is_green(returncode, output)
-    if _pytest_missing(returncode, output):
+    if _is_pytest_runner(runner) and _pytest_missing(returncode, output):
         # Still emit a parseable verdict so the gate/model is never left without
         # a signal. pytest-missing is RED (the named tests could not run) and
         # points the model at auto-detected native runners.

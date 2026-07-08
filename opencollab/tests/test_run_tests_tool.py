@@ -316,7 +316,7 @@ def test_run_tests_falls_back_to_go_runner_when_pytest_missing():
     )
 
     cmds = [c for c, _ in env.exec_calls]
-    assert "go test ./internal/server" in cmds
+    assert any("go test ./internal/server" in c for c in cmds)
     assert "runner override is disabled" not in result
     assert "Verdict: GREEN" in result
 
@@ -336,7 +336,7 @@ def test_run_tests_falls_back_to_go_runner_when_pytest_finds_no_tests():
     )
 
     cmds = [c for c, _ in env.exec_calls]
-    assert "go test ./internal/server" in cmds
+    assert any("go test ./internal/server" in c for c in cmds)
     assert "no tests ran" not in result
     assert "Verdict: GREEN" in result
 
@@ -411,7 +411,33 @@ def test_build_command_native_runner_quotes_translated_target():
 def test_build_command_go_runner_translates_package_and_test_name():
     from opencollab.adapters.tools.run_tests import _build_command
     cmd = _build_command("go test", "internal/server/evaluator_test.go::TestEvaluate", "")
-    assert cmd == "go test ./internal/server -run TestEvaluate"
+    assert cmd == (
+        "PATH=/usr/local/go/bin:/usr/lib/go/bin:/opt/go/bin:$PATH "
+        "go test ./internal/server -run TestEvaluate"
+    )
+
+
+def test_build_command_go_runner_translates_multiple_packages():
+    from opencollab.adapters.tools.run_tests import _build_command
+    cmd = _build_command("go test", "./internal/server/... ./rpc/flipt/...", "-count=1")
+    assert cmd == (
+        "PATH=/usr/local/go/bin:/usr/lib/go/bin:/opt/go/bin:$PATH "
+        "go test ./internal/server/... ./rpc/flipt/... -count=1"
+    )
+
+
+def test_go_runner_command_not_found_is_not_reported_as_pytest_missing():
+    from opencollab.adapters.tools.run_tests import _format_report
+    result = _format_report(
+        "go test ./...",
+        127,
+        "bash: line 2: go: command not found",
+        runner="go test",
+        green=False,
+    )
+    assert "pytest not found" not in result
+    assert "go: command not found" in result
+    assert "Verdict: RED" in result
 
 
 def test_run_tests_requires_execution_environment():
