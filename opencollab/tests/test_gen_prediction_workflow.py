@@ -8,6 +8,10 @@ module from the repo-root ``swebench/`` dir, the same way the script bootstraps.
 from __future__ import annotations
 
 import asyncio
+import os
+import shutil
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -211,6 +215,112 @@ def test_extract_patch_guarded_reextracts_after_cleanup(monkeypatch):
     assert cleanup == ["tmp/check.py"]
     assert removed == ["tmp/check.py"]
     assert patch == "diff --git a/pkg/widget.py b/pkg/widget.py"
+
+
+def test_cleanup_patch_paths_command_has_legacy_git_fallbacks():
+    cmd = gpw._cleanup_patch_paths_command(["yarn.lock", "tmp/check file.py"])
+
+    assert "git restore --staged --worktree --" in cmd
+    assert "git reset -q HEAD --" in cmd
+    assert "git checkout --" in cmd
+    assert "git clean -fdq --" in cmd
+    assert "'tmp/check file.py'" in cmd
+
+
+def test_cleanup_patch_paths_command_removes_tracked_noise_without_touching_allowed(tmp_path):
+    real_git = shutil.which("git")
+    if not real_git:
+        pytest.skip("git unavailable")
+
+    repo = tmp_path
+
+    def run(args):
+        return subprocess.run(args, cwd=repo, text=True, capture_output=True, check=True)
+
+    run(["git", "init"])
+    (repo / "pkg.py").write_text("old\n", encoding="utf-8")
+    (repo / "yarn.lock").write_text("lock\n", encoding="utf-8")
+    run(["git", "add", "pkg.py", "yarn.lock"])
+    run(["git", "-c", "user.name=OpenCollab", "-c", "user.email=test@example.com", "commit", "-m", "init"])
+
+    (repo / "pkg.py").write_text("new\n", encoding="utf-8")
+    (repo / "yarn.lock").write_text("rewritten\n", encoding="utf-8")
+    run(["git", "add", "pkg.py", "yarn.lock"])
+
+    subprocess.run(
+        ["bash", "-lc", gpw._cleanup_patch_paths_command(["yarn.lock"])],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    staged = run(["git", "diff", "--cached", "--name-only"]).stdout.splitlines()
+    assert staged == ["pkg.py"]
+    assert (repo / "pkg.py").read_text(encoding="utf-8") == "new\n"
+    assert (repo / "yarn.lock").read_text(encoding="utf-8") == "lock\n"
+
+
+def test_cleanup_patch_paths_command_falls_back_when_git_restore_is_missing(tmp_path):
+    real_git = shutil.which("git")
+    if not real_git:
+        pytest.skip("git unavailable")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_git = fake_bin / "git"
+    fake_git.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                "if [ \"$1\" = \"restore\" ]; then",
+                "  echo 'git restore unavailable' >&2",
+                "  exit 1",
+                "fi",
+                f"exec {shlex.quote(real_git)} \"$@\"",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    fake_git.chmod(0o755)
+    fake_env = {**os.environ, "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}"}
+
+    def run(args, *, env=None):
+        return subprocess.run(
+            args,
+            cwd=repo,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
+    run([real_git, "init"])
+    (repo / "pkg.py").write_text("old\n", encoding="utf-8")
+    (repo / "yarn.lock").write_text("lock\n", encoding="utf-8")
+    run([real_git, "add", "pkg.py", "yarn.lock"])
+    run([real_git, "-c", "user.name=OpenCollab", "-c", "user.email=test@example.com", "commit", "-m", "init"])
+
+    (repo / "pkg.py").write_text("new\n", encoding="utf-8")
+    (repo / "yarn.lock").write_text("rewritten\n", encoding="utf-8")
+    run([real_git, "add", "pkg.py", "yarn.lock"])
+
+    subprocess.run(
+        ["bash", "-lc", gpw._cleanup_patch_paths_command(["yarn.lock"])],
+        cwd=repo,
+        env=fake_env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+
+    staged = run([real_git, "diff", "--cached", "--name-only"]).stdout.splitlines()
+    assert staged == ["pkg.py"]
+    assert (repo / "pkg.py").read_text(encoding="utf-8") == "new\n"
+    assert (repo / "yarn.lock").read_text(encoding="utf-8") == "lock\n"
 
 
 def test_json_safe_degrades_unknown_objects():

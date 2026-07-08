@@ -318,13 +318,21 @@ def _patch_paths_to_remove(
 def _remove_patch_paths(cid: str, paths: list[str]) -> None:
     if not paths:
         return
-    quoted = " ".join(shlex.quote(path) for path in paths)
-    cmd = (
-        f"git restore --staged --worktree -- {quoted} 2>/dev/null || true; "
-        f"git clean -fdq -- {quoted}"
-    )
+    cmd = _cleanup_patch_paths_command(paths)
     res = gp._docker("exec", "-w", gp.DOCKER_WORKDIR, cid, "bash", "-lc", cmd)
     gp._check_docker(res, "remove validation artifacts before patch extraction")
+
+
+def _cleanup_patch_paths_command(paths: list[str]) -> str:
+    quoted = " ".join(shlex.quote(path) for path in paths)
+    return "\n".join(
+        [
+            f"git restore --staged --worktree -- {quoted} 2>/dev/null || true",
+            f"git reset -q HEAD -- {quoted} 2>/dev/null || true",
+            f"git checkout -- {quoted} 2>/dev/null || true",
+            f"git clean -fdq -- {quoted}",
+        ]
+    )
 
 
 def extract_patch_guarded(
