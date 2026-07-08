@@ -271,6 +271,22 @@ async def test_failed_final_verifier_retries_with_feedback(validation_council_so
     assert any("attempt 1 failed" in message for message in ctx.logs)
 
 
+async def test_failed_final_verifier_allows_three_coder_rounds(validation_council_solve):
+    ctx = ScriptedCtx(_base_replies(FAIL) + _base_replies(FAIL)[6:] + _base_replies(FAIL)[6:])
+
+    result = await validation_council_solve(ctx, {"goal": "fix empty widget"})
+
+    assert result["status"] == "incomplete"
+    assert result["rounds"] == 3
+    labels = [call["label"] for call in ctx.agent_calls]
+    assert "coder:r3" in labels
+    assert "final-verifier:r3" in labels
+    assert not any(label == "coder:r4" for label in labels)
+    assert any("attempt 1 failed" in message for message in ctx.logs)
+    assert any("attempt 2 failed" in message for message in ctx.logs)
+    assert len(result["attempts"]) == 3
+
+
 async def test_blocked_patch_validator_short_circuits_retry(validation_council_solve):
     replies = [
         LOCALIZATION,

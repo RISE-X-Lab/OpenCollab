@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""One-command V1 runner for SWE-batch-pro-lite slices.
+"""One-command G1.1 runner for SWE-batch-pro-lite slices.
 
-This script is deliberately narrow: it starts V1 generation for a contiguous
+This script is deliberately narrow: it starts G1.1 generation for a contiguous
 slice, runs the pro-lite direct evaluator for each non-empty patch, and writes a
 machine and Markdown report. It avoids watch-loop restarts; each task has one
 bounded generation attempt and one bounded evaluation attempt.
@@ -32,11 +32,11 @@ DEFAULT_HOST = "jinan-aws"
 DEFAULT_REMOTE_ROOT = "/nfsEDS/dongyh/data/kaka/docker/opencollab"
 DEFAULT_BASE_RUN_DIR_PREFIX = (
     "/nfsEDS/dongyh/data/kaka/docker/opencollab/"
-    "eval_work/validation_council_v1_16m_prolite26_35"
+    "eval_work/validation_council_g11_16m_prolite26_35"
 )
 DEFAULT_MODEL_NAME = "opencollab-glm52-v1-16m-prolite26-35-20260707"
-DEFAULT_REPORT_JSON = REPO_ROOT / "docs" / "monitoring" / "swe_v1_16m_prolite26_35_report.json"
-DEFAULT_REPORT_MD = REPO_ROOT / "docs" / "monitoring" / "swe_v1_16m_prolite26_35_report.md"
+DEFAULT_REPORT_JSON = REPO_ROOT / "docs" / "monitoring" / "swe_g11_16m_prolite26_35_report.json"
+DEFAULT_REPORT_MD = REPO_ROOT / "docs" / "monitoring" / "swe_g11_16m_prolite26_35_report.md"
 DEFAULT_PROXY_ENV_FILE = Path.home() / ".claude" / "glm52.env"
 DEFAULT_LOCAL_PROXY_BASE_URL = "http://127.0.0.1:8878"
 REMOTE_HEALTH_SSH_TIMEOUT_FLOOR = 15
@@ -649,6 +649,23 @@ def eval_summary_matches_prediction(summary, prediction, task):
     return True
 
 
+EVAL_INFRA_FAILURE_PATTERNS = (
+    "ECONNREFUSED",
+    "Connection refused",
+    "could not connect to server",
+    "redis.exceptions.ConnectionError",
+    "ServerSelectionTimeoutError",
+    "database is locked",
+)
+
+
+def eval_log_has_infra_failure(exit_status, log_text):
+    if exit_status == 0:
+        return False
+    text = str(log_text or "")
+    return any(pattern.lower() in text.lower() for pattern in EVAL_INFRA_FAILURE_PATTERNS)
+
+
 def eval_for_task(row):
     task = row["instance_id"]
     run_dir = base_run_dir / task
@@ -769,14 +786,32 @@ exit 0
     test_status = read_exit("test_patch.exit")
     f2p_status = read_exit("f2p.exit")
     p2p_status = read_exit("p2p.exit", 0)
-    technical_error = docker_exit != 0 or before_status != 0 or model_status != 0 or test_status != 0
+    f2p_log_tail = read_text("f2p.log")
+    p2p_log_tail = read_text("p2p.log")
+    technical_reasons = []
+    if docker_exit != 0:
+        technical_reasons.append("docker_exit")
+    if before_status != 0:
+        technical_reasons.append("before_repo")
+    if model_status != 0:
+        technical_reasons.append("model_patch")
+    if test_status != 0:
+        technical_reasons.append("test_patch")
+    if eval_log_has_infra_failure(f2p_status, f2p_log_tail):
+        technical_reasons.append("fail_to_pass_infra")
+    if eval_log_has_infra_failure(p2p_status, p2p_log_tail):
+        technical_reasons.append("pass_to_pass_infra")
+    technical_error = bool(technical_reasons)
     resolved = bool(not technical_error and f2p_status == 0 and p2p_status == 0)
+    summary_status = "technical_eval_failed" if technical_error else "done"
     report = {
         "schema": "opencollab.prolite_direct_eval.v1",
+        "status": summary_status,
         "instance_id": task,
         "resolved": resolved,
         "patch_successfully_applied": model_status == 0,
         "error": bool(technical_error),
+        "technical_reasons": technical_reasons,
         "docker_exit": docker_exit,
         "patch_sha256": row_patch_sha(prediction),
         "record_id": row_record_id(prediction),
@@ -792,21 +827,22 @@ exit 0
             "pass_to_pass": pass_to_pass,
             "f2p_command": read_text("f2p.command", 1000),
             "p2p_command": read_text("p2p.command", 1000),
-            "f2p_log_tail": read_text("f2p.log"),
-            "p2p_log_tail": read_text("p2p.log"),
+            "f2p_log_tail": f2p_log_tail,
+            "p2p_log_tail": p2p_log_tail,
             "model_patch_log_tail": read_text("model_patch.log"),
             "test_patch_log_tail": read_text("test_patch.log"),
         },
     }
     write_json(report_path, {task: report})
     summary = {
-        "status": "technical_eval_failed" if technical_error else "done",
+        "status": summary_status,
         "task": task,
         "resolved": resolved,
         "patch_sha256": row_patch_sha(prediction),
         "record_id": row_record_id(prediction),
         "model_patch_chars": len(original_model_patch),
         "eval_model_patch_chars": len(model_patch),
+        "technical_reasons": technical_reasons,
         "report_path": str(report_path),
         "command_log": str(command_log),
         "tests_status": report["tests_status"],
@@ -817,7 +853,7 @@ exit 0
 
 def write_markdown(summary):
     lines = [
-        f"# SWE V1 Pro-Lite {summary.get('slice', slice_label())} Report",
+        f"# SWE G1.1 Pro-Lite {summary.get('slice', slice_label())} Report",
         "",
         f"- generated_at: `{summary['generated_at']}`",
         f"- base_run_dir: `{summary['base_run_dir']}`",
@@ -863,7 +899,7 @@ def main():
     }
     if not all([preflight["dataset_exists"], preflight["remote_root_exists"], preflight["remote_repo_exists"], preflight["proxy_health"].get("ok")]):
         summary = {
-            "schema": "opencollab.swe_v1_prolite_runner.v1",
+            "schema": "opencollab.swe_g11_prolite_runner.v1",
             "status": "preflight_failed",
             "generated_at": now(),
             "slice": slice_label(),
@@ -916,7 +952,7 @@ def main():
     if dry_run and counts["technical_failed"] == 0:
         status = "dry_run"
     summary = {
-        "schema": "opencollab.swe_v1_prolite_runner.v1",
+        "schema": "opencollab.swe_g11_prolite_runner.v1",
         "status": status,
         "generated_at": now(),
         "slice": slice_label(),
@@ -1442,12 +1478,12 @@ def write_local_report(summary: dict[str, Any], json_path: Path, md_path: Path) 
     json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     markdown = summary.get("markdown")
     if not isinstance(markdown, str):
-        markdown = "# SWE V1 Pro-Lite Report\n\nNo markdown was returned.\n"
+        markdown = "# SWE G1.1 Pro-Lite Report\n\nNo markdown was returned.\n"
     md_path.write_text(markdown, encoding="utf-8")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run V1 validation-council on a SWE-batch-pro-lite slice and evaluate it.")
+    parser = argparse.ArgumentParser(description="Run G1.1 validation-council on a SWE-batch-pro-lite slice and evaluate it.")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--ssh-command", default="ssh")
     parser.add_argument("--remote-root", default=DEFAULT_REMOTE_ROOT)
@@ -1458,7 +1494,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=10)
     parser.add_argument("--workflow", default="validation-council-solve")
     parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
-    parser.add_argument("--session-prefix", default="swe_v1_pro35_16m")
+    parser.add_argument("--session-prefix", default="swe_g11_pro35_16m")
     parser.add_argument("--remote-proxy-base-url", default="http://127.0.0.1:18788")
     parser.add_argument("--local-proxy-base-url", default=DEFAULT_LOCAL_PROXY_BASE_URL)
     parser.add_argument("--proxy-env-file", type=Path, default=DEFAULT_PROXY_ENV_FILE)

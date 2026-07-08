@@ -32,13 +32,19 @@ class EvalReport:
     path: str = ""
 
 
-def _status_from_official_payload(task_id: str, payload: dict[str, Any]) -> tuple[str, int, int] | None:
+def _status_from_official_payload(task_id: str, payload: dict[str, Any]) -> tuple[str, int, int, str] | None:
     item = payload.get(task_id)
-    if not isinstance(item, dict) or not isinstance(item.get("resolved"), bool):
+    if not isinstance(item, dict):
+        return None
+    patch_sha = str(item.get("patch_sha256") or item.get("patch_sha") or item.get("model_patch_sha256") or "")
+    status = str(item.get("status") or "")
+    if status in TECHNICAL_EVAL_STATUSES or item.get("error") is True:
+        return "technical_eval_failed", 0, 0, patch_sha
+    if not isinstance(item.get("resolved"), bool):
         return None
     resolved = 1 if item["resolved"] else 0
     unresolved = 0 if item["resolved"] else 1
-    return "done", resolved, unresolved
+    return "done", resolved, unresolved, patch_sha
 
 
 def _status_from_summary_payload(payload: dict[str, Any]) -> tuple[str, int, int]:
@@ -64,6 +70,7 @@ def _report_from_json(path: Path) -> EvalReport | None:
     status = ""
     resolved = 0
     unresolved = 0
+    patch_sha = ""
     if task_id:
         status, resolved, unresolved = _status_from_summary_payload(payload)
     else:
@@ -74,11 +81,11 @@ def _report_from_json(path: Path) -> EvalReport | None:
             if official is None:
                 continue
             task_id = str(key)
-            status, resolved, unresolved = official
+            status, resolved, unresolved, patch_sha = official
             break
     if not task_id:
         return None
-    patch_sha = str(payload.get("patch_sha256") or payload.get("patch_sha") or payload.get("model_patch_sha256") or "")
+    patch_sha = patch_sha or str(payload.get("patch_sha256") or payload.get("patch_sha") or payload.get("model_patch_sha256") or "")
     return EvalReport(
         task_id=task_id,
         patch_sha=patch_sha,
@@ -112,7 +119,8 @@ def summarize_eval_reports(
     resolved = 0
     unresolved = 0
     ignored = 0
-    paths: list[str] = []
+    done_paths: list[str] = []
+    failed_paths: list[str] = []
     for report in reports:
         if report.task_id != task_id:
             continue
@@ -124,10 +132,15 @@ def summarize_eval_reports(
             done += 1
             resolved += report.resolved_count
             unresolved += report.unresolved_count
-            paths.append(report.path)
+            done_paths.append(report.path)
         elif report.status in TECHNICAL_EVAL_STATUSES:
             failed += 1
-            paths.append(report.path)
+            failed_paths.append(report.path)
+    if done:
+        failed = 0
+        paths = done_paths
+    else:
+        paths = failed_paths
     return EvalReportSummary(
         done_count=done,
         active_count=1 if active_eval else 0,

@@ -129,6 +129,44 @@ def test_done_metric_without_matching_eval_report_is_ready_for_eval():
     assert decision.ready_for_eval is True
 
 
+def test_matching_done_eval_report_supersedes_earlier_infra_failure():
+    prediction = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "model_patch": _patch("+current\n"),
+    }
+    metric = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "patch_sha256": row_patch_sha(prediction),
+        "workflow_status": "done",
+    }
+    reports = [
+        EvalReport(
+            task_id="task-1",
+            patch_sha=row_patch_sha(prediction),
+            status="technical_eval_failed",
+            path="first-docker-refused.json",
+        ),
+        EvalReport(
+            task_id="task-1",
+            patch_sha=row_patch_sha(prediction),
+            status="done",
+            resolved_count=1,
+            path="rerun-resolved.json",
+        ),
+    ]
+    snapshot = build_snapshots_from_rows([prediction], [metric], reports=reports)[0]
+
+    row = task_status_row(snapshot)
+
+    assert row["state"] == "eval_done"
+    assert row["eval"]["done_count"] == 1
+    assert row["eval"]["failed_count"] == 0
+    assert row["eval"]["resolved_count"] == 1
+    assert row["eval"]["report_paths"] == ["rerun-resolved.json"]
+
+
 def test_eval_report_without_patch_sha_does_not_finish_current_patch():
     prediction = {
         "instance_id": "task-1",
@@ -404,3 +442,43 @@ def test_build_snapshots_reads_prediction_metric_and_summary_report(tmp_path):
     row = task_status_row(snapshots[0])
     assert row["state"] == "eval_done"
     assert row["eval"]["resolved_count"] == 1
+
+
+def test_build_snapshots_reads_nested_direct_eval_technical_failure(tmp_path):
+    run_dir = tmp_path / "run"
+    side_dir = run_dir / "official_eval_auto" / "reports" / "task-1"
+    side_dir.mkdir(parents=True)
+    prediction = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "model_patch": _patch("+current\n"),
+    }
+    metric = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "patch_sha256": row_patch_sha(prediction),
+        "workflow_status": "done",
+    }
+    _write_jsonl(run_dir / "predictions.jsonl", [prediction])
+    _write_jsonl(run_dir / "metrics.jsonl", [metric])
+    (side_dir / "report.json").write_text(
+        json.dumps(
+            {
+                "task-1": {
+                    "schema": "opencollab.prolite_direct_eval.v1",
+                    "status": "technical_eval_failed",
+                    "resolved": False,
+                    "error": True,
+                    "patch_sha256": row_patch_sha(prediction),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshots = build_snapshots(run_dir)
+
+    row = task_status_row(snapshots[0])
+    assert row["state"] == "technical_eval_failed"
+    assert row["eval"]["failed_count"] == 1
+    assert row["eval"]["done_count"] == 0
