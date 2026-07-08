@@ -31,13 +31,13 @@ from dataclasses import dataclass
 from typing import Any
 
 from opencollab.application.async_timeout import abandon_on_timeout
+from opencollab.application.extension_valve import RequestExtensionTool
 from opencollab.application.ports import (
     EventPublisherPort,
     TracePort,
     WorkflowSessionFactoryPort,
     WorkingTreeProbe,
 )
-from opencollab.application.extension_valve import RequestExtensionTool
 from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE, ENFORCEMENT_OFF
 from opencollab.application.structured_output import StructuredOutputTool
 from opencollab.application.submit_findings import (

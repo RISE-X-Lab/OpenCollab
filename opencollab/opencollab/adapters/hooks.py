@@ -15,6 +15,7 @@ it.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -68,7 +69,11 @@ class ShellHookRunner(HookPort):
             _, stderr = await asyncio.wait_for(proc.communicate(stdin_bytes), timeout=spec.timeout)
         except asyncio.TimeoutError:
             proc.kill()
-            await proc.wait()
+            # Reap the killed process, but bounded: on Python 3.11+ a
+            # ``proc.wait()`` after a cancelled ``communicate()`` can hang on the
+            # wedged pipe transport, so cap it rather than block the caller.
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(proc.wait(), timeout=1.0)
             logger.warning("hook command timed out after %.1fs: %s", spec.timeout, spec.command)
             return
 

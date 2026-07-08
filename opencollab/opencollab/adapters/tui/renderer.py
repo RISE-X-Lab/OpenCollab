@@ -21,6 +21,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
+from opencollab.adapters.tui.brand_motion import MARK_HEX, PulseDot
 from opencollab.adapters.tui.renderer_display import _RendererDisplayMixin
 from opencollab.adapters.tui.renderer_events import _RendererEventsMixin
 
@@ -44,6 +45,13 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         # aid -> {"role": str, "state": str} for the live team roster panel.
         self._roster: dict[int, dict] = {}
         self._step = 0
+        # Brand motion (single pulsing dot). ``_motion`` is the shared,
+        # seconds-less tool-execution spinner; ``_thinking`` is the live LLM-wait
+        # indicator (labeled + a seconds counter), (re)created each step so the
+        # counter resets. Both animate purely from Live's periodic re-render — no
+        # extra thread, loop, or sleep.
+        self._motion = PulseDot(muted_style=self._STYLE_MUTED, show_seconds=False)
+        self._thinking: PulseDot | None = None
         self._live: Live | None = None
         self._live_paused = False
         # When filtering is on, only the selected agent's text stream is shown.
@@ -70,6 +78,10 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
     def start_live(self) -> None:
         """Start the Live display context."""
         self._live_paused = False
+        # The turn begins by waiting on the model — show the animated wait bar so
+        # first-token latency doesn't read as frozen. step_start refines it with
+        # the step counter; text/tool progress clears it.
+        self._thinking = self._new_thinking_bar("Thinking…")
         self._live = Live(
             self._build_live_display(),
             console=self.console,
@@ -137,7 +149,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         from rich.rule import Rule
 
         title = Text.assemble(
-            ("◆ ", self._STYLE_ACCENT),
+            ("◆ ", MARK_HEX),
             ("OpenCollab", self._STYLE_HEADING),
             ("  multi-agent dev", self._STYLE_MUTED),
         )
@@ -198,3 +210,4 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         self._status_lines.clear()
         self._roster.clear()
         self._step = 0
+        self._thinking = None
