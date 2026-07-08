@@ -1047,15 +1047,7 @@ class SessionRunUseCase:
         override: Any | None = None
         level: str | None = None
         extra = ""
-        if has_structured_output and reads >= READS_NUDGE_SOFT:
-            extra = (
-                f" You have read {reads} times without submitting structured output."
-                " STOP reading — your next action MUST be structured_output using"
-                " the evidence you already have."
-            )
-            override = _submit_tool_choice(_STRUCTURED_OUTPUT_TOOL)
-            level = "hard"
-        elif has_write and reads >= READS_NUDGE_HARD:
+        if has_write and reads >= READS_NUDGE_HARD:
             extra = (
                 f" You have read {reads} times without making an edit. STOP reading"
                 " — your next action MUST be a file_write or apply_patch edit."
@@ -1069,6 +1061,14 @@ class SessionRunUseCase:
                 " apply_patch before reading more."
             )
             level = "soft"
+        elif has_structured_output and reads >= READS_NUDGE_SOFT:
+            extra = (
+                f" You have read {reads} times without submitting structured output."
+                " STOP reading — your next action MUST be structured_output using"
+                " the evidence you already have."
+            )
+            override = _submit_tool_choice(_STRUCTURED_OUTPUT_TOOL)
+            level = "hard"
         return {"role": "user", "content": status + extra}, override, level
 
     def _fold_steering(self, last_user_msg: dict, steering_text: str) -> dict:
@@ -1105,10 +1105,10 @@ class SessionRunUseCase:
             getattr(t, "name", None)
             for t in getattr(self.agent, "tools", []) or []
         }
-        if _STRUCTURED_OUTPUT_TOOL in tool_names:
-            return frozenset({_STRUCTURED_OUTPUT_TOOL}), "hard structured-output gate"
         if tool_names & _WRITE_TOOLS:
             return _WRITE_TOOLS, "hard write gate"
+        if _STRUCTURED_OUTPUT_TOOL in tool_names:
+            return frozenset({_STRUCTURED_OUTPUT_TOOL}), "hard structured-output gate"
         return frozenset(), "hard tool gate"
 
     def _apply_pending_tool_allowlist(
