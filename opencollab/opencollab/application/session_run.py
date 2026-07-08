@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from opencollab.application.async_timeout import abandon_on_timeout
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
     CompletionResponse,
@@ -1332,9 +1333,7 @@ class SessionRunUseCase:
         """
         if self._per_call_timeout is None:
             return await self.llm.complete(**kwargs)
-        return await asyncio.wait_for(
-            self.llm.complete(**kwargs), timeout=self._per_call_timeout
-        )
+        return await abandon_on_timeout(self.llm.complete(**kwargs), self._per_call_timeout)
 
     async def _stop_on_context_overflow(self) -> None:
         """Graceful terminal stop when a prompt overflows the model window even

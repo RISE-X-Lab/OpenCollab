@@ -30,6 +30,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from opencollab.application.async_timeout import abandon_on_timeout
 from opencollab.application.ports import (
     EventPublisherPort,
     TracePort,
@@ -402,9 +403,7 @@ class WorkflowContext:
             # already written to disk before the cancel survive in the env, so the
             # patch is still extractable. A non-positive timeout is treated as "no
             # bound" — the caller is already past the deadline; let the call run.
-            if timeout is not None and timeout != float("inf") and timeout > 0:
-                return await asyncio.wait_for(session.run_loop(), timeout=timeout)
-            return await session.run_loop()
+            return await abandon_on_timeout(session.run_loop(), timeout)
         except asyncio.TimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
             return None
@@ -466,12 +465,7 @@ class WorkflowContext:
         text: str | None = None
         try:
             await session.add_user_message(prompt)
-            if timeout is not None and timeout != float("inf") and timeout > 0:
-                text = await asyncio.wait_for(
-                    session.run_loop(capture_done), timeout=timeout
-                )
-            else:
-                text = await session.run_loop(capture_done)
+            text = await abandon_on_timeout(session.run_loop(capture_done), timeout)
         except asyncio.TimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
@@ -830,9 +824,7 @@ class WorkflowContext:
         *,
         timeout: float | None,
     ) -> str:
-        if timeout is not None and timeout != float("inf") and timeout > 0:
-            return await asyncio.wait_for(session.run_loop(cancel_event), timeout=timeout)
-        return await session.run_loop(cancel_event)
+        return await abandon_on_timeout(session.run_loop(cancel_event), timeout)
 
     @staticmethod
     def _carry_exploration(prior_session: Any, session: Any) -> None:

@@ -1376,6 +1376,23 @@ class SlowLLM:
         return self.response
 
 
+class CancelCleanupLLM:
+    def __init__(self):
+        self.calls = []
+        self.cancel_seen = asyncio.Event()
+        self.release_cancel = asyncio.Event()
+
+    async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+        self.calls.append(copy.deepcopy(messages))
+        gate = asyncio.Event()
+        try:
+            await gate.wait()
+        except asyncio.CancelledError:
+            self.cancel_seen.set()
+            await self.release_cancel.wait()
+            raise
+
+
 def test_per_call_timeout_raises_on_slow_generation():
     import pytest
 
@@ -1390,6 +1407,28 @@ def test_per_call_timeout_raises_on_slow_generation():
 
     assert state.phase is SessionPhase.ERROR
     assert len(llm.calls) == 1  # the call was attempted (then cancelled)
+
+
+def test_per_call_timeout_returns_before_cancel_cleanup_finishes():
+    async def scenario():
+        state = SessionState(messages=[{"role": "system", "content": "sys"}])
+        llm = CancelCleanupLLM()
+        runner = build_runner(state=state, llm=llm, per_call_timeout=0.01)
+
+        raised = False
+        try:
+            await asyncio.wait_for(runner.run_loop(), timeout=0.5)
+        except asyncio.TimeoutError:
+            raised = True
+
+        assert raised is True
+        assert state.phase is SessionPhase.ERROR
+        assert "TimeoutError" in (state.terminal_reason or "")
+        llm.release_cancel.set()
+        await asyncio.sleep(0)
+        assert llm.cancel_seen.is_set()
+
+    run(scenario())
 
 
 def test_per_call_timeout_none_does_not_bound_the_call():
