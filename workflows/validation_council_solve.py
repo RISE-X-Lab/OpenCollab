@@ -395,6 +395,9 @@ CODER_PROMPT = """\
 You are the Coder. Implement a minimal source fix using the evidence package.
 Do not edit tests unless the task explicitly requires test-only changes.
 Run relevant public tests and accepted validation probes where practical.
+Once you can name the concrete source change, stop reading and call file_write
+or apply_patch in that turn. Do not announce an edit and then call file_read or
+grep.
 Your final message should name changed source files, explain the root cause,
 and summarize verification.
 

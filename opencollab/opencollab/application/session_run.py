@@ -24,6 +24,7 @@ from opencollab.application.shaping import forced_shape
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
+from opencollab.domain.tools import ToolProcessingResult
 
 logger = logging.getLogger(__name__)
 
@@ -302,6 +303,7 @@ class SessionRunUseCase:
         # (a model that ignored the forced tool_choice and called another/unknown
         # tool gets exactly ONE more turn before going terminal).
         self._wind_down_retried = False
+        self._pending_tool_allowlist: frozenset[str] | None = None
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
@@ -872,14 +874,25 @@ class SessionRunUseCase:
             self.state.fail()
             raise RuntimeError("Cannot execute tools before calling LLM")
 
-        tool_calls = pending.response.tool_calls
+        original_tool_calls = list(pending.response.tool_calls)
+        tool_calls, blocked_messages = self._apply_pending_tool_allowlist(original_tool_calls)
         immediate, deferred = self._split_tool_calls(tool_calls)
 
         # Fast path, unchanged: every tool is synchronous — run them, append
         # results, and autosave the step.
         if not deferred:
-            result = await self.tool_execution.process(tool_calls)
+            result = (
+                await self.tool_execution.process(tool_calls)
+                if tool_calls
+                else ToolProcessingResult()
+            )
+            result.messages_to_append = self._ordered_tool_messages(
+                original_tool_calls,
+                result.messages_to_append,
+                blocked_messages,
+            )
             result.apply_to(self.state)
+            self._pending_tool_allowlist = None
             self.state.transition_to(SessionPhase.AUTOSAVING)
             return
 
@@ -912,6 +925,18 @@ class SessionRunUseCase:
                     )
                 )
 
+        for message in blocked_messages:
+            tid = message["tool_call_id"]
+            table.add(
+                PendingRow(
+                    tool_call_id=tid,
+                    kind=RowKind.IMMEDIATE,
+                    order=order[tid],
+                    status=RowStatus.DONE,
+                    result=message["content"],
+                )
+            )
+
         for tc in deferred:
             tid = tc["id"]
             ref, error = await self.tool_execution.execute_deferred(tc)
@@ -937,6 +962,7 @@ class SessionRunUseCase:
                     )
                 )
 
+        self._pending_tool_allowlist = None
         if table.is_complete():
             # Nothing is actually outstanding (e.g. all spawns were rejected
             # synchronously) — drain now and autosave instead of suspending on
@@ -1045,6 +1071,66 @@ class SessionRunUseCase:
             folded = steering_text
         return {**last_user_msg, "content": folded}
 
+    def _write_only_tool_schemas(self, tools: list[dict] | None) -> list[dict] | None:
+        if not tools:
+            return tools
+        write_tools = [
+            spec
+            for spec in tools
+            if spec.get("function", {}).get("name") in _WRITE_TOOLS
+        ]
+        return write_tools or tools
+
+    def _apply_pending_tool_allowlist(
+        self,
+        tool_calls: list[dict],
+    ) -> tuple[list[dict], list[dict]]:
+        allowed = self._pending_tool_allowlist
+        if allowed is None:
+            return tool_calls, []
+
+        kept: list[dict] = []
+        blocked: list[dict] = []
+        for tc in tool_calls:
+            func = tc.get("function", {})
+            name = func.get("name")
+            if name in allowed:
+                kept.append(tc)
+                continue
+            allowed_list = ", ".join(sorted(allowed))
+            blocked.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.get("id"),
+                    "content": (
+                        f"Error: tool '{name}' is not allowed during the hard "
+                        f"write gate. Use one of: {allowed_list}."
+                    ),
+                }
+            )
+        return kept, blocked
+
+    def _ordered_tool_messages(
+        self,
+        tool_calls: list[dict],
+        *message_groups: list[dict],
+    ) -> list[dict]:
+        by_id: dict[str, dict] = {}
+        extras: list[dict] = []
+        for group in message_groups:
+            for message in group:
+                tool_call_id = message.get("tool_call_id")
+                if isinstance(tool_call_id, str):
+                    by_id[tool_call_id] = message
+                else:
+                    extras.append(message)
+        ordered = [
+            by_id[tc["id"]]
+            for tc in tool_calls
+            if tc.get("id") in by_id
+        ]
+        return ordered + extras
+
     async def call_llm(self, tools: list[dict] | None) -> CompletionResponse:
         """Complete against the shaped view of history.
 
@@ -1087,6 +1173,12 @@ class SessionRunUseCase:
         )
         if steering is not None and not persisted:
             messages = [*messages, steering]
+        if steering_level == "hard":
+            self._pending_tool_allowlist = frozenset(_WRITE_TOOLS)
+            tools = self._write_only_tool_schemas(tools)
+        else:
+            self._pending_tool_allowlist = None
+
         try:
             return await self._complete(messages, tools, tool_choice_override)
         except Exception as exc:

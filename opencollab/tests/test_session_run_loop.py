@@ -336,9 +336,26 @@ class _ToolStub:
         self.name = name
 
 
+def _tool_schema(name):
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": f"{name} tool",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    }
+
+
 def _agent_with_tools(*names):
     agent = FakeAgent()
     agent.tools = [_ToolStub(n) for n in names]
+    return agent
+
+
+def _agent_with_tool_schemas(*names):
+    agent = FakeAgent([_tool_schema(name) for name in names])
+    agent.tools = [_ToolStub(name) for name in names]
     return agent
 
 
@@ -422,6 +439,113 @@ def test_steering_hard_rung_forces_tool_choice_through_run_loop():
     run(runner.run_loop())
 
     assert llm.calls[0]["tool_choice"] == "required"
+
+
+def test_steering_hard_rung_limits_provider_tools_to_writes():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_HARD,
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas(
+            "file_read",
+            "grep",
+            "file_write",
+            "apply_patch",
+            "run_tests",
+        ),
+    )
+
+    run(runner.run_loop())
+
+    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
+    assert llm.calls[0]["tool_choice"] == "required"
+    assert sent_tool_names == ["file_write", "apply_patch"]
+
+
+def test_steering_hard_rung_blocks_read_tool_call_before_execution():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_HARD,
+    )
+    read_call = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
+    llm = FakeLLM(
+        [
+            llm_response(content="try read", tool_calls=[read_call], finish_reason="tool_calls"),
+            llm_response(content="done"),
+        ]
+    )
+    tool_execution = FakeToolExecution()
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        tool_execution=tool_execution,
+        agent=_agent_with_tool_schemas("file_read", "file_write", "apply_patch"),
+    )
+
+    result = run(runner.run_loop())
+
+    tool_messages = [
+        m for m in state.messages if m.get("role") == "tool" and m.get("tool_call_id")
+    ]
+    assert result == "done"
+    assert tool_execution.calls == []
+    assert len(tool_messages) == 1
+    assert tool_messages[0]["tool_call_id"] == "r1"
+    assert "not allowed during the hard write gate" in tool_messages[0]["content"]
+    assert state.reads_since_last_edit == READS_NUDGE_HARD
+
+
+def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_HARD,
+    )
+    read_call = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
+    write_call = tool_call(call_id="w1", name="apply_patch", arguments='{"patch": "..."}')
+    llm = FakeLLM(
+        [
+            llm_response(
+                content="mixed",
+                tool_calls=[read_call, write_call],
+                finish_reason="tool_calls",
+            ),
+            llm_response(content="done"),
+        ]
+    )
+    tool_execution = FakeToolExecution(
+        ToolProcessingResult(
+            messages_to_append=[{"role": "tool", "tool_call_id": "w1", "content": "patched"}],
+            write_succeeded=True,
+        )
+    )
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        tool_execution=tool_execution,
+        agent=_agent_with_tool_schemas("file_read", "file_write", "apply_patch"),
+    )
+
+    result = run(runner.run_loop())
+
+    tool_messages = [
+        m for m in state.messages if m.get("role") == "tool" and m.get("tool_call_id")
+    ]
+    assert result == "done"
+    assert tool_execution.calls == [[write_call]]
+    assert [m["tool_call_id"] for m in tool_messages] == ["r1", "w1"]
+    assert "not allowed during the hard write gate" in tool_messages[0]["content"]
+    assert tool_messages[1]["content"] == "patched"
+    assert state.reads_since_last_edit == 0
 
 
 def test_steering_reaches_provider_and_is_persisted():
