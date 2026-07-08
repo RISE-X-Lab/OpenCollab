@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -165,6 +166,44 @@ def test_matching_done_eval_report_supersedes_earlier_infra_failure():
     assert row["eval"]["failed_count"] == 0
     assert row["eval"]["resolved_count"] == 1
     assert row["eval"]["report_paths"] == ["rerun-resolved.json"]
+
+
+def test_later_infra_failure_supersedes_earlier_done_report():
+    prediction = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "model_patch": _patch("+current\n"),
+    }
+    metric = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "patch_sha256": row_patch_sha(prediction),
+        "workflow_status": "done",
+    }
+    reports = [
+        EvalReport(
+            task_id="task-1",
+            patch_sha=row_patch_sha(prediction),
+            status="done",
+            unresolved_count=1,
+            path="old-unclassified.json",
+        ),
+        EvalReport(
+            task_id="task-1",
+            patch_sha=row_patch_sha(prediction),
+            status="technical_eval_failed",
+            path="classified-redis.json",
+        ),
+    ]
+    snapshot = build_snapshots_from_rows([prediction], [metric], reports=reports)[0]
+
+    row = task_status_row(snapshot)
+
+    assert row["state"] == "technical_eval_failed"
+    assert row["eval"]["done_count"] == 0
+    assert row["eval"]["failed_count"] == 1
+    assert row["eval"]["unresolved_count"] == 0
+    assert row["eval"]["report_paths"] == ["classified-redis.json"]
 
 
 def test_eval_report_without_patch_sha_does_not_finish_current_patch():
@@ -482,3 +521,57 @@ def test_build_snapshots_reads_nested_direct_eval_technical_failure(tmp_path):
     assert row["state"] == "technical_eval_failed"
     assert row["eval"]["failed_count"] == 1
     assert row["eval"]["done_count"] == 0
+
+
+def test_build_snapshots_prefers_newer_matching_eval_report(tmp_path):
+    run_dir = tmp_path / "run"
+    side_dir = run_dir / "official_eval_auto" / "task-1"
+    side_dir.mkdir(parents=True)
+    prediction = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "model_patch": _patch("+current\n"),
+    }
+    metric = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "patch_sha256": row_patch_sha(prediction),
+        "workflow_status": "done",
+    }
+    _write_jsonl(run_dir / "predictions.jsonl", [prediction])
+    _write_jsonl(run_dir / "metrics.jsonl", [metric])
+    old_report = side_dir / "old-summary.json"
+    old_report.write_text(
+        json.dumps(
+            {
+                "instance_id": "task-1",
+                "patch_sha256": row_patch_sha(prediction),
+                "status": "done",
+                "unresolved_instances": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    new_report = side_dir / "redis-classified.json"
+    new_report.write_text(
+        json.dumps(
+            {
+                "task-1": {
+                    "status": "technical_eval_failed",
+                    "error": True,
+                    "patch_sha256": row_patch_sha(prediction),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    os.utime(old_report, ns=(1, 1))
+    os.utime(new_report, ns=(2, 2))
+
+    snapshots = build_snapshots(run_dir)
+
+    row = task_status_row(snapshots[0])
+    assert row["state"] == "technical_eval_failed"
+    assert row["eval"]["done_count"] == 0
+    assert row["eval"]["failed_count"] == 1
+    assert row["eval"]["report_paths"] == [str(new_report)]

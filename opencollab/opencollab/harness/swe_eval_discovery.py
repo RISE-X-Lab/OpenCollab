@@ -96,11 +96,19 @@ def _report_from_json(path: Path) -> EvalReport | None:
     )
 
 
+def _report_path_sort_key(path: Path) -> tuple[int, str]:
+    try:
+        mtime_ns = path.stat().st_mtime_ns
+    except OSError:
+        mtime_ns = 0
+    return mtime_ns, str(path)
+
+
 def discover_eval_reports(side_dir: Path) -> list[EvalReport]:
     if not side_dir.exists():
         return []
     reports: list[EvalReport] = []
-    for path in sorted(side_dir.rglob("*.json")):
+    for path in sorted(side_dir.rglob("*.json"), key=_report_path_sort_key):
         report = _report_from_json(path)
         if report is not None:
             reports.append(report)
@@ -114,13 +122,8 @@ def summarize_eval_reports(
     current_patch_sha: str,
     active_eval: bool = False,
 ) -> EvalReportSummary:
-    done = 0
-    failed = 0
-    resolved = 0
-    unresolved = 0
     ignored = 0
-    done_paths: list[str] = []
-    failed_paths: list[str] = []
+    latest: EvalReport | None = None
     for report in reports:
         if report.task_id != task_id:
             continue
@@ -128,25 +131,18 @@ def summarize_eval_reports(
             if not report.patch_sha or not patch_sha_matches(report.patch_sha, current_patch_sha):
                 ignored += 1
                 continue
-        if report.status == "done":
-            done += 1
-            resolved += report.resolved_count
-            unresolved += report.unresolved_count
-            done_paths.append(report.path)
-        elif report.status in TECHNICAL_EVAL_STATUSES:
-            failed += 1
-            failed_paths.append(report.path)
-    if done:
-        failed = 0
-        paths = done_paths
-    else:
-        paths = failed_paths
+        if report.status == "done" or report.status in TECHNICAL_EVAL_STATUSES:
+            latest = report
+
+    done = int(latest is not None and latest.status == "done")
+    failed = int(latest is not None and latest.status in TECHNICAL_EVAL_STATUSES)
+    paths = [latest.path] if latest is not None and latest.path else []
     return EvalReportSummary(
         done_count=done,
         active_count=1 if active_eval else 0,
         failed_count=failed,
-        resolved_count=resolved,
-        unresolved_count=unresolved,
+        resolved_count=latest.resolved_count if done and latest is not None else 0,
+        unresolved_count=latest.unresolved_count if done and latest is not None else 0,
         ignored_patch_mismatch_count=ignored,
         report_paths=tuple(paths),
     )
