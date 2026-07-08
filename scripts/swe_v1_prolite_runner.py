@@ -1058,6 +1058,27 @@ def loopback_port(base_url: str, *, default: int) -> int:
     return int(parsed.port or default)
 
 
+def loopback_url_with_port(base_url: str, port: int) -> str:
+    parsed = urllib.parse.urlparse(base_url)
+    host = parsed.hostname
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        raise RuntimeError(f"proxy URL must be loopback: {base_url}")
+    if host == "::1":
+        netloc = f"[::1]:{port}"
+    else:
+        netloc = f"{host}:{port}"
+    return urllib.parse.urlunparse(parsed._replace(netloc=netloc))
+
+
+def remote_forward_port_conflict(message: str) -> bool:
+    lowered = message.lower()
+    return (
+        "remote port forwarding failed" in lowered
+        or "address already in use" in lowered
+        or "cannot listen to port" in lowered
+    )
+
+
 def ensure_remote_proxy(
     *,
     ssh_command: list[str],
@@ -1074,31 +1095,54 @@ def ensure_remote_proxy(
         raise RuntimeError(f"local proxy health check failed: {url_with_healthz(local_proxy_base_url)}")
     local_port = loopback_port(local_proxy_base_url, default=8878)
     remote_port = loopback_port(remote_proxy_base_url, default=18788)
-    forward = f"127.0.0.1:{remote_port}:127.0.0.1:{local_port}"
-    command = [
-        *ssh_command,
-        "-fN",
-        "-o",
-        "ExitOnForwardFailure=yes",
-        "-o",
-        "ServerAliveInterval=30",
-        "-o",
-        "ServerAliveCountMax=3",
-        "-R",
-        forward,
-        host,
-    ]
-    run_checked(command, timeout=30)
-    for _ in range(20):
-        if remote_http_ok(ssh_command=ssh_command, host=host, base_url=remote_proxy_base_url, timeout=5):
+    attempts: list[str] = []
+    for candidate_port in range(remote_port, remote_port + 21):
+        candidate_base_url = loopback_url_with_port(remote_proxy_base_url, candidate_port)
+        if candidate_port != remote_port and remote_http_ok(
+            ssh_command=ssh_command, host=host, base_url=candidate_base_url
+        ):
             return {
-                "status": "started",
-                "local_proxy_base_url": local_proxy_base_url,
-                "remote_proxy_base_url": remote_proxy_base_url,
-                "forward": forward,
+                "status": "already_healthy",
+                "remote_proxy_base_url": candidate_base_url,
+                "selected_remote_port": candidate_port,
             }
-        time.sleep(0.5)
-    raise RuntimeError(f"remote proxy tunnel did not become healthy: {url_with_healthz(remote_proxy_base_url)}")
+        forward = f"127.0.0.1:{candidate_port}:127.0.0.1:{local_port}"
+        command = [
+            *ssh_command,
+            "-fN",
+            "-o",
+            "ExitOnForwardFailure=yes",
+            "-o",
+            "ServerAliveInterval=30",
+            "-o",
+            "ServerAliveCountMax=3",
+            "-R",
+            forward,
+            host,
+        ]
+        try:
+            run_checked(command, timeout=30)
+        except RuntimeError as exc:
+            message = str(exc)
+            attempts.append(f"{candidate_port}: {message}")
+            if remote_forward_port_conflict(message):
+                continue
+            raise
+        for _ in range(20):
+            if remote_http_ok(ssh_command=ssh_command, host=host, base_url=candidate_base_url, timeout=5):
+                return {
+                    "status": "started" if candidate_port == remote_port else "started_fallback_port",
+                    "local_proxy_base_url": local_proxy_base_url,
+                    "remote_proxy_base_url": candidate_base_url,
+                    "forward": forward,
+                    "selected_remote_port": candidate_port,
+                }
+            time.sleep(0.5)
+        attempts.append(f"{candidate_port}: tunnel started but health check failed")
+    detail = "; ".join(attempts[-5:])
+    raise RuntimeError(
+        f"remote proxy tunnel did not become healthy near port {remote_port}: {detail}"
+    )
 
 
 def sync_runtime(*, ssh_command: list[str], host: str, remote_runtime_repo: str) -> dict[str, Any]:
@@ -1322,6 +1366,9 @@ def run_remote(args: argparse.Namespace) -> dict[str, Any]:
         host=args.host,
         remote_runtime_repo=args.remote_runtime_repo,
     )
+    selected_remote_proxy_base_url = proxy_summary.get(
+        "remote_proxy_base_url", args.remote_proxy_base_url
+    )
     payload = {
         "token": get_proxy_token(args.proxy_env_file),
         "remote_root": args.remote_root,
@@ -1330,7 +1377,7 @@ def run_remote(args: argparse.Namespace) -> dict[str, Any]:
         "workflow": args.workflow,
         "model_name": args.model_name,
         "session_prefix": args.session_prefix,
-        "remote_proxy_base_url": args.remote_proxy_base_url,
+        "remote_proxy_base_url": selected_remote_proxy_base_url,
         "start_index": args.start_index,
         "limit": args.limit,
         "budget": args.budget,
