@@ -212,6 +212,7 @@ async def test_happy_path_passes_first_round(validation_council_solve):
         "final-verifier:r1",
     ]
     budgets = {call["label"]: call.get("budget") for call in ctx.agent_calls}
+    timeouts = {call["label"]: call.get("timeout") for call in ctx.agent_calls}
     assert budgets["analyst-localizer"] == 220_000
     assert budgets["contract-miner"] == 180_000
     assert budgets["test-cartographer"] == 180_000
@@ -225,6 +226,10 @@ async def test_happy_path_passes_first_round(validation_council_solve):
     assert budgets["post-r1-validation-judge"] == 100_000
     assert budgets["post-validation-triage:r1"] == 180_000
     assert budgets["final-verifier:r1"] == 220_000
+    assert timeouts["coder:r1"] == 1800
+    for call in ctx.agent_calls:
+        if call["label"] != "coder:r1":
+            assert call.get("timeout") == 300
     assert ctx.phases == [
         "localize",
         "evidence",
@@ -235,6 +240,8 @@ async def test_happy_path_passes_first_round(validation_council_solve):
     ]
     all_prompts = "\n".join(call["prompt"] for call in ctx.agent_calls)
     assert "tests/hidden.py::test_secret" not in all_prompts
+    assert "If your current tools cannot create or run a probe" in all_prompts
+    assert "do not search for write tools" in all_prompts
 
 
 async def test_failed_final_verifier_retries_with_feedback(validation_council_solve):
@@ -246,6 +253,7 @@ async def test_failed_final_verifier_retries_with_feedback(validation_council_so
     assert result["rounds"] == 2
     assert "edge case still fails" in ctx.agent_calls[13]["prompt"]
     budgets = {call["label"]: call.get("budget") for call in ctx.agent_calls}
+    timeouts = {call["label"]: call.get("timeout") for call in ctx.agent_calls}
     assert budgets["coder:r2"] is None
     assert budgets["patch-validator:r2"] == 220_000
     assert budgets["diff-risk-auditor:r2"] == 60_000
@@ -253,6 +261,13 @@ async def test_failed_final_verifier_retries_with_feedback(validation_council_so
     assert budgets["post-r2-validation-judge"] == 100_000
     assert budgets["post-validation-triage:r2"] == 180_000
     assert budgets["final-verifier:r2"] == 220_000
+    assert timeouts["coder:r2"] == 1800
+    assert timeouts["patch-validator:r2"] == 300
+    assert timeouts["diff-risk-auditor:r2"] == 300
+    assert timeouts["post-validation-factory:r2"] == 300
+    assert timeouts["post-r2-validation-judge"] == 300
+    assert timeouts["post-validation-triage:r2"] == 300
+    assert timeouts["final-verifier:r2"] == 300
     assert any("attempt 1 failed" in message for message in ctx.logs)
 
 
