@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import Enum
 from typing import Any
 
 from opencollab.harness.swe_eval_records import (
@@ -15,7 +15,7 @@ from opencollab.harness.swe_eval_records import (
 )
 
 
-class TaskState(StrEnum):
+class TaskState(str, Enum):
     NEEDS_GENERATION = "needs_generation"
     GENERATION_ACTIVE = "generation_active"
     EMPTY_PATCH_INVALID = "empty_patch_invalid"
