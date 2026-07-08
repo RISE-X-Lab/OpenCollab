@@ -17,6 +17,10 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def is_worktree_diff_cmd(cmd: str) -> bool:
+    return "git diff --cached --binary HEAD" in cmd
+
+
 class FakeLLMClient:
     def __init__(self, *args, **kwargs):
         self.calls = []
@@ -39,7 +43,7 @@ class FakeEnv(Environment):
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         self.cmds.append(cmd)
-        if cmd.startswith("git diff"):
+        if is_worktree_diff_cmd(cmd) or cmd.startswith("git diff"):
             return ExecResult(returncode=0, stdout=self.diff, stderr="")
         return ExecResult(returncode=0, stdout="", stderr="")
 
@@ -84,6 +88,36 @@ def test_run_eval_task_empty_diff_not_produced(monkeypatch, tmp_path):
 
     assert result.patch_produced is False
     assert result.patch == ""
+
+
+def test_run_eval_task_staged_extraction_includes_new_files(monkeypatch, tmp_path):
+    monkeypatch.setattr(container, "LLMClient", FakeLLMClient)
+    env = FakeEnv(
+        diff=(
+            "diff --git a/new_module.py b/new_module.py\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/new_module.py\n"
+            "@@ -0,0 +1 @@\n"
+            "+value = 1\n"
+        )
+    )
+
+    async def env_factory(task):
+        return env
+
+    result = run(
+        run_eval_task(
+            EvalTask(task_id="new-file", description="add file"),
+            output_dir=str(tmp_path),
+            tools_factory=list,
+            env_factory=env_factory,
+        )
+    )
+
+    assert any(is_worktree_diff_cmd(cmd) for cmd in env.cmds)
+    assert "new file mode" in result.patch
+    assert result.patch_produced is True
 
 
 def test_run_eval_task_honors_injected_params(monkeypatch, tmp_path):
@@ -292,7 +326,7 @@ class InjectFakeEnv(Environment):
             path = cmd[len("git clean -fq -- "):].strip().strip("'\"")
             self.cleaned.add(path)
             return ExecResult(returncode=0, stdout="", stderr="")
-        if cmd.startswith("git diff"):
+        if is_worktree_diff_cmd(cmd) or cmd.startswith("git diff"):
             parts = [f"diff --git a/{self.src_path} b/{self.src_path}\n+fix\n"]
             if self._leaks(self.mod_path, untracked=False):
                 parts.append(f"diff --git a/{self.mod_path} b/{self.mod_path}\n+assert thing\n")
