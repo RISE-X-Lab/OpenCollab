@@ -30,7 +30,7 @@ EVIDENCE_BUDGET = 180_000
 VALIDATION_FACTORY_BUDGET = 160_000
 JUDGE_BUDGET = 100_000
 TRIAGE_BUDGET = 180_000
-RISK_BUDGET = 150_000
+RISK_BUDGET = 60_000
 VERIFIER_BUDGET = 220_000
 EMPTY_POST_CANDIDATES = {
     "tests": [],
@@ -457,9 +457,12 @@ Baseline triage:
 {baseline_triage}"""
 
 DIFF_RISK_PROMPT = """\
-You are the Diff Risk Auditor. Do not edit files. Read the current git diff and
-identify semantic risks, missed contracts, neighboring behavior that may
-regress, and focused probes that would catch those risks.
+You are the Diff Risk Auditor. Do not edit files and do not run tools. Use only
+the contracts and patch validator verdict already provided below. Identify at
+most three semantic risks, missed contracts, neighboring behavior that may
+regress, and focused probes that would catch those risks. If the verdict already
+contains enough clean evidence, return an empty risks list with a concise
+summary. Your next action must be structured_output.
 
 {rules}
 
@@ -561,6 +564,10 @@ def _tester_tools() -> list[Any]:
         GrepTool(),
         GitDiffTool(),
     ]
+
+
+def _risk_tools() -> list[Any]:
+    return []
 
 
 def _dump(value: Any) -> str:
@@ -712,7 +719,7 @@ async def _run_attempt(
         ),
         schema=DIFF_RISK_SCHEMA,
         label=f"diff-risk-auditor:r{attempt}",
-        tools=_tester_tools(),
+        tools=_risk_tools(),
         budget=RISK_BUDGET,
     )
     risks = _dict_or(risks, {"risks": [], "summary": "Diff risk auditor returned no structured report."})

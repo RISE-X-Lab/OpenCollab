@@ -220,7 +220,7 @@ async def test_happy_path_passes_first_round(validation_council_solve):
     assert budgets["baseline-triage"] == 180_000
     assert budgets["coder:r1"] is None
     assert budgets["patch-validator:r1"] == 220_000
-    assert budgets["diff-risk-auditor:r1"] == 150_000
+    assert budgets["diff-risk-auditor:r1"] == 60_000
     assert budgets["post-validation-factory:r1"] == 160_000
     assert budgets["post-r1-validation-judge"] == 100_000
     assert budgets["post-validation-triage:r1"] == 180_000
@@ -248,7 +248,7 @@ async def test_failed_final_verifier_retries_with_feedback(validation_council_so
     budgets = {call["label"]: call.get("budget") for call in ctx.agent_calls}
     assert budgets["coder:r2"] is None
     assert budgets["patch-validator:r2"] == 220_000
-    assert budgets["diff-risk-auditor:r2"] == 150_000
+    assert budgets["diff-risk-auditor:r2"] == 60_000
     assert budgets["post-validation-factory:r2"] == 160_000
     assert budgets["post-r2-validation-judge"] == 100_000
     assert budgets["post-validation-triage:r2"] == 180_000

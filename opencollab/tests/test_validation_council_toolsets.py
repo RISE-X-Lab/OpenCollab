@@ -42,6 +42,10 @@ def test_validation_council_tester_tools_cannot_edit():
     assert run_tests.allow_extra_args is False
 
 
+def test_validation_council_risk_tools_are_disabled():
+    assert _workflow_globals()["_risk_tools"]() == []
+
+
 def test_validation_council_coder_tools_keep_edit_path():
     names = _names(_workflow_globals()["_coder_tools"]())
 
