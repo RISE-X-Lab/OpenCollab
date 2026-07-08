@@ -423,7 +423,7 @@ class ToolExecutionUseCase:
                 timeout=timeout,
             )
         except asyncio.TimeoutError:
-            tool_name = getattr(tool, "name", type(tool).__name__)
+            tool_name = self._tool_display_name(tool)
             result = (
                 f"Tool execution timed out after {timeout:.1f}s "
                 f"while running '{tool_name}'."
@@ -434,6 +434,9 @@ class ToolExecutionUseCase:
             result = f"Tool execution error: {type(e).__name__}: {e}"
 
         return result, time.monotonic() - start
+
+    def _tool_display_name(self, tool: Any) -> str:
+        return str(getattr(tool, "name", type(tool).__name__))
 
     def tool_execution_timeout(self, tool: Any, args: dict) -> float:
         requested = self._numeric_timeout((args or {}).get("timeout"))
