@@ -22,13 +22,23 @@ class FakeProc:
     def __init__(self, stdout=b"", stderr=b"", returncode=0, hang=False):
         self._stdout = stdout
         self._stderr = stderr
-        self.returncode = returncode
+        self.returncode = None if hang and returncode == 0 else returncode
         self._hang = hang
+        self.killed = False
+        self.communicated_input = None
 
-    async def communicate(self):
+    async def communicate(self, input=None):
+        self.communicated_input = input
         if self._hang:
             await asyncio.sleep(3600)
         return self._stdout, self._stderr
+
+    def kill(self):
+        self.killed = True
+        self.returncode = -9
+
+    async def wait(self):
+        return self.returncode
 
 
 class FakeDocker:
@@ -38,7 +48,7 @@ class FakeDocker:
         self.calls = []
         self._procs = list(procs or [])
 
-    async def __call__(self, *argv, stdout=None, stderr=None):
+    async def __call__(self, *argv, stdin=None, stdout=None, stderr=None):
         self.calls.append(list(argv))
         if self._procs:
             return self._procs.pop(0)
@@ -175,7 +185,8 @@ def test_callable_command_prefix_wraps_command(monkeypatch):
 
 
 def test_timeout_returns_default_negative_one(monkeypatch):
-    fake = FakeDocker([FakeProc(hang=True)])
+    proc = FakeProc(hang=True)
+    fake = FakeDocker([proc])
     patch_docker(monkeypatch, fake)
 
     env = DockerEnvironment(container_id="cid")
@@ -183,16 +194,42 @@ def test_timeout_returns_default_negative_one(monkeypatch):
 
     assert result.returncode == -1
     assert "timed out after 0.01s" in result.stderr
+    assert proc.killed
 
 
 def test_timeout_returncode_is_parameterized(monkeypatch):
-    fake = FakeDocker([FakeProc(hang=True)])
+    proc = FakeProc(hang=True)
+    fake = FakeDocker([proc])
     patch_docker(monkeypatch, fake)
 
     env = DockerEnvironment(container_id="cid", timeout_returncode=124)
     result = run(env.exec_cmd("sleep 999", timeout=0.01))
 
     assert result.returncode == 124
+    assert proc.killed
+
+
+def test_cancelled_exec_kills_docker_exec_process(monkeypatch):
+    async def scenario():
+        proc = FakeProc(hang=True)
+        fake = FakeDocker([proc])
+        patch_docker(monkeypatch, fake)
+        env = DockerEnvironment(container_id="cid")
+
+        task = asyncio.create_task(env.exec_cmd("sleep 999", timeout=60))
+        for _ in range(5):
+            await asyncio.sleep(0)
+            if fake.calls:
+                break
+        assert fake.calls
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        return proc.killed
+
+    assert run(scenario())
 
 
 def test_read_file_reads_via_cat(monkeypatch):
@@ -205,4 +242,33 @@ def test_read_file_reads_via_cat(monkeypatch):
     assert body == "file body"
     assert fake.calls == [
         ["docker", "exec", "cid", "bash", "-c", "cat -- /testbed/a.py"]
+    ]
+
+
+def test_write_file_streams_content_over_stdin(monkeypatch):
+    content = "x" * 200_000
+    write_proc = FakeProc(returncode=0)
+    fake = FakeDocker([write_proc, FakeProc(stdout=content.encode(), returncode=0)])
+    patch_docker(monkeypatch, fake)
+
+    env = DockerEnvironment(container_id="cid", exec_workdir="/testbed")
+    run(env.write_file("big.txt", content))
+
+    assert fake.calls[0] == [
+        "docker",
+        "exec",
+        "-i",
+        "-w",
+        "/testbed",
+        "cid",
+        "bash",
+        "-c",
+        'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"',
+        "opencollab-write",
+        "big.txt",
+    ]
+    assert write_proc.communicated_input == content.encode()
+    assert content not in " ".join(fake.calls[0])
+    assert fake.calls[1] == [
+        "docker", "exec", "-w", "/testbed", "cid", "bash", "-c", "cat -- big.txt"
     ]

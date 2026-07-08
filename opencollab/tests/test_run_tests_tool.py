@@ -219,6 +219,38 @@ def test_run_tests_honors_runner_options_and_safety_policy():
     assert safety.cmd_calls == [(expected, None)]
 
 
+def test_run_tests_can_disable_runner_override_before_exec():
+    env = FakeEnv(stdout=PASS_OUTPUT)
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        RunTestsTool(allow_runner_override=False).execute_with_runtime(
+            {"runner": "python -c 'open(\"pwned\", \"w\").write(\"x\")'"},
+            runtime,
+        )
+    )
+
+    assert "runner override is disabled" in result
+    assert "Omit `runner`" in result
+    assert "Go go.mod" in result
+    assert env.exec_calls == []
+
+
+def test_run_tests_can_disable_extra_args_before_exec():
+    env = FakeEnv(stdout=PASS_OUTPUT)
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        RunTestsTool(allow_extra_args=False).execute_with_runtime(
+            {"extra_args": "; touch pwned"},
+            runtime,
+        )
+    )
+
+    assert result == "Error: extra_args is disabled for this run_tests tool."
+    assert env.exec_calls == []
+
+
 def test_run_tests_pytest_path_emits_green_verdict():
     env = FakeEnv(stdout=PASS_OUTPUT)
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
@@ -269,6 +301,66 @@ def test_run_tests_falls_back_to_native_runner_when_pytest_missing():
     assert "Verdict: GREEN" in result
 
 
+def test_run_tests_falls_back_to_go_runner_when_pytest_missing():
+    env = ScriptedEnv([
+        ("python -m pytest", 1, "No module named pytest"),
+        ("test -f go.mod", 0, ""),
+        ("go test ./internal/server", 0, "ok\tmodule/internal/server\t0.01s"),
+    ])
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        RunTestsTool(allow_runner_override=False, allow_extra_args=False).execute_with_runtime(
+            {"target": "internal/server"}, runtime
+        )
+    )
+
+    cmds = [c for c, _ in env.exec_calls]
+    assert any("go test ./internal/server" in c for c in cmds)
+    assert "runner override is disabled" not in result
+    assert "Verdict: GREEN" in result
+
+
+def test_run_tests_falls_back_to_go_runner_when_pytest_finds_no_tests():
+    env = ScriptedEnv([
+        ("python -m pytest", 5, "no tests ran in 0.01s"),
+        ("test -f go.mod", 0, ""),
+        ("go test ./internal/server", 0, "ok\tmodule/internal/server\t0.01s"),
+    ])
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        RunTestsTool(allow_runner_override=False, allow_extra_args=False).execute_with_runtime(
+            {"target": "internal/server"}, runtime
+        )
+    )
+
+    cmds = [c for c, _ in env.exec_calls]
+    assert any("go test ./internal/server" in c for c in cmds)
+    assert "no tests ran" not in result
+    assert "Verdict: GREEN" in result
+
+
+def test_run_tests_native_fallback_quotes_translated_target():
+    env = ScriptedEnv([
+        ("python -m pytest", 1, "No module named pytest"),
+        ("test -x bin/test", 0, ""),
+        ("python bin/test", 0, "tests passed"),
+    ])
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        RunTestsTool(allow_runner_override=False, allow_extra_args=False).execute_with_runtime(
+            {"target": "tests/test_x.py::test_two; touch pwned"}, runtime
+        )
+    )
+
+    cmds = [c for c, _ in env.exec_calls]
+    native = next(c for c in cmds if "python bin/test" in c)
+    assert native == "python bin/test tests/test_x.py 'test_two; touch pwned'"
+    assert "Verdict: GREEN" in result
+
+
 def test_run_tests_pinned_runner_suppresses_autodetect():
     env = ScriptedEnv([("bin/test", 0, "ok")])
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
@@ -308,6 +400,44 @@ def test_build_command_native_runner_omits_pytest_flags_and_translates():
     cmd = _build_command("python bin/test", "tests/test_x.py::test_two", "")
     assert "--tb=short" not in cmd and "-rA" not in cmd
     assert "::" not in cmd and "test_two" in cmd
+
+
+def test_build_command_native_runner_quotes_translated_target():
+    from opencollab.adapters.tools.run_tests import _build_command
+    cmd = _build_command("python bin/test", "tests/test_x.py::test_two; touch pwned", "")
+    assert cmd == "python bin/test tests/test_x.py 'test_two; touch pwned'"
+
+
+def test_build_command_go_runner_translates_package_and_test_name():
+    from opencollab.adapters.tools.run_tests import _build_command
+    cmd = _build_command("go test", "internal/server/evaluator_test.go::TestEvaluate", "")
+    assert cmd == (
+        "PATH=/usr/local/go/bin:/usr/lib/go/bin:/opt/go/bin:$PATH "
+        "go test ./internal/server -run TestEvaluate"
+    )
+
+
+def test_build_command_go_runner_translates_multiple_packages():
+    from opencollab.adapters.tools.run_tests import _build_command
+    cmd = _build_command("go test", "./internal/server/... ./rpc/flipt/...", "-count=1")
+    assert cmd == (
+        "PATH=/usr/local/go/bin:/usr/lib/go/bin:/opt/go/bin:$PATH "
+        "go test ./internal/server/... ./rpc/flipt/... -count=1"
+    )
+
+
+def test_go_runner_command_not_found_is_not_reported_as_pytest_missing():
+    from opencollab.adapters.tools.run_tests import _format_report
+    result = _format_report(
+        "go test ./...",
+        127,
+        "bash: line 2: go: command not found",
+        runner="go test",
+        green=False,
+    )
+    assert "pytest not found" not in result
+    assert "go: command not found" in result
+    assert "Verdict: RED" in result
 
 
 def test_run_tests_requires_execution_environment():

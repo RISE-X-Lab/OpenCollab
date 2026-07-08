@@ -68,6 +68,22 @@ class FakeSession:
         return self._tokens
 
 
+class CancelCleanupSession(FakeSession):
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancel_seen = asyncio.Event()
+        self.release_cancel = asyncio.Event()
+
+    async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
+        gate = asyncio.Event()
+        try:
+            await gate.wait()
+        except asyncio.CancelledError:
+            self.cancel_seen.set()
+            await self.release_cancel.wait()
+            raise
+
+
 class FakeFactory:
     """Hands out pre-scripted sessions in build order, recording build calls."""
 
@@ -677,6 +693,75 @@ async def test_agent_timeout_bounds_run_loop_and_returns_none():
 
     assert result is None
     assert any("timed out" in e.message for e in sink.events)
+
+
+@pytest.mark.asyncio
+async def test_structured_agent_timeout_bounds_first_pass_and_returns_none():
+    gate = asyncio.Event()
+    session = FakeSession(reply="ok", gate=gate)
+    sink = RecordingSink()
+    ctx = WorkflowContext(FakeFactory([session]), event_sink=sink)
+
+    result = await ctx.agent(
+        "slow structured",
+        schema={
+            "type": "object",
+            "required": ["verdict"],
+            "properties": {"verdict": {"type": "string"}},
+        },
+        timeout=0.01,
+    )
+
+    assert result is None
+    assert any("structured agent timed out" in e.message for e in sink.events)
+
+
+@pytest.mark.asyncio
+async def test_structured_agent_timeout_bounds_forced_retry_and_returns_none():
+    first = FakeSession(reply="prose instead of structured output")
+    gate = asyncio.Event()
+    retry = FakeSession(reply="ok", gate=gate)
+    sink = RecordingSink()
+    ctx = WorkflowContext(FakeFactory([first, retry]), event_sink=sink)
+
+    result = await ctx.agent(
+        "needs structured",
+        schema={
+            "type": "object",
+            "required": ["verdict"],
+            "properties": {"verdict": {"type": "string"}},
+        },
+        timeout=0.01,
+    )
+
+    assert result is None
+    assert any("structured retry timed out" in e.message for e in sink.events)
+
+
+@pytest.mark.asyncio
+async def test_structured_agent_timeout_returns_before_cancel_cleanup_finishes():
+    session = CancelCleanupSession()
+    sink = RecordingSink()
+    ctx = WorkflowContext(FakeFactory([session]), event_sink=sink)
+
+    result = await asyncio.wait_for(
+        ctx.agent(
+            "slow structured",
+            schema={
+                "type": "object",
+                "required": ["verdict"],
+                "properties": {"verdict": {"type": "string"}},
+            },
+            timeout=0.01,
+        ),
+        timeout=0.5,
+    )
+
+    assert result is None
+    assert any("structured agent timed out" in e.message for e in sink.events)
+    session.release_cancel.set()
+    await asyncio.sleep(0)
+    assert session.cancel_seen.is_set()
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from opencollab.application.async_timeout import abandon_on_timeout
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.extension_valve import (
     EXTENSION_DENIED_NUDGE,
@@ -24,6 +25,7 @@ from opencollab.application.shaping import forced_shape
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
+from opencollab.domain.tools import ToolProcessingResult
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,7 @@ _EMPTY_STOP_PLACEHOLDER = "[no output produced this turn]"
 # only (ephemeral). Soft: advise a write; hard: demand it + force a tool call.
 _READ_TOOLS = frozenset({"file_read", "grep"})
 _WRITE_TOOLS = frozenset({"file_write", "apply_patch"})
+_STRUCTURED_OUTPUT_TOOL = "structured_output"
 READS_NUDGE_SOFT = 8
 READS_NUDGE_HARD = 16
 
@@ -105,6 +108,7 @@ DEFAULT_COMMIT_RESERVE = 25_000
 # distill-as-you-read scout is never braked mid-stride.
 DEFAULT_WATCHDOG_K = 4
 DEFAULT_LOW_YIELD_M = 3
+DEFAULT_LOOP_BLOCKED_LIMIT = 3
 
 # Predictive overshoot guard (STEP 4a). The agreed ~80% wind-down trips on
 # ``used_tokens >= explore_threshold`` — but the very turn meant to submit can BE
@@ -301,6 +305,8 @@ class SessionRunUseCase:
         # (a model that ignored the forced tool_choice and called another/unknown
         # tool gets exactly ONE more turn before going terminal).
         self._wind_down_retried = False
+        self._pending_tool_allowlist: frozenset[str] | None = None
+        self._pending_tool_gate_label: str | None = None
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
@@ -642,6 +648,18 @@ class SessionRunUseCase:
             self.state.transition_to(SessionPhase.CANCELLED, reason="interrupted by user")
             return
 
+        if self.state.loop_blocked_since_progress >= DEFAULT_LOOP_BLOCKED_LIMIT:
+            reason = (
+                "loop block limit reached: "
+                f"{self.state.loop_blocked_since_progress} repeated tool calls"
+            )
+            self.state.append_message(
+                {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
+            )
+            await self.event_publisher.emit(self.event_factory.error("loop_blocked"))
+            self.state.transition_to(SessionPhase.STEP_LIMIT_EXCEEDED, reason=reason)
+            return
+
         # Enforcement wind-down (STEP 0) — gated; with enforcement OFF this whole
         # block is skipped and the budget trip below runs exactly as before. When
         # ON, at ~80% of the cap we force a single structured submit instead of
@@ -859,14 +877,26 @@ class SessionRunUseCase:
             self.state.fail()
             raise RuntimeError("Cannot execute tools before calling LLM")
 
-        tool_calls = pending.response.tool_calls
+        original_tool_calls = list(pending.response.tool_calls)
+        tool_calls, blocked_messages = self._apply_pending_tool_allowlist(original_tool_calls)
         immediate, deferred = self._split_tool_calls(tool_calls)
 
         # Fast path, unchanged: every tool is synchronous — run them, append
         # results, and autosave the step.
         if not deferred:
-            result = await self.tool_execution.process(tool_calls)
+            result = (
+                await self.tool_execution.process(tool_calls)
+                if tool_calls
+                else ToolProcessingResult()
+            )
+            result.messages_to_append = self._ordered_tool_messages(
+                original_tool_calls,
+                result.messages_to_append,
+                blocked_messages,
+            )
             result.apply_to(self.state)
+            self._pending_tool_allowlist = None
+            self._pending_tool_gate_label = None
             self.state.transition_to(SessionPhase.AUTOSAVING)
             return
 
@@ -875,7 +905,7 @@ class SessionRunUseCase:
         # original order, satisfying the LLM rule that every tool_call_id is
         # answered before the next model call.
         table = self.state.pending_events
-        order = {tc["id"]: i for i, tc in enumerate(tool_calls)}
+        order = {tc["id"]: i for i, tc in enumerate(original_tool_calls)}
 
         if immediate:
             proc = await self.tool_execution.process(immediate)
@@ -898,6 +928,18 @@ class SessionRunUseCase:
                         result=message["content"],
                     )
                 )
+
+        for message in blocked_messages:
+            tid = message["tool_call_id"]
+            table.add(
+                PendingRow(
+                    tool_call_id=tid,
+                    kind=RowKind.IMMEDIATE,
+                    order=order[tid],
+                    status=RowStatus.DONE,
+                    result=message["content"],
+                )
+            )
 
         for tc in deferred:
             tid = tc["id"]
@@ -924,6 +966,8 @@ class SessionRunUseCase:
                     )
                 )
 
+        self._pending_tool_allowlist = None
+        self._pending_tool_gate_label = None
         if table.is_complete():
             # Nothing is actually outstanding (e.g. all spawns were rejected
             # synchronously) — drain now and autosave instead of suspending on
@@ -970,7 +1014,7 @@ class SessionRunUseCase:
 
     def _build_steering_block(
         self, messages: list[dict]
-    ) -> tuple[dict | None, str | None, str | None]:
+    ) -> tuple[dict | None, Any | None, str | None]:
         """Build the per-turn closed-loop steering message + any tool_choice force.
 
         Returns ``(message, tool_choice_override_or_None, level)`` where ``level``
@@ -995,11 +1039,13 @@ class SessionRunUseCase:
         status = f"[Budget: ~{remaining_k}k/{total_k}k tokens left, ~{steps_left} steps left.]"
 
         reads = self.state.reads_since_last_edit
-        has_write = any(
-            getattr(t, "name", None) in _WRITE_TOOLS
+        tool_names = {
+            getattr(t, "name", None)
             for t in getattr(self.agent, "tools", []) or []
-        )
-        override: str | None = None
+        }
+        has_write = bool(tool_names & _WRITE_TOOLS)
+        has_structured_output = _STRUCTURED_OUTPUT_TOOL in tool_names
+        override: Any | None = None
         level: str | None = None
         extra = ""
         if has_write and reads >= READS_NUDGE_HARD:
@@ -1016,6 +1062,14 @@ class SessionRunUseCase:
                 " apply_patch before reading more."
             )
             level = "soft"
+        elif has_structured_output and reads >= READS_NUDGE_SOFT:
+            extra = (
+                f" You have read {reads} times without submitting structured output."
+                " STOP reading — your next action MUST be structured_output using"
+                " the evidence you already have."
+            )
+            override = _submit_tool_choice(_STRUCTURED_OUTPUT_TOOL)
+            level = "hard"
         return {"role": "user", "content": status + extra}, override, level
 
     def _fold_steering(self, last_user_msg: dict, steering_text: str) -> dict:
@@ -1031,6 +1085,83 @@ class SessionRunUseCase:
         else:
             folded = steering_text
         return {**last_user_msg, "content": folded}
+
+    def _write_only_tool_schemas(self, tools: list[dict] | None) -> list[dict] | None:
+        return self._tool_schemas_with_names(tools, _WRITE_TOOLS)
+
+    def _tool_schemas_with_names(
+        self, tools: list[dict] | None, names: frozenset[str]
+    ) -> list[dict] | None:
+        if not tools:
+            return tools
+        filtered = [
+            spec
+            for spec in tools
+            if spec.get("function", {}).get("name") in names
+        ]
+        return filtered or tools
+
+    def _hard_steering_tools(self) -> tuple[frozenset[str], str]:
+        tool_names = {
+            getattr(t, "name", None)
+            for t in getattr(self.agent, "tools", []) or []
+        }
+        if tool_names & _WRITE_TOOLS:
+            return _WRITE_TOOLS, "hard write gate"
+        if _STRUCTURED_OUTPUT_TOOL in tool_names:
+            return frozenset({_STRUCTURED_OUTPUT_TOOL}), "hard structured-output gate"
+        return frozenset(), "hard tool gate"
+
+    def _apply_pending_tool_allowlist(
+        self,
+        tool_calls: list[dict],
+    ) -> tuple[list[dict], list[dict]]:
+        allowed = self._pending_tool_allowlist
+        if allowed is None:
+            return tool_calls, []
+
+        kept: list[dict] = []
+        blocked: list[dict] = []
+        for tc in tool_calls:
+            func = tc.get("function", {})
+            name = func.get("name")
+            if name in allowed:
+                kept.append(tc)
+                continue
+            allowed_list = ", ".join(sorted(allowed))
+            gate_label = self._pending_tool_gate_label or "hard tool gate"
+            blocked.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tc.get("id"),
+                    "content": (
+                        f"Error: tool '{name}' is not allowed during the "
+                        f"{gate_label}. Use one of: {allowed_list}."
+                    ),
+                }
+            )
+        return kept, blocked
+
+    def _ordered_tool_messages(
+        self,
+        tool_calls: list[dict],
+        *message_groups: list[dict],
+    ) -> list[dict]:
+        by_id: dict[str, dict] = {}
+        extras: list[dict] = []
+        for group in message_groups:
+            for message in group:
+                tool_call_id = message.get("tool_call_id")
+                if isinstance(tool_call_id, str):
+                    by_id[tool_call_id] = message
+                else:
+                    extras.append(message)
+        ordered = [
+            by_id[tc["id"]]
+            for tc in tool_calls
+            if tc.get("id") in by_id
+        ]
+        return ordered + extras
 
     async def call_llm(self, tools: list[dict] | None) -> CompletionResponse:
         """Complete against the shaped view of history.
@@ -1074,6 +1205,15 @@ class SessionRunUseCase:
         )
         if steering is not None and not persisted:
             messages = [*messages, steering]
+        if steering_level == "hard":
+            hard_tools, gate_label = self._hard_steering_tools()
+            self._pending_tool_allowlist = hard_tools
+            self._pending_tool_gate_label = gate_label
+            tools = self._tool_schemas_with_names(tools, hard_tools)
+        else:
+            self._pending_tool_allowlist = None
+            self._pending_tool_gate_label = None
+
         try:
             return await self._complete(messages, tools, tool_choice_override)
         except Exception as exc:
@@ -1107,7 +1247,7 @@ class SessionRunUseCase:
         self,
         messages: list[dict],
         tools: list[dict] | None,
-        tool_choice_override: str | None = None,
+        tool_choice_override: Any | None = None,
     ) -> CompletionResponse:
         # ``tool_choice`` is read defensively (getattr) so duck-typed agent stubs
         # without the field keep working; ``None`` (the default) keeps the
@@ -1143,7 +1283,7 @@ class SessionRunUseCase:
             return await self._complete_with_choice(messages, tools, "auto")
 
     async def _complete_with_choice(
-        self, messages: list[dict], tools: list[dict] | None, tool_choice: str | None
+        self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None
     ) -> CompletionResponse:
         # ``thinking`` is read defensively (getattr) so duck-typed agent stubs
         # without the field keep working. When OFF (the default) the call is made
@@ -1193,9 +1333,7 @@ class SessionRunUseCase:
         """
         if self._per_call_timeout is None:
             return await self.llm.complete(**kwargs)
-        return await asyncio.wait_for(
-            self.llm.complete(**kwargs), timeout=self._per_call_timeout
-        )
+        return await abandon_on_timeout(self.llm.complete(**kwargs), self._per_call_timeout)
 
     async def _stop_on_context_overflow(self) -> None:
         """Graceful terminal stop when a prompt overflows the model window even
@@ -1261,29 +1399,36 @@ class SessionRunUseCase:
                     }
                     for tc in response.tool_calls
                 ]
+            usage = response.usage
+            input_tokens = getattr(usage, "input_tokens", 0)
+            total_tokens = getattr(usage, "total_tokens", input_tokens)
             payload = {
                 "model": self.agent.model,
                 "finish_reason": response.finish_reason,
                 "content": response.content,
                 "tool_calls": tool_calls_log,
-                "usage": {
-                    "input_tokens": response.usage.input_tokens,
-                    "output_tokens": response.usage.output_tokens,
-                    "total_tokens": response.usage.total_tokens,
-                    "cache_read_tokens": getattr(response.usage, "cache_read_tokens", 0),
-                    "cache_creation_tokens": getattr(response.usage, "cache_creation_tokens", 0),
+            }
+            if all(hasattr(usage, name) for name in ("input_tokens", "output_tokens", "total_tokens", "estimated")):
+                output_tokens = getattr(usage, "output_tokens", max(total_tokens - input_tokens, 0))
+                cache_read_tokens = getattr(usage, "cache_read_tokens", 0)
+                cache_creation_tokens = getattr(usage, "cache_creation_tokens", 0)
+                payload["usage"] = {
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": total_tokens,
+                    "cache_read_tokens": cache_read_tokens,
+                    "cache_creation_tokens": cache_creation_tokens,
                     "uncached_input_tokens": max(
-                        response.usage.input_tokens
-                        - getattr(response.usage, "cache_read_tokens", 0)
-                        - getattr(response.usage, "cache_creation_tokens", 0),
+                        input_tokens
+                        - cache_read_tokens
+                        - cache_creation_tokens,
                         0,
                     ),
-                    "estimated": response.usage.estimated,
-                },
-            }
-            raw_usage = getattr(response.usage, "raw_usage", None)
-            if raw_usage:
-                payload["usage"]["raw_usage"] = raw_usage
+                    "estimated": getattr(usage, "estimated", False),
+                }
+                raw_usage = getattr(usage, "raw_usage", None)
+                if raw_usage:
+                    payload["usage"]["raw_usage"] = raw_usage
             # Record provider chain-of-thought to the trajectory when present
             # (omitted otherwise, so non-thinking traces keep their prior shape).
             reasoning = getattr(response, "reasoning", None)
@@ -1292,7 +1437,7 @@ class SessionRunUseCase:
             self.tracer.log_step(
                 step_type="llm_call",
                 payload=payload,
-                tokens=response.usage.total_tokens,
+                tokens=total_tokens,
                 latency=latency,
             )
 

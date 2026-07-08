@@ -424,6 +424,19 @@ def test_short_circuit_loop_block_is_traced():
     assert step["payload"]["count"] == 3
 
 
+def test_loop_block_short_circuit_counts_toward_hard_brake():
+    state = SessionState(messages=[])
+    use_case, _ = build_use_case(state=state)
+    call_hash = use_case.tool_call_hash("fake_tool", {"value": 1})
+    state.replace_recent_tool_hashes([call_hash, call_hash])
+
+    result = run(use_case.process([tool_call(arguments='{"value": 1}')]))
+    result.apply_to(state)
+
+    assert state.loop_blocked_since_progress == 1
+    assert result.loop_detections == [LoopDetection(tool="fake_tool", count=3)]
+
+
 def test_application_tool_execution_module_does_not_import_outer_layers():
     package_root = Path(__file__).resolve().parents[1]
     source = (package_root / "opencollab/application/tool_execution.py").read_text(encoding="utf-8")

@@ -17,6 +17,7 @@ from opencollab.application.tool_execution import ToolRuntime
 
 # Max chars to keep from stdout/stderr (ref: user feedback blind spot #1)
 MAX_OUTPUT_CHARS = 8_000
+DEFAULT_TIMEOUT = 120.0
 
 
 class BashTool(Tool):
@@ -28,6 +29,7 @@ class BashTool(Tool):
     """
 
     name = "bash"
+    default_timeout = DEFAULT_TIMEOUT
     description = (
         "Execute a shell command in the workspace. Returns stdout and stderr. "
         "Use this for installing packages, build/setup commands, and one-off "
@@ -64,7 +66,7 @@ class BashTool(Tool):
         runtime: ToolRuntime,
     ) -> str:
         cmd = params["command"]
-        timeout = params.get("timeout", 120.0)
+        timeout = params.get("timeout", DEFAULT_TIMEOUT)
         env = runtime.environment
         safety_policy = runtime.safety_policy
 
