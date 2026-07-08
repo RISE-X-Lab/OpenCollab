@@ -468,6 +468,31 @@ def test_steering_hard_rung_limits_provider_tools_to_writes():
     assert sent_tool_names == ["file_write", "apply_patch"]
 
 
+def test_steering_structured_hard_rung_forces_structured_output():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_HARD,
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas("structured_output", "file_read", "grep"),
+    )
+
+    run(runner.run_loop())
+
+    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
+    assert sent_tool_names == ["structured_output"]
+    assert llm.calls[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "structured_output"},
+    }
+    assert "structured_output using" in llm.calls[0]["messages"][-1]["content"]
+
+
 def test_steering_hard_rung_blocks_read_tool_call_before_execution():
     state = SessionState(
         messages=[{"role": "tool", "content": "prev"}],
@@ -500,6 +525,41 @@ def test_steering_hard_rung_blocks_read_tool_call_before_execution():
     assert len(tool_messages) == 1
     assert tool_messages[0]["tool_call_id"] == "r1"
     assert "not allowed during the hard write gate" in tool_messages[0]["content"]
+    assert state.reads_since_last_edit == READS_NUDGE_HARD
+
+
+def test_steering_structured_hard_rung_blocks_read_tool_call_before_execution():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        used_tokens=1_000,
+        step_count=1,
+        reads_since_last_edit=READS_NUDGE_HARD,
+    )
+    read_call = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
+    llm = FakeLLM(
+        [
+            llm_response(content="try read", tool_calls=[read_call], finish_reason="tool_calls"),
+            llm_response(content="done"),
+        ]
+    )
+    tool_execution = FakeToolExecution()
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        tool_execution=tool_execution,
+        agent=_agent_with_tool_schemas("structured_output", "file_read", "grep"),
+    )
+
+    result = run(runner.run_loop())
+
+    tool_messages = [
+        m for m in state.messages if m.get("role") == "tool" and m.get("tool_call_id")
+    ]
+    assert result == "done"
+    assert tool_execution.calls == []
+    assert len(tool_messages) == 1
+    assert tool_messages[0]["tool_call_id"] == "r1"
+    assert "not allowed during the hard structured-output gate" in tool_messages[0]["content"]
     assert state.reads_since_last_edit == READS_NUDGE_HARD
 
 

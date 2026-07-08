@@ -72,6 +72,7 @@ _EMPTY_STOP_PLACEHOLDER = "[no output produced this turn]"
 # only (ephemeral). Soft: advise a write; hard: demand it + force a tool call.
 _READ_TOOLS = frozenset({"file_read", "grep"})
 _WRITE_TOOLS = frozenset({"file_write", "apply_patch"})
+_STRUCTURED_OUTPUT_TOOL = "structured_output"
 READS_NUDGE_SOFT = 8
 READS_NUDGE_HARD = 16
 
@@ -304,6 +305,7 @@ class SessionRunUseCase:
         # tool gets exactly ONE more turn before going terminal).
         self._wind_down_retried = False
         self._pending_tool_allowlist: frozenset[str] | None = None
+        self._pending_tool_gate_label: str | None = None
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
@@ -893,6 +895,7 @@ class SessionRunUseCase:
             )
             result.apply_to(self.state)
             self._pending_tool_allowlist = None
+            self._pending_tool_gate_label = None
             self.state.transition_to(SessionPhase.AUTOSAVING)
             return
 
@@ -963,6 +966,7 @@ class SessionRunUseCase:
                 )
 
         self._pending_tool_allowlist = None
+        self._pending_tool_gate_label = None
         if table.is_complete():
             # Nothing is actually outstanding (e.g. all spawns were rejected
             # synchronously) — drain now and autosave instead of suspending on
@@ -1009,7 +1013,7 @@ class SessionRunUseCase:
 
     def _build_steering_block(
         self, messages: list[dict]
-    ) -> tuple[dict | None, str | None, str | None]:
+    ) -> tuple[dict | None, Any | None, str | None]:
         """Build the per-turn closed-loop steering message + any tool_choice force.
 
         Returns ``(message, tool_choice_override_or_None, level)`` where ``level``
@@ -1034,11 +1038,13 @@ class SessionRunUseCase:
         status = f"[Budget: ~{remaining_k}k/{total_k}k tokens left, ~{steps_left} steps left.]"
 
         reads = self.state.reads_since_last_edit
-        has_write = any(
-            getattr(t, "name", None) in _WRITE_TOOLS
+        tool_names = {
+            getattr(t, "name", None)
             for t in getattr(self.agent, "tools", []) or []
-        )
-        override: str | None = None
+        }
+        has_write = bool(tool_names & _WRITE_TOOLS)
+        has_structured_output = _STRUCTURED_OUTPUT_TOOL in tool_names
+        override: Any | None = None
         level: str | None = None
         extra = ""
         if has_write and reads >= READS_NUDGE_HARD:
@@ -1048,11 +1054,26 @@ class SessionRunUseCase:
             )
             override = "required"
             level = "hard"
+        elif has_structured_output and reads >= READS_NUDGE_HARD:
+            extra = (
+                f" You have read {reads} times without submitting structured output."
+                " STOP reading — your next action MUST be structured_output using"
+                " the evidence you already have."
+            )
+            override = _submit_tool_choice(_STRUCTURED_OUTPUT_TOOL)
+            level = "hard"
         elif has_write and reads >= READS_NUDGE_SOFT:
             extra = (
                 f" You have read {reads} times without making an edit. If"
                 " you can describe the fix, make it now with file_write or"
                 " apply_patch before reading more."
+            )
+            level = "soft"
+        elif has_structured_output and reads >= READS_NUDGE_SOFT:
+            extra = (
+                f" You have read {reads} times without submitting structured output."
+                " If you can fill the schema, call structured_output before"
+                " reading more."
             )
             level = "soft"
         return {"role": "user", "content": status + extra}, override, level
@@ -1072,14 +1093,30 @@ class SessionRunUseCase:
         return {**last_user_msg, "content": folded}
 
     def _write_only_tool_schemas(self, tools: list[dict] | None) -> list[dict] | None:
+        return self._tool_schemas_with_names(tools, _WRITE_TOOLS)
+
+    def _tool_schemas_with_names(
+        self, tools: list[dict] | None, names: frozenset[str]
+    ) -> list[dict] | None:
         if not tools:
             return tools
-        write_tools = [
+        filtered = [
             spec
             for spec in tools
-            if spec.get("function", {}).get("name") in _WRITE_TOOLS
+            if spec.get("function", {}).get("name") in names
         ]
-        return write_tools or tools
+        return filtered or tools
+
+    def _hard_steering_tools(self) -> tuple[frozenset[str], str]:
+        tool_names = {
+            getattr(t, "name", None)
+            for t in getattr(self.agent, "tools", []) or []
+        }
+        if tool_names & _WRITE_TOOLS:
+            return _WRITE_TOOLS, "hard write gate"
+        if _STRUCTURED_OUTPUT_TOOL in tool_names:
+            return frozenset({_STRUCTURED_OUTPUT_TOOL}), "hard structured-output gate"
+        return frozenset(), "hard tool gate"
 
     def _apply_pending_tool_allowlist(
         self,
@@ -1098,13 +1135,14 @@ class SessionRunUseCase:
                 kept.append(tc)
                 continue
             allowed_list = ", ".join(sorted(allowed))
+            gate_label = self._pending_tool_gate_label or "hard tool gate"
             blocked.append(
                 {
                     "role": "tool",
                     "tool_call_id": tc.get("id"),
                     "content": (
-                        f"Error: tool '{name}' is not allowed during the hard "
-                        f"write gate. Use one of: {allowed_list}."
+                        f"Error: tool '{name}' is not allowed during the "
+                        f"{gate_label}. Use one of: {allowed_list}."
                     ),
                 }
             )
@@ -1174,10 +1212,13 @@ class SessionRunUseCase:
         if steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
-            self._pending_tool_allowlist = frozenset(_WRITE_TOOLS)
-            tools = self._write_only_tool_schemas(tools)
+            hard_tools, gate_label = self._hard_steering_tools()
+            self._pending_tool_allowlist = hard_tools
+            self._pending_tool_gate_label = gate_label
+            tools = self._tool_schemas_with_names(tools, hard_tools)
         else:
             self._pending_tool_allowlist = None
+            self._pending_tool_gate_label = None
 
         try:
             return await self._complete(messages, tools, tool_choice_override)
@@ -1212,7 +1253,7 @@ class SessionRunUseCase:
         self,
         messages: list[dict],
         tools: list[dict] | None,
-        tool_choice_override: str | None = None,
+        tool_choice_override: Any | None = None,
     ) -> CompletionResponse:
         # ``tool_choice`` is read defensively (getattr) so duck-typed agent stubs
         # without the field keep working; ``None`` (the default) keeps the
@@ -1248,7 +1289,7 @@ class SessionRunUseCase:
             return await self._complete_with_choice(messages, tools, "auto")
 
     async def _complete_with_choice(
-        self, messages: list[dict], tools: list[dict] | None, tool_choice: str | None
+        self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None
     ) -> CompletionResponse:
         # ``thinking`` is read defensively (getattr) so duck-typed agent stubs
         # without the field keep working. When OFF (the default) the call is made
