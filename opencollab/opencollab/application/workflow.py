@@ -30,6 +30,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from opencollab.application.async_timeout import abandon_on_timeout
 from opencollab.application.extension_valve import RequestExtensionTool
 from opencollab.application.ports import (
     EventPublisherPort,
@@ -333,7 +334,7 @@ class WorkflowContext:
             if schema is not None:
                 return await self._run_structured_agent(
                     prompt, schema=schema, label=label, tools=tools,
-                    isolation=isolation, budget=budget,
+                    isolation=isolation, timeout=timeout, budget=budget,
                 )
             # Enforcement wind-down (STEP 0): the scout path injects submit_findings
             # and the structural commit brake. OFF (the default) routes to the
@@ -402,9 +403,7 @@ class WorkflowContext:
             # already written to disk before the cancel survive in the env, so the
             # patch is still extractable. A non-positive timeout is treated as "no
             # bound" — the caller is already past the deadline; let the call run.
-            if timeout is not None and timeout != float("inf") and timeout > 0:
-                return await asyncio.wait_for(session.run_loop(), timeout=timeout)
-            return await session.run_loop()
+            return await abandon_on_timeout(session.run_loop(), timeout)
         except asyncio.TimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
             return None
@@ -466,12 +465,7 @@ class WorkflowContext:
         text: str | None = None
         try:
             await session.add_user_message(prompt)
-            if timeout is not None and timeout != float("inf") and timeout > 0:
-                text = await asyncio.wait_for(
-                    session.run_loop(capture_done), timeout=timeout
-                )
-            else:
-                text = await session.run_loop(capture_done)
+            text = await abandon_on_timeout(session.run_loop(capture_done), timeout)
         except asyncio.TimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
@@ -677,6 +671,7 @@ class WorkflowContext:
         label: str | None,
         tools: Sequence[Any] | None,
         isolation: bool,
+        timeout: float | None = None,
         budget: int | None = None,
     ) -> dict | None:
         """Run a schema-bound session, returning the validated payload or None.
@@ -729,9 +724,16 @@ class WorkflowContext:
         self._sessions.append(session)
         try:
             await session.add_user_message(seeded_prompt)
-            await session.run_loop(capture_done)
+            await self._run_session_loop(
+                session,
+                capture_done,
+                timeout=timeout,
+            )
             if _schema_satisfied(capture_tool.captured, schema):
                 return capture_tool.captured
+        except asyncio.TimeoutError:
+            await self.log(f"structured agent timed out ({label or 'agent'}) after {timeout}s")
+            return None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             await self.log(f"structured agent failed ({label or 'agent'}): {exc}")
             return None
@@ -751,6 +753,7 @@ class WorkflowContext:
             schema=schema,
             label=label,
             isolation=isolation,
+            timeout=timeout,
         )
 
     async def _forced_structured_commit(
@@ -763,6 +766,7 @@ class WorkflowContext:
         schema: dict[str, Any],
         label: str | None,
         isolation: bool,
+        timeout: float | None,
     ) -> dict | None:
         """Build a single-tool, forced-``tool_choice`` corrective session.
 
@@ -800,11 +804,27 @@ class WorkflowContext:
         try:
             self._carry_exploration(prior_session, session)
             await session.add_user_message(retry_prompt)
-            await session.run_loop(capture_done)
+            await self._run_session_loop(
+                session,
+                capture_done,
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            await self.log(f"structured retry timed out ({label or 'agent'}) after {timeout}s")
+            return None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             await self.log(f"structured retry failed ({label or 'agent'}): {exc}")
             return None
         return capture_tool.captured if _schema_satisfied(capture_tool.captured, schema) else None
+
+    @staticmethod
+    async def _run_session_loop(
+        session: Any,
+        cancel_event: asyncio.Event | None,
+        *,
+        timeout: float | None,
+    ) -> str:
+        return await abandon_on_timeout(session.run_loop(cancel_event), timeout)
 
     @staticmethod
     def _carry_exploration(prior_session: Any, session: Any) -> None:

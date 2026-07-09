@@ -191,6 +191,10 @@ class SessionState:
     # physical tool-removal actuator was not satisfied on the first forced turn. A
     # session-lifetime latch like ``wind_down_done`` (not reset per user turn).
     forced_unsatisfied: bool = False
+    # Hard loop-block brake. Tool execution short-circuits repeated identical or
+    # path-normalized calls; this counter lets that short-circuit stop a session
+    # after repeated warnings instead of paying for more near-identical turns.
+    loop_blocked_since_progress: int = 0
     # Single-justified-extension valve (STEP 4b). At a wind-down trip the scout is
     # offered "commit OR justify one more read"; ``extension_offered`` latches that
     # the offer turn is outstanding so the NEXT precheck resolves the model's choice
@@ -366,6 +370,7 @@ class SessionState:
         self.low_yield_since_progress = 0
         self.distinct_evidence_count = 0
         self.steps_since_progress = 0
+        self.loop_blocked_since_progress = 0
         self._seen_result_hashes.clear()
         self.scout_ledger.clear()
 
