@@ -78,6 +78,12 @@ Rules:
 """
 
 
+def unique_container_name(prefix: str, instance_id: str) -> str:
+    suffix = uuid.uuid4().hex[:8]
+    max_instance_chars = max(1, 63 - len(prefix) - len(suffix) - 1)
+    return f"{prefix}{instance_id[:max_instance_chars]}-{suffix}"
+
+
 def _docker(*args: str, timeout: int | None = None) -> subprocess.CompletedProcess:
     if timeout is None:
         timeout = int(os.environ.get("OPENCOLLAB_DOCKER_TIMEOUT", "60"))
@@ -99,14 +105,46 @@ def start_container(image: str, name: str) -> str:
     if res.returncode != 0:
         raise RuntimeError(f"docker run failed: {res.stderr.strip()}")
     cid = res.stdout.strip()[:12]
-    # Repo is owned by root in the image; allow git to operate on it.
-    safe_dir = _docker("exec", cid, "bash", "-lc",
-                       f"git config --global --add safe.directory {DOCKER_WORKDIR}")
-    _check_docker(safe_dir, "docker git safe.directory setup")
+    ensure_workdir = _docker(
+        "exec", cid, "bash", "-lc",
+        """
+set -e
+if [ -e /testbed/.git ]; then
+  exit 0
+fi
+if { [ -e /testbed ] || [ -L /testbed ]; } && [ ! -e /testbed/.git ]; then
+  rm -rf /testbed
+fi
+if [ ! -e /testbed ]; then
+  for d in /app /workspace /repo /src; do
+    if [ -e "$d/.git" ]; then
+      ln -s "$d" /testbed
+      exit 0
+    fi
+  done
+  found=$(find / -maxdepth 3 -name .git 2>/dev/null | head -1 || true)
+  if [ -n "$found" ]; then
+    ln -s "$(dirname "$found")" /testbed
+    exit 0
+  fi
+fi
+echo "unable to prepare /testbed: no repository checkout found" >&2
+exit 2
+""",
+    )
+    try:
+        _check_docker(ensure_workdir, "docker /testbed workdir setup")
+        # Repo is owned by root in the image; allow git to operate on it.
+        safe_dir = _docker("exec", cid, "bash", "-lc",
+                           f"git config --global --add safe.directory {DOCKER_WORKDIR}")
+        _check_docker(safe_dir, "docker git safe.directory setup")
+    except Exception:
+        remove_container(cid)
+        raise
     return cid
 
 
-def remove_container(cid: str) -> None:
+def remove_container(cid: str) -> bool:
     """Best-effort teardown of a throwaway container.
 
     Cleanup must NEVER lose an already-computed result: under heavy daemon load
@@ -118,10 +156,40 @@ def remove_container(cid: str) -> None:
     Swallow any failure with a warning instead.
     """
     try:
-        _docker("rm", "-f", cid, timeout=30)
+        result = _docker("rm", "-f", cid, timeout=30)
     except Exception as exc:  # noqa: BLE001 — teardown must never propagate
         print(f"  warning: container cleanup failed for {cid}: {exc!r} "
               f"(best-effort, continuing)")
+        return False
+    detail = (result.stderr or result.stdout or "").strip()
+    if result.returncode != 0 and "No such container" not in detail:
+        print(
+            f"  warning: container cleanup failed for {cid}: "
+            f"exit {result.returncode}: {detail[:500]} (best-effort, continuing)"
+        )
+        return False
+    return True
+
+
+def write_container_marker(run_dir: Path, cid: str, name: str) -> None:
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "container.id").write_text(cid + "\n", encoding="utf-8")
+    (run_dir / "container.name").write_text(name + "\n", encoding="utf-8")
+
+
+def clear_container_marker(run_dir: Path) -> None:
+    for marker in ("container.id", "container.name"):
+        try:
+            (run_dir / marker).unlink()
+        except FileNotFoundError:
+            pass
+
+
+def remove_container_and_clear_marker(run_dir: Path, cid: str) -> bool:
+    removed = remove_container(cid)
+    if removed:
+        clear_container_marker(run_dir)
+    return removed
 
 
 def build_task(instance: dict) -> str:
@@ -226,8 +294,10 @@ def main() -> None:
     print(f"Image:    {image}")
     print(f"Model:    {cfg['model']} (provider={cfg['provider']})")
 
-    name = f"oc-gen-{iid}-{uuid.uuid4().hex[:6]}"[:60]
+    name = unique_container_name("oc-gen-", iid)
     cid = start_container(image, name)
+    run_dir = Path(args.output).parent
+    write_container_marker(run_dir, cid, name)
     print(f"Container: {cid}")
     try:
         task = build_task(instance)
@@ -235,7 +305,7 @@ def main() -> None:
         patch = extract_patch(cid)
     finally:
         if not args.keep_container:
-            remove_container(cid)
+            remove_container_and_clear_marker(run_dir, cid)
         else:
             print(f"  (left container {cid} running: {name})")
 

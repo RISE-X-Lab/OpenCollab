@@ -19,6 +19,20 @@ eval_work/
 .understand-anything/
 tmp/
 opencollab-glm52-*.json
+
+# Local GLM / SWE-bench evaluation run artifacts
+docs/monitoring/
+workflow_logs/
+**/workflow_logs/
+**/trajectories/
+**/orchestration.jsonl
+**/metrics*.jsonl
+**/monitor_snapshots.jsonl
+**/predictions*_raw.jsonl
+**/predictions_*_raw.jsonl
+**/*_official.json
+**/*_official_*.json
+
 *.aux
 *.fdb_latexmk
 *.fls
