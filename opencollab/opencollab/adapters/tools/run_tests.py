@@ -233,7 +233,7 @@ def _is_go_runner(runner: str) -> bool:
         parts = shlex.split(runner)
     except ValueError:
         return False
-    return len(parts) >= 2 and parts[0] == "go" and parts[1] == "test"
+    return len(parts) >= 2 and (parts[0] == "go" or parts[0].endswith("/go")) and parts[1] == "test"
 
 
 def _go_runner_command(runner: str) -> str:

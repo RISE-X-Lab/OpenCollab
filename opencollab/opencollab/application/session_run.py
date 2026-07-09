@@ -1408,7 +1408,7 @@ class SessionRunUseCase:
                 "content": response.content,
                 "tool_calls": tool_calls_log,
             }
-            if all(hasattr(usage, name) for name in ("input_tokens", "output_tokens", "total_tokens", "estimated")):
+            if usage is not None:
                 output_tokens = getattr(usage, "output_tokens", max(total_tokens - input_tokens, 0))
                 cache_read_tokens = getattr(usage, "cache_read_tokens", 0)
                 cache_creation_tokens = getattr(usage, "cache_creation_tokens", 0)
