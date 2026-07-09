@@ -416,6 +416,40 @@ def test_grep_tool_preserves_env_exec_path_without_path_safety():
     assert timeout == 30
 
 
+def test_grep_tool_rejects_non_integer_max_results_before_exec():
+    env = FakeEnv(stdout="src/app.py:1:needle\n")
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        GrepTool().execute_with_runtime(
+            {"pattern": "needle", "max_results": "1; touch pwned"},
+            runtime,
+        )
+    )
+
+    assert result == "Error: max_results must be an integer."
+    assert env.exec_calls == []
+
+
+def test_grep_tool_terminates_options_before_pattern_and_path():
+    env = FakeEnv(stdout="")
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    run(
+        GrepTool().execute_with_runtime(
+            {"pattern": "--pre=touch pwned", "path": "--debug"},
+            runtime,
+        )
+    )
+
+    cmd, _ = env.exec_calls[0]
+    assert "rg -n --max-count 50 -- '--pre=touch pwned' --debug" in cmd
+    assert (
+        "grep -rEn --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.opencollab "
+        "-- '--pre=touch pwned' --debug"
+    ) in cmd
+
+
 def test_file_read_description_teaches_distill_and_forbids_reread():
     # The file_read description is the UNIVERSAL carrier of the anti-thrash rule:
     # every workflow/team that has the tool sees it, regardless of its prompt. Pins
