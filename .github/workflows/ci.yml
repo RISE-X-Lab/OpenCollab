@@ -24,7 +24,8 @@ jobs:
           enable-cache: true
       - name: Sync dependencies
         run: uv sync --extra dev
-      - name: Lint
-        run: uv run ruff check opencollab/
+      - name: Lint (whole repo)
+        working-directory: .
+        run: uv run --project opencollab ruff check .
       - name: Test
         run: uv run pytest -q
