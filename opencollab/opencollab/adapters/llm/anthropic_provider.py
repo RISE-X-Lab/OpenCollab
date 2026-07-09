@@ -22,6 +22,8 @@ def _anthropic_tool_choice(tool_choice: Any) -> dict[str, Any] | None:
     """
     if tool_choice is None:
         return None
+    if tool_choice == "none":
+        return {"type": "none"}
     if tool_choice == "required":
         return {"type": "any"}
     if tool_choice == "auto":
