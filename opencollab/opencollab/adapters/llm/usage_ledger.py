@@ -21,8 +21,9 @@ SECRET_ENV_NAME_PARTS = ("API_KEY", "AUTH_TOKEN", "ACCESS_TOKEN", "CLIENT_TOKEN"
 URL_RE = re.compile(r"https?://[^\s'\"<>]+")
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)"
-    r"((?:api[-_ ]?key|auth[-_ ]?token|access[-_ ]?token|client[-_ ]?token|token|secret|password)"
-    r"\s*[:=]\s*)[^\s,;'\")\]}]+"
+    r"(['\"]?(?:api[-_ ]?key|auth[-_ ]?token|access[-_ ]?token|client[-_ ]?token|"
+    r"token|secret|password)['\"]?\s*[:=]\s*)"
+    r"(?:(['\"])(.*?)\2|([^\s,;'\")\]}]+))"
 )
 
 
@@ -130,8 +131,16 @@ def _redact_secrets(text: str) -> str:
         r"\1[redacted]",
         redacted,
     )
-    redacted = SECRET_ASSIGNMENT_RE.sub(r"\1[redacted]", redacted)
+    redacted = SECRET_ASSIGNMENT_RE.sub(_redact_secret_assignment, redacted)
     return redacted
+
+
+def _redact_secret_assignment(match: re.Match[str]) -> str:
+    prefix = match.group(1)
+    quote = match.group(2)
+    if quote:
+        return f"{prefix}{quote}[redacted]{quote}"
+    return f"{prefix}[redacted]"
 
 
 def _usage_payload(usage: Usage, model: str | None) -> dict[str, Any]:

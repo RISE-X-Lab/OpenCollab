@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from typing import Any
 
@@ -15,10 +16,16 @@ from opencollab.adapters.llm.providers import is_anthropic, warn_provider_near_m
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
 
+_ledger_lock = threading.Lock()
+
 
 async def _record_api_usage_async(**kwargs: Any) -> None:
+    def _locked_record() -> None:
+        with _ledger_lock:
+            record_api_usage(**kwargs)
+
     try:
-        await asyncio.to_thread(record_api_usage, **kwargs)
+        await asyncio.to_thread(_locked_record)
     except Exception:
         return
 
