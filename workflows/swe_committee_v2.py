@@ -18,7 +18,6 @@ from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.workflow_registry import workflow
 
-
 MAX_PRE_TESTS = 5
 MAX_POST_TESTS = 4
 MAX_CODER_ROUNDS = 3

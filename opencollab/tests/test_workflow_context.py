@@ -12,7 +12,6 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 import pytest
-
 from opencollab.application.workflow import (
     WorkflowBudgetExceeded,
     WorkflowContext,
