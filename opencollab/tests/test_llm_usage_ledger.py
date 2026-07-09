@@ -6,6 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from opencollab.adapters.llm import client as client_module
+from opencollab.adapters.llm import usage_ledger as ledger
 from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.types import Usage
 from opencollab.adapters.llm.usage_ledger import (
@@ -23,12 +25,18 @@ def _read_jsonl(path):
 def test_glm_usage_cost_accounts_for_cache_discount(monkeypatch):
     monkeypatch.delenv("GLM_INPUT_USD_PER_MTOK", raising=False)
     monkeypatch.delenv("GLM_CACHED_INPUT_USD_PER_MTOK", raising=False)
+    monkeypatch.delenv("GLM_CACHE_CREATION_USD_PER_MTOK", raising=False)
     monkeypatch.delenv("GLM_OUTPUT_USD_PER_MTOK", raising=False)
-    usage = Usage(input_tokens=1000, output_tokens=50, cache_read_tokens=800)
+    usage = Usage(
+        input_tokens=1000,
+        output_tokens=50,
+        cache_read_tokens=600,
+        cache_creation_tokens=200,
+    )
 
     cost = usage_cost_usd(usage, "glm-5.2")
 
-    expected = (200 * 1.4 + 800 * 0.26 + 50 * 4.4) / 1_000_000
+    expected = (200 * 1.4 + 600 * 0.26 + 200 * 1.4 + 50 * 4.4) / 1_000_000
     assert cost == pytest.approx(expected)
 
 
@@ -78,11 +86,11 @@ def test_usage_record_strips_base_url_userinfo_and_query():
     assert "hidden" not in record_text
 
 
-def test_error_message_redacts_url_token_and_prompt(monkeypatch):
+def test_error_message_redacts_secrets_without_hiding_plain_text(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "local-secret-token")
     error = RuntimeError(
         "failed https://user:secret@example.com:8443/v1?token=hidden "
-        "token=abc123 prompt=very secret prompt content: very secret body "
+        "token=abc123 prompt=ordinary prompt content message=plain input "
         "bearer local-secret-token"
     )
 
@@ -100,8 +108,83 @@ def test_error_message_redacts_url_token_and_prompt(monkeypatch):
     assert "user" not in record_text
     assert "hidden" not in record_text
     assert "abc123" not in record_text
-    assert "very secret" not in record_text
+    assert "ordinary prompt content" in record_text
+    assert "message=plain input" in record_text
     assert "local-secret-token" not in record_text
+
+
+def test_error_message_redacts_quoted_secret_assignments():
+    error = RuntimeError(
+        "failed password=\"my-secret\" {'token': 'abc123'} "
+        '"secret": "top secret value" prompt=ordinary prompt'
+    )
+
+    record = build_usage_record(
+        provider="openai",
+        model="glm-5.2",
+        base_url="https://safe.example/v1",
+        latency_s=0.25,
+        status="error",
+        error=error,
+    )
+    message = record["error"]["message"]
+
+    assert 'password="[redacted]"' in message
+    assert "'token': '[redacted]'" in message
+    assert '"secret": "[redacted]"' in message
+    assert "ordinary prompt" in message
+    assert "my-secret" not in message
+    assert "abc123" not in message
+    assert "top secret value" not in message
+
+
+def test_record_api_usage_is_fail_safe(monkeypatch):
+    def boom(**kwargs):
+        raise RuntimeError("ledger build failed")
+
+    monkeypatch.setattr(ledger, "build_usage_record", boom)
+
+    ledger.record_api_usage(
+        provider="openai",
+        model="glm-5.2",
+        base_url="http://127.0.0.1:18788/v1",
+        latency_s=0.1,
+        status="success",
+    )
+
+
+def test_async_usage_recording_runs_under_lock(monkeypatch):
+    events = []
+
+    class FakeLock:
+        def __enter__(self):
+            events.append("enter")
+
+        def __exit__(self, exc_type, exc, tb):
+            events.append("exit")
+
+    async def fake_to_thread(fn):
+        events.append("to_thread")
+        fn()
+
+    def fake_record_api_usage(**kwargs):
+        events.append("record")
+
+    monkeypatch.setattr(client_module, "_ledger_lock", FakeLock())
+    monkeypatch.setattr(client_module.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(client_module, "record_api_usage", fake_record_api_usage)
+
+    asyncio.run(
+        client_module._record_api_usage_async(
+            provider="openai",
+            model="glm-5.2",
+            base_url="http://127.0.0.1:18788/v1",
+            latency_s=0.1,
+            status="success",
+        )
+    )
+
+    assert events == ["to_thread", "enter", "record", "exit"]
 
 
 class _FakeCompletions:

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
+import threading
 import time
 from typing import Any
 
@@ -13,6 +15,19 @@ from opencollab.adapters.llm.openai_provider import complete_openai
 from opencollab.adapters.llm.providers import is_anthropic, warn_provider_near_miss
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
+
+_ledger_lock = threading.Lock()
+
+
+async def _record_api_usage_async(**kwargs: Any) -> None:
+    def _locked_record() -> None:
+        with _ledger_lock:
+            record_api_usage(**kwargs)
+
+    try:
+        await asyncio.to_thread(_locked_record)
+    except Exception:
+        return
 
 
 class LLMClient:
@@ -113,7 +128,7 @@ class LLMClient:
                     tool_choice=tool_choice,
                     top_p=top_p,
                 )
-            record_api_usage(
+            await _record_api_usage_async(
                 provider=self.provider,
                 model=self.model,
                 base_url=self.base_url,
@@ -123,7 +138,7 @@ class LLMClient:
             )
             return response
         except Exception as exc:
-            record_api_usage(
+            await _record_api_usage_async(
                 provider=self.provider,
                 model=self.model,
                 base_url=self.base_url,
