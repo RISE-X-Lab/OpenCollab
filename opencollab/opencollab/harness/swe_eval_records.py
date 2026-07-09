@@ -23,7 +23,10 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
     for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
         if not line.strip():
             continue
-        value = json.loads(line)
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
         if isinstance(value, dict):
             rows.append(value)
     return rows

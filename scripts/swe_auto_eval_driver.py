@@ -118,7 +118,13 @@ def maybe_start_eval(args: argparse.Namespace, summary: dict) -> list[dict]:
         if args.dry_run:
             actions.append({"task": row["task"], "action": "dry_run", "command": command})
             continue
-        proc = subprocess.Popen(command, cwd=args.run_dir)
+        try:
+            proc = subprocess.Popen(command, cwd=args.run_dir)
+        except OSError as exc:
+            actions.append(
+                {"task": row["task"], "action": "failed_to_start", "error": str(exc), "command": command}
+            )
+            continue
         actions.append({"task": row["task"], "action": "started", "pid": proc.pid, "command": command})
     return actions
 
@@ -134,7 +140,14 @@ def main() -> int:
     parser.add_argument("--json-output", type=Path, default=None)
     parser.add_argument("--markdown-output", type=Path, default=None)
     parser.add_argument("--start-eval", action="store_true")
-    parser.add_argument("--eval-command-template", default="")
+    parser.add_argument(
+        "--eval-command-template",
+        default="",
+        help=(
+            "Command template parsed with shlex; shell redirection and pipes are not interpreted. "
+            "Use bash -lc when shell syntax is required."
+        ),
+    )
     parser.add_argument("--max-eval-starts", type=int, default=1)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
