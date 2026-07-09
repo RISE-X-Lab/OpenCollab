@@ -523,6 +523,42 @@ def test_build_snapshots_reads_nested_direct_eval_technical_failure(tmp_path):
     assert row["eval"]["done_count"] == 0
 
 
+def test_build_snapshots_reads_empty_eval_patch_invalid_as_failure(tmp_path):
+    run_dir = tmp_path / "run"
+    side_dir = run_dir / "official_eval_auto" / "task-1"
+    side_dir.mkdir(parents=True)
+    prediction = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "model_patch": _patch("+current\n"),
+    }
+    metric = {
+        "instance_id": "task-1",
+        "record_id": "r1",
+        "patch_sha256": row_patch_sha(prediction),
+        "workflow_status": "done",
+    }
+    _write_jsonl(run_dir / "predictions.jsonl", [prediction])
+    _write_jsonl(run_dir / "metrics.jsonl", [metric])
+    (side_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "instance_id": "task-1",
+                "patch_sha256": row_patch_sha(prediction),
+                "status": "empty_eval_patch_invalid",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    snapshots = build_snapshots(run_dir)
+
+    row = task_status_row(snapshots[0])
+    assert row["state"] == "technical_eval_failed"
+    assert row["eval"]["failed_count"] == 1
+    assert row["eval"]["done_count"] == 0
+
+
 def test_build_snapshots_prefers_newer_matching_eval_report(tmp_path):
     run_dir = tmp_path / "run"
     side_dir = run_dir / "official_eval_auto" / "task-1"

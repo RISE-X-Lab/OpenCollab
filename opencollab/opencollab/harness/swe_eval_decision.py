@@ -41,6 +41,7 @@ TECHNICAL_EVAL_STATUSES = {
     "eval_failed",
     "eval_start_failed",
     "eval_driver_error",
+    "empty_eval_patch_invalid",
     "blocked_missing_eval_deps",
     "blocked_missing_eval_image",
     "blocked_missing_eval_spec",
