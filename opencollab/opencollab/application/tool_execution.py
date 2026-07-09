@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from opencollab.application.async_timeout import abandon_on_timeout
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
     AskUserPort,
@@ -418,7 +419,7 @@ class ToolExecutionUseCase:
         runtime = self.tool_runtime(tool_call_id=tool_id)
         timeout = self.tool_execution_timeout(tool, args)
         try:
-            result = await asyncio.wait_for(
+            result = await abandon_on_timeout(
                 tool.execute_with_runtime(args, runtime),
                 timeout=timeout,
             )
@@ -450,7 +451,7 @@ class ToolExecutionUseCase:
         return DEFAULT_TOOL_EXECUTION_TIMEOUT
 
     def _numeric_timeout(self, value: Any) -> float | None:
-        if value is None:
+        if value is None or isinstance(value, bool):
             return None
         try:
             timeout = float(value)
