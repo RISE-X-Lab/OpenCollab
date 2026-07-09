@@ -106,6 +106,65 @@ def test_remote_runner_rejects_test_only_patch_before_eval(tmp_path):
     assert result["summary"]["technical_reasons"] == ["empty_eval_patch_after_filter"]
 
 
+def test_filter_model_patch_handles_diff_paths_with_spaces(tmp_path):
+    namespace = _remote_namespace(tmp_path)
+    patch = (
+        "diff --git a/src/app code.py b/src/app code.py\n"
+        "--- a/src/app code.py\n"
+        "+++ b/src/app code.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+        "diff --git a/tests/test app.py b/tests/test app.py\n"
+        "--- a/tests/test app.py\n"
+        "+++ b/tests/test app.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+    )
+
+    filtered = namespace["filter_model_patch_for_eval"](patch)
+
+    assert "src/app code.py" in filtered
+    assert "tests/test app.py" not in filtered
+
+
+def test_prolite_go_command_uses_package_targets(tmp_path):
+    namespace = _remote_namespace(tmp_path)
+
+    command = namespace["prolite_test_command"](
+        {"repo_language": "go"},
+        ["internal/api/widget_test.go", "pkg/server/router_test.go"],
+    )
+
+    assert command == "go test ./internal/api ./pkg/server"
+
+
+def test_ensure_image_pulls_missing_image(tmp_path):
+    namespace = _remote_namespace(tmp_path)
+    existing: set[str] = set()
+    calls: list[list[str]] = []
+
+    def fake_image_exists(image):
+        return image in existing
+
+    def fake_run(command, timeout=60):
+        calls.append(command)
+        if command[:2] == ["docker", "pull"]:
+            existing.add(command[2])
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+        return {"returncode": 1, "stdout": "", "stderr": "unexpected"}
+
+    namespace["image_exists"] = fake_image_exists
+    namespace["run"] = fake_run
+
+    result = namespace["ensure_image"]("example/image:tag")
+
+    assert result["ok"] is True
+    assert result["pulled"] is True
+    assert calls == [["docker", "pull", "example/image:tag"]]
+
+
 def test_remote_runner_does_not_reuse_stale_done_for_test_only_patch(tmp_path):
     namespace = _remote_namespace(tmp_path)
     task = "task-1"
@@ -133,26 +192,26 @@ def test_ensure_remote_proxy_falls_back_when_default_remote_port_is_busy():
     started_ports: set[int] = set()
     old_remote_http_ok = runner.remote_http_ok
     old_local_http_ok = runner.local_http_ok
-    old_run_checked = runner.run_checked
+    old_start_remote_proxy_tunnel = runner.start_remote_proxy_tunnel
     old_sleep = runner.time.sleep
 
     def fake_remote_http_ok(*, ssh_command, host, base_url, timeout=10):
         return base_url == "http://127.0.0.1:18789" and 18789 in started_ports
 
-    def fake_run_checked(command, *, timeout=120, input_text=None):
+    def fake_start_remote_proxy_tunnel(command):
         calls.append(command)
         forward = command[command.index("-R") + 1]
         if forward.startswith("127.0.0.1:18788:"):
-            raise RuntimeError("Error: remote port forwarding failed for listen port 18788")
+            return None, "Error: remote port forwarding failed for listen port 18788"
         if forward.startswith("127.0.0.1:18789:"):
             started_ports.add(18789)
-            return None
+            return SimpleNamespace(poll=lambda: None), ""
         raise AssertionError(forward)
 
     try:
         runner.remote_http_ok = fake_remote_http_ok
         runner.local_http_ok = lambda base_url: True
-        runner.run_checked = fake_run_checked
+        runner.start_remote_proxy_tunnel = fake_start_remote_proxy_tunnel
         runner.time.sleep = lambda _seconds: None
 
         summary = runner.ensure_remote_proxy(
@@ -165,12 +224,14 @@ def test_ensure_remote_proxy_falls_back_when_default_remote_port_is_busy():
     finally:
         runner.remote_http_ok = old_remote_http_ok
         runner.local_http_ok = old_local_http_ok
-        runner.run_checked = old_run_checked
+        runner.start_remote_proxy_tunnel = old_start_remote_proxy_tunnel
         runner.time.sleep = old_sleep
 
     assert summary["status"] == "started_fallback_port"
     assert summary["remote_proxy_base_url"] == "http://127.0.0.1:18789"
     assert summary["selected_remote_port"] == 18789
+    assert "-N" in calls[1]
+    assert "-fN" not in calls[1]
     assert calls[0][calls[0].index("-R") + 1] == "127.0.0.1:18788:127.0.0.1:8878"
     assert calls[1][calls[1].index("-R") + 1] == "127.0.0.1:18789:127.0.0.1:8878"
 

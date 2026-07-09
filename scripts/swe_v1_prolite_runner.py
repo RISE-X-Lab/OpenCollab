@@ -10,6 +10,7 @@ bounded generation attempt and one bounded evaluation attempt.
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import json
 import os
@@ -40,6 +41,7 @@ DEFAULT_REPORT_MD = REPO_ROOT / "docs" / "monitoring" / "swe_g11_16m_prolite26_3
 DEFAULT_PROXY_ENV_FILE = Path.home() / ".claude" / "glm52.env"
 DEFAULT_LOCAL_PROXY_BASE_URL = "http://127.0.0.1:8878"
 REMOTE_HEALTH_SSH_TIMEOUT_FLOOR = 15
+REMOTE_PROXY_TUNNELS: list[subprocess.Popen[str]] = []
 
 SYNC_FILES = [
     "scripts/run_swe_v2_one_from_fifo.sh",
@@ -223,6 +225,18 @@ def is_eval_test_path(path):
     )
 
 
+def diff_target_path(header):
+    match = re.match(r"^diff --git a/(.*) b/(.*)$", str(header or "").strip())
+    if match:
+        return match.group(2)
+    parts = str(header or "").strip().split()
+    if len(parts) >= 4 and parts[3].startswith("b/"):
+        return parts[3][2:]
+    if len(parts) >= 3 and parts[2].startswith("a/"):
+        return parts[2][2:]
+    return ""
+
+
 def filter_model_patch_for_eval(patch):
     if not patch.strip():
         return patch
@@ -239,12 +253,7 @@ def filter_model_patch_for_eval(patch):
     kept = []
     for block in blocks:
         header = block[0] if block else ""
-        parts = header.strip().split()
-        path = ""
-        if len(parts) >= 4 and parts[3].startswith("b/"):
-            path = parts[3][2:]
-        elif len(parts) >= 3 and parts[2].startswith("a/"):
-            path = parts[2][2:]
+        path = diff_target_path(header)
         if path and is_eval_test_path(path):
             continue
         kept.extend(block)
@@ -362,7 +371,14 @@ def image_for_row(row):
 
 
 def image_exists(image):
-    return subprocess.run(["docker", "image", "inspect", image], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+    return (
+        subprocess.run(
+            ["docker", "image", "inspect", image],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    )
 
 
 def ensure_image(image):
@@ -374,8 +390,36 @@ def ensure_image(image):
         tagged = run(["docker", "tag", alias, image], timeout=120)
         if tagged["returncode"] == 0:
             return {"ok": True, "image": image, "aliased_from": alias}
-        return {"ok": False, "image": image, "alias": alias, "reason": "tag_failed", "details": tagged["stderr"] or tagged["stdout"]}
-    return {"ok": False, "image": image, "alias": alias, "reason": "missing_image"}
+        return {
+            "ok": False,
+            "image": image,
+            "alias": alias,
+            "reason": "tag_failed",
+            "details": tagged["stderr"] or tagged["stdout"],
+        }
+    pulled = run(["docker", "pull", image], timeout=900)
+    if pulled["returncode"] == 0 and image_exists(image):
+        return {"ok": True, "image": image, "pulled": True}
+    if alias:
+        pulled_alias = run(["docker", "pull", alias], timeout=900)
+        if pulled_alias["returncode"] == 0 and image_exists(alias):
+            tagged = run(["docker", "tag", alias, image], timeout=120)
+            if tagged["returncode"] == 0:
+                return {"ok": True, "image": image, "aliased_from": alias, "pulled_alias": True}
+            return {
+                "ok": False,
+                "image": image,
+                "alias": alias,
+                "reason": "tag_failed",
+                "details": tagged["stderr"] or tagged["stdout"],
+            }
+    return {
+        "ok": False,
+        "image": image,
+        "alias": alias,
+        "reason": "missing_image",
+        "details": pulled["stderr"] or pulled["stdout"],
+    }
 
 
 def image_repo_workdir_status(image):
@@ -390,8 +434,16 @@ fi
 echo "no repository checkout found under common paths" >&2
 exit 2
 """
-    result = run(["docker", "run", "--rm", "--entrypoint", "", image, "bash", "-lc", script], timeout=120)
-    return {"ok": result["returncode"] == 0, "image": image, "returncode": result["returncode"], "details": result["stderr"] or result["stdout"]}
+    result = run(
+        ["docker", "run", "--rm", "--entrypoint", "", image, "bash", "-lc", script],
+        timeout=120,
+    )
+    return {
+        "ok": result["returncode"] == 0,
+        "image": image,
+        "returncode": result["returncode"],
+        "details": result["stderr"] or result["stdout"],
+    }
 
 
 def task_session(task):
@@ -477,6 +529,31 @@ def compact_python_test_targets(tests, selected, max_args=80, max_chars=24000):
     return files or targets[:max_args]
 
 
+def go_test_packages(tests, selected):
+    packages = []
+    for raw in tests or selected:
+        item = str(raw or "").split(" | ", 1)[0].split("::", 1)[0].strip()
+        if not item:
+            continue
+        if item.endswith(".go"):
+            package = str(pathlib.Path(item).parent).replace("\\", "/")
+        elif "/" in item:
+            package = item.strip("/")
+            if package and not package.endswith("..."):
+                package = package.rstrip("/") + "/..."
+        else:
+            continue
+        if package in {"", "."}:
+            target = "./..."
+        elif package.startswith("./"):
+            target = package
+        else:
+            target = "./" + package
+        if target not in packages:
+            packages.append(target)
+    return packages
+
+
 def js_runner_command(binary, package_script, target, extra_args=""):
     local_binary = f"./node_modules/.bin/{binary}"
     target_part = f" {target}" if target else ""
@@ -510,17 +587,20 @@ def prolite_test_command(row, tests):
         if targets:
             return "python3 -m pytest -q " + " ".join(shlex.quote(item) for item in targets)
     if language == "go" or repo.endswith("/vuls") or repo.endswith("/teleport") or repo.endswith("/navidrome"):
-        names = []
-        for item in tests or selected:
-            head = str(item).split("/", 1)[0]
-            if head and head not in names:
-                names.append(head)
-        if names:
-            pattern = "^(" + "|".join(re.escape(name) for name in names) + ")(/.*)?$"
-            return "go test ./... -run " + shlex.quote(pattern)
+        packages = go_test_packages(tests, selected)
+        if packages:
+            return "go test " + " ".join(shlex.quote(package) for package in packages)
         return "go test ./..."
-    if language in {"js", "javascript", "typescript"} or repo in {"nodebb/nodebb", "protonmail/webclients", "element-hq/element-web"}:
-        files = [item.split(" | ", 1)[0] for item in (selected or tests) if item and ("/" in item or "." in item)]
+    if language in {"js", "javascript", "typescript"} or repo in {
+        "nodebb/nodebb",
+        "protonmail/webclients",
+        "element-hq/element-web",
+    }:
+        files = [
+            item.split(" | ", 1)[0]
+            for item in (selected or tests)
+            if item and ("/" in item or "." in item)
+        ]
         seen = []
         for item in files:
             if item not in seen:
@@ -550,7 +630,12 @@ def generation_for_task(row):
     if dry_run:
         workdir_status = image_repo_workdir_status(image)
         if not workdir_status.get("ok"):
-            return {"status": "blocked_bad_generation_workdir", "task": task, "image_status": image_status, "workdir_status": workdir_status}
+            return {
+                "status": "blocked_bad_generation_workdir",
+                "task": task,
+                "image_status": image_status,
+                "workdir_status": workdir_status,
+            }
         return {"status": "would_generate", "task": task, "image": image, "workdir_status": workdir_status}
     fifo = pathlib.Path("/tmp") / f"opencollab_v1_{os.getpid()}_{int(time.time())}.fifo"
     os.mkfifo(fifo, 0o600)
@@ -1170,6 +1255,38 @@ def remote_forward_port_conflict(message: str) -> bool:
     )
 
 
+def stop_remote_proxy_tunnel(proc: subprocess.Popen[str]) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+
+def cleanup_remote_proxy_tunnels() -> None:
+    for proc in list(REMOTE_PROXY_TUNNELS):
+        stop_remote_proxy_tunnel(proc)
+        if proc in REMOTE_PROXY_TUNNELS:
+            REMOTE_PROXY_TUNNELS.remove(proc)
+
+
+atexit.register(cleanup_remote_proxy_tunnels)
+
+
+def start_remote_proxy_tunnel(command: list[str]) -> tuple[subprocess.Popen[str] | None, str]:
+    proc = subprocess.Popen(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    time.sleep(0.2)
+    if proc.poll() is not None:
+        stdout, stderr = proc.communicate()
+        message = _redacted(stderr or stdout or f"{command[0]} exited {proc.returncode}")
+        return None, message
+    REMOTE_PROXY_TUNNELS.append(proc)
+    return proc, ""
+
+
 def ensure_remote_proxy(
     *,
     ssh_command: list[str],
@@ -1192,7 +1309,7 @@ def ensure_remote_proxy(
         forward = f"127.0.0.1:{candidate_port}:127.0.0.1:{local_port}"
         command = [
             *ssh_command,
-            "-fN",
+            "-N",
             "-o",
             "ExitOnForwardFailure=yes",
             "-o",
@@ -1203,10 +1320,8 @@ def ensure_remote_proxy(
             forward,
             host,
         ]
-        try:
-            run_checked(command, timeout=30)
-        except RuntimeError as exc:
-            message = str(exc)
+        proc, message = start_remote_proxy_tunnel(command)
+        if proc is None:
             attempts.append(f"{candidate_port}: {message}")
             if remote_forward_port_conflict(message):
                 if remote_http_ok(
@@ -1221,7 +1336,7 @@ def ensure_remote_proxy(
                         "selected_remote_port": candidate_port,
                     }
                 continue
-            raise
+            raise RuntimeError(message)
         for _ in range(6):
             if remote_http_ok(ssh_command=ssh_command, host=host, base_url=candidate_base_url, timeout=2):
                 return {
@@ -1232,6 +1347,9 @@ def ensure_remote_proxy(
                     "selected_remote_port": candidate_port,
                 }
             time.sleep(0.5)
+        stop_remote_proxy_tunnel(proc)
+        if proc in REMOTE_PROXY_TUNNELS:
+            REMOTE_PROXY_TUNNELS.remove(proc)
         attempts.append(f"{candidate_port}: tunnel started but health check failed")
     detail = "; ".join(attempts[-5:])
     raise RuntimeError(
