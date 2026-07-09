@@ -297,6 +297,15 @@ def test_anthropic_tool_choice_required_maps_to_any():
     assert "tool_choice" not in default
 
 
+def test_anthropic_tool_choice_none_maps_to_none_type():
+    tools = [{"function": {"name": "f", "parameters": {}}}]
+    msgs = [{"role": "user", "content": "hi"}]
+
+    kwargs = build_anthropic_kwargs("claude", msgs, tools, 0.0, tool_choice="none")
+
+    assert kwargs["tool_choice"] == {"type": "none"}
+
+
 def test_anthropic_tool_choice_named_function_maps_to_named_tool():
     tools = [{"function": {"name": "structured_output", "parameters": {}}}]
     msgs = [{"role": "user", "content": "hi"}]

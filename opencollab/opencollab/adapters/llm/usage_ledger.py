@@ -21,11 +21,9 @@ SECRET_ENV_NAME_PARTS = ("API_KEY", "AUTH_TOKEN", "ACCESS_TOKEN", "CLIENT_TOKEN"
 URL_RE = re.compile(r"https?://[^\s'\"<>]+")
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?i)"
-    r"((?:api[-_ ]?key|auth[-_ ]?token|access[-_ ]?token|client[-_ ]?token|token|secret|password)"
-    r"\s*[:=]\s*)[^\s,;'\")\]}]+"
-)
-SENSITIVE_TEXT_RE = re.compile(
-    r"(?i)((?:prompt|content|message|messages|input)\s*[:=]\s*)[^\r\n,;}\]]{1,500}"
+    r"(['\"]?(?:api[-_ ]?key|auth[-_ ]?token|access[-_ ]?token|client[-_ ]?token|"
+    r"token|secret|password)['\"]?\s*[:=]\s*)"
+    r"(?:(['\"])(.*?)\2|([^\s,;'\")\]}]+))"
 )
 
 
@@ -52,22 +50,30 @@ def _float_env(name: str, default: float) -> float:
 def pricing_for_model(model: str | None) -> dict[str, float | str]:
     lowered = (model or "").lower()
     if "glm" in lowered:
+        input_price = _float_env("GLM_INPUT_USD_PER_MTOK", DEFAULT_GLM52_INPUT_USD_PER_MTOK)
         return {
             "mode": "glm-5.2-default",
-            "input_usd_per_mtok": _float_env(
-                "GLM_INPUT_USD_PER_MTOK", DEFAULT_GLM52_INPUT_USD_PER_MTOK
-            ),
+            "input_usd_per_mtok": input_price,
             "cached_input_usd_per_mtok": _float_env(
                 "GLM_CACHED_INPUT_USD_PER_MTOK", DEFAULT_GLM52_CACHED_INPUT_USD_PER_MTOK
+            ),
+            "cache_creation_usd_per_mtok": _float_env(
+                "GLM_CACHE_CREATION_USD_PER_MTOK",
+                input_price,
             ),
             "output_usd_per_mtok": _float_env(
                 "GLM_OUTPUT_USD_PER_MTOK", DEFAULT_GLM52_OUTPUT_USD_PER_MTOK
             ),
         }
+    input_price = _float_env("OPENCOLLAB_INPUT_USD_PER_MTOK", 0.0)
     return {
         "mode": "unset",
-        "input_usd_per_mtok": _float_env("OPENCOLLAB_INPUT_USD_PER_MTOK", 0.0),
+        "input_usd_per_mtok": input_price,
         "cached_input_usd_per_mtok": _float_env("OPENCOLLAB_CACHED_INPUT_USD_PER_MTOK", 0.0),
+        "cache_creation_usd_per_mtok": _float_env(
+            "OPENCOLLAB_CACHE_CREATION_USD_PER_MTOK",
+            input_price,
+        ),
         "output_usd_per_mtok": _float_env("OPENCOLLAB_OUTPUT_USD_PER_MTOK", 0.0),
     }
 
@@ -79,10 +85,12 @@ def usage_cost_usd(usage: Usage, model: str | None) -> float:
     uncached_input = max(int(usage.input_tokens or 0) - cached - cache_creation, 0)
     input_price = float(pricing["input_usd_per_mtok"])
     cached_price = float(pricing["cached_input_usd_per_mtok"])
+    cache_creation_price = float(pricing["cache_creation_usd_per_mtok"])
     output_price = float(pricing["output_usd_per_mtok"])
     return (
         uncached_input / 1_000_000 * input_price
         + cached / 1_000_000 * cached_price
+        + cache_creation / 1_000_000 * cache_creation_price
         + int(usage.output_tokens or 0) / 1_000_000 * output_price
     )
 
@@ -107,7 +115,7 @@ def _safe_base_url(base_url: str | None) -> dict[str, str | None]:
 
 def _redact_secrets(text: str) -> str:
     redacted = URL_RE.sub(lambda match: str(_safe_base_url(match.group(0))["base_url"]), text)
-    for name, value in os.environ.items():
+    for name, value in list(os.environ.items()):
         if not value or len(value) < 8:
             continue
         upper = name.upper()
@@ -123,9 +131,16 @@ def _redact_secrets(text: str) -> str:
         r"\1[redacted]",
         redacted,
     )
-    redacted = SECRET_ASSIGNMENT_RE.sub(r"\1[redacted]", redacted)
-    redacted = SENSITIVE_TEXT_RE.sub(r"\1[redacted]", redacted)
+    redacted = SECRET_ASSIGNMENT_RE.sub(_redact_secret_assignment, redacted)
     return redacted
+
+
+def _redact_secret_assignment(match: re.Match[str]) -> str:
+    prefix = match.group(1)
+    quote = match.group(2)
+    if quote:
+        return f"{prefix}{quote}[redacted]{quote}"
+    return f"{prefix}[redacted]"
 
 
 def _usage_payload(usage: Usage, model: str | None) -> dict[str, Any]:
@@ -208,17 +223,20 @@ def record_api_usage(
     response: LLMResponse | None = None,
     error: BaseException | None = None,
 ) -> None:
-    append_usage_record(
-        build_usage_record(
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            latency_s=latency_s,
-            status=status,
-            response=response,
-            error=error,
+    try:
+        append_usage_record(
+            build_usage_record(
+                provider=provider,
+                model=model,
+                base_url=base_url,
+                latency_s=latency_s,
+                status=status,
+                response=response,
+                error=error,
+            )
         )
-    )
+    except Exception:
+        return
 
 
 __all__ = [
