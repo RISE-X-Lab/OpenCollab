@@ -12,7 +12,6 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-
 WRITE_TOOLS = {"file_write", "apply_patch"}
 WARN_LOOP_COUNT = 5
 CRITICAL_LOOP_COUNT = 10

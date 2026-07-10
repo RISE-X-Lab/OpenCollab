@@ -5,7 +5,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from opencollab.adapters.llm import client as client_module
 from opencollab.adapters.llm import usage_ledger as ledger
 from opencollab.adapters.llm.client import LLMClient

@@ -4,7 +4,6 @@ import inspect
 import pkgutil
 
 import pytest
-
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.application.event_bus import EventBus
