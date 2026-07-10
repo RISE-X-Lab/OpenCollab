@@ -2,15 +2,14 @@
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 import os
 import signal
 import subprocess
 import sys
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
