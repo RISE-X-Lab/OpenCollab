@@ -11,7 +11,6 @@ from __future__ import annotations
 import textwrap
 
 import pytest
-
 from opencollab.application.workflow_registry import (
     Registry,
     WorkflowSpec,

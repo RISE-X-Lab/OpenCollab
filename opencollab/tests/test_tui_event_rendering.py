@@ -11,11 +11,10 @@ from __future__ import annotations
 
 from io import StringIO
 
-from rich.console import Console
-from rich.text import Text
-
 from opencollab.adapters.tui import TUI
 from opencollab.domain.events import SchedulerEvent, SessionRuntimeEvent
+from rich.console import Console
+from rich.text import Text
 
 
 def _make_tui() -> TUI:

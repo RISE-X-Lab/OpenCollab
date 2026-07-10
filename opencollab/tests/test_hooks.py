@@ -11,7 +11,6 @@ import asyncio
 import json
 
 import pytest
-
 from opencollab.adapters.hooks import ShellHookRunner
 from opencollab.application.hooks import HookEventSubscriber
 from opencollab.bootstrap import build_runtime_context, build_scheduler

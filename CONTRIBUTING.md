@@ -37,12 +37,22 @@ cp configs/.env.example configs/.env   # then set OPENCOLLAB_API_KEY
 ## Checks (must pass before a PR)
 
 ```bash
-cd opencollab
-uv run pytest -q               # test suite
-uv run ruff check opencollab/  # lint
+uv run --project opencollab ruff check .   # lint the whole repo (root ruff.toml)
+cd opencollab && uv run pytest -q           # test suite
 ```
 
 New behavior needs tests, and the suite must stay green.
+
+### Enforced automatically in CI
+
+- **Lint** — `ruff check .` over the whole repo (package + `scripts/` + `swebench/`
+  + `workflows/` + tests); config lives in the repo-root `ruff.toml`.
+- **PR title** — must follow Conventional Commits; squash-merge uses it as the
+  commit subject on `main`.
+- **File hygiene** — a newly added file over 500 KB, or a new `.py` module over
+  800 lines, fails the build. Commit `.tex`/`.md` sources, not compiled PDFs.
+
+Optionally mirror these locally: `pip install pre-commit && pre-commit install`.
 
 ## The architecture rule (enforced by tests)
 

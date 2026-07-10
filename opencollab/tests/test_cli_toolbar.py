@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import pytest
-from prompt_toolkit.formatted_text import to_formatted_text
-
 from opencollab.adapters.cli.main import _PROMPT_STYLE, _dispatch_repl_command
 from opencollab.adapters.cli.toolbar import format_team_toolbar
+from prompt_toolkit.formatted_text import to_formatted_text
 
 
 class _FakeLead:

@@ -49,7 +49,6 @@ if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
 import gen_prediction as gp  # noqa: E402 — shared container plumbing
-
 from opencollab.adapters.env import DockerEnvironment  # noqa: E402
 from opencollab.bootstrap.config import get_config  # noqa: E402
 from opencollab.bootstrap.workflow_runtime import discover_workflows  # noqa: E402

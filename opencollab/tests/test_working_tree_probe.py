@@ -19,7 +19,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from opencollab.adapters.working_tree import EnvWorkingTreeProbe
 
 

@@ -15,7 +15,6 @@ from collections.abc import Sequence
 from typing import Any
 
 import pytest
-
 from opencollab.application.schema_validate import validate
 from opencollab.application.structured_output import StructuredOutputTool
 from opencollab.application.tool_execution import ToolRuntime

@@ -13,7 +13,6 @@ import os
 from typing import Any
 
 import pytest
-
 from opencollab.application.workflow import WorkflowBudgetExceeded, WorkflowContext
 from opencollab.bootstrap import workflow_runtime
 

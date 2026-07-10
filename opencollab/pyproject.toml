@@ -46,12 +46,8 @@ Homepage = "https://github.com/YihongDong/OpenCollab"
 Repository = "https://github.com/YihongDong/OpenCollab"
 Issues = "https://github.com/YihongDong/OpenCollab/issues"
 
-[tool.ruff]
-line-length = 120
-target-version = "py310"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "W"]
+# Ruff configuration lives in the repo-root ruff.toml, so a single config governs
+# the whole tree (this package + scripts/ + swebench/ + workflows/).
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

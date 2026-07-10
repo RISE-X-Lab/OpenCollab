@@ -8,7 +8,6 @@ budgets to its backend's context size. Unknown tools/kwargs fail fast.
 import asyncio
 
 import pytest
-
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.tools.bash import MAX_OUTPUT_CHARS
 from opencollab.application.tool_execution import ToolRuntime

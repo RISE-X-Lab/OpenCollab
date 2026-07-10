@@ -17,14 +17,12 @@ fact-sheet anchors.
 from __future__ import annotations
 
 import asyncio
-import os
 from pathlib import Path
 from typing import Any
 
 from opencollab.application.session_run import ENFORCEMENT_OFF, ENFORCEMENT_ON
 from opencollab.application.submit_findings import (
     SUBMIT_TOOL_NAME,
-    format_findings_report,
     harvest_findings,
 )
 from opencollab.application.workflow import WorkflowContext

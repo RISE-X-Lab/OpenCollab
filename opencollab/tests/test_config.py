@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from opencollab.bootstrap.config import (
     accepted_api_key_envs,
     api_key_env_precedence,

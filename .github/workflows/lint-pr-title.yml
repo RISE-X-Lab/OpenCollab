@@ -1,0 +1,25 @@
+name: PR Title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Enforce Conventional Commits in the PR title
+        env:
+          # Read via env (never interpolate ${{ }} into the shell) to avoid injection.
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          echo "PR title: $TITLE"
+          if printf '%s' "$TITLE" | grep -Eq '^(feat|fix|refactor|docs|test|chore|perf|ci|build|style|revert)(\([a-z0-9._/ -]+\))?!?: .+'; then
+            echo "OK: title follows Conventional Commits."
+          else
+            echo "::error::PR title must follow Conventional Commits — e.g. 'feat: add X', 'fix(tui): handle Y', 'chore!: drop Z'. Squash-merge uses the PR title as the commit subject, so it becomes the message on main."
+            exit 1
+          fi

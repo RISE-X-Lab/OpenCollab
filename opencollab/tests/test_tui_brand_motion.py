@@ -7,15 +7,14 @@ TUI's per-glyph chrome walk stays satisfied.
 
 from __future__ import annotations
 
-from rich.console import Console
-from rich.text import Text
-
 from opencollab.adapters.tui.brand_motion import (
     DOT_GLYPH,
     PulseDot,
     dot_color,
     pulse_brightness,
 )
+from rich.console import Console
+from rich.text import Text
 
 
 def _assert_all_non_white(text: Text) -> None:

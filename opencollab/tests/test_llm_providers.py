@@ -8,7 +8,6 @@ import sys
 from types import SimpleNamespace
 
 import pytest
-
 from opencollab.adapters.llm.anthropic_provider import _build_request_kwargs as build_anthropic_kwargs
 from opencollab.adapters.llm.anthropic_provider import _parse_response as parse_anthropic_response
 from opencollab.adapters.llm.anthropic_provider import _parse_usage as parse_anthropic_usage

@@ -9,10 +9,9 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from typer.testing import CliRunner
-
 from opencollab.adapters.cli import workflow as workflow_cli
 from opencollab.application.workflow_registry import Registry, workflow
+from typer.testing import CliRunner
 
 runner = CliRunner()
 
