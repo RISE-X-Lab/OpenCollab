@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from opencollab.bootstrap.team_config import (
     BASE_TOOL_NAMES,
     DEFAULT_LEAD_PROMPT,

@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from opencollab.bootstrap.workflow_runtime import discover_workflows
 
 _WF_DIR = Path(__file__).resolve().parents[2] / "workflows"

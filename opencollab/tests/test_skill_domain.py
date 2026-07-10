@@ -5,7 +5,6 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
-
 from opencollab.domain.context import LAYER_PRIORITY, ContextLayer
 from opencollab.domain.skill import SkillManifest
 

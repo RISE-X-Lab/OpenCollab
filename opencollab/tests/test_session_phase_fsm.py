@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from opencollab.domain.session import (
     PHASE_TRANSITIONS,
     TERMINAL_PHASES,
