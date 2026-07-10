@@ -140,6 +140,24 @@ def test_prolite_go_command_uses_package_targets(tmp_path):
     assert command == "go test ./internal/api ./pkg/server"
 
 
+def test_prolite_test_command_never_falls_back_to_a_passing_noop(tmp_path):
+    namespace = _remote_namespace(tmp_path)
+    command = namespace["prolite_test_command"]
+    is_runnable = namespace["_is_runnable_test_command"]
+
+    # An underivable command returns "" — NOT the old "true" no-op that ran zero
+    # target tests yet scored resolved=true (false green; 2026-07-09 review).
+    assert command({"repo_language": "python"}, []) == ""
+    assert command({}, []) == ""
+    assert command({"repo_language": "ruby"}, ["spec/widget_spec.rb"]) == ""
+
+    # The runnable-command gate rejects every no-op form and accepts real commands.
+    assert not is_runnable("")
+    assert not is_runnable("true")
+    assert not is_runnable(" : ")
+    assert is_runnable("python3 -m pytest -q tests/test_x.py::test_y")
+
+
 def test_ensure_image_pulls_missing_image(tmp_path):
     namespace = _remote_namespace(tmp_path)
     existing: set[str] = set()

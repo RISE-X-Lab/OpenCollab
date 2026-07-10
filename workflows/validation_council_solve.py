@@ -575,7 +575,12 @@ def _coder_tools() -> list[Any]:
 
 
 def _tester_tools() -> list[Any]:
+    # Gate roles (patch-validator, post-triage, final-verifier) need an executable
+    # probe so a PASS is backed by a real run, not prose alone. Blindness holds
+    # because the hidden FAIL_TO_PASS tests are absent from the container, not
+    # because bash is. No file_write/apply_patch: these roles verify, not author.
     return [
+        BashTool(),
         FileReadTool(),
         RunTestsTool(allow_runner_override=False, allow_extra_args=False),
         GrepTool(),
@@ -584,7 +589,9 @@ def _tester_tools() -> list[Any]:
 
 
 def _risk_tools() -> list[Any]:
-    return []
+    # The diff-risk auditor must at least read the diff and the sources it judges;
+    # an empty toolset let it "audit" blind. Read-only — no execution or authoring.
+    return [FileReadTool(), GrepTool(), GitDiffTool()]
 
 
 def _dump(value: Any) -> str:
