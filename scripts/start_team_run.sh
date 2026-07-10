@@ -1722,9 +1722,13 @@ print(gp.bounded_container_output_command(
     "git diff --cached --binary",
     max_bytes=gp.MAX_EXTRACTED_PATCH_BYTES,
     label="team staged patch",
+    helper_path="/tmp/opencollab_gen_prediction_bounded_capture.py",
 ))
 PY
 )"
+    docker_bounded cp \
+        "$REPO_ROOT/swebench/gen_prediction_bounded_capture.py" \
+        "$cid:/tmp/opencollab_gen_prediction_bounded_capture.py"
     patch_file="$(mktemp -t oc_patch.XXXXXX)"
     local diff_pidfile="${run_pidfile}.diff"
     local diff_cancelfile="${diff_pidfile}.cancel"

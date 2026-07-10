@@ -18,12 +18,12 @@ internally.
 Generate (OpenCollab venv, absolute paths in background shells)::
 
     opencollab/.venv/bin/python swebench/gen_prediction_workflow.py \
-        --instance-file /home/xuzhenhua/swebench-eval/instance_sympy-20590.json \
-        --output /home/xuzhenhua/swebench-eval/predictions-review-fix.jsonl
+        --instance-file /path/to/swebench-eval/instance_sympy-20590.json \
+        --output /path/to/swebench-eval/predictions-review-fix.jsonl
 
 Grade with the official harness (separate venv)::
 
-    cd /home/xuzhenhua/swebench-eval && HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+    cd /path/to/swebench-eval && HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
     .venv/bin/python -m swebench.harness.run_evaluation \
         -p predictions-review-fix.jsonl -i sympy__sympy-20590 \
         -id review-fix-1 --cache_level env --report_dir reports

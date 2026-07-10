@@ -5,9 +5,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import opencollab.application.tool_execution as tool_execution_module
+import pytest
 from opencollab.adapters.env import Environment
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.tool_execution import (

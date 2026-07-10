@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 
 import pytest
-
 from opencollab.bootstrap import config as config_mod
 from opencollab.bootstrap.config import (
     accepted_api_key_envs,

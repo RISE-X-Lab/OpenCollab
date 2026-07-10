@@ -13,7 +13,6 @@ import threading
 from typing import Any
 
 import pytest
-
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus

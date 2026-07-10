@@ -9,10 +9,9 @@ import threading
 import time
 from types import SimpleNamespace
 
-import pytest
-
 import opencollab.adapters.event_log as event_log_mod
 import opencollab.adapters.safe_files as safe_files_mod
+import pytest
 from opencollab.adapters.event_log import JsonlEventSink
 from opencollab.adapters.safe_files import append_regular_text, read_regular_bytes
 from opencollab.adapters.trace import Tracer

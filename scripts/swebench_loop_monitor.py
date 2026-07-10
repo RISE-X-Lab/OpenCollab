@@ -5,10 +5,8 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
-import hashlib
 import json
 import os
-import re
 import stat
 import sys
 from collections import Counter, deque
@@ -18,9 +16,13 @@ from typing import Any, BinaryIO, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PKG_ROOT = REPO_ROOT / "opencollab"
+SCRIPT_ROOT = Path(__file__).resolve().parent
 if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
 
+import swebench_loop_analysis as loop_analysis  # noqa: E402
 from opencollab.adapters.safe_files import (  # noqa: E402
     _directory_path_matches_fd,
     _open_directory_no_symlinks,
@@ -475,63 +477,23 @@ def _session_messages_status(
 
 
 def _plain_text(value: Any) -> str:
-    if isinstance(value, str):
-        return value
-    if isinstance(value, list):
-        parts: list[str] = []
-        for item in value:
-            if isinstance(item, dict):
-                text = item.get("text") or item.get("content")
-                if text:
-                    parts.append(str(text))
-            elif item:
-                parts.append(str(item))
-        return "\n".join(parts)
-    return "" if value is None else str(value)
-
-
-def _normalize_text(text: str) -> str:
-    text = re.sub(r"```.*?```", " ", text, flags=re.S)
-    text = re.sub(r"`[^`]+`", " ", text)
-    text = re.sub(r"\s+", " ", text).strip().lower()
-    return text
-
-
-def _sentences(text: str) -> list[str]:
-    chunks = re.split(r"[\n。！？!?]+|(?<=[a-z0-9\)])\.\s+", text)
-    out: list[str] = []
-    for chunk in chunks:
-        norm = _normalize_text(chunk)
-        if len(norm) >= 40:
-            out.append(norm)
-    return out
+    return loop_analysis.plain_text(value)
 
 
 def _update_sentence_counter(counter: Counter[str], text: str) -> None:
-    for sentence in _sentences(text):
-        sentence = sentence[:MAX_SENTENCE_CHARS]
-        if sentence in counter or len(counter) < MAX_SENTENCE_KEYS:
-            counter[sentence] += 1
+    loop_analysis.update_sentence_counter(
+        counter,
+        text,
+        max_sentence_chars=MAX_SENTENCE_CHARS,
+        max_sentence_keys=MAX_SENTENCE_KEYS,
+    )
 
 
 def _text_report_from_counter(
     sentence_counter: Counter[str],
     recent_texts: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    repeated = [
-        {
-            "count": count,
-            "sha1": hashlib.sha1(sentence.encode("utf-8")).hexdigest()[:12],
-            "text": sentence[:500],
-        }
-        for sentence, count in sentence_counter.most_common()
-        if count > 1
-    ]
-    return {
-        "max_repeated_sentence_count": repeated[0]["count"] if repeated else 0,
-        "repeated_sentences": repeated[:10],
-        "recent_assistant_texts": recent_texts[-3:],
-    }
+    return loop_analysis.text_report_from_counter(sentence_counter, recent_texts)
 
 
 def _discover_event_analysis(
@@ -656,105 +618,19 @@ def _discover_event_analysis(
 
 
 def _assistant_text_report(messages: list[dict[str, Any]]) -> dict[str, Any]:
-    assistant_texts: list[dict[str, Any]] = []
-    sentence_counter: Counter[str] = Counter()
-    for msg in messages:
-        if msg.get("role") != "assistant":
-            continue
-        text = _plain_text(msg.get("content"))
-        if not text.strip():
-            continue
-        assistant_texts.append({
-            "aid": msg.get("_aid"),
-            "role": msg.get("_agent_role"),
-            "source_file": msg.get("_source_file"),
-            "message_index": msg.get("_message_index"),
-            "text": text[-2000:],
-        })
-    for item in assistant_texts:
-        text = str(item.get("text") or "")
-        _update_sentence_counter(sentence_counter, text)
-
-    return _text_report_from_counter(sentence_counter, assistant_texts[-3:])
-
-
-def _tool_call_name(call: dict[str, Any]) -> str:
-    fn = call.get("function")
-    if isinstance(fn, dict):
-        return str(fn.get("name") or "")
-    return ""
-
-
-def _tool_call_args(call: dict[str, Any]) -> Any:
-    fn = call.get("function")
-    raw = fn.get("arguments") if isinstance(fn, dict) else None
-    if isinstance(raw, str):
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            return raw[:1000]
-    return raw
+    return loop_analysis.assistant_text_report(
+        messages,
+        max_sentence_chars=MAX_SENTENCE_CHARS,
+        max_sentence_keys=MAX_SENTENCE_KEYS,
+    )
 
 
 def _truncate_obj(value: Any, limit: int = 1600) -> Any:
-    text = json.dumps(value, ensure_ascii=False, default=str)
-    if len(text) <= limit:
-        return json.loads(text)
-    return text[:limit] + "...[truncated]"
-
-
-def _looks_successful_tool_result(content: str) -> bool:
-    head = content.strip().lower()[:300]
-    if not head:
-        return False
-    if head.startswith("error:") or "traceback" in head:
-        return False
-    if re.search(r"\b(exit code|return code):\s*[1-9]", head):
-        return False
-    return True
+    return loop_analysis.truncate_obj(value, limit)
 
 
 def _write_and_error_report(messages: list[dict[str, Any]]) -> dict[str, Any]:
-    calls: dict[str, dict[str, Any]] = {}
-    last_write: dict[str, Any] | None = None
-    recent_errors: list[dict[str, Any]] = []
-
-    for msg in messages:
-        if msg.get("role") == "assistant":
-            for call in msg.get("tool_calls") or []:
-                if not isinstance(call, dict):
-                    continue
-                call_id = str(call.get("id") or "")
-                if not call_id:
-                    continue
-                calls[call_id] = {
-                    "tool": _tool_call_name(call),
-                    "args": _truncate_obj(_tool_call_args(call)),
-                    "aid": msg.get("_aid"),
-                    "role": msg.get("_agent_role"),
-                    "source_file": msg.get("_source_file"),
-                    "message_index": msg.get("_message_index"),
-                }
-        elif msg.get("role") == "tool":
-            content = _plain_text(msg.get("content"))
-            call_id = str(msg.get("tool_call_id") or "")
-            call = calls.get(call_id)
-            if content.strip().startswith("Error:") or "Traceback" in content[:1000]:
-                recent_errors.append({
-                    "source": "tool_message",
-                    "tool": call.get("tool") if call else None,
-                    "content": content[:1200],
-                })
-            if call and call.get("tool") in WRITE_TOOLS and _looks_successful_tool_result(content):
-                last_write = {
-                    **call,
-                    "tool_result": content[:1200],
-                }
-
-    return {
-        "last_successful_write": last_write,
-        "recent_tool_errors": recent_errors[-3:],
-    }
+    return loop_analysis.write_and_error_report(messages, write_tools=WRITE_TOOLS)
 
 
 def _artifact_dir(output_path: Path) -> Path:

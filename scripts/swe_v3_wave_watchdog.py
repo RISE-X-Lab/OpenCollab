@@ -20,14 +20,14 @@ PKG_ROOT = REPO_ROOT / "opencollab"
 if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
-from opencollab.harness.swe_eval_decision import task_status_row  # noqa: E402
-from opencollab.harness.swe_eval_discovery import build_snapshots  # noqa: E402
 from opencollab.adapters.safe_files import (  # noqa: E402
     _open_directory_no_symlinks,
     ensure_directory_no_symlinks,
     read_regular_bytes,
     write_regular_bytes_atomic,
 )
+from opencollab.harness.swe_eval_decision import task_status_row  # noqa: E402
+from opencollab.harness.swe_eval_discovery import build_snapshots  # noqa: E402
 
 MAX_SIDE_NAME_BYTES = 128
 MAX_RUNS_CONFIG_BYTES = 16 * 1024 * 1024

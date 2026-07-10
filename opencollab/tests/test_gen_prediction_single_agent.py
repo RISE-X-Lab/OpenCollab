@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from opencollab.domain.session import SessionPhase
 from opencollab.harness.swe_eval_records import (
     SUBMISSION_INTEGRITY_PROVEN,
@@ -256,9 +255,7 @@ def test_single_agent_non_quiescent_timeout_revokes_env_and_rejects_patch(monkey
     monkeypatch.setattr(gp, "AGENT_CANCELLATION_GRACE_SECONDS", 0.01)
 
     async def scenario():
-        metrics = await gp.run_agent(
-            "task", "cid", _agent_config(), 4, 100, 0.05
-        )
+        metrics = await gp.run_agent("task", "cid", _agent_config(), 4, 100, 0.05)
         assert metrics["execution_quiesced"] is False
         assert metrics["submission_eligible"] is False
         assert metrics["workflow_status"] == "error"
@@ -490,7 +487,7 @@ def test_extract_patch_fails_closed_when_bounded_diff_reports_overflow(monkeypat
 
     def fake_docker(*args, **_kwargs):
         calls.append(args)
-        if "git add -A" in args:
+        if "git add -A" in args or args[0] == "cp":
             return subprocess.CompletedProcess(args, 0, "", "")
         return subprocess.CompletedProcess(
             args,
@@ -504,8 +501,10 @@ def test_extract_patch_fails_closed_when_bounded_diff_reports_overflow(monkeypat
     with pytest.raises(RuntimeError, match="exceeded"):
         gp.extract_patch("cid")
 
-    diff_command = calls[1][-1]
-    assert "selectors.DefaultSelector" in diff_command
+    diff_command = calls[2][-1]
+    assert "selectors.DefaultSelector" not in diff_command
+    assert "opencollab_gen_prediction_bounded_capture.py" in diff_command
+    assert " -c " not in diff_command
     assert "git diff --cached --binary" in diff_command
     assert str(gp.MAX_EXTRACTED_PATCH_BYTES) in diff_command
 
@@ -541,10 +540,7 @@ def test_bounded_capture_kills_term_ignoring_descendant_after_leader_exit(
         "time.sleep(0.5); "
         f"pathlib.Path({str(sentinel)!r}).write_text('leaked')"
     )
-    leader_code = (
-        "import subprocess,sys; "
-        f"subprocess.Popen([sys.executable, '-c', {child_code!r}])"
-    )
+    leader_code = f"import subprocess,sys; subprocess.Popen([sys.executable, '-c', {child_code!r}])"
     producer = f"{shlex.quote(sys.executable)} -c {shlex.quote(leader_code)}"
     command = gp.bounded_container_output_command(
         producer,
@@ -574,10 +570,7 @@ def test_bounded_capture_reaps_quiet_descendant_after_leader_exit(tmp_path):
         "time.sleep(0.5); "
         f"pathlib.Path({str(sentinel)!r}).write_text('leaked')"
     )
-    leader_code = (
-        "import subprocess,sys; "
-        f"subprocess.Popen([sys.executable, '-c', {child_code!r}])"
-    )
+    leader_code = f"import subprocess,sys; subprocess.Popen([sys.executable, '-c', {child_code!r}])"
     producer = f"{shlex.quote(sys.executable)} -c {shlex.quote(leader_code)}"
     command = gp.bounded_container_output_command(
         producer,

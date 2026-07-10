@@ -4,9 +4,8 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 import opencollab.adapters.env as env_module
+import pytest
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.tools import base, human

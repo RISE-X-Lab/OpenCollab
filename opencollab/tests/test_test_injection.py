@@ -12,7 +12,6 @@ import subprocess
 import uuid
 
 import pytest
-
 from opencollab.adapters.env import Environment, ExecResult
 from opencollab.harness import test_injection as injection
 from opencollab.harness.test_injection import (

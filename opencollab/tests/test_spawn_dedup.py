@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from opencollab.adapters.tools.spawn import SpawnAgentTool
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.event_bus import EventBus

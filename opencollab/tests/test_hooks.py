@@ -18,7 +18,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from opencollab.adapters import hooks as hooks_adapter
 from opencollab.adapters.hooks import ShellHookRunner
 from opencollab.application.hooks import HookEventSubscriber

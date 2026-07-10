@@ -10,9 +10,9 @@
 #   scripts/run_team_batch.sh \
 #       --dataset SWE-bench/SWE-bench_Lite \
 #       --split test \
-#       --output /home/xuzhenhua/swebench-eval/predictions-team.jsonl \
+#       --output /path/to/swebench-eval/predictions-team.jsonl \
 #       [--timeout 1500] \
-#       [--namespace docker.1panel.live/swebench] \
+#       --namespace <registry-namespace> \
 #       [--instance-ids id1,id2,...] \
 #       [--limit N] \
 #       [--start-from <instance_id>] \
@@ -25,16 +25,15 @@
 # instances are skipped.
 #
 # The dataset entry is also resolved via swebench.make_test_spec so that the
-# correct local docker image (mirror-namespaced, with __ → _1776_) is passed
-# to start_team_run.sh via --image. This means images pulled by
-# /home/xuzhenhua/swebench-eval/pull_all_images.py work out of the box; no
-# retagging needed.
+# correct local Docker image (with __ → _1776_) is passed to
+# start_team_run.sh via --image. Set OPENCOLLAB_EVAL_PYTHON to the Python
+# executable that has the swebench package installed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ONE_SHOT="$SCRIPT_DIR/start_team_run.sh"
-EVAL_VENV_PY="${OPENCOLLAB_EVAL_PYTHON:-/home/xuzhenhua/swebench-eval/.venv/bin/python}"
+EVAL_VENV_PY="${OPENCOLLAB_EVAL_PYTHON:-}"
 BATCH_IO="$SCRIPT_DIR/swe_team_batch_io.py"
 
 die() { echo "error: $*" >&2; exit 1; }
@@ -47,7 +46,7 @@ dataset="SWE-bench/SWE-bench_Lite"
 split="test"
 output=""
 timeout_secs=1500
-namespace="docker.1panel.live/swebench"
+namespace="${OPENCOLLAB_SWEBENCH_NAMESPACE:-}"
 instance_ids=""
 limit=""
 start_from=""
@@ -74,8 +73,9 @@ while (($#)); do
 done
 
 [ -n "$output" ] || die "--output is required"
+[ -n "$namespace" ] || die "--namespace or OPENCOLLAB_SWEBENCH_NAMESPACE is required"
 [ -x "$ONE_SHOT" ] || die "missing $ONE_SHOT"
-[ -x "$EVAL_VENV_PY" ] || die "missing $EVAL_VENV_PY (need swebench package installed)"
+[ -x "$EVAL_VENV_PY" ] || die "set OPENCOLLAB_EVAL_PYTHON to an executable with swebench installed"
 [ -f "$BATCH_IO" ] || die "missing $BATCH_IO"
 
 [ -n "$logs_dir" ] || logs_dir="$REPO_ROOT/.opencollab/swebench/_batch_logs/$(date +%Y-%m-%dT%H-%M-%S)"

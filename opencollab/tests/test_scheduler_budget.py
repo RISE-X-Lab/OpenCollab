@@ -18,7 +18,6 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
 from opencollab.domain.scheduler import SessionControlBlock, lead_reserve

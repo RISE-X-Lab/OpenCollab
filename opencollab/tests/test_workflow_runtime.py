@@ -15,7 +15,6 @@ import threading
 from typing import Any
 
 import pytest
-
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
