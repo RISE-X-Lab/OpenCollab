@@ -12,7 +12,6 @@ import os
 import textwrap
 
 import pytest
-
 from opencollab.application.workflow_registry import (
     Registry,
     WorkflowSpec,

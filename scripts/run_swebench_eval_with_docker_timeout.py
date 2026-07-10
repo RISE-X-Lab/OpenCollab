@@ -7,7 +7,6 @@ import runpy
 
 import docker
 
-
 _original_from_env = docker.from_env
 
 

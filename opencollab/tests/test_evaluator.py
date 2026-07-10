@@ -2179,12 +2179,10 @@ def test_failed_partial_test_patch_rollback_stops_agent_and_invalidates_output(t
     assert "tests/test_new.py.rej" not in diff_command
 
 
-def test_workflow_args_drop_fail_to_pass_when_not_injected(tmp_path):
-    # With no test_patch (nothing injected), fail_to_pass MUST NOT reach the
-    # workflow: the F2P hard-gate keys on it, and the named tests do not exist at
-    # the base commit, so forwarding the ids would make the gate unsatisfiable
-    # rather than bypassed. Coupling fail_to_pass to injection success keeps the
-    # gate's documented "no injection -> trust the verdict" invariant.
+def test_workflow_args_preserve_fail_to_pass_when_not_injected(tmp_path):
+    # A missing test patch must not erase the declared verification targets.
+    # The workflow may prove that the targets already exist and pass; otherwise
+    # its FAIL_TO_PASS gate must keep the result red.
     env = FakeEnv()
 
     async def env_factory(task):
@@ -2210,8 +2208,7 @@ def test_workflow_args_drop_fail_to_pass_when_not_injected(tmp_path):
         )
     )
 
-    # No test_patch -> nothing injected -> fail_to_pass dropped, gate bypassed.
-    assert "fail_to_pass" not in seen["args"]
+    assert seen["args"]["fail_to_pass"] == ["pkg::test_a", "pkg::test_b"]
     assert "injected_test_paths" not in seen["args"]
 
 

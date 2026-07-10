@@ -2,7 +2,6 @@ import json
 import os
 
 import pytest
-
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.bootstrap import (
     build_runtime_context,

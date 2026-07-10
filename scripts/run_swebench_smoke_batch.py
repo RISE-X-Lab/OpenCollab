@@ -18,7 +18,6 @@ from pathlib import Path
 
 from swebench.harness.test_spec.test_spec import make_test_spec
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PKG_ROOT = REPO_ROOT / "opencollab"
 if str(PKG_ROOT) not in sys.path:

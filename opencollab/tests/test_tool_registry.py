@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from opencollab.adapters.tools.use_skill import UseSkillTool
 from opencollab.bootstrap.tool_registry import (
     KNOWN_TOOL_NAMES,

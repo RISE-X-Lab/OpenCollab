@@ -13,18 +13,29 @@ from opencollab.adapters.llm.retry import with_retry
 from opencollab.adapters.llm.types import DEFAULT_MAX_OUTPUT_TOKENS, LLMResponse, Usage
 
 
-def _anthropic_tool_choice(tool_choice: str | None) -> dict[str, Any] | None:
-    """Map an OpenAI-style ``tool_choice`` string to Anthropic's dict form.
+def _anthropic_tool_choice(tool_choice: Any) -> dict[str, Any] | None:
+    """Map OpenAI-style ``tool_choice`` values to Anthropic's dict form.
 
     Anthropic expects ``{"type": "auto"|"any"|"tool"}``; OpenAI's ``"required"``
-    (force *some* tool) maps to ``"any"``. ``None`` keeps the API default.
+    (force *some* tool) maps to ``"any"``. A named OpenAI function choice maps
+    to ``{"type": "tool", "name": ...}``. ``None`` keeps the API default.
     """
     if tool_choice is None:
         return None
+    if tool_choice == "none":
+        return {"type": "none"}
     if tool_choice == "required":
         return {"type": "any"}
     if tool_choice == "auto":
         return {"type": "auto"}
+    if isinstance(tool_choice, dict):
+        if tool_choice.get("type") == "function":
+            function = tool_choice.get("function") or {}
+            name = function.get("name")
+            if name:
+                return {"type": "tool", "name": name}
+        if tool_choice.get("type") == "tool" and tool_choice.get("name"):
+            return {"type": "tool", "name": tool_choice["name"]}
     return None
 
 
@@ -35,7 +46,7 @@ def _build_request_kwargs(
     temperature: float,
     thinking: bool = False,
     thinking_params: dict | None = None,
-    tool_choice: str | None = None,
+    tool_choice: Any = None,
     top_p: float | None = None,
 ) -> dict[str, Any]:
     system_parts, anthropic_messages = convert_to_anthropic_messages(messages)
@@ -86,7 +97,7 @@ async def complete_anthropic(
     max_retries: int,
     thinking: bool = False,
     thinking_params: dict | None = None,
-    tool_choice: str | None = None,
+    tool_choice: Any = None,
     top_p: float | None = None,
 ) -> LLMResponse:
     """Single-shot completion against the Anthropic API."""

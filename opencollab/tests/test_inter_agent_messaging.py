@@ -6,7 +6,6 @@ import asyncio
 import json
 
 import pytest
-
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler

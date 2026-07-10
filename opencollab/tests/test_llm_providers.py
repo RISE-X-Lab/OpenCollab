@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from types import SimpleNamespace
 
 import pytest
-
 from opencollab.adapters.llm.anthropic_provider import _build_request_kwargs as build_anthropic_kwargs
 from opencollab.adapters.llm.anthropic_provider import _parse_response as parse_anthropic_response
 from opencollab.adapters.llm.anthropic_provider import _parse_usage as parse_anthropic_usage
@@ -295,6 +295,59 @@ def test_anthropic_tool_choice_required_maps_to_any():
     assert forced["tool_choice"] == {"type": "any"}
     default = build_anthropic_kwargs("claude", msgs, tools, 0.0)
     assert "tool_choice" not in default
+
+
+def test_anthropic_tool_choice_none_maps_to_none_type():
+    tools = [{"function": {"name": "f", "parameters": {}}}]
+    msgs = [{"role": "user", "content": "hi"}]
+
+    kwargs = build_anthropic_kwargs("claude", msgs, tools, 0.0, tool_choice="none")
+
+    assert kwargs["tool_choice"] == {"type": "none"}
+
+
+def test_anthropic_tool_choice_named_function_maps_to_named_tool():
+    tools = [{"function": {"name": "structured_output", "parameters": {}}}]
+    msgs = [{"role": "user", "content": "hi"}]
+
+    kwargs = build_anthropic_kwargs(
+        "claude",
+        msgs,
+        tools,
+        0.0,
+        tool_choice={"type": "function", "function": {"name": "structured_output"}},
+    )
+
+    assert kwargs["tool_choice"] == {"type": "tool", "name": "structured_output"}
+
+
+def test_llm_client_forwards_anthropic_base_url(monkeypatch):
+    captured = {}
+
+    class FakeAsyncAnthropic:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "anthropic",
+        SimpleNamespace(AsyncAnthropic=FakeAsyncAnthropic),
+    )
+
+    from opencollab.adapters.llm.client import LLMClient
+
+    client = LLMClient(
+        provider="anthropic",
+        model="claude",
+        api_key="k",
+        base_url="http://proxy.local",
+        request_timeout=12.0,
+    )
+
+    assert client.base_url == "http://proxy.local"
+    assert captured["base_url"] == "http://proxy.local"
+    assert captured["api_key"] == "k"
+    assert captured["timeout"] == 12.0
 
 
 def test_openai_estimates_output_from_tool_calls_when_no_content():
