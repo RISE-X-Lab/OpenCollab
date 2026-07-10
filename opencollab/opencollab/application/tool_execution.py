@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
+import logging
+import math
 import os
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from opencollab.application.async_timeout import abandon_on_timeout
+from opencollab.application.async_timeout import (
+    CallerTimeoutError,
+    force_task_terminal,
+    task_is_isolated,
+)
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
     AskUserPort,
@@ -18,19 +25,60 @@ from opencollab.application.ports import (
     SafetyPolicyPort,
     TracePort,
 )
+from opencollab.application.schema_validate import validate
 from opencollab.domain.session import SessionState
 from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, LoopDetection, ToolProcessingResult
 
+logger = logging.getLogger(__name__)
+
+
+class _ToolExecutionTimeoutError(CallerTimeoutError):
+    """Raised only by this use case's own per-tool deadline."""
+
+
+def _positive_env_float(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return value if math.isfinite(value) and value > 0 else default
+
 # Loop detection (ref: opencode doom_loop detection — 3 identical calls)
 MAX_SIMILAR_CALLS = 3
+MAX_TOOL_CALLS_PER_BATCH = 32
 
 # A single tool call must not be able to hold a session forever. Individual
 # tools still pass their own command timeout to the environment; this outer
 # guard catches hangs before that layer is reached, including approval hooks,
 # adapter bugs, or stuck subprocess creation.
-DEFAULT_TOOL_EXECUTION_TIMEOUT = float(os.environ.get("OPENCOLLAB_TOOL_EXECUTION_TIMEOUT", "180"))
-MAX_TOOL_EXECUTION_TIMEOUT = float(os.environ.get("OPENCOLLAB_TOOL_EXECUTION_MAX_TIMEOUT", "900"))
+DEFAULT_TOOL_EXECUTION_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_EXECUTION_TIMEOUT", 180.0
+)
+MAX_TOOL_EXECUTION_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_EXECUTION_MAX_TIMEOUT", 900.0
+)
 TOOL_EXECUTION_TIMEOUT_GRACE = 10.0
+DEFAULT_TOOL_CANCELLATION_CLEANUP_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_CANCELLATION_CLEANUP_TIMEOUT", 1.0
+)
+DEFAULT_TOOL_CANCELLATION_FORCE_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_CANCELLATION_FORCE_TIMEOUT", 0.5
+)
+DEFAULT_TOOL_ENVIRONMENT_ABORT_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_ENVIRONMENT_ABORT_TIMEOUT", 1.0
+)
+
+
+def _require_positive_finite_timeout(value: Any, *, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a finite positive number")
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a finite positive number") from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"{name} must be a finite positive number")
+    return timeout
 
 # Read-only, range-parameterized tools whose loop key is the FILE PATH alone, not
 # the full args. A model thrashing on one file re-reads it with SHIFTING line
@@ -225,6 +273,9 @@ class ToolExecutionUseCase:
         permission_policy: PermissionPort | None = None,
         ask_policy: AskUserPort | None = None,
         safety_policy: SafetyPolicyPort | None = None,
+        cancellation_cleanup_timeout: float = DEFAULT_TOOL_CANCELLATION_CLEANUP_TIMEOUT,
+        cancellation_force_timeout: float = DEFAULT_TOOL_CANCELLATION_FORCE_TIMEOUT,
+        environment_abort_timeout: float = DEFAULT_TOOL_ENVIRONMENT_ABORT_TIMEOUT,
     ):
         self.agent = agent
         self.environment = environment
@@ -235,6 +286,26 @@ class ToolExecutionUseCase:
         self.permission_policy = permission_policy
         self.ask_policy = ask_policy
         self.safety_policy = safety_policy
+        self._cancellation_cleanup_timeout = _require_positive_finite_timeout(
+            cancellation_cleanup_timeout,
+            name="cancellation_cleanup_timeout",
+        )
+        self._cancellation_force_timeout = _require_positive_finite_timeout(
+            cancellation_force_timeout,
+            name="cancellation_force_timeout",
+        )
+        self._environment_abort_timeout = _require_positive_finite_timeout(
+            environment_abort_timeout,
+            name="environment_abort_timeout",
+        )
+        self._pending_cleanup_tasks: set[asyncio.Task[Any]] = set()
+
+    @property
+    def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
+        """Tasks still unwinding after a timed-out or cancelled tool call."""
+        return tuple(
+            task for task in self._pending_cleanup_tasks if not task.done()
+        )
 
     async def process(self, tool_calls: list[dict]) -> ToolProcessingResult:
         """Execute a batch of tool calls and collect their result messages.
@@ -247,6 +318,36 @@ class ToolExecutionUseCase:
         state here; the caller applies the returned ``ToolProcessingResult``.
         """
         result = ToolProcessingResult()
+        preflight_errors = (
+            self._preflight_tool_batch(tool_calls)
+            if len(tool_calls) > 1
+            else [""] * len(tool_calls)
+        )
+        if any(preflight_errors):
+            summary = "; ".join(
+                f"call {index}: {error}"
+                for index, error in enumerate(preflight_errors)
+                if error
+            )[:2_000]
+            for index, tc in enumerate(tool_calls):
+                tool_id = (
+                    tc.get("id")
+                    if isinstance(tc, dict) and isinstance(tc.get("id"), str)
+                    else f"invalid-tool-call-{index}"
+                )
+                result.messages_to_append.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_id,
+                        "content": (
+                            preflight_errors[index]
+                            if len(tool_calls) == 1
+                            else "Error: entire tool-call batch rejected before execution: "
+                            + summary
+                        ),
+                    }
+                )
+            return result
         recent_call_hashes = list(self.state.recent_call_hashes)
 
         for tc in tool_calls:
@@ -257,15 +358,29 @@ class ToolExecutionUseCase:
             try:
                 args = self.parse_tool_args(func)
             except json.JSONDecodeError:
+                raw_args = str(func.get("arguments", ""))
                 self._trace_short_circuit(
                     "tool_error",
                     tool_name,
-                    {"error": "invalid_json_args", "args": func.get("arguments", "")[:200]},
+                    {"error": "invalid_json_args", "args": raw_args[:200]},
                 )
                 result.messages_to_append.append({
                     "role": "tool",
                     "tool_call_id": tool_id,
-                    "content": f"Error: invalid JSON arguments: {func['arguments'][:200]}",
+                    "content": f"Error: invalid JSON arguments: {raw_args[:200]}",
+                })
+                continue
+            except ValueError:
+                raw_args = str(func.get("arguments", ""))
+                self._trace_short_circuit(
+                    "tool_error",
+                    tool_name,
+                    {"error": "non_object_args", "args": raw_args[:200]},
+                )
+                result.messages_to_append.append({
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": f"Error: tool arguments must be a JSON object: {raw_args[:200]}",
                 })
                 continue
 
@@ -298,7 +413,10 @@ class ToolExecutionUseCase:
                 )
                 result.messages_to_append.append({"role": "tool", "tool_call_id": tool_id, "content": warning})
                 result.loop_detections.append(LoopDetection(tool=tool_name, count=recent_same))
-                await self.event_publisher.emit(self.event_factory.loop_detected(tool_name, recent_same))
+                await self._emit_observation(
+                    lambda: self.event_factory.loop_detected(tool_name, recent_same),
+                    label="loop_detected",
+                )
                 continue
 
             tool = self.find_tool(tool_name)
@@ -313,7 +431,10 @@ class ToolExecutionUseCase:
                 })
                 continue
 
-            await self.event_publisher.emit(self.event_factory.tool_start(tool_name, args))
+            await self._emit_observation(
+                lambda: self.event_factory.tool_start(tool_name, args),
+                label="tool_start",
+            )
 
             tool_output, tool_latency = await self.execute_tool(tool, args, tool_id=tool_id)
             # The full result is persisted; a per-tool-result budget shaper caps
@@ -362,7 +483,7 @@ class ToolExecutionUseCase:
             )
 
             if self.tracer:
-                self.tracer.log_step(
+                self._trace_observation(
                     step_type="tool_exec",
                     payload=self.trace_payload(tool_name, args, tool_output),
                     tokens=0,
@@ -370,13 +491,89 @@ class ToolExecutionUseCase:
                 )
 
             result.messages_to_append.append(self.tool_result_message(tool_id, tool_output))
-            await self.event_publisher.emit(self.event_factory.tool_end(tool_name, tool_latency))
+            await self._emit_observation(
+                lambda: self.event_factory.tool_end(tool_name, tool_latency),
+                label="tool_end",
+            )
 
         return result
 
+    def _preflight_tool_batch(self, tool_calls: object) -> list[str]:
+        if not isinstance(tool_calls, list):
+            raise ValueError("tool_calls must be a list")
+        if len(tool_calls) > MAX_TOOL_CALLS_PER_BATCH:
+            return [
+                f"batch has {len(tool_calls)} calls; maximum is {MAX_TOOL_CALLS_PER_BATCH}"
+            ] * len(tool_calls)
+        errors = [""] * len(tool_calls)
+        seen_ids: set[str] = set()
+        duplicate_ids: set[str] = set()
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            tool_id = tc.get("id")
+            if isinstance(tool_id, str) and tool_id:
+                if tool_id in seen_ids:
+                    duplicate_ids.add(tool_id)
+                seen_ids.add(tool_id)
+        for index, tc in enumerate(tool_calls):
+            if not isinstance(tc, dict):
+                errors[index] = "call envelope must be an object"
+                continue
+            tool_id = tc.get("id")
+            if not isinstance(tool_id, str) or not tool_id:
+                errors[index] = "id must be non-empty text"
+                continue
+            if tool_id in duplicate_ids:
+                errors[index] = f"duplicate tool_call id {tool_id!r}"
+                continue
+            func = tc.get("function")
+            if not isinstance(func, dict):
+                errors[index] = "function must be an object"
+                continue
+            tool_name = func.get("name")
+            if not isinstance(tool_name, str) or not tool_name:
+                errors[index] = "function.name must be non-empty text"
+                continue
+            try:
+                args = self.parse_tool_args(func)
+            except json.JSONDecodeError:
+                raw_args = str(func.get("arguments", ""))
+                errors[index] = f"Error: invalid JSON arguments: {raw_args[:200]}"
+                continue
+            except ValueError:
+                raw_args = str(func.get("arguments", ""))
+                errors[index] = (
+                    "Error: tool arguments must be a JSON object: "
+                    f"{raw_args[:200]}"
+                )
+                continue
+            tool = self.find_tool(tool_name)
+            if tool is None:
+                errors[index] = (
+                    f"Error: unknown tool '{tool_name}'. Available: "
+                    f"{[t.name for t in self.agent.tools]}"
+                )
+                continue
+            schema = getattr(tool, "parameters", None)
+            if isinstance(schema, dict):
+                schema_errors = validate(args, schema)
+                if schema_errors:
+                    errors[index] = "schema validation failed: " + "; ".join(
+                        schema_errors
+                    )[:1_000]
+        return errors
+
     def parse_tool_args(self, func: dict) -> dict:
-        args_str = func["arguments"]
-        return json.loads(args_str) if args_str else {}
+        args_str = func.get("arguments", "")
+        if isinstance(args_str, dict):
+            return dict(args_str)
+        if not isinstance(args_str, str):
+            raise ValueError("tool arguments must be a JSON object")
+        args = json.loads(args_str) if args_str else {}
+        if not isinstance(args, dict):
+            raise ValueError("tool arguments must be a JSON object")
+        return args
 
     def tool_call_hash(self, tool_name: str, args: dict) -> str:
         # Path-normalized read tools key on the file path alone so re-reads of one
@@ -418,28 +615,214 @@ class ToolExecutionUseCase:
         start = time.monotonic()
         runtime = self.tool_runtime(tool_call_id=tool_id)
         timeout = self.tool_execution_timeout(tool, args)
+        execution_task: asyncio.Task[Any] | None = None
         try:
-            result = await abandon_on_timeout(
-                tool.execute_with_runtime(args, runtime),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
+            execution = tool.execute_with_runtime(args, runtime)
+            execution_task = asyncio.ensure_future(execution)
+            result = await self._await_execution_task(execution_task, timeout)
+        except _ToolExecutionTimeoutError:
             tool_name = self._tool_display_name(tool)
-            result = (
+            timeout_result = (
                 f"Tool execution timed out after {timeout:.1f}s "
                 f"while running '{tool_name}'."
             )
+            if execution_task is None:
+                result = timeout_result
+            else:
+                cleanup_task = asyncio.create_task(
+                    self._cleanup_timed_out_execution(execution_task)
+                )
+                try:
+                    quiesced, revoke_error, abort_error = await asyncio.shield(
+                        cleanup_task
+                    )
+                except asyncio.CancelledError:
+                    await self._await_owned_cleanup_despite_cancellation(cleanup_task)
+                    raise
+                if quiesced:
+                    result = timeout_result
+                else:
+                    details = [
+                        "Tool cancellation cleanup failed after two bounded cancellation attempts",
+                        "the execution environment was revoked before returning",
+                    ]
+                    if revoke_error:
+                        details.append(revoke_error)
+                    if abort_error:
+                        details.append(abort_error)
+                    result = timeout_result + " " + "; ".join(details) + "."
+        except asyncio.CancelledError:
+            if execution_task is not None and not execution_task.done():
+                cleanup_task = asyncio.create_task(
+                    self._cleanup_caller_cancelled_execution(execution_task)
+                )
+                await self._await_owned_cleanup_despite_cancellation(cleanup_task)
+            raise
         except PermissionError as e:
             result = f"Permission denied: {e}"
         except Exception as e:
             result = f"Tool execution error: {type(e).__name__}: {e}"
+        finally:
+            if execution_task is not None and not execution_task.done():
+                self._track_pending_cleanup(execution_task)
 
         return result, time.monotonic() - start
+
+    @staticmethod
+    async def _await_execution_task(
+        task: asyncio.Task[Any], timeout: float | None
+    ) -> Any:
+        if timeout is None:
+            return await asyncio.shield(task)
+        done, _pending = await asyncio.wait({task}, timeout=timeout)
+        if task in done:
+            return task.result()
+        task.cancel()
+        raise _ToolExecutionTimeoutError
+
+    async def _quiesce_cancelled_task(self, task: asyncio.Task[Any]) -> bool:
+        """Give one cancellation time to unwind, then cancel once more."""
+        if await self._wait_task(task, self._cancellation_cleanup_timeout):
+            return True
+        task.cancel()
+        return await self._wait_task(task, self._cancellation_force_timeout)
+
+    async def _cleanup_caller_cancelled_execution(
+        self, task: asyncio.Task[Any]
+    ) -> None:
+        task.cancel()
+        await self._cleanup_timed_out_execution(task)
+
+    async def _cleanup_timed_out_execution(
+        self, task: asyncio.Task[Any]
+    ) -> tuple[bool, str | None, str | None]:
+        if await self._quiesce_cancelled_task(task):
+            return True, None, None
+        self._track_pending_cleanup(task)
+        revoke_error = self._revoke_environment_sync()
+        abort_error = await self._abort_environment_bounded()
+        termination = await force_task_terminal(
+            task,
+            timeout=self._cancellation_force_timeout,
+        )
+        if termination.isolated:
+            self._pending_cleanup_tasks.discard(task)
+        if termination.errors:
+            detail = "; ".join(str(error) for error in termination.errors)
+            abort_error = "; ".join(
+                part for part in (abort_error, detail) if part
+            )
+        return False, revoke_error, abort_error
+
+    async def _await_owned_cleanup_despite_cancellation(
+        self, cleanup_task: asyncio.Task[Any]
+    ) -> None:
+        """Finish owned cleanup even when the caller repeats ``Task.cancel``."""
+        while True:
+            try:
+                await asyncio.shield(cleanup_task)
+                return
+            except asyncio.CancelledError:
+                if cleanup_task.done():
+                    self._consume_task_result(cleanup_task)
+                    return
+                continue
+            except BaseException:
+                self._consume_task_result(cleanup_task)
+                return
+
+    @staticmethod
+    async def _wait_task(task: asyncio.Task[Any], timeout: float) -> bool:
+        done, _pending = await asyncio.wait({task}, timeout=timeout)
+        if done:
+            ToolExecutionUseCase._consume_task_result(task)
+        return bool(done)
+
+    def _track_pending_cleanup(self, task: asyncio.Task[Any]) -> None:
+        if (
+            task.done()
+            or task_is_isolated(task)
+            or task in self._pending_cleanup_tasks
+        ):
+            return
+        self._pending_cleanup_tasks.add(task)
+        task.add_done_callback(self._pending_cleanup_tasks.discard)
+        task.add_done_callback(self._consume_task_result)
+
+    @staticmethod
+    def _consume_task_result(task: asyncio.Task[Any]) -> None:
+        try:
+            task.result()
+        except BaseException:
+            pass
+
+    def _revoke_environment_sync(self) -> str | None:
+        """Synchronously block concrete Environment methods before abort awaits."""
+        if self.environment is None:
+            return "no execution environment was available to revoke"
+        try:
+            setattr(self.environment, "_aborted", True)
+        except Exception as exc:  # pragma: no cover - exotic immutable ports
+            return f"environment revocation failed: {type(exc).__name__}: {exc}"
+        return None
+
+    async def _abort_environment_bounded(self) -> str | None:
+        if self.environment is None:
+            return "environment abort was unavailable"
+        abort = getattr(self.environment, "abort", None)
+        if not callable(abort):
+            return "environment abort was unavailable"
+        try:
+            outcome = abort()
+        except Exception as exc:
+            return f"environment abort failed: {type(exc).__name__}: {exc}"
+        if not inspect.isawaitable(outcome):
+            return None
+
+        try:
+            abort_task = asyncio.ensure_future(outcome)
+        except Exception as exc:
+            close = getattr(outcome, "close", None)
+            if callable(close):
+                close()
+            return f"environment abort scheduling failed: {type(exc).__name__}: {exc}"
+        try:
+            if await self._wait_task(abort_task, self._environment_abort_timeout):
+                return self._task_failure(abort_task, label="environment abort")
+            abort_task.cancel()
+            if await self._wait_task(abort_task, self._cancellation_force_timeout):
+                failure = self._task_failure(abort_task, label="environment abort")
+                return failure or "environment abort timed out and was cancelled"
+            termination = await force_task_terminal(
+                abort_task,
+                timeout=self._cancellation_force_timeout,
+            )
+            detail = "; ".join(str(error) for error in termination.errors)
+            return (
+                "environment abort did not quiesce within its bounded timeout"
+                + (f": {detail}" if detail else "")
+            )
+        except asyncio.CancelledError:
+            abort_task.cancel()
+            self._track_pending_cleanup(abort_task)
+            raise
+
+    @staticmethod
+    def _task_failure(task: asyncio.Task[Any], *, label: str) -> str | None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return f"{label} was cancelled"
+        except Exception as exc:
+            return f"{label} failed: {type(exc).__name__}: {exc}"
+        return None
 
     def _tool_display_name(self, tool: Any) -> str:
         return str(getattr(tool, "name", type(tool).__name__))
 
-    def tool_execution_timeout(self, tool: Any, args: dict) -> float:
+    def tool_execution_timeout(self, tool: Any, args: dict) -> float | None:
+        if getattr(tool, "disable_outer_timeout", False):
+            return None
         requested = self._numeric_timeout((args or {}).get("timeout"))
         base = requested if requested is not None else self._tool_default_timeout(tool)
         return min(base + TOOL_EXECUTION_TIMEOUT_GRACE, MAX_TOOL_EXECUTION_TIMEOUT)
@@ -457,7 +840,7 @@ class ToolExecutionUseCase:
             timeout = float(value)
         except (TypeError, ValueError):
             return None
-        if timeout <= 0:
+        if not math.isfinite(timeout) or timeout <= 0:
             return None
         return timeout
 
@@ -490,21 +873,32 @@ class ToolExecutionUseCase:
         try:
             args = self.parse_tool_args(func)
         except json.JSONDecodeError:
-            return None, f"Error: invalid JSON arguments: {func['arguments'][:200]}"
+            raw_args = str(func.get("arguments", ""))
+            return None, f"Error: invalid JSON arguments: {raw_args[:200]}"
+        except ValueError:
+            raw_args = str(func.get("arguments", ""))
+            return None, (
+                "Error: tool arguments must be a JSON object: "
+                f"{raw_args[:200]}"
+            )
 
         tool = self.find_tool(tool_name)
         if not tool:
             return None, f"Error: unknown tool '{tool_name}'."
 
-        await self.event_publisher.emit(self.event_factory.tool_start(tool_name, args))
-        runtime = self.tool_runtime(tool_call_id=tc["id"])
+        await self._emit_observation(
+            lambda: self.event_factory.tool_start(tool_name, args),
+            label="tool_start",
+        )
+
+        latency = 0.0
         try:
-            outcome = await tool.execute_with_runtime(args, runtime)
-        except PermissionError as e:
-            return None, f"Permission denied: {e}"
-        except Exception as e:
-            return None, f"Tool execution error: {type(e).__name__}: {e}"
-        await self.event_publisher.emit(self.event_factory.tool_end(tool_name, 0.0))
+            outcome, latency = await self.execute_tool(tool, args, tool_id=tc["id"])
+        finally:
+            await self._emit_observation(
+                lambda: self.event_factory.tool_end(tool_name, latency),
+                label="tool_end",
+            )
 
         if isinstance(outcome, DeferredCall):
             return outcome.ref, None
@@ -528,7 +922,22 @@ class ToolExecutionUseCase:
         if isinstance(payload.get("args"), dict):
             snapshot = json.dumps(payload["args"], default=str)[:500]
             payload["args"] = snapshot
-        self.tracer.log_step(step_type=step_type, payload=payload)
+        self._trace_observation(step_type=step_type, payload=payload)
+
+    async def _emit_observation(self, build_event: Callable[[], Any], *, label: str) -> None:
+        """Keep event sinks observational even when a direct publisher fails."""
+        try:
+            await self.event_publisher.emit(build_event())
+        except Exception as exc:
+            logger.error("%s event failed: %s", label, exc)
+
+    def _trace_observation(self, **payload: Any) -> None:
+        if not self.tracer:
+            return
+        try:
+            self.tracer.log_step(**payload)
+        except Exception as exc:
+            logger.error("tool trace failed: %s", exc)
 
     def trace_payload(self, tool_name: str, args: dict, tool_output: str) -> dict[str, Any]:
         # Cap result in trace to 4k to keep trajectory files manageable.

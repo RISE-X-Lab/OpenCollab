@@ -27,6 +27,7 @@ Ref:
 
 from __future__ import annotations
 
+import json
 import re
 import shlex
 from typing import Any
@@ -119,10 +120,12 @@ class RunTestsTool(Tool):
         *,
         allow_runner_override: bool = True,
         allow_extra_args: bool = True,
+        require_process_isolation: bool = False,
     ):
         self.max_traceback_chars = max_traceback_chars
         self.allow_runner_override = allow_runner_override
         self.allow_extra_args = allow_extra_args
+        self.require_process_isolation = require_process_isolation
         # target -> consecutive RED count, for the escalation nudge. The tool
         # instance is shared across a task's workflow sessions (built once in
         # the eval toolset), so this survives across run_tests calls.
@@ -142,6 +145,13 @@ class RunTestsTool(Tool):
 
         if not env:
             return "Error: no execution environment available."
+        if self.require_process_isolation and not getattr(
+            env, "process_isolated", False
+        ):
+            return (
+                "Error: run_tests is disabled because this execution environment "
+                "does not provide an OS process sandbox."
+            )
         if pinned_runner and not self.allow_runner_override:
             return (
                 "Error: runner override is disabled for this run_tests tool. "
@@ -177,7 +187,12 @@ class RunTestsTool(Tool):
                     "\n" + result.stderr if result.stderr else ""
                 )
 
-        green = _is_green(result.returncode, combined)
+        green = _is_green(
+            result.returncode,
+            combined,
+            runner=runner,
+            target=target,
+        )
         streak = self._record(target, green)
         return _format_report(
             cmd,
@@ -308,7 +323,7 @@ def _build_command(runner: str, target: str, extra_args: str) -> str:
         if target:
             parts.append(shlex.quote(target))
     elif _is_go_runner(runner):
-        parts = [_go_runner_command(runner)]
+        parts = [_go_runner_command(runner), "-json"]
         parts.extend(_translate_go_target_args(target))
     else:
         parts = [runner]
@@ -392,18 +407,61 @@ def _parse_counts(summary: str | None) -> tuple[dict[str, int], int]:
     return counts, warnings
 
 
-def _is_green(returncode: int, output: str) -> bool:
-    """Runner-agnostic pass decision: exit-code 0 AND no failed/error counts.
+def _target_has_pass_proof(target: str, passed_lines: list[str]) -> bool:
+    """Whether pytest's per-test summary proves the requested target ran."""
+    if not target:
+        return True
+    normalized = target.removeprefix("./")
+    for line in passed_lines:
+        node_id = line.removeprefix("PASSED ").split(maxsplit=1)[0]
+        candidate = node_id.removeprefix("./")
+        if candidate == normalized or candidate.startswith(normalized + "::"):
+            return True
+    return False
 
-    Works even with no pytest summary line — a native runner that exits 0 is
-    GREEN. If a pytest-shaped summary IS present, a nonzero failed/error count
-    forces RED regardless of exit code (defends against runners that mis-report).
-    """
+
+def _is_green(
+    returncode: int,
+    output: str,
+    *,
+    runner: str = DEFAULT_RUNNER,
+    target: str = "",
+) -> bool:
+    """Require positive evidence that at least one requested test executed."""
     summary = _summary_line(output)
     counts, _ = _parse_counts(summary)
     if counts.get("failed", 0) or counts.get("error", 0):
         return False
-    return returncode == 0
+    if returncode != 0:
+        return False
+    if _is_pytest_runner(runner):
+        if counts.get("passed", 0) <= 0:
+            return False
+        return _target_has_pass_proof(target, _passed_tests(output))
+    if _is_go_runner(runner):
+        requested_test = target.partition("::")[2].split("::")[-1].strip()
+        saw_test_pass = False
+        for line in output.splitlines():
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(event, dict) or event.get("Action") != "pass":
+                continue
+            test_name = event.get("Test")
+            if not isinstance(test_name, str) or not test_name:
+                continue
+            saw_test_pass = True
+            if not requested_test or (
+                test_name == requested_test
+                or test_name.startswith(requested_test + "/")
+            ):
+                return True
+        return saw_test_pass and not requested_test
+    # Native runners need an explicit, parser-backed proof adapter before their
+    # output can authorize a GREEN verdict. A bare exit code is forgeable via
+    # no-op commands and zero-test modes.
+    return False
 
 
 def _missing_substring_hint(output: str) -> str | None:
@@ -495,8 +553,8 @@ def _format_report(
     else:
         verdict_word = "GREEN" if green else "RED"
         parts.append(
-            f"Summary: no pytest summary line; decided from exit code "
-            f"{returncode} -> {verdict_word}"
+            "Summary: no parser-backed executed-test proof; "
+            f"exit code {returncode} -> {verdict_word}"
         )
 
     if failed:

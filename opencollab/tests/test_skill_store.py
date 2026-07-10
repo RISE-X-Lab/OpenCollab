@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
+
+from opencollab.adapters.skills import file_skill_store as skill_store_mod
 from opencollab.adapters.skills.file_skill_store import (
     SKILL_BODY_MAX_CHARS,
     FileSkillStore,
@@ -125,3 +129,48 @@ def test_file_store_does_not_cap_small_body(tmp_path):
     _write_skill(tmp_path, "small", description="S.", body="tiny")
     store = FileSkillStore(tmp_path)
     assert store.get_body("small") == "tiny"
+
+
+@pytest.mark.parametrize("kind", ["fifo", "symlink", "oversized"])
+def test_file_store_skips_unsafe_or_oversized_skill_file(
+    tmp_path,
+    monkeypatch,
+    kind,
+):
+    skill_dir = tmp_path / "unsafe"
+    skill_dir.mkdir()
+    skill_file = skill_dir / "SKILL.md"
+    if kind == "fifo":
+        os.mkfifo(skill_file)
+    elif kind == "symlink":
+        outside = tmp_path / "outside.md"
+        outside.write_text("---\nname: leaked\n---\nsecret", encoding="utf-8")
+        skill_file.symlink_to(outside)
+    else:
+        skill_file.write_text("x" * 65, encoding="utf-8")
+        monkeypatch.setattr(skill_store_mod, "MAX_SKILL_FILE_BYTES", 64)
+
+    store = FileSkillStore(tmp_path)
+
+    assert store.list_manifests() == ()
+
+
+def test_file_store_does_not_follow_symlink_root(tmp_path):
+    real = tmp_path / "real"
+    real.mkdir()
+    _write_skill(real, "alpha", description="A", body="secret")
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+
+    store = FileSkillStore(linked)
+
+    assert store.list_manifests() == ()
+
+
+def test_file_store_root_enumeration_is_bounded(tmp_path, monkeypatch):
+    for index in range(4):
+        (tmp_path / f"entry-{index}").mkdir()
+    monkeypatch.setattr(skill_store_mod, "MAX_SKILL_ROOT_ENTRIES", 3)
+
+    with pytest.raises(ValueError, match="entries exceed limit"):
+        FileSkillStore(tmp_path)

@@ -17,16 +17,19 @@ import os
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import time
+import unicodedata
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_HOST = "jinan-aws"
@@ -42,6 +45,15 @@ DEFAULT_PROXY_ENV_FILE = Path.home() / ".claude" / "glm52.env"
 DEFAULT_LOCAL_PROXY_BASE_URL = "http://127.0.0.1:8878"
 REMOTE_HEALTH_SSH_TIMEOUT_FLOOR = 15
 REMOTE_PROXY_TUNNELS: list[subprocess.Popen[str]] = []
+LOCAL_PROCESS_TERM_GRACE_SECONDS = 5.0
+LOCAL_PROCESS_KILL_REAP_TIMEOUT_SECONDS = 5.0
+LOCAL_PROCESS_CLEANUP_OUTER_SLACK_SECONDS = 1.0
+REMOTE_CLEANUP_COMMAND_TIMEOUT_SECONDS = 30.0
+LOCAL_SPAWN_SIGNALS = frozenset((signal.SIGINT,))
+PROXY_PROCESS_LOOKUP_TIMEOUT_SECONDS = 5.0
+MAX_PROXY_ENV_BYTES = 1024 * 1024
+MAX_TASKS_PER_RUN = 1000
+MAX_REMOTE_OUTPUT_TAIL_CHARS = 4 * 1024 * 1024
 
 SYNC_FILES = [
     "scripts/run_swe_v2_one_from_fifo.sh",
@@ -56,7 +68,12 @@ SYNC_DIRS = [
 
 
 REMOTE_RUNNER = r'''
+import atexit
 import ast
+from collections import deque
+from contextlib import contextmanager
+import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -64,17 +81,31 @@ import pathlib
 import re
 import shlex
 import signal
+import stat
 import subprocess
 import sys
+import threading
 import time
+import unicodedata
 import urllib.request
+import uuid
 
 
 cfg = json.loads(sys.stdin.read())
 token = cfg["token"]
+owner_nonce = cfg["owner_nonce"]
 remote_root = pathlib.Path(cfg["remote_root"])
 remote_repo = pathlib.Path(cfg["remote_repo"])
 base_run_dir = pathlib.Path(cfg["base_run_dir"])
+package_root = remote_repo / "opencollab"
+if str(package_root) not in sys.path:
+    sys.path.insert(0, str(package_root))
+from opencollab.harness.swe_eval_records import (
+    SUBMISSION_INTEGRITY_INELIGIBLE,
+    metric_submission_integrity,
+    open_regular_binary,
+)
+
 dataset_path = remote_root / "datasets" / "swe-batch-pro-lite" / "instances.jsonl"
 workflow = cfg["workflow"]
 model_name = cfg["model_name"]
@@ -91,6 +122,236 @@ checkpoint_interval = int(cfg["checkpoint_interval"])
 max_task_starts = int(cfg["max_task_starts"])
 dry_run = bool(cfg["dry_run"])
 ACTIVE_CHILD_PGIDS = set()
+ACTIVE_FIFO_PATHS = set()
+RUNNER_LOCK_FD = None
+RUNNER_OWNER_RECORD = None
+RUNNER_STATE_THREAD_LOCK = threading.RLock()
+PROCESS_TERM_GRACE_SECONDS = 30.0
+PROCESS_KILL_REAP_TIMEOUT_SECONDS = 5.0
+PROCESS_CLEANUP_OUTER_SLACK_SECONDS = 1.0
+PROCESS_CLEANUP_FAILED_EXIT_CODE = 125
+SPAWN_SIGNALS = frozenset((signal.SIGINT, signal.SIGTERM, signal.SIGHUP))
+MAX_JSONL_LINE_BYTES = 16 * 1024 * 1024
+MAX_JSONL_RETAINED_BYTES = 64 * 1024 * 1024
+MAX_JSONL_RETAINED_ROWS = 10000
+MAX_JSONL_SCAN_BYTES = 256 * 1024 * 1024
+MAX_DATASET_BYTES = 256 * 1024 * 1024
+MAX_DATASET_ROWS = 1_000_000
+MAX_LOG_TAIL_BYTES = 4 * 1024 * 1024
+MAX_TASK_ID_BYTES = 240
+MAX_TASKS_PER_RUN = 1000
+MAX_DURABLE_JSONL_BYTES = 256 * 1024 * 1024
+MAX_JSON_DOCUMENT_BYTES = 16 * 1024 * 1024
+MAX_EXIT_STATUS_BYTES = 128
+SAFE_FILE_OPEN_RETRIES = 8
+HARNESS_LOCK_TIMEOUT_SECONDS = 10.0
+
+
+class RecordInputLimitError(ValueError):
+    pass
+
+
+class RecordInputFormatError(ValueError):
+    pass
+
+
+def block_spawn_signals():
+    state = {"previous": {}, "pending": [], "restored": False}
+
+    def defer(signum, frame):
+        if signum not in state["pending"]:
+            state["pending"].append(signum)
+
+    try:
+        for signum in SPAWN_SIGNALS:
+            state["previous"][signum] = signal.getsignal(signum)
+            signal.signal(signum, defer)
+    except BaseException:
+        for signum, handler in state["previous"].items():
+            signal.signal(signum, handler)
+        raise
+    return state
+
+
+def restore_spawn_signals(state):
+    if state.get("restored"):
+        return
+    for signum, handler in state["previous"].items():
+        signal.signal(signum, handler)
+    state["restored"] = True
+    for signum in state["pending"]:
+        handler = state["previous"].get(signum, signal.SIG_DFL)
+        if handler == signal.SIG_IGN:
+            continue
+        if handler == signal.SIG_DFL:
+            os.kill(os.getpid(), signum)
+        else:
+            handler(signum, None)
+
+
+def wait_for_owned_cleanup(done, timeout):
+    deadline = time.monotonic() + max(0.0, timeout)
+    interruption = None
+    while not done.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            done.wait(min(0.05, remaining))
+        except (KeyboardInterrupt, SystemExit) as exc:
+            if interruption is None:
+                interruption = exc
+    return done.is_set(), interruption
+
+
+def consume_process_exit(proc):
+    try:
+        proc.wait()
+    except BaseException:
+        pass
+    while process_group_exists(proc.pid):
+        time.sleep(0.1)
+    ACTIVE_CHILD_PGIDS.discard(proc.pid)
+
+
+def schedule_process_exit_consumer(proc):
+    threading.Thread(
+        target=consume_process_exit,
+        args=(proc,),
+        name=f"prolite-reap-{getattr(proc, 'pid', 'unknown')}",
+        daemon=True,
+    ).start()
+
+
+def process_group_exists(pgid):
+    try:
+        os.kill(-pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def wait_for_process_group_exit(pgid, deadline):
+    while process_group_exists(pgid):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.01, remaining))
+    return True
+
+
+def terminate_process_group_owned(proc, term_timeout, kill_timeout):
+    pgid = proc.pid
+    term_deadline = time.monotonic() + max(0.0, term_timeout)
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            schedule_process_exit_consumer(proc)
+            return False
+
+    leader_reaped = False
+    try:
+        proc.wait(timeout=max(0.0, term_deadline - time.monotonic()))
+        leader_reaped = True
+    except ChildProcessError:
+        leader_reaped = True
+    except subprocess.TimeoutExpired:
+        pass
+
+    group_gone = wait_for_process_group_exit(pgid, term_deadline)
+    if leader_reaped and group_gone:
+        return True
+
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    kill_deadline = time.monotonic() + max(0.0, kill_timeout)
+    if not leader_reaped:
+        try:
+            proc.wait(timeout=max(0.0, kill_deadline - time.monotonic()))
+            leader_reaped = True
+        except ChildProcessError:
+            leader_reaped = True
+        except subprocess.TimeoutExpired:
+            pass
+    group_gone = wait_for_process_group_exit(pgid, kill_deadline)
+    if not leader_reaped or not group_gone:
+        schedule_process_exit_consumer(proc)
+    return leader_reaped and group_gone
+
+
+def terminate_process_group_bounded(
+    proc,
+    term_timeout=PROCESS_TERM_GRACE_SECONDS,
+    kill_timeout=PROCESS_KILL_REAP_TIMEOUT_SECONDS,
+):
+    state = {}
+    done = threading.Event()
+
+    def cleanup():
+        try:
+            state["reaped"] = terminate_process_group_owned(
+                proc,
+                term_timeout,
+                kill_timeout,
+            )
+        except BaseException as exc:
+            state["error"] = exc
+        finally:
+            done.set()
+
+    cleanup_thread = threading.Thread(
+        target=cleanup,
+        name=f"prolite-cleanup-{getattr(proc, 'pid', 'unknown')}",
+        daemon=True,
+    )
+    cleanup_thread.start()
+    completed, interruption = wait_for_owned_cleanup(
+        done,
+        term_timeout + kill_timeout + PROCESS_CLEANUP_OUTER_SLACK_SECONDS,
+    )
+    if completed and "reaped" in state:
+        reaped = bool(state["reaped"])
+    else:
+        reaped = False
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            try:
+                proc.kill()
+            except (ProcessLookupError, PermissionError):
+                pass
+    if interruption is not None:
+        raise interruption
+    return reaped
+
+
+def ensure_process_group_quiesced_after_wait(
+    proc,
+    term_timeout=PROCESS_TERM_GRACE_SECONDS,
+    kill_timeout=PROCESS_KILL_REAP_TIMEOUT_SECONDS,
+):
+    if not process_group_exists(proc.pid):
+        return True
+    return terminate_process_group_bounded(
+        proc,
+        term_timeout=term_timeout,
+        kill_timeout=kill_timeout,
+    )
 
 
 def slice_label():
@@ -98,61 +359,442 @@ def slice_label():
     return str(start_index) if end_index <= start_index else f"{start_index}-{end_index}"
 
 
-def terminate_active_children(sig=signal.SIGTERM):
-    for pgid in list(ACTIVE_CHILD_PGIDS):
+def terminate_active_children(_sig=signal.SIGTERM):
+    owned = set(ACTIVE_CHILD_PGIDS)
+    for pgid in owned:
         try:
-            os.killpg(pgid, sig)
+            os.killpg(pgid, signal.SIGTERM)
         except ProcessLookupError:
-            pass
+            ACTIVE_CHILD_PGIDS.discard(pgid)
+    term_deadline = time.monotonic() + PROCESS_TERM_GRACE_SECONDS
+    for pgid in list(owned):
+        if wait_for_process_group_exit(pgid, term_deadline):
+            ACTIVE_CHILD_PGIDS.discard(pgid)
+            owned.discard(pgid)
+    for pgid in owned:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            ACTIVE_CHILD_PGIDS.discard(pgid)
+    kill_deadline = time.monotonic() + PROCESS_KILL_REAP_TIMEOUT_SECONDS
+    for pgid in list(owned):
+        if wait_for_process_group_exit(pgid, kill_deadline):
+            ACTIVE_CHILD_PGIDS.discard(pgid)
+            owned.discard(pgid)
+    return not owned
+
+
+def cleanup_fifo(path):
+    try:
+        pathlib.Path(path).unlink(missing_ok=True)
+    finally:
+        ACTIVE_FIFO_PATHS.discard(pathlib.Path(path))
+
+
+def cleanup_active_fifos():
+    for path in list(ACTIVE_FIFO_PATHS):
+        cleanup_fifo(path)
 
 
 def signal_exit(signum, frame):
     terminate_active_children(signal.SIGTERM)
+    cleanup_active_fifos()
     raise SystemExit(128 + int(signum))
 
 
+def fsync_directory(path):
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    fd = os.open(path, flags)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_all(fd, payload):
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short harness file write")
+        view = view[written:]
+
+
+def open_regular_file(path, flags, mode=0o644):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    safe_flags = (
+        flags
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    for _attempt in range(SAFE_FILE_OPEN_RETRIES):
+        try:
+            before = path.lstat()
+        except FileNotFoundError:
+            before = None
+        if before is not None and not stat.S_ISREG(before.st_mode):
+            raise OSError(f"harness file must be regular: {path}")
+        try:
+            if before is None:
+                fd = os.open(path, safe_flags | os.O_CREAT | os.O_EXCL, mode)
+            else:
+                fd = os.open(path, safe_flags)
+        except (FileExistsError, FileNotFoundError):
+            continue
+        try:
+            opened = os.fstat(fd)
+            current = path.lstat()
+            identity = (opened.st_dev, opened.st_ino)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or not stat.S_ISREG(current.st_mode)
+                or (current.st_dev, current.st_ino) != identity
+                or (
+                    before is not None
+                    and (before.st_dev, before.st_ino) != identity
+                )
+            ):
+                os.close(fd)
+                continue
+            return fd
+        except BaseException:
+            os.close(fd)
+            raise
+    raise OSError(f"harness file did not stabilize while opening: {path}")
+
+
+def acquire_lock(fd, label):
+    deadline = time.monotonic() + HARNESS_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except OSError as exc:
+            if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                raise
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError(f"timed out acquiring {label}")
+        time.sleep(min(0.01, remaining))
+
+
+@contextmanager
+def open_locked_append(path):
+    fd = open_regular_file(path, os.O_RDWR | os.O_APPEND)
+    locked = False
+    handle = None
+    try:
+        acquire_lock(fd, f"append lock {path}")
+        locked = True
+        handle = os.fdopen(fd, "ab", closefd=False)
+        yield handle
+        handle.flush()
+        os.fsync(fd)
+        fsync_directory(path.parent)
+    finally:
+        if handle is not None:
+            handle.close()
+        try:
+            if locked:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def atomic_write_bytes(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        before = None
+    if before is not None and not stat.S_ISREG(before.st_mode):
+        raise OSError(f"harness destination must be regular or absent: {path}")
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        fd = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+        )
+        try:
+            write_all(fd, payload)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        try:
+            current = path.lstat()
+        except FileNotFoundError:
+            current = None
+        if before is None:
+            if current is not None:
+                raise OSError(f"harness destination appeared during write: {path}")
+        elif (
+            current is None
+            or not stat.S_ISREG(current.st_mode)
+            or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise OSError(f"harness destination changed during write: {path}")
+        os.replace(temporary, path)
+        fsync_directory(path.parent)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def process_start_identity(pid):
+    try:
+        raw = pathlib.Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        remainder = raw.rsplit(")", 1)[1].split()
+        if len(remainder) > 19 and remainder[19].isdigit():
+            return f"proc:{remainder[19]}"
+    except (OSError, IndexError):
+        pass
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    value = result.stdout.strip()
+    return f"ps:{value}" if result.returncode == 0 and value else ""
+
+
+def _runner_owner_record():
+    try:
+        context = open_regular_binary(base_run_dir / "runner.pid")
+        handle = context.__enter__()
+    except FileNotFoundError:
+        return None
+    try:
+        opened = os.fstat(handle.fileno())
+        if opened.st_size <= 0 or opened.st_size > 4096:
+            raise RuntimeError("runner owner must be a bounded regular file")
+        raw = handle.read(4097)
+        if len(raw) > 4096:
+            raise RuntimeError("runner owner exceeds its byte limit")
+        value = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("runner owner record is invalid") from exc
+    finally:
+        context.__exit__(None, None, None)
+    if (
+        not isinstance(value, dict)
+        or value.get("schema") != "opencollab.prolite_runner_owner.v1"
+        or isinstance(value.get("pid"), bool)
+        or not isinstance(value.get("pid"), int)
+        or value["pid"] <= 1
+        or not isinstance(value.get("start_identity"), str)
+        or not value["start_identity"]
+        or re.fullmatch(r"[0-9a-f]{32}", str(value.get("owner_nonce") or "")) is None
+    ):
+        raise RuntimeError("runner owner record is invalid")
+    return value
+
+
+def _pid_exists(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+    return True
+
+
 def write_runner_pid():
+    global RUNNER_LOCK_FD, RUNNER_OWNER_RECORD
+    if RUNNER_LOCK_FD is not None:
+        return RUNNER_OWNER_RECORD
     base_run_dir.mkdir(parents=True, exist_ok=True)
-    (base_run_dir / "runner.pid").write_text(str(os.getpid()) + "\n", encoding="utf-8")
+    pid = os.getpid()
+    start_identity = process_start_identity(pid)
+    if not start_identity or not re.fullmatch(r"[0-9a-f]{32}", owner_nonce):
+        raise RuntimeError("runner ownership identity could not be established")
+    lock_fd = open_regular_file(base_run_dir / ".runner.lock", os.O_RDWR)
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            if exc.errno in {errno.EACCES, errno.EAGAIN}:
+                raise RuntimeError("another ProLite runner owns this run directory") from exc
+            raise
+        existing = _runner_owner_record()
+        if existing is not None:
+            existing_pid = existing["pid"]
+            current_identity = process_start_identity(existing_pid)
+            if existing_pid == pid and existing.get("owner_nonce") == owner_nonce:
+                if existing.get("start_identity") != start_identity:
+                    raise RuntimeError("current runner owner identity changed")
+            elif _pid_exists(existing_pid):
+                if not current_identity:
+                    raise RuntimeError("existing runner owner identity is unverifiable")
+                if current_identity == existing["start_identity"]:
+                    raise RuntimeError("a live ProLite runner already owns this run directory")
+        record = {
+            "schema": "opencollab.prolite_runner_owner.v1",
+            "pid": pid,
+            "start_identity": start_identity,
+            "owner_nonce": owner_nonce,
+        }
+        atomic_write_bytes(
+            base_run_dir / "runner.pid",
+            (json.dumps(record, sort_keys=True) + "\n").encode("utf-8"),
+        )
+        RUNNER_LOCK_FD = lock_fd
+        RUNNER_OWNER_RECORD = record
+        lock_fd = -1
+        return record
+    finally:
+        if lock_fd >= 0:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            finally:
+                os.close(lock_fd)
 
 
-for _sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
-    signal.signal(_sig, signal_exit)
+def initialize_runner_ownership():
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, signal_exit)
+    write_runner_pid()
+    atexit.register(cleanup_active_fifos)
+    atexit.register(terminate_active_children)
 
-write_runner_pid()
+
+if __name__ == "__main__":
+    initialize_runner_ownership()
 
 
 def now():
     return time.strftime("%Y-%m-%d %H:%M:%S %z")
 
 
+def iter_jsonl(path, max_scan_bytes=None, max_rows=None):
+    try:
+        context = open_regular_binary(path)
+        handle = context.__enter__()
+    except FileNotFoundError:
+        return
+    try:
+        opened = os.fstat(handle.fileno())
+        if max_scan_bytes is not None and opened.st_size > max_scan_bytes:
+            raise RecordInputLimitError(
+                f"JSONL input exceeds {max_scan_bytes} bytes: {path}"
+            )
+        remaining = opened.st_size
+        physical_rows = 0
+        while True:
+            if remaining <= 0:
+                break
+            line = handle.readline(min(MAX_JSONL_LINE_BYTES + 1, remaining))
+            if not line:
+                break
+            remaining -= len(line)
+            physical_rows += 1
+            if max_rows is not None and physical_rows > max_rows:
+                raise RecordInputLimitError(
+                    f"JSONL input exceeds {max_rows} physical rows: {path}"
+                )
+            if len(line) > MAX_JSONL_LINE_BYTES:
+                raise RecordInputLimitError(
+                    f"JSONL line exceeds {MAX_JSONL_LINE_BYTES} bytes: {path}"
+                )
+            if not line.strip():
+                raise RecordInputFormatError(f"blank JSONL record in {path}")
+            try:
+                value = json.loads(line.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise RecordInputFormatError(
+                    f"invalid JSONL record in {path}"
+                ) from exc
+            if not isinstance(value, dict):
+                raise RecordInputFormatError(
+                    f"JSONL record must be an object: {path}"
+                )
+            yield len(line), value
+    finally:
+        context.__exit__(None, None, None)
+
+
 def read_jsonl(path):
-    rows = []
-    if not path.exists():
-        return rows
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except Exception:
-            continue
-        if isinstance(value, dict):
-            rows.append(value)
-    return rows
+    rows = deque()
+    retained_bytes = 0
+    for line_size, value in iter_jsonl(
+        path,
+        max_scan_bytes=MAX_JSONL_SCAN_BYTES,
+    ):
+        rows.append((line_size, value))
+        retained_bytes += line_size
+        if (
+            len(rows) > MAX_JSONL_RETAINED_ROWS
+            or retained_bytes > MAX_JSONL_RETAINED_BYTES
+        ):
+            raise RecordInputLimitError(
+                "JSONL input exceeds retained row or byte limit: "
+                f"{path}"
+            )
+    return [value for _size, value in rows]
+
+
+def read_tail_text(path, limit=4000):
+    try:
+        limit = max(0, int(limit))
+    except (TypeError, ValueError, OverflowError):
+        return ""
+    limit = min(limit, MAX_LOG_TAIL_BYTES)
+    if limit == 0:
+        return ""
+    try:
+        with open_regular_binary(path) as handle:
+            size = os.fstat(handle.fileno()).st_size
+            handle.seek(max(0, size - limit), os.SEEK_SET)
+            return handle.read(limit).decode("utf-8", errors="replace")
+    except FileNotFoundError:
+        return ""
 
 
 def write_json(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name("." + path.name + f".{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    atomic_write_bytes(
+        path,
+        (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
 
 
 def append_jsonl(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(value, ensure_ascii=False) + "\n")
+    payload = (json.dumps(value, ensure_ascii=False) + "\n").encode("utf-8")
+    if len(payload) > MAX_JSONL_LINE_BYTES:
+        raise RecordInputLimitError(f"JSONL row exceeds byte limit: {path}")
+    fd = open_regular_file(path, os.O_RDWR | os.O_APPEND)
+    locked = False
+    try:
+        acquire_lock(fd, f"JSONL output lock {path}")
+        locked = True
+        size = os.fstat(fd).st_size
+        needs_separator = size > 0 and os.pread(fd, 1, size - 1) != b"\n"
+        if size + int(needs_separator) + len(payload) > MAX_DURABLE_JSONL_BYTES:
+            raise RecordInputLimitError(f"JSONL output exceeds byte limit: {path}")
+        if needs_separator:
+            write_all(fd, b"\n")
+        write_all(fd, payload)
+        os.fsync(fd)
+        fsync_directory(path.parent)
+    finally:
+        try:
+            if locked:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def run(args, timeout=60):
@@ -176,14 +818,58 @@ def http_health(url, timeout=15):
         return {"ok": False, "error": str(exc)[:500]}
 
 
-def load_dataset():
+def load_dataset(selected_start, selected_limit):
     if not dataset_path.exists():
         raise RuntimeError(f"missing dataset: {dataset_path}")
     rows = []
-    for line in dataset_path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.strip():
-            rows.append(json.loads(line))
+    for index, (_line_size, value) in enumerate(
+        iter_jsonl(
+            dataset_path,
+            max_scan_bytes=MAX_DATASET_BYTES,
+            max_rows=MAX_DATASET_ROWS,
+        ),
+        1,
+    ):
+        if index < selected_start:
+            continue
+        if not isinstance(value, dict):
+            raise ValueError(f"dataset row {index} must be an object")
+        row = dict(value)
+        row["instance_id"] = validate_task_identity(row.get("instance_id"))
+        rows.append(row)
+        if len(rows) >= selected_limit:
+            break
     return rows
+
+
+def validate_task_identity(value):
+    if not isinstance(value, str) or not value or value in {".", ".."}:
+        raise ValueError("instance_id must be one non-empty path component")
+    windows_path = pathlib.PureWindowsPath(value)
+    if (
+        os.path.isabs(value)
+        or windows_path.is_absolute()
+        or windows_path.drive
+        or "/" in value
+        or "\\" in value
+    ):
+        raise ValueError("instance_id must be one non-empty path component")
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+        for character in value
+    ):
+        raise ValueError(
+            "instance_id must not contain control, format, or surrogate characters"
+        )
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("instance_id must be valid UTF-8 text") from exc
+    if len(encoded) > MAX_TASK_ID_BYTES:
+        raise ValueError(
+            f"instance_id exceeds {MAX_TASK_ID_BYTES} UTF-8 bytes"
+        )
+    return value
 
 
 def parse_literal_list(value):
@@ -211,7 +897,7 @@ def prediction_patch(row):
 
 
 def is_eval_test_path(path):
-    normalized = str(path or "").replace("\\", "/").lstrip("/")
+    normalized = str(path or "").lstrip("/")
     parts = [part for part in normalized.split("/") if part]
     name = parts[-1] if parts else normalized
     if any(part in {"test", "tests", "__tests__"} for part in parts):
@@ -225,15 +911,93 @@ def is_eval_test_path(path):
     )
 
 
+GIT_C_ESCAPES = {
+    "a": 0x07,
+    "b": 0x08,
+    "t": 0x09,
+    "n": 0x0A,
+    "v": 0x0B,
+    "f": 0x0C,
+    "r": 0x0D,
+    '"': 0x22,
+    "\\": 0x5C,
+}
+
+
+def decode_git_c_path(value):
+    value = str(value or "")
+    quoted = value.startswith('"')
+    index = 1 if quoted else 0
+    decoded = bytearray()
+    while index < len(value):
+        char = value[index]
+        if quoted and char == '"':
+            break
+        if char != "\\":
+            decoded.extend(char.encode("utf-8", errors="surrogatepass"))
+            index += 1
+            continue
+        index += 1
+        if index >= len(value):
+            decoded.append(ord("\\"))
+            break
+        escaped = value[index]
+        if escaped in "01234567":
+            end = index
+            while end < len(value) and end < index + 3 and value[end] in "01234567":
+                end += 1
+            decoded.append(int(value[index:end], 8))
+            index = end
+            continue
+        decoded.append(GIT_C_ESCAPES.get(escaped, ord(escaped)))
+        index += 1
+    return decoded.decode("utf-8", errors="surrogateescape")
+
+
+def git_header_tokens(header):
+    text = str(header or "").strip()
+    prefix = "diff --git "
+    if not text.startswith(prefix):
+        return []
+    text = text[len(prefix):]
+    tokens = []
+    index = 0
+    while index < len(text) and len(tokens) < 2:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        start = index
+        if text[index] == '"':
+            index += 1
+            while index < len(text):
+                if text[index] == "\\":
+                    index += 2
+                    continue
+                if text[index] == '"':
+                    index += 1
+                    break
+                index += 1
+        else:
+            while index < len(text) and not text[index].isspace():
+                index += 1
+        tokens.append(text[start:index])
+    return tokens
+
+
 def diff_target_path(header):
     match = re.match(r"^diff --git a/(.*) b/(.*)$", str(header or "").strip())
     if match:
         return match.group(2)
-    parts = str(header or "").strip().split()
-    if len(parts) >= 4 and parts[3].startswith("b/"):
-        return parts[3][2:]
-    if len(parts) >= 3 and parts[2].startswith("a/"):
-        return parts[2][2:]
+    paths = git_header_tokens(header)
+    if len(paths) >= 2:
+        target = decode_git_c_path(paths[1])
+        if target.startswith("b/"):
+            return target[2:]
+    if paths:
+        source = decode_git_c_path(paths[0])
+        if source.startswith("a/"):
+            return source[2:]
     return ""
 
 
@@ -285,22 +1049,51 @@ def patch_sha(patch):
 def row_patch_sha(row):
     if not isinstance(row, dict):
         return ""
+    patch = prediction_patch(row)
+    if patch:
+        return patch_sha(patch)
     for key in ("patch_sha256", "patch_sha", "model_patch_sha256"):
         value = row.get(key)
         if value:
             return str(value)
-    return patch_sha(prediction_patch(row))
+    return ""
+
+
+def row_explicit_patch_sha(row):
+    if not isinstance(row, dict):
+        return ""
+    for key in ("patch_sha256", "patch_sha", "model_patch_sha256"):
+        value = row.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def embedded_workflow_metric(row):
+    if not isinstance(row, dict):
+        return None
+    metric = row.get("workflow_metric")
+    if not isinstance(metric, dict):
+        return None
+    if row_task_id(metric) != row_task_id(row):
+        return None
+    if row_record_id(metric) != row_record_id(row):
+        return None
+    prediction_sha = row_patch_sha(row)
+    metric_sha = row_patch_sha(metric)
+    if not prediction_sha or not metric_sha or not patch_sha_matches(prediction_sha, metric_sha):
+        return None
+    return metric
 
 
 def patch_sha_matches(left, right):
     left = str(left or "")
     right = str(right or "")
-    if not left or not right:
-        return False
-    if left == right:
-        return True
-    shorter, longer = (left, right) if len(left) < len(right) else (right, left)
-    return len(shorter) >= 12 and longer.startswith(shorter)
+    return bool(
+        re.fullmatch(r"[0-9a-fA-F]{64}", left)
+        and re.fullmatch(r"[0-9a-fA-F]{64}", right)
+        and left == right
+    )
 
 
 def workflow_status(row):
@@ -321,6 +1114,9 @@ def latest_pair(run_dir, task):
     if record_id:
         matched = [row for row in metrics if row_record_id(row) == record_id]
         if not matched:
+            embedded_metric = embedded_workflow_metric(prediction)
+            if embedded_metric is not None:
+                return prediction, embedded_metric, "embedded_metric"
             return prediction, None, "missing_metric_for_record_id"
         metric = matched[-1]
         metric_sha = row_patch_sha(metric)
@@ -339,9 +1135,36 @@ def latest_pair(run_dir, task):
 
 def generation_done(run_dir, task):
     prediction, metric, pairing = latest_pair(run_dir, task)
-    patch = eval_model_patch(prediction)
+    return completed_generation_identity(prediction, metric, task), prediction, metric, pairing
+
+
+def completed_generation_identity(prediction, metric, task):
+    if not isinstance(prediction, dict) or not isinstance(metric, dict):
+        return False
+    original_patch = prediction_patch(prediction)
+    if not original_patch.strip() or not eval_model_patch(prediction).strip():
+        return False
+    if row_task_id(prediction) != task or row_task_id(metric) != task:
+        return False
+    prediction_record_id = row_record_id(prediction)
+    if not prediction_record_id or row_record_id(metric) != prediction_record_id:
+        return False
+    computed_sha = patch_sha(original_patch)
+    if not patch_sha_matches(row_explicit_patch_sha(prediction), computed_sha):
+        return False
+    if not patch_sha_matches(row_explicit_patch_sha(metric), computed_sha):
+        return False
+    if metric_submission_integrity(metric) == SUBMISSION_INTEGRITY_INELIGIBLE:
+        return False
+    returncode = metric.get("runner_returncode")
+    if isinstance(returncode, bool) or not isinstance(returncode, int):
+        return False
     status = workflow_status(metric)
-    return bool(patch.strip() and status in {"done", "done_with_timeout_patch"}), prediction, metric, pairing
+    if status == "done":
+        return returncode == 0
+    if status == "done_with_timeout_patch":
+        return returncode == 124
+    return False
 
 
 def generation_done_result(task, prediction, metric, pairing, **extra):
@@ -371,14 +1194,7 @@ def image_for_row(row):
 
 
 def image_exists(image):
-    return (
-        subprocess.run(
-            ["docker", "image", "inspect", image],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ).returncode
-        == 0
-    )
+    return run(["docker", "image", "inspect", image], timeout=120)["returncode"] == 0
 
 
 def ensure_image(image):
@@ -457,12 +1273,23 @@ def generation_state_path(run_dir):
 
 
 def load_json(path):
-    if not path.exists():
+    try:
+        context = open_regular_binary(path)
+        handle = context.__enter__()
+    except FileNotFoundError:
         return None
     try:
-        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except Exception:
+        opened = os.fstat(handle.fileno())
+        if opened.st_size > MAX_JSON_DOCUMENT_BYTES:
+            raise RecordInputLimitError(f"JSON document exceeds byte limit: {path}")
+        raw = handle.read(MAX_JSON_DOCUMENT_BYTES + 1)
+        if len(raw) > MAX_JSON_DOCUMENT_BYTES:
+            raise RecordInputLimitError(f"JSON document exceeds byte limit: {path}")
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
         return None
+    finally:
+        context.__exit__(None, None, None)
 
 
 def start_count(run_dir):
@@ -476,23 +1303,30 @@ def start_count(run_dir):
 
 
 def write_start_state(run_dir, task, session):
-    state = load_json(generation_state_path(run_dir))
-    if not isinstance(state, dict):
-        state = {}
-    starts = state.get("starts") if isinstance(state.get("starts"), list) else []
-    count = start_count(run_dir) + 1
-    event = {"started_at": now(), "session": session, "workflow": workflow}
-    starts.append(event)
-    state.update({
-        "schema": "opencollab.generation_state.v1",
-        "task": task,
-        "start_count": count,
-        "last_started_at": event["started_at"],
-        "last_session": session,
-        "starts": starts[-20:],
-    })
-    write_json(generation_state_path(run_dir), state)
-    return state
+    if RUNNER_LOCK_FD is None:
+        raise RuntimeError("runner directory ownership lock is not held")
+    with RUNNER_STATE_THREAD_LOCK:
+        state = load_json(generation_state_path(run_dir))
+        if not isinstance(state, dict):
+            state = {}
+        starts = state.get("starts") if isinstance(state.get("starts"), list) else []
+        try:
+            previous_count = int(state.get("start_count") or 0)
+        except (TypeError, ValueError):
+            previous_count = 0
+        count = previous_count + 1
+        event = {"started_at": now(), "session": session, "workflow": workflow}
+        starts.append(event)
+        state.update({
+            "schema": "opencollab.generation_state.v1",
+            "task": task,
+            "start_count": count,
+            "last_started_at": event["started_at"],
+            "last_session": session,
+            "starts": starts[-20:],
+        })
+        write_json(generation_state_path(run_dir), state)
+        return state
 
 
 def write_fifo_with_timeout(path, text, timeout=45):
@@ -507,8 +1341,24 @@ def write_fifo_with_timeout(path, text, timeout=45):
             time.sleep(0.25)
             continue
         try:
-            os.write(fd, data)
+            offset = 0
+            while offset < len(data):
+                if time.time() >= deadline:
+                    return {
+                        "ok": False,
+                        "error": "timed out while writing complete fifo payload",
+                    }
+                try:
+                    written = os.write(fd, data[offset:])
+                except BlockingIOError:
+                    time.sleep(0.01)
+                    continue
+                if written <= 0:
+                    return {"ok": False, "error": "zero-byte fifo write"}
+                offset += written
             return {"ok": True}
+        except OSError as exc:
+            last_error = str(exc)
         finally:
             os.close(fd)
     return {"ok": False, "error": last_error or "timed out waiting for fifo reader"}
@@ -614,6 +1464,50 @@ def prolite_test_command(row, tests):
     return str(row.get("test_cmd") or row.get("eval_cmd") or "true")
 
 
+def prolite_service_bootstrap(row):
+    repo = str(row.get("repo") or "").lower()
+    hints = " ".join(str(row.get(key) or "") for key in ("database", "before_repo_set_cmd", "test_cmd", "eval_cmd")).lower()
+    needs_redis = repo == "nodebb/nodebb" or "redis" in hints
+    if not needs_redis:
+        return ""
+    return r"""
+redis_ready() {
+  if command -v redis-cli >/dev/null 2>&1; then
+    redis-cli -h 127.0.0.1 -p 6379 ping 2>/dev/null | grep -q PONG && return 0
+  fi
+  (echo > /dev/tcp/127.0.0.1/6379) >/dev/null 2>&1 && return 0
+  return 1
+}
+
+if redis_ready; then
+  echo "redis already ready on 127.0.0.1:6379"
+  exit 0
+fi
+
+if command -v redis-server >/dev/null 2>&1; then
+  mkdir -p /tmp/opencollab-redis
+  redis-server --daemonize yes --bind 127.0.0.1 --port 6379 --dir /tmp/opencollab-redis --save "" --appendonly no >/tmp/prolite_redis_server.log 2>&1 || true
+elif command -v service >/dev/null 2>&1; then
+  service redis-server start >/tmp/prolite_redis_server.log 2>&1 || service redis start >>/tmp/prolite_redis_server.log 2>&1 || true
+else
+  echo "redis-server not found and service command unavailable" >&2
+  exit 42
+fi
+
+for _attempt in $(seq 1 100); do
+  if redis_ready; then
+    echo "redis ready on 127.0.0.1:6379"
+    exit 0
+  fi
+  sleep 0.1
+done
+
+echo "redis did not become ready on 127.0.0.1:6379" >&2
+cat /tmp/prolite_redis_server.log 2>/dev/null || true
+exit 42
+"""
+
+
 def generation_for_task(row):
     task = row["instance_id"]
     run_dir = base_run_dir / task
@@ -637,8 +1531,11 @@ def generation_for_task(row):
                 "workdir_status": workdir_status,
             }
         return {"status": "would_generate", "task": task, "image": image, "workdir_status": workdir_status}
-    fifo = pathlib.Path("/tmp") / f"opencollab_v1_{os.getpid()}_{int(time.time())}.fifo"
+    fifo = pathlib.Path("/tmp") / (
+        f"opencollab_v1_{os.getpid()}_{uuid.uuid4().hex}.fifo"
+    )
     os.mkfifo(fifo, 0o600)
+    ACTIVE_FIFO_PATHS.add(fifo)
     session = task_session(task)
     state = write_start_state(run_dir, task, session)
     log_path = run_dir / "generation_logs" / f"{task}.outer.log"
@@ -665,37 +1562,91 @@ def generation_for_task(row):
         str(fifo),
         str(run_dir),
     ]
-    with log_path.open("ab") as log:
+    with open_locked_append(log_path) as log:
         log.write(("\n===== generation start " + now() + " =====\n").encode())
-        proc = subprocess.Popen(cmd, cwd=str(remote_root), env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-        ACTIVE_CHILD_PGIDS.add(proc.pid)
+        spawn_signal_state = block_spawn_signals()
         try:
+            proc = subprocess.Popen(cmd, cwd=str(remote_root), env=env, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        except OSError as exc:
+            try:
+                restore_spawn_signals(spawn_signal_state)
+            finally:
+                cleanup_fifo(fifo)
+            return {"status": "generation_start_failed", "task": task, "details": str(exc), "log": str(log_path), "start_state": state}
+        except BaseException:
+            try:
+                restore_spawn_signals(spawn_signal_state)
+            finally:
+                cleanup_fifo(fifo)
+            raise
+        ACTIVE_CHILD_PGIDS.add(proc.pid)
+        cleanup_quiesced = True
+        try:
+            restore_spawn_signals(spawn_signal_state)
             fifo_write = write_fifo_with_timeout(fifo, token + "\n")
             if not fifo_write.get("ok"):
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+                cleanup_quiesced = terminate_process_group_bounded(proc)
+                cleanup_fifo(fifo)
+                if not cleanup_quiesced:
+                    return {
+                        "status": "technical_generation_cleanup_failed",
+                        "task": task,
+                        "returncode": PROCESS_CLEANUP_FAILED_EXIT_CODE,
+                        "details": fifo_write,
+                        "log": str(log_path),
+                    }
                 return {"status": "fifo_write_failed", "task": task, "details": fifo_write, "log": str(log_path)}
             try:
                 returncode = proc.wait(timeout=task_wall_timeout)
+                cleanup_quiesced = ensure_process_group_quiesced_after_wait(proc)
+                if not cleanup_quiesced:
+                    cleanup_fifo(fifo)
+                    return {
+                        "status": "technical_generation_cleanup_failed",
+                        "task": task,
+                        "returncode": PROCESS_CLEANUP_FAILED_EXIT_CODE,
+                        "details": "generator leader exited with residual process-group descendants",
+                        "log": str(log_path),
+                        "start_state": state,
+                    }
             except subprocess.TimeoutExpired:
                 log.write(("\nouter generation timeout after " + str(task_wall_timeout) + "s\n").encode())
-                try:
-                    os.killpg(proc.pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    proc.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    try:
-                        os.killpg(proc.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
-                    proc.wait()
+                cleanup_quiesced = terminate_process_group_bounded(proc)
+                if not cleanup_quiesced:
+                    cleanup_fifo(fifo)
+                    return {
+                        "status": "technical_generation_cleanup_failed",
+                        "task": task,
+                        "returncode": PROCESS_CLEANUP_FAILED_EXIT_CODE,
+                        "log": str(log_path),
+                        "start_state": state,
+                    }
+                done, prediction, metric, pairing = generation_done(run_dir, task)
+                cleanup_fifo(fifo)
+                if done:
+                    return generation_done_result(
+                        task,
+                        prediction,
+                        metric,
+                        pairing,
+                        returncode=124,
+                        log=str(log_path),
+                        start_state=state,
+                        timed_out=True,
+                    )
                 return {"status": "generation_timeout", "task": task, "returncode": 124, "log": str(log_path), "start_state": state}
+        except BaseException:
+            cleanup_quiesced = False
+            try:
+                cleanup_quiesced = terminate_process_group_bounded(proc)
+            except BaseException:
+                pass
+            cleanup_fifo(fifo)
+            raise
         finally:
-            ACTIVE_CHILD_PGIDS.discard(proc.pid)
+            if cleanup_quiesced:
+                ACTIVE_CHILD_PGIDS.discard(proc.pid)
+    cleanup_fifo(fifo)
     done, prediction, metric, pairing = generation_done(run_dir, task)
     if done:
         return generation_done_result(
@@ -741,21 +1692,84 @@ def eval_summary_matches_prediction(summary, prediction, task):
     return True
 
 
-EVAL_INFRA_FAILURE_PATTERNS = (
-    "ECONNREFUSED",
-    "Connection refused",
-    "could not connect to server",
-    "redis.exceptions.ConnectionError",
-    "ServerSelectionTimeoutError",
-    "database is locked",
-)
-
-
 def eval_log_has_infra_failure(exit_status, log_text):
+    if exit_status in {124, 126, 127}:
+        return True
     if exit_status == 0:
         return False
-    text = str(log_text or "")
-    return any(pattern.lower() in text.lower() for pattern in EVAL_INFRA_FAILURE_PATTERNS)
+    patterns = (
+        r"\bconnectionrefusederror\b",
+        r"\bconnection refused\b",
+        r"\btemporary failure in name resolution\b",
+        r"\bname or service not known\b",
+        r"\bnetwork is unreachable\b",
+        r"\bno space left on device\b",
+        r"\bcannot connect to the docker daemon\b",
+        r"\b(?:redis|mongodb?|postgres(?:ql)?|mysql|database)\b.{0,100}"
+        r"\b(?:unavailable|refused|failed to connect|not running|timed out)\b",
+    )
+    for raw_line in str(log_text or "").splitlines():
+        line = raw_line.lower()
+        if "assertionerror" in line:
+            continue
+        if any(re.search(pattern, line) for pattern in patterns):
+            return True
+    return False
+
+
+def cleanup_eval_container(cidfile, marker_path, container_name):
+    try:
+        cid = cidfile.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        cid = ""
+    references = []
+    if re.fullmatch(r"[0-9a-fA-F]{12,64}", cid):
+        references.append(("cid", cid))
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", str(container_name or "")):
+        references.append(("name", container_name))
+    attempts = []
+    for kind, reference in references:
+        remove_result = run(["docker", "rm", "-f", reference], timeout=60)
+        inspect_result = run(
+            ["docker", "inspect", "--type", "container", reference],
+            timeout=30,
+        )
+        inspect_details = str(
+            inspect_result.get("stderr") or inspect_result.get("stdout") or ""
+        )
+        absent = bool(
+            inspect_result.get("returncode") != 0
+            and (
+                "no such container" in inspect_details.lower()
+                or "no such object" in inspect_details.lower()
+            )
+        )
+        attempts.append({
+            "kind": kind,
+            "reference": reference,
+            "remove_returncode": remove_result.get("returncode"),
+            "remove_details": str(
+                remove_result.get("stderr") or remove_result.get("stdout") or ""
+            )[-1000:],
+            "inspect_returncode": inspect_result.get("returncode"),
+            "inspect_details": inspect_details[-1000:],
+            "absent": absent,
+        })
+    if references and all(attempt.get("absent") for attempt in attempts):
+        cidfile.unlink(missing_ok=True)
+        marker_path.unlink(missing_ok=True)
+        return {
+            "ok": True,
+            "status": "all_references_absent",
+            "attempts": attempts,
+        }
+    return {
+        "ok": False,
+        "status": "remove_failed",
+        "attempts": attempts,
+        "marker_path": str(marker_path),
+        "cidfile": str(cidfile),
+    }
 
 
 def eval_for_task(row):
@@ -785,6 +1799,19 @@ def eval_for_task(row):
                 write_json(summary_path, summary)
                 return {"status": "empty_eval_patch_invalid", "task": task, "summary": summary}
         return {"status": "skipped_no_generation_patch", "task": task, "pairing": pairing}
+    fail_to_pass = parse_literal_list(row.get("fail_to_pass") or row.get("FAIL_TO_PASS"))
+    if not fail_to_pass:
+        summary = {
+            "status": "blocked_missing_eval_spec",
+            "task": task,
+            "resolved": False,
+            "patch_sha256": row_patch_sha(prediction),
+            "record_id": row_record_id(prediction),
+            "technical_reasons": ["missing_fail_to_pass"],
+            "pairing": pairing,
+        }
+        write_json(summary_path, summary)
+        return {"status": "blocked_missing_eval_spec", "task": task, "summary": summary}
     previous = load_json(summary_path)
     if eval_summary_matches_prediction(previous, prediction, task):
         return {"status": "eval_done", "task": task, "summary": previous, "report_path": str(report_path)}
@@ -802,12 +1829,20 @@ def eval_for_task(row):
     original_model_patch = prediction_patch(prediction)
     model_patch = eval_model_patch(prediction)
     test_patch = str(row.get("test_patch") or "")
-    fail_to_pass = parse_literal_list(row.get("fail_to_pass") or row.get("FAIL_TO_PASS"))
     pass_to_pass = parse_literal_list(row.get("pass_to_pass") or row.get("PASS_TO_PASS"))
     f2p_cmd = prolite_test_command(row, fail_to_pass)
     p2p_cmd = prolite_test_command(row, pass_to_pass)
-    (input_dir / "model.patch").write_text(model_patch, encoding="utf-8")
-    (input_dir / "test.patch").write_text(test_patch, encoding="utf-8")
+    service_bootstrap = prolite_service_bootstrap(row)
+    atomic_write_bytes(input_dir / "model.patch", model_patch.encode("utf-8"))
+    atomic_write_bytes(input_dir / "test.patch", test_patch.encode("utf-8"))
+    atomic_write_bytes(
+        input_dir / "service_bootstrap.sh",
+        service_bootstrap.encode("utf-8"),
+    )
+    atomic_write_bytes(
+        input_dir / "before_repo.sh",
+        str(row.get("before_repo_set_cmd") or "").encode("utf-8"),
+    )
     inner = f"""#!/usr/bin/env bash
 set +e
 cd /app 2>/dev/null || cd "$(git rev-parse --show-toplevel 2>/dev/null)" 2>/dev/null || cd /
@@ -815,10 +1850,9 @@ export PATH="/usr/local/go/bin:/usr/lib/go/bin:/opt/go/bin:/root/go/bin:/usr/loc
 if ! command -v pnpm >/dev/null 2>&1 && command -v corepack >/dev/null 2>&1; then
   corepack enable >/tmp/prolite_corepack.log 2>&1 || true
 fi
-cat > /tmp/prolite_before_repo.sh <<'BEFORE'
-{row.get("before_repo_set_cmd") or ""}
-BEFORE
-bash /tmp/prolite_before_repo.sh > /eval_output/before_repo.log 2>&1
+bash /eval_input/service_bootstrap.sh > /eval_output/service_bootstrap.log 2>&1
+echo "$?" > /eval_output/service_bootstrap.exit
+bash /eval_input/before_repo.sh > /eval_output/before_repo.log 2>&1
 echo "$?" > /eval_output/before_repo.exit
 model_status=0
 if [ -s /eval_input/model.patch ]; then
@@ -854,19 +1888,70 @@ fi
 exit 0
 """
     script_path = input_dir / "run_prolite_direct_eval.sh"
-    script_path.write_text(inner, encoding="utf-8")
+    atomic_write_bytes(script_path, inner.encode("utf-8"))
     script_path.chmod(0o755)
     command_log = eval_dir / "command.log"
+    cidfile = eval_dir / "container.cid"
+    marker_path = eval_dir / "container.marker.json"
+    previous_marker = load_json(marker_path)
+    if isinstance(previous_marker, dict):
+        previous_name = str(previous_marker.get("container_name") or "")
+        stale_cleanup = cleanup_eval_container(
+            cidfile,
+            marker_path,
+            previous_name,
+        )
+        if not stale_cleanup.get("ok"):
+            summary = {
+                "status": "technical_eval_failed",
+                "task": task,
+                "resolved": False,
+                "patch_sha256": row_patch_sha(prediction),
+                "record_id": row_record_id(prediction),
+                "technical_reasons": ["stale_container_cleanup"],
+                "container_cleanup": stale_cleanup,
+            }
+            write_json(summary_path, summary)
+            return {"status": "technical_eval_failed", "task": task, "summary": summary}
+    elif marker_path.exists() or cidfile.exists():
+        stale_cleanup = cleanup_eval_container(cidfile, marker_path, "")
+        if not stale_cleanup.get("ok"):
+            summary = {
+                "status": "technical_eval_failed",
+                "task": task,
+                "resolved": False,
+                "patch_sha256": row_patch_sha(prediction),
+                "record_id": row_record_id(prediction),
+                "technical_reasons": ["stale_container_cleanup"],
+                "container_cleanup": stale_cleanup,
+            }
+            write_json(summary_path, summary)
+            return {"status": "technical_eval_failed", "task": task, "summary": summary}
+    container_name = "opencollab-prolite-" + hashlib.sha256(
+        f"{base_run_dir}:{task}:{os.getpid()}:{time.time_ns()}".encode()
+    ).hexdigest()[:24]
+    cidfile.unlink(missing_ok=True)
+    write_json(marker_path, {
+        "schema": "opencollab.prolite_eval_container.v1",
+        "task": task,
+        "container_name": container_name,
+        "cidfile": str(cidfile),
+        "created_at": now(),
+    })
     docker_cmd = [
         "timeout",
         str(eval_timeout),
         "docker",
         "run",
         "--rm",
+        "--name",
+        container_name,
         "--user",
         "0:0",
         "--entrypoint",
         "/bin/bash",
+        "--cidfile",
+        str(cidfile),
         "-v",
         f"{input_dir}:/eval_input:ro",
         "-v",
@@ -874,23 +1959,106 @@ exit 0
         image,
         "/eval_input/run_prolite_direct_eval.sh",
     ]
-    with command_log.open("ab") as log:
+    cleanup_quiesced = True
+    with open_locked_append(command_log) as log:
         log.write(("\n===== eval start " + now() + " =====\n").encode())
-        proc = subprocess.run(docker_cmd, stdout=log, stderr=subprocess.STDOUT, timeout=eval_timeout + 120)
-    docker_exit = proc.returncode
+        spawn_signal_state = block_spawn_signals()
+        try:
+            proc = subprocess.Popen(
+                docker_cmd,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            try:
+                restore_spawn_signals(spawn_signal_state)
+            finally:
+                cleanup_eval_container(cidfile, marker_path, container_name)
+            log.write((f"failed to start eval container: {exc}\n").encode())
+            docker_exit = 127
+        except BaseException:
+            try:
+                restore_spawn_signals(spawn_signal_state)
+            finally:
+                cleanup_eval_container(cidfile, marker_path, container_name)
+            raise
+        else:
+            ACTIVE_CHILD_PGIDS.add(proc.pid)
+            try:
+                try:
+                    restore_spawn_signals(spawn_signal_state)
+                    docker_exit = proc.wait(timeout=eval_timeout + 120)
+                    cleanup_quiesced = ensure_process_group_quiesced_after_wait(proc)
+                    if not cleanup_quiesced:
+                        docker_exit = PROCESS_CLEANUP_FAILED_EXIT_CODE
+                except subprocess.TimeoutExpired:
+                    log.write((f"outer eval timeout after {eval_timeout + 120}s\n").encode())
+                    cleanup_quiesced = terminate_process_group_bounded(proc)
+                    docker_exit = (
+                        124 if cleanup_quiesced else PROCESS_CLEANUP_FAILED_EXIT_CODE
+                    )
+                except BaseException:
+                    cleanup_quiesced = False
+                    try:
+                        cleanup_quiesced = terminate_process_group_bounded(proc)
+                    except BaseException:
+                        pass
+                    try:
+                        cleanup_eval_container(
+                            cidfile,
+                            marker_path,
+                            container_name,
+                        )
+                    except BaseException:
+                        pass
+                    raise
+            finally:
+                if cleanup_quiesced:
+                    ACTIVE_CHILD_PGIDS.discard(proc.pid)
+
+    if docker_exit != 0:
+        container_cleanup = cleanup_eval_container(
+            cidfile,
+            marker_path,
+            container_name,
+        )
+    else:
+        cidfile.unlink(missing_ok=True)
+        marker_path.unlink(missing_ok=True)
+        container_cleanup = {"ok": True, "status": "not_needed"}
+
+    output_artifact_errors = []
 
     def read_exit(name, default=99):
+        path = output_dir / name
         try:
-            return int((output_dir / name).read_text(encoding="utf-8", errors="replace").strip() or default)
-        except Exception:
+            with open_regular_binary(path) as handle:
+                opened = os.fstat(handle.fileno())
+                if opened.st_size > MAX_EXIT_STATUS_BYTES:
+                    raise RecordInputLimitError(
+                        f"exit status exceeds byte limit: {path}"
+                    )
+                raw = handle.read(MAX_EXIT_STATUS_BYTES + 1)
+            text = raw.decode("ascii").strip()
+            if not re.fullmatch(r"-?[0-9]+", text):
+                raise RecordInputFormatError(f"invalid exit status: {path}")
+            return int(text)
+        except FileNotFoundError:
+            output_artifact_errors.append(f"missing:{name}")
+            return default
+        except (OSError, ValueError, UnicodeDecodeError) as exc:
+            output_artifact_errors.append(f"unsafe:{name}:{type(exc).__name__}")
             return default
 
     def read_text(name, limit=4000):
-        path = output_dir / name
-        if not path.exists():
+        try:
+            return read_tail_text(output_dir / name, limit)
+        except OSError as exc:
+            output_artifact_errors.append(f"unsafe:{name}:{type(exc).__name__}")
             return ""
-        return path.read_text(encoding="utf-8", errors="replace")[-limit:]
 
+    service_status = read_exit("service_bootstrap.exit", 0)
     before_status = read_exit("before_repo.exit")
     model_status = read_exit("model_patch.exit")
     test_status = read_exit("test_patch.exit")
@@ -899,8 +2067,16 @@ exit 0
     f2p_log_tail = read_text("f2p.log")
     p2p_log_tail = read_text("p2p.log")
     technical_reasons = []
+    if output_artifact_errors:
+        technical_reasons.append("unsafe_or_missing_output_artifact")
     if docker_exit != 0:
         technical_reasons.append("docker_exit")
+    if not cleanup_quiesced:
+        technical_reasons.append("process_cleanup")
+    if not container_cleanup.get("ok"):
+        technical_reasons.append("container_cleanup")
+    if service_status != 0:
+        technical_reasons.append("service_bootstrap")
     if before_status != 0:
         technical_reasons.append("before_repo")
     if model_status != 0:
@@ -922,12 +2098,16 @@ exit 0
         "patch_successfully_applied": model_status == 0,
         "error": bool(technical_error),
         "technical_reasons": technical_reasons,
+        "output_artifact_errors": output_artifact_errors,
         "docker_exit": docker_exit,
+        "cleanup_quiesced": cleanup_quiesced,
+        "container_cleanup": container_cleanup,
         "patch_sha256": row_patch_sha(prediction),
         "record_id": row_record_id(prediction),
         "model_patch_chars": len(original_model_patch),
         "eval_model_patch_chars": len(model_patch),
         "tests_status": {
+            "service_bootstrap_status": service_status,
             "before_repo_status": before_status,
             "model_patch_status": model_status,
             "test_patch_status": test_status,
@@ -937,6 +2117,7 @@ exit 0
             "pass_to_pass": pass_to_pass,
             "f2p_command": read_text("f2p.command", 1000),
             "p2p_command": read_text("p2p.command", 1000),
+            "service_bootstrap_log_tail": read_text("service_bootstrap.log"),
             "f2p_log_tail": f2p_log_tail,
             "p2p_log_tail": p2p_log_tail,
             "model_patch_log_tail": read_text("model_patch.log"),
@@ -953,6 +2134,10 @@ exit 0
         "model_patch_chars": len(original_model_patch),
         "eval_model_patch_chars": len(model_patch),
         "technical_reasons": technical_reasons,
+        "output_artifact_errors": output_artifact_errors,
+        "docker_exit": docker_exit,
+        "cleanup_quiesced": cleanup_quiesced,
+        "container_cleanup": container_cleanup,
         "report_path": str(report_path),
         "command_log": str(command_log),
         "tests_status": report["tests_status"],
@@ -1042,8 +2227,7 @@ def main():
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 2
 
-    rows_all = load_dataset()
-    selected = rows_all[start_index - 1 : start_index - 1 + limit]
+    selected = load_dataset(start_index, limit)
     base_run_dir.mkdir(parents=True, exist_ok=True)
     result_rows = []
     for offset, row in enumerate(selected, start_index):
@@ -1052,8 +2236,15 @@ def main():
         append_jsonl(base_run_dir / "events.jsonl", {"time": now(), "phase": "generation", "task": task, "result": gen})
         if dry_run and gen.get("status") in {"would_generate", "generation_done"}:
             ev = {"status": "would_eval", "task": task}
-        else:
+        elif gen.get("status") == "generation_done":
             ev = eval_for_task(row)
+        else:
+            ev = {
+                "status": "skipped_generation_not_ready",
+                "task": task,
+                "generation_status": gen.get("status"),
+                "reason": "generation_not_ready",
+            }
         append_jsonl(base_run_dir / "events.jsonl", {"time": now(), "phase": "eval", "task": task, "result": ev})
         result_rows.append({"index": offset, "task": task, "generation": gen, "eval": ev})
     generation_ok_statuses = {"generation_done"}
@@ -1094,7 +2285,10 @@ def main():
     }
     write_markdown(summary)
     write_json(base_run_dir / "summary.json", summary)
-    (base_run_dir / "summary.md").write_text(summary["markdown"], encoding="utf-8")
+    atomic_write_bytes(
+        base_run_dir / "summary.md",
+        summary["markdown"].encode("utf-8"),
+    )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if counts["technical_failed"] == 0 else 1
 
@@ -1105,8 +2299,10 @@ def validate_runner_config():
         errors.append("start_index must be >= 1")
     if limit <= 0:
         errors.append("limit must be > 0")
-    if max_task_starts < 1:
-        errors.append("max_task_starts must be >= 1")
+    if limit > MAX_TASKS_PER_RUN:
+        errors.append(f"limit must be <= {MAX_TASKS_PER_RUN}")
+    if max_task_starts < 0:
+        errors.append("max_task_starts must be >= 0")
     return errors
 
 
@@ -1130,9 +2326,42 @@ def run_checked(command: list[str], *, timeout: int = 120, input_text: str | Non
     return result
 
 
+def _read_bounded_regular_text(path: Path, *, max_bytes: int) -> str:
+    path = path.expanduser()
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        raise
+    if not stat.S_ISREG(before.st_mode) or before.st_size > max_bytes:
+        raise RuntimeError(f"input must be a bounded regular file: {path}")
+    fd = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        opened = os.fstat(fd)
+        current = path.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+            or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
+        ):
+            raise RuntimeError(f"input changed while opening: {path}")
+        raw = os.read(fd, max_bytes + 1)
+    finally:
+        os.close(fd)
+    if len(raw) > max_bytes:
+        raise RuntimeError(f"input exceeds {max_bytes} bytes: {path}")
+    return raw.decode("utf-8")
+
+
 def load_shell_env(path: Path) -> dict[str, str]:
     values: dict[str, str] = {}
-    for raw in path.expanduser().read_text(encoding="utf-8", errors="replace").splitlines():
+    text = _read_bounded_regular_text(path, max_bytes=MAX_PROXY_ENV_BYTES)
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -1156,9 +2385,10 @@ def token_from_values(values: dict[str, str]) -> str:
 
 
 def token_from_env_file(path: Path) -> str:
-    if path.expanduser().exists():
+    try:
         return token_from_values(load_shell_env(path))
-    return ""
+    except FileNotFoundError:
+        return ""
 
 
 def proxy_env_file_from_ps(ps_text: str) -> Path | None:
@@ -1181,10 +2411,36 @@ def get_proxy_token(proxy_env_file: Path) -> str:
     token = token_from_env_file(proxy_env_file)
     if token:
         return token
-    pids = subprocess.check_output(["pgrep", "-f", "opencollab_glm_anthropic_proxy.py|glm_anthropic_proxy.py"], text=True).split()
+    try:
+        pids = subprocess.check_output(
+            [
+                "pgrep",
+                "-f",
+                "opencollab_glm_anthropic_proxy.py|glm_anthropic_proxy.py",
+            ],
+            text=True,
+            timeout=PROXY_PROCESS_LOOKUP_TIMEOUT_SECONDS,
+        ).split()
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "timed out while locating the glm proxy process"
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError("glm proxy process not found") from exc
+    except OSError as exc:
+        raise RuntimeError(f"failed to locate the glm proxy process: {exc}") from exc
     if not pids:
         raise RuntimeError("glm proxy process not found")
-    ps = subprocess.check_output(["ps", "eww", "-p", pids[0]], text=True)
+    try:
+        ps = subprocess.check_output(
+            ["ps", "eww", "-p", pids[0]],
+            text=True,
+            timeout=PROXY_PROCESS_LOOKUP_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("timed out while reading the glm proxy environment") from exc
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise RuntimeError(f"failed to read the glm proxy environment: {exc}") from exc
     env_path = proxy_env_file_from_ps(ps)
     if env_path:
         token = token_from_env_file(env_path)
@@ -1255,21 +2511,17 @@ def remote_forward_port_conflict(message: str) -> bool:
     )
 
 
-def stop_remote_proxy_tunnel(proc: subprocess.Popen[str]) -> None:
-    if proc.poll() is not None:
-        return
-    proc.terminate()
-    try:
-        proc.wait(timeout=5)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+def stop_remote_proxy_tunnel(proc: subprocess.Popen[str]) -> bool:
+    return terminate_local_process_group(proc)
 
 
 def cleanup_remote_proxy_tunnels() -> None:
     for proc in list(REMOTE_PROXY_TUNNELS):
-        stop_remote_proxy_tunnel(proc)
-        if proc in REMOTE_PROXY_TUNNELS:
+        try:
+            cleanup_quiesced = stop_remote_proxy_tunnel(proc)
+        except BaseException:
+            cleanup_quiesced = False
+        if cleanup_quiesced and proc in REMOTE_PROXY_TUNNELS:
             REMOTE_PROXY_TUNNELS.remove(proc)
 
 
@@ -1277,14 +2529,49 @@ atexit.register(cleanup_remote_proxy_tunnels)
 
 
 def start_remote_proxy_tunnel(command: list[str]) -> tuple[subprocess.Popen[str] | None, str]:
-    proc = subprocess.Popen(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    time.sleep(0.2)
-    if proc.poll() is not None:
-        stdout, stderr = proc.communicate()
-        message = _redacted(stderr or stdout or f"{command[0]} exited {proc.returncode}")
-        return None, message
+    spawn_signal_state = _block_local_spawn_signals()
+    try:
+        proc = subprocess.Popen(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except BaseException:
+        _restore_local_spawn_signals(spawn_signal_state)
+        raise
     REMOTE_PROXY_TUNNELS.append(proc)
-    return proc, ""
+    try:
+        _restore_local_spawn_signals(spawn_signal_state)
+        time.sleep(0.2)
+        if proc.poll() is not None:
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                cleanup_quiesced = terminate_local_process_group(proc)
+                if cleanup_quiesced and proc in REMOTE_PROXY_TUNNELS:
+                    REMOTE_PROXY_TUNNELS.remove(proc)
+                return None, "ssh tunnel output drain timed out"
+            cleanup_quiesced = _ensure_local_process_group_quiesced_after_wait(proc)
+            if cleanup_quiesced:
+                REMOTE_PROXY_TUNNELS.remove(proc)
+            else:
+                return None, "ssh tunnel leader exited with residual process-group descendants that could not be cleaned"
+            message = _redacted(
+                stderr or stdout or f"{command[0]} exited {proc.returncode}"
+            )
+            return None, message
+        return proc, ""
+    except BaseException:
+        cleanup_quiesced = False
+        try:
+            cleanup_quiesced = terminate_local_process_group(proc)
+        except BaseException:
+            pass
+        if cleanup_quiesced and proc in REMOTE_PROXY_TUNNELS:
+            REMOTE_PROXY_TUNNELS.remove(proc)
+        raise
 
 
 def ensure_remote_proxy(
@@ -1347,9 +2634,13 @@ def ensure_remote_proxy(
                     "selected_remote_port": candidate_port,
                 }
             time.sleep(0.5)
-        stop_remote_proxy_tunnel(proc)
-        if proc in REMOTE_PROXY_TUNNELS:
+        cleanup_quiesced = stop_remote_proxy_tunnel(proc)
+        if cleanup_quiesced and proc in REMOTE_PROXY_TUNNELS:
             REMOTE_PROXY_TUNNELS.remove(proc)
+        if not cleanup_quiesced:
+            raise RuntimeError(
+                f"remote proxy tunnel on port {candidate_port} did not stop"
+            )
         attempts.append(f"{candidate_port}: tunnel started but health check failed")
     detail = "; ".join(attempts[-5:])
     raise RuntimeError(
@@ -1411,6 +2702,19 @@ def configure_run_paths(args: argparse.Namespace) -> None:
         args.remote_runtime_repo = str(Path(args.base_run_dir) / "_runtime" / "repo")
 
 
+def validate_run_id(value: str) -> str:
+    if not value or value in {".", ".."} or "/" in value or "\\" in value:
+        raise ValueError("run_id must be one non-empty path component")
+    if Path(value).is_absolute() or any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+        for character in value
+    ):
+        raise ValueError("run_id must be one safe path component")
+    if len(value.encode("utf-8")) > 240:
+        raise ValueError("run_id exceeds 240 UTF-8 bytes")
+    return value
+
+
 def terminate_remote_run(
     *,
     ssh_command: list[str],
@@ -1423,12 +2727,13 @@ import json
 import os
 import pathlib
 import signal
+import shlex
+import stat
 import subprocess
 import sys
 import time
 
 base = pathlib.Path(sys.argv[1])
-needle = str(base)
 me = os.getpid()
 parent = os.getppid()
 
@@ -1451,10 +2756,65 @@ def send_pgid(pgid, sig):
         return False
 
 
-def scan():
+def process_start_identity(pid):
     try:
-        output = subprocess.check_output(["ps", "-eo", "pid=,pgid=,args="], text=True)
-    except Exception:
+        raw = pathlib.Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        remainder = raw.rsplit(")", 1)[1].split()
+        if len(remainder) > 19 and remainder[19].isdigit():
+            return f"proc:{remainder[19]}"
+    except (OSError, IndexError) as exc:
+        scan_errors.append(repr(exc))
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "lstart=", "-p", str(pid)],
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+    except Exception as exc:
+        scan_errors.append(repr(exc))
+        return ""
+    value = result.stdout.strip()
+    return f"ps:{value}" if result.returncode == 0 and value else ""
+
+
+def read_owner(path):
+    before = path.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_size > 4096:
+        raise RuntimeError("runner owner is not a bounded regular file")
+    fd = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        opened = os.fstat(fd)
+        payload = json.loads(os.read(fd, 4097).decode("utf-8"))
+        current = path.lstat()
+    finally:
+        os.close(fd)
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+        or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
+        or not isinstance(payload, dict)
+        or payload.get("schema") != "opencollab.prolite_runner_owner.v1"
+    ):
+        raise RuntimeError("runner owner identity is invalid")
+    return payload
+
+
+def scan(owner_nonce):
+    try:
+        output = subprocess.check_output(
+            ["ps", "-eo", "pid=,pgid=,args="],
+            text=True,
+            timeout=5,
+        )
+    except Exception as exc:
+        scan_errors.append(repr(exc))
         return []
     rows = []
     for line in output.splitlines():
@@ -1469,40 +2829,70 @@ def scan():
         args = parts[2]
         if pid in {me, parent}:
             continue
-        if needle in args:
+        try:
+            tokens = shlex.split(args)
+        except ValueError:
+            continue
+        if owner_nonce in tokens:
             rows.append((pid, pgid, args))
     return rows
 
 
 killed = []
+scan_errors = []
 containers = []
-try:
-    for marker in base.rglob("container.id"):
-        cid = marker.read_text(encoding="utf-8", errors="replace").strip()
-        if cid:
-            containers.append(cid)
-except Exception:
-    pass
+for pattern in ("container.id", "container.cid"):
+    for marker in base.rglob(pattern):
+        try:
+            cid = marker.read_text(encoding="utf-8", errors="replace").strip()
+            if cid:
+                containers.append(cid)
+        except Exception:
+            pass
+for marker in base.rglob("container.marker.json"):
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8", errors="replace"))
+        if isinstance(payload, dict) and payload.get("container_name"):
+            containers.append(str(payload["container_name"]))
+    except Exception:
+        pass
 runner_pid_path = base / "runner.pid"
 try:
-    runner_pid = int(runner_pid_path.read_text(encoding="utf-8").strip())
-except Exception:
+    owner = read_owner(runner_pid_path)
+except FileNotFoundError:
+    owner = None
+    scan_errors.append("runner owner record is missing")
+except Exception as exc:
+    owner = None
+    scan_errors.append(repr(exc))
+
+owner_nonce = str((owner or {}).get("owner_nonce") or "")
+try:
+    runner_pid = int((owner or {}).get("pid") or 0)
+except (TypeError, ValueError):
     runner_pid = 0
-if runner_pid > 1 and runner_pid not in {me, parent}:
-    try:
-        runner_pgid = os.getpgid(runner_pid)
-    except ProcessLookupError:
-        runner_pgid = runner_pid
-    if send_pgid(runner_pgid, signal.SIGTERM):
-        killed.append({"pid": runner_pid, "pgid": runner_pgid, "signal": "TERM"})
-    send_pid(runner_pid, signal.SIGTERM)
+expected_start = str((owner or {}).get("start_identity") or "")
+current_start = process_start_identity(runner_pid) if runner_pid > 1 else ""
+owner_matches = bool(
+    runner_pid > 1
+    and runner_pid not in {me, parent}
+    and expected_start
+    and current_start == expected_start
+)
+if runner_pid > 1 and current_start and not owner_matches:
+    scan_errors.append("runner PID/start identity mismatch")
+if owner_matches:
+    if send_pid(runner_pid, signal.SIGTERM):
+        killed.append({"pid": runner_pid, "signal": "TERM"})
 
 for sig_name, sig_value, delay in (("TERM", signal.SIGTERM, 2.0), ("KILL", signal.SIGKILL, 0.0)):
-    for pid, pgid, _args in scan():
-        if send_pgid(pgid, sig_value) or send_pid(pid, sig_value):
+    for pid, pgid, _args in scan(owner_nonce) if owner_nonce else []:
+        if send_pid(pid, sig_value):
             killed.append({"pid": pid, "pgid": pgid, "signal": sig_name})
     if delay:
         time.sleep(delay)
+
+residual_processes = scan(owner_nonce) if owner_nonce else []
 
 container_results = []
 for cid in sorted(set(containers)):
@@ -1525,7 +2915,25 @@ for cid in sorted(set(containers)):
     except Exception as exc:
         container_results.append({"cid": cid, "error": repr(exc)})
 
-print(json.dumps({"killed": killed, "containers": container_results}, ensure_ascii=False))
+containers_ok = all(
+    item.get("returncode") == 0
+    or "no such container" in str(item.get("stderr") or "").lower()
+    for item in container_results
+)
+cleanup_ok = not scan_errors and not residual_processes and containers_ok
+status = "done" if cleanup_ok else "technical_cleanup_failed"
+print(json.dumps({
+    "ok": cleanup_ok,
+    "status": status,
+    "killed": killed,
+    "containers": container_results,
+    "scan_errors": scan_errors,
+    "residual_processes": [
+        {"pid": pid, "pgid": pgid, "args": args[:500]}
+        for pid, pgid, args in residual_processes
+    ],
+}, ensure_ascii=False))
+raise SystemExit(0 if cleanup_ok else 3)
 '''
     result = subprocess.run(
         [*ssh_command, host, "python3 -c " + shlex.quote(cleanup) + " " + shlex.quote(base_run_dir)],
@@ -1541,27 +2949,427 @@ print(json.dumps({"killed": killed, "containers": container_results}, ensure_asc
     return {"returncode": result.returncode, "detail": detail}
 
 
-def terminate_local_process_group(proc: subprocess.Popen[str]) -> None:
+def _wait_for_owned_local_cleanup(
+    done: threading.Event,
+    *,
+    timeout: float,
+) -> tuple[bool, BaseException | None]:
+    deadline = time.monotonic() + max(0.0, timeout)
+    interruption: BaseException | None = None
+    while not done.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            done.wait(min(0.05, remaining))
+        except (KeyboardInterrupt, SystemExit) as exc:
+            if interruption is None:
+                interruption = exc
+    return done.is_set(), interruption
+
+
+def _block_local_spawn_signals() -> dict[str, object]:
+    state: dict[str, object] = {
+        "previous": {},
+        "pending": [],
+        "restored": False,
+    }
+
+    def defer(signum: int, _frame: object) -> None:
+        pending = state["pending"]
+        if isinstance(pending, list) and signum not in pending:
+            pending.append(signum)
+
+    previous: dict[signal.Signals, Any] = {}
+    state["previous"] = previous
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
-    except ProcessLookupError:
+        for signum in LOCAL_SPAWN_SIGNALS:
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, defer)
+    except BaseException:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+        raise
+    return state
+
+
+def _restore_local_spawn_signals(
+    state: dict[str, object],
+) -> None:
+    if state.get("restored"):
         return
+    previous = state.get("previous")
+    if not isinstance(previous, dict):
+        return
+    for signum, handler in previous.items():
+        signal.signal(signum, handler)
+    state["restored"] = True
+    pending = state.get("pending")
+    for signum in pending if isinstance(pending, list) else []:
+        handler = previous.get(signum, signal.SIG_DFL)
+        if handler == signal.SIG_IGN:
+            continue
+        if handler == signal.SIG_DFL:
+            os.kill(os.getpid(), signum)
+        else:
+            handler(signum, None)
+
+
+class _BoundedTextTail:
+    def __init__(self, limit: int) -> None:
+        self.limit = limit
+        self.value = ""
+        self.total_chars = 0
+        self.lock = threading.Lock()
+
+    def append(self, chunk: str) -> None:
+        with self.lock:
+            self.total_chars += len(chunk)
+            self.value = (self.value + chunk)[-self.limit :]
+
+    def render(self) -> str:
+        with self.lock:
+            if self.total_chars <= self.limit:
+                return self.value
+            omitted = self.total_chars - len(self.value)
+            return f"[truncated {omitted} chars]\n{self.value}"
+
+
+def _drain_text_stream(stream: Any, sink: _BoundedTextTail) -> None:
+    try:
+        while True:
+            chunk = stream.read(64 * 1024)
+            if not chunk:
+                return
+            sink.append(chunk)
+    except (OSError, ValueError):
+        return
+
+
+def _bounded_remote_communicate(
+    proc: subprocess.Popen[str],
+    input_text: str,
+    *,
+    timeout: float,
+) -> tuple[str, str]:
+    if (
+        getattr(proc, "stdout", None) is None
+        or getattr(proc, "stderr", None) is None
+        or getattr(proc, "stdin", None) is None
+    ):
+        return proc.communicate(input_text, timeout=timeout)
+    stdout_tail = _BoundedTextTail(MAX_REMOTE_OUTPUT_TAIL_CHARS)
+    stderr_tail = _BoundedTextTail(MAX_REMOTE_OUTPUT_TAIL_CHARS)
+    threads = [
+        threading.Thread(
+            target=_drain_text_stream,
+            args=(proc.stdout, stdout_tail),
+            name=f"prolite-stdout-{proc.pid}",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_drain_text_stream,
+            args=(proc.stderr, stderr_tail),
+            name=f"prolite-stderr-{proc.pid}",
+            daemon=True,
+        ),
+    ]
+    setattr(proc, "_opencollab_bounded_drainers", threads)
+    for thread in threads:
+        thread.start()
+    try:
+        proc.stdin.write(input_text)
+        proc.stdin.flush()
+    except (BrokenPipeError, OSError):
+        pass
+    finally:
+        try:
+            proc.stdin.close()
+        except OSError:
+            pass
+    proc.wait(timeout=timeout)
+    for thread in threads:
+        thread.join(timeout=5)
+    if any(thread.is_alive() for thread in threads):
+        raise RuntimeError("remote output drain did not reach EOF")
+    return stdout_tail.render(), stderr_tail.render()
+
+
+def _wait_or_communicate_local_process(
+    proc: subprocess.Popen[str],
+    *,
+    timeout: float | None = None,
+) -> None:
+    if getattr(proc, "_opencollab_bounded_drainers", None) is not None:
+        proc.wait(timeout=timeout)
+    else:
+        proc.communicate(timeout=timeout)
+
+
+def _consume_local_process_exit(proc: subprocess.Popen[str]) -> None:
+    try:
+        _wait_or_communicate_local_process(proc)
+    except BaseException:
+        pass
+
+
+def _schedule_local_process_exit_consumer(proc: subprocess.Popen[str]) -> None:
+    threading.Thread(
+        target=_consume_local_process_exit,
+        args=(proc,),
+        name=f"prolite-local-reap-{getattr(proc, 'pid', 'unknown')}",
+        daemon=True,
+    ).start()
+
+
+def _local_process_group_exists(pgid: int) -> bool:
+    try:
+        os.kill(-pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_for_local_process_group_exit(pgid: int, *, deadline: float) -> bool:
+    while _local_process_group_exists(pgid):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.01, remaining))
+    return True
+
+
+def _terminate_local_process_group_owned(
+    proc: subprocess.Popen[str],
+    *,
+    term_timeout: float,
+    kill_timeout: float,
+) -> bool:
+    pgid = proc.pid
+    term_deadline = time.monotonic() + max(0.0, term_timeout)
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
     except PermissionError:
         try:
             proc.terminate()
         except ProcessLookupError:
-            return
+            pass
+        except PermissionError:
+            _schedule_local_process_exit_consumer(proc)
+            return False
+
+    leader_reaped = False
     try:
-        proc.wait(timeout=5)
+        _wait_or_communicate_local_process(
+            proc,
+            timeout=max(0.0, term_deadline - time.monotonic()),
+        )
+        leader_reaped = True
+    except ChildProcessError:
+        leader_reaped = True
     except subprocess.TimeoutExpired:
+        pass
+
+    group_gone = _wait_for_local_process_group_exit(pgid, deadline=term_deadline)
+    if leader_reaped and group_gone:
+        return True
+
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, PermissionError):
+            pass
+
+    kill_deadline = time.monotonic() + max(0.0, kill_timeout)
+    if not leader_reaped:
+        try:
+            _wait_or_communicate_local_process(
+                proc,
+                timeout=max(0.0, kill_deadline - time.monotonic()),
+            )
+            leader_reaped = True
+        except ChildProcessError:
+            leader_reaped = True
+        except subprocess.TimeoutExpired:
+            pass
+    group_gone = _wait_for_local_process_group_exit(pgid, deadline=kill_deadline)
+    if not leader_reaped:
+        _schedule_local_process_exit_consumer(proc)
+    return leader_reaped and group_gone
+
+
+def terminate_local_process_group(
+    proc: subprocess.Popen[str],
+    *,
+    term_timeout: float = LOCAL_PROCESS_TERM_GRACE_SECONDS,
+    kill_timeout: float = LOCAL_PROCESS_KILL_REAP_TIMEOUT_SECONDS,
+) -> bool:
+    """Terminate an SSH wrapper and drain its pipes without an unbounded wait."""
+    state: dict[str, object] = {}
+    done = threading.Event()
+
+    def cleanup() -> None:
+        try:
+            state["reaped"] = _terminate_local_process_group_owned(
+                proc,
+                term_timeout=term_timeout,
+                kill_timeout=kill_timeout,
+            )
+        except BaseException as exc:
+            state["error"] = exc
+        finally:
+            done.set()
+
+    cleanup_thread = threading.Thread(
+        target=cleanup,
+        name=f"prolite-local-cleanup-{getattr(proc, 'pid', 'unknown')}",
+        daemon=True,
+    )
+    cleanup_thread.start()
+    completed, interruption = _wait_for_owned_local_cleanup(
+        done,
+        timeout=(
+            term_timeout
+            + kill_timeout
+            + LOCAL_PROCESS_CLEANUP_OUTER_SLACK_SECONDS
+        ),
+    )
+    if completed and "reaped" in state:
+        reaped = bool(state["reaped"])
+    else:
+        reaped = False
         try:
             os.killpg(proc.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             try:
                 proc.kill()
-            except ProcessLookupError:
+            except (ProcessLookupError, PermissionError):
                 pass
-        proc.wait()
+    if interruption is not None:
+        raise interruption
+    return reaped
+
+
+def _ensure_local_process_group_quiesced_after_wait(
+    proc: subprocess.Popen[str],
+    *,
+    term_timeout: float = LOCAL_PROCESS_TERM_GRACE_SECONDS,
+    kill_timeout: float = LOCAL_PROCESS_KILL_REAP_TIMEOUT_SECONDS,
+) -> bool:
+    if not _local_process_group_exists(proc.pid):
+        return True
+    return terminate_local_process_group(
+        proc,
+        term_timeout=term_timeout,
+        kill_timeout=kill_timeout,
+    )
+
+
+def _cleanup_remote_execution(
+    *,
+    ssh_command: list[str],
+    host: str,
+    base_run_dir: str,
+    proc: subprocess.Popen[str],
+) -> tuple[dict[str, Any], BaseException | None]:
+    """Run remote and local cleanup under one caller-interrupt-resistant owner."""
+    state: dict[str, object] = {}
+    done = threading.Event()
+
+    def cleanup() -> None:
+        remote_state: dict[str, object] = {}
+        remote_done = threading.Event()
+
+        def cleanup_remote() -> None:
+            try:
+                remote_state["result"] = terminate_remote_run(
+                    ssh_command=ssh_command,
+                    host=host,
+                    base_run_dir=base_run_dir,
+                    timeout=int(REMOTE_CLEANUP_COMMAND_TIMEOUT_SECONDS),
+                )
+            except BaseException as exc:
+                remote_state["result"] = {
+                    "returncode": 125,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            finally:
+                remote_done.set()
+
+        try:
+            threading.Thread(
+                target=cleanup_remote,
+                name=f"prolite-remote-command-cleanup-{getattr(proc, 'pid', 'unknown')}",
+                daemon=True,
+            ).start()
+            try:
+                local_quiesced = terminate_local_process_group(proc)
+            except BaseException as exc:
+                local_quiesced = False
+                state["local_error"] = f"{type(exc).__name__}: {exc}"
+            remote_completed = remote_done.wait(
+                REMOTE_CLEANUP_COMMAND_TIMEOUT_SECONDS + 1.0
+            )
+            remote = remote_state.get("result")
+            if not remote_completed or not isinstance(remote, dict):
+                remote = {
+                    "returncode": 125,
+                    "error": "remote cleanup exceeded its outer bound",
+                }
+            state["result"] = {
+                "ok": remote.get("returncode") == 0 and local_quiesced,
+                "remote": remote,
+                "local_cleanup_quiesced": local_quiesced,
+                "completed": True,
+            }
+        finally:
+            done.set()
+
+    threading.Thread(
+        target=cleanup,
+        name=f"prolite-remote-cleanup-{getattr(proc, 'pid', 'unknown')}",
+        daemon=True,
+    ).start()
+    completed, interruption = _wait_for_owned_local_cleanup(
+        done,
+        timeout=(
+            max(
+                REMOTE_CLEANUP_COMMAND_TIMEOUT_SECONDS + 1.0,
+                LOCAL_PROCESS_TERM_GRACE_SECONDS
+                + LOCAL_PROCESS_KILL_REAP_TIMEOUT_SECONDS
+                + LOCAL_PROCESS_CLEANUP_OUTER_SLACK_SECONDS,
+            )
+            + 1.0
+        ),
+    )
+    if completed and isinstance(state.get("result"), dict):
+        result = dict(state["result"])
+        if "local_error" in state:
+            result["local_error"] = state["local_error"]
+        return result, interruption
+
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        try:
+            proc.kill()
+        except (ProcessLookupError, PermissionError):
+            pass
+    _schedule_local_process_exit_consumer(proc)
+    return {
+        "ok": False,
+        "remote": state.get("result", {}).get("remote")
+        if isinstance(state.get("result"), dict)
+        else {"returncode": 125, "error": "cleanup exceeded outer bound"},
+        "local_cleanup_quiesced": False,
+        "completed": False,
+    }, interruption
 
 
 def run_remote(args: argparse.Namespace) -> dict[str, Any]:
@@ -1581,8 +3389,10 @@ def run_remote(args: argparse.Namespace) -> dict[str, Any]:
     selected_remote_proxy_base_url = proxy_summary.get(
         "remote_proxy_base_url", args.remote_proxy_base_url
     )
+    owner_nonce = uuid.uuid4().hex
     payload = {
         "token": get_proxy_token(args.proxy_env_file),
+        "owner_nonce": owner_nonce,
         "remote_root": args.remote_root,
         "remote_repo": args.remote_runtime_repo,
         "base_run_dir": args.base_run_dir,
@@ -1604,34 +3414,73 @@ def run_remote(args: argparse.Namespace) -> dict[str, Any]:
     }
     encoded = base64.b64encode(REMOTE_RUNNER.encode("utf-8")).decode("ascii")
     wrapper = "import base64; exec(base64.b64decode(%r).decode('utf-8'))" % encoded
-    command = [*ssh_command, args.host, "python3 -c " + shlex.quote(wrapper)]
-    proc = subprocess.Popen(
-        command,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        start_new_session=True,
-    )
+    command = [
+        *ssh_command,
+        args.host,
+        "python3 -c "
+        + shlex.quote(wrapper)
+        + " "
+        + shlex.quote(owner_nonce),
+    ]
+    spawn_signal_state = _block_local_spawn_signals()
     try:
-        stdout, stderr = proc.communicate(json.dumps(payload), timeout=args.total_timeout)
-    except subprocess.TimeoutExpired as exc:
-        cleanup = terminate_remote_run(
-            ssh_command=ssh_command,
-            host=args.host,
-            base_run_dir=args.base_run_dir,
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
         )
-        terminate_local_process_group(proc)
-        raise RuntimeError(f"remote run timed out after {args.total_timeout}s; cleanup={cleanup}") from exc
-    except KeyboardInterrupt:
-        cleanup = terminate_remote_run(
-            ssh_command=ssh_command,
-            host=args.host,
-            base_run_dir=args.base_run_dir,
-        )
-        terminate_local_process_group(proc)
-        print("interrupted; remote cleanup requested: " + json.dumps(cleanup, ensure_ascii=False), file=sys.stderr)
+    except BaseException:
+        _restore_local_spawn_signals(spawn_signal_state)
         raise
+    try:
+        _restore_local_spawn_signals(spawn_signal_state)
+        stdout, stderr = _bounded_remote_communicate(
+            proc,
+            json.dumps(payload),
+            timeout=args.total_timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        cleanup, interruption = _cleanup_remote_execution(
+            ssh_command=ssh_command,
+            host=args.host,
+            base_run_dir=args.base_run_dir,
+            proc=proc,
+        )
+        if interruption is not None:
+            raise interruption
+        raise RuntimeError(
+            f"remote run timed out after {args.total_timeout}s; cleanup={cleanup}"
+        ) from exc
+    except BaseException:
+        cleanup, _interruption = _cleanup_remote_execution(
+            ssh_command=ssh_command,
+            host=args.host,
+            base_run_dir=args.base_run_dir,
+            proc=proc,
+        )
+        print(
+            "remote execution aborted; cleanup requested: "
+            + json.dumps(cleanup, ensure_ascii=False),
+            file=sys.stderr,
+        )
+        raise
+    if _local_process_group_exists(proc.pid):
+        cleanup, interruption = _cleanup_remote_execution(
+            ssh_command=ssh_command,
+            host=args.host,
+            base_run_dir=args.base_run_dir,
+            proc=proc,
+        )
+        if interruption is not None:
+            raise interruption
+        if not cleanup.get("ok"):
+            raise RuntimeError(
+                "ssh leader exited with residual process-group descendants; "
+                f"technical cleanup failure: {cleanup}"
+            )
     result = subprocess.CompletedProcess(command, proc.returncode, stdout, stderr)
     if result.returncode not in (0, 1, 2):
         raise RuntimeError(_redacted(result.stderr or result.stdout or f"ssh exited {result.returncode}"))
@@ -1644,14 +3493,87 @@ def run_remote(args: argparse.Namespace) -> dict[str, Any]:
     return summary
 
 
+def _prepare_local_report_output(path: Path, payload: bytes) -> tuple[Path, os.stat_result | None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        before = None
+    if before is not None and not stat.S_ISREG(before.st_mode):
+        raise OSError(f"report destination must be regular or absent: {path}")
+    with tempfile.NamedTemporaryFile(
+        mode="wb",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temporary = Path(handle.name)
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return temporary, before
+
+
+def _commit_local_report_output(
+    path: Path,
+    temporary: Path,
+    before: os.stat_result | None,
+) -> None:
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        current = None
+    if before is None:
+        if current is not None:
+            raise OSError(f"report destination appeared during write: {path}")
+    elif (
+        current is None
+        or not stat.S_ISREG(current.st_mode)
+        or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
+    ):
+        raise OSError(f"report destination changed during write: {path}")
+    os.replace(temporary, path)
+    directory_fd = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def write_local_report(summary: dict[str, Any], json_path: Path, md_path: Path) -> None:
     json_path.parent.mkdir(parents=True, exist_ok=True)
     md_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    if os.path.abspath(json_path) == os.path.abspath(md_path):
+        raise ValueError("JSON and Markdown reports must use different paths")
+    bundle_id = uuid.uuid4().hex
+    bundled_summary = {**summary, "local_report_bundle_id": bundle_id}
+    json_payload = (
+        json.dumps(bundled_summary, ensure_ascii=False, indent=2) + "\n"
+    ).encode("utf-8")
     markdown = summary.get("markdown")
     if not isinstance(markdown, str):
         markdown = "# SWE G1.1 Pro-Lite Report\n\nNo markdown was returned.\n"
-    md_path.write_text(markdown, encoding="utf-8")
+    markdown = markdown.rstrip("\n") + f"\n\n<!-- local_report_bundle_id:{bundle_id} -->\n"
+    prepared: list[tuple[Path, Path, os.stat_result | None]] = []
+    try:
+        json_temp, json_before = _prepare_local_report_output(json_path, json_payload)
+        prepared.append((json_path, json_temp, json_before))
+        md_temp, md_before = _prepare_local_report_output(
+            md_path,
+            markdown.encode("utf-8"),
+        )
+        prepared.append((md_path, md_temp, md_before))
+        # JSON is the commit marker: both complete files exist before either
+        # destination changes, and JSON is published after Markdown.
+        _commit_local_report_output(md_path, md_temp, md_before)
+        _commit_local_report_output(json_path, json_temp, json_before)
+    finally:
+        for _path, temporary, _before in prepared:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def main() -> int:
@@ -1689,8 +3611,29 @@ def main() -> int:
         parser.error("--start-index must be >= 1")
     if args.limit <= 0:
         parser.error("--limit must be > 0")
-    if args.max_task_starts < 1:
-        parser.error("--max-task-starts must be >= 1")
+    if args.limit > MAX_TASKS_PER_RUN:
+        parser.error(f"--limit must be <= {MAX_TASKS_PER_RUN}")
+    if args.max_task_starts < 0:
+        parser.error("--max-task-starts must be >= 0")
+    positive_values = {
+        "--budget": args.budget,
+        "--max-steps": args.max_steps,
+        "--swe-timeout": args.swe_timeout,
+        "--task-wall-timeout": args.task_wall_timeout,
+        "--eval-timeout": args.eval_timeout,
+        "--llm-timeout": args.llm_timeout,
+        "--total-timeout": args.total_timeout,
+    }
+    for option, value in positive_values.items():
+        if value <= 0:
+            parser.error(f"{option} must be > 0")
+    if args.checkpoint_interval < 0:
+        parser.error("--checkpoint-interval must be >= 0")
+    if args.run_id:
+        try:
+            args.run_id = validate_run_id(args.run_id)
+        except ValueError as exc:
+            parser.error(str(exc))
     configure_run_paths(args)
 
     try:

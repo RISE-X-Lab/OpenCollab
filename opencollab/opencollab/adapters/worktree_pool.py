@@ -10,7 +10,13 @@ from __future__ import annotations
 import logging
 import uuid
 
-from opencollab.adapters.env import Environment, LocalEnvironment, WorktreeEnvironment
+from opencollab.adapters.env import (
+    Environment,
+    LocalEnvironment,
+    WorktreeEnvironment,
+    _await_owned_operation,
+)
+from opencollab.domain.identity import role_storage_slug, validate_role_identity
 
 logger = logging.getLogger(__name__)
 
@@ -29,12 +35,27 @@ class WorktreePool:
 
     async def acquire(self, role: str) -> Environment:
         """Create (and remember) an isolated env for a spawned agent of this role."""
+        role = validate_role_identity(role)
         if not self._use_worktrees:
             return LocalEnvironment(self._workspace)
 
-        branch = f"opencollab-{role}-{uuid.uuid4().hex[:8]}"
+        branch = f"opencollab-{role_storage_slug(role)}-{uuid.uuid4().hex[:8]}"
         env = WorktreeEnvironment(self._workspace, branch_name=branch)
-        await env.setup()
+        try:
+            await env.setup()
+        except BaseException as original:
+            try:
+                await _await_owned_operation(env.cleanup())
+            except BaseException as cleanup_exc:
+                self._envs.append(env)
+                logger.warning("partial worktree cleanup failed", exc_info=True)
+                add_note = getattr(original, "add_note", None)
+                if callable(add_note):
+                    add_note(
+                        "partial worktree retained for cleanup retry: "
+                        f"{type(cleanup_exc).__name__}: {cleanup_exc}"
+                    )
+            raise original
         self._envs.append(env)
         return env
 
@@ -44,12 +65,37 @@ class WorktreePool:
         One failing teardown must not abort the others, so each is isolated;
         the failure is logged rather than swallowed so it is diagnosable.
         """
-        for env in self._envs:
+        failures: list[tuple[WorktreeEnvironment, BaseException]] = []
+        remaining: list[WorktreeEnvironment] = []
+        for env in list(self._envs):
             try:
-                await env.cleanup()
-            except Exception:
+                await _await_owned_operation(env.cleanup())
+            except BaseException as exc:
+                failures.append((env, exc))
+                remaining.append(env)
                 logger.warning("worktree cleanup failed for %s", env.workspace, exc_info=True)
-        self._envs.clear()
+        self._envs[:] = remaining
+        if failures:
+            detail = "; ".join(
+                f"{env.workspace}: {type(exc).__name__}: {exc}"
+                for env, exc in failures
+            )
+            raise OSError(f"worktree pool cleanup failed; retry state retained: {detail}")
+
+    async def release_env(self, env: Environment) -> None:
+        """Release one failed spawn's environment without touching siblings."""
+        if not isinstance(env, WorktreeEnvironment):
+            return
+        try:
+            self._envs.remove(env)
+        except ValueError:
+            return
+        try:
+            await _await_owned_operation(env.cleanup())
+        except BaseException:
+            self._envs.append(env)
+            logger.warning("worktree cleanup failed for %s", env.workspace, exc_info=True)
+            raise
 
     async def cleanup(self) -> None:
         """Compatibility alias for older callers."""

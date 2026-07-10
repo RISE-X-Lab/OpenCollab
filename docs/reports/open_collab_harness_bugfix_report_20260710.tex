@@ -1,0 +1,355 @@
+\documentclass[11pt,a4paper,fontset=fandol]{ctexart}
+\usepackage[margin=2.15cm]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+
+\hypersetup{colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!55!black}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.45em}
+\setlength{\headheight}{14pt}
+\setlength{\emergencystretch}{3em}
+\renewcommand{\arraystretch}{1.22}
+\Urlmuskip=0mu plus 1mu
+\sloppy
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{OpenCollab Harness Repair Report}
+\rhead{2026-07-10}
+\cfoot{Page \thepage\ of \pageref{LastPage}}
+
+\definecolor{critical}{HTML}{9C1C1C}
+\definecolor{high}{HTML}{B35A00}
+\definecolor{medium}{HTML}{6B5B00}
+\definecolor{passgreen}{HTML}{16733B}
+\newcommand{\PZero}{\textcolor{critical}{\textbf{P0}}}
+\newcommand{\POne}{\textcolor{high}{\textbf{P1}}}
+\newcommand{\PTwo}{\textcolor{medium}{\textbf{P2}}}
+\newcommand{\Pass}{\textcolor{passgreen}{\textbf{PASS}}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{\textbf{OpenCollab Harness Reliability, Integrity, and Isolation Repairs}\\
+\large Multi-Agent Implementation and Independent Reviewer Findings}
+\author{拱垲}
+\date{2026-07-10}
+
+\begin{document}
+\maketitle
+
+\begin{center}
+\begin{tabular}{rl}
+Repair branch: & \code{codex/harness-bugfix-20260710} \\
+Upstream target: & \code{YihongDong/OpenCollab:main} \\
+Review basis: & full working-tree diff, focused regressions, and repository-wide gates \\
+Publication rule: & source report tracked; rendered PDF excluded from Git \\
+\end{tabular}
+\end{center}
+
+\section{Executive Conclusion}
+
+The repair changes the harness from a collection of mostly cooperative assumptions into a system that records ownership, validates identity, bounds waiting, rejects unverifiable success, and treats cleanup evidence as part of result integrity. The highest-risk failures allowed a candidate to receive a false PASS, allowed a headless agent to inspect files outside its assigned repository, reused stale official-evaluation output, or returned while an untrusted task could still mutate state. Those paths now fail closed.
+
+The work covers the scheduler, session persistence, workflow engine, evaluation runner, Docker and local environments, SWE-bench generation and official-evaluation scripts, monitor scripts, tool dispatch, structured evidence capture, and output publication. Every behavior change has a focused regression. The final repository-wide test and lint totals are inserted after the post-merge validation run so this report cannot claim a result that was not executed.
+
+\section{Repair Scope and Results}
+
+\small
+\begin{longtable}{>{\raggedright\arraybackslash}p{1.0cm}>{\raggedright\arraybackslash}p{4.1cm}>{\raggedright\arraybackslash}p{9.0cm}}
+\toprule
+Risk & Area & Result \\
+\midrule
+\endfirsthead
+\toprule
+Risk & Area & Result \\
+\midrule
+\endhead
+\PZero & Evaluation truth & A result can become GREEN or resolved only after parser-backed evidence proves that tests actually executed and passed. Empty collection, help, collect-only, no-op runners, stale reports, and unpaired candidates are RED. \\
+\PZero & Execution isolation & Headless Bash and test execution require an OS-isolated environment. Docker runs with a verified owner identity and no network by default. Local and worktree environments reject untrusted command execution. Grep paths pass through the workspace jail. \\
+\PZero & Candidate identity & Prediction, metric, attempt, claim, pending record, and official report share a record identifier and a full patch digest. Discovery verifies stable files and exact candidate pairing before reporting completion. \\
+\PZero & Cancellation and teardown & Environments are synchronously revoked before asynchronous abort. Cancellation-resistant tasks receive bounded cancellation phases and are then isolated from event-loop shutdown ownership. Capacity exhaustion marks the process unhealthy. \\
+\POne & Scheduler correctness & Deferred rows are registered before a child can finish; wake-up races, spawn rollback, message restoration, cleanup classification, sender/parent validation, budget leases, and terminal-state preservation are covered by deterministic tests. \\
+\POne & Filesystem integrity & Reads, writes, appends, claims, owner records, reports, checkpoints, and manifests use stable directory descriptors, no-follow opens, inode checks, bounded sizes, durable replacement, and ownership-aware cleanup. \\
+\POne & Process and container ownership & Docker references are validated, start-mode containers carry an unpredictable owner label, full 64-hex identities are rebound and checked, foreign containers survive name collisions, and host subprocesses use bounded capture and verified process identity. \\
+\POne & Workflow evidence & Tool batches receive zero-side-effect preflight; evidence storage is bounded; verified findings always need an anchor; internal commit and synthesis calls have walls; numeric and schema validation reject ambiguous values. \\
+\POne & Monitoring and publication & Monitors distinguish changed output from old output, reject malformed status, preserve process identity, and refuse to publish an outcome when the official report lacks a terminal result. \\
+\PTwo & Repository hygiene & Tool output caps are strict, temporary names remain below \code{NAME\_MAX}, result records have byte ceilings, root pytest collection ignores run artifacts, and every newly added Python module stays below 800 lines. \\
+\bottomrule
+\end{longtable}
+\normalsize
+
+\section{Detailed Bug Scenarios, Failure Modes, and Harm}
+
+This section follows the repair summary immediately and records each root defect family. Each case states a concrete trigger, the former wrong result, the harm, the repair, and the regression evidence.
+
+\subsection{H-01: Headless command tools escaped the workspace jail (P0)}
+
+\textbf{Trigger.} An evaluation agent called \code{grep} with an absolute path outside the worktree, or called Bash with \code{cat /outside/ground\_truth}, \code{find /}, or a Python one-liner that opened a host file. \code{run\_tests} accepted the same behavior through a caller-controlled runner or extra arguments.
+
+\textbf{Former result and harm.} FileRead and FileWrite used the path policy, while Grep and command tools relied on quoting and destructive-command regular expressions. The agent could search reference answers, credentials, another run's artifacts, or modify any host path available to the harness account. This contaminated benchmark results and exposed local data.
+
+\textbf{Repair and regression.} Grep now applies \code{check\_path}. Every non-interactive tool registry and the evaluator construct Bash and RunTests with \code{require\_process\_isolation}; Local and Worktree report no such capability, while Docker reports it and starts with \code{--network none}. RunTests also disables runner and extra-argument overrides in headless mode. Regressions create a real outside secret and verify that Grep, Bash, and RunTests cannot read or modify it.
+
+\subsection{H-02: A zero-test command could forge GREEN (P0)}
+
+\textbf{Trigger.} A model selected \code{runner=true}, \code{echo ok}, \code{pytest --collect-only}, or \code{pytest --help}. Each command returned zero without executing a test.
+
+\textbf{Former result and harm.} The verdict function treated return code zero with no parsed failure count as GREEN. A broken patch could therefore pass the harness without running the requested FAIL\_TO\_PASS target, corrupting resolved counts.
+
+\textbf{Repair and regression.} Pytest GREEN now requires a positive passed count, and a focused target requires a matching PASSED node identifier. Go uses JSON event output and requires at least one test-level pass event. Other native runners remain RED until a parser-backed adapter proves execution. Regressions cover \code{true}, collect-only, help, a missing named target, and a real passing target.
+
+\subsection{H-03: Injected tests could leak into the submitted model patch (P0)}
+
+\textbf{Trigger.} Test-patch application partially succeeded, created \code{.orig} or \code{.rej}, timed out during rollback, or ignored cancellation while the harness extracted the final diff.
+
+\textbf{Former result and harm.} Harness-owned tests or partial rejects could appear as model-authored changes. Official grading could accept a patch that modified its own tests, and a failed rollback could leave the repository in an unknown state.
+
+\textbf{Repair and regression.} Both Git and patch fallbacks preflight the full patch, snapshot every touched path, use bounded apply and rollback owners, remove auxiliary artifacts, restore the original index and working tree, and mark submission ineligible unless cleanup and exclusion are proven. Regressions cover partial application, cancellation-resistant rollback, auxiliary files, and late writes.
+
+\subsection{H-04: Stale official reports could be paired with a new patch (P0)}
+
+\textbf{Trigger.} A new prediction reused an instance directory that already contained \code{report.json}, or two candidates shared a shortened digest prefix.
+
+\textbf{Former result and harm.} Discovery could report the old terminal outcome for the new candidate. A newly broken patch could inherit an earlier resolved result, or a valid patch could inherit an earlier failure.
+
+\textbf{Repair and regression.} Candidate identity now uses a record ID plus the full SHA-256 of the actual patch text. Attempt sidecars record the candidate, start time, report fingerprint, and relative report path. Pairing requires exact identity and evidence that the report changed after the attempt began. Tests cover unchanged old reports, explicit digest mismatch, changed reports, and parallel candidate directories.
+
+\subsection{H-05: Evaluation claims had check-then-act and ABA races (P0)}
+
+\textbf{Trigger.} Two auto-evaluation drivers inspected an apparently free task simultaneously, or an old claimant resumed after a successor had replaced its claim.
+
+\textbf{Former result and harm.} Both drivers could launch Docker evaluation, and the older driver could heartbeat, finalize, or delete the newer claim. Duplicate work wasted resources and could overwrite the authoritative attempt.
+
+\textbf{Repair and regression.} Claims use exclusive creation, unpredictable nonces, process-start identity, stable bounded reads, compare-and-swap heartbeat/finalization, and ownership-checked deletion. Popen startup has a deadline and a failed launch writes an explicit technical attempt. Multiprocess regressions prove single acquisition and reject stale-owner mutation.
+
+\subsection{H-06: Docker cleanup could delete a foreign container (P0)}
+
+\textbf{Trigger.} Docker returned a name conflict, an attach reference was ambiguous, setup timed out after a container appeared, or an old marker named a new foreign container.
+
+\textbf{Former result and harm.} Cleanup trusted a name or short reference and issued force removal. A concurrent user's container could be destroyed, while the harness might retain its own leaked container.
+
+\textbf{Repair and regression.} Image and container arguments reject option-like and malformed values. Start mode assigns a unique name and owner-token label, then binds the exact full ID through inspect. Attach mode binds a full ID once and verifies the expected name and running state. Removal occurs only after name, label, and full ID all match, followed by an absence check. Tests model foreign name collisions, renamed containers, truncated IDs, setup timeout, and marker replacement.
+
+\subsection{H-07: Local process groups could escape cleanup (P0)}
+
+\textbf{Trigger.} A command double-forked or called \code{setsid}, leaving a descendant outside the original process group after the leader exited.
+
+\textbf{Former result and harm.} Group termination and leader reaping did not prove that all descendants stopped. A detached process could mutate the repository after patch extraction or keep producing output indefinitely.
+
+\textbf{Repair and regression.} Host process execution has bounded output readers, process-start identity, descendant quiescence checks, and an explicit unquiesced result. More importantly, untrusted headless execution is permitted only in Docker; Local and Worktree remain available for trusted interactive use and filesystem operations. Regressions cover term-ignoring children, quiet descendants, leader exit, and bounded shutdown.
+
+\subsection{H-08: Worktree branch ownership was not atomic (P1)}
+
+\textbf{Trigger.} Another process created the requested branch between the harness probe and \code{git worktree add}, or cancellation arrived during registration.
+
+\textbf{Former result and harm.} Cleanup could delete a branch it never owned or leave a half-registered worktree and budget reservation.
+
+\textbf{Repair and regression.} Worktree setup claims the branch with \code{git update-ref <ref> <base> 000...} before add. Rollback uses compare-and-swap deletion and tracked registration state. Tests inject an external branch during the former race and verify that it survives cleanup.
+
+\subsection{H-09: Host file operations followed symlinks or accepted path swaps (P0/P1)}
+
+\textbf{Trigger.} An attacker replaced a parent directory, final file, owner record, PID file, report, dataset, or prediction with a symlink/FIFO between validation and open.
+
+\textbf{Former result and harm.} The harness could read secrets, overwrite an external file, block forever on a FIFO, delete a successor's state, or parse two versions of one input.
+
+\textbf{Repair and regression.} Shared safe-file helpers open every ancestor with directory descriptors and \code{O\_NOFOLLOW}, compare pre-open and post-open identities, enforce regular-file and byte limits, verify parent identity after I/O, and delete only the inode created by the current owner. The same pattern is applied to local environments, results, records, discovery, start scripts, and monitor scripts. Tests swap ancestors and final components at each stage and verify that outside files remain unchanged.
+
+\subsection{H-10: Atomic output replacement failed on legal long names and unbounded records (P1/P2)}
+
+\textbf{Trigger.} A destination already used the filesystem's 255-byte component limit, or one result carried an extremely large patch/trajectory.
+
+\textbf{Former result and harm.} Temporary names appended the destination basename and exceeded \code{NAME\_MAX}. Result writing also had no per-record or total byte ceiling, allowing disk exhaustion.
+
+\textbf{Repair and regression.} Temporary components now use a short fixed prefix plus a UUID, independent of the destination name. Evaluation records enforce per-line and total byte limits, preserve the previous file on failure, fsync source and destination directories, and clean only the owned temporary inode. Tests write to a 255-byte destination and force a record-limit failure while checking that the old output remains intact.
+
+\subsection{H-11: Event logging could block loop shutdown or cross-write a replaced file (P1)}
+
+\textbf{Trigger.} Append I/O blocked, another process held the advisory lock, or the JSONL path was replaced, truncated, or rewritten between records.
+
+\textbf{Former result and harm.} \code{asyncio.to\_thread} used the default executor, whose shutdown could wait indefinitely. A replacement could split one run's observations across files while the sink continued silently.
+
+\textbf{Repair and regression.} Each sink owns a serial daemon I/O worker with a bounded result wait. A timeout makes the write error sticky and stops later records. Each append verifies the prior inode, size, mtime, and ctime before writing and verifies identity afterward. Tests use a real held lock, a deliberately blocked worker, replacement, truncation, same-size rewrite, FIFO, and concurrent 100 KB events.
+
+\subsection{H-12: Deferred child completion could be lost (P0)}
+
+\textbf{Trigger.} A child completed between tool dispatch and parent-row registration, or filled the final row while the parent's driver was returning into AWAITING.
+
+\textbf{Former result and harm.} The completion had no row to fill, or no driver remained to wake the parent. The session stayed suspended forever despite completed work.
+
+\textbf{Repair and regression.} The parent row exists before a child can run. Wake-up holds the parent lock, preserves an already-filled row, and installs a one-shot task-done callback for the tail window. The callback rechecks state and creates at most one replacement driver. Event-controlled tests exercise both interleavings.
+
+\subsection{H-13: Spawn failure leaked ghost sessions and reservations (P1)}
+
+\textbf{Trigger.} Environment acquisition, session construction, event publication, or driver creation failed after an aid, budget, or inflight key had been reserved.
+
+\textbf{Former result and harm.} The table contained a child with no driver; budget and dedup state remained consumed; parent rows never received a failure; worktrees leaked.
+
+\textbf{Repair and regression.} Spawn startup is an owned transaction. Every failure unwinds the SCB, session, origin, task, lock, inbox, branch environment, budget lease, review-parent lease, and inflight key, then fills the parent row with an explicit failure. Regressions inject failures at each stage and assert a lead-only final registry.
+
+\subsection{H-14: Unknown scheduler identities could mutate state under allow-all topology (P1)}
+
+\textbf{Trigger.} A caller invoked spawn with a nonexistent parent aid or sent a message from a nonexistent sender while topology allowed all roles.
+
+\textbf{Former result and harm.} Role fallback let the operation proceed, fabricating ancestry or sender attribution and consuming real resources.
+
+\textbf{Repair and regression.} Spawn now requires the parent in both the session table and live session map before allocation. Messaging validates the source before looking up the target or touching an inbox. Tests verify zero allocation and zero queue mutation for unknown identities.
+
+\subsection{H-15: Message restoration and cleanup changed durable terminal state (P1)}
+
+\textbf{Trigger.} A process restarted with pending teammate messages, or scheduler cleanup cancelled a blocked message-add task after the target child had already completed.
+
+\textbf{Former result and harm.} Restored messages could remain outside the scheduler inbox forever. Cleanup also classified a delivery owner as an execution owner and changed a DONE child to CANCELLED.
+
+\textbf{Repair and regression.} Pending messages rebuild the scheduler inbox with timestamps and sender metadata. Delivery rollback restores the exact message snapshot and queue lease. Execution/startup owners alone can fail the child session; delivery/add owners only restore messaging state. Regressions verify child-result, teammate, and external-turn order and preserve DONE through blocked delivery cleanup.
+
+\subsection{H-16: Concurrent token budgets oversubscribed the team (P0/P1)}
+
+\textbf{Trigger.} Several children or workflow calls observed the same remaining budget before any one of them recorded consumption.
+
+\textbf{Former result and harm.} Grants exceeded the global ceiling, a first child could starve siblings, and a structured retry could obtain a fresh budget after spending its first pass.
+
+\textbf{Repair and regression.} Scheduler grants reserve a bounded fair share and release by owner. Workflow calls acquire atomic leases that subtract active reservations as well as spent tokens. Corrective commits reuse the original lease. Parallel tests prove the sum of grants never exceeds the team cap and retries receive only the lease remainder.
+
+\subsection{H-17: Cancellation-resistant tasks held teardown forever (P0/P1)}
+
+\textbf{Trigger.} A tool, provider, environment abort, checkpoint, message add, or cleanup coroutine consumed repeated \code{CancelledError}, or blocked synchronously in \code{finally}.
+
+\textbf{Former result and harm.} \code{asyncio.wait\_for} waited for cancellation cleanup, \code{asyncio.run} waited again during shutdown, and the process missed its wall. The scheduler also removed an isolated abort task from its pending set and then called \code{task.exception()} while that task was still active. This raised \code{InvalidStateError}; the remaining cancellation-resistant owners then trapped event-loop shutdown. Late code could still mutate resources after a result returned.
+
+\textbf{Repair and regression.} Cleanup first revokes the concrete environment synchronously, performs two bounded cancellation phases, then unregisters and retains the revoked task under a daemon owner so event-loop shutdown cannot wait for it. Exception inspection is limited to terminal tasks, while active isolated owners keep a result-consuming callback. The report calls this \emph{shutdown ownership isolation}, not task termination. Isolated-owner capacity is bounded; overflow raises an async-runtime-unhealthy error that requires process restart. Regressions cover consumed cancellation, stubborn environment abort, sync-blocking finalizers, late writes, repeated caller cancellation, and capacity escalation.
+
+\subsection{H-18: Workflow commit and synthesis calls had no wall (P1)}
+
+\textbf{Trigger.} A draft or dead-scout synthesis session blocked in initial message delivery or generation while the outer workflow had no explicit per-call timeout.
+
+\textbf{Former result and harm.} A supposedly bounded salvage step could consume the remainder of the evaluation wall and prevent patch extraction or cleanup.
+
+\textbf{Repair and regression.} Internal commit calls share one finite deadline across message delivery and run loop. The deadline is the smaller of the workflow's remaining wall and the internal commit ceiling. A timeout returns no fabricated capture and enters the same owned cleanup path. Regressions hold a draft session open and prove bounded return.
+
+\subsection{H-19: Session snapshots were incomplete or destructively replaced (P1)}
+
+\textbf{Trigger.} The process crashed during save, resumed an AWAITING session, or restored a session containing unresolved rows and queued messages.
+
+\textbf{Former result and harm.} A partial JSON file could replace the prior snapshot. Token and step counts, terminal phase, pending rows, timestamps, and messages were lost or overwritten by registration.
+
+\textbf{Repair and regression.} Session and manifest saves use exact UTF-8 byte limits, same-directory durable replacement, stable parents, post-replace identity checks, and cleanup provenance. Versioned snapshots restore counters, phase, terminal reason, rows, timestamps, and pending messages. Non-resumable child/tool rows become explicit failure results. Tests inject write, fsync, replace, parent-swap, target-swap, and restore failures.
+
+\subsection{H-20: Autosave and event subscribers outlived their owners (P1)}
+
+\textbf{Trigger.} Autosave received rapid events, a save raised \code{KeyboardInterrupt}/\code{SystemExit}, a subscriber returned an arbitrary awaitable, or cancellation occurred during final snapshots.
+
+\textbf{Former result and harm.} Concurrent workers raced on the same state, BaseException escaped ownership, valid awaitables were dropped, and the final durable snapshot could lag the final phase.
+
+\textbf{Repair and regression.} Autosave uses one daemon-backed worker per subscriber, generation fences, sticky errors, and explicit final enqueue/wait. EventBus accepts arbitrary awaitables and separates external cancellation from a subscriber cancelling itself. Final evaluator snapshots and manifests remain owned through teardown. Regressions cover bursts, failures, cancellation, and final phase persistence.
+
+\subsection{H-21: Checkpoint proof could retain stale or late artifacts (P1)}
+
+\textbf{Trigger.} A later checkpoint produced an empty diff, a proof command exceeded its deadline, or an auxiliary task continued after stop/abort.
+
+\textbf{Former result and harm.} The prior nonempty patch remained and could be submitted as the current result. Late proof tasks could race restoration or artifact reads.
+
+\textbf{Repair and regression.} Empty checkpoints durably remove the stale patch, checkpoint paths bind to the original run-directory inode, proof and metadata I/O use safe files, and auxiliary owners receive bounded cleanup plus shutdown isolation. Restore evidence is mandatory for eligibility. Tests cover empty-after-nonempty, parent replacement, late proof, and abort.
+
+\subsection{H-22: Tool-call batches could partially execute malformed requests (P1)}
+
+\textbf{Trigger.} A batch contained a valid write first and a duplicate ID, malformed envelope, unknown tool, invalid JSON, or schema violation later.
+
+\textbf{Former result and harm.} Earlier calls executed before the harness discovered the later defect. Retrying the rejected batch could duplicate writes, and duplicate IDs made result association ambiguous.
+
+\textbf{Repair and regression.} Multi-call batches have a fixed count ceiling and receive a full preflight of envelopes, unique nonempty IDs, JSON object arguments, tool existence, and declared schemas before any call starts. Any defect rejects the whole batch with zero side effects. Tests place a schema failure after a valid side-effect call and verify the tool was never invoked.
+
+\subsection{H-23: Evidence records grew without bound and abstention bypassed citations (P1/P2)}
+
+\textbf{Trigger.} A scout accumulated many tool results, or submitted \code{insufficient\_evidence=true} together with \code{verified=true} and an empty anchor.
+
+\textbf{Former result and harm.} The evidence ledger could grow with every step. The abstention flag skipped the verified-anchor check, allowing an unsupported claim to appear verified.
+
+\textbf{Repair and regression.} Per-batch calls and the session ledger have explicit caps, retaining the latest bounded evidence cards. Every verified finding requires a nonempty anchor regardless of report-level abstention; partial cited findings may coexist with honest abstention. Tests exceed the ledger cap and exercise the mixed abstention bypass.
+
+\subsection{H-24: Schema and numeric validation accepted non-finite or ambiguous values (P1/P2)}
+
+\textbf{Trigger.} Configuration supplied \code{nan}, \code{inf}, booleans in integer slots, unknown schema types, zero/negative output caps, or an oversized cap.
+
+\textbf{Former result and harm.} Unknown schema types failed open. Non-finite timeouts and prices could create permanent waits or meaningless metrics. A zero truncation cap returned the entire string because \code{text[-0:]} equals the full text.
+
+\textbf{Repair and regression.} The stdlib schema validator validates schema nodes, rejects unknown types, and accepts only finite JSON numbers. Team tool limits use strict integer allowlists and upper bounds. Truncation includes its marker inside the configured cap. Enforcement, timeout, retry, monitor, and generation parameters reject booleans and non-finite values. Parametrized tests cover every invalid class and one-character legal caps.
+
+\subsection{H-25: Mandatory review iteration counts were unbounded (P1)}
+
+\textbf{Trigger.} A tool call set \code{max\_iterations} to zero, a negative number, a boolean, a string, or a very large integer.
+
+\textbf{Former result and harm.} Zero silently skipped mandatory review, while a large value bypassed the advertised three-iteration ceiling and could consume the entire run budget.
+
+\textbf{Repair and regression.} A shared application validator enforces integer values from one through three. The adapter rejects invalid calls before invoking the scheduler, and the application loop validates again for programmatic callers. Parametrized tests prove no reviewer call starts for invalid values.
+
+\subsection{H-26: Fact-sheet discovery could leak reference answers (P0)}
+
+\textbf{Trigger.} A stub directory contained an ancestor symlink to an outside source tree, a queued directory was swapped to a symlink after enumeration, or answer filenames differed only by case or Unicode normalization.
+
+\textbf{Former result and harm.} Lexical containment and case-sensitive answer filtering allowed ground-truth implementation files into the planning fact sheet. The agent then solved the task using hidden answers.
+
+\textbf{Repair and regression.} Fact-sheet traversal keeps directory descriptors open, uses relative no-follow opens, checks directory and file identities, and never reopens a yielded path. Answer names use NFC normalization plus casefold. Tests cover static ancestor links, queued-directory replacement, and case/Unicode variants.
+
+\subsection{H-27: Host write locks blocked the event loop and polluted patches (P1)}
+
+\textbf{Trigger.} One FileWrite held a synchronous \code{FileLock} across an await while another write to the same path tried to acquire it on the event-loop thread.
+
+\textbf{Former result and harm.} The second acquire synchronously polled for ten seconds, preventing the first coroutine from resuming and creating a deterministic self-stall. The persistent \code{<target>.lock} file also appeared as an untracked model change.
+
+\textbf{Repair and regression.} Locks live in an owner-only temporary harness directory under a SHA-256 path key. Acquisition uses nonblocking cross-process attempts with asynchronous sleeps and a finite deadline. No lock component is created in the repository. Concurrent-write regressions finish below the wall and a real Git status contains no lock file.
+
+\subsection{H-28: Monitor and runner scripts reported completion from weak evidence (P0/P1)}
+
+\textbf{Trigger.} A nested report was stale, a prediction or dataset changed during read, a process PID was reused, a child survived its leader, or a report existed without a terminal outcome.
+
+\textbf{Former result and harm.} Monitors could publish false completion, attach output to the wrong attempt, or leave long-running producers. Batch scripts also trusted delimiter-fragile shell parsing and unstable files.
+
+\textbf{Repair and regression.} Scripts use bounded stable reads, directory descriptors, exact process-start identity, claim records, strict terminal schemas, bounded Popen ownership, descendant guards, and deterministic Python helpers for batch state. A report without a resolved/unresolved outcome is a technical failure. Script suites cover report replacement, nested discovery, stale PID, process descendants, malformed JSON, and replay.
+
+\subsection{H-29: Single-agent and team publication could lose or duplicate durable output (P0/P1)}
+
+\textbf{Trigger.} The process crashed between prediction and metric writes, output append failed after container cleanup, two processes replayed one stale pending record, or an output path changed to a symlink.
+
+\textbf{Former result and harm.} Prediction and metric rows diverged, successful patches disappeared, duplicate rows appeared, or an external file was modified. Container owner records could be cleared before durable publication.
+
+\textbf{Repair and regression.} Publication stages one candidate and one owner record with record ID, full digest, output targets, and integrity fields. Replay fills whichever side is missing and removes the pending record only after both directories are durable. Output locking is bounded and CAS-based; symlinks, FIFOs, corrupt tails, replacements, and path mismatches fail closed. Two-process recovery tests prove exactly-once publication.
+
+\section{Strict Code Review Record}
+
+Independent reviewers inspected separate risk surfaces instead of reviewing only the happy path. The review repeatedly introduced adversarial interleavings: completion before registration, cancellation during rollback, parent and target swaps, PID/container identity reuse, stale reports, duplicate claims, no-op test commands, blocked finalizers, and report publication after partial failure. Findings were returned with severity, concrete trigger, harm, and required regression.
+
+The final repair wave addressed every P0, P1, and P2 finding recorded during that review wave. The final gate relies on the post-merge full test run, whole-repository Ruff run, compile check, shell syntax check, diff check, file-size check, and rendered report inspection. The report intentionally distinguishes a terminal coroutine from a revoked task isolated from shutdown ownership.
+
+\section{Validation Evidence}
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{5.1cm}>{\raggedright\arraybackslash}p{8.8cm}}
+\toprule
+Gate & Recorded result \\
+\midrule
+Focused harness regressions & Scheduler, environment, evaluation, workflow, persistence, tools, monitors, generation, and publication suites passed during repair. \\
+Split-module regressions & \code{156 passed}; new test modules remain below the 800-line CI ceiling. \\
+Repository-wide pytest & \code{2424 passed}; 18 Python 3.14 fork deprecation warnings; 126.02 seconds. \\
+Whole-repository Ruff & \code{All checks passed!} from the repository root. \\
+Python bytecode compilation & \Pass; package, scripts, SWE-bench, and workflows compiled. \\
+Shell syntax & \Pass; all five repository shell scripts passed \code{bash -n}. \\
+Patch whitespace & \Pass; \code{git diff --check} produced no findings. \\
+TeX compilation and page rendering & \Pass; XeLaTeX compiled 13 pages and every rendered page was inspected. \\
+\bottomrule
+\end{longtable}
+
+\section{Compatibility and Operational Impact}
+
+Headless runs without a Docker image can still read and edit through dedicated filesystem tools, yet Bash and RunTests return an isolation error. A benchmark that needs command execution must provide an isolated Docker environment. Docker starts without network access; tasks that require network setup must prepare dependencies in the image.
+
+Old prediction or report artifacts lacking full candidate identity are no longer accepted as proof for a new attempt. Re-evaluation creates the required sidecars. Native test runners without a parser-backed execution adapter return RED even when their process exits zero. These behaviors protect result truth and can surface previously hidden technical failures.
+
+The rendered PDF is generated for delivery under a local output directory and excluded from the commit. The TeX source is the tracked, reviewable artifact. Public source, comments, commit metadata, and PR text remain English; the requested author name is preserved as a proper name.
+
+\section{Git and Pull Request Plan}
+
+The branch is synchronized with the current upstream \code{main} before publication. The commit and PR title use an English Conventional Commit subject. The push target is the contributor fork, and the draft PR targets \code{YihongDong/OpenCollab:main}. The PR body summarizes root causes, user and evaluator impact, the compatibility changes above, and every executed validation gate.
+
+\end{document}

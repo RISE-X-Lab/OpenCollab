@@ -21,6 +21,22 @@ class EnvironmentPort(Protocol):
     async def write_file(self, path: str, content: str) -> None:
         ...
 
+    async def write_temp_file(
+        self,
+        content: str,
+        *,
+        prefix: str,
+        suffix: str = ".tmp",
+    ) -> str:
+        ...
+
+    async def remove_file(self, path: str) -> None:
+        ...
+
+    async def abort(self) -> None:
+        """Revoke future side effects and stop owned environment resources."""
+        ...
+
 
 @runtime_checkable
 class DiffCapablePort(Protocol):
@@ -142,6 +158,8 @@ class ToolPort(Protocol):
     name: str
     description: str
     parameters: dict[str, Any]
+    default_timeout: float | None
+    disable_outer_timeout: bool
 
     def to_openai_schema(self) -> dict[str, Any]:
         ...

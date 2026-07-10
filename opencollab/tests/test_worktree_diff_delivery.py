@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
@@ -22,6 +24,16 @@ class _DiffEnv:
 
     async def get_diff(self) -> str:
         return self._diff
+
+
+class _FailingDiffEnv(_DiffEnv):
+    async def get_diff(self) -> str:
+        raise RuntimeError("diff failed")
+
+
+class _FailingTracer:
+    def log_step(self, **kwargs) -> None:
+        raise RuntimeError("trace failed")
 
 
 class _ChildSession:
@@ -100,3 +112,44 @@ def test_child_worktree_diff_is_delivered_to_parent_pending_row():
     assert row.result == (
         "implemented it\n\n[Changes made in worktree]\n```diff\n" + diff + "\n```"
     )
+    assert scheduler.table.get(1).result == row.result
+
+
+@pytest.mark.parametrize("failure_site", ["diff", "tracer", "event"])
+def test_child_finalization_failure_still_delivers_to_parent(failure_site):
+    env = _FailingDiffEnv("") if failure_site == "diff" else _DiffEnv("")
+    child = _ChildSession("coder", "implemented it", env)
+    lead = _LeadSession()
+
+    async def sink(event):
+        if failure_site == "event" and event.type == "agent_completed":
+            raise RuntimeError("event failed")
+
+    scheduler = Scheduler(
+        session_factory=_Factory(child),
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(sink),
+        tracer=_FailingTracer() if failure_site == "tracer" else None,
+    )
+    scheduler.register_lead(lead)
+
+    async def scenario() -> None:
+        aid = await scheduler.spawn(0, "coder", "implement", tool_call_id="tc-1")
+        lead.state.pending_events.add(
+            PendingRow(
+                tool_call_id="tc-1",
+                kind=RowKind.CHILD_AGENT,
+                order=0,
+                ref=aid,
+                status=RowStatus.PENDING,
+            )
+        )
+        lead.state.set_phase(SessionPhase.AWAITING_EVENTS)
+        await scheduler._tasks[aid]
+
+    asyncio.run(scenario())
+
+    row = lead.state.pending_events.rows["tc-1"]
+    assert row.status is RowStatus.DONE
+    assert row.result == "implemented it"
+    assert 1 not in scheduler._spawn_origin

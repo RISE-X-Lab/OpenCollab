@@ -9,6 +9,7 @@ one bad sink cannot break siblings or the loop.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any, Awaitable, Callable
 
 from opencollab.application.ports import EventPublisherPort
@@ -37,6 +38,20 @@ class EventBus:
         """Read-only view of every subscribed target, in subscription order."""
         return tuple(self._targets)
 
+    @property
+    def pending_tasks(self) -> tuple[asyncio.Task[Any], ...]:
+        """Live tasks owned by subscribers after their callback waiter exits."""
+        pending: list[asyncio.Task[Any]] = []
+        seen: set[int] = set()
+        for target in self._targets:
+            tasks = getattr(target, "pending_tasks", ())
+            for task in tasks:
+                if not isinstance(task, asyncio.Task) or task.done() or id(task) in seen:
+                    continue
+                seen.add(id(task))
+                pending.append(task)
+        return tuple(pending)
+
     async def emit(self, event: Any) -> None:
         for target in self._targets:
             try:
@@ -44,8 +59,20 @@ class EventBus:
                     result = target.emit(event)  # type: ignore[union-attr]
                 else:
                     result = target(event)  # type: ignore[operator]
-                if asyncio.iscoroutine(result):
-                    await result
+                if inspect.isawaitable(result):
+                    owner = asyncio.ensure_future(result)
+                    try:
+                        await owner
+                    except asyncio.CancelledError:
+                        current = asyncio.current_task()
+                        if current is not None and current.cancelling():
+                            raise
+                        continue
+            except asyncio.CancelledError:
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
+                continue
             except Exception:
                 # Subscriber failure must not break siblings or the loop.
                 continue

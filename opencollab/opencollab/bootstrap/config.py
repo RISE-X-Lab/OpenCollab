@@ -26,12 +26,16 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from opencollab.adapters.llm.providers import is_anthropic, required_env_key
+from opencollab.adapters.safe_files import read_regular_text
+
+MAX_DOTENV_BYTES = 1024 * 1024
 
 # Authoritative LLM sampling-temperature default. Every runtime path resolves
 # its effective temperature from here (env/.env override → per-role override),
@@ -112,7 +116,7 @@ class OpenCollabConfig(BaseModel):
     top_p: float | None = Field(default=DEFAULT_TOP_P, ge=0.0, le=1.0)
     thinking: bool = Field(default=DEFAULT_THINKING)
     thinking_params: dict[str, Any] = Field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
-    llm_timeout: float = Field(default=600.0, gt=0)
+    llm_timeout: float = Field(default=600.0, gt=0, allow_inf_nan=False)
     filter_messages: bool = Field(default=False)
 
     @field_validator("top_p", mode="before")
@@ -132,6 +136,13 @@ class OpenCollabConfig(BaseModel):
         # real bool, mirroring how temperature accepts its string form.
         if isinstance(value, str):
             return _parse_bool(value)
+        return value
+
+    @field_validator("llm_timeout", mode="before")
+    @classmethod
+    def _reject_boolean_llm_timeout(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("llm_timeout must be a finite positive number")
         return value
 
     @field_validator("thinking_params", mode="before")
@@ -171,23 +182,27 @@ def load_dotenv(path: str | None = None) -> dict[str, str]:
     env_path = path or os.path.join(os.getcwd(), ".env")
     result: dict[str, str] = {}
 
-    if not os.path.isfile(env_path):
+    try:
+        inspected = os.lstat(env_path)
+    except FileNotFoundError:
         return result
+    if not stat.S_ISREG(inspected.st_mode):
+        raise ValueError(f"config env path is not a regular file: {env_path}")
 
-    with open(env_path, "r", encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if "=" not in line:
-                continue
-            key, _, value = line.partition("=")
-            key = key.strip()
-            value = value.strip()
-            # Remove surrounding quotes
-            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-                value = value[1:-1]
-            result[key] = value
+    text = read_regular_text(env_path, max_bytes=MAX_DOTENV_BYTES)
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        # Remove surrounding quotes
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        result[key] = value
 
     return result
 

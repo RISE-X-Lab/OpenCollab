@@ -52,3 +52,25 @@ def test_unknown_tool_error_lists_known_tools_including_skill():
 def test_stateless_tools_resolve_without_any_dependency():
     tools = build_tools_for_role(["bash", "file_read"])
     assert {t.name for t in tools} == {"bash", "file_read"}
+
+
+def test_headless_registry_restricts_command_tools():
+    bash, run_tests = build_tools_for_role(
+        ["bash", "run_tests"], interactive=False
+    )
+
+    assert bash.require_process_isolation is True
+    assert run_tests.require_process_isolation is True
+    assert run_tests.allow_runner_override is False
+    assert run_tests.allow_extra_args is False
+
+
+def test_interactive_registry_keeps_user_command_controls():
+    bash, run_tests = build_tools_for_role(
+        ["bash", "run_tests"], interactive=True
+    )
+
+    assert bash.require_process_isolation is False
+    assert run_tests.require_process_isolation is False
+    assert run_tests.allow_runner_override is True
+    assert run_tests.allow_extra_args is True

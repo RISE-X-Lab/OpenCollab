@@ -55,3 +55,6 @@ select = ["E", "F", "I", "W"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = [".", ".."]
+testpaths = ["tests"]
+norecursedirs = ["eval_work", ".git", ".venv", "__pycache__"]
