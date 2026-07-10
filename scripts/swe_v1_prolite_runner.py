@@ -577,6 +577,15 @@ def js_runner_command(binary, package_script, target, extra_args=""):
     ])
 
 
+_NOOP_TEST_COMMANDS = {"", "true", ":", "/bin/true"}
+
+
+def _is_runnable_test_command(cmd):
+    # A no-op like `true` "passes" instantly and would score a false green:
+    # resolved=true having executed zero target tests. Treat it as no command.
+    return bool(cmd) and cmd.strip() not in _NOOP_TEST_COMMANDS
+
+
 def prolite_test_command(row, tests):
     language = str(row.get("repo_language") or "").lower()
     repo = str(row.get("repo") or "").lower()
@@ -611,7 +620,7 @@ def prolite_test_command(row, tests):
         if repo == "element-hq/element-web":
             return js_runner_command("jest", "test", target)
         return js_runner_command("jest", "test", target)
-    return str(row.get("test_cmd") or row.get("eval_cmd") or "true")
+    return str(row.get("test_cmd") or row.get("eval_cmd") or "")
 
 
 def generation_for_task(row):
@@ -899,6 +908,10 @@ exit 0
     f2p_log_tail = read_text("f2p.log")
     p2p_log_tail = read_text("p2p.log")
     technical_reasons = []
+    if not _is_runnable_test_command(f2p_cmd):
+        # No derivable FAIL_TO_PASS command: we cannot prove the fix, so this is a
+        # technical failure (resolved stays False) — never a silent pass.
+        technical_reasons.append("no_fail_to_pass_command")
     if docker_exit != 0:
         technical_reasons.append("docker_exit")
     if before_status != 0:
