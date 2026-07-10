@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenCollab · Team Blueprint</title>
+<style>
+  /* ── OpenCollab "Blueprint Schematic" — a working drafting table, sibling of
+     assets/oc-hero-dark.svg. Dark navy ink + blueprint grid + serif display +
+     the pentagon-ring mark. Fonts live in the base :root only (theme-independent);
+     every theme block redefines colours + atmosphere. Hex/rgba only — no
+     color-mix()/oklch() — so the offline file renders identically everywhere. */
+  :root {
+    /* light "architect paper" (default) */
+    --bg: #E8EDF4; --panel: #ffffff; --card: #ffffff;
+    --heading: #0F172A; --text: #14203A; --muted: #55657E; --faint: #586780;
+    --border: #D8E0EE; --border-strong: #C6D0E2;
+    --accent: #6D28D9; --accent-soft: #EDE7FB;
+    --work: #1D4ED8; --work-bg: #E4ECFD;
+    --coord: #6D28D9; --coord-bg: #EDE7FB;
+    --skill: #0F766E; --skill-bg: #D6F4EE;
+    --unknown: #C81E1E; --unknown-bg: #FCE4E4;
+    --ok: #0E7A46; --ok-bg: #DCF3E5;
+    --warn: #9A5B08; --warn-bg: #FBEAD2;
+    --err: #C81E1E; --err-bg: #FCE4E4;
+    --shadow: 0 1px 2px rgba(20,32,58,.06), 0 8px 24px rgba(20,32,58,.07); --shadow-lift: 0 12px 28px rgba(20,32,58,.16);
+    --grid: rgba(37,99,235,0.10); --grid-major: rgba(37,99,235,0.16);
+    --mesh-1: rgba(124,58,237,.07); --mesh-2: rgba(37,99,235,.06);
+    --node-travel: #7C3AED; --mark-glow: rgba(124,58,237,.45);
+    --grad-a: #7C3AED; --grad-b: #2563EB;
+    --font-display: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, Georgia, "Times New Roman", Times, serif;
+    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0F172A; --panel: #182234; --card: #1E293B;
+      --heading: #F1F5F9; --text: #EAF1FB; --muted: #9AA8BE; --faint: #8193AD;
+      --border: #2B3A50; --border-strong: #33445E;
+      --accent: #A78BFA; --accent-soft: #2C2350;
+      --work: #93C5FD; --work-bg: #1C2C4C;
+      --coord: #A78BFA; --coord-bg: #2C2350;
+      --skill: #2DD4BF; --skill-bg: #123A34;
+      --unknown: #F87171; --unknown-bg: #3A1A1A;
+      --ok: #34D399; --ok-bg: #0F2E22;
+      --warn: #FBBF24; --warn-bg: #34260F;
+      --err: #F87171; --err-bg: #3A1A1A;
+      --shadow: 0 1px 2px rgba(0,0,0,.45), 0 10px 30px rgba(0,0,0,.35); --shadow-lift: 0 12px 28px rgba(0,0,0,.32);
+      --grid: rgba(122,150,205,0.08); --grid-major: rgba(122,150,205,0.14);
+      --mesh-1: rgba(124,58,237,.16); --mesh-2: rgba(37,99,235,.14);
+      --node-travel: #C4B5FD; --mark-glow: rgba(167,139,250,.85);
+      --grad-a: #7C3AED; --grad-b: #2563EB;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #E8EDF4; --panel: #ffffff; --card: #ffffff;
+    --heading: #0F172A; --text: #14203A; --muted: #55657E; --faint: #586780;
+    --border: #D8E0EE; --border-strong: #C6D0E2;
+    --accent: #6D28D9; --accent-soft: #EDE7FB;
+    --work: #1D4ED8; --work-bg: #E4ECFD; --coord: #6D28D9; --coord-bg: #EDE7FB;
+    --skill: #0F766E; --skill-bg: #D6F4EE; --unknown: #C81E1E; --unknown-bg: #FCE4E4;
+    --ok: #0E7A46; --ok-bg: #DCF3E5; --warn: #9A5B08; --warn-bg: #FBEAD2;
+    --err: #C81E1E; --err-bg: #FCE4E4;
+    --shadow: 0 1px 2px rgba(20,32,58,.06), 0 8px 24px rgba(20,32,58,.07); --shadow-lift: 0 12px 28px rgba(20,32,58,.16);
+    --grid: rgba(37,99,235,0.10); --grid-major: rgba(37,99,235,0.16);
+    --mesh-1: rgba(124,58,237,.07); --mesh-2: rgba(37,99,235,.06);
+    --node-travel: #7C3AED; --mark-glow: rgba(124,58,237,.45);
+    --grad-a: #7C3AED; --grad-b: #2563EB;
+  }
+  :root[data-theme="dark"] {
+    --bg: #0F172A; --panel: #182234; --card: #1E293B;
+    --heading: #F1F5F9; --text: #EAF1FB; --muted: #9AA8BE; --faint: #8193AD;
+    --border: #2B3A50; --border-strong: #33445E;
+    --accent: #A78BFA; --accent-soft: #2C2350;
+    --work: #93C5FD; --work-bg: #1C2C4C; --coord: #A78BFA; --coord-bg: #2C2350;
+    --skill: #2DD4BF; --skill-bg: #123A34; --unknown: #F87171; --unknown-bg: #3A1A1A;
+    --ok: #34D399; --ok-bg: #0F2E22; --warn: #FBBF24; --warn-bg: #34260F;
+    --err: #F87171; --err-bg: #3A1A1A;
+    --shadow: 0 1px 2px rgba(0,0,0,.45), 0 10px 30px rgba(0,0,0,.35); --shadow-lift: 0 12px 28px rgba(0,0,0,.32);
+    --grid: rgba(122,150,205,0.08); --grid-major: rgba(122,150,205,0.14);
+    --mesh-1: rgba(124,58,237,.16); --mesh-2: rgba(37,99,235,.14);
+    --node-travel: #C4B5FD; --mark-glow: rgba(167,139,250,.85);
+    --grad-a: #7C3AED; --grad-b: #2563EB;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    color: var(--text);
+    background-color: var(--bg);
+    /* two brand glows on the gradient diagonal + a two-tier blueprint grid
+       (40px minor, 160px major). Fixed, so it reads like a drawing surface. */
+    background-image:
+      radial-gradient(1100px 620px at 12% -8%, var(--mesh-1), transparent 60%),
+      radial-gradient(1000px 680px at 108% 112%, var(--mesh-2), transparent 62%),
+      repeating-linear-gradient(0deg, var(--grid-major) 0 1px, transparent 1px 160px),
+      repeating-linear-gradient(90deg, var(--grid-major) 0 1px, transparent 1px 160px),
+      repeating-linear-gradient(0deg, var(--grid) 0 1px, transparent 1px 40px),
+      repeating-linear-gradient(90deg, var(--grid) 0 1px, transparent 1px 40px);
+    background-attachment: fixed;
+    font: 14px/1.5 var(--font-body);
+    -webkit-font-smoothing: antialiased;
+  }
+  /* whisper of drafting grain — an INLINE data-URI (not a fetched subresource);
+     lives only in the gutters (opaque panels cover it). */
+  body::after {
+    content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: .04;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='ocgrain'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23ocgrain)'/%3E%3C/svg%3E");
+  }
+  :root[data-theme="light"] body::after { opacity: .03; mix-blend-mode: multiply; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) body::after { opacity: .03; mix-blend-mode: multiply; } }
+
+  .wrap { position: relative; z-index: 1; max-width: 1120px; margin: 0 auto; padding: 24px 20px 72px; }
+  a { color: var(--accent); }
+  h1, h2, h3 { margin: 0; font-family: var(--font-display); font-weight: 700; letter-spacing: -.01em; color: var(--heading); }
+  .muted { color: var(--muted); }
+  .mono { font-family: var(--font-mono); }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  ::selection { background: var(--accent-soft); color: var(--text); }
+
+  /* one-shot "plotting in" — bound to the PERSISTENT #app so it never replays
+     when the renderer rewrites app.innerHTML on every edit/matrix toggle. */
+  #app { animation: oc-rise .55s cubic-bezier(.2,.7,.15,1) both; }
+  @keyframes oc-rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+  /* Header */
+  .topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; margin-bottom: 4px; }
+  .title .eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: .16em; color: var(--coord); font-weight: 700; margin-bottom: 3px; }
+  .title h1 { font-size: 24px; letter-spacing: 0; display: flex; align-items: center; gap: 10px; }
+  .title h1 span { color: var(--heading); }
+  .title .sub { color: var(--muted); font-size: 13px; margin-top: 5px; }
+
+  /* the pentagon-ring mark — "Control flows AROUND the ring, node to node" */
+  .oc-mark { display: block; flex: 0 0 auto; overflow: visible; }
+  .oc-mark .ocn { opacity: .5; animation: oc-travel 2.6s ease-in-out infinite; will-change: opacity, filter; }
+  .oc-mark .n0 { animation-delay: 0s; }
+  .oc-mark .n1 { animation-delay: .52s; }
+  .oc-mark .n2 { animation-delay: 1.04s; }
+  .oc-mark .n3 { animation-delay: 1.56s; }
+  .oc-mark .n4 { animation-delay: 2.08s; }
+  @keyframes oc-travel {
+    0%, 8% { opacity: 1; filter: drop-shadow(0 0 5px var(--mark-glow)); }
+    26%, 100% { opacity: .5; filter: none; }
+  }
+
+  .stats { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600; border: 1px solid var(--border); background: var(--panel); color: var(--muted); }
+  .pill b { color: var(--heading); font-weight: 700; }
+  .pill.ok, .pill.warn, .pill.err { border-color: transparent; font-weight: 700; letter-spacing: .02em; }
+  .pill.ok { background: var(--ok-bg); color: var(--ok); }
+  .pill.warn { background: var(--warn-bg); color: var(--warn); }
+  .pill.err { background: var(--err-bg); color: var(--err); }
+  .toolbar { display: flex; gap: 8px; margin: 16px 0 8px; flex-wrap: wrap; align-items: center; }
+  button.btn { font: inherit; font-size: 13px; font-weight: 600; padding: 6px 12px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--panel); color: var(--text); cursor: pointer; transition: border-color .12s, color .12s, transform .12s; }
+  button.btn:hover { border-color: var(--accent); color: var(--accent); }
+  button.btn:active { transform: translateY(1px); }
+  button.btn.primary { background: linear-gradient(120deg, var(--grad-a), var(--grad-b)); color: #fff; border-color: transparent; box-shadow: 0 2px 10px rgba(124,58,237,.30); }
+  button.btn.primary:hover { filter: brightness(1.07); color: #fff; }
+  button.btn.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+  /* Sections */
+  section { margin-top: 22px; }
+  .sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+  .sec-head h2 { font-size: 15px; }
+  .sec-head .hint { font-size: 12px; color: var(--faint); }
+  .hint { font-size: 12px; color: var(--faint); }
+
+  /* Role cards */
+  .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 14px; }
+  .card { position: relative; overflow: hidden; background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 14px 14px 14px 16px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px; transition: transform .18s, box-shadow .18s, border-color .18s; }
+  .card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--border-strong); }
+  .card:hover { transform: translateY(-2px); box-shadow: var(--shadow-lift), var(--shadow); }
+  .card.entry { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow); }
+  .card.entry::before { background: var(--accent); }
+  .card-top { display: flex; align-items: center; gap: 8px; }
+  .card-top .name { font-family: var(--font-mono); font-size: 15px; font-weight: 680; color: var(--heading); }
+  .card-top .star { color: var(--accent); font-size: 13px; font-weight: 700; }
+  .card-top .spacer { flex: 1; }
+  .icon-btn { border: none; background: transparent; color: var(--faint); cursor: pointer; font-size: 15px; padding: 2px 6px; border-radius: 6px; line-height: 1; }
+  .icon-btn:hover { background: var(--unknown-bg); color: var(--unknown); }
+  .metarow { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .tag { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--panel); border: 1px solid var(--border); color: var(--muted); }
+  .tag b { color: var(--heading); }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; }
+  .chip { font-family: var(--font-mono); font-size: 11.5px; font-weight: 600; padding: 3px 8px; border-radius: 7px; display: inline-flex; align-items: center; gap: 5px; user-select: none; }
+  .chip.work { background: var(--work-bg); color: var(--work); }
+  .chip.coord { background: var(--coord-bg); color: var(--coord); }
+  .chip.skill { background: var(--skill-bg); color: var(--skill); }
+  .chip.unknown { background: var(--unknown-bg); color: var(--unknown); outline: 1px dashed var(--unknown); }
+  .chip.off { opacity: 1; background: var(--panel); box-shadow: inset 0 0 0 1px var(--border); }
+  .chip.sel { cursor: pointer; transition: transform .12s, box-shadow .12s; }
+  .chip.sel:hover { transform: translateY(-1px); box-shadow: 0 0 0 1px currentColor, 0 2px 8px rgba(20,32,58,.18); }
+  .prompt { font-family: var(--font-mono); font-size: 12.5px; color: var(--muted); white-space: pre-wrap; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; max-height: 108px; overflow: auto; }
+  textarea.prompt-edit, input.inp { font: inherit; width: 100%; color: var(--text); background: var(--panel); border: 1px solid var(--border-strong); border-radius: 8px; padding: 7px 9px; }
+  textarea.prompt-edit { min-height: 84px; resize: vertical; font-size: 12.5px; }
+  input.inp { font-size: 12.5px; }
+  textarea.prompt-edit:focus, input.inp:focus, textarea.out:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); outline: none; }
+  .field { display: flex; flex-direction: column; gap: 3px; }
+  .field label { font-size: 11px; color: var(--faint); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+  .field-row { display: flex; gap: 8px; }
+  .field-row .field { flex: 1; }
+
+  /* Legend */
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11.5px; color: var(--muted); margin-top: 10px; }
+  .legend span { display: inline-flex; align-items: center; gap: 5px; }
+  .dot { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  /* Topology — its own drawing board: a finer 24px graph-paper grid behind the SVG */
+  .topo-wrap { background: repeating-linear-gradient(0deg, var(--grid) 0 1px, transparent 1px 24px), repeating-linear-gradient(90deg, var(--grid) 0 1px, transparent 1px 24px), var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 4px; overflow-x: auto; box-shadow: var(--shadow); }
+  svg.graph { display: block; min-width: 100%; }
+  svg.graph g.node { cursor: grab; }
+  svg.graph g.node:hover { filter: brightness(1.08); }
+  svg.graph.dragging, svg.graph.dragging g.node { cursor: grabbing; }
+  svg.graph [data-node] { touch-action: none; }
+  svg.graph .edge-hit { cursor: pointer; transition: stroke-opacity .12s; }
+  svg.graph .edge-hit:hover { stroke: var(--err); stroke-opacity: .22; }
+  svg.graph .oc-rubber { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 4; opacity: .85; pointer-events: none; }
+  svg.graph .oc-rubber.ok { stroke-width: 2.8; opacity: 1; }
+  .matrix { border-collapse: separate; border-spacing: 0; font-size: 12.5px; }
+  .matrix th, .matrix td { padding: 6px 8px; text-align: center; border-bottom: 1px solid var(--border); }
+  .matrix th.corner { text-align: left; color: var(--faint); font-weight: 600; font-size: 11px; position: sticky; left: 0; top: 0; z-index: 3; background: var(--panel); }
+  .matrix thead th { color: var(--muted); font-weight: 600; position: sticky; top: 0; z-index: 2; background: var(--panel); font-family: var(--font-mono); }
+  .matrix td.rowname, .matrix th.rowname { text-align: left; font-weight: 600; color: var(--text); white-space: nowrap; position: sticky; left: 0; z-index: 1; background: var(--panel); font-family: var(--font-mono); }
+  .matrix input[type=checkbox] { width: 15px; height: 15px; accent-color: var(--accent); cursor: pointer; }
+  .matrix td.diag { background: repeating-linear-gradient(45deg, transparent, transparent 4px, var(--border) 4px, var(--border) 5px); }
+  .matrix tbody tr:hover td:not(.diag) { background: var(--accent-soft); }
+  .matrix-note { font-size: 11.5px; color: var(--faint); margin: 8px 2px 0; }
+
+  /* Issues */
+  .issues { display: flex; flex-direction: column; gap: 6px; }
+  .issue { font-size: 12.5px; padding: 7px 11px; border-radius: 8px; display: flex; gap: 8px; align-items: baseline; border-left: 3px solid currentColor; }
+  .issue.error { background: var(--err-bg); color: var(--err); }
+  .issue.warn { background: var(--warn-bg); color: var(--warn); }
+  .issue.info { background: var(--accent-soft); color: var(--accent); }
+  .issue .who { font-weight: 700; font-family: var(--font-mono); }
+
+  /* Export */
+  .export-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 720px) { .export-grid { grid-template-columns: 1fr; } .title h1 { font-size: 21px; } }
+  .export-box { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; box-shadow: var(--shadow); }
+  .export-box h3 { font-family: var(--font-display); font-size: 13px; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; color: var(--heading); }
+  textarea.out { width: 100%; min-height: 260px; font-family: var(--font-mono); font-size: 12px; line-height: 1.55; color: var(--text); background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; resize: vertical; }
+  textarea.notes { min-height: 120px; }
+  .export-box .row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .callout { font-size: 12px; color: var(--muted); background: var(--accent-soft); border-radius: 8px; padding: 9px 11px; margin-top: 8px; }
+  .callout b { color: var(--heading); }
+  .loading { color: var(--muted); padding: 40px 0; text-align: center; }
+  .fatal { background: var(--err-bg); color: var(--err); border-radius: 10px; padding: 16px; }
+  .fatal pre { white-space: pre-wrap; font-family: var(--font-mono); font-size: 12px; margin: 8px 0 0; }
+
+  /* Motion safety — ring fully lit + static, entrance + lifts suppressed. */
+  @media (prefers-reduced-motion: reduce) {
+    .oc-mark .ocn { animation: none; opacity: 1; filter: none; }
+    #app { animation: none; opacity: 1; transform: none; }
+    .card, .chip.sel, button.btn, svg.graph path, svg.graph .edge-hit { transition: none; }
+    .card:hover { transform: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div id="app"><p class="loading">Rendering team blueprint…</p></div>
+  <noscript><p class="fatal">This blueprint is interactive and needs JavaScript enabled to render.</p></noscript>
+</div>
+<script id="team-src" type="text/yaml">

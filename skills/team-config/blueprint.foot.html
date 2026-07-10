@@ -1,0 +1,629 @@
+
+</script>
+<script>
+/* OpenCollab Team Blueprint — interactive renderer.
+   Reads the embedded team.yaml (data island #team-src), renders role cards +
+   an editable topology, and exports a refined team.yaml + feedback notes to
+   hand back to the LLM. Pure browser JS; the only dependency is the vendored
+   js-yaml above. No network, no build step. */
+(function () {
+  "use strict";
+
+  var CATS = {
+    work: ["bash", "file_read", "file_write", "apply_patch", "run_tests", "git_diff", "grep", "ask_user"],
+    coord: ["spawn_agent", "spawn_with_review", "message_agent", "team_status"],
+    skill: ["use_skill"]
+  };
+  var ALL_TOOLS = CATS.work.concat(CATS.coord, CATS.skill);
+  // Mirror of OpenCollab's domain/hooks.py — kept in sync so the linter matches
+  // the real fail-fast conditions at config load.
+  var HOOK_EVENTS = ["PreToolUse", "PostToolUse", "SessionStart", "Stop", "SubagentStop", "Notification"];
+  var HOOK_ACTIONS = ["command", "prompt", "agent"];
+  function catOf(t) {
+    if (CATS.work.indexOf(t) >= 0) return "work";
+    if (CATS.coord.indexOf(t) >= 0) return "coord";
+    if (CATS.skill.indexOf(t) >= 0) return "skill";
+    return "unknown";
+  }
+
+  var app = document.getElementById("app");
+  var team = null;      // normalized model
+  var editMode = false;
+
+  // The OpenCollab pentagon-ring mark, inlined (no external asset). Unique ids
+  // ocg/occut so they never collide with the topology graph's markers (arr/arrL).
+  // Each dot carries .ocn .nN so the CSS drives the "control travels the ring"
+  // highlight. Brand meaning: authority flows AROUND a decentralized ring.
+  var OC_MARK = '<svg class="oc-mark" viewBox="0 0 512 512" width="30" height="30" role="img" aria-label="OpenCollab" focusable="false">'
+    + '<defs><linearGradient id="ocg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7C3AED"/><stop offset="1" stop-color="#2563EB"/></linearGradient>'
+    + '<mask id="occut" maskUnits="userSpaceOnUse" x="0" y="0" width="512" height="512"><rect width="512" height="512" fill="#fff"/>'
+    + '<circle cx="256" cy="96" r="62" fill="#000"/><circle cx="408.17" cy="206.56" r="62" fill="#000"/><circle cx="350.05" cy="385.44" r="62" fill="#000"/><circle cx="161.95" cy="385.44" r="62" fill="#000"/><circle cx="103.83" cy="206.56" r="62" fill="#000"/></mask></defs>'
+    + '<circle cx="256" cy="256" r="160" fill="none" stroke="url(#ocg)" stroke-width="31" mask="url(#occut)"/>'
+    + '<circle class="ocn n0" cx="256" cy="96" r="45" fill="#713AED"/>'
+    + '<circle class="ocn n1" cx="408.17" cy="206.56" r="45" fill="#2A53EB"/>'
+    + '<circle class="ocn n2" cx="350.05" cy="385.44" r="45" fill="#2563EB"/>'
+    + '<circle class="ocn n3" cx="161.95" cy="385.44" r="45" fill="#5556EC"/>'
+    + '<circle class="ocn n4" cx="103.83" cy="206.56" r="45" fill="#7C3AED"/></svg>';
+
+  function esc(s) {
+    return String(s == null ? "" : s)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+  function uniq(a) { var o = [], s = Object.create(null); a.forEach(function (x) { if (!s[x]) { s[x] = 1; o.push(x); } }); return o; }
+  function trunc(s, max) { s = String(s); return s.length > max ? s.slice(0, max - 1) + "…" : s; }
+
+  /* ---------- parse + normalize ---------- */
+  function isMap(v) { return v && typeof v === "object" && !Array.isArray(v); }
+  function normalize(raw) {
+    raw = isMap(raw) ? raw : {};
+    var roles = Object.create(null);
+    var rawRoles = isMap(raw.roles) ? raw.roles : {};
+    Object.keys(rawRoles).forEach(function (name) {
+      var r = rawRoles[name] || {};
+      roles[name] = {
+        prompt: typeof r.prompt === "string" ? r.prompt : null,
+        promptFile: typeof r.prompt_file === "string" ? r.prompt_file : null,
+        model: r.model != null ? String(r.model) : null,
+        temperature: r.temperature != null ? r.temperature : null,
+        thinking: r.thinking != null ? r.thinking : null,
+        thinkingParams: r.thinking_params != null ? r.thinking_params : null,
+        tools: Array.isArray(r.tools) ? r.tools.map(String) : []
+      };
+    });
+    var topo = Object.create(null), badTopo = [];
+    var rawTopo = isMap(raw.topology) ? raw.topology : {};
+    Object.keys(rawTopo).forEach(function (src) {
+      var dsts = rawTopo[src];
+      if (Array.isArray(dsts)) topo[src] = dsts.map(String);
+      else { topo[src] = []; if (dsts != null) badTopo.push(src); }
+    });
+    var explicit = raw.entry != null ? String(raw.entry) : null;
+    return {
+      entryExplicit: explicit,
+      entry: resolveEntry(explicit, roles),
+      roles: roles,
+      topology: topo,
+      badTopo: badTopo,
+      toolLimits: isMap(raw.tool_limits) ? raw.tool_limits : {},
+      hooks: isMap(raw.hooks) ? raw.hooks : {}
+    };
+  }
+  function resolveEntry(explicit, roles) {
+    var names = Object.keys(roles);
+    if (explicit != null) return explicit;      // may be invalid → validation flags it
+    if (names.indexOf("lead") >= 0) return "lead";
+    return names.length ? names[0] : "lead";
+  }
+
+  /* ---------- validation (the blueprint doubles as a linter) ---------- */
+  function reachable(t) {
+    var seen = Object.create(null), q = [t.entry];
+    seen[t.entry] = 1;
+    while (q.length) {
+      var u = q.shift();
+      (t.topology[u] || []).forEach(function (v) { if (!seen[v]) { seen[v] = 1; q.push(v); } });
+    }
+    return seen;
+  }
+  function validate(t) {
+    var issues = [], names = Object.keys(t.roles);
+    if (t.entryExplicit != null && !t.roles[t.entryExplicit]) {
+      issues.push({ level: "error", who: "entry", msg: "entry role '" + t.entryExplicit + "' is not declared in roles (" + JSON.stringify(names) + ")." });
+    }
+    if (!names.length) issues.push({ level: "warn", who: "roles", msg: "no roles declared — OpenCollab would fall back to a single default lead." });
+    names.forEach(function (n) {
+      var r = t.roles[n];
+      if (!r.prompt && !r.promptFile) issues.push({ level: "error", who: n, msg: "must set 'prompt' or 'prompt_file'." });
+      r.tools.forEach(function (tool) {
+        if (catOf(tool) === "unknown") issues.push({ level: "error", who: n, msg: "unknown tool '" + tool + "'." });
+      });
+      if (r.temperature != null && r.temperature !== "" && (isNaN(+r.temperature) || +r.temperature < 0 || +r.temperature > 2)) {
+        issues.push({ level: "warn", who: n, msg: "temperature " + r.temperature + " is outside the usual 0.0–2.0 range." });
+      }
+      var hasCoord = r.tools.some(function (x) { return catOf(x) === "coord"; });
+      var out = (t.topology[n] || []).length;
+      if (hasCoord && out === 0) issues.push({ level: "warn", who: n, msg: "has coordination tools but no topology targets — it can't reach anyone." });
+      if (!hasCoord && out > 0) issues.push({ level: "warn", who: n, msg: "has topology targets but no spawn/message tool — those edges are inert." });
+    });
+    (t.badTopo || []).forEach(function (s) { issues.push({ level: "warn", who: s, msg: "topology value is not a list — its edges were dropped." }); });
+    Object.keys(t.topology).forEach(function (s) { if ((t.topology[s] || []).indexOf(s) >= 0) issues.push({ level: "warn", who: s, msg: "lists itself as a spawn/message target — probably unintended." }); });
+    // topology referencing undeclared roles (ad-hoc — allowed, but worth noting)
+    var refd = Object.create(null);
+    Object.keys(t.topology).forEach(function (s) { refd[s] = 1; (t.topology[s] || []).forEach(function (d) { refd[d] = 1; }); });
+    Object.keys(refd).forEach(function (n) {
+      if (!t.roles[n]) issues.push({ level: "warn", who: n, msg: "referenced in topology but not declared in roles (will fall back to a generic ad-hoc role)." });
+    });
+    // unreachable declared roles
+    var reach = reachable(t);
+    names.forEach(function (n) { if (!reach[n]) issues.push({ level: "warn", who: n, msg: "unreachable from entry '" + t.entry + "' — it can never be spawned." }); });
+    // tool_limits sanity
+    Object.keys(t.toolLimits).forEach(function (k) {
+      if (catOf(k) === "unknown") issues.push({ level: "error", who: "tool_limits", msg: "names unknown tool '" + k + "'." });
+      else if (catOf(k) === "coord") issues.push({ level: "error", who: "tool_limits", msg: "not supported for coordination tool '" + k + "'." });
+    });
+    // hooks sanity (OpenCollab fail-fasts on an unknown event or action type)
+    Object.keys(t.hooks).forEach(function (ev) {
+      if (HOOK_EVENTS.indexOf(ev) < 0) issues.push({ level: "error", who: "hooks", msg: "unknown hook event '" + ev + "'. Known: " + HOOK_EVENTS.join(", ") + "." });
+      var actions = t.hooks[ev];
+      (Array.isArray(actions) ? actions : []).forEach(function (a) {
+        a = a || {};
+        if (a.type != null && HOOK_ACTIONS.indexOf(String(a.type)) < 0) issues.push({ level: "error", who: "hooks/" + ev, msg: "unknown action type '" + a.type + "'. Known: " + HOOK_ACTIONS.join(", ") + "." });
+        if (!a.command) issues.push({ level: "error", who: "hooks/" + ev, msg: "a hook action is missing its 'command'." });
+      });
+    });
+    return issues;
+  }
+
+  /* ---------- graph layout: BFS layers from entry ---------- */
+  function layout(t) {
+    var nodes = uniq(Object.keys(t.roles).concat(
+      Object.keys(t.topology),
+      Object.keys(t.topology).reduce(function (a, s) { return a.concat(t.topology[s] || []); }, [])
+    ));
+    var depth = Object.create(null), q = [];
+    // BFS from entry if it's a real node; otherwise from the first node so an
+    // invalid/undeclared entry still yields a structured graph, not a blank column.
+    var root = nodes.indexOf(t.entry) >= 0 ? t.entry : nodes[0];
+    if (root != null) { depth[root] = 0; q.push(root); }
+    while (q.length) {
+      var u = q.shift();
+      (t.topology[u] || []).forEach(function (v) { if (depth[v] == null) { depth[v] = depth[u] + 1; q.push(v); } });
+    }
+    var maxd = 0; nodes.forEach(function (n) { if (depth[n] != null && depth[n] > maxd) maxd = depth[n]; });
+    var unreachCol = null;
+    nodes.forEach(function (n) { if (depth[n] == null) { unreachCol = maxd + 1; depth[n] = maxd + 1; } });
+    // group by column
+    var cols = Object.create(null);
+    nodes.forEach(function (n) { (cols[depth[n]] = cols[depth[n]] || []).push(n); });
+    var NW = 150, NH = 38, COLGAP = 62, ROWGAP = 20, PADX = 22, PADY = 32;
+    var colKeys = Object.keys(cols).map(Number).sort(function (a, b) { return a - b; });
+    var maxRows = 0; colKeys.forEach(function (c) { if (cols[c].length > maxRows) maxRows = cols[c].length; });
+    var height = PADY * 2 + maxRows * (NH + ROWGAP) - ROWGAP;
+    if (height < NH + PADY * 2) height = NH + PADY * 2;
+    var pos = Object.create(null);
+    colKeys.forEach(function (c, ci) {
+      var list = cols[c], k = list.length;
+      var startY = PADY + (maxRows - k) * (NH + ROWGAP) / 2;
+      var x = PADX + ci * (NW + COLGAP);
+      list.forEach(function (n, i) {
+        var y = startY + i * (NH + ROWGAP);
+        pos[n] = { x: x, y: y, cx: x + NW / 2, cy: y + NH / 2, col: depth[n] };
+      });
+    });
+    var width = PADX * 2 + (colKeys.length ? colKeys.length * (NW + COLGAP) - COLGAP : NW);
+    return { pos: pos, nodes: nodes, depth: depth, NW: NW, NH: NH, width: Math.max(width, 320), height: height, unreachCol: unreachCol };
+  }
+  function borderPt(c, hw, hh, fromx, fromy) {
+    var dx = fromx - c.cx, dy = fromy - c.cy;
+    if (!dx && !dy) return { x: c.cx, y: c.cy };
+    var s = Math.min(dx ? hw / Math.abs(dx) : Infinity, dy ? hh / Math.abs(dy) : Infinity);
+    return { x: c.cx + dx * s, y: c.cy + dy * s };
+  }
+  function renderGraph(t) {
+    var L = layout(t), pos = L.pos, hw = L.NW / 2, hh = L.NH / 2;
+    var edges = "";
+    Object.keys(t.topology).forEach(function (src) {
+      (t.topology[src] || []).forEach(function (dst) {
+        var a = pos[src], b = pos[dst];
+        if (!a || !b) return;
+        var loop = (L.depth[dst] != null && L.depth[src] != null && L.depth[dst] <= L.depth[src]);
+        if (src === dst) {
+          var lx = a.cx, ly = a.y;
+          var sd = 'M ' + (lx - 12) + ' ' + ly + ' C ' + (lx - 34) + ' ' + (ly - 26) + ', ' + (lx + 34) + ' ' + (ly - 26) + ', ' + (lx + 12) + ' ' + ly;
+          edges += '<path class="edge-hit" data-esrc="' + esc(src) + '" data-edst="' + esc(dst) + '" d="' + sd + '" fill="none" stroke="transparent" stroke-width="14" pointer-events="stroke"><title>' + esc(src) + ' → ' + esc(dst) + ' · click to remove</title></path>';
+          edges += '<path d="' + sd + '" fill="none" style="stroke:var(--warn)" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrL)" pointer-events="none"/>';
+          return;
+        }
+        var pa = borderPt(a, hw, hh, b.cx, b.cy), pb = borderPt(b, hw, hh, a.cx, a.cy);
+        var mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
+        var vx = pb.x - pa.x, vy = pb.y - pa.y, len = Math.sqrt(vx * vx + vy * vy) || 1;
+        var dir = src < dst ? 1 : -1;
+        var off = (loop ? 26 : 16) * dir;
+        var cxp = mx + (-vy / len) * off, cyp = my + (vx / len) * off;
+        var ed = 'M ' + pa.x.toFixed(1) + ' ' + pa.y.toFixed(1) + ' Q ' + cxp.toFixed(1) + ' ' + cyp.toFixed(1) + ' ' + pb.x.toFixed(1) + ' ' + pb.y.toFixed(1);
+        edges += '<path class="edge-hit" data-esrc="' + esc(src) + '" data-edst="' + esc(dst) + '" d="' + ed + '" fill="none" stroke="transparent" stroke-width="14" pointer-events="stroke"><title>' + esc(src) + ' → ' + esc(dst) + ' · click to remove</title></path>';
+        edges += '<path d="' + ed + '" fill="none" style="stroke:' + (loop ? "var(--warn)" : "var(--coord)") + '" stroke-width="1.6"' + (loop ? ' stroke-dasharray="5 3"' : '') + ' marker-end="url(#' + (loop ? "arrL" : "arr") + ')" pointer-events="none"/>';
+      });
+    });
+    var boxes = "";
+    L.nodes.forEach(function (n) {
+      var p = pos[n]; if (!p) return;
+      var isEntry = n === t.entry, adhoc = !t.roles[n], unreach = L.unreachCol != null && p.col === L.unreachCol;
+      var fill = isEntry ? "var(--accent-soft)" : "var(--card)";
+      var stroke = isEntry ? "var(--accent)" : (unreach ? "var(--warn)" : "var(--border-strong)");
+      var label = (isEntry ? "★ " : "") + trunc(n, isEntry ? 15 : 17);
+      boxes += '<g class="node" data-node="' + esc(n) + '" data-cx="' + p.cx + '" data-cy="' + p.cy + '">'
+        + '<title>' + esc(n) + (adhoc ? " (ad-hoc)" : "") + '</title>'
+        + '<rect x="' + p.x + '" y="' + p.y + '" width="' + L.NW + '" height="' + L.NH + '" rx="9" style="fill:' + fill + ';stroke:' + stroke + '" stroke-width="' + (isEntry ? 2 : 1.3) + '"' + (adhoc ? ' stroke-dasharray="5 4"' : '') + '/>'
+        + '<text x="' + p.cx + '" y="' + (p.cy + 4.5) + '" text-anchor="middle" font-size="13" font-weight="600" style="fill:var(--text)" font-family="ui-monospace, monospace">' + esc(label) + '</text>'
+        + '</g>';
+    });
+    var defs = '<defs>'
+      + '<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" style="fill:var(--coord)"/></marker>'
+      + '<marker id="arrL" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10 z" style="fill:var(--warn)"/></marker>'
+      + '</defs>';
+    return '<svg class="graph" viewBox="0 0 ' + L.width + ' ' + L.height + '" width="' + L.width + '" height="' + L.height + '" xmlns="http://www.w3.org/2000/svg">' + defs + edges + boxes + '</svg>';
+  }
+
+  /* ---------- editable adjacency matrix ---------- */
+  function renderMatrix(t) {
+    var names = uniq(Object.keys(t.roles).concat(Object.keys(t.topology),
+      Object.keys(t.topology).reduce(function (a, s) { return a.concat(t.topology[s] || []); }, [])));
+    if (!names.length) return "";
+    var h = '<table class="matrix"><thead><tr><th class="corner" scope="col">spawn/msg&nbsp;→</th>';
+    names.forEach(function (c) { h += '<th class="mono" scope="col">' + esc(c) + "</th>"; });
+    h += "</tr></thead><tbody>";
+    names.forEach(function (rsrc) {
+      h += '<tr><th class="rowname mono" scope="row">' + esc(rsrc) + "</th>";
+      names.forEach(function (cdst) {
+        if (rsrc === cdst) { h += '<td class="diag" title="a role can\'t spawn itself"></td>'; return; }
+        var on = (t.topology[rsrc] || []).indexOf(cdst) >= 0;
+        h += '<td><input type="checkbox" aria-label="' + esc(rsrc) + ' may spawn or message ' + esc(cdst) + '" data-edge-src="' + esc(rsrc) + '" data-edge-dst="' + esc(cdst) + '"' + (on ? " checked" : "") + "></td>";
+      });
+      h += "</tr>";
+    });
+    h += "</tbody></table>";
+    h += '<p class="matrix-note">Row → column: does the row role\'s topology list the column role (may spawn / message it)? Toggle a box to rewire. Rows/cols include ad-hoc roles referenced only in topology.</p>';
+    return h;
+  }
+
+  /* ---------- role cards ---------- */
+  function roleCard(name, r, t) {
+    var isEntry = name === t.entry;
+    var toolChips;
+    if (editMode) {
+      toolChips = ALL_TOOLS.map(function (tool) {
+        var on = r.tools.indexOf(tool) >= 0, c = catOf(tool);
+        return '<span class="chip sel ' + c + (on ? "" : " off") + '" role="button" tabindex="0" aria-pressed="' + on + '" title="' + (on ? "remove" : "add") + " " + esc(tool) + '" data-tool-role="' + esc(name) + '" data-tool="' + esc(tool) + '">' + (on ? "✓ " : "") + esc(tool) + "</span>";
+      }).join("");
+      // any unknown tools already present
+      r.tools.forEach(function (tool) { if (catOf(tool) === "unknown") toolChips += '<span class="chip sel unknown" role="button" tabindex="0" aria-pressed="true" title="remove ' + esc(tool) + '" data-tool-role="' + esc(name) + '" data-tool="' + esc(tool) + '">✓ ' + esc(tool) + "</span>"; });
+    } else {
+      toolChips = r.tools.length
+        ? r.tools.map(function (tool) { return '<span class="chip ' + catOf(tool) + '">' + esc(tool) + "</span>"; }).join("")
+        : '<span class="muted" style="font-size:12px">no tools</span>';
+    }
+    var body;
+    if (editMode) {
+      body =
+        '<div class="field-row">'
+        + '<div class="field"><label>model</label><input class="inp" aria-label="model for ' + esc(name) + '" data-model="' + esc(name) + '" value="' + esc(r.model || "") + '" placeholder="(default)"></div>'
+        + '<div class="field" style="max-width:96px"><label>temp</label><input class="inp" aria-label="temperature for ' + esc(name) + '" data-temp="' + esc(name) + '" value="' + esc(r.temperature == null ? "" : r.temperature) + '" placeholder="inherit"></div>'
+        + "</div>"
+        + '<div class="field"><label>prompt</label><textarea class="prompt-edit" aria-label="prompt for ' + esc(name) + '" data-prompt="' + esc(name) + '" placeholder="System prompt for this role…">' + esc(r.prompt || "") + "</textarea></div>";
+    } else {
+      var meta = '<div class="metarow">'
+        + '<span class="tag">model <b>' + esc(r.model || "default") + "</b></span>"
+        + '<span class="tag">temp <b>' + esc(r.temperature == null ? "inherit" : r.temperature) + "</b></span>"
+        + (r.thinking != null ? '<span class="tag">thinking <b>' + esc(r.thinking) + "</b></span>" : "")
+        + (r.promptFile ? '<span class="tag">prompt_file <b>' + esc(r.promptFile) + "</b></span>" : "")
+        + "</div>";
+      var pv = r.prompt ? '<div class="prompt">' + esc(r.prompt) + "</div>" : (r.promptFile ? "" : '<div class="issue error" style="margin:0">no prompt or prompt_file</div>');
+      body = meta + pv;
+    }
+    return '<div class="card' + (isEntry ? " entry" : "") + '">'
+      + '<div class="card-top">'
+      + (editMode
+          ? '<input class="inp mono" style="font-weight:680;max-width:150px" aria-label="rename role ' + esc(name) + '" data-rename="' + esc(name) + '" value="' + esc(name) + '">'
+          : '<span class="name mono">' + esc(name) + "</span>")
+      + (isEntry ? '<span class="star" title="entry — agent 0">★ entry</span>' : (editMode ? '<label class="tag" style="cursor:pointer"><input type="radio" name="entry" data-entry="' + esc(name) + '"> make entry</label>' : ""))
+      + '<span class="spacer"></span>'
+      + (editMode ? '<button class="icon-btn" data-remove="' + esc(name) + '" title="remove role" aria-label="remove role ' + esc(name) + '">✕</button>' : "")
+      + "</div>"
+      + '<div class="chips">' + toolChips + "</div>"
+      + body
+      + "</div>";
+  }
+
+  /* ---------- export ---------- */
+  function serialize(t) {
+    var out = {};
+    if (t.entryExplicit != null || t.entry) out.entry = t.entry;
+    out.roles = {};
+    Object.keys(t.roles).forEach(function (n) {
+      var r = t.roles[n], o = {};
+      if (r.model) o.model = r.model;
+      if (r.temperature != null && r.temperature !== "") { var tn = +r.temperature; o.temperature = isFinite(tn) ? tn : r.temperature; }
+      if (r.thinking != null) o.thinking = r.thinking;
+      if (r.thinkingParams != null) o.thinking_params = r.thinkingParams;
+      o.tools = r.tools.slice();
+      if (r.prompt) o.prompt = r.prompt;
+      else if (r.promptFile) o.prompt_file = r.promptFile;
+      out.roles[n] = o;
+    });
+    var topo = {};
+    Object.keys(t.topology).forEach(function (s) { if ((t.topology[s] || []).length) topo[s] = t.topology[s].slice(); });
+    if (Object.keys(topo).length) out.topology = topo;
+    if (Object.keys(t.toolLimits).length) out.tool_limits = t.toolLimits;
+    if (Object.keys(t.hooks).length) out.hooks = t.hooks;
+    return out;
+  }
+  function toYaml(t) {
+    try { return window.jsyaml.dump(serialize(t), { lineWidth: -1, noRefs: true, indent: 2 }); }
+    catch (e) { return "# export failed: " + e.message; }
+  }
+
+  /* ---------- top-level render ---------- */
+  function render() {
+    var issues = validate(team);
+    var errs = issues.filter(function (i) { return i.level === "error"; }).length;
+    var warns = issues.filter(function (i) { return i.level === "warn"; }).length;
+    var status = errs ? '<span class="pill err">✕ ' + errs + ' error' + (errs > 1 ? "s" : "") + "</span>"
+      : warns ? '<span class="pill warn">! ' + warns + ' warning' + (warns > 1 ? "s" : "") + "</span>"
+        : '<span class="pill ok">✓ valid</span>';
+    var roleNames = Object.keys(team.roles);
+
+    var html = ""
+      + '<div class="topbar">'
+      + '  <div class="title">'
+      + '    <div class="eyebrow mono">OPENCOLLAB</div>'
+      + '    <h1>' + OC_MARK + '<span>Team Blueprint</span></h1>'
+      + '    <div class="sub">An Operating Theory of Organized Intelligence · <span class="mono">configs/team.yaml</span></div>'
+      + '  </div>'
+      + '  <div class="stats">'
+      + '    <span class="pill"><b>' + roleNames.length + "</b> roles</span>"
+      + '    <span class="pill">entry <b class="mono">' + esc(team.entry) + "</b></span>"
+      + "    " + status
+      + '    <button class="btn" data-act="theme" title="toggle light/dark">◐</button>'
+      + "  </div>"
+      + "</div>"
+      + '<div class="toolbar">'
+      + '  <button class="btn ' + (editMode ? "on" : "") + '" data-act="edit">' + (editMode ? "✓ Editing" : "✎ Edit roles") + "</button>"
+      + (editMode ? '  <button class="btn" data-act="add-role">+ Add role</button>' : "")
+      + '  <span class="hint">Toggle the matrix below to rewire who can spawn / message whom.</span>'
+      + "</div>";
+
+    // issues
+    if (issues.length) {
+      html += '<section><div class="issues">'
+        + issues.map(function (i) { return '<div class="issue ' + i.level + '"><span class="who">' + esc(i.who) + "</span><span>" + esc(i.msg) + "</span></div>"; }).join("")
+        + "</div></section>";
+    }
+
+    // roles
+    html += '<section><div class="sec-head"><h2>Roles</h2><span class="hint">' + roleNames.length + ' agent role' + (roleNames.length === 1 ? "" : "s") + "</span></div>"
+      + '<div class="cards">' + roleNames.map(function (n) { return roleCard(n, team.roles[n], team); }).join("") + "</div>"
+      + '<div class="legend">'
+      + '<span><i class="dot" style="background:var(--work)"></i> work tool</span>'
+      + '<span><i class="dot" style="background:var(--coord)"></i> coordination (spawn/msg)</span>'
+      + '<span><i class="dot" style="background:var(--skill)"></i> use_skill</span>'
+      + '<span><i class="dot" style="background:var(--unknown)"></i> unknown</span>'
+      + "</div></section>";
+
+    // topology
+    html += '<section><div class="sec-head"><h2>Topology</h2><span class="hint">drag a node onto another to connect · click an edge to remove · BFS layers from entry</span></div>'
+      + '<div class="topo-wrap">' + renderGraph(team) + "</div>"
+      + '<div class="legend"><span><i class="dot" style="background:var(--coord)"></i> delegates to (forward)</span><span><i class="dot" style="background:var(--warn)"></i> feedback / loop edge</span><span>dashed box = ad-hoc role (not declared)</span></div>'
+      + '<div style="margin-top:14px" class="topo-wrap"><div style="padding:8px 6px">' + renderMatrix(team) + "</div></div>"
+      + "</section>";
+
+    // export
+    html += '<section><div class="sec-head"><h2>Export &amp; feedback</h2><span class="hint">hand this back to OpenCollab</span></div>'
+      + '<div class="export-grid">'
+      + '  <div class="export-box"><h3>team.yaml <span class="muted" style="font-weight:400">(live)</span></h3>'
+      + '    <div class="row"><button class="btn primary" data-act="copy-yaml">⧉ Copy YAML</button><button class="btn" data-act="download">⭳ Download</button></div>'
+      + '    <textarea class="out" data-out="yaml" readonly spellcheck="false"></textarea></div>'
+      + '  <div class="export-box"><h3>Notes for the LLM</h3>'
+      + '    <textarea class="out notes" data-out="notes" spellcheck="false" placeholder="e.g. &quot;reviewer should be able to send the coder back to work&quot;, &quot;drop the analyst, too heavy&quot;, &quot;coder needs git_diff&quot;…"></textarea>'
+      + '    <div class="row" style="margin-top:8px"><button class="btn primary" data-act="copy-feedback">⧉ Copy YAML + notes</button></div>'
+      + '    <div class="callout"><b>Round-trip:</b> tweak the matrix / roles above, then <b>Copy YAML + notes</b> and paste it back into the OpenCollab chat. The lead will refine the topology from your feedback and re-render.</div></div>'
+      + "</div></section>";
+
+    app.innerHTML = html;
+    refreshExport();
+  }
+
+  function refreshExport() {
+    var box = app.querySelector('[data-out="yaml"]');
+    if (box) box.value = toYaml(team);
+  }
+
+  /* ---------- interactivity ---------- */
+  function renameRole(oldName, raw) {
+    var neu = (raw || "").trim();
+    if (!neu || neu === oldName) { render(); return; }
+    // revert if the new name collides with a declared role OR an ad-hoc node
+    // referenced in topology — merging onto either silently drops/merges edges.
+    var refd = Object.create(null);
+    Object.keys(team.topology).forEach(function (s) { refd[s] = 1; (team.topology[s] || []).forEach(function (d) { refd[d] = 1; }); });
+    if (team.roles[neu] || refd[neu]) { render(); return; }
+    var nr = Object.create(null); Object.keys(team.roles).forEach(function (k) { nr[k === oldName ? neu : k] = team.roles[k]; });
+    team.roles = nr;
+    var nt = Object.create(null); Object.keys(team.topology).forEach(function (s) {
+      nt[s === oldName ? neu : s] = (team.topology[s] || []).map(function (d) { return d === oldName ? neu : d; });
+    });
+    team.topology = nt;
+    if (team.entry === oldName) team.entry = neu;
+    if (team.entryExplicit === oldName) team.entryExplicit = neu;
+    render();
+  }
+
+  document.addEventListener("click", function (e) {
+    var el = e.target.closest("[data-act], [data-remove], [data-tool-role]");
+    if (!el) return;
+    var act = el.getAttribute("data-act");
+    if (act === "theme") {
+      var cur = document.documentElement.getAttribute("data-theme");
+      var next = cur === "dark" ? "light" : cur === "light" ? "dark" : (matchMedia("(prefers-color-scheme: dark)").matches ? "light" : "dark");
+      document.documentElement.setAttribute("data-theme", next); return;
+    }
+    if (act === "edit") { editMode = !editMode; render(); return; }
+    if (act === "add-role") {
+      var base = "role", n = base, i = 2; while (team.roles[n]) n = base + i++;
+      team.roles[n] = { prompt: "", promptFile: null, model: null, temperature: null, thinking: null, thinkingParams: null, tools: [] };
+      render(); return;
+    }
+    if (act === "copy-yaml") { copy(toYaml(team), el); return; }
+    if (act === "download") { download("team.yaml", toYaml(team)); return; }
+    if (act === "copy-feedback") {
+      var notes = (app.querySelector('[data-out="notes"]') || {}).value || "";
+      var blob = "Here is my current OpenCollab team (edited in the blueprint). Please refine the topology / roles from my notes and re-render.\n\n"
+        + "```yaml\n" + toYaml(team) + "```\n\nNotes:\n" + (notes.trim() || "(none)") + "\n";
+      copy(blob, el); return;
+    }
+    var rem = el.getAttribute("data-remove");
+    if (rem != null) {
+      delete team.roles[rem];
+      delete team.topology[rem];
+      Object.keys(team.topology).forEach(function (s) { team.topology[s] = (team.topology[s] || []).filter(function (d) { return d !== rem; }); });
+      if (team.entryExplicit === rem) team.entryExplicit = null;
+      if (team.entry === rem) team.entry = resolveEntry(team.entryExplicit, team.roles);
+      render(); return;
+    }
+    if (el.hasAttribute("data-tool-role")) {
+      var role = el.getAttribute("data-tool-role"), tool = el.getAttribute("data-tool"), r = team.roles[role];
+      if (r) { var k = r.tools.indexOf(tool); if (k >= 0) r.tools.splice(k, 1); else r.tools.push(tool); render(); }
+      return;
+    }
+  });
+
+  document.addEventListener("change", function (e) {
+    var el = e.target;
+    if (el.hasAttribute("data-edge-src")) {
+      var s = el.getAttribute("data-edge-src"), d = el.getAttribute("data-edge-dst");
+      team.topology[s] = team.topology[s] || [];
+      var k = team.topology[s].indexOf(d);
+      if (el.checked && k < 0) team.topology[s].push(d);
+      else if (!el.checked && k >= 0) team.topology[s].splice(k, 1);
+      render(); return;
+    }
+    if (el.hasAttribute("data-entry") && el.checked) { team.entry = el.getAttribute("data-entry"); team.entryExplicit = team.entry; render(); return; }
+    if (el.hasAttribute("data-rename")) { renameRole(el.getAttribute("data-rename"), el.value); return; }
+  });
+
+  document.addEventListener("input", function (e) {
+    var el = e.target, r;
+    if (el.hasAttribute("data-prompt")) { r = team.roles[el.getAttribute("data-prompt")]; if (r) { r.prompt = el.value; r.promptFile = null; } refreshExport(); return; }
+    if (el.hasAttribute("data-model")) { r = team.roles[el.getAttribute("data-model")]; if (r) r.model = el.value.trim() || null; refreshExport(); return; }
+    if (el.hasAttribute("data-temp")) { r = team.roles[el.getAttribute("data-temp")]; if (r) { var v = el.value.trim(); r.temperature = v === "" ? null : (isNaN(+v) ? v : +v); } refreshExport(); return; }
+  });
+
+  document.addEventListener("keydown", function (e) {
+    var t = e.target;
+    if (!t || !t.hasAttribute || !t.hasAttribute("data-tool-role")) return;
+    if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+    e.preventDefault();
+    var r = team.roles[t.getAttribute("data-tool-role")], tool = t.getAttribute("data-tool");
+    if (r) { var k = r.tools.indexOf(tool); if (k >= 0) r.tools.splice(k, 1); else r.tools.push(tool); render(); }
+  });
+
+  /* ---------- graph drag-to-connect + click-to-remove ---------- */
+  // Draw the topology directly: drag one node onto another to add src→dst; click
+  // an edge to remove it. The adjacency matrix stays as the keyboard-accessible
+  // path (drag is a pointer-only enhancement). No new tools, no logic changes to
+  // the model beyond the same team.topology edits the matrix already makes.
+  var SVGNS = "http://www.w3.org/2000/svg";
+  var drag = null;                // { src, svg, sx, sy, line, hover, pointerId }
+  var suppressNextClick = false;  // eat the click a pointerup synthesizes
+
+  function svgOf(el) { return el && el.closest ? el.closest("svg.graph") : null; }
+  function toSvg(svg, cx, cy) {
+    var m = svg.getScreenCTM(); if (!m) return null;
+    var pt = svg.createSVGPoint(); pt.x = cx; pt.y = cy;
+    return pt.matrixTransform(m.inverse());
+  }
+  function nodeAt(x, y) { var el = document.elementFromPoint(x, y); return el && el.closest ? el.closest("[data-node]") : null; }
+  function hiNode(g) { var r = g.querySelector("rect"); if (r) { if (g._os == null) g._os = r.style.stroke; r.style.stroke = "var(--accent)"; r.style.strokeWidth = "2.6"; } }
+  function unhiNode(g) { var r = g.querySelector("rect"); if (r) { r.style.stroke = g._os || ""; r.style.strokeWidth = ""; g._os = null; } }
+
+  document.addEventListener("pointerdown", function (e) {
+    if (e.button != null && e.button !== 0) return;            // primary button / touch only
+    if (drag) return;                                          // one drag at a time (ignore a 2nd concurrent pointer)
+    var svg = svgOf(e.target);
+    var node = svg && e.target.closest ? e.target.closest("[data-node]") : null;
+    if (!svg || !node) return;
+    e.preventDefault();
+    var sx = +node.getAttribute("data-cx"), sy = +node.getAttribute("data-cy");
+    var line = document.createElementNS(SVGNS, "path");
+    line.setAttribute("class", "oc-rubber");
+    line.setAttribute("fill", "none");
+    line.setAttribute("d", "M " + sx + " " + sy + " L " + sx + " " + sy);
+    svg.appendChild(line);
+    svg.classList.add("dragging");
+    drag = { src: node.getAttribute("data-node"), svg: svg, sx: sx, sy: sy, line: line, hover: null, pointerId: e.pointerId };
+    try { svg.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  document.addEventListener("pointermove", function (e) {
+    if (!drag) return;
+    var p = toSvg(drag.svg, e.clientX, e.clientY); if (!p) return;
+    drag.line.setAttribute("d", "M " + drag.sx + " " + drag.sy + " L " + p.x.toFixed(1) + " " + p.y.toFixed(1));
+    var node = nodeAt(e.clientX, e.clientY), name = node && node.getAttribute("data-node");
+    if (drag.hover && drag.hover !== node) unhiNode(drag.hover);
+    if (node && name && name !== drag.src) { hiNode(node); drag.hover = node; drag.line.classList.add("ok"); }
+    else { drag.hover = null; drag.line.classList.remove("ok"); }
+  });
+
+  function endDrag(commit, e) {
+    if (!drag) return;
+    var d = drag; drag = null;
+    if (d.hover) unhiNode(d.hover);
+    if (d.line && d.line.parentNode) d.line.parentNode.removeChild(d.line);
+    d.svg.classList.remove("dragging");
+    try { d.svg.releasePointerCapture(d.pointerId); } catch (_) {}
+    if (commit && e) {
+      var node = nodeAt(e.clientX, e.clientY), dst = node && node.getAttribute("data-node");
+      if (dst && dst !== d.src) {                                // add-only; removal is click-on-edge
+        team.topology[d.src] = team.topology[d.src] || [];
+        if (team.topology[d.src].indexOf(dst) < 0) team.topology[d.src].push(dst);
+        render();
+      }
+    }
+  }
+  document.addEventListener("pointerup", function (e) {
+    if (!drag) return;
+    e.preventDefault();
+    suppressNextClick = true;
+    endDrag(true, e);
+    // A drag whose release lands on a different element fires NO synthetic click,
+    // so clear the guard on the next tick too — never eat a later real click.
+    setTimeout(function () { suppressNextClick = false; }, 0);
+  });
+  document.addEventListener("pointercancel", function () { endDrag(false); });
+
+  // Capture phase: runs before the bubble click handler so it can remove an edge
+  // and swallow the synthetic click a drag-release fires.
+  document.addEventListener("click", function (e) {
+    if (suppressNextClick) { suppressNextClick = false; e.stopPropagation(); e.preventDefault(); return; }
+    var eh = e.target.closest ? e.target.closest("[data-esrc]") : null;
+    if (!eh) return;
+    e.stopPropagation();
+    var s = eh.getAttribute("data-esrc"), dst = eh.getAttribute("data-edst"), arr = team.topology[s];
+    if (arr) { var k = arr.indexOf(dst); if (k >= 0) { arr.splice(k, 1); render(); } }
+  }, true);
+
+  function copy(text, btn) {
+    var done = function () { if (btn) { var o = btn.textContent; btn.textContent = "✓ Copied"; setTimeout(function () { btn.textContent = o; }, 1200); } };
+    if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(text).then(done, function () { legacyCopy(text); done(); }); }
+    else { legacyCopy(text); done(); }
+  }
+  function legacyCopy(text) {
+    var ta = document.createElement("textarea"); ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select(); try { document.execCommand("copy"); } catch (e) { } document.body.removeChild(ta);
+  }
+  function download(name, text) {
+    var blob = new Blob([text], { type: "text/yaml" }), url = URL.createObjectURL(blob);
+    var a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click();
+    document.body.removeChild(a); setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  /* ---------- boot ---------- */
+  function boot() {
+    var src = (document.getElementById("team-src") || {}).textContent || "";
+    var raw;
+    try { raw = window.jsyaml.load(src); }
+    catch (err) {
+      app.innerHTML = '<div class="fatal"><b>Could not parse the embedded team.yaml.</b><pre>' + esc(err && err.message) + "</pre></div>";
+      return;
+    }
+    try { team = normalize(raw); render(); }
+    catch (err) {
+      app.innerHTML = '<div class="fatal"><b>Render error.</b><pre>' + esc(err && err.stack || err) + "</pre></div>";
+    }
+  }
+  boot();
+})();
+</script>
+</body>
+</html>

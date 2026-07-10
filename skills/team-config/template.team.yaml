@@ -1,0 +1,99 @@
+# OpenCollab team — copy this to configs/team.yaml and fill it in.
+# Every field below is documented inline. Delete what you don't need.
+#
+# A team is: a set of ROLES (each an agent with a prompt + tools) and a directed
+# TOPOLOGY that says which role may spawn/message which other role. `entry` is
+# agent 0 — the root that receives the user task and spawns the rest.
+
+# entry: which role is agent 0. Optional.
+#   Resolution when omitted: a role literally named `lead` > the first role.
+#   An explicit entry that names no declared role fails fast — keep them in sync.
+entry: lead
+
+roles:
+  # ---- one block per role; the key is the role NAME (kept as the agent label) ----
+  lead:
+    # prompt: the role's system prompt (inline block scalar). REQUIRED unless you
+    # use prompt_file instead. Write it as concrete instructions for this agent.
+    prompt: |
+      You are agent 0, the team lead. You own the goal: analyze it, delegate the
+      work to specialists you spawn, integrate their results, and decide the next
+      move. Prefer delegation; only pick up tools yourself to unblock a child.
+    # model: per-role model override. Optional — omit to inherit OPENCOLLAB_MODEL.
+    # model: kimi-k2.6
+    # temperature: per-role sampling temp, 0.0–2.0. Optional — omit to inherit
+    # OPENCOLLAB_TEMPERATURE (default 0.2). A role override of 0.0 IS honored.
+    # temperature: 0.2
+    # thinking / thinking_params: per-role extended-thinking overrides. Optional.
+    # thinking: true
+    # tools: the allowlist this role may call. Names must be from the menu below.
+    # A role that spawns/messages others needs the coordination tools AND matching
+    # topology edges.
+    tools: [bash, file_read, file_write, grep, git_diff, spawn_agent, message_agent, team_status]
+
+  analyst:
+    prompt: |
+      You are the Analyst. You locate the root cause and produce a precise, file-
+      and-line fix plan. You do NOT write code — you investigate and hand off.
+    tools: [bash, file_read, grep]
+
+  coder:
+    prompt: |
+      You are the Coder. You implement the plan with the smallest correct change
+      to the source, verify locally, and report exactly what you changed.
+    tools: [bash, file_read, file_write, apply_patch, run_tests, grep]
+
+  reviewer:
+    prompt: |
+      You are the Reviewer. You check the fix for correctness against the goal and
+      the tests. End with a single `VERDICT: PASS` or `VERDICT: FAIL` line.
+    tools: [bash, file_read, run_tests, git_diff, grep]
+
+# topology: a directed graph. For each source role, list the roles it may
+# spawn/message. A role can only reach the roles listed for it here.
+topology:
+  lead: [analyst, coder, reviewer]
+  analyst: [coder]
+  coder: [reviewer]
+  reviewer: [coder]        # feedback edge: reviewer can send the coder back to work
+
+# ------------------------------------------------------------------------------
+# TOOL MENU — the only valid tool names (anything else fails at startup):
+#
+#   Work tools (do the task):
+#     bash          run a shell command
+#     file_read     read a file (ranged reads supported)
+#     file_write    create / str_replace edit a file
+#     apply_patch   apply a content-anchored unified diff
+#     run_tests     run the project's test suite
+#     git_diff      inspect the working-tree diff / status
+#     grep          search the codebase
+#     ask_user      ask the human (dropped automatically in headless runs)
+#
+#   Coordination tools (act on teammates — pair with topology edges):
+#     spawn_agent        blocking delegate-and-wait: spawn a child, get its result
+#     spawn_with_review  spawn a child whose output is reviewed before returning
+#     message_agent      send a message to another agent
+#     team_status        list the current agents and their state
+#
+#   Skill tool:
+#     use_skill     load an on-demand instruction set from skills/ by name
+#                   (this very blueprint skill is invoked via use_skill)
+#
+# Only the lead/entry needs coordination tools for a simple hub-and-spoke team.
+# Give a specialist coordination tools only if the topology lets it reach others.
+# ------------------------------------------------------------------------------
+
+# tool_limits (optional): per-tool output caps, tuned to your backend's context.
+# Keys are tool names (NOT coordination tools); values are constructor kwargs.
+# tool_limits:
+#   bash: { max_output_chars: 8000 }
+#   git_diff: { max_diff_chars: 8000, max_status_chars: 2000 }
+#   run_tests: { max_traceback_chars: 6000 }
+#   file_read: { max_read_chars: 30000 }
+#   grep: { max_grep_chars: 10000 }
+
+# hooks (optional, advanced): shell commands bound to lifecycle events.
+# hooks:
+#   PreToolUse:
+#     - { command: "echo about to run a tool", matcher: "bash" }
