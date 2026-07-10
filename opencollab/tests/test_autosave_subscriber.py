@@ -22,6 +22,10 @@ from opencollab.application.event_bus import EventBus
 from opencollab.bootstrap import build_session as Session
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 
+# Reuse the fakes from the characterization test file (same tests/ directory,
+# added to sys.path by pytest's rootdir discovery).
+from test_session_characterization import FakeAgent, FakeLLMClient
+
 
 @pytest.mark.parametrize("trigger", sorted(SAVE_TRIGGERS))
 def test_autosave_subscriber_fires_on_each_trigger(trigger):

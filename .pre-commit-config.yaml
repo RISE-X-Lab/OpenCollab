@@ -1,0 +1,21 @@
+# Local guardrails that mirror CI. Install once:
+#   pip install pre-commit && pre-commit install
+# Hooks then run on every commit; bypass a one-off with `git commit --no-verify`.
+# Keep `rev` in sync with the ruff version pinned in opencollab/pyproject.toml.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff
+        name: ruff (lint + autofix)
+        args: [--fix]
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-added-large-files
+        args: [--maxkb=500]
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-toml

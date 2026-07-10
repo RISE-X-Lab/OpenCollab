@@ -657,16 +657,11 @@ async def _run_workflow_mode(
     # Forward benchmark passthrough (e.g. SWE-bench fail_to_pass ids + the paths
     # of any injected test files) so the workflow can scope to the target tests.
     args.pop("injected_test_paths", None)
-    # The F2P hard-gate (D2) keys on ``fail_to_pass`` non-emptiness and demands the
-    # agent run those exact node-ids. That is only satisfiable when the tests were
-    # actually injected: if injection FAILED (``injected_paths`` empty) the tests
-    # do not exist at the base commit, so forwarding the ids would make the gate
-    # unsatisfiable rather than bypassed. Couple the two — drop ``fail_to_pass``
-    # when nothing was injected so the gate falls back to the trusted-verdict path
-    # its docstring describes.
-    if not injected_paths:
-        args.pop("fail_to_pass", None)
-    else:
+    # Preserve every declared FAIL_TO_PASS id even when no test patch was
+    # supplied or injection produced no paths. The workflow must execute the
+    # exact targets before it may report PASS; unavailable targets therefore
+    # remain a technical failure instead of silently bypassing the hard gate.
+    if injected_paths:
         args["injected_test_paths"] = list(injected_paths)
     # ALWAYS return the ctx, even when the workflow ends abnormally. The ctx is
     # already fully built (above) and its ``.sessions`` accumulate token+step

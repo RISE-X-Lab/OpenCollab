@@ -18,7 +18,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from opencollab.harness.evaluator import EvalResult, EvalTask
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]

@@ -26,17 +26,6 @@ PKG_ROOT = REPO_ROOT / "opencollab"
 if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
-from opencollab.harness import swe_eval_records as swe_records  # noqa: E402
-from opencollab.harness.swe_eval_records import (  # noqa: E402
-    MAX_JSON_DOCUMENT_BYTES,
-    RecordInputFormatError,
-    RecordInputLimitError,
-    UnsafeRecordInputError,
-    SUBMISSION_INTEGRITY_PROVEN,
-    embedded_workflow_metric,
-    is_completed_prediction,
-    metric_submission_integrity,
-)
 from opencollab.adapters.safe_files import (  # noqa: E402
     _directory_path_matches_fd,
     _open_directory_no_symlinks,
@@ -45,6 +34,17 @@ from opencollab.adapters.safe_files import (  # noqa: E402
     regular_path_identity,
     unlink_regular_file_durable,
     write_regular_bytes_atomic,
+)
+from opencollab.harness import swe_eval_records as swe_records  # noqa: E402
+from opencollab.harness.swe_eval_records import (  # noqa: E402
+    MAX_JSON_DOCUMENT_BYTES,
+    SUBMISSION_INTEGRITY_PROVEN,
+    RecordInputFormatError,
+    RecordInputLimitError,
+    UnsafeRecordInputError,
+    embedded_workflow_metric,
+    is_completed_prediction,
+    metric_submission_integrity,
 )
 
 _PROCESS_IDENTITY_POPEN = subprocess.Popen
