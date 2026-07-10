@@ -9,13 +9,8 @@ import subprocess
 import sys
 import threading
 
-import pytest
-
-# Reuse the fakes from the characterization test file (same tests/ directory,
-# added to sys.path by pytest's rootdir discovery).
-from test_session_characterization import FakeAgent, FakeLLMClient
-
 import opencollab.adapters.storage as storage_mod
+import pytest
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
@@ -25,6 +20,9 @@ from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 # Reuse the fakes from the characterization test file (same tests/ directory,
 # added to sys.path by pytest's rootdir discovery).
 from test_session_characterization import FakeAgent, FakeLLMClient
+
+# Reuse the fakes from the characterization test file (same tests/ directory,
+# added to sys.path by pytest's rootdir discovery).
 
 
 @pytest.mark.parametrize("trigger", sorted(SAVE_TRIGGERS))

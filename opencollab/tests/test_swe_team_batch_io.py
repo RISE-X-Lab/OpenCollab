@@ -178,6 +178,7 @@ def test_batch_script_rejects_missing_start_from_in_dataset(tmp_path):
     env.update(
         {
             "OPENCOLLAB_EVAL_PYTHON": sys.executable,
+            "OPENCOLLAB_SWEBENCH_NAMESPACE": "swebench",
             "PYTHONPATH": str(package_root),
             "OC_TEST_DATASET": json.dumps(
                 [{"instance_id": "demo__task-1", "problem_statement": "fix"}]

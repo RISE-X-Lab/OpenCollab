@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-
 from opencollab.application import fact_sheet as fact_sheet_mod
 from opencollab.application.fact_sheet import (
     FactSheetIntegrityError,

@@ -31,9 +31,13 @@ def fake_team_repo(tmp_path):
     (root / "configs" / ".env").write_text("\n")
     (root / "swebench" / "gen_prediction.py").write_text(
         "MAX_EXTRACTED_PATCH_BYTES = 8 * 1024 * 1024\n"
-        "def bounded_container_output_command(command, *, max_bytes, label):\n"
+        "def bounded_container_output_command(command, *, max_bytes, label, helper_path=None):\n"
         "    return 'true'\n",
         encoding="utf-8",
+    )
+    shutil.copy2(
+        SOURCE_ROOT / "swebench" / "gen_prediction_bounded_capture.py",
+        root / "swebench" / "gen_prediction_bounded_capture.py",
     )
     (root / "scripts" / "swebench_loop_monitor.py").write_text(
         "raise SystemExit(0)\n",

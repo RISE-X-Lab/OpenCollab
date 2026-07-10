@@ -12,9 +12,8 @@ import gc
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
-import pytest
-
 import opencollab.application.workflow as workflow_module
+import pytest
 from opencollab.application.session_run import ENFORCEMENT_ON
 from opencollab.application.workflow import (
     WorkflowBudgetExceeded,

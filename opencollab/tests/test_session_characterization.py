@@ -2,7 +2,6 @@ import asyncio
 import copy
 
 import pytest
-
 from opencollab.adapters.llm import LLMResponse, Usage
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.event_bus import EventBus

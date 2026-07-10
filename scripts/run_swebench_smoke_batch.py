@@ -2,14 +2,10 @@
 from __future__ import annotations
 
 import argparse
-import errno
-import fcntl
 import json
-import math
 import os
-import signal
 import select
-import stat
+import signal
 import subprocess
 import sys
 import threading
@@ -20,29 +16,31 @@ from swebench.harness.test_spec.test_spec import make_test_spec
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PKG_ROOT = REPO_ROOT / "opencollab"
+SCRIPT_ROOT = Path(__file__).resolve().parent
 if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
 
+import swebench_process as process_tools  # noqa: E402
+import swebench_smoke_io as smoke_io  # noqa: E402
+from opencollab.adapters.safe_files import (  # noqa: E402
+    ensure_directory_no_symlinks,
+)
 from opencollab.harness.swe_eval_records import (  # noqa: E402
     MAX_JSONL_LINE_BYTES,
     MAX_JSONL_RETAINED_BYTES,
     MAX_JSONL_RETAINED_ROWS,
     MAX_JSONL_SCAN_BYTES,
-    RecordInputFormatError,
-    RecordInputLimitError,
-    is_completed_prediction,
-    read_bounded_json,
-)
-from opencollab.adapters.safe_files import (  # noqa: E402
-    _directory_path_matches_fd,
-    _open_directory_no_symlinks,
-    ensure_directory_no_symlinks,
-    read_regular_bytes,
-    regular_path_identity,
 )
 
-_ORIGINAL_POPEN = subprocess.Popen
-_GENERATOR_POPEN = subprocess.Popen
+positive_timeout_seconds = process_tools.positive_timeout_seconds
+_ensure_process_tree_quiesced_after_wait = process_tools.ensure_process_tree_quiesced_after_wait
+_posix_group_exists = process_tools.posix_group_exists
+_process_group_kwargs = process_tools.process_group_kwargs
+_terminate_process_tree = process_tools.terminate_process_tree
+
+_ORIGINAL_POPEN = _GENERATOR_POPEN = subprocess.Popen
 
 PROCESS_TERM_GRACE_SECONDS = 0.1
 PROCESS_KILL_REAP_SECONDS = 2.0
@@ -54,130 +52,6 @@ MAX_MANIFEST_BYTES = 16 * 1024 * 1024
 SAFE_FILE_OPEN_RETRIES = 8
 MAX_INSTANCE_DIRECTORY_ENTRIES = 10_000
 HARNESS_LOCK_TIMEOUT_SECONDS = 10.0
-
-
-def positive_timeout_seconds(value: object, *, name: str) -> float:
-    try:
-        timeout = float(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{name} must be a positive finite number") from exc
-    if not math.isfinite(timeout) or timeout <= 0:
-        raise ValueError(f"{name} must be a positive finite number")
-    return timeout
-
-
-def _process_group_kwargs() -> dict:
-    if os.name == "posix":
-        return {"start_new_session": True}
-    if os.name == "nt":
-        return {
-            "creationflags": getattr(
-                subprocess,
-                "CREATE_NEW_PROCESS_GROUP",
-                0x00000200,
-            )
-        }
-    return {}
-
-
-def _posix_group_exists(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-
-
-def _signal_posix_group(pgid: int, sig: signal.Signals) -> None:
-    try:
-        os.killpg(pgid, sig)
-    except (ProcessLookupError, PermissionError):
-        pass
-
-
-def _wait_leader(process: subprocess.Popen, timeout: float) -> bool:
-    try:
-        process.wait(timeout=max(0.0, timeout))
-        return True
-    except (subprocess.TimeoutExpired, ChildProcessError):
-        return False
-
-
-def _terminate_process_tree(
-    process: subprocess.Popen,
-    *,
-    term_timeout: float,
-    kill_timeout: float,
-) -> bool:
-    if os.name == "posix":
-        pgid = process.pid
-        _signal_posix_group(pgid, signal.SIGTERM)
-        deadline = time.monotonic() + term_timeout
-        while _posix_group_exists(pgid) and time.monotonic() < deadline:
-            remaining = deadline - time.monotonic()
-            _wait_leader(process, min(0.05, max(0.0, remaining)))
-            if _posix_group_exists(pgid):
-                time.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
-        if _posix_group_exists(pgid):
-            _signal_posix_group(pgid, signal.SIGKILL)
-        kill_deadline = time.monotonic() + kill_timeout
-        leader_reaped = False
-        while time.monotonic() < kill_deadline:
-            remaining = kill_deadline - time.monotonic()
-            leader_reaped = _wait_leader(process, min(0.05, remaining)) or leader_reaped
-            if leader_reaped and not _posix_group_exists(pgid):
-                return True
-            time.sleep(min(0.05, max(0.0, kill_deadline - time.monotonic())))
-        return leader_reaped and not _posix_group_exists(pgid)
-
-    if os.name == "nt":
-        try:
-            killed = subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                check=False,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=kill_timeout,
-            ).returncode == 0
-        except (OSError, subprocess.TimeoutExpired):
-            killed = False
-        if not killed:
-            try:
-                process.kill()
-            except (OSError, ProcessLookupError):
-                pass
-        return _wait_leader(process, kill_timeout)
-
-    try:
-        process.terminate()
-    except (OSError, ProcessLookupError):
-        pass
-    if _wait_leader(process, term_timeout):
-        return True
-    try:
-        process.kill()
-    except (OSError, ProcessLookupError):
-        pass
-    return _wait_leader(process, kill_timeout)
-
-
-def _ensure_process_tree_quiesced_after_wait(
-    process: subprocess.Popen,
-    *,
-    term_timeout: float,
-    kill_timeout: float,
-) -> bool:
-    if os.name == "posix" and not _posix_group_exists(process.pid):
-        return True
-    if os.name not in {"posix", "nt"}:
-        return _wait_leader(process, 0.0)
-    return _terminate_process_tree(
-        process,
-        term_timeout=term_timeout,
-        kill_timeout=kill_timeout,
-    )
 
 
 def _generator_worker(
@@ -719,205 +593,47 @@ def _run_generator(
 
 
 def _read_instance(path: Path) -> dict:
-    document = read_bounded_json(path, max_bytes=MAX_INSTANCE_BYTES)
-    if document is None or not isinstance(document[0], dict):
-        raise ValueError(f"instance input is not a bounded regular JSON object: {path}")
-    return document[0]
+    return smoke_io.read_instance(path, max_bytes=MAX_INSTANCE_BYTES)
 
 
 def _read_prediction_rows(path: Path) -> list[dict]:
-    try:
-        payload = read_regular_bytes(path, max_bytes=MAX_JSONL_SCAN_BYTES)
-    except FileNotFoundError:
-        return []
-    retained_bytes = 0
-    rows: list[dict] = []
-    for raw_line in payload.splitlines(keepends=True):
-        if not raw_line.strip():
-            continue
-        if len(raw_line) > MAX_JSONL_LINE_BYTES:
-            raise RecordInputLimitError(
-                f"JSONL line exceeds {MAX_JSONL_LINE_BYTES} bytes: {path}"
-            )
-        retained_bytes += len(raw_line)
-        if (
-            len(rows) >= MAX_JSONL_RETAINED_ROWS
-            or retained_bytes > MAX_JSONL_RETAINED_BYTES
-        ):
-            raise RecordInputLimitError(
-                f"JSONL input exceeds retained row or byte limit: {path}"
-            )
-        try:
-            value = json.loads(raw_line.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise RecordInputFormatError(f"invalid JSONL record in {path}") from exc
-        if not isinstance(value, dict):
-            raise RecordInputFormatError(f"JSONL record must be an object: {path}")
-        rows.append(value)
-    return rows
+    return smoke_io.read_prediction_rows(
+        path,
+        scan_bytes=MAX_JSONL_SCAN_BYTES,
+        line_bytes=MAX_JSONL_LINE_BYTES,
+        retained_rows=MAX_JSONL_RETAINED_ROWS,
+        retained_bytes=MAX_JSONL_RETAINED_BYTES,
+    )
 
 
 def _prediction_has_patch(output: Path, instance_id: str) -> bool:
-    latest: dict | None = None
-    for record in _read_prediction_rows(output):
-        if record.get("instance_id") == instance_id:
-            latest = record
-    return is_completed_prediction(latest)
-
-
-def _fsync_directory(path: Path) -> None:
-    fd = _open_directory_no_symlinks(path)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
-def _acquire_exclusive_lock(fd: int, *, label: str) -> None:
-    deadline = time.monotonic() + HARNESS_LOCK_TIMEOUT_SECONDS
-    while True:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            return
-        except OSError as exc:
-            if exc.errno not in {errno.EACCES, errno.EAGAIN}:
-                raise
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise TimeoutError(
-                f"timed out acquiring {label} after "
-                f"{HARNESS_LOCK_TIMEOUT_SECONDS:g}s"
-            )
-        time.sleep(min(0.01, remaining))
-
-
-def _open_regular_append(path: Path) -> int:
-    path = Path(os.path.abspath(os.fspath(path)))
-    ensure_directory_no_symlinks(path.parent)
-    flags = (
-        os.O_RDWR
-        | os.O_APPEND
-        | getattr(os, "O_NONBLOCK", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
+    return smoke_io.prediction_has_patch(
+        output,
+        instance_id,
+        read_rows=_read_prediction_rows,
     )
-    for _parent_attempt in range(SAFE_FILE_OPEN_RETRIES):
-        parent_fd = _open_directory_no_symlinks(path.parent)
-        try:
-            try:
-                before = os.stat(
-                    path.name,
-                    dir_fd=parent_fd,
-                    follow_symlinks=False,
-                )
-            except FileNotFoundError:
-                before = None
-            if before is not None and not stat.S_ISREG(before.st_mode):
-                raise OSError(f"refusing non-regular smoke manifest: {path}")
-            try:
-                if before is None:
-                    fd = os.open(
-                        path.name,
-                        flags | os.O_CREAT | os.O_EXCL,
-                        0o644,
-                        dir_fd=parent_fd,
-                    )
-                else:
-                    fd = os.open(path.name, flags, dir_fd=parent_fd)
-            except (FileExistsError, FileNotFoundError):
-                continue
-            try:
-                opened = os.fstat(fd)
-                current = os.stat(
-                    path.name,
-                    dir_fd=parent_fd,
-                    follow_symlinks=False,
-                )
-                if not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(current.st_mode):
-                    raise OSError(f"refusing non-regular smoke manifest: {path}")
-                opened_identity = (opened.st_dev, opened.st_ino)
-                if (current.st_dev, current.st_ino) != opened_identity:
-                    continue
-                if before is not None and (before.st_dev, before.st_ino) != opened_identity:
-                    continue
-                if not _directory_path_matches_fd(path.parent, parent_fd):
-                    break
-                result_fd = fd
-                fd = -1
-                return result_fd
-            except FileNotFoundError:
-                pass
-            finally:
-                if fd >= 0:
-                    os.close(fd)
-        finally:
-            os.close(parent_fd)
-    raise OSError(f"smoke manifest did not stabilize while opening: {path}")
 
 
-def _write_all(fd: int, payload: bytes) -> None:
-    view = memoryview(payload)
-    while view:
-        written = os.write(fd, view)
-        if written <= 0:
-            raise OSError("short write while persisting smoke manifest")
-        view = view[written:]
+_fsync_directory = smoke_io.fsync_directory
 
 
 def _append_manifest_record(path: Path, record: dict) -> None:
-    payload = (json.dumps(record, ensure_ascii=False) + "\n").encode("utf-8")
-    fd = _open_regular_append(path)
-    locked = False
-    try:
-        _acquire_exclusive_lock(fd, label=f"manifest lock {path}")
-        locked = True
-        size = os.fstat(fd).st_size
-        needs_separator = size > 0 and os.pread(fd, 1, size - 1) != b"\n"
-        if size + int(needs_separator) + len(payload) > MAX_MANIFEST_BYTES:
-            raise OSError(f"smoke manifest exceeds byte limit: {path}")
-        if needs_separator:
-            _write_all(fd, b"\n")
-        _write_all(fd, payload)
-        os.fsync(fd)
-        opened = os.fstat(fd)
-        current_dev, current_ino, current_size, _mtime_ns, _ctime_ns = (
-            regular_path_identity(path)
-        )
-        if (opened.st_dev, opened.st_ino, opened.st_size) != (
-            current_dev,
-            current_ino,
-            current_size,
-        ):
-            raise OSError(f"smoke manifest changed while appending: {path}")
-        _fsync_directory(path.parent)
-    finally:
-        try:
-            if locked:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
+    smoke_io.append_manifest_record(
+        path,
+        record,
+        max_bytes=MAX_MANIFEST_BYTES,
+        retries=SAFE_FILE_OPEN_RETRIES,
+        lock_timeout=HARNESS_LOCK_TIMEOUT_SECONDS,
+        sync_directory=_fsync_directory,
+    )
 
 
 def _discover_instance_paths(instances_dir: Path, *, limit: int) -> list[Path]:
-    try:
-        root_info = instances_dir.lstat()
-    except FileNotFoundError as exc:
-        raise ValueError(f"instances directory does not exist: {instances_dir}") from exc
-    if not stat.S_ISDIR(root_info.st_mode):
-        raise ValueError(f"instances path must be a real directory: {instances_dir}")
-    paths: list[Path] = []
-    scanned_entries = 0
-    with os.scandir(instances_dir) as entries:
-        for entry in entries:
-            scanned_entries += 1
-            if scanned_entries > MAX_INSTANCE_DIRECTORY_ENTRIES:
-                raise ValueError(
-                    "instances directory exceeds "
-                    f"{MAX_INSTANCE_DIRECTORY_ENTRIES} entries"
-                )
-            if entry.name.endswith(".json"):
-                paths.append(Path(entry.path))
-    return sorted(paths)[:limit]
+    return smoke_io.discover_instance_paths(
+        instances_dir,
+        limit=limit,
+        max_entries=MAX_INSTANCE_DIRECTORY_ENTRIES,
+    )
 
 
 def main() -> int:
@@ -939,7 +655,7 @@ def main() -> int:
         type=float,
         default=PROCESS_SPAWN_TIMEOUT_SECONDS,
     )
-    parser.add_argument("--model-name", default="opencollab-glm52-single-smoke5")
+    parser.add_argument("--model-name", required=True)
     parser.add_argument("--arch", default="x86_64")
     args = parser.parse_args()
 
@@ -961,7 +677,6 @@ def main() -> int:
         )
     except ValueError as exc:
         parser.error(str(exc))
-
     instances_dir = Path(os.path.abspath(args.instances_dir))
     output_dir = Path(os.path.abspath(args.output_dir))
     try:

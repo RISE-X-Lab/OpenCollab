@@ -12,9 +12,8 @@ import sys
 import threading
 import time
 
-import pytest
-
 import opencollab.adapters.env as env_mod
+import pytest
 from opencollab.adapters.env import DockerEnvironment
 
 CONTAINER_ID_A = "a" * 64
@@ -37,7 +36,9 @@ class _CaptureStdin(io.BytesIO):
 
 
 class FakeProc:
-    _next_pid = 50_000
+    # Keep synthetic process groups outside host PID ranges so group probes
+    # cannot mistake an unrelated local process for a fake descendant.
+    _next_pid = 1_000_000_000
 
     def __init__(
         self,

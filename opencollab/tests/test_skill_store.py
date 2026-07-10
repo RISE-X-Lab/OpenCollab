@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from opencollab.adapters.skills import file_skill_store as skill_store_mod
 from opencollab.adapters.skills.file_skill_store import (
     SKILL_BODY_MAX_CHARS,

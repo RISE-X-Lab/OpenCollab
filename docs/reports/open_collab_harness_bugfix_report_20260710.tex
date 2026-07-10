@@ -53,7 +53,7 @@ Publication rule: & source report tracked; rendered PDF excluded from Git \\
 
 The repair changes the harness from a collection of mostly cooperative assumptions into a system that records ownership, validates identity, bounds waiting, rejects unverifiable success, and treats cleanup evidence as part of result integrity. The highest-risk failures allowed a candidate to receive a false PASS, allowed a headless agent to inspect files outside its assigned repository, reused stale official-evaluation output, or returned while an untrusted task could still mutate state. Those paths now fail closed.
 
-The work covers the scheduler, session persistence, workflow engine, evaluation runner, Docker and local environments, SWE-bench generation and official-evaluation scripts, monitor scripts, tool dispatch, structured evidence capture, and output publication. Every behavior change has a focused regression. The final repository-wide test and lint totals are inserted after the post-merge validation run so this report cannot claim a result that was not executed.
+The work covers the scheduler, session persistence, workflow engine, evaluation runner, Docker and local environments, SWE-bench generation and official-evaluation scripts, monitor scripts, tool dispatch, structured evidence capture, and output publication. Every behavior change has a focused regression. After merging the current upstream branch, the final repository-wide run completed with \code{2479 passed}, 18 warnings, and no failed tests.
 
 \section{Repair Scope and Results}
 
@@ -67,8 +67,8 @@ Risk & Area & Result \\
 Risk & Area & Result \\
 \midrule
 \endhead
-\PZero & Evaluation truth & A result can become GREEN or resolved only after parser-backed evidence proves that tests actually executed and passed. Empty collection, help, collect-only, no-op runners, stale reports, and unpaired candidates are RED. \\
-\PZero & Execution isolation & Headless Bash and test execution require an OS-isolated environment. Docker runs with a verified owner identity and no network by default. Local and worktree environments reject untrusted command execution. Grep paths pass through the workspace jail. \\
+\PZero & Evaluation truth & A result can become GREEN or resolved only after parser-backed output or an exact adapter-generated execution plan proves that declared tests ran and passed. Empty collection, help, collect-only, no-op runners, stale reports, and unpaired candidates are RED. \\
+\PZero & Execution isolation & Headless Bash and test execution require an OS-isolated environment. Evaluation Docker environments use a verified owner identity and no network by default. Local and worktree environments reject untrusted command execution. Grep paths pass through the workspace jail. \\
 \PZero & Candidate identity & Prediction, metric, attempt, claim, pending record, and official report share a record identifier and a full patch digest. Discovery verifies stable files and exact candidate pairing before reporting completion. \\
 \PZero & Cancellation and teardown & Environments are synchronously revoked before asynchronous abort. Cancellation-resistant tasks receive bounded cancellation phases and are then isolated from event-loop shutdown ownership. Capacity exhaustion marks the process unhealthy. \\
 \POne & Scheduler correctness & Deferred rows are registered before a child can finish; wake-up races, spawn rollback, message restoration, cleanup classification, sender/parent validation, budget leases, and terminal-state preservation are covered by deterministic tests. \\
@@ -317,11 +317,97 @@ This section follows the repair summary immediately and records each root defect
 
 \textbf{Repair and regression.} Publication stages one candidate and one owner record with record ID, full digest, output targets, and integrity fields. Replay fills whichever side is missing and removes the pending record only after both directories are durable. Output locking is bounded and CAS-based; symlinks, FIFOs, corrupt tails, replacements, and path mismatches fail closed. Two-process recovery tests prove exactly-once publication.
 
+\subsection{H-30: Missing test injection erased mandatory verification targets (P0)}
+
+\textbf{Trigger.} An evaluation task declared one or more \code{FAIL\_TO\_PASS} node IDs, while its test patch was missing, empty, or produced no injected path. The evaluator removed \code{fail\_to\_pass} before starting the workflow whenever \code{injected\_paths} was empty.
+
+\textbf{Former result and harm.} The final verification gate then saw no required targets and accepted a model-reported PASS based on unrelated tests or prose evidence. The workflow could report \code{done} even though none of the declared target tests executed, creating a false-green status that violated evaluation integrity.
+
+\textbf{Repair and regression.} The evaluator now preserves every declared target ID regardless of injection outcome and adds \code{injected\_test\_paths} only when paths actually exist. The workflow gate requires \code{failed\_count == 0} and the exact target IDs in \code{tests\_run}; unavailable or unexecuted targets remain RED. A regression supplies target IDs without a test patch and proves that the workflow still receives the complete list.
+
+\subsection{H-31: Standalone generation and official-evaluation containers retained network access (P1)}
+
+\textbf{Trigger.} The single-agent prediction generator or ProLite official evaluator started a Docker container without an explicit network mode. Docker therefore attached the container to its default bridge even though model requests run on the host and official tests require no external network.
+
+\textbf{Former result and harm.} Untrusted repository code and test commands could contact external services, observe network-dependent state, or leak task data. The same patch could behave differently across hosts, weakening reproducibility and the isolation claim recorded by the harness.
+
+\textbf{Repair and regression.} Both Docker command builders now pass \code{--network none}. Their regression tests capture the actual Docker argument vector and assert that the isolated mode is present before any container is allowed to start.
+
+\subsection{H-32: The ProLite runner embedded private infrastructure and a drifting remote implementation (P1)}
+
+\textbf{Trigger.} A contributor ran \code{swe\_v1\_prolite\_runner.py} without overriding its defaults. The script silently selected a private SSH host, NFS roots, image registry, private model identity, personal proxy environment file, and fixed loopback proxy ports. It also carried more than two thousand lines of remote-runner logic inside a Python string and launched that copy through base64 and \code{exec}.
+
+\textbf{Former result and harm.} An external clone could connect to the wrong machine, reveal private topology in logs or documentation, or fail in a way that only made sense on the original author's host. The embedded remote implementation was invisible to normal imports and lint boundaries, so fixes in tested harness modules could drift from the code that actually ran remotely.
+
+\textbf{Repair and regression.} Host, remote root, image repository, model, session prefix, proxy endpoints, and optional proxy environment file now come from explicit CLI arguments or environment variables and fail before I/O when required values are absent. Image acquisition pulls the configured name directly and no longer contains a private-registry alias path. The remote implementation is split into importable harness modules and launched with \code{python3 -m opencollab.harness.swe\_v1\_remote\_runner}; base64, \code{exec}, and private defaults are gone. Regressions cover every missing required configuration, bare and fully qualified image names, and the SSH module entry point.
+
+\subsection{H-33: Exact targets were broadened and arbitrary fallback commands could score a false green (P0)}
+
+\textbf{Trigger.} A Python task declared 81 exact pytest node IDs, exceeding the old 80-argument compaction limit, or an unsupported Ruby task supplied \code{test\_cmd: echo ok}. The old planner replaced the 81 nodes with one test-file path and accepted almost any nonempty fallback command as runnable.
+
+\textbf{Former result and harm.} Pytest could skip the declared parameterized nodes while the broader file happened to pass; \code{echo ok} could exit zero without executing a test. The evaluator then treated process status zero as proof and could publish \code{resolved=true} without executing every \code{FAIL\_TO\_PASS} target.
+
+\textbf{Repair and regression.} Adapter-backed test plans retain every declared target and split long pytest invocations into exact batches. Every batch emits its command, exit status, and log; scoring verifies those artifacts against the immutable plan and an evaluation-spec digest. Unsupported adapters return technical RED before Docker starts. Regressions cover an 80+1 node split, missing or altered batch evidence, stale-summary reuse, and the Ruby \code{echo ok} case.
+
+\subsection{H-34: Runtime synchronization omitted newly extracted generation modules (P1)}
+
+\textbf{Trigger.} The ProLite launcher synchronized its old file list to an empty remote runtime after \code{gen\_prediction.py} had been split into helper modules. The facade imported six generation helpers plus the shared process helper, yet the archive did not contain them.
+
+\textbf{Former result and harm.} A clean remote host raised \code{ModuleNotFoundError} before generation began. A developer machine with stale copies could pass, making the failure dependent on undeclared remote state and masking incomplete deployment artifacts.
+
+\textbf{Repair and regression.} The synchronization manifest now includes every direct and transitive generation helper, including the bounded-capture executable module. A regression builds the real archive, extracts it into an empty directory, and imports both generation entry points from that extracted tree.
+
+\subsection{H-35: Remote cleanup trusted unbounded markers and could delete a foreign container (P0)}
+
+\textbf{Trigger.} Timeout cleanup recursively encountered a symlink, FIFO, oversized JSON marker, truncated container ID, or forged marker under a run directory. The old inline cleanup program used \code{read\_text}, trusted marker content, and invoked \code{docker rm -f} before proving runner and container ownership.
+
+\textbf{Former result and harm.} Cleanup could block forever on a FIFO, follow an attacker-controlled link, or remove a container owned by another task. The large \code{python3 -c} source string also bypassed normal import, Ruff, and focused unit-test paths.
+
+\textbf{Repair and regression.} Cleanup is an importable remote harness module. It opens bounded regular files with no-follow semantics, validates marker schemas and complete 64-hex container IDs, checks runner identity plus Docker owner labels, removes by verified ID using an option terminator, and proves absence afterward. Missing ownership evidence returns technical failure without deletion. Evaluation-container cleanup uses the same evidence rules, and bounded in-container capture is now a synchronized executable module rather than embedded Python source.
+
+\subsection{H-36: Image workdir preflight was networked and could leave an unowned container (P1)}
+
+\textbf{Trigger.} A ProLite dry run inspected an image whose workdir probe hung after Docker created the container. The old \code{docker run --rm} command used the default network and had no random name, cidfile, owner label, or post-timeout cleanup proof.
+
+\textbf{Former result and harm.} The probe could retain external network access and continue running after the Docker client timed out. Later runs had no reliable identity for removing the residual container, weakening isolation and consuming host resources.
+
+\textbf{Repair and regression.} The preflight command now uses \code{--network none}, a random container name, a cidfile, and owner/schema labels. Its finally path inspects those labels, removes only the matching full container ID, and verifies absence; a mismatched label is a technical failure and never triggers deletion. Regressions exercise timeout cleanup and a foreign-owner refusal.
+
 \section{Strict Code Review Record}
 
 Independent reviewers inspected separate risk surfaces instead of reviewing only the happy path. The review repeatedly introduced adversarial interleavings: completion before registration, cancellation during rollback, parent and target swaps, PID/container identity reuse, stale reports, duplicate claims, no-op test commands, blocked finalizers, and report publication after partial failure. Findings were returned with severity, concrete trigger, harm, and required regression.
 
 The final repair wave addressed every P0, P1, and P2 finding recorded during that review wave. The final gate relies on the post-merge full test run, whole-repository Ruff run, compile check, shell syntax check, diff check, file-size check, and rendered report inspection. The report intentionally distinguishes a terminal coroutine from a revoked task isolated from shutdown ownership.
+
+\section{Modularization, Reuse, and Debt Reduction}
+
+The review found that correctness work had accumulated in a small number of oversized entry modules. The refactor moved executable behavior into importable same-layer modules, retained compatibility exports at the original paths, and replaced duplicated process, safe-file, claim, and remote-runner implementations with shared helpers. No executable logic was hidden in generated strings or base64 payloads.
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{5.0cm}>{\raggedleft\arraybackslash}p{1.7cm}>{\raggedleft\arraybackslash}p{1.7cm}>{\raggedright\arraybackslash}p{5.2cm}}
+\toprule
+Entry module & Before & After & Extracted responsibility \\
+\midrule
+\endfirsthead
+\toprule
+Entry module & Before & After & Extracted responsibility \\
+\midrule
+\endhead
+\path{adapters/env.py} & 2971 & 142 & Local, worktree, Docker, process, file-I/O, lifecycle, and configuration modules. \\
+\path{application/scheduler.py} & 1356 & 229 & Run loop, cleanup, persistence, team view, review, and budget state. \\
+\path{bootstrap/workflow_runtime.py} & 1156 & 148 & Discovery, session construction, execution, cleanup, state, and manifest writing. \\
+\path{harness/evaluator.py} & 2353 & 775 & Task preparation, sessions, resources, patch extraction, and task execution. \\
+\path{harness/swe_checkpoint.py} & 1026 & 786 & Stable checkpoint I/O and failed-restore recovery. \\
+\path{application/tool_execution.py} & 957 & 606 & Timeout, cancellation, deferred-call, and observability runtime. \\
+\path{swebench/gen_prediction.py} & 2034 & 378 & Docker ownership, configuration, agent execution, safe output, and pending publication. \\
+\path{run_swebench_eval_per_instance.py} & 1993 & 754 & Owned processes and safe record/claim/queue handling. \\
+\path{swe_auto_eval_driver.py} & 1283 & 390 & Claim runner, safe state, reports, and shared process identity. \\
+\path{swe_v1_prolite_runner.py} & 3664 & 164 & Importable remote harness plus local config, process, controller, and report modules. \\
+\path{swebench_loop_monitor.py} & 905 & 781 & Shared message and repetition analysis. \\
+\path{run_swebench_smoke_batch.py} & 1083 & 798 & Shared process lifecycle and bounded smoke-batch I/O. \\
+\bottomrule
+\end{longtable}
+
+The largest newly added Python file is 744 lines and 30,358 bytes. The largest test aggregations were also split without removing assertions: SWE evaluation status retained 275 collected nodes, evaluator tests retained 129, evaluator-workflow tests retained 74, and the ProLite runner plus remote-cleanup suites collected 156 nodes. Shared support modules removed duplicated fixture and fake-environment code.
 
 \section{Validation Evidence}
 
@@ -330,26 +416,26 @@ The final repair wave addressed every P0, P1, and P2 finding recorded during tha
 Gate & Recorded result \\
 \midrule
 Focused harness regressions & Scheduler, environment, evaluation, workflow, persistence, tools, monitors, generation, and publication suites passed during repair. \\
-Split-module regressions & \code{156 passed}; new test modules remain below the 800-line CI ceiling. \\
-Repository-wide pytest & \code{2424 passed}; 18 Python 3.14 fork deprecation warnings; 126.02 seconds. \\
+Split-module regressions & Compatibility exports, monkeypatch seams, AST-preserved tests, and focused module suites passed; every new Python file remains below 800 lines. \\
+Repository-wide pytest & \code{2479 passed}; 18 Python 3.14 fork deprecation warnings; 117.10 seconds. \\
 Whole-repository Ruff & \code{All checks passed!} from the repository root. \\
 Python bytecode compilation & \Pass; package, scripts, SWE-bench, and workflows compiled. \\
 Shell syntax & \Pass; all five repository shell scripts passed \code{bash -n}. \\
 Patch whitespace & \Pass; \code{git diff --check} produced no findings. \\
-TeX compilation and page rendering & \Pass; XeLaTeX compiled 13 pages and every rendered page was inspected. \\
+TeX compilation and page rendering & \Pass; XeLaTeX compiled 18 pages and every rendered page was inspected. \\
 \bottomrule
 \end{longtable}
 
 \section{Compatibility and Operational Impact}
 
-Headless runs without a Docker image can still read and edit through dedicated filesystem tools, yet Bash and RunTests return an isolation error. A benchmark that needs command execution must provide an isolated Docker environment. Docker starts without network access; tasks that require network setup must prepare dependencies in the image.
+Headless runs without a Docker image can still read and edit through dedicated filesystem tools, yet Bash and RunTests return an isolation error. A benchmark that needs command execution must provide an isolated Docker environment. Evaluation Docker environments start without network access; tasks that require network setup must prepare dependencies in the image.
 
-Old prediction or report artifacts lacking full candidate identity are no longer accepted as proof for a new attempt. Re-evaluation creates the required sidecars. Native test runners without a parser-backed execution adapter return RED even when their process exits zero. These behaviors protect result truth and can surface previously hidden technical failures.
+Old prediction or report artifacts lacking full candidate identity are no longer accepted as proof for a new attempt. Re-evaluation creates the required sidecars. Native test runners without parser-backed output or an exact adapter-generated plan return RED even when their process exits zero. These behaviors protect result truth and can surface previously hidden technical failures.
 
-The rendered PDF is generated for delivery under a local output directory and excluded from the commit. The TeX source is the tracked, reviewable artifact. Public source, comments, commit metadata, and PR text remain English; the requested author name is preserved as a proper name.
+The rendered PDF is generated for delivery under a local output directory and excluded from the commit. The TeX source is the tracked, reviewable artifact. Public source and comments follow repository conventions; the requested author name is preserved as a proper name.
 
 \section{Git and Pull Request Plan}
 
-The branch is synchronized with the current upstream \code{main} before publication. The commit and PR title use an English Conventional Commit subject. The push target is the contributor fork, and the draft PR targets \code{YihongDong/OpenCollab:main}. The PR body summarizes root causes, user and evaluator impact, the compatibility changes above, and every executed validation gate.
+The branch is synchronized with the current upstream \code{main} before publication. The commit and PR title use a valid Conventional Commit subject. The push target is the contributor fork, and the draft PR targets \code{YihongDong/OpenCollab:main}. The PR body summarizes root causes, user and evaluator impact, the compatibility changes above, and every executed validation gate.
 
 \end{document}

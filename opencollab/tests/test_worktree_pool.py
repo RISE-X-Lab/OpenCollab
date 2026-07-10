@@ -8,10 +8,9 @@ import shutil
 import subprocess
 import threading
 
-import pytest
-
 import opencollab.adapters.env as env_module
 import opencollab.adapters.worktree_pool as pool_module
+import pytest
 from opencollab.adapters.env import ExecResult, LocalEnvironment, WorktreeEnvironment
 from opencollab.adapters.worktree_pool import WorktreePool
 

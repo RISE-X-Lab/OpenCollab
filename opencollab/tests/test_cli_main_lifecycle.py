@@ -4,12 +4,11 @@ import asyncio
 import os
 from types import SimpleNamespace
 
-import pytest
-import typer
-
 import opencollab.adapters.cli.main as cli_main
 import opencollab.adapters.tui as tui_mod
 import opencollab.bootstrap as bootstrap
+import pytest
+import typer
 
 
 @pytest.mark.parametrize("kind", ["fifo", "symlink", "oversized"])

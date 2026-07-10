@@ -22,7 +22,6 @@ import json
 from types import SimpleNamespace
 
 import pytest
-
 from opencollab.application.event_bus import EventBus
 from opencollab.application.session_run import (
     ENFORCEMENT_OFF,

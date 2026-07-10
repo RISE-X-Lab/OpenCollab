@@ -5,9 +5,8 @@ import os
 import subprocess
 import sys
 
-import pytest
-
 import opencollab.application.async_timeout as async_timeout_module
+import pytest
 from opencollab.application.async_timeout import (
     AsyncRuntimeUnhealthyError,
     abandon_on_timeout,

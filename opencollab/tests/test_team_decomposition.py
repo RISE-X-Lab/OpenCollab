@@ -6,7 +6,6 @@ import asyncio
 import inspect
 
 import pytest
-
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.tools import spawn as spawn_mod

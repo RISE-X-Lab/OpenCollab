@@ -274,6 +274,9 @@ def test_start_container_timeout_compensates_by_unique_name(monkeypatch):
     with pytest.raises(subprocess.TimeoutExpired):
         gp.start_container("image", "unique-name", token)
 
+    run_call = next(call for call in calls if call[0] == "run")
+    network_index = run_call.index("--network")
+    assert run_call[network_index + 1] == "none"
     assert any(call[:3] == ("rm", "-f", "unique-name") for call in calls)
 
 

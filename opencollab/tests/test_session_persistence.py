@@ -12,11 +12,10 @@ import concurrent.futures
 import json
 import os
 
-import pytest
-
 import opencollab.adapters.safe_files as safe_files_mod
 import opencollab.adapters.storage as storage_mod
 import opencollab.bootstrap.session_factory as session_factory_mod
+import pytest
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.worktree_pool import WorktreePool

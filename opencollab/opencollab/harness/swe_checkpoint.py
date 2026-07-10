@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import math
 import os
 import shlex
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -21,9 +19,36 @@ from opencollab.adapters.env import (
 from opencollab.adapters.safe_files import (
     _open_directory_no_symlinks,
     ensure_directory_no_symlinks,
-    read_regular_bytes,
-    unlink_regular_file_durable,
-    write_regular_bytes_atomic,
+)
+from opencollab.harness.swe_checkpoint_io import (
+    CheckpointResult as CheckpointResult,
+)
+from opencollab.harness.swe_checkpoint_io import (
+    _atomic_write as _atomic_write,
+)
+from opencollab.harness.swe_checkpoint_io import (
+    _checkpoint_meta_integrity_error as _checkpoint_meta_integrity_error,
+)
+from opencollab.harness.swe_checkpoint_io import (
+    _patch_sha as _patch_sha,
+)
+from opencollab.harness.swe_checkpoint_io import (
+    _read_bounded_text as _read_bounded_text,
+)
+from opencollab.harness.swe_checkpoint_io import (
+    _truncated_output_error as _truncated_output_error,
+)
+from opencollab.harness.swe_checkpoint_io import (
+    _unlink_durable as _unlink_durable,
+)
+from opencollab.harness.swe_checkpoint_io import (
+    worktree_diff_command as worktree_diff_command,
+)
+from opencollab.harness.swe_checkpoint_recovery import (
+    _prove_failed_restore_clean as _prove_failed_restore_clean,
+)
+from opencollab.harness.swe_checkpoint_recovery import (
+    _remove_recovery_patch as _remove_recovery_patch,
 )
 
 CHECKPOINT_PATCH = "checkpoint.worktree.patch"
@@ -35,132 +60,6 @@ MAX_CHECKPOINT_META_BYTES = 1024 * 1024
 MAX_CHECKPOINT_TEMP_CLEANUP_SECONDS = 10.0
 MAX_FAILED_RESTORE_PROOF_SECONDS = 10.0
 
-
-def _atomic_write(
-    path: Path,
-    text: str,
-    *,
-    expected_parent_identity: tuple[int, int] | None = None,
-) -> None:
-    payload = text.encode("utf-8")
-    max_bytes = (
-        MAX_CHECKPOINT_PATCH_BYTES
-        if path.name == CHECKPOINT_PATCH
-        else MAX_CHECKPOINT_META_BYTES
-    )
-    write_regular_bytes_atomic(
-        path,
-        payload,
-        max_bytes=max_bytes,
-        expected_parent_identity=expected_parent_identity,
-    )
-
-
-def _unlink_durable(
-    path: Path,
-    *,
-    expected_parent_identity: tuple[int, int] | None = None,
-) -> None:
-    unlink_regular_file_durable(
-        path,
-        expected_parent_identity=expected_parent_identity,
-    )
-
-
-def _read_bounded_text(
-    path: Path,
-    *,
-    max_bytes: int,
-    errors: str = "replace",
-    expected_parent_identity: tuple[int, int] | None = None,
-) -> str:
-    payload = read_regular_bytes(
-        path,
-        max_bytes=max_bytes,
-        expected_parent_identity=expected_parent_identity,
-    )
-    return payload.decode("utf-8", errors=errors)
-
-
-def _patch_sha(patch: str) -> str:
-    if not patch:
-        return ""
-    return hashlib.sha256(patch.encode("utf-8", errors="surrogatepass")).hexdigest()
-
-
-def _truncated_output_error(result: ExecResult, *, label: str) -> str:
-    parts: list[str] = []
-    if result.stdout_truncated:
-        parts.append(f"stdout dropped {result.stdout_dropped_bytes} bytes")
-    if result.stderr_truncated:
-        parts.append(f"stderr dropped {result.stderr_dropped_bytes} bytes")
-    return f"{label} output truncated: {', '.join(parts)}" if parts else ""
-
-
-def worktree_diff_command(exclude_paths: Sequence[str] = ()) -> str:
-    resets = ""
-    for path in exclude_paths:
-        if not str(path).strip():
-            continue
-        resets += (
-            'GIT_INDEX_FILE="$idx" git --literal-pathspecs reset -q HEAD -- '
-            f"{shlex.quote(str(path))} && "
-        )
-    return (
-        'tmpdir=$(mktemp -d) || exit 125; idx="$tmpdir/index"; '
-        'trap \'rm -rf -- "$tmpdir"\' EXIT; '
-        'GIT_INDEX_FILE="$idx" git read-tree HEAD && '
-        'GIT_INDEX_FILE="$idx" git add -A && '
-        f"{resets}"
-        'GIT_INDEX_FILE="$idx" git diff --cached --binary HEAD'
-    )
-
-
-@dataclass(frozen=True)
-class CheckpointResult:
-    status: str
-    patch_bytes: int = 0
-    patch_sha256: str = ""
-    reason: str = ""
-    error: str = ""
-    preserved_previous_patch: bool = False
-    submission_eligible: bool = False
-    worktree_integrity_proven: bool = True
-    background_errors: tuple[str, ...] = ()
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "status": self.status,
-            "patch_bytes": self.patch_bytes,
-            "patch_sha256": self.patch_sha256,
-            "reason": self.reason,
-            "error": self.error,
-            "preserved_previous_patch": self.preserved_previous_patch,
-            "submission_eligible": self.submission_eligible,
-            "worktree_integrity_proven": self.worktree_integrity_proven,
-            "background_errors": list(self.background_errors),
-        }
-
-
-def _checkpoint_meta_integrity_error(
-    meta: dict[str, Any] | None,
-    *,
-    patch_bytes: int,
-    patch_sha256: str,
-) -> str | None:
-    if not isinstance(meta, dict):
-        return "checkpoint metadata is missing or invalid"
-    if meta.get("schema") != "opencollab.swe_worktree_checkpoint.v1":
-        return "checkpoint metadata schema is invalid"
-    if meta.get("status") not in {"written", "failed"}:
-        return "checkpoint metadata status is invalid for a stored patch"
-    if str(meta.get("patch_sha256") or "") != patch_sha256:
-        return "checkpoint patch checksum does not match metadata"
-    if meta.get("patch_bytes") != patch_bytes:
-        return "checkpoint patch byte count does not match metadata"
-    if not isinstance(meta.get("submission_eligible"), bool):
-        return "checkpoint metadata submission eligibility is invalid"
-    return None
 
 
 class WorktreeCheckpoint:
@@ -885,142 +784,3 @@ class WorktreeCheckpoint:
             preserved_previous_patch=preserved,
             submission_eligible=preserved_eligible,
         )
-
-
-async def _remove_recovery_patch(
-    env: Environment,
-    path: str,
-    *,
-    cancellation: asyncio.CancelledError | None,
-    pending_tasks: set[asyncio.Task[Any]],
-) -> tuple[BaseException | None, asyncio.CancelledError | None]:
-    """Remove one restore-owned file within a fixed wall-clock bound."""
-    try:
-        cleanup_task = asyncio.create_task(env.remove_file(path))
-    except BaseException as exc:
-        return exc, cancellation
-    pending_tasks.add(cleanup_task)
-
-    cleanup_failure: BaseException | None = None
-    deadline = asyncio.get_running_loop().time() + MAX_CHECKPOINT_TEMP_CLEANUP_SECONDS
-    while not cleanup_task.done():
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            cleanup_failure = TimeoutError(
-                "checkpoint recovery temporary-file cleanup exceeded its deadline"
-            )
-            cleanup_task.cancel()
-            cleanup_task.add_done_callback(
-                lambda finished: (
-                    pending_tasks.discard(finished),
-                    WorktreeCheckpoint._consume_task_result(finished),
-                )
-            )
-            break
-        try:
-            done, _pending = await asyncio.wait(
-                {cleanup_task},
-                timeout=remaining,
-            )
-        except asyncio.CancelledError as exc:
-            if cancellation is None:
-                cancellation = exc
-            continue
-        if not done:
-            cleanup_failure = TimeoutError(
-                "checkpoint recovery temporary-file cleanup exceeded its deadline"
-            )
-            cleanup_task.cancel()
-            cleanup_task.add_done_callback(
-                lambda finished: (
-                    pending_tasks.discard(finished),
-                    WorktreeCheckpoint._consume_task_result(finished),
-                )
-            )
-            break
-
-    if cleanup_failure is None and cleanup_task.done():
-        pending_tasks.discard(cleanup_task)
-        try:
-            cleanup_task.result()
-        except BaseException as exc:
-            cleanup_failure = exc
-    return cleanup_failure, cancellation
-
-
-async def _prove_failed_restore_clean(
-    env: Environment,
-    *,
-    exclude_paths: Sequence[str],
-    cancellation: asyncio.CancelledError | None,
-    pending_tasks: set[asyncio.Task[Any]],
-) -> tuple[bool, str, asyncio.CancelledError | None]:
-    """Prove a failed/cancelled apply left no worktree mutation."""
-    proof_task = asyncio.create_task(
-        env.exec_cmd(worktree_diff_command(exclude_paths), timeout=120)
-    )
-    pending_tasks.add(proof_task)
-    result: ExecResult | None = None
-    proof_failure: BaseException | None = None
-    deadline = asyncio.get_running_loop().time() + MAX_FAILED_RESTORE_PROOF_SECONDS
-    while not proof_task.done():
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            env._aborted = True
-            proof_task.cancel()
-            proof_task.add_done_callback(
-                lambda finished: (
-                    pending_tasks.discard(finished),
-                    WorktreeCheckpoint._consume_task_result(finished),
-                )
-            )
-            return (
-                False,
-                "failed restore worktree proof exceeded its deadline",
-                cancellation,
-            )
-        try:
-            done, _pending = await asyncio.wait({proof_task}, timeout=remaining)
-        except asyncio.CancelledError as exc:
-            if cancellation is None:
-                cancellation = exc
-            continue
-        if not done:
-            continue
-
-    pending_tasks.discard(proof_task)
-    try:
-        result = proof_task.result()
-    except BaseException as exc:
-        proof_failure = exc
-
-    if proof_failure is not None:
-        return (
-            False,
-            "failed restore worktree proof raised "
-            f"{type(proof_failure).__name__}: {proof_failure}",
-            cancellation,
-        )
-    if result is None:
-        return False, "failed restore worktree proof produced no result", cancellation
-    truncation_error = _truncated_output_error(
-        result,
-        label="failed restore worktree proof",
-    )
-    if truncation_error:
-        return False, truncation_error, cancellation
-    if result.returncode != 0:
-        detail = result.stderr[:1000]
-        return (
-            False,
-            "failed restore worktree proof exited "
-            f"{result.returncode}" + (f": {detail}" if detail else ""),
-            cancellation,
-        )
-    if result.stdout.strip():
-        return (
-            False,
-            "failed checkpoint restore left the worktree dirty",
-            cancellation,
-        )
-    return True, "", cancellation

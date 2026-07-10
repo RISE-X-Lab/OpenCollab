@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 
 import pytest
-
 from opencollab.bootstrap import team_config as team_config_mod
 from opencollab.bootstrap.team_config import (
     BASE_TOOL_NAMES,

@@ -5,7 +5,6 @@ import copy
 from types import SimpleNamespace
 
 import pytest
-
 from opencollab.application.event_bus import EventBus
 from opencollab.application.session_run import (
     READS_NUDGE_HARD,

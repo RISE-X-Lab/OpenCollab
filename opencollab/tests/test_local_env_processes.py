@@ -13,9 +13,8 @@ import sys
 import threading
 import time
 
-import pytest
-
 import opencollab.adapters.env as env_mod
+import pytest
 from opencollab.adapters.env import LocalEnvironment
 
 
