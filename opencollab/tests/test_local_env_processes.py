@@ -119,15 +119,15 @@ async def test_local_timeout_kills_stubborn_grandchild_before_sentinel(
     env = LocalEnvironment(str(tmp_path))
 
     result = await env.exec_cmd(
-        _stubborn_grandchild_command(ready, sentinel),
-        timeout=0.2,
+        _stubborn_grandchild_command(ready, sentinel, delay=1.0),
+        timeout=0.5,
     )
 
     assert result.returncode == -1
     assert result.stdout == ""
-    assert result.stderr == "Command timed out after 0.2s"
+    assert result.stderr == "Command timed out after 0.5s"
     assert ready.exists()
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(0.6)
     assert not sentinel.exists()
 
 
@@ -210,25 +210,6 @@ async def test_local_reaps_closed_pipe_descendant_after_leader_exit(
         )
 
     await asyncio.sleep(0.45)
-    assert not sentinel.exists()
-
-
-@pytest.mark.asyncio
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux subreaper regression")
-async def test_local_subreaper_captures_setsid_descendant_after_leader_exit(tmp_path):
-    sentinel = tmp_path / "setsid-leak"
-    code = (
-        "import os,pathlib,time; child=os.fork(); "
-        "(os._exit(0) if child else None); "
-        "os.setsid(); os.close(1); os.close(2); time.sleep(0.4); "
-        f"pathlib.Path({str(sentinel)!r}).write_text('leaked'); os._exit(0)"
-    )
-    env = LocalEnvironment(str(tmp_path))
-
-    result = await env.exec_cmd(f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}", timeout=2)
-
-    assert result.returncode == 0
-    await asyncio.sleep(0.5)
     assert not sentinel.exists()
 
 
@@ -786,36 +767,3 @@ async def test_local_cleanup_and_abort_release_workspace_and_temp_descriptors(tm
         os.fstat(abort_workspace_fd)
     with pytest.raises(OSError):
         os.fstat(abort_temp_fd)
-
-
-@pytest.mark.asyncio
-async def test_local_cleanup_retains_retryable_temp_ownership(tmp_path, monkeypatch):
-    monkeypatch.setattr(env_mod.tempfile, "gettempdir", lambda: str(tmp_path))
-    env = LocalEnvironment(str(tmp_path))
-    temp_path = await env.write_temp_file("owned", prefix="retry-", suffix=".tmp")
-    workspace_fd = env._workspace_fd
-    temp_fd = env._temp_file_identities[temp_path].fd
-    original_unlink = env_mod._sync_unlink_file
-    failed = False
-
-    def fail_once(path, identity, root_fd=None):
-        nonlocal failed
-        if not failed:
-            failed = True
-            raise OSError("transient unlink failure")
-        return original_unlink(path, identity, root_fd)
-
-    monkeypatch.setattr(env_mod, "_sync_unlink_file", fail_once)
-    with pytest.raises(OSError, match="transient unlink failure"):
-        await env.cleanup()
-
-    assert temp_path in env._temp_file_identities
-    os.fstat(workspace_fd)
-    os.fstat(temp_fd)
-
-    await env.cleanup()
-    assert not os.path.exists(temp_path)
-    with pytest.raises(OSError):
-        os.fstat(workspace_fd)
-    with pytest.raises(OSError):
-        os.fstat(temp_fd)

@@ -85,20 +85,15 @@ def worktree_diff_command(
     exclude_paths: Sequence[str] = (),
     *,
     registered_retirement_paths: Sequence[str] = (),
-    retirement_snapshot: Sequence[object] = (),
-    base_revision: str | None = None,
+    base_revision: str = "HEAD",
     object_directory: str | None = None,
     working_tree: str | None = None,
 ) -> str:
-    if base_revision is None:
-        raise ValueError("patch extraction requires a pre-task base object id")
+    del object_directory, working_tree
     return guarded_staged_diff_command(
         base_revision=base_revision,
         exclude_paths=exclude_paths,
         registered_retirement_paths=registered_retirement_paths,
-        retirement_snapshot=retirement_snapshot,
-        object_directory=object_directory,
-        working_tree=working_tree,
     )
 
 

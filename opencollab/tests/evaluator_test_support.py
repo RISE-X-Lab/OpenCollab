@@ -82,8 +82,6 @@ class FakeLLMClient:
 
 class FakeEnv(Environment):
     workspace = "/tmp/opencollab-test-worktree"
-    patch_base_revision = "0" * 40
-    patch_object_directory = "/tmp/opencollab-test-objects"
 
     def __init__(self, diff="diff --git a/x b/x\n+new\n"):
         self.diff = diff

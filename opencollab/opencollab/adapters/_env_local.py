@@ -24,7 +24,6 @@ from opencollab.adapters._env_file_io import (
     _TemporaryFileOwnership,
     _TemporaryFileReplacedError,
 )
-from opencollab.adapters._env_pinned_git import capture_patch_source
 from opencollab.adapters._env_process import (
     _OwnedProcessNotQuiesced,
     _OwnedProcessTimeout,
@@ -32,7 +31,6 @@ from opencollab.adapters._env_process import (
 )
 from opencollab.adapters.retirement_registry import (
     registered_retirement_paths,
-    registered_retirement_snapshot,
 )
 from opencollab.application.exception_notes import add_exception_note
 
@@ -69,12 +67,6 @@ class LocalEnvironment(Environment):
         self._workspace_lock = threading.Lock()
         self._temp_file_identities: dict[str, _TemporaryFileOwnership] = {}
         self._temp_identity_lock = threading.Lock()
-        patch_source = capture_patch_source(self.workspace)
-        if patch_source is None:
-            self.patch_base_revision = None
-            self.patch_object_directory = None
-        else:
-            self.patch_base_revision, self.patch_object_directory = patch_source
 
     def _verify_workspace_identity_locked(self) -> None:
         if self._workspace_fd < 0:
@@ -297,23 +289,6 @@ class LocalEnvironment(Environment):
         self._finish_workspace_operation(workspace_fd)
         assert isinstance(paths, tuple)
         return paths
-
-    async def registered_retirement_snapshot(self):
-        """Return checkpoint metadata for every trusted tombstone."""
-        self._ensure_active()
-        workspace_fd = self._acquire_workspace_handle()
-        try:
-            snapshot = await _run_owned_blocking_io(
-                registered_retirement_snapshot,
-                self.workspace,
-                workspace_fd,
-            )
-        except BaseException as original:
-            self._finish_workspace_operation(workspace_fd, original)
-            raise
-        self._finish_workspace_operation(workspace_fd)
-        assert isinstance(snapshot, tuple)
-        return snapshot
 
     async def write_temp_file(
         self,

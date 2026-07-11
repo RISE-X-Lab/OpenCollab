@@ -76,27 +76,15 @@ async def cleanup_injected_paths_and_extract_patch(
     extraction_succeeded = False
     if execution_quiesced and env:
         try:
-            retirement_collector = getattr(env, "registered_retirement_snapshot", None)
-            retirement_snapshot = (
+            retirement_collector = getattr(env, "registered_retirement_paths", None)
+            registered_retirements = (
                 await await_teardown(retirement_collector()) if callable(retirement_collector) else ()
             )
-            registered_retirements = tuple(
-                item.relative_path for item in retirement_snapshot
-            )
-            base_revision = getattr(env, "patch_base_revision", None)
-            object_directory = getattr(env, "patch_object_directory", None)
-            working_tree = getattr(env, "workspace", None)
-            if not base_revision or not object_directory or not working_tree:
-                raise RuntimeError("patch source was not pinned before task execution")
             patch_result = await await_teardown(
                 env.exec_cmd(
                     facade.worktree_diff_command(
                         (*injected_paths, *harness_artifact_paths),
                         registered_retirement_paths=registered_retirements,
-                        retirement_snapshot=retirement_snapshot,
-                        base_revision=base_revision,
-                        object_directory=object_directory,
-                        working_tree=working_tree,
                     )
                 )
             )
@@ -117,12 +105,12 @@ async def cleanup_injected_paths_and_extract_patch(
                 )
                 error = facade._append_harness_error(error, "patch extraction failed", failure)
             else:
-                refreshed_snapshot = (
+                refreshed_retirements = (
                     await await_teardown(retirement_collector())
                     if callable(retirement_collector)
                     else ()
                 )
-                if tuple(refreshed_snapshot) != tuple(retirement_snapshot):
+                if tuple(refreshed_retirements) != tuple(registered_retirements):
                     raise RuntimeError("retirement artifacts changed during patch extraction")
                 extraction_succeeded = True
                 if (

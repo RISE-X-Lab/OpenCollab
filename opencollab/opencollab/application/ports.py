@@ -37,10 +37,6 @@ class EnvironmentPort(Protocol):
         """Return exact unchanged framework tombstones under the workspace."""
         ...
 
-    async def registered_retirement_snapshot(self) -> tuple[object, ...]:
-        """Return authenticated metadata for patch extraction checkpoints."""
-        ...
-
     async def abort(self) -> None:
         """Revoke future side effects and stop owned environment resources."""
         ...

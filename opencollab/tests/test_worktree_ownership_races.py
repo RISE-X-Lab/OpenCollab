@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-import opencollab.adapters._env_pinned_git as pinned_git_module
+import opencollab.adapters._env_git_repository as pinned_git_module
 import opencollab.adapters.env as env_module
 import pytest
 from opencollab.adapters.env import ExecResult, WorktreeEnvironment

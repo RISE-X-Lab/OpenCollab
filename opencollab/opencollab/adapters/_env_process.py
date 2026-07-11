@@ -393,21 +393,6 @@ class _ThreadProcessOwner:
                 popen_kwargs["shell"] = False
                 popen_kwargs["cwd"] = None
                 popen_kwargs["pass_fds"] = (self._cwd_fd,)
-            if sys.platform.startswith("linux"):
-                if popen_kwargs["shell"]:
-                    if not isinstance(command, str):
-                        raise ValueError("shell process command must be text")
-                    command = ["/bin/sh", "-c", command]
-                elif not isinstance(command, list):
-                    raise ValueError("supervised process command must be a list")
-                command = [
-                    sys.executable,
-                    "-m",
-                    "opencollab.adapters._linux_process_supervisor",
-                    "--",
-                    *command,
-                ]
-                popen_kwargs["shell"] = False
             proc = _PROCESS_POPEN(command, **popen_kwargs)
             if proc.stdout is not None:
                 readers.append(

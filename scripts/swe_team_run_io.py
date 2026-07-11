@@ -22,8 +22,7 @@ from pathlib import Path, PureWindowsPath
 from opencollab.adapters import _atomic_rename
 from opencollab.adapters.git_patch import guarded_staged_diff_command
 from opencollab.adapters.retirement_registry import (
-    RETIREMENT_SIGNING_KEY_BYTES,
-    registered_retirement_snapshot,
+    registered_retirement_paths,
 )
 from opencollab.adapters.safe_files import (
     create_regular_bytes_atomic,
@@ -34,20 +33,8 @@ from opencollab.adapters.safe_files import (
 
 try:
     from scripts import swe_team_batch_io as batch_io
-    from scripts.swe_team_retirement_io import (
-        create_retirement_key,
-        create_retirement_keys,
-        create_retirement_log,
-        remove_retirement_log,
-    )
 except ImportError:  # Direct execution places this module's directory on sys.path.
     import swe_team_batch_io as batch_io
-    from swe_team_retirement_io import (  # type: ignore[no-redef]
-        create_retirement_key,
-        create_retirement_keys,
-        create_retirement_log,
-        remove_retirement_log,
-    )
 
 MAX_INSTANCE_BYTES = 16 * 1024 * 1024
 MAX_INSTANCE_ID_BYTES = 240
@@ -308,13 +295,13 @@ def create_pending_prediction(
     ).hexdigest()
     record_id = uuid.uuid4().hex
     workflow_status = (
-        "empty_patch"
+        "error"
+        if returncode not in {0, 124}
+        else "empty_patch"
         if not patch
         else "done"
         if returncode == 0
         else "done_with_timeout_patch"
-        if returncode == 124
-        else "error"
     )
     metric = {
         "instance_id": instance_id,
@@ -472,7 +459,7 @@ def _validate_pending(
     valid_status = (
         (status == "done" and returncode == 0 and bool(patch))
         or (status == "done_with_timeout_patch" and returncode == 124 and bool(patch))
-        or (status == "empty_patch" and not patch)
+        or (status == "empty_patch" and returncode in {0, 124} and not patch)
         or (status == "error" and returncode not in {0, 124})
     )
     if not valid_status:
@@ -603,10 +590,6 @@ def bounded_diff_command(
     *,
     workspace: Path | None = None,
     retirement_log: Path | None = None,
-    retirement_key: Path | None = None,
-    portable_snapshot: bool = False,
-    base_revision: str | None = None,
-    object_directory: Path | None = None,
     helper_path: Path = Path("/tmp/opencollab_gen_prediction_bounded_capture.py"),
 ) -> str:
     sys.path.insert(0, str(swebench_dir))
@@ -614,26 +597,16 @@ def bounded_diff_command(
     command = "git diff --cached --binary"
     if any(
         value is not None
-        for value in (workspace, retirement_log, retirement_key, base_revision, object_directory)
+        for value in (workspace, retirement_log)
     ):
         if any(
             value is None
-            for value in (workspace, retirement_log, retirement_key, base_revision, object_directory)
+            for value in (workspace, retirement_log)
         ):
-            raise ValueError("workspace, retirement authentication, base, and objects are required")
+            raise ValueError("workspace and retirement log are required")
         assert workspace is not None
         assert retirement_log is not None
-        assert retirement_key is not None
-        assert base_revision is not None
-        assert object_directory is not None
-        command = team_staged_diff_command(
-            workspace,
-            retirement_log,
-            retirement_key,
-            portable_snapshot=portable_snapshot,
-            base_revision=base_revision,
-            object_directory=object_directory,
-        )
+        command = team_staged_diff_command(workspace, retirement_log)
     return module.bounded_container_output_command(
         command,
         max_bytes=module.MAX_EXTRACTED_PATCH_BYTES,
@@ -645,35 +618,34 @@ def bounded_diff_command(
 def team_staged_diff_command(
     workspace: Path,
     retirement_log: Path,
-    retirement_key: Path,
-    *,
-    portable_snapshot: bool = False,
-    base_revision: str | None = None,
-    object_directory: Path | None = None,
 ) -> str:
-    """Build the team extractor after validating its host-owned sidecar."""
-    if base_revision is None or object_directory is None:
-        raise ValueError("team patch source was not pinned before model execution")
-    key = read_regular_bytes(
-        retirement_key,
-        max_bytes=RETIREMENT_SIGNING_KEY_BYTES,
-    )
-    if len(key) != RETIREMENT_SIGNING_KEY_BYTES:
-        raise ValueError("internal retirement verification key has invalid length")
-    retirement_snapshot = registered_retirement_snapshot(
+    """Build the team extractor after validating its bounded sidecar."""
+    retirements = registered_retirement_paths(
         workspace,
         persistent_log=retirement_log,
-        persistent_key=key,
-        portable_snapshot=portable_snapshot,
     )
-    retirements = tuple(item.relative_path for item in retirement_snapshot)
     return guarded_staged_diff_command(
-        base_revision=base_revision,
         registered_retirement_paths=retirements,
-        retirement_snapshot=retirement_snapshot,
-        object_directory=str(object_directory),
-        working_tree=str(workspace),
     )
+
+
+def create_retirement_log(path: Path) -> tuple[int, int]:
+    create_regular_bytes_atomic(path, b"", max_bytes=0, mode=0o600)
+    current = path.lstat()
+    if not stat.S_ISREG(current.st_mode) or current.st_size:
+        raise OSError("internal retirement log is invalid")
+    return current.st_dev, current.st_ino
+
+
+def remove_retirement_log(path: Path, expected_identity: str) -> None:
+    match = re.fullmatch(r"([0-9]+):([0-9]+)", expected_identity)
+    if match is None:
+        raise ValueError("internal retirement log identity is invalid")
+    if not unlink_regular_file_durable(
+        path,
+        expected_target_identity=(int(match.group(1)), int(match.group(2))),
+    ):
+        raise OSError("internal retirement log disappeared before cleanup")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -711,21 +683,12 @@ def _parser() -> argparse.ArgumentParser:
     diff.add_argument("swebench_dir", type=Path)
     diff.add_argument("--workspace", type=Path)
     diff.add_argument("--retirement-log", type=Path)
-    diff.add_argument("--retirement-key", type=Path)
-    diff.add_argument("--portable-snapshot", action="store_true")
-    diff.add_argument("--base-revision")
-    diff.add_argument("--object-directory", type=Path)
     diff.add_argument("--helper-path", type=Path, default=Path("/tmp/opencollab_gen_prediction_bounded_capture.py"))
     create_retirement = commands.add_parser("create-retirement-log")
     create_retirement.add_argument("path", type=Path)
     remove_retirement = commands.add_parser("remove-retirement-log")
     remove_retirement.add_argument("path", type=Path)
     remove_retirement.add_argument("expected_identity")
-    create_key = commands.add_parser("create-retirement-key")
-    create_key.add_argument("path", type=Path)
-    create_keys = commands.add_parser("create-retirement-keys")
-    create_keys.add_argument("signing_path", type=Path)
-    create_keys.add_argument("verification_path", type=Path)
     return parser
 
 
@@ -768,10 +731,6 @@ def main(argv: list[str] | None = None) -> int:
                     args.swebench_dir,
                     workspace=args.workspace,
                     retirement_log=args.retirement_log,
-                    retirement_key=args.retirement_key,
-                    portable_snapshot=args.portable_snapshot,
-                    base_revision=args.base_revision,
-                    object_directory=args.object_directory,
                     helper_path=args.helper_path,
                 )
             )
@@ -780,11 +739,6 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{dev}:{ino}")
         elif args.command == "remove-retirement-log":
             remove_retirement_log(args.path, args.expected_identity)
-        elif args.command == "create-retirement-key":
-            dev, ino = create_retirement_key(args.path)
-            print(f"{dev}:{ino}")
-        elif args.command == "create-retirement-keys":
-            print(create_retirement_keys(args.signing_path, args.verification_path))
         else:
             raise AssertionError(args.command)
     except (OSError, ValueError, UnicodeError) as exc:
