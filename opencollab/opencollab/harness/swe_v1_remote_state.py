@@ -29,8 +29,16 @@ from typing import Any
 
 from opencollab.harness.swe_eval_records import (
     SUBMISSION_INTEGRITY_INELIGIBLE,
+    embedded_workflow_metric,
     metric_submission_integrity,
     open_regular_binary,
+    patch_sha,
+    patch_sha_matches,
+    prediction_patch,
+    row_explicit_patch_sha,
+    row_patch_sha,
+    row_record_id,
+    row_task_id,
 )
 
 cfg: dict[str, Any] = {}
