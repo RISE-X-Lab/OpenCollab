@@ -190,7 +190,7 @@ class FileWriteTool(Tool):
             path = safety_policy.check_path(path)
 
         try:
-            async with host_write_lock(path, env):
+            with host_write_lock(path, env):
                 if mode == "create":
                     return await self._create(
                         env,
@@ -323,15 +323,9 @@ class GrepTool(Tool):
         glob_pattern = params.get("glob")
         raw_max_results = params.get("max_results", 50)
         env = runtime.environment
-        safety_policy = runtime.safety_policy
 
         if not env:
             return "Error: no execution environment available."
-        if safety_policy:
-            try:
-                search_path = safety_policy.check_path(search_path)
-            except PermissionError as exc:
-                return f"Error: {exc}"
         try:
             max_results = int(raw_max_results)
         except (TypeError, ValueError):

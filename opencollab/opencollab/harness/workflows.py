@@ -51,21 +51,9 @@ async def _current_diff(ctx: Any) -> str:
         return ""
     try:
         result = await env.exec_cmd("git diff")
-        if result.stdout_truncated or result.stderr_truncated:
-            return (
-                "[diff unavailable: command output truncated; "
-                f"stdout dropped {result.stdout_dropped_bytes} bytes, "
-                f"stderr dropped {result.stderr_dropped_bytes} bytes]"
-            )
         diff = result.stdout
         if not diff.strip():
             result = await env.exec_cmd("git diff HEAD")
-            if result.stdout_truncated or result.stderr_truncated:
-                return (
-                    "[diff unavailable: command output truncated; "
-                    f"stdout dropped {result.stdout_dropped_bytes} bytes, "
-                    f"stderr dropped {result.stderr_dropped_bytes} bytes]"
-                )
             diff = result.stdout
         return diff
     except Exception:  # noqa: BLE001 — a missing diff must not abort the workflow

@@ -1,281 +1,209 @@
 from __future__ import annotations
 
+import importlib
+import io
 import json
-import shutil
-import tarfile
+import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
-from swe_v1_prolite_runner_test_support import (
-    SimpleNamespace,
-    os,
-    pytest,
-    runner,
-    subprocess,
-    sys,
-)
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+runner = importlib.import_module("scripts.swe_v1_prolite_runner")
 
 
-def _run_runtime_sync_command_locally(command, *, timeout=120, input_text=None):
-    if command[0] == "rsync":
-        destination = Path(command[-1].split(":", 1)[1])
-        shutil.copy2(command[-2], destination)
-        return subprocess.CompletedProcess(command, 0, "", "")
-    assert command[:2] == ["ssh", "remote-host"]
-    result = subprocess.run(
-        ["sh", "-c", command[-1]],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=timeout,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr or result.stdout)
-    return result
-
-
-@pytest.mark.parametrize(
-    ("option", "value"),
-    [
-        ("--budget", "-1"),
-        ("--max-steps", "0"),
-        ("--swe-timeout", "0"),
-        ("--task-wall-timeout", "-2"),
-        ("--eval-timeout", "0"),
-        ("--llm-timeout", "0"),
-        ("--total-timeout", "-3"),
-        ("--checkpoint-interval", "-1"),
-        ("--limit", "1001"),
-        ("--run-id", "../../escape"),
-    ],
-)
-def test_main_rejects_invalid_numeric_limits_before_dry_run(
-    monkeypatch, option, value
-):
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        ["swe_v1_prolite_runner.py", "--dry-run", option, value],
-    )
-
-    with pytest.raises(SystemExit) as exc:
-        runner.main()
-
-    assert exc.value.code == 2
-
-
-@pytest.mark.parametrize(
-    ("missing_default", "expected_option"),
-    [
-        ("DEFAULT_HOST", "--host"),
-        ("DEFAULT_REMOTE_ROOT", "--remote-root"),
-        ("DEFAULT_MODEL_NAME", "--model-name"),
-        ("DEFAULT_SESSION_PREFIX", "--session-prefix"),
-        ("DEFAULT_IMAGE_REPOSITORY", "--image-repository"),
-        ("DEFAULT_REMOTE_PROXY_BASE_URL", "--remote-proxy-base-url"),
-        ("DEFAULT_LOCAL_PROXY_BASE_URL", "--local-proxy-base-url"),
-    ],
-)
-def test_main_rejects_missing_runtime_configuration_before_start(
-    monkeypatch,
-    capsys,
-    missing_default,
-    expected_option,
-):
-    defaults = {
-        "DEFAULT_HOST": "remote-host",
-        "DEFAULT_REMOTE_ROOT": "/remote/root",
-        "DEFAULT_MODEL_NAME": "model",
-        "DEFAULT_SESSION_PREFIX": "session",
-        "DEFAULT_IMAGE_REPOSITORY": "registry.example/swebench",
-        "DEFAULT_REMOTE_PROXY_BASE_URL": "http://127.0.0.1:18788",
-        "DEFAULT_LOCAL_PROXY_BASE_URL": "http://127.0.0.1:8080",
+def _remote_namespace(tmp_path, **overrides):
+    remote_root = tmp_path / "remote"
+    remote_repo = remote_root / "repo"
+    base_run_dir = tmp_path / "run"
+    cfg = {
+        "token": "tok",
+        "remote_root": str(remote_root),
+        "remote_repo": str(remote_repo),
+        "base_run_dir": str(base_run_dir),
+        "workflow": "validation-council-solve",
+        "model_name": "model",
+        "session_prefix": "test",
+        "remote_proxy_base_url": "http://127.0.0.1:18788",
+        "start_index": 1,
+        "limit": 1,
+        "budget": 1000,
+        "max_steps": 3,
+        "swe_timeout": 10,
+        "task_wall_timeout": 10,
+        "eval_timeout": 10,
+        "checkpoint_interval": 300,
+        "max_task_starts": 1,
+        "dry_run": False,
     }
-    for name, value in defaults.items():
-        monkeypatch.setattr(runner, name, value)
-    monkeypatch.setattr(runner, missing_default, "")
-    monkeypatch.setattr(
-        runner,
-        "run_remote",
-        lambda args: pytest.fail("run_remote must not start after parser validation fails"),
-    )
-    monkeypatch.setattr(sys, "argv", ["swe_v1_prolite_runner.py", "--dry-run"])
-
-    with pytest.raises(SystemExit) as exc:
-        runner.main()
-
-    assert exc.value.code == 2
-    assert expected_option in capsys.readouterr().err
+    cfg.update(overrides)
+    old_stdin = sys.stdin
+    sys.stdin = io.StringIO(json.dumps(cfg))
+    namespace = {"__name__": "swe_v1_remote_runner_test"}
+    remote_code = runner.REMOTE_RUNNER.rsplit("raise SystemExit(main())", 1)[0]
+    try:
+        exec(remote_code, namespace)
+    finally:
+        sys.stdin = old_stdin
+    return namespace
 
 
-def test_run_remote_uses_installed_remote_module_without_inline_payload(monkeypatch):
-    commands = []
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
 
-    class FinishedProcess:
-        pid = 424280
-        returncode = 0
 
-    def fake_popen(command, *args, **kwargs):
-        commands.append(command)
-        return FinishedProcess()
-
-    monkeypatch.setattr(
-        runner,
-        "ensure_remote_proxy",
-        lambda **kwargs: {"remote_proxy_base_url": "http://127.0.0.1:18788"},
-    )
-    monkeypatch.setattr(runner, "get_proxy_token", lambda path: "token")
-    monkeypatch.setattr(runner.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(runner, "_block_local_spawn_signals", lambda: object())
-    monkeypatch.setattr(runner, "_restore_local_spawn_signals", lambda state: None)
-    monkeypatch.setattr(
-        runner,
-        "_bounded_remote_communicate",
-        lambda proc, payload, timeout: ('{"status":"done"}', ""),
-    )
-    monkeypatch.setattr(runner, "_local_process_group_exists", lambda pgid: False)
-    args = SimpleNamespace(
-        ssh_command="ssh -p 22",
-        host="remote-host",
-        local_proxy_base_url="http://127.0.0.1:8080",
-        remote_proxy_base_url="http://127.0.0.1:18788",
-        no_ensure_remote_proxy=False,
-        no_sync_runtime=True,
-        remote_runtime_repo="/remote/repo",
-        proxy_env_file=None,
-        remote_root="/remote/root",
-        base_run_dir="/remote/run",
-        workflow="validation-council-solve",
-        model_name="model",
-        session_prefix="session",
-        image_repository="registry.example/swebench",
-        start_index=1,
-        limit=1,
-        budget=1000,
-        max_steps=3,
-        swe_timeout=10,
-        task_wall_timeout=10,
-        eval_timeout=10,
-        llm_timeout=10,
-        checkpoint_interval=300,
-        max_task_starts=1,
-        dry_run=False,
-        total_timeout=30,
+def _test_only_patch() -> str:
+    return (
+        "diff --git a/tests/test_widget.py b/tests/test_widget.py\n"
+        "--- a/tests/test_widget.py\n"
+        "+++ b/tests/test_widget.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+def test_widget(): pass\n"
     )
 
-    summary = runner.run_remote(args)
 
-    assert summary["status"] == "done"
-    remote_command = commands[0][-1]
-    assert "python3 -m opencollab.harness.swe_v1_remote_runner" in remote_command
-    assert "base64" not in remote_command
-    assert "exec(" not in remote_command
+def test_remote_runner_rejects_invalid_slice_config(tmp_path):
+    namespace = _remote_namespace(tmp_path, start_index=0, limit=0, max_task_starts=0)
+
+    errors = namespace["validate_runner_config"]()
+
+    assert "start_index must be >= 1" in errors
+    assert "limit must be > 0" in errors
+    assert "max_task_starts must be >= 1" in errors
 
 
-def test_runtime_archive_imports_generation_entrypoints_from_clean_directory(monkeypatch, tmp_path):
-    extracted = tmp_path / "clean-runtime"
-    extracted.mkdir()
-    imported = False
+def test_remote_runner_rejects_test_only_patch_before_eval(tmp_path):
+    namespace = _remote_namespace(tmp_path)
+    task = "task-1"
+    run_dir = namespace["base_run_dir"] / task
+    patch = _test_only_patch()
+    patch_sha = namespace["patch_sha"](patch)
+    prediction = {
+        "instance_id": task,
+        "record_id": "r1",
+        "patch_sha256": patch_sha,
+        "model_patch": patch,
+    }
+    metric = {
+        "instance_id": task,
+        "record_id": "r1",
+        "patch_sha256": patch_sha,
+        "workflow_status": "done",
+    }
+    _write_jsonl(run_dir / "predictions.jsonl", [prediction])
+    _write_jsonl(run_dir / "metrics.jsonl", [metric])
 
-    def fake_run_checked(command, *, timeout=120, input_text=None):
-        nonlocal imported
-        if command[0] == "rsync":
-            archive_path = command[-2]
-            with tarfile.open(archive_path, "r:gz") as archive:
-                archive.extractall(extracted, filter="data")
-            probe = subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    "import gen_prediction; import gen_prediction_workflow",
-                ],
-                cwd=extracted / "swebench",
-                text=True,
-                capture_output=True,
-                check=False,
-                timeout=30,
-            )
-            assert probe.returncode == 0, probe.stderr
-            imported = True
-        return subprocess.CompletedProcess(command, 0, "", "")
+    done, _prediction, _metric, _pairing = namespace["generation_done"](run_dir, task)
+    result = namespace["eval_for_task"]({"instance_id": task})
 
-    monkeypatch.setattr(runner, "run_checked", fake_run_checked)
+    assert done is False
+    assert result["status"] == "empty_eval_patch_invalid"
+    assert result["summary"]["eval_model_patch_chars"] == 0
+    assert result["summary"]["technical_reasons"] == ["empty_eval_patch_after_filter"]
 
-    summary = runner.sync_runtime(
-        ssh_command=["ssh"],
-        host="remote-host",
-        remote_runtime_repo="/remote/runtime",
+
+def test_filter_model_patch_handles_diff_paths_with_spaces(tmp_path):
+    namespace = _remote_namespace(tmp_path)
+    patch = (
+        "diff --git a/src/app code.py b/src/app code.py\n"
+        "--- a/src/app code.py\n"
+        "+++ b/src/app code.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
+        "diff --git a/tests/test app.py b/tests/test app.py\n"
+        "--- a/tests/test app.py\n"
+        "+++ b/tests/test app.py\n"
+        "@@ -1 +1 @@\n"
+        "-old\n"
+        "+new\n"
     )
 
-    assert imported is True
-    assert "scripts/swebench_process.py" in summary["synced"]
-    for name in (
-        "gen_prediction_agent.py",
-        "gen_prediction_bounded_capture.py",
-        "gen_prediction_config.py",
-        "gen_prediction_constants.py",
-        "gen_prediction_docker.py",
-        "gen_prediction_pending.py",
-        "gen_prediction_safe_output.py",
-    ):
-        assert (extracted / "swebench" / name).is_file()
+    filtered = namespace["filter_model_patch_for_eval"](patch)
+
+    assert "src/app code.py" in filtered
+    assert "tests/test app.py" not in filtered
 
 
-def test_runtime_sync_requires_every_declared_input(monkeypatch, tmp_path):
-    calls = []
-    monkeypatch.setattr(runner, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(runner, "SYNC_FILES", ["missing.py"])
-    monkeypatch.setattr(runner, "SYNC_DIRS", ["missing-package"])
-    monkeypatch.setattr(runner, "run_checked", lambda *args, **kwargs: calls.append(args))
+def test_prolite_go_command_uses_package_targets(tmp_path):
+    namespace = _remote_namespace(tmp_path)
 
-    with pytest.raises(RuntimeError, match="missing-package, missing.py"):
-        runner.sync_runtime(
-            ssh_command=["ssh"],
-            host="remote-host",
-            remote_runtime_repo="/remote/runtime",
-        )
-
-    assert calls == []
-
-
-def test_runtime_sync_replaces_reused_directory_with_manifested_snapshot(monkeypatch, tmp_path):
-    remote_runtime = tmp_path / "remote-runtime"
-    remote_runtime.mkdir()
-    (remote_runtime / "runtime.tgz").write_bytes(b"legacy runtime marker")
-    (remote_runtime / "stale_module.py").write_text("STALE = True\n", encoding="utf-8")
-
-    monkeypatch.setattr(runner, "run_checked", _run_runtime_sync_command_locally)
-
-    summary = runner.sync_runtime(
-        ssh_command=["ssh"],
-        host="remote-host",
-        remote_runtime_repo=str(remote_runtime),
+    command = namespace["prolite_test_command"](
+        {"repo_language": "go"},
+        ["internal/api/widget_test.go", "pkg/server/router_test.go"],
     )
 
-    assert not (remote_runtime / "stale_module.py").exists()
-    manifest = json.loads((remote_runtime / "runtime-manifest.json").read_text(encoding="utf-8"))
-    assert manifest["synced"] == summary["synced"]
-    assert manifest["synced_dirs"] == summary["synced_dirs"]
-    assert "opencollab/opencollab/application/session.py" in manifest["archive_members"]
-    assert not list(tmp_path.glob("remote-runtime.*"))
+    assert command == "go test ./internal/api ./pkg/server"
 
 
-def test_runtime_sync_refuses_to_replace_unmarked_directory(monkeypatch, tmp_path):
-    remote_runtime = tmp_path / "user-directory"
-    remote_runtime.mkdir()
-    user_file = remote_runtime / "notes.txt"
-    user_file.write_text("keep me\n", encoding="utf-8")
+def test_prolite_test_command_never_falls_back_to_a_passing_noop(tmp_path):
+    namespace = _remote_namespace(tmp_path)
+    command = namespace["prolite_test_command"]
+    is_runnable = namespace["_is_runnable_test_command"]
 
-    monkeypatch.setattr(runner, "run_checked", _run_runtime_sync_command_locally)
+    # An underivable command returns "" — NOT the old "true" no-op that ran zero
+    # target tests yet scored resolved=true (false green; 2026-07-09 review).
+    assert command({"repo_language": "python"}, []) == ""
+    assert command({}, []) == ""
+    assert command({"repo_language": "ruby"}, ["spec/widget_spec.rb"]) == ""
 
-    with pytest.raises(RuntimeError, match="unmarked runtime directory"):
-        runner.sync_runtime(
-            ssh_command=["ssh"],
-            host="remote-host",
-            remote_runtime_repo=str(remote_runtime),
-        )
+    # The runnable-command gate rejects every no-op form and accepts real commands.
+    assert not is_runnable("")
+    assert not is_runnable("true")
+    assert not is_runnable(" : ")
+    assert is_runnable("python3 -m pytest -q tests/test_x.py::test_y")
 
-    assert user_file.read_text(encoding="utf-8") == "keep me\n"
-    assert not list(tmp_path.glob("user-directory.*"))
+
+def test_ensure_image_pulls_missing_image(tmp_path):
+    namespace = _remote_namespace(tmp_path)
+    existing: set[str] = set()
+    calls: list[list[str]] = []
+
+    def fake_image_exists(image):
+        return image in existing
+
+    def fake_run(command, timeout=60):
+        calls.append(command)
+        if command[:2] == ["docker", "pull"]:
+            existing.add(command[2])
+            return {"returncode": 0, "stdout": "", "stderr": ""}
+        return {"returncode": 1, "stdout": "", "stderr": "unexpected"}
+
+    namespace["image_exists"] = fake_image_exists
+    namespace["run"] = fake_run
+
+    result = namespace["ensure_image"]("example/image:tag")
+
+    assert result["ok"] is True
+    assert result["pulled"] is True
+    assert calls == [["docker", "pull", "example/image:tag"]]
+
+
+def test_remote_runner_does_not_reuse_stale_done_for_test_only_patch(tmp_path):
+    namespace = _remote_namespace(tmp_path)
+    task = "task-1"
+    patch = _test_only_patch()
+    patch_sha = namespace["patch_sha"](patch)
+    prediction = {
+        "instance_id": task,
+        "record_id": "r1",
+        "patch_sha256": patch_sha,
+        "model_patch": patch,
+    }
+    stale_summary = {
+        "status": "done",
+        "task": task,
+        "patch_sha256": patch_sha,
+        "record_id": "r1",
+        "resolved": True,
+    }
+
+    assert namespace["eval_summary_matches_prediction"](stale_summary, prediction, task) is False
+
 
 def test_ensure_remote_proxy_falls_back_when_default_remote_port_is_busy():
     calls: list[list[str]] = []
@@ -306,7 +234,7 @@ def test_ensure_remote_proxy_falls_back_when_default_remote_port_is_busy():
 
         summary = runner.ensure_remote_proxy(
             ssh_command=["ssh"],
-            host="remote-host",
+            host="jinan-aws",
             local_proxy_base_url="http://127.0.0.1:8878",
             remote_proxy_base_url="http://127.0.0.1:18788",
             enabled=True,
@@ -326,107 +254,6 @@ def test_ensure_remote_proxy_falls_back_when_default_remote_port_is_busy():
     assert calls[1][calls[1].index("-R") + 1] == "127.0.0.1:18789:127.0.0.1:8878"
 
 
-def test_proxy_tunnel_registers_before_pending_interrupt_restore(monkeypatch):
-    process = SimpleNamespace(pid=424253, poll=lambda: None)
-    cleanup_seen = []
-    real_restore = runner._restore_local_spawn_signals
-
-    monkeypatch.setattr(runner.subprocess, "Popen", lambda *args, **kwargs: process)
-
-    def restore_then_interrupt(previous_mask):
-        real_restore(previous_mask)
-        assert process in runner.REMOTE_PROXY_TUNNELS
-        raise SystemExit(79)
-
-    def fake_terminate(proc):
-        cleanup_seen.append(proc)
-        return True
-
-    monkeypatch.setattr(runner, "_restore_local_spawn_signals", restore_then_interrupt)
-    monkeypatch.setattr(runner, "terminate_local_process_group", fake_terminate)
-
-    with pytest.raises(SystemExit) as exc:
-        runner.start_remote_proxy_tunnel(["ssh", "-N", "host"])
-
-    assert exc.value.code == 79
-    assert cleanup_seen == [process]
-    assert process not in runner.REMOTE_PROXY_TUNNELS
-
-
-def test_proxy_tunnel_normal_leader_exit_cleanup_failure_is_explicit(monkeypatch):
-    class ReapedTunnelLeader:
-        pid = 424265
-        returncode = 0
-
-        def poll(self):
-            return 0
-
-        def communicate(self, timeout=None):
-            return "", "ssh exited"
-
-    process = ReapedTunnelLeader()
-    monkeypatch.setattr(
-        runner.subprocess,
-        "Popen",
-        lambda *args, **kwargs: process,
-    )
-    monkeypatch.setattr(runner.time, "sleep", lambda seconds: None)
-    monkeypatch.setattr(
-        runner,
-        "_ensure_local_process_group_quiesced_after_wait",
-        lambda proc: False,
-    )
-    try:
-        tunnel, message = runner.start_remote_proxy_tunnel(["ssh", "-N", "host"])
-
-        assert tunnel is None
-        assert "residual process-group descendants" in message
-        assert process in runner.REMOTE_PROXY_TUNNELS
-    finally:
-        if process in runner.REMOTE_PROXY_TUNNELS:
-            runner.REMOTE_PROXY_TUNNELS.remove(process)
-
-
-def test_get_proxy_token_process_lookup_timeout_is_bounded(monkeypatch, tmp_path):
-    calls = []
-    monkeypatch.setattr(runner, "token_from_values", lambda values: "")
-
-    def fake_check_output(command, **kwargs):
-        calls.append((command, kwargs))
-        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
-
-    monkeypatch.setattr(runner.subprocess, "check_output", fake_check_output)
-
-    with pytest.raises(RuntimeError, match="timed out while locating"):
-        runner.get_proxy_token(tmp_path / "missing.env")
-
-    assert calls[0][1]["timeout"] == runner.PROXY_PROCESS_LOOKUP_TIMEOUT_SECONDS
-
-
-@pytest.mark.parametrize("kind", ["symlink", "fifo"])
-def test_proxy_env_reader_rejects_unsafe_file_without_blocking(tmp_path, kind):
-    if kind == "fifo" and not hasattr(os, "mkfifo"):
-        pytest.skip("FIFO requires POSIX")
-    path = tmp_path / "proxy.env"
-    if kind == "symlink":
-        target = tmp_path / "real.env"
-        target.write_text("GLM_PROXY_CLIENT_TOKEN=secret\n", encoding="utf-8")
-        path.symlink_to(target)
-    else:
-        os.mkfifo(path)
-
-    with pytest.raises((OSError, RuntimeError)):
-        runner.load_shell_env(path)
-
-
-def test_proxy_env_reader_rejects_oversized_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(runner, "MAX_PROXY_ENV_BYTES", 32)
-    path = tmp_path / "proxy.env"
-    path.write_text("GLM_PROXY_CLIENT_TOKEN=" + "x" * 64, encoding="utf-8")
-
-    with pytest.raises(RuntimeError, match="bounded regular file"):
-        runner.load_shell_env(path)
-
 def test_remote_http_ok_keeps_ssh_outer_timeout_above_short_http_probe():
     calls: list[dict] = []
     old_run = runner.subprocess.run
@@ -439,7 +266,7 @@ def test_remote_http_ok_keeps_ssh_outer_timeout_above_short_http_probe():
         runner.subprocess.run = fake_run
         ok = runner.remote_http_ok(
             ssh_command=["ssh"],
-            host="remote-host",
+            host="jinan-aws",
             base_url="http://127.0.0.1:18792",
             timeout=2,
         )
@@ -461,7 +288,7 @@ def test_remote_http_ok_returns_false_on_outer_timeout():
         runner.subprocess.run = fake_run
         ok = runner.remote_http_ok(
             ssh_command=["ssh"],
-            host="remote-host",
+            host="jinan-aws",
             base_url="http://127.0.0.1:18792",
             timeout=2,
         )

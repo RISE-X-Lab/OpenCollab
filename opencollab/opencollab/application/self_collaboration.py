@@ -3,34 +3,17 @@
 Extracted from ``Scheduler`` so the long, self-contained review-iteration logic
 does not bloat the scheduler's core. It drives the loop through the slice of the
 scheduler's public surface typed by ``ReviewLoopScheduler`` (``spawn``,
-``wait_until_terminal``, ``table``, ``events``, ``emit_scheduler_event``), so it
-takes the scheduler as a parameter rather than being a method.
+``wait_for``, ``table``, ``events``, ``emit_scheduler_event``), so it takes the
+scheduler as a parameter rather than being a method.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Protocol
 
 from opencollab.application.events import SchedulerEventFactory
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.scheduler import ReviewVerdict, SessionTable
-
-logger = logging.getLogger(__name__)
-MAX_REVIEW_ITERATIONS = 3
-
-
-def validate_review_iterations(value: object) -> int:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, int)
-        or value < 1
-        or value > MAX_REVIEW_ITERATIONS
-    ):
-        raise ValueError(
-            f"max_iterations must be an integer in 1..{MAX_REVIEW_ITERATIONS}"
-        )
-    return value
 
 
 class ReviewLoopScheduler(Protocol):
@@ -48,25 +31,11 @@ class ReviewLoopScheduler(Protocol):
     ) -> int:
         ...
 
-    async def wait_until_terminal(self, aid: int) -> None:
+    async def wait_for(self, aid: int) -> None:
         ...
 
     async def emit_scheduler_event(self, event: SchedulerEvent) -> None:
         ...
-
-
-async def _emit_review_event(
-    scheduler: ReviewLoopScheduler, event: SchedulerEvent
-) -> None:
-    """Publish review telemetry without making it part of loop correctness."""
-    safe_emit = getattr(scheduler, "_safe_emit_scheduler_event", None)
-    if callable(safe_emit):
-        await safe_emit(event)
-        return
-    try:
-        await scheduler.emit_scheduler_event(event)
-    except Exception as exc:
-        logger.error("review event %s failed: %s", event.type, exc)
 
 
 async def run_spawn_with_review(
@@ -86,19 +55,17 @@ async def run_spawn_with_review(
     implementation is returned, marked as failed. ``review_started`` /
     ``review_completed`` scheduler events bracket each iteration.
     """
-    max_iterations = validate_review_iterations(max_iterations)
     current_task = task
     last_result = ""
 
     for iteration in range(1, max_iterations + 1):
-        await _emit_review_event(
-            scheduler,
+        await scheduler.emit_scheduler_event(
             scheduler.events.review_started(iteration, max_iterations)
         )
 
         # Spawn coder and wait
         coder_aid = await scheduler.spawn(parent_aid, "coder", current_task, context)
-        await scheduler.wait_until_terminal(coder_aid)
+        await scheduler.wait_for(coder_aid)
         coder_scb = scheduler.table.get(coder_aid)
         code_result = coder_scb.result if coder_scb else ""
 
@@ -113,13 +80,12 @@ async def run_spawn_with_review(
             f"If FAIL, provide detailed fix instructions before the verdict line."
         )
         reviewer_aid = await scheduler.spawn(parent_aid, "reviewer", review_prompt)
-        await scheduler.wait_until_terminal(reviewer_aid)
+        await scheduler.wait_for(reviewer_aid)
         reviewer_scb = scheduler.table.get(reviewer_aid)
         review_result = reviewer_scb.result if reviewer_scb else ""
 
         verdict = ReviewVerdict.parse(review_result)
-        await _emit_review_event(
-            scheduler,
+        await scheduler.emit_scheduler_event(
             scheduler.events.review_completed(iteration, verdict.passed)
         )
 
@@ -132,11 +98,8 @@ async def run_spawn_with_review(
         current_task = (
             f"Your previous implementation failed review (iteration {iteration}/{max_iterations}).\n"
             f"Original task: {task}\n\n"
-            f"Previous implementation artifact (including any worktree diff):\n"
-            f"{code_result}\n\n"
             f"Reviewer feedback:\n{review_result}\n\n"
-            f"Reapply the previous implementation in your fresh worktree, preserve its "
-            f"correct parts, and fix the issues identified by the reviewer."
+            f"Fix the issues identified by the reviewer."
         )
         last_result = code_result
 
@@ -146,9 +109,4 @@ async def run_spawn_with_review(
     )
 
 
-__all__ = [
-    "MAX_REVIEW_ITERATIONS",
-    "ReviewLoopScheduler",
-    "run_spawn_with_review",
-    "validate_review_iterations",
-]
+__all__ = ["ReviewLoopScheduler", "run_spawn_with_review"]
