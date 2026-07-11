@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -20,7 +21,12 @@ from opencollab.adapters._env_config import (
     PROCESS_SPAWN_HANDOFF_TIMEOUT_SECONDS,
     PROCESS_TERM_GRACE_SECONDS,
 )
-from opencollab.adapters._env_file_io import _positive_finite_timeout
+from opencollab.adapters._env_file_io import (
+    _await_owned_transaction,
+    _positive_finite_timeout,
+)
+from opencollab.adapters.retirement_registry import INTERNAL_RETIREMENT_LOG_ENV
+from opencollab.application.exception_notes import add_exception_note
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +178,7 @@ def _sync_run_cleanup_command(
     command: list[str],
     *,
     cwd: str | None,
+    cwd_fd: int | None = None,
     timeout: object,
     timeout_name: str,
 ) -> tuple[int, bytes, bytes, bool]:
@@ -180,6 +187,7 @@ def _sync_run_cleanup_command(
         command,
         shell=False,
         cwd=cwd,
+        cwd_fd=cwd_fd,
         timeout=timeout_seconds,
         input_data=None,
         late_compensation=None,
@@ -232,6 +240,7 @@ class _ThreadProcessOwner:
         *,
         shell: bool,
         cwd: str | None,
+        cwd_fd: int | None,
         timeout: float,
         input_data: bytes | None,
         late_compensation: Callable[["_ThreadProcessResult"], None] | None,
@@ -239,6 +248,7 @@ class _ThreadProcessOwner:
         self._command = command
         self._shell = shell
         self._cwd = cwd
+        self._cwd_fd = cwd_fd
         self._timeout = timeout
         self._input_data = input_data
         self._late_compensation = late_compensation
@@ -346,15 +356,59 @@ class _ThreadProcessOwner:
         deadline = time.monotonic() + self._timeout
         interrupted = False
         try:
-            proc = _PROCESS_POPEN(
-                self._command,
-                shell=self._shell,
-                cwd=self._cwd,
-                stdin=subprocess.PIPE if self._input_data is not None else subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                start_new_session=True,
-            )
+            popen_kwargs = {
+                "shell": self._shell,
+                "cwd": self._cwd,
+                "stdin": subprocess.PIPE if self._input_data is not None else subprocess.DEVNULL,
+                "stdout": subprocess.PIPE,
+                "stderr": subprocess.PIPE,
+                "start_new_session": True,
+            }
+            if INTERNAL_RETIREMENT_LOG_ENV in os.environ:
+                child_env = os.environ.copy()
+                child_env.pop(INTERNAL_RETIREMENT_LOG_ENV, None)
+                popen_kwargs["env"] = child_env
+            command = self._command
+            if self._cwd_fd is not None:
+                if self._shell:
+                    if not isinstance(command, str):
+                        raise ValueError("shell process command must be text")
+                    wrapper = (
+                        "import os,sys; "
+                        "fd=int(sys.argv[1]); command=sys.argv[2]; "
+                        "os.fchdir(fd); os.close(fd); "
+                        "os.execv('/bin/sh', ['/bin/sh', '-c', command])"
+                    )
+                    command = [sys.executable, "-c", wrapper, str(self._cwd_fd), command]
+                else:
+                    if not isinstance(command, list) or not command:
+                        raise ValueError("descriptor-pinned process command must be a non-empty list")
+                    wrapper = (
+                        "import os,sys; "
+                        "fd=int(sys.argv[1]); command=sys.argv[2:]; "
+                        "os.fchdir(fd); os.close(fd); "
+                        "os.execvp(command[0], command)"
+                    )
+                    command = [sys.executable, "-c", wrapper, str(self._cwd_fd), *command]
+                popen_kwargs["shell"] = False
+                popen_kwargs["cwd"] = None
+                popen_kwargs["pass_fds"] = (self._cwd_fd,)
+            if sys.platform.startswith("linux"):
+                if popen_kwargs["shell"]:
+                    if not isinstance(command, str):
+                        raise ValueError("shell process command must be text")
+                    command = ["/bin/sh", "-c", command]
+                elif not isinstance(command, list):
+                    raise ValueError("supervised process command must be a list")
+                command = [
+                    sys.executable,
+                    "-m",
+                    "opencollab.adapters._linux_process_supervisor",
+                    "--",
+                    *command,
+                ]
+                popen_kwargs["shell"] = False
+            proc = _PROCESS_POPEN(command, **popen_kwargs)
             if proc.stdout is not None:
                 readers.append(
                     threading.Thread(
@@ -461,6 +515,7 @@ async def _run_thread_owned_process(
     *,
     shell: bool,
     cwd: str | None,
+    cwd_fd: int | None = None,
     timeout: object,
     timeout_name: str,
     input_data: bytes | None = None,
@@ -471,6 +526,7 @@ async def _run_thread_owned_process(
         command,
         shell=shell,
         cwd=cwd,
+        cwd_fd=cwd_fd,
         timeout=timeout_seconds,
         input_data=input_data,
         late_compensation=late_compensation,
@@ -513,13 +569,15 @@ async def _run_thread_owned_process(
             completed = await _await_owned_operation(_wait_thread_event(owner.finished, timeout=cancel_bound))
         except BaseException as exc:
             completed = False
-            add_note = getattr(original, "add_note", None)
-            if callable(add_note):
-                add_note(f"process owner wait failed: {type(exc).__name__}: {exc}")
+            add_exception_note(
+                original,
+                f"process owner wait failed: {type(exc).__name__}: {exc}",
+            )
         if not completed:
-            add_note = getattr(original, "add_note", None)
-            if callable(add_note):
-                add_note("process owner continues cleanup in a non-daemon thread")
+            add_exception_note(
+                original,
+                "process owner continues cleanup in a non-daemon thread",
+            )
         else:
             compensation_event = owner.start_compensation_thread()
             try:
@@ -534,9 +592,10 @@ async def _run_thread_owned_process(
                 )
             except BaseException as exc:
                 compensation_completed = False
-                add_note = getattr(original, "add_note", None)
-                if callable(add_note):
-                    add_note(f"process compensation observation failed: {type(exc).__name__}: {exc}")
+                add_exception_note(
+                    original,
+                    f"process compensation observation failed: {type(exc).__name__}: {exc}",
+                )
         try:
             original.cleanup_quiesced = (
                 completed
@@ -547,10 +606,11 @@ async def _run_thread_owned_process(
         except (AttributeError, TypeError):
             pass
         if completed and compensation_completed and owner.result.compensation_error is not None:
-            add_note = getattr(original, "add_note", None)
-            if callable(add_note):
-                compensation_error = owner.result.compensation_error
-                add_note(f"process compensation failed: {type(compensation_error).__name__}: {compensation_error}")
+            compensation_error = owner.result.compensation_error
+            add_exception_note(
+                original,
+                f"process compensation failed: {type(compensation_error).__name__}: {compensation_error}",
+            )
         raise original
     except BaseException as original:
         owner.cancel()
@@ -574,9 +634,10 @@ async def _run_thread_owned_process(
             completed = await _await_owned_operation(_wait_thread_event(owner.finished, timeout=cancel_bound))
         except BaseException as exc:
             completed = False
-            add_note = getattr(original, "add_note", None)
-            if callable(add_note):
-                add_note(f"process owner wait failed: {type(exc).__name__}: {exc}")
+            add_exception_note(
+                original,
+                f"process owner wait failed: {type(exc).__name__}: {exc}",
+            )
         if not completed:
             logger.error(
                 "process owner continues cleanup after %s",
@@ -596,9 +657,10 @@ async def _run_thread_owned_process(
                 )
             except BaseException as exc:
                 compensation_completed = False
-                add_note = getattr(original, "add_note", None)
-                if callable(add_note):
-                    add_note(f"process compensation observation failed: {type(exc).__name__}: {exc}")
+                add_exception_note(
+                    original,
+                    f"process compensation observation failed: {type(exc).__name__}: {exc}",
+                )
         try:
             original.cleanup_quiesced = (
                 completed
@@ -609,10 +671,11 @@ async def _run_thread_owned_process(
         except (AttributeError, TypeError):
             pass
         if completed and compensation_completed and owner.result.compensation_error is not None:
-            add_note = getattr(original, "add_note", None)
-            if callable(add_note):
-                compensation_error = owner.result.compensation_error
-                add_note(f"process compensation failed: {type(compensation_error).__name__}: {compensation_error}")
+            compensation_error = owner.result.compensation_error
+            add_exception_note(
+                original,
+                f"process compensation failed: {type(compensation_error).__name__}: {compensation_error}",
+            )
         raise original
     if not completed:
         owner.cancel()
@@ -624,18 +687,18 @@ async def _run_thread_owned_process(
                 "subprocess failed and owned cleanup did not quiesce",
                 cleanup_quiesced=False,
             )
-            add_note = getattr(not_quiesced, "add_note", None)
-            if callable(add_note):
-                add_note(f"original process error: {type(result.error).__name__}: {result.error}")
+            add_exception_note(
+                not_quiesced,
+                f"original process error: {type(result.error).__name__}: {result.error}",
+            )
             raise not_quiesced from result.error
         if result.compensation_error is not None:
-            add_note = getattr(result.error, "add_note", None)
-            if callable(add_note):
-                add_note(
-                    "process compensation failed: "
-                    f"{type(result.compensation_error).__name__}: "
-                    f"{result.compensation_error}"
-                )
+            add_exception_note(
+                result.error,
+                "process compensation failed: "
+                f"{type(result.compensation_error).__name__}: "
+                f"{result.compensation_error}",
+            )
         raise result.error
     if result.timed_out:
         if result.compensation_error is not None:
@@ -664,8 +727,23 @@ class _OwnedProcessNotQuiesced(OSError):
         self.cleanup_quiesced = cleanup_quiesced
 
 
-async def _await_owned_operation(awaitable):
-    """Finish an owned teardown operation despite repeated caller cancellation."""
+async def _await_owned_operation(
+    awaitable,
+    *,
+    propagate_cancellation: bool = False,
+):
+    """Finish teardown while choosing who owns cancellation propagation.
+
+    Compensation paths already retain an outer exception, so repeated caller
+    cancellation must not replace it.  Public lifecycle boundaries opt in to
+    propagation after their owned operation has quiesced.
+    """
+    if propagate_cancellation:
+        return await _await_owned_transaction(
+            awaitable,
+            failure_note="owned teardown operation",
+        )
+
     task = asyncio.ensure_future(awaitable)
     while True:
         try:
@@ -673,7 +751,4 @@ async def _await_owned_operation(awaitable):
         except asyncio.CancelledError:
             if task.cancelled():
                 raise
-            # The surrounding operation already owns resource teardown. Further
-            # caller cancellations are remembered by the caller's original
-            # exception and must not interrupt TERM/KILL/reap or compensation.
             continue

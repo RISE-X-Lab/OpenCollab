@@ -16,6 +16,9 @@ from opencollab.harness.swe_eval_records import (
     prediction_patch,
     row_record_id,
 )
+from opencollab.harness.swe_eval_records import (
+    row_patch_sha as row_patch_sha,
+)
 
 
 class TaskState(str, Enum):

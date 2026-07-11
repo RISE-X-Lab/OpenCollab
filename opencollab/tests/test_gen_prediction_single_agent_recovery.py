@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from opencollab.harness.swe_eval_records import read_jsonl
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SWEBENCH_DIR = _REPO_ROOT / "swebench"
@@ -302,6 +303,38 @@ def test_next_start_recovers_owner_and_publishes_pending_once(monkeypatch, tmp_p
     assert not gp.container_owner_path(tmp_path, "name").exists()
 
 
+def test_pending_publish_retains_candidate_when_output_path_is_replaced(
+    monkeypatch,
+    tmp_path,
+):
+    pending, predictions, metrics_path, _prediction, _metric = _stage_pending_output(
+        tmp_path
+    )
+    detached = tmp_path / "detached-predictions.jsonl"
+    original_fsync_directory = gp._fsync_directory
+    replaced = False
+
+    monkeypatch.setattr(gp, "_pending_owner_state", lambda *_args: "kept")
+
+    def replace_prediction_after_sync(directory):
+        nonlocal replaced
+        original_fsync_directory(directory)
+        if not replaced and predictions.exists():
+            replaced = True
+            predictions.rename(detached)
+            predictions.write_text("foreign\n", encoding="utf-8")
+
+    monkeypatch.setattr(gp, "_fsync_directory", replace_prediction_after_sync)
+
+    with pytest.raises(OSError, match="output path changed"):
+        gp.publish_pending_output(tmp_path, pending)
+
+    assert pending.exists()
+    assert predictions.read_text(encoding="utf-8") == "foreign\n"
+    assert detached.exists()
+    assert not metrics_path.exists()
+
+
 def test_pending_replay_fills_metrics_after_prediction_only_crash(monkeypatch, tmp_path):
     pending, predictions, metrics_path, prediction, metric = _stage_pending_output(
         tmp_path
@@ -349,10 +382,30 @@ def test_pending_replay_separates_truncated_jsonl_tail(monkeypatch, tmp_path):
 
     assert gp.recover_generation_state(tmp_path) is True
 
-    assert predictions.read_bytes().startswith(b'{"instance_id":"truncated"\n')
-    assert _jsonl_rows(predictions) == [prediction]
-    assert _jsonl_rows(metrics_path) == [metric]
+    assert read_jsonl(predictions) == [prediction]
+    assert read_jsonl(metrics_path) == [metric]
     assert not pending.exists()
+
+
+def test_pending_replay_retains_candidate_for_malformed_complete_jsonl_record(
+    monkeypatch,
+    tmp_path,
+):
+    pending, predictions, metrics_path, _prediction, _metric = (
+        _stage_pending_output(tmp_path)
+    )
+    monkeypatch.setattr(
+        gp, "_remove_labeled_container", lambda *args, **kwargs: True
+    )
+    assert gp.remove_container_and_clear_marker(tmp_path, "cid") is True
+    malformed = b'{"instance_id":\n'
+    predictions.write_bytes(malformed)
+
+    assert gp.recover_generation_state(tmp_path) is False
+
+    assert predictions.read_bytes() == malformed
+    assert not metrics_path.exists()
+    assert pending.exists()
 
 
 def test_pending_survives_unknown_output_fsync(monkeypatch, tmp_path):

@@ -14,6 +14,7 @@ import time
 
 import opencollab.adapters.env as env_mod
 import pytest
+from asyncio_test_support import assert_cancel_reason
 from opencollab.adapters.env import DockerEnvironment
 
 CONTAINER_ID_A = "a" * 64
@@ -735,7 +736,7 @@ def test_double_cancel_preserves_first_cancellation_and_finishes_inner_cleanup(
         threading.Timer(0.03, lambda: cancel_proc.complete(0)).start()
         with pytest.raises(asyncio.CancelledError) as captured:
             await task
-        assert captured.value.args == ("first cancellation",)
+        assert_cancel_reason(captured.value, "first cancellation")
         assert task.cancelled() is True
         followup = await env.exec_cmd("echo reusable", timeout=1)
         assert followup.stdout == "reusable"
@@ -884,6 +885,37 @@ class _BackingEnvironment(env_mod.Environment):
         self.abort_calls += 1
         if self.abort_failure is not None:
             raise self.abort_failure
+
+
+@pytest.mark.asyncio
+async def test_cleanup_finishes_backing_environment_before_propagating_cancel():
+    class SlowBacking(_BackingEnvironment):
+        def __init__(self):
+            super().__init__()
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def cleanup(self) -> None:
+            self.cleanup_calls += 1
+            self.started.set()
+            await self.release.wait()
+
+    backing = SlowBacking()
+    env = DockerEnvironment(backing_environment=backing)
+    task = asyncio.create_task(env.cleanup())
+    await backing.started.wait()
+
+    task.cancel("Docker cleanup cancelled")
+    await asyncio.sleep(0)
+    assert task.done() is False
+
+    backing.release.set()
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await task
+
+    assert_cancel_reason(raised.value, "Docker cleanup cancelled")
+    assert backing.cleanup_calls == 1
+    assert env._backing_environment is None
 
 
 def test_abort_retries_backing_cleanup_after_initial_teardown_failures(
@@ -1095,16 +1127,15 @@ def test_docker_temp_file_creation_is_unique_and_digest_verified(monkeypatch):
     payload = content.encode()
     temp_path = "/tmp/opencollab-checkpoint-recovery-A1b2C3d4.patch"
     verification = (
-        f"{len(payload)}\t{hashlib.sha256(payload).hexdigest()}\n"
+        f"7:11\t{len(payload)}\t{hashlib.sha256(payload).hexdigest()}\n"
     ).encode()
     monkeypatch.setattr(
         env_mod.uuid,
         "uuid4",
         lambda: type("FixedUUID", (), {"hex": "A1b2C3d4"})(),
     )
-    create_proc = FakeProc()
     write_proc = FakeProc(stdout=verification)
-    fake = FakeDocker([create_proc, write_proc])
+    fake = FakeDocker([write_proc])
     patch_docker(monkeypatch, fake)
     env = DockerEnvironment(container_id="cid")
 
@@ -1118,27 +1149,26 @@ def test_docker_temp_file_creation_is_unique_and_digest_verified(monkeypatch):
 
     assert created == temp_path
     exec_calls = [call for call in fake.calls if call[:2] == ["docker", "exec"]]
-    assert "set -o noclobber" in " ".join(exec_calls[0])
-    assert temp_path in " ".join(exec_calls[0])
+    assert len(exec_calls) == 1
+    assert env_mod._DOCKER_CREATE_WRITE_AND_VERIFY in exec_calls[0]
+    assert temp_path in exec_calls[0]
     assert write_proc.communicated_input == payload
-    assert temp_path in exec_calls[1]
+    assert env._docker_temp_file_identities[temp_path] == "7:11"
 
 
-def test_docker_temp_write_failure_removes_owned_path(monkeypatch):
+def test_docker_temp_write_failure_without_identity_never_blindly_removes_path(monkeypatch):
     temp_path = "/tmp/opencollab-test-patch-owned.diff"
     monkeypatch.setattr(
         env_mod.uuid,
         "uuid4",
         lambda: type("FixedUUID", (), {"hex": "owned"})(),
     )
-    create_proc = FakeProc()
     failed_write = FakeProc(returncode=74, stderr=b"write failed")
-    remove_proc = FakeProc()
-    fake = FakeDocker([create_proc, failed_write, remove_proc])
+    fake = FakeDocker([failed_write])
     patch_docker(monkeypatch, fake)
     env = DockerEnvironment(container_id="cid")
 
-    with pytest.raises(OSError, match="docker write failed"):
+    with pytest.raises(OSError, match="docker temporary write failed"):
         run(
             env.write_temp_file(
                 "patch",
@@ -1147,56 +1177,267 @@ def test_docker_temp_write_failure_removes_owned_path(monkeypatch):
             )
         )
 
-    assert any(
-        temp_path in " ".join(call) and "rm -f" in " ".join(call)
-        for call in fake.calls
-    )
+    exec_calls = [call for call in fake.calls if call[:2] == ["docker", "exec"]]
+    assert len(exec_calls) == 1
+    assert env_mod._DOCKER_CREATE_WRITE_AND_VERIFY in exec_calls[0]
+    assert temp_path not in getattr(env, "_docker_temp_file_identities", {})
 
 
-def test_cancelled_docker_temp_create_removes_preknown_owned_path(monkeypatch):
-    temp_path = "/tmp/opencollab-test-patch-race.diff"
+def test_docker_temp_verification_failure_removes_only_proven_identity(monkeypatch):
+    temp_path = "/tmp/opencollab-test-patch-verified.diff"
     monkeypatch.setattr(
         env_mod.uuid,
         "uuid4",
-        lambda: type("FixedUUID", (), {"hex": "race"})(),
+        lambda: type("FixedUUID", (), {"hex": "verified"})(),
     )
+    bad_verification = FakeProc(stdout=b"7:11\t5\tbad-digest\n")
+    verified_remove = FakeProc()
+    fake = FakeDocker([bad_verification, verified_remove])
+    patch_docker(monkeypatch, fake)
+    env = DockerEnvironment(container_id="cid")
 
-    class RaceDocker(DockerEnvironment):
-        def __init__(self):
-            super().__init__(container_id="cid")
-            self.created = asyncio.Event()
-            self.remote_files: set[str] = set()
-            self.remove_calls: list[str] = []
-
-        async def exec_cmd(self, cmd: str, timeout: float = 120.0):
-            assert temp_path in cmd
-            self.remote_files.add(temp_path)
-            self.created.set()
-            await asyncio.Event().wait()
-
-        async def remove_file(self, path: str) -> None:
-            self.remove_calls.append(path)
-            self.remote_files.discard(path)
-
-    async def scenario():
-        env = RaceDocker()
-        task = asyncio.create_task(
+    with pytest.raises(OSError, match="verification failed"):
+        run(
             env.write_temp_file(
                 "patch",
                 prefix="opencollab-test-patch-",
                 suffix=".diff",
             )
         )
-        await env.created.wait()
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        return env
 
-    env = run(scenario())
+    exec_calls = [call for call in fake.calls if call[:2] == ["docker", "exec"]]
+    assert len(exec_calls) == 2
+    removal = " ".join(exec_calls[1])
+    assert temp_path in removal
+    assert "7:11" in removal
+    assert temp_path not in env._docker_temp_file_identities
 
-    assert env.remove_calls == [temp_path]
-    assert env.remote_files == set()
+
+def test_docker_remove_temp_requires_known_identity_without_spawning(monkeypatch):
+    fake = FakeDocker()
+    patch_docker(monkeypatch, fake)
+    env = DockerEnvironment(container_id="cid")
+
+    with pytest.raises(OSError, match="without ownership proof"):
+        run(env.remove_file("/tmp/unknown.diff"))
+
+    assert fake.calls == []
+
+
+def test_docker_remove_temp_compares_remote_identity(monkeypatch):
+    path = "/tmp/owned.diff"
+    fake = FakeDocker([FakeProc(returncode=76)])
+    patch_docker(monkeypatch, fake)
+    env = DockerEnvironment(container_id="cid")
+    env._docker_temp_file_identities = {path: "7:11"}
+
+    with pytest.raises(OSError, match="replaced container temporary file"):
+        run(env.remove_file(path))
+
+    exec_calls = [call for call in fake.calls if call[:2] == ["docker", "exec"]]
+    assert len(exec_calls) == 1
+    joined = " ".join(exec_calls[0])
+    assert "stat -c" in joined
+    assert path in joined
+    assert "7:11" in joined
+    assert path in env._docker_temp_file_identities
+
+
+def test_docker_remove_temp_forgets_identity_only_after_verified_removal(monkeypatch):
+    path = "/tmp/owned.diff"
+    fake = FakeDocker([FakeProc()])
+    patch_docker(monkeypatch, fake)
+    env = DockerEnvironment(container_id="cid")
+    env._docker_temp_file_identities = {path: "7:11"}
+
+    run(env.remove_file(path))
+
+    assert path not in env._docker_temp_file_identities
+
+
+def test_docker_retirement_limit_failure_keeps_cleanup_identity(monkeypatch):
+    path = "/tmp/owned.diff"
+    fake = FakeDocker([FakeProc(returncode=78)])
+    patch_docker(monkeypatch, fake)
+    env = DockerEnvironment(container_id="cid")
+    env._docker_temp_file_identities = {path: "7:11"}
+
+    with pytest.raises(OSError, match="failed to remove container temporary file"):
+        run(env.remove_file(path))
+
+    assert path in env._docker_temp_file_identities
+    assert "-ge 256" in env_mod._DOCKER_REMOVE_OWNED_TEMP
+    assert "mv -T -n --" in env_mod._DOCKER_REMOVE_OWNED_TEMP
+    assert "flock -x 9" in env_mod._DOCKER_REMOVE_OWNED_TEMP
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Docker control script uses Linux /proc and stat")
+def test_docker_create_write_script_detects_name_swap_without_touching_victim(tmp_path):
+    target = tmp_path / "owned.tmp"
+    detached = tmp_path / "detached.tmp"
+    victim = tmp_path / "victim.txt"
+    victim.write_text("victim", encoding="utf-8")
+    process = subprocess.Popen(
+        [
+            "bash",
+            "-c",
+            env_mod._DOCKER_CREATE_WRITE_AND_VERIFY,
+            "opencollab-write",
+            str(target),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    deadline = time.monotonic() + 2
+    while not target.exists() and time.monotonic() < deadline:
+        time.sleep(0.001)
+    assert target.exists()
+    target.rename(detached)
+    target.symlink_to(victim)
+
+    stdout, stderr = process.communicate(b"payload", timeout=5)
+
+    assert process.returncode == 75, (stdout, stderr)
+    assert detached.read_bytes() == b"payload"
+    assert target.is_symlink() and target.resolve() == victim
+    assert victim.read_text(encoding="utf-8") == "victim"
+    assert not list(tmp_path.glob(".opencollab-retired-*"))
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Docker control script uses GNU stat")
+def test_docker_remove_owned_script_refuses_replacement_without_touching_victim(tmp_path):
+    target = tmp_path / "owned.tmp"
+    target.write_text("owned", encoding="utf-8")
+    opened = target.stat()
+    expected = f"{opened.st_dev}:{opened.st_ino}"
+    target.unlink()
+    victim = tmp_path / "victim.txt"
+    victim.write_text("victim", encoding="utf-8")
+    target.symlink_to(victim)
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            env_mod._DOCKER_REMOVE_OWNED_TEMP,
+            "opencollab-remove",
+            str(target),
+            expected,
+        ],
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 76
+    assert target.is_symlink() and target.resolve() == victim
+    assert victim.read_text(encoding="utf-8") == "victim"
+    assert not list(tmp_path.glob(".opencollab-retired-*"))
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Docker control script uses GNU stat and mv")
+def test_docker_remove_retires_owned_inode_without_final_rm(tmp_path):
+    target = tmp_path / "owned.tmp"
+    target.write_text("owned", encoding="utf-8")
+    opened = target.stat()
+    expected = f"{opened.st_dev}:{opened.st_ino}"
+    hook = "rm() { return 99; }\n"
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            hook + env_mod._DOCKER_REMOVE_OWNED_TEMP,
+            "opencollab-remove",
+            str(target),
+            expected,
+        ],
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert not target.exists()
+    retired = list(tmp_path.glob(".opencollab-retired-*"))
+    assert len(retired) == 1 and retired[0].read_text(encoding="utf-8") == "owned"
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Docker control script uses GNU mv")
+def test_docker_retirement_destination_collision_preserves_foreign_inode(tmp_path):
+    target = tmp_path / "owned.tmp"
+    target.write_text("owned", encoding="utf-8")
+    opened = target.stat()
+    expected = f"{opened.st_dev}:{opened.st_ino}"
+    victim = tmp_path / "foreign.txt"
+    victim.write_text("foreign", encoding="utf-8")
+    marker = tmp_path / "collision.injected"
+    hook = f"""
+mv() {{
+    destination="${{@: -1}}"
+    if [ ! -e {shlex.quote(str(marker))} ]; then
+        : > {shlex.quote(str(marker))}
+        ln {shlex.quote(str(victim))} "$destination"
+    fi
+    command mv "$@"
+}}
+"""
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            hook + env_mod._DOCKER_REMOVE_OWNED_TEMP,
+            "opencollab-remove",
+            str(target),
+            expected,
+        ],
+        capture_output=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    assert not target.exists()
+    foreign = victim.stat()
+    assert foreign.st_nlink == 2
+    retired = list(tmp_path.glob(".opencollab-retired-*"))
+    assert any(entry.stat().st_ino == foreign.st_ino for entry in retired)
+    assert any(entry.read_text(encoding="utf-8") == "owned" for entry in retired)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Docker control script uses GNU mv")
+def test_docker_retirement_lock_keeps_concurrent_count_at_cap(tmp_path):
+    for index in range(255):
+        (tmp_path / f".opencollab-retired-existing-{index}").touch()
+    targets = [tmp_path / "first.tmp", tmp_path / "second.tmp"]
+    expected = []
+    for target in targets:
+        target.write_text("owned", encoding="utf-8")
+        opened = target.stat()
+        expected.append(f"{opened.st_dev}:{opened.st_ino}")
+    hook = "mv() { sleep 0.1; command mv \"$@\"; }\n"
+    processes = [
+        subprocess.Popen(
+            [
+                "bash",
+                "-c",
+                hook + env_mod._DOCKER_REMOVE_OWNED_TEMP,
+                "opencollab-remove",
+                str(target),
+                identity,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        for target, identity in zip(targets, expected, strict=True)
+    ]
+
+    results = [process.communicate(timeout=5) for process in processes]
+
+    assert {process.returncode for process in processes} == {0, 78}, results
+    assert len(list(tmp_path.glob(".opencollab-retired-*"))) == 256
 
 
 def test_read_rejects_truncated_output(monkeypatch):

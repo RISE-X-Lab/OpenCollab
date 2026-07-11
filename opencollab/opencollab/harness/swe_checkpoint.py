@@ -1,13 +1,14 @@
 """Bounded-loss worktree checkpoints for long SWE-bench runs."""
-
 from __future__ import annotations
 
 import asyncio
+import hashlib as hashlib
 import json
 import math
 import os
 import shlex
 import time
+from dataclasses import dataclass as dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -20,6 +21,7 @@ from opencollab.adapters.safe_files import (
     _open_directory_no_symlinks,
     ensure_directory_no_symlinks,
 )
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.harness.swe_checkpoint_io import (
     CheckpointResult as CheckpointResult,
 )
@@ -43,6 +45,9 @@ from opencollab.harness.swe_checkpoint_io import (
 )
 from opencollab.harness.swe_checkpoint_io import (
     worktree_diff_command as worktree_diff_command,
+)
+from opencollab.harness.swe_checkpoint_recovery import (
+    ENV_RECOVERY_PATCH_PREFIX as ENV_RECOVERY_PATCH_PREFIX,
 )
 from opencollab.harness.swe_checkpoint_recovery import (
     _prove_failed_restore_clean as _prove_failed_restore_clean,
@@ -91,6 +96,13 @@ class WorktreeCheckpoint:
         self._owned_operations: set[asyncio.Task[Any]] = set()
         self._background_errors: list[str] = []
 
+    @property
+    def pending_tasks(self) -> tuple[asyncio.Task[Any], ...]:
+        tasks = set(self._owned_operations)
+        if self._task is not None:
+            tasks.add(self._task)
+        return tuple(task for task in tasks if not task.done())
+
     async def capture(
         self,
         env: Environment,
@@ -109,7 +121,27 @@ class WorktreeCheckpoint:
             )
         exclude_paths = tuple(exclude_paths) + self._artifact_exclude_paths(env)
         try:
-            result = await env.exec_cmd(worktree_diff_command(exclude_paths), timeout=120)
+            retirement_collector = getattr(env, "registered_retirement_snapshot", None)
+            retirement_snapshot = await retirement_collector() if callable(retirement_collector) else ()
+            registered_retirements = tuple(
+                item.relative_path for item in retirement_snapshot
+            )
+            base_revision = getattr(env, "patch_base_revision", None)
+            object_directory = getattr(env, "patch_object_directory", None)
+            working_tree = getattr(env, "workspace", None)
+            if not base_revision or not object_directory or not working_tree:
+                raise RuntimeError("patch source was not pinned before task execution")
+            result = await env.exec_cmd(
+                worktree_diff_command(
+                    exclude_paths,
+                    registered_retirement_paths=registered_retirements,
+                    retirement_snapshot=retirement_snapshot,
+                    base_revision=base_revision,
+                    object_directory=object_directory,
+                    working_tree=working_tree,
+                ),
+                timeout=120,
+            )
         except Exception as exc:  # noqa: BLE001
             return self._write_failure(reason=reason, error=f"{type(exc).__name__}: {exc}")
         truncation_error = _truncated_output_error(result, label="worktree diff")
@@ -117,6 +149,19 @@ class WorktreeCheckpoint:
             return self._write_failure(reason=reason, error=truncation_error)
         if result.returncode != 0:
             return self._write_failure(reason=reason, error=result.stderr[:1000])
+        if callable(retirement_collector):
+            try:
+                refreshed_snapshot = await retirement_collector()
+            except Exception as exc:
+                return self._write_failure(
+                    reason=reason,
+                    error=f"retirement artifact validation failed: {type(exc).__name__}: {exc}",
+                )
+            if tuple(refreshed_snapshot) != tuple(retirement_snapshot):
+                return self._write_failure(
+                    reason=reason,
+                    error="retirement artifacts changed during checkpoint extraction",
+                )
 
         patch = result.stdout
         patch_bytes = len(patch.encode("utf-8", errors="surrogatepass"))
@@ -318,8 +363,33 @@ class WorktreeCheckpoint:
             *exclude_paths,
             *self._artifact_exclude_paths(env),
         )
+        try:
+            retirement_collector = getattr(env, "registered_retirement_snapshot", None)
+            retirement_snapshot = await retirement_collector() if callable(retirement_collector) else ()
+            registered_retirements = tuple(
+                item.relative_path for item in retirement_snapshot
+            )
+            base_revision = getattr(env, "patch_base_revision", None)
+            object_directory = getattr(env, "patch_object_directory", None)
+            working_tree = getattr(env, "workspace", None)
+            if not base_revision or not object_directory or not working_tree:
+                raise RuntimeError("patch source was not pinned before task execution")
+        except Exception as exc:
+            return CheckpointResult(
+                status="failed",
+                reason="restore",
+                error=f"retirement artifact validation failed: {type(exc).__name__}: {exc}",
+                submission_eligible=False,
+            )
         precheck = await env.exec_cmd(
-            worktree_diff_command(restore_exclude_paths),
+            worktree_diff_command(
+                restore_exclude_paths,
+                registered_retirement_paths=registered_retirements,
+                retirement_snapshot=retirement_snapshot,
+                base_revision=base_revision,
+                object_directory=object_directory,
+                working_tree=working_tree,
+            ),
             timeout=120,
         )
         truncation_error = _truncated_output_error(
@@ -415,19 +485,20 @@ class WorktreeCheckpoint:
                 )
             except (AttributeError, TypeError):
                 pass
-            add_note = getattr(cancellation, "add_note", None)
-            if callable(add_note) and cleanup_failure is not None:
-                add_note(
+            if cleanup_failure is not None:
+                add_exception_note(
+                    cancellation,
                     "checkpoint recovery temporary-file cleanup failed: "
-                    f"{type(cleanup_failure).__name__}: {cleanup_failure}"
+                    f"{type(cleanup_failure).__name__}: {cleanup_failure}",
                 )
-            if callable(add_note) and apply_error is not None and apply_error is not cancellation:
-                add_note(
+            if apply_error is not None and apply_error is not cancellation:
+                add_exception_note(
+                    cancellation,
                     "checkpoint recovery apply also failed: "
-                    f"{type(apply_error).__name__}: {apply_error}"
+                    f"{type(apply_error).__name__}: {apply_error}",
                 )
-            if callable(add_note) and proof_error:
-                add_note(proof_error)
+            if proof_error:
+                add_exception_note(cancellation, proof_error)
             raise cancellation
         if cleanup_failure is not None:
             error = (

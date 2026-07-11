@@ -281,7 +281,7 @@ async def _stop_checkpoint_bounded(
     *,
     exclude_paths: Sequence[str],
     cleanup_timeout: float,
-) -> tuple[bool, Any | None]:
+) -> tuple[bool, Any | None, tuple[asyncio.Task[Any], ...]]:
     stop_task = asyncio.ensure_future(checkpoint.stop(env, exclude_paths=exclude_paths))
     quiesced = await _wait_for_owned_execution(
         [stop_task],
@@ -290,10 +290,10 @@ async def _stop_checkpoint_bounded(
     )
     if quiesced:
         if stop_task.cancelled():
-            return False, None
-        return True, stop_task.result()
+            return False, None, ()
+        return True, stop_task.result(), ()
     stop_task.add_done_callback(_consume_background_task)
-    return False, None
+    return False, None, (stop_task,)
 
 
 def _consume_background_task(task: asyncio.Future[Any]) -> None:
@@ -379,6 +379,22 @@ def _eval_manifest_owner_done(task: asyncio.Task[Any]) -> None:
     _consume_background_task(task)
 
 
+async def _await_eval_manifest_daemon_write(write: Any) -> None:
+    await asyncio.wrap_future(write)
+
+
+def _track_eval_manifest_daemon_writes(
+    subscriber: AutoSaveSubscriber,
+) -> set[asyncio.Task[Any]]:
+    owners: set[asyncio.Task[Any]] = set()
+    for write in subscriber.pending_write_futures:
+        owner = asyncio.create_task(_await_eval_manifest_daemon_write(write))
+        _EVAL_MANIFEST_OWNER_TASKS.add(owner)
+        owner.add_done_callback(_eval_manifest_owner_done)
+        owners.add(owner)
+    return owners
+
+
 async def _persist_eval_workflow_manifest_owned(
     run_dir: str,
     *,
@@ -395,7 +411,11 @@ async def _persist_eval_workflow_manifest_owned(
             workflow=workflow,
             ctx=ctx,
             manifest=manifest,
-        )
+        ),
+        serialization_key=os.path.join(
+            run_dir,
+            WORKFLOW_MANIFEST_FILENAME,
+        ),
     )
     owner = subscriber.enqueue()
     if owner is None:
@@ -410,6 +430,10 @@ async def _persist_eval_workflow_manifest_owned(
         _done, pending = await asyncio.wait(pending, timeout=cleanup_timeout)
     if pending:
         await isolate_tasks_from_shutdown(pending, timeout=cleanup_timeout)
+    write_owners = _track_eval_manifest_daemon_writes(subscriber)
+    if write_owners:
+        _done, write_owners = await asyncio.wait(write_owners, timeout=0)
+        pending.update(write_owners)
     return not pending, subscriber.last_error, tuple(pending)
 
 
@@ -418,38 +442,53 @@ async def _cleanup_eval_resources_after_tasks(
     *,
     tracer: Tracer,
     timeout: float,
+    env: Environment | None = None,
 ) -> None:
-    quiesced = False
-    try:
-        pending = {task for task in dependencies if not task.done()}
-        deadline = asyncio.get_running_loop().time() + timeout
-        while pending:
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
+    pending = {task for task in dependencies if not task.done()}
+    deadline = asyncio.get_running_loop().time() + timeout
+    while pending:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            break
+        waiter = asyncio.create_task(asyncio.wait(pending, timeout=remaining))
+        while True:
+            try:
+                await asyncio.shield(waiter)
                 break
-            waiter = asyncio.create_task(asyncio.wait(pending, timeout=remaining))
-            while True:
-                try:
-                    await asyncio.shield(waiter)
+            except asyncio.CancelledError:
+                if waiter.done():
                     break
-                except asyncio.CancelledError:
-                    if waiter.done():
-                        break
-                    continue
-            _done, pending = waiter.result()
-        quiesced = not pending
-        if pending:
-            await isolate_tasks_from_shutdown(pending, timeout=timeout)
-    finally:
-        if not quiesced:
-            _LATE_EVAL_RESOURCE_FAILURES.append(
-                TimeoutError("late evaluator tracer dependencies did not quiesce before their final deadline")
+                continue
+        _done, pending = waiter.result()
+    if pending:
+        await isolate_tasks_from_shutdown(pending, timeout=timeout)
+        _LATE_EVAL_RESOURCE_FAILURES.append(
+            TimeoutError(
+                "late evaluator resource dependencies did not quiesce; "
+                "their environment and tracer remain retained"
             )
+        )
+        return
+    if env is not None:
         try:
-            tracer.close()
+            cleaned = await _cleanup_environment_bounded(
+                env,
+                cleanup_timeout=timeout,
+            )
         except BaseException as exc:
             _LATE_EVAL_RESOURCE_FAILURES.append(exc)
-            raise
+        else:
+            if not cleaned:
+                _LATE_EVAL_RESOURCE_FAILURES.append(
+                    TimeoutError(
+                        "late evaluator environment cleanup did not quiesce"
+                    )
+                )
+    try:
+        tracer.close()
+    except BaseException as exc:
+        _LATE_EVAL_RESOURCE_FAILURES.append(exc)
+        raise
 
 
 def _late_eval_resource_done(task: asyncio.Task[Any]) -> None:
@@ -461,6 +500,7 @@ def _defer_eval_resource_cleanup(
     dependencies: Sequence[asyncio.Task[Any]],
     *,
     tracer: Tracer,
+    env: Environment | None,
     timeout: float,
 ) -> None:
     late_timeout = min(2.0, max(0.1, timeout))
@@ -468,6 +508,7 @@ def _defer_eval_resource_cleanup(
         _cleanup_eval_resources_after_tasks(
             dependencies,
             tracer=tracer,
+            env=env,
             timeout=late_timeout,
         )
     )

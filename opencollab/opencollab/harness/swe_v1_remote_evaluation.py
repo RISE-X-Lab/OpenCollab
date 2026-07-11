@@ -28,6 +28,7 @@ def eval_for_task(row):
                 and status in {"done", "done_with_timeout_patch"}
             ):
                 summary = {
+                    "schema": "opencollab.prolite_direct_eval.v2",
                     "status": "empty_eval_patch_invalid",
                     "task": task,
                     "resolved": False,
@@ -44,6 +45,7 @@ def eval_for_task(row):
     fail_to_pass = parse_literal_list(row.get("fail_to_pass") or row.get("FAIL_TO_PASS"))
     if not fail_to_pass:
         summary = {
+            "schema": "opencollab.prolite_direct_eval.v2",
             "status": "blocked_missing_eval_spec",
             "task": task,
             "resolved": False,
@@ -65,6 +67,7 @@ def eval_for_task(row):
         unverified_plan_reasons.append("no_verified_pass_to_pass_plan")
     if unverified_plan_reasons:
         summary = {
+            "schema": "opencollab.prolite_direct_eval.v2",
             "status": "technical_eval_failed",
             "task": task,
             "resolved": False,
@@ -82,7 +85,14 @@ def eval_for_task(row):
     if (
         isinstance(previous, dict)
         and previous.get("eval_spec_sha256") == eval_spec_sha256
-        and eval_summary_matches_prediction(previous, prediction, task)
+        and eval_summary_matches_prediction(
+            previous,
+            prediction,
+            task,
+            eval_spec_sha256=eval_spec_sha256,
+            f2p_plan=f2p_plan,
+            p2p_plan=p2p_plan,
+        )
     ):
         return {"status": "eval_done", "task": task, "summary": previous, "report_path": str(report_path)}
     if dry_run:
@@ -96,6 +106,7 @@ def eval_for_task(row):
     input_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     output_dir.chmod(0o777)
+    proof_nonce = uuid.uuid4().hex
     original_model_patch = prediction_patch(prediction)
     model_patch = eval_model_patch(prediction)
     test_patch = str(row.get("test_patch") or "")
@@ -115,12 +126,17 @@ def eval_for_task(row):
     atomic_write_bytes(input_dir / "f2p.command", (f2p_cmd + "\n").encode("utf-8"))
     atomic_write_bytes(input_dir / "p2p.command", (p2p_cmd + "\n").encode("utf-8"))
     atomic_write_bytes(
+        input_dir / "opencollab_pytest_proof.py",
+        prolite_pytest_proof_plugin_source().encode("utf-8"),
+    )
+    atomic_write_bytes(input_dir / "proof.nonce", (proof_nonce + "\n").encode("ascii"))
+    atomic_write_bytes(
         input_dir / "f2p.sh",
-        prolite_test_plan_script(f2p_plan, "f2p").encode("utf-8"),
+        prolite_test_plan_script(f2p_plan, "f2p", proof_nonce).encode("utf-8"),
     )
     atomic_write_bytes(
         input_dir / "p2p.sh",
-        prolite_test_plan_script(p2p_plan, "p2p").encode("utf-8"),
+        prolite_test_plan_script(p2p_plan, "p2p", proof_nonce).encode("utf-8"),
     )
     write_json(input_dir / "f2p.plan.json", f2p_plan)
     write_json(input_dir / "p2p.plan.json", p2p_plan)
@@ -184,6 +200,7 @@ exit 0
         )
         if not stale_cleanup.get("ok"):
             summary = {
+                "schema": "opencollab.prolite_direct_eval.v2",
                 "status": "technical_eval_failed",
                 "task": task,
                 "resolved": False,
@@ -198,6 +215,7 @@ exit 0
         stale_cleanup = cleanup_eval_container(cidfile, marker_path, "")
         if not stale_cleanup.get("ok"):
             summary = {
+                "schema": "opencollab.prolite_direct_eval.v2",
                 "status": "technical_eval_failed",
                 "task": task,
                 "resolved": False,
@@ -307,6 +325,7 @@ exit 0
                 if cleanup_quiesced:
                     ACTIVE_CHILD_PGIDS.discard(proc.pid)
                 summary = {
+                    "schema": "opencollab.prolite_direct_eval.v2",
                     "status": "technical_eval_failed",
                     "task": task,
                     "resolved": False,
@@ -389,12 +408,15 @@ exit 0
         try:
             with open_regular_binary(path) as handle:
                 size = os.fstat(handle.fileno()).st_size
-                handle.seek(max(0, size - limit), os.SEEK_SET)
-                return handle.read(limit).decode("utf-8", errors="replace")
+                if size > limit:
+                    raise RecordInputLimitError(
+                        f"required output artifact exceeds byte limit: {path}"
+                    )
+                return handle.read(limit + 1).decode("utf-8", errors="replace")
         except FileNotFoundError:
             output_artifact_errors.append(f"missing:{name}")
             return ""
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             output_artifact_errors.append(f"unsafe:{name}:{type(exc).__name__}")
             return ""
 
@@ -406,14 +428,27 @@ exit 0
             status = read_exit(f"{stem}.exit")
             observed_command = read_text(f"{stem}.command", MAX_LOG_TAIL_BYTES).rstrip("\n")
             log_error_count = len(output_artifact_errors)
-            read_required_text(f"{stem}.log", MAX_LOG_TAIL_BYTES)
+            log_text = read_required_text(f"{stem}.log", MAX_LOG_TAIL_BYTES)
             log_artifact_safe = len(output_artifact_errors) == log_error_count
+            proofs = plan.get("proofs") or []
+            proof = proofs[index - 1] if index <= len(proofs) else None
+            proof_text = ""
+            if isinstance(proof, dict) and proof.get("kind") == "pytest_structured_reports":
+                proof_text = read_required_text(
+                    f"{stem}.proof.{proof_nonce}.jsonl",
+                    MAX_LOG_TAIL_BYTES,
+                )
             evidence.append(
                 {
                     "batch": index,
                     "status": status,
                     "command_matches_plan": observed_command == expected_command,
                     "log_artifact_safe": log_artifact_safe,
+                    "target_proof_matches_plan": _plan_log_proof_matches(
+                        proof,
+                        log_text,
+                        proof_text,
+                    ),
                     "artifact_safe": len(output_artifact_errors) == error_count,
                 }
             )
@@ -426,6 +461,7 @@ exit 0
             and all(
                 item["command_matches_plan"]
                 and item["log_artifact_safe"]
+                and item["target_proof_matches_plan"]
                 and item["artifact_safe"]
                 for item in evidence
             )
@@ -521,6 +557,7 @@ exit 0
     }
     write_json(report_path, {task: report})
     summary = {
+        "schema": "opencollab.prolite_direct_eval.v2",
         "status": summary_status,
         "task": task,
         "resolved": resolved,

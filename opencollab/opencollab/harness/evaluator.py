@@ -15,13 +15,14 @@ import asyncio
 import json
 import operator
 import os
+import shlex as shlex
 import stat
+import time as time
 import unicodedata
-import uuid
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass as dataclass
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import Any as Any
 
 from opencollab.adapters.env import (
     DockerEnvironment,
@@ -29,11 +30,14 @@ from opencollab.adapters.env import (
     WorktreeEnvironment,
     _await_owned_operation,
 )
+from opencollab.adapters.env import (
+    LocalEnvironment as LocalEnvironment,
+)
 from opencollab.adapters.repo_map import build_repo_map_via_env as build_repo_map_via_env
 from opencollab.adapters.safe_files import (
-    _directory_path_matches_fd,
     _open_directory_no_symlinks,
     ensure_directory_no_symlinks,
+    write_regular_file_atomic,
 )
 from opencollab.adapters.storage import SessionStore as SessionStore
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
@@ -57,6 +61,7 @@ from opencollab.application.async_timeout import (
     isolate_tasks_from_shutdown as isolate_tasks_from_shutdown,
 )
 from opencollab.application.autosave import AutoSaveSubscriber as AutoSaveSubscriber
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.session import Session as Session
 from opencollab.application.workflow import (
     WorkflowBudgetExceeded as WorkflowBudgetExceeded,
@@ -84,6 +89,8 @@ from opencollab.bootstrap.session_factory import (
     workflow_transcript_path as workflow_transcript_path,
 )
 from opencollab.domain.agent import Agent as Agent
+from opencollab.harness.evaluator_models import EvalResult as EvalResult
+from opencollab.harness.evaluator_models import EvalTask as EvalTask
 from opencollab.harness.evaluator_resources import (
     _EVAL_MANIFEST_OWNER_TASKS as _EVAL_MANIFEST_OWNER_TASKS,
 )
@@ -175,59 +182,6 @@ from opencollab.harness.test_injection import (
 
 EnvFactory = Callable[["EvalTask"], Awaitable[Environment]]
 ToolFactory = Callable[[], Sequence[Tool]]
-
-
-@dataclass
-class EvalResult:
-    """Result of a single evaluation task."""
-
-    task_id: str
-    patch: str  # Git diff output
-    patch_produced: bool
-    tokens_used: int
-    steps: int
-    duration: float
-    error: str | None = None
-    trajectory_path: str | None = None
-    # Observability: count of LLM calls whose kimi tool-call markup was recovered
-    # from literal text (P6), summed across every session of the run. Surfaces in
-    # metrics.jsonl via asdict() — a regression alarm if it spikes (provider
-    # quirk worsening) or drops to zero unexpectedly (recovery silently broke).
-    markup_recovered: int = 0
-    # Structured workflow return payload, when workflow mode is used. This is
-    # observability plus a hook for outer SWE drivers that need workflow-level
-    # audit data when writing the final prediction patch.
-    workflow_result: Any | None = None
-    checkpoint_result: Any | None = None
-    # A failed partial test-patch rollback invalidates every later extraction
-    # from the attached workspace, including extraction performed by an outer
-    # SWE driver after this evaluator returns.
-    test_patch_isolation_failed: bool = False
-    execution_quiesced: bool = True
-    patch_extraction_succeeded: bool = True
-    injected_path_cleanup_proven: bool = True
-    harness_artifact_exclusion_proven: bool = True
-    checkpoint_restore_integrity_proven: bool = True
-    task_stage_integrity_proven: bool = True
-    submission_eligible: bool = True
-
-
-@dataclass
-class EvalTask:
-    """A single evaluation task (e.g., one SWE-bench instance)."""
-
-    task_id: str
-    description: str  # Issue/problem description
-    repo_path: str | None = None  # Path to repo (for local env)
-    docker_image: str | None = None  # Docker image (for container env)
-    timeout: float = 600.0  # Max seconds per task
-    max_tokens: int = 1_000_000
-    # Generic benchmark passthrough — never interpreted by the harness core, only
-    # forwarded into the workflow args. SWE-bench uses it to thread the
-    # ``test_patch`` (injected before the run) and parsed ``fail_to_pass`` ids.
-    extras: dict | None = None
-    # Host-side harness inputs that must stay outside checkpoint/final diffs.
-    harness_artifact_paths: tuple[str, ...] = ()
 
 
 EVAL_AGENT_PROMPT = """\
@@ -474,12 +428,11 @@ async def default_env_factory(task: EvalTask) -> Environment:
             try:
                 await _await_owned_operation(env.cleanup())
             except BaseException as cleanup_exc:
-                add_note = getattr(original, "add_note", None)
-                if callable(add_note):
-                    add_note(
-                        "isolated Docker environment cleanup failed: "
-                        f"{type(cleanup_exc).__name__}: {cleanup_exc}"
-                    )
+                add_exception_note(
+                    original,
+                    "isolated Docker environment cleanup failed: "
+                    f"{type(cleanup_exc).__name__}: {cleanup_exc}",
+                )
             raise original
     env = WorktreeEnvironment(source_workspace=task.repo_path or ".")
     await env.setup()
@@ -580,47 +533,16 @@ async def run_eval_batch(
     return results
 
 
-def _fsync_directory_fds(directory_fds: Sequence[int]) -> None:
-    first_failure: BaseException | None = None
-    for directory_fd in directory_fds:
-        try:
-            os.fsync(directory_fd)
-        except BaseException as exc:
-            if first_failure is None:
-                first_failure = exc
-            else:
-                add_note = getattr(first_failure, "add_note", None)
-                if callable(add_note):
-                    add_note(
-                        "additional directory fsync failure: "
-                        f"{type(exc).__name__}: {exc}"
-                    )
-    if first_failure is not None:
-        raise first_failure
-
-
 def save_results(results: list[EvalResult], output_path: str) -> None:
     """Durably save evaluation results and their recoverable patches as JSONL."""
     target = Path(os.path.abspath(output_path))
     if not target.name or target.name in {".", ".."}:
         raise ValueError("output_path must name a results file")
     ensure_directory_no_symlinks(target.parent)
-    temp_directory = target.parent / RESULT_TEMP_DIRECTORY
-    ensure_directory_no_symlinks(temp_directory)
-    temporary = f".oc-{uuid.uuid4().hex}.tmp"
-    parent_fd = -1
-    temp_directory_fd = -1
-    fd = -1
-    replaced = False
-    written_identity: tuple[int, int] | None = None
-    temporary_identity: tuple[int, int] | None = None
+    parent_fd = _open_directory_no_symlinks(target.parent)
     try:
-        parent_fd = _open_directory_no_symlinks(target.parent)
-        temp_directory_fd = _open_directory_no_symlinks(temp_directory)
-        if not _directory_path_matches_fd(target.parent, parent_fd):
-            raise OSError("results parent changed before temporary-file creation")
-        if not _directory_path_matches_fd(temp_directory, temp_directory_fd):
-            raise OSError("results temporary directory changed before creation")
+        parent = os.fstat(parent_fd)
+        expected_parent_identity = (parent.st_dev, parent.st_ino)
         try:
             existing = os.stat(
                 target.name,
@@ -631,145 +553,63 @@ def save_results(results: list[EvalResult], output_path: str) -> None:
             existing = None
         if existing is not None and not stat.S_ISREG(existing.st_mode):
             raise OSError(f"results target is not a regular file: {target}")
-        flags = (
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
-        )
-        fd = os.open(
-            temporary,
-            flags,
-            0o600,
-            dir_fd=temp_directory_fd,
-        )
-        temporary_info = os.fstat(fd)
-        temporary_identity = (temporary_info.st_dev, temporary_info.st_ino)
-        handle = os.fdopen(fd, "w", encoding="utf-8")
-        fd = -1
-        with handle:
-            total_bytes = 0
-            for r in results:
-                record = {
-                    "task_id": r.task_id,
-                    "patch": r.patch,
-                    "patch_produced": r.patch_produced,
-                    "tokens_used": r.tokens_used,
-                    "steps": r.steps,
-                    "duration": round(r.duration, 2),
-                    "error": r.error,
-                    "patch_lines": len(r.patch.splitlines()),
-                    "trajectory": r.trajectory_path,
-                    "test_patch_isolation_failed": r.test_patch_isolation_failed,
-                    "execution_quiesced": r.execution_quiesced,
-                    "patch_extraction_succeeded": r.patch_extraction_succeeded,
-                    "injected_path_cleanup_proven": r.injected_path_cleanup_proven,
-                    "harness_artifact_exclusion_proven": (
-                        r.harness_artifact_exclusion_proven
-                    ),
-                    "checkpoint_restore_integrity_proven": (
-                        r.checkpoint_restore_integrity_proven
-                    ),
-                    "task_stage_integrity_proven": (
-                        r.task_stage_integrity_proven
-                    ),
-                    "submission_eligible": r.submission_eligible,
-                }
-                if r.checkpoint_result is not None:
-                    record["checkpoint_result"] = r.checkpoint_result
-                line = json.dumps(record) + "\n"
-                line_bytes = len(line.encode("utf-8"))
-                if line_bytes > MAX_RESULT_RECORD_BYTES:
-                    raise ValueError(
-                        f"evaluation result record exceeds {MAX_RESULT_RECORD_BYTES} bytes"
-                    )
-                total_bytes += line_bytes
-                if total_bytes > MAX_RESULTS_FILE_BYTES:
-                    raise ValueError(
-                        f"evaluation results exceed {MAX_RESULTS_FILE_BYTES} bytes"
-                    )
-                handle.write(line)
-            handle.flush()
-            os.fsync(handle.fileno())
-            written = os.fstat(handle.fileno())
-            written_identity = (written.st_dev, written.st_ino)
-        if not _directory_path_matches_fd(target.parent, parent_fd):
-            raise OSError("results parent changed before atomic replace")
-        if not _directory_path_matches_fd(temp_directory, temp_directory_fd):
-            raise OSError("results temporary directory changed before atomic replace")
-        os.replace(
-            temporary,
-            target.name,
-            src_dir_fd=temp_directory_fd,
-            dst_dir_fd=parent_fd,
-        )
-        replaced = True
-        _fsync_directory_fds((temp_directory_fd, parent_fd))
-        verified_parent_fd = _open_directory_no_symlinks(target.parent)
-        try:
-            original_parent = os.fstat(parent_fd)
-            verified_parent = os.fstat(verified_parent_fd)
-            if (original_parent.st_dev, original_parent.st_ino) != (
-                verified_parent.st_dev,
-                verified_parent.st_ino,
-            ):
-                raise OSError("results parent changed after atomic replace")
-            current = os.stat(
-                target.name,
-                dir_fd=verified_parent_fd,
-                follow_symlinks=False,
-            )
-            if (
-                written_identity is None
-                or not stat.S_ISREG(current.st_mode)
-                or (current.st_dev, current.st_ino) != written_identity
-            ):
-                raise OSError("results target changed after atomic replace")
-        finally:
-            os.close(verified_parent_fd)
-    except BaseException as primary_error:
-        if fd >= 0:
-            try:
-                os.close(fd)
-            except BaseException as cleanup_error:
-                primary_error.add_note(
-                    "results temporary fd cleanup failed: "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
-                )
-        if temp_directory_fd >= 0 and not replaced:
-            try:
-                current = os.stat(
-                    temporary,
-                    dir_fd=temp_directory_fd,
-                    follow_symlinks=False,
-                )
-            except FileNotFoundError:
-                pass
-            except BaseException as cleanup_error:
-                primary_error.add_note(
-                    "results temporary identity cleanup failed: "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
-                )
-            else:
-                if temporary_identity is None or (
-                    current.st_dev,
-                    current.st_ino,
-                ) != temporary_identity:
-                    primary_error.add_note(
-                        "results temporary cleanup skipped because ownership changed"
-                    )
-                else:
-                    try:
-                        os.unlink(temporary, dir_fd=temp_directory_fd)
-                    except BaseException as cleanup_error:
-                        primary_error.add_note(
-                            "results temporary unlink cleanup failed: "
-                            f"{type(cleanup_error).__name__}: {cleanup_error}"
-                        )
-        raise
     finally:
-        if temp_directory_fd >= 0:
-            os.close(temp_directory_fd)
-        if parent_fd >= 0:
-            os.close(parent_fd)
+        os.close(parent_fd)
+
+    def write_jsonl(handle) -> None:
+        total_bytes = 0
+        for result in results:
+            record = {
+                "task_id": result.task_id,
+                "patch": result.patch,
+                "patch_produced": result.patch_produced,
+                "tokens_used": result.tokens_used,
+                "steps": result.steps,
+                "duration": round(result.duration, 2),
+                "error": result.error,
+                "patch_lines": len(result.patch.splitlines()),
+                "trajectory": result.trajectory_path,
+                "test_patch_isolation_failed": result.test_patch_isolation_failed,
+                "execution_quiesced": result.execution_quiesced,
+                "patch_extraction_succeeded": result.patch_extraction_succeeded,
+                "injected_path_cleanup_proven": (
+                    result.injected_path_cleanup_proven
+                ),
+                "harness_artifact_exclusion_proven": (
+                    result.harness_artifact_exclusion_proven
+                ),
+                "checkpoint_restore_integrity_proven": (
+                    result.checkpoint_restore_integrity_proven
+                ),
+                "task_stage_integrity_proven": (
+                    result.task_stage_integrity_proven
+                ),
+                "submission_eligible": result.submission_eligible,
+            }
+            if result.checkpoint_result is not None:
+                record["checkpoint_result"] = result.checkpoint_result
+            line = (json.dumps(record) + "\n").encode("utf-8")
+            if len(line) > MAX_RESULT_RECORD_BYTES:
+                raise ValueError(
+                    f"evaluation result record exceeds {MAX_RESULT_RECORD_BYTES} bytes"
+                )
+            total_bytes += len(line)
+            if total_bytes > MAX_RESULTS_FILE_BYTES:
+                raise ValueError(
+                    f"evaluation results exceed {MAX_RESULTS_FILE_BYTES} bytes"
+                )
+            written = handle.write(line)
+            if written != len(line):
+                raise OSError("evaluation results write made no progress")
+
+    write_regular_file_atomic(
+        target,
+        write_jsonl,
+        max_bytes=MAX_RESULTS_FILE_BYTES,
+        expected_parent_identity=expected_parent_identity,
+        expected_target_identity=(
+            (existing.st_dev, existing.st_ino) if existing is not None else None
+        ),
+        require_target_absent=existing is None,
+        context="evaluation results",
+    )

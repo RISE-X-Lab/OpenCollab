@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-import stat
-import uuid
 from typing import Any, BinaryIO
 
 from opencollab.adapters.safe_files import (
-    _open_directory_no_symlinks,
     ensure_directory_no_symlinks,
     read_regular_bytes,
+    write_regular_file_atomic,
 )
 
 MAX_SESSION_SNAPSHOT_BYTES = 64 * 1024 * 1024
@@ -132,185 +130,13 @@ class SessionStore:
     @staticmethod
     def _atomic_json_write(path: str, value: Any) -> None:
         """Durably replace one JSON file without exposing a partial snapshot."""
-        target = os.path.abspath(path)
-        directory = os.path.dirname(target) or "."
-        filename = os.path.basename(target)
-        if not filename or filename in {".", ".."}:
-            raise ValueError(f"invalid session snapshot path: {path}")
-        directory_fd = _open_directory_no_symlinks(os.path.abspath(directory))
-        temporary = f".{filename}.{uuid.uuid4().hex}.tmp"
-        flags = (
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
+        def serialize(handle: BinaryIO) -> None:
+            writer = _BoundedUTF8Writer(handle, path=path)
+            json.dump(value, writer, ensure_ascii=False, indent=2)
+
+        write_regular_file_atomic(
+            path,
+            serialize,
+            max_bytes=MAX_SESSION_SNAPSHOT_BYTES,
+            context="session snapshot",
         )
-        fd = -1
-        replaced = False
-        written_identity: tuple[int, int] | None = None
-        primary_error: BaseException | None = None
-        try:
-            fd = os.open(temporary, flags, 0o600, dir_fd=directory_fd)
-            handle = os.fdopen(fd, "wb")
-            fd = -1
-            serialization_error: BaseException | None = None
-            try:
-                writer = _BoundedUTF8Writer(handle, path=path)
-                json.dump(value, writer, ensure_ascii=False, indent=2)
-                handle.flush()
-                os.fsync(handle.fileno())
-                written = os.fstat(handle.fileno())
-                written_identity = (written.st_dev, written.st_ino)
-            except BaseException as exc:
-                serialization_error = exc
-            try:
-                handle.close()
-            except BaseException as close_error:
-                if serialization_error is not None:
-                    serialization_error.add_note(
-                        "session temporary handle close failed with "
-                        f"{type(close_error).__name__}: {close_error}"
-                    )
-                else:
-                    raise
-            if serialization_error is not None:
-                raise serialization_error
-            verified_directory_fd = _open_directory_no_symlinks(
-                os.path.abspath(directory)
-            )
-            verification_error: BaseException | None = None
-            try:
-                original = os.fstat(directory_fd)
-                verified = os.fstat(verified_directory_fd)
-                if (original.st_dev, original.st_ino) != (
-                    verified.st_dev,
-                    verified.st_ino,
-                ):
-                    raise OSError(
-                        "session snapshot parent changed before atomic replace: "
-                        f"{directory}"
-                    )
-            except BaseException as exc:
-                verification_error = exc
-            try:
-                os.close(verified_directory_fd)
-            except BaseException as close_error:
-                if verification_error is not None:
-                    verification_error.add_note(
-                        "session verified parent fd close failed with "
-                        f"{type(close_error).__name__}: {close_error}"
-                    )
-                else:
-                    raise
-            if verification_error is not None:
-                raise verification_error
-            try:
-                existing = os.stat(
-                    filename,
-                    dir_fd=directory_fd,
-                    follow_symlinks=False,
-                )
-            except FileNotFoundError:
-                existing = None
-            if existing is not None and not stat.S_ISREG(existing.st_mode):
-                raise OSError(f"session snapshot target is not a regular file: {target}")
-            os.replace(
-                temporary,
-                filename,
-                src_dir_fd=directory_fd,
-                dst_dir_fd=directory_fd,
-            )
-            replaced = True
-            current = os.stat(
-                filename,
-                dir_fd=directory_fd,
-                follow_symlinks=False,
-            )
-            if (
-                not stat.S_ISREG(current.st_mode)
-                or (current.st_dev, current.st_ino) != written_identity
-            ):
-                raise OSError(f"session snapshot changed during replace: {target}")
-            os.fsync(directory_fd)
-            final_directory_fd = _open_directory_no_symlinks(
-                os.path.abspath(directory)
-            )
-            final_verification_error: BaseException | None = None
-            try:
-                original = os.fstat(directory_fd)
-                final = os.fstat(final_directory_fd)
-                if (original.st_dev, original.st_ino) != (
-                    final.st_dev,
-                    final.st_ino,
-                ):
-                    raise OSError(
-                        "session snapshot parent changed after atomic replace: "
-                        f"{directory}"
-                    )
-                visible = os.stat(
-                    filename,
-                    dir_fd=final_directory_fd,
-                    follow_symlinks=False,
-                )
-                if (
-                    not stat.S_ISREG(visible.st_mode)
-                    or (visible.st_dev, visible.st_ino) != written_identity
-                ):
-                    raise OSError(
-                        f"session snapshot path changed after atomic replace: {target}"
-                    )
-            except BaseException as exc:
-                final_verification_error = exc
-            try:
-                os.close(final_directory_fd)
-            except BaseException as close_error:
-                if final_verification_error is not None:
-                    final_verification_error.add_note(
-                        "session final parent fd close failed with "
-                        f"{type(close_error).__name__}: {close_error}"
-                    )
-                else:
-                    raise
-            if final_verification_error is not None:
-                raise final_verification_error
-        except BaseException as exc:
-            primary_error = exc
-            raise
-        finally:
-            cleanup_errors: list[tuple[str, BaseException]] = []
-            if fd >= 0:
-                try:
-                    os.close(fd)
-                except BaseException as exc:
-                    cleanup_errors.append(("temporary fd close", exc))
-            if not replaced:
-                try:
-                    os.unlink(temporary, dir_fd=directory_fd)
-                except FileNotFoundError:
-                    pass
-                except BaseException as exc:
-                    cleanup_errors.append((f"temporary unlink {temporary}", exc))
-            try:
-                os.close(directory_fd)
-            except BaseException as exc:
-                cleanup_errors.append(("parent directory fd close", exc))
-            if cleanup_errors:
-                if primary_error is not None:
-                    for stage, cleanup_error in cleanup_errors:
-                        primary_error.add_note(
-                            f"session atomic cleanup {stage} failed with "
-                            f"{type(cleanup_error).__name__}: {cleanup_error}"
-                        )
-                else:
-                    stage, cleanup_error = cleanup_errors[0]
-                    for extra_stage, extra_error in cleanup_errors[1:]:
-                        cleanup_error.add_note(
-                            "additional session atomic cleanup "
-                            f"{extra_stage} failed with "
-                            f"{type(extra_error).__name__}: {extra_error}"
-                        )
-                    cleanup_error.add_note(
-                        f"session atomic cleanup stage: {stage}"
-                    )
-                    raise cleanup_error

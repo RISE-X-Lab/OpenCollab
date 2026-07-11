@@ -234,14 +234,8 @@ class LifecycleMixin:
 
         if env is None:
             return
-        release_env = getattr(self._worktree_pool, "release_env", None)
         try:
-            if callable(release_env):
-                await release_env(env)
-                return
-            cleanup = getattr(env, "cleanup", None)
-            if callable(cleanup):
-                await cleanup()
+            await self._worktree_pool.release_env(env)
         except Exception as exc:
             logger.error("failed-spawn environment cleanup failed for aid %s: %s", aid, exc)
 

@@ -77,8 +77,10 @@ def test_checkpoint_abort_is_bounded_when_capture_ignores_cancellation(tmp_path)
         assert quiesced is False
         assert checkpoint._task is None
         assert env.cancellations >= 2
+        assert checkpoint.pending_tasks == (capture_task,)
         env.release.set()
         await asyncio.wait_for(capture_task, timeout=0.5)
+        assert checkpoint.pending_tasks == ()
 
     run(scenario())
 

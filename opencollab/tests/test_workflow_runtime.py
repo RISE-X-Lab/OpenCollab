@@ -14,7 +14,9 @@ import os
 import threading
 from typing import Any
 
+import opencollab.application.autosave as autosave_mod
 import pytest
+from asyncio_test_support import assert_cancel_note, assert_cancel_reason
 from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
@@ -824,7 +826,11 @@ async def test_workflow_cleanup_marks_cancelled_blocking_autosave_nonquiescent()
         workflow_runtime._quiesce_workflow_context(ctx, timeout=0.02)
     )
     deadline = asyncio.get_running_loop().time() + 0.5
-    while not all(owner.cancelling() for owner in owners):
+    while not (
+        cleanup.done()
+        or all(owner.cancelled() or owner.done() for owner in owners)
+        or subscriber.failure_count > 0
+    ):
         assert not cleanup.done()
         assert asyncio.get_running_loop().time() < deadline
         await asyncio.sleep(0)
@@ -1023,10 +1029,10 @@ async def test_run_workflow_cleanup_failure_is_note_on_primary_cancel(monkeypatc
 
     with pytest.raises(asyncio.CancelledError) as caught:
         await asyncio.wait_for(run_task, timeout=0.5)
-    assert caught.value.args == ("primary cancellation",)
-    assert any(
-        "workflow cleanup also failed" in note
-        for note in caught.value.__notes__
+    assert_cancel_reason(caught.value, "primary cancellation")
+    assert_cancel_note(
+        caught.value,
+        "workflow cleanup also failed",
     )
 
 
@@ -1036,6 +1042,7 @@ async def test_run_workflow_slow_manifest_is_bounded_and_defers_tracer_close(
     tmp_path,
 ):
     _patch_build_session(monkeypatch)
+    monkeypatch.setattr(autosave_mod, "MAX_CANCELLED_SAVE_WAIT_SECONDS", 0.01)
     started = threading.Event()
     release = threading.Event()
     order: list[str] = []
@@ -1226,11 +1233,11 @@ async def test_run_workflow_manifest_failure_during_cancel_is_note_on_primary_ca
 
     with pytest.raises(asyncio.CancelledError) as caught:
         await asyncio.wait_for(run_task, timeout=0.5)
-    assert caught.value.args == ("primary cancellation",)
-    assert any(
-        "workflow manifest persistence also failed" in note
-        and "manifest disk failed" in note
-        for note in caught.value.__notes__
+    assert_cancel_reason(caught.value, "primary cancellation")
+    assert_cancel_note(
+        caught.value,
+        "workflow manifest persistence also failed",
+        "manifest disk failed",
     )
 
 
@@ -1386,7 +1393,7 @@ async def test_run_workflow_double_cancel_cannot_interrupt_owned_cleanup(
 
     with pytest.raises(asyncio.CancelledError) as raised:
         await asyncio.wait_for(run_task, timeout=0.5)
-    assert raised.value.args == ("first cancellation",)
+    assert_cancel_reason(raised.value, "first cancellation")
     assert order.index("session-finished") < order.index("tracer-close")
     assert tracer_instances[0].closed is True
 

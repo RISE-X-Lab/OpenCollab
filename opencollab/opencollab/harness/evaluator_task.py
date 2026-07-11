@@ -11,6 +11,7 @@ from typing import Any
 
 from opencollab.adapters.env import Environment
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.session import Session
 from opencollab.application.workflow import WorkflowContext
 from opencollab.harness.evaluator_patch import cleanup_injected_paths_and_extract_patch
@@ -86,6 +87,7 @@ async def run_eval_task_impl(
     session_holder: list[Session] = []
     workflow_context_holder: list[WorkflowContext] = []
     owned_execution_tasks: list[asyncio.Task[Any]] = []
+    checkpoint_lingering: set[asyncio.Task[Any]] = set()
     stage_tasks: dict[str, asyncio.Task[Any]] = {}
     observed_stage_results: set[str] = set()
     environment_setup_owner: _EnvironmentSetupOwner | None = None
@@ -103,6 +105,7 @@ async def run_eval_task_impl(
     persistence_succeeded = True
     final_snapshot_lingering: tuple[asyncio.Task[Any], ...] = ()
     manifest_lingering: tuple[asyncio.Task[Any], ...] = ()
+    environment_revocation_quiesced = False
 
     def remaining_task_time() -> float:
         remaining = task_deadline - time.monotonic()
@@ -294,9 +297,9 @@ async def run_eval_task_impl(
         """Finish one owned teardown operation despite repeated caller cancel."""
         nonlocal cancellation, error
         owned_task = asyncio.ensure_future(awaitable)
-        while True:
+        while not owned_task.done():
             try:
-                return await asyncio.shield(owned_task)
+                await asyncio.wait({owned_task})
             except asyncio.CancelledError as exc:
                 if cancellation is None:
                     cancellation = exc
@@ -305,21 +308,30 @@ async def run_eval_task_impl(
                         "evaluation task cancelled",
                         RuntimeError("caller cancelled during teardown"),
                     )
-                if owned_task.done():
-                    return owned_task.result()
                 continue
+        if owned_task.cancelled():
+            raise RuntimeError("owned teardown operation cancelled itself")
+        return owned_task.result()
 
     if session is None and session_holder:
         session = session_holder[0]
     if workflow_ctx is None and workflow_context_holder:
         workflow_ctx = workflow_context_holder[0]
-    execution_quiesced = await await_teardown(
-        _wait_for_owned_execution(
-            owned_execution_tasks,
-            workflow_ctx,
-            cleanup_timeout=cleanup_timeout,
+    try:
+        execution_quiesced = await await_teardown(
+            _wait_for_owned_execution(
+                owned_execution_tasks,
+                workflow_ctx,
+                cleanup_timeout=cleanup_timeout,
+            )
         )
-    )
+    except Exception as exc:
+        execution_quiesced = False
+        error = _append_harness_error(
+            error,
+            "execution teardown failed",
+            exc,
+        )
 
     if environment_setup_owner is not None:
         for stage, disposal_error in environment_setup_owner.disposal_errors:
@@ -444,21 +456,9 @@ async def run_eval_task_impl(
                     TimeoutError("periodic checkpoint capture remained active"),
                 )
         if env is not None:
-            try:
-                environment_quiesced = await await_teardown(
-                    _abort_environment(
-                        env,
-                        cleanup_timeout=cleanup_timeout,
-                    )
-                )
-                if not environment_quiesced:
-                    error = _append_harness_error(
-                        error,
-                        "environment abort timed out",
-                        TimeoutError("environment abort hook remained active"),
-                    )
-            except Exception as exc:
-                error = _append_harness_error(error, "environment abort failed", exc)
+            # Revoke new public operations immediately. Adapter teardown waits
+            # until the still-owned workflow/checkpoint tasks stop using it.
+            env._aborted = True
 
     if (
         execution_quiesced
@@ -500,7 +500,11 @@ async def run_eval_task_impl(
         and checkpoint_restore_integrity_proven
     ):
         try:
-            checkpoint_finalized, final_checkpoint = await await_teardown(
+            (
+                checkpoint_finalized,
+                final_checkpoint,
+                stop_lingering,
+            ) = await await_teardown(
                 _stop_checkpoint_bounded(
                     checkpoint,
                     env,
@@ -508,6 +512,7 @@ async def run_eval_task_impl(
                     cleanup_timeout=cleanup_timeout,
                 )
             )
+            checkpoint_lingering.update(stop_lingering)
             if checkpoint_result is None:
                 checkpoint_result = {}
             if checkpoint_finalized:
@@ -533,18 +538,7 @@ async def run_eval_task_impl(
                         "checkpoint abort failed",
                         exc,
                     )
-                abort_quiesced = await await_teardown(
-                    _abort_environment(
-                        env,
-                        cleanup_timeout=cleanup_timeout,
-                    )
-                )
-                if not abort_quiesced:
-                    error = _append_harness_error(
-                        error,
-                        "environment abort timed out",
-                        TimeoutError("environment abort hook remained active"),
-                    )
+                env._aborted = True
                 execution_quiesced = False
         except Exception as exc:
             error = _append_harness_error(error, "checkpoint finalization failed", exc)
@@ -614,19 +608,53 @@ async def run_eval_task_impl(
             *owned_execution_tasks,
             *final_snapshot_lingering,
             *manifest_lingering,
+            *checkpoint_lingering,
         )
         if not task.done()
     }
+    if checkpoint is not None:
+        live_resource_dependencies.update(
+            task
+            for task in getattr(checkpoint, "pending_tasks", ())
+            if isinstance(task, asyncio.Task) and not task.done()
+        )
     if workflow_ctx is not None:
         live_resource_dependencies.update(
             task for task in workflow_ctx.pending_cleanup_tasks if isinstance(task, asyncio.Task) and not task.done()
         )
+    if session is not None:
+        live_resource_dependencies.update(
+            task
+            for task in getattr(session, "pending_cleanup_tasks", ())
+            if isinstance(task, asyncio.Task) and not task.done()
+        )
     resources_deferred = bool(live_resource_dependencies)
     if resources_deferred:
         execution_quiesced = False
+        if env is not None:
+            try:
+                environment_revocation_quiesced = await await_teardown(
+                    _abort_environment(
+                        env,
+                        cleanup_timeout=cleanup_timeout,
+                    )
+                )
+            except Exception as exc:
+                error = _append_harness_error(
+                    error,
+                    "environment abort failed",
+                    exc,
+                )
+            if not environment_revocation_quiesced:
+                error = _append_harness_error(
+                    error,
+                    "environment abort timed out",
+                    TimeoutError("environment abort hook remained active"),
+                )
         _defer_eval_resource_cleanup(
             tuple(live_resource_dependencies),
             tracer=tracer,
+            env=(env if not environment_revocation_quiesced else None),
             timeout=cleanup_timeout,
         )
         error = _append_harness_error(
@@ -649,7 +677,7 @@ async def run_eval_task_impl(
             RuntimeError(str(tracer_write_error)),
         )
 
-    if env:
+    if env and (not resources_deferred or environment_revocation_quiesced):
         environment_cleaned = False
         cleanup_raised = False
         try:
@@ -737,8 +765,9 @@ async def run_eval_task_impl(
     )
     if cancellation is not None:
         if error:
-            add_note = getattr(cancellation, "add_note", None)
-            if callable(add_note):
-                add_note(f"evaluation teardown diagnostics: {error}")
+            add_exception_note(
+                cancellation,
+                f"evaluation teardown diagnostics: {error}",
+            )
         raise cancellation
     return result

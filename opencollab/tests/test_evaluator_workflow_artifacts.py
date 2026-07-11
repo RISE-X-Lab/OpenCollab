@@ -6,6 +6,7 @@ from evaluator_workflow_test_support import (
     LocalEnvironment,
     WorktreeCheckpoint,
     evaluator,
+    is_worktree_diff_cmd,
     json,
     run,
     run_eval_task,
@@ -254,9 +255,9 @@ def test_workflow_checkpoint_excludes_injected_test_paths(tmp_path):
         )
     )
 
-    checkpoint_cmds = [cmd for cmd in env.cmds if "git diff --cached --binary HEAD" in cmd]
+    checkpoint_cmds = [cmd for cmd in env.cmds if is_worktree_diff_cmd(cmd)]
     assert checkpoint_cmds
-    assert "git --literal-pathspecs reset -q HEAD -- tests/test_x.py" in checkpoint_cmds[-1]
+    assert 'trusted_git --literal-pathspecs reset -q "$base_oid" -- tests/test_x.py' in checkpoint_cmds[-1]
 
 
 def test_workflow_checkpoint_excludes_own_artifacts_inside_workspace(tmp_path):
@@ -287,15 +288,15 @@ def test_workflow_checkpoint_excludes_own_artifacts_inside_workspace(tmp_path):
         )
     )
 
-    checkpoint_cmds = [cmd for cmd in env.cmds if "git diff --cached --binary HEAD" in cmd]
+    checkpoint_cmds = [cmd for cmd in env.cmds if is_worktree_diff_cmd(cmd)]
     assert checkpoint_cmds
     assert result.checkpoint_result["restore"]["status"] == "restored"
     assert (
-        "git --literal-pathspecs reset -q HEAD -- "
+        'trusted_git --literal-pathspecs reset -q "$base_oid" -- '
         "eval_results/trajectories/inside/checkpoint.worktree.patch" in checkpoint_cmds[0]
     )
     assert (
-        "git --literal-pathspecs reset -q HEAD -- "
+        'trusted_git --literal-pathspecs reset -q "$base_oid" -- '
         "eval_results/trajectories/inside/checkpoint.worktree.json" in checkpoint_cmds[0]
     )
 

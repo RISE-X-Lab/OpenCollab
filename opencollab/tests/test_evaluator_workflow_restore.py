@@ -224,7 +224,8 @@ def test_checkpoint_restore_nonzero_apply_detects_partial_worktree_mutation(tmp_
     assert "left the worktree dirty" in result.error
 
 
-def test_checkpoint_restore_cancelled_partial_apply_marks_cancellation_unproven(
+@pytest.mark.asyncio
+async def test_checkpoint_restore_cancelled_partial_apply_marks_cancellation_unproven(
     tmp_path,
 ):
     patch = "diff --git a/new b/new\n+new\n"
@@ -251,7 +252,7 @@ def test_checkpoint_restore_cancelled_partial_apply_marks_cancellation_unproven(
             return await super().exec_cmd(cmd, timeout)
 
     with pytest.raises(asyncio.CancelledError) as raised:
-        run(checkpoint.restore_latest(CancelledPartialEnv()))
+        await checkpoint.restore_latest(CancelledPartialEnv())
 
     assert raised.value.checkpoint_restore_integrity_proven is False
     assert any("left the worktree dirty" in note for note in raised.value.__notes__)

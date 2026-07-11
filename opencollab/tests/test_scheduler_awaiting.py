@@ -14,6 +14,7 @@ import asyncio
 
 import pytest
 from opencollab.adapters.worktree_pool import WorktreePool
+from opencollab.application import _scheduler_cleanup
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
 from opencollab.domain.events import SchedulerEvent
@@ -24,6 +25,23 @@ from opencollab.domain.session import SessionPhase, SessionState
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def test_cleanup_wait_consumes_finished_task_without_scheduler_module_injection(monkeypatch):
+    monkeypatch.delattr(_scheduler_cleanup, "Scheduler", raising=False)
+
+    async def scenario():
+        task = asyncio.create_task(asyncio.sleep(0))
+        await task
+
+        pending = await _scheduler_cleanup.SchedulerCleanupMixin._wait_for_cleanup_tasks(
+            {task},
+            timeout=0.01,
+        )
+
+        assert pending == set()
+
+    run(scenario())
 
 
 class ScriptedSession:

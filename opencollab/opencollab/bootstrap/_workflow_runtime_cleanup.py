@@ -5,14 +5,17 @@ from __future__ import annotations
 import asyncio
 import inspect
 import math
+import os
 from collections.abc import Sequence
 from typing import Any
 
 from opencollab.application.async_timeout import isolate_tasks_from_shutdown
 from opencollab.application.autosave import AutoSaveSubscriber
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import TracePort
 from opencollab.application.workflow import WorkflowContext
 from opencollab.bootstrap._workflow_runtime_manifest import (
+    WORKFLOW_MANIFEST_FILENAME,
     _workflow_manifest_payload,
     _write_workflow_manifest,
 )
@@ -24,9 +27,7 @@ from opencollab.bootstrap._workflow_runtime_state import (
 
 
 def _add_failure_note(error: BaseException, note: str) -> None:
-    add_note = getattr(error, "add_note", None)
-    if callable(add_note):
-        add_note(note)
+    add_exception_note(error, note)
 
 
 def _merge_failure(
@@ -276,6 +277,22 @@ def _workflow_manifest_owner_done(task: asyncio.Task[Any]) -> None:
     _consume_task_result(task)
 
 
+async def _await_manifest_daemon_write(write: Any) -> None:
+    await asyncio.wrap_future(write)
+
+
+def _track_manifest_daemon_writes(
+    subscriber: AutoSaveSubscriber,
+) -> set[asyncio.Task[Any]]:
+    owners: set[asyncio.Task[Any]] = set()
+    for write in subscriber.pending_write_futures:
+        owner = asyncio.create_task(_await_manifest_daemon_write(write))
+        _WORKFLOW_MANIFEST_OWNER_TASKS.add(owner)
+        owner.add_done_callback(_workflow_manifest_owner_done)
+        owners.add(owner)
+    return owners
+
+
 async def _persist_workflow_manifest_owned(
     save_dir: str,
     *,
@@ -309,7 +326,11 @@ async def _persist_workflow_manifest_owned(
             tracer_write_error=tracer_write_error,
             tracer_dropped_steps=tracer_dropped_steps,
             manifest=manifest,
-        )
+        ),
+        serialization_key=os.path.join(
+            save_dir,
+            WORKFLOW_MANIFEST_FILENAME,
+        ),
     )
     owner = subscriber.enqueue()
     if owner is None:
@@ -324,6 +345,10 @@ async def _persist_workflow_manifest_owned(
             task.cancel()
         _done, pending = await asyncio.wait(pending, timeout=timeout)
     await isolate_tasks_from_shutdown(pending, timeout=timeout)
+    write_owners = _track_manifest_daemon_writes(subscriber)
+    if write_owners:
+        _done, write_owners = await asyncio.wait(write_owners, timeout=0)
+        pending.update(write_owners)
     return not pending, subscriber.last_error, tuple(pending)
 
 

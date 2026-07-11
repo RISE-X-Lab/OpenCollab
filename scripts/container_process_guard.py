@@ -18,6 +18,20 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+try:
+    from opencollab.adapters._linux_process_supervisor import (
+        SupervisorError,
+        descendants,
+        enable_subreaper,
+    )
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "opencollab"))
+    from opencollab.adapters._linux_process_supervisor import (  # noqa: E402
+        SupervisorError,
+        descendants,
+        enable_subreaper,
+    )
+
 UNKNOWN = 125
 _MARKER_LIMIT = 4096
 _POLL_SECONDS = 0.05
@@ -245,6 +259,10 @@ def _command_session_members(session_id: int) -> set[int]:
             raise GuardError(f"pgrep session enumeration failed: {exc}") from exc
         if result.returncode == 1:
             return set()
+        if result.returncode != 0:
+            raise GuardError(
+                f"pgrep session enumeration exited {result.returncode}"
+            )
         if result.returncode == 0:
             values = [line.strip() for line in result.stdout.splitlines() if line.strip()]
             if not values:
@@ -319,6 +337,7 @@ def _validate_record(value: Any) -> dict[str, Any]:
     owner_pid = value.get("owner_pid")
     nonce = value.get("nonce")
     start_identity = value.get("start_identity")
+    owner_start_identity = value.get("owner_start_identity")
     if isinstance(session_id, bool) or not isinstance(session_id, int) or session_id <= 1:
         raise GuardError("owner marker has invalid session id")
     if isinstance(owner_pid, bool) or not isinstance(owner_pid, int) or owner_pid <= 1:
@@ -327,6 +346,8 @@ def _validate_record(value: Any) -> dict[str, Any]:
         raise GuardError("owner marker has invalid nonce")
     if not isinstance(start_identity, str):
         raise GuardError("owner marker has invalid start identity")
+    if not isinstance(owner_start_identity, str):
+        raise GuardError("owner marker has invalid owner start identity")
     return value
 
 
@@ -490,6 +511,21 @@ def _assert_identity(record: dict[str, Any], *, trusted: bool) -> None:
     current = _start_identity(session_id)
     if current and current != expected:
         raise GuardError("session leader identity changed; refusing to signal reused pid")
+    owner_pid = int(record["owner_pid"])
+    owner_expected = str(record.get("owner_start_identity") or "")
+    owner_current = _start_identity(owner_pid)
+    if not owner_expected or not owner_current or owner_current != owner_expected:
+        raise GuardError("process guard owner identity is unavailable or changed")
+
+
+def _owned_members(record: dict[str, Any]) -> set[int]:
+    members = _session_members(int(record["session_id"]))
+    if Path("/proc").is_dir():
+        try:
+            members.update(descendants(int(record["owner_pid"])))
+        except SupervisorError as exc:
+            raise GuardError(str(exc)) from exc
+    return members
 
 
 def _signal_members(session_id: int, members: set[int], sig: signal.Signals) -> None:
@@ -518,7 +554,7 @@ def _terminate_session(record: dict[str, Any], *, trusted: bool) -> None:
         deadline = time.monotonic() + duration
         empty_scans = 0
         while time.monotonic() < deadline:
-            members = _session_members(session_id)
+            members = _owned_members(record)
             if not members:
                 empty_scans += 1
                 if empty_scans >= 2:
@@ -527,7 +563,7 @@ def _terminate_session(record: dict[str, Any], *, trusted: bool) -> None:
                 empty_scans = 0
                 _signal_members(session_id, members, sig)
             time.sleep(_POLL_SECONDS)
-    remaining = _session_members(session_id)
+    remaining = _owned_members(record)
     if remaining:
         raise GuardError(
             f"session {session_id} remained after SIGKILL: {sorted(remaining)[:20]}"
@@ -603,6 +639,7 @@ def _child_main(
         "schema": "opencollab.container-process.v1",
         "session_id": os.getpid(),
         "owner_pid": os.getppid(),
+        "owner_start_identity": _start_identity(os.getppid()),
         "start_identity": _start_identity(os.getpid()),
         "nonce": nonce,
     }
@@ -615,6 +652,11 @@ def _child_main(
 def run(pidfile: Path, cancelfile: Path, command: list[str]) -> int:
     if not command:
         raise GuardError("missing guarded command")
+    if Path("/proc").is_dir():
+        try:
+            enable_subreaper()
+        except SupervisorError as exc:
+            raise GuardError(str(exc)) from exc
     lock_fd = _open_owner_lock(pidfile)
     if not _try_lock(lock_fd):
         os.close(lock_fd)
@@ -660,14 +702,14 @@ def run(pidfile: Path, cancelfile: Path, command: list[str]) -> int:
                     pass
             if interrupted and record is not None and not interrupt_signalled:
                 try:
-                    members = _session_members(int(record["session_id"]))
+                    members = _owned_members(record)
                     _signal_members(
                         int(record["session_id"]),
                         members,
                         signal.SIGTERM,
                     )
                     time.sleep(0.1)
-                    members = _session_members(int(record["session_id"]))
+                    members = _owned_members(record)
                     _signal_members(
                         int(record["session_id"]),
                         members,
@@ -692,6 +734,7 @@ def run(pidfile: Path, cancelfile: Path, command: list[str]) -> int:
                     "schema": "opencollab.container-process.v1",
                     "session_id": child,
                     "owner_pid": os.getpid(),
+                    "owner_start_identity": _start_identity(os.getpid()),
                     "start_identity": _start_identity(child),
                     "nonce": nonce,
                 }

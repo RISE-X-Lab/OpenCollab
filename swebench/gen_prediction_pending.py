@@ -29,6 +29,7 @@ from gen_prediction_safe_output import (
     _fsync_directory,
     _open_regular_file,
     _patch_sha256,
+    _require_path_matches_open_file,
     _validate_output_target,
     _write_all,
     output_paths_collide,
@@ -277,31 +278,42 @@ def _promote_durable_preservation_candidates(run_dir: Path) -> bool:
 
 def _find_committed_identity(fd: int, expected: dict) -> bool:
     expected_instance, expected_record, expected_sha = _row_output_identity(expected)
-    if os.fstat(fd).st_size > MAX_OUTPUT_JSONL_BYTES:
+    size = os.fstat(fd).st_size
+    if size > MAX_OUTPUT_JSONL_BYTES:
         raise OSError("output JSONL exceeds byte limit")
-    with os.fdopen(os.dup(fd), "rb") as handle:
-        handle.seek(0)
-        while True:
-            line = handle.readline(MAX_JSONL_SCAN_LINE_BYTES + 1)
-            if not line:
+    data = os.pread(fd, size, 0)
+    if len(data) != size:
+        raise OSError("output JSONL changed during validation")
+    lines = data.splitlines(keepends=True)
+    found = False
+    tail_start = size
+    if data and not data.endswith(b"\n"):
+        tail_start = data.rfind(b"\n") + 1
+
+    for index, line in enumerate(lines):
+        terminated = line.endswith(b"\n")
+        content = line[:-1] if terminated else line
+        if len(line) > MAX_JSONL_SCAN_LINE_BYTES:
+            raise OSError("output JSONL line exceeds byte limit")
+        if not content.strip():
+            raise OSError("output JSONL contains a blank record")
+        try:
+            row = json.loads(content.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            if not terminated and index == len(lines) - 1:
+                os.ftruncate(fd, tail_start)
+                os.fsync(fd)
                 break
-            if len(line) > MAX_JSONL_SCAN_LINE_BYTES:
-                while line and not line.endswith(b"\n"):
-                    line = handle.readline(MAX_JSONL_SCAN_LINE_BYTES + 1)
-                continue
-            try:
-                row = json.loads(line.decode("utf-8"))
-            except (UnicodeDecodeError, json.JSONDecodeError):
-                continue
-            if not isinstance(row, dict):
-                continue
-            instance_id, record_id, patch_sha = _row_output_identity(row)
-            if instance_id != expected_instance or record_id != expected_record:
-                continue
-            if patch_sha != expected_sha or row != expected:
-                raise RuntimeError("committed output conflicts with pending record identity")
-            return True
-    return False
+            raise OSError("output JSONL contains a malformed record") from exc
+        if not isinstance(row, dict):
+            raise OSError("output JSONL record must be an object")
+        instance_id, record_id, patch_sha = _row_output_identity(row)
+        if instance_id != expected_instance or record_id != expected_record:
+            continue
+        if patch_sha != expected_sha or row != expected:
+            raise RuntimeError("committed output conflicts with pending record identity")
+        found = True
+    return found
 
 
 def _append_jsonl_durable_once(path: Path, row: dict) -> bool:
@@ -317,8 +329,10 @@ def _append_jsonl_durable_once(path: Path, row: dict) -> bool:
     try:
         _acquire_exclusive_lock(fd, label=f"output lock {path}")
         locked = True
+        _require_path_matches_open_file(path, fd)
         if _find_committed_identity(fd, row):
             _fsync_directory(path.parent)
+            _require_path_matches_open_file(path, fd)
             return False
         size = os.fstat(fd).st_size
         needs_separator = size > 0 and os.pread(fd, 1, size - 1) != b"\n"
@@ -329,6 +343,7 @@ def _append_jsonl_durable_once(path: Path, row: dict) -> bool:
         _write_all(fd, payload)
         os.fsync(fd)
         _fsync_directory(path.parent)
+        _require_path_matches_open_file(path, fd)
         return True
     finally:
         try:

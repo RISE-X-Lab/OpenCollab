@@ -475,6 +475,36 @@ def test_local_report_pair_publishes_matching_bundle_identity(tmp_path):
     assert f"local_report_bundle_id:{bundle_id}" in md_path.read_text(encoding="utf-8")
 
 
+def test_local_report_json_commit_marker_rejects_concurrent_replacement(
+    tmp_path,
+    monkeypatch,
+):
+    json_path = tmp_path / "report.json"
+    md_path = tmp_path / "report.md"
+    json_path.write_text('{"status":"old"}\n', encoding="utf-8")
+    md_path.write_text("# Old\n", encoding="utf-8")
+    original_write = runner.write_regular_bytes_atomic
+
+    def replace_json_after_markdown(path, payload, **kwargs):
+        result = original_write(path, payload, **kwargs)
+        if path == md_path:
+            json_path.unlink()
+            json_path.write_text("foreign\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(runner, "write_regular_bytes_atomic", replace_json_after_markdown)
+
+    with pytest.raises(OSError, match="target identity changed before commit"):
+        runner.write_local_report(
+            {"status": "done", "markdown": "# New\n"},
+            json_path,
+            md_path,
+        )
+
+    assert json_path.read_text(encoding="utf-8") == "foreign\n"
+    assert md_path.read_text(encoding="utf-8").startswith("# New\n")
+
+
 @pytest.mark.parametrize("target_name", ["report.json", "report.md"])
 def test_local_report_rejects_symlink_destination_without_touching_target(
     tmp_path,
@@ -494,6 +524,27 @@ def test_local_report_rejects_symlink_destination_without_touching_target(
         )
 
     assert victim.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_remote_atomic_write_rejects_concurrent_target_replacement(
+    tmp_path,
+):
+    namespace = _remote_namespace(tmp_path)
+    target = tmp_path / "state.json"
+    target.write_bytes(b"old")
+    original_write = namespace["write_regular_bytes_atomic"]
+
+    def replace_before_commit(path, payload, **kwargs):
+        path.unlink()
+        path.write_bytes(b"foreign")
+        return original_write(path, payload, **kwargs)
+
+    namespace["write_regular_bytes_atomic"] = replace_before_commit
+
+    with pytest.raises(OSError, match="target identity changed before commit"):
+        namespace["atomic_write_bytes"](target, b"owned")
+
+    assert target.read_bytes() == b"foreign"
 
 
 def test_remote_output_capture_keeps_only_bounded_tail(monkeypatch):

@@ -22,6 +22,7 @@ class EventBus:
 
     def __init__(self, target: EventPublisherPort | EventCallback | None = None):
         self._targets: list[EventPublisherPort | EventCallback] = []
+        self._pending_tasks: set[asyncio.Task[Any]] = set()
         if target is not None:
             self.subscribe(target)
 
@@ -43,6 +44,11 @@ class EventBus:
         """Live tasks owned by subscribers after their callback waiter exits."""
         pending: list[asyncio.Task[Any]] = []
         seen: set[int] = set()
+        for task in self._pending_tasks:
+            if task.done() or id(task) in seen:
+                continue
+            seen.add(id(task))
+            pending.append(task)
         for target in self._targets:
             tasks = getattr(target, "pending_tasks", ())
             for task in tasks:
@@ -59,23 +65,36 @@ class EventBus:
                     result = target.emit(event)  # type: ignore[union-attr]
                 else:
                     result = target(event)  # type: ignore[operator]
-                if inspect.isawaitable(result):
-                    owner = asyncio.ensure_future(result)
-                    try:
-                        await owner
-                    except asyncio.CancelledError:
-                        current = asyncio.current_task()
-                        if current is not None and current.cancelling():
-                            raise
-                        continue
             except asyncio.CancelledError:
-                current = asyncio.current_task()
-                if current is not None and current.cancelling():
-                    raise
                 continue
             except Exception:
                 # Subscriber failure must not break siblings or the loop.
                 continue
+            if not inspect.isawaitable(result):
+                continue
+            owner = asyncio.ensure_future(result)
+            self._pending_tasks.add(owner)
+            owner.add_done_callback(self._pending_tasks.discard)
+            try:
+                await asyncio.wait({owner})
+            except asyncio.CancelledError:
+                owner.cancel()
+                owner.add_done_callback(_consume_task_result)
+                raise
+            try:
+                owner.result()
+            except asyncio.CancelledError:
+                # A subscriber that cancels itself is an isolated sink failure.
+                continue
+            except Exception:
+                continue
+
+
+def _consume_task_result(task: asyncio.Future[Any]) -> None:
+    try:
+        task.result()
+    except BaseException:
+        pass
 
 
 __all__ = ["EventBus", "EventCallback"]

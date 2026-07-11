@@ -153,10 +153,7 @@ def test_completed_attempt_with_reused_live_pid_is_not_active_and_binds_report(t
     _write_jsonl(tmp_path / "metrics.jsonl", [metric])
     report = tmp_path / "eval" / "task-1" / "report.json"
     report.parent.mkdir(parents=True)
-    report.write_text(
-        json.dumps({"task-1": {"resolved": True}}),
-        encoding="utf-8",
-    )
+    started_at_ns = time.time_ns()
     (report.parent / "opencollab-attempt.json").write_text(
         json.dumps(
             {
@@ -164,7 +161,7 @@ def test_completed_attempt_with_reused_live_pid_is_not_active_and_binds_report(t
                 "instance_id": "task-1",
                 "record_id": "r1",
                 "patch_sha256": row_patch_sha(prediction),
-                "started_at_ns": time.time_ns(),
+                "started_at_ns": started_at_ns,
                 "status": "completed",
                 "pid": os.getpid(),
                 "prior_report_fingerprint": "",
@@ -172,6 +169,11 @@ def test_completed_attempt_with_reused_live_pid_is_not_active_and_binds_report(t
         ),
         encoding="utf-8",
     )
+    report.write_text(
+        json.dumps({"task-1": {"resolved": True}}),
+        encoding="utf-8",
+    )
+    os.utime(report, ns=(started_at_ns + 1, started_at_ns + 1))
 
     snapshot = build_snapshots(tmp_path, side_name="eval")[0]
     decision = decide_task(snapshot)

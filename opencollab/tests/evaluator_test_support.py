@@ -60,7 +60,10 @@ def run(coro):
 
 
 def is_worktree_diff_cmd(cmd: str) -> bool:
-    return "git diff --cached --binary HEAD" in cmd
+    return (
+        "git diff --cached --binary HEAD" in cmd
+        or "trusted_git diff --cached --binary --no-ext-diff --no-textconv" in cmd
+    )
 
 
 class FakeLLMClient:
@@ -78,6 +81,10 @@ class FakeLLMClient:
 
 
 class FakeEnv(Environment):
+    workspace = "/tmp/opencollab-test-worktree"
+    patch_base_revision = "0" * 40
+    patch_object_directory = "/tmp/opencollab-test-objects"
+
     def __init__(self, diff="diff --git a/x b/x\n+new\n"):
         self.diff = diff
         self.cleaned_up = False

@@ -204,7 +204,8 @@ def is_eval_test_path(path):
     if any(part in {"test", "tests", "__tests__"} for part in parts):
         return True
     return (
-        name.endswith("_test.go")
+        name == "conftest.py"
+        or name.endswith("_test.go")
         or name.startswith("test_")
         and name.endswith(".py")
         or name.endswith("_test.py")

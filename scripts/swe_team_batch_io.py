@@ -13,12 +13,30 @@ import subprocess
 import sys
 import time
 import unicodedata
-import uuid
 from pathlib import Path, PureWindowsPath
+
+from opencollab.adapters.safe_files import (
+    write_regular_bytes_atomic,
+    write_regular_file_atomic,
+)
+from opencollab.application.exception_notes import add_exception_note
+
+try:
+    from scripts.swebench_process import (
+        ensure_process_tree_quiesced_after_wait,
+        terminate_process_tree,
+    )
+except ImportError:  # Direct execution places this module's directory on sys.path.
+    from swebench_process import (  # type: ignore[no-redef]
+        ensure_process_tree_quiesced_after_wait,
+        terminate_process_tree,
+    )
 
 MAX_SUMMARY_BYTES = 64 * 1024 * 1024
 MAX_INSTANCE_ID_BYTES = 240
 LOCK_TIMEOUT_SECONDS = 10.0
+CHILD_TERM_TIMEOUT_SECONDS = 1.0
+CHILD_KILL_TIMEOUT_SECONDS = 2.0
 SUMMARY_HEADER = (
     "timestamp\tinstance_id\tstatus\tpatch_bytes\twall_seconds\tloop_alert\n"
 )
@@ -123,50 +141,17 @@ def atomic_write_at(parent_fd: int, name: str, payload: bytes, *, label: object)
     before = stat_at(parent_fd, name)
     if before is not None and not stat.S_ISREG(before.st_mode):
         raise OSError(f"batch destination must be regular or absent: {label}")
-    temporary = f".{name}.{uuid.uuid4().hex}.tmp"
-    created = False
-    try:
-        temp_fd = os.open(
-            temporary,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-            dir_fd=parent_fd,
-        )
-        created = True
-        try:
-            write_all(temp_fd, payload)
-            os.fsync(temp_fd)
-        finally:
-            os.close(temp_fd)
-        current = stat_at(parent_fd, name)
-        if before is None:
-            if current is not None:
-                raise OSError(f"batch destination appeared during write: {label}")
-        elif (
-            current is None
-            or not stat.S_ISREG(current.st_mode)
-            or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
-        ):
-            raise OSError(f"batch destination changed during write: {label}")
-        os.replace(
-            temporary,
-            name,
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
-        )
-        created = False
-        os.fsync(parent_fd)
-    finally:
-        if created:
-            try:
-                os.unlink(temporary, dir_fd=parent_fd)
-                os.fsync(parent_fd)
-            except FileNotFoundError:
-                pass
+    target = lexical_absolute(os.fspath(label))
+    if target.name != name:
+        raise OSError(f"batch destination label does not match parent entry: {label}")
+    parent = os.fstat(parent_fd)
+    write_regular_bytes_atomic(
+        target,
+        payload,
+        expected_parent_identity=(parent.st_dev, parent.st_ino),
+        expected_target_identity=(before.st_dev, before.st_ino) if before is not None else None,
+        require_target_absent=before is None,
+    )
 
 
 def atomic_write(path: str | Path, payload: bytes) -> Path:
@@ -408,70 +393,86 @@ def run_with_log(log_path: str | Path, command: list[str]) -> int:
     if not command:
         raise ValueError("missing batch child command")
     absolute, parent_fd, name = open_parent(log_path, create=False)
-    before = stat_at(parent_fd, name)
-    if before is not None and not stat.S_ISREG(before.st_mode):
-        os.close(parent_fd)
-        raise OSError(f"batch log must be regular or absent: {absolute}")
-    temporary = f".{name}.{uuid.uuid4().hex}.tmp"
-    log_fd = -1
-    temp_created = False
     try:
-        log_fd = os.open(
-            temporary,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_NOFOLLOW", 0)
-            | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-            dir_fd=parent_fd,
+        before = stat_at(parent_fd, name)
+        if before is not None and not stat.S_ISREG(before.st_mode):
+            raise OSError(f"batch log must be regular or absent: {absolute}")
+        parent = os.fstat(parent_fd)
+        expected_parent = (parent.st_dev, parent.st_ino)
+        returncode: int | None = None
+
+        def run_child(handle) -> None:
+            nonlocal returncode
+            current = stat_at(parent_fd, name)
+            if before is None:
+                if current is not None:
+                    raise OSError("batch log appeared before child start")
+            elif (
+                current is None
+                or not stat.S_ISREG(current.st_mode)
+                or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
+            ):
+                raise OSError("batch log changed before child start")
+            _reopened, reopened_fd = open_directory(absolute.parent, create=False)
+            try:
+                reopened = os.fstat(reopened_fd)
+                if (reopened.st_dev, reopened.st_ino) != expected_parent:
+                    raise OSError(f"batch log parent changed before child start: {absolute.parent}")
+            finally:
+                os.close(reopened_fd)
+            proc = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=handle.fileno(),
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+            try:
+                returncode = proc.wait()
+            except BaseException as exc:
+                try:
+                    quiesced = terminate_process_tree(
+                        proc,
+                        term_timeout=CHILD_TERM_TIMEOUT_SECONDS,
+                        kill_timeout=CHILD_KILL_TIMEOUT_SECONDS,
+                    )
+                except BaseException as cleanup_error:
+                    add_exception_note(
+                        exc,
+                        "batch child cleanup failed with "
+                        f"{type(cleanup_error).__name__}: {cleanup_error}",
+                    )
+                else:
+                    if not quiesced:
+                        add_exception_note(
+                            exc,
+                            "batch child process group remained after bounded TERM/KILL cleanup",
+                        )
+                raise
+            if not ensure_process_tree_quiesced_after_wait(
+                proc,
+                term_timeout=CHILD_TERM_TIMEOUT_SECONDS,
+                kill_timeout=CHILD_KILL_TIMEOUT_SECONDS,
+            ):
+                raise RuntimeError(
+                    "batch child process group remained after bounded TERM/KILL cleanup"
+                )
+
+        write_regular_file_atomic(
+            absolute,
+            run_child,
+            max_bytes=MAX_SUMMARY_BYTES,
+            expected_parent_identity=expected_parent,
+            expected_target_identity=(
+                (before.st_dev, before.st_ino) if before is not None else None
+            ),
+            require_target_absent=before is None,
+            context="batch log",
         )
-        temp_created = True
-        proc = subprocess.Popen(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=log_fd,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-        returncode = proc.wait()
-        os.fsync(log_fd)
-        current = stat_at(parent_fd, name)
-        if before is None:
-            if current is not None:
-                raise OSError("batch log appeared while child was running")
-        elif (
-            current is None
-            or not stat.S_ISREG(current.st_mode)
-            or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
-        ):
-            raise OSError("batch log changed while child was running")
-        reopened_path, reopened_fd = open_directory(absolute.parent, create=False)
-        try:
-            rebound = os.fstat(reopened_fd)
-            held = os.fstat(parent_fd)
-            if (rebound.st_dev, rebound.st_ino) != (held.st_dev, held.st_ino):
-                raise OSError(f"batch log parent changed while running: {reopened_path}")
-        finally:
-            os.close(reopened_fd)
-        os.replace(
-            temporary,
-            name,
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
-        )
-        temp_created = False
-        os.fsync(parent_fd)
+        if returncode is None:
+            raise RuntimeError("batch child exited without a return code")
         return returncode
     finally:
-        if log_fd >= 0:
-            os.close(log_fd)
-        if temp_created:
-            try:
-                os.unlink(temporary, dir_fd=parent_fd)
-                os.fsync(parent_fd)
-            except FileNotFoundError:
-                pass
         os.close(parent_fd)
 
 

@@ -135,6 +135,7 @@ def build_scheduler(
         scheduler.set_manifest_writer(
             _write_manifest,
             prepare_fn=_prepare_manifest,
+            serialization_key=manifest_path,
         )
 
     scheduler.create_init_process(

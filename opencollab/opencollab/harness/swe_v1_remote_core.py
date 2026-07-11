@@ -2,6 +2,7 @@
 
 # ruff: noqa: F403, F405
 
+from opencollab.adapters.safe_files import write_regular_bytes_atomic
 from opencollab.harness.swe_v1_remote_state import *
 
 
@@ -353,45 +354,18 @@ def open_locked_append(path):
 
 
 def atomic_write_bytes(path, payload):
-    path.parent.mkdir(parents=True, exist_ok=True)
     try:
         before = path.lstat()
     except FileNotFoundError:
         before = None
     if before is not None and not stat.S_ISREG(before.st_mode):
         raise OSError(f"harness destination must be regular or absent: {path}")
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        fd = os.open(
-            temporary,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-        )
-        try:
-            write_all(fd, payload)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        try:
-            current = path.lstat()
-        except FileNotFoundError:
-            current = None
-        if before is None:
-            if current is not None:
-                raise OSError(f"harness destination appeared during write: {path}")
-        elif (
-            current is None
-            or not stat.S_ISREG(current.st_mode)
-            or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
-        ):
-            raise OSError(f"harness destination changed during write: {path}")
-        os.replace(temporary, path)
-        fsync_directory(path.parent)
-    finally:
-        try:
-            temporary.unlink()
-        except FileNotFoundError:
-            pass
+    write_regular_bytes_atomic(
+        path,
+        payload,
+        expected_target_identity=(before.st_dev, before.st_ino) if before is not None else None,
+        require_target_absent=before is None,
+    )
 
 
 def process_start_identity(pid):

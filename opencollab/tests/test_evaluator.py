@@ -533,6 +533,55 @@ def test_default_worktree_maps_source_repo_artifact_into_isolated_workspace(
     assert result.submission_eligible is True
     assert tasks_path.read_text(encoding="utf-8") == '{"task_id": "mapped"}\n'
 
+
+def test_default_worktree_rejects_model_file_in_reserved_retirement_namespace(
+    tmp_path,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "source.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "source.py"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=OpenCollab",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "base",
+        ],
+        cwd=repo,
+        check=True,
+    )
+
+    async def workflow(ctx, args):
+        created = await ctx.env.exec_cmd(
+            "printf %s hidden-model-change > .opencollab-retired-model-hidden.py"
+        )
+        assert created.returncode == 0
+        return {"status": "done"}
+
+    result = run(
+        run_eval_task(
+            EvalTask(
+                task_id="reserved-retirement-prefix",
+                description="fix",
+                repo_path=str(repo),
+            ),
+            output_dir=str(tmp_path / "output"),
+            tools_factory=list,
+            workflow=workflow,
+        )
+    )
+
+    assert result.patch == ""
+    assert result.patch_extraction_succeeded is False
+    assert result.submission_eligible is False
+    assert "unregistered or modified .opencollab-retired-*" in (result.error or "")
+
 def test_non_local_environment_never_maps_host_artifact_paths_into_container():
     class NonLocalEnv(Environment):
         workspace = "/testbed"

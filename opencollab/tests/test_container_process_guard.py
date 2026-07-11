@@ -15,6 +15,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD = REPO_ROOT / "scripts" / "container_process_guard.sh"
 TEAM_RUNNER = REPO_ROOT / "scripts" / "start_team_run.sh"
+TEAM_RUN_IO = REPO_ROOT / "scripts" / "swe_team_run_io.py"
 
 
 def _load_guard_module():
@@ -88,7 +89,8 @@ def test_container_guard_stop_kills_term_ignoring_descendant(tmp_path):
         ["bash", str(GUARD), "run", str(pidfile), str(cancelfile), "bash", "-lc", command],
         env=env,
     )
-    for _ in range(100):
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline and runner.poll() is None:
         if started.exists():
             break
         time.sleep(0.01)
@@ -146,11 +148,11 @@ def test_container_guard_cancel_marker_blocks_late_start(tmp_path):
     assert not sentinel.exists()
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sessions")
-def test_container_guard_enumeration_failure_is_fail_closed(tmp_path):
-    pidfile = tmp_path / "run.pid"
-    cancelfile = tmp_path / "run.cancel"
-    sentinel = tmp_path / "descendant-finished"
+def test_container_guard_command_enumeration_failure_is_fail_closed(
+    tmp_path,
+    monkeypatch,
+):
+    guard = _load_guard_module()
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_pgrep = fake_bin / "pgrep"
@@ -170,41 +172,10 @@ def test_container_guard_enumeration_failure_is_fail_closed(tmp_path):
         encoding="utf-8",
     )
     fake_ps.chmod(0o755)
-    env = os.environ.copy()
-    env["PATH"] = f"{fake_bin}:{env.get('PATH', '')}"
-    child = _term_ignoring_child(sentinel.with_suffix(".started"), sentinel, delay=0.5)
-    runner = subprocess.Popen(
-        [
-            "bash",
-            str(GUARD),
-            "run",
-            str(pidfile),
-            str(cancelfile),
-            "bash",
-            "-lc",
-            f"set -m; {child} & wait",
-        ],
-        env=env,
-    )
-    for _ in range(100):
-        if pidfile.exists():
-            break
-        time.sleep(0.01)
-    assert pidfile.exists()
+    monkeypatch.setenv("PATH", str(fake_bin))
 
-    stopped = subprocess.run(
-        ["bash", str(GUARD), "stop", str(pidfile), str(cancelfile)],
-        check=False,
-        env=env,
-        timeout=5,
-    )
-
-    assert stopped.returncode == 125
-    assert pidfile.exists()
-    assert runner.wait(timeout=5) == 125
-    time.sleep(0.6)
-    assert sentinel.exists()
-    assert pidfile.exists()
+    with pytest.raises(guard.GuardError, match="pgrep session enumeration"):
+        guard._command_session_members(12345)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sessions")
@@ -368,6 +339,7 @@ def test_container_guard_record_read_detects_post_open_replacement(
         "schema": "opencollab.container-process.v1",
         "session_id": 12345,
         "owner_pid": 12346,
+        "owner_start_identity": "owner-identity",
         "start_identity": "identity",
         "nonce": "a" * 32,
     }
@@ -399,6 +371,7 @@ def test_container_guard_owned_record_cleanup_fails_on_corrupt_replacement(tmp_p
         "schema": "opencollab.container-process.v1",
         "session_id": 12345,
         "owner_pid": 12346,
+        "owner_start_identity": "owner-identity",
         "start_identity": "identity",
         "nonce": "a" * 32,
     }
@@ -488,9 +461,45 @@ def test_container_guard_signal_cleans_owned_session(tmp_path):
 
 
 def test_team_runner_uses_guard_bounded_diff_and_locked_append():
-    source = TEAM_RUNNER.read_text(encoding="utf-8")
+    runner_source = TEAM_RUNNER.read_text(encoding="utf-8")
+    io_source = TEAM_RUN_IO.read_text(encoding="utf-8")
 
-    assert "container_process_guard.sh" in source
-    assert "bounded_container_output_command" in source
-    assert "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)" in source
-    assert '>> "$output"' not in source
+    assert "container_process_guard.sh" in runner_source
+    assert '"$TEAM_RUN_IO" bounded-diff-command' in runner_source
+    assert "bounded_container_output_command" in io_source
+    assert "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)" in io_source
+    assert '>> "$output"' not in runner_source
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux subreaper regression")
+def test_container_guard_subreaper_captures_setsid_escape(tmp_path):
+    pidfile = tmp_path / "run.pid"
+    cancelfile = tmp_path / "run.cancel"
+    sentinel = tmp_path / "setsid-leak"
+    code = (
+        "import os,pathlib,time; child=os.fork(); "
+        "(os._exit(0) if child else None); os.setsid(); "
+        "os.close(1); os.close(2); time.sleep(0.4); "
+        f"pathlib.Path({str(sentinel)!r}).write_text('leaked'); os._exit(0)"
+    )
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(GUARD),
+            "run",
+            str(pidfile),
+            str(cancelfile),
+            sys.executable,
+            "-c",
+            code,
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    time.sleep(0.5)
+    assert not sentinel.exists()

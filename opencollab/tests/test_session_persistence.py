@@ -12,6 +12,7 @@ import concurrent.futures
 import json
 import os
 
+import opencollab.adapters._atomic_rename as atomic_rename_mod
 import opencollab.adapters.safe_files as safe_files_mod
 import opencollab.adapters.storage as storage_mod
 import opencollab.bootstrap.session_factory as session_factory_mod
@@ -223,10 +224,10 @@ def test_atomic_store_reports_directory_fsync_failure_after_replace(
     with pytest.raises(OSError, match="directory fsync failed"):
         SessionStore().save_manifest(path, {"run_id": "new"})
 
-    assert json.loads((tmp_path / "state.json").read_text(encoding="utf-8")) == {
-        "run_id": "new"
-    }
-    assert calls == 2
+    assert not (tmp_path / "state.json").exists()
+    retired = next(tmp_path.glob(".opencollab-retired-*"))
+    assert json.loads(retired.read_text(encoding="utf-8")) == {"run_id": "new"}
+    assert calls == 3
     assert list(tmp_path.glob(".state.json.*.tmp")) == []
 
 
@@ -237,7 +238,7 @@ def test_atomic_store_parent_reopen_failure_preserves_previous_file(
     path = str(tmp_path / "state.json")
     SessionStore().save_manifest(path, {"run_id": "old"})
     original = (tmp_path / "state.json").read_bytes()
-    real_open_directory = storage_mod._open_directory_no_symlinks
+    real_open_directory = safe_files_mod._open_directory_no_symlinks
     calls = 0
 
     def fail_directory_open(target):
@@ -247,7 +248,7 @@ def test_atomic_store_parent_reopen_failure_preserves_previous_file(
             raise OSError("directory open failed")
         return real_open_directory(target)
 
-    monkeypatch.setattr(storage_mod, "_open_directory_no_symlinks", fail_directory_open)
+    monkeypatch.setattr(safe_files_mod, "_open_directory_no_symlinks", fail_directory_open)
 
     with pytest.raises(OSError, match="directory open failed"):
         SessionStore().save_manifest(path, {"run_id": "new"})
@@ -322,19 +323,20 @@ def test_atomic_store_detects_parent_swap_after_replace(tmp_path, monkeypatch):
     path = parent / "state.json"
     path.write_text('{"run_id": "old"}', encoding="utf-8")
     old_parent = tmp_path / "sessions-old"
-    real_replace = storage_mod.os.replace
+    real_rename_noreplace = atomic_rename_mod.rename_noreplace
     swapped = False
 
-    def swapping_replace(source, destination, *args, **kwargs):
+    def swapping_commit(source, destination, **kwargs):
         nonlocal swapped
-        result = real_replace(source, destination, *args, **kwargs)
-        parent.rename(old_parent)
-        parent.mkdir()
-        path.write_text('{"run_id": "visible"}', encoding="utf-8")
-        swapped = True
+        result = real_rename_noreplace(source, destination, **kwargs)
+        if destination == path.name:
+            parent.rename(old_parent)
+            parent.mkdir()
+            path.write_text('{"run_id": "visible"}', encoding="utf-8")
+            swapped = True
         return result
 
-    monkeypatch.setattr(storage_mod.os, "replace", swapping_replace)
+    monkeypatch.setattr(atomic_rename_mod, "rename_noreplace", swapping_commit)
 
     with pytest.raises(OSError, match="parent changed after atomic replace"):
         SessionStore().save_manifest(str(path), {"run_id": "new"})
@@ -342,12 +344,17 @@ def test_atomic_store_detects_parent_swap_after_replace(tmp_path, monkeypatch):
     assert swapped is True
     assert path.read_text(encoding="utf-8") == '{"run_id": "visible"}'
     assert json.loads((old_parent / "state.json").read_text(encoding="utf-8")) == {
-        "run_id": "new"
+        "run_id": "old"
     }
+    retired_manifests = {
+        json.loads(entry.read_text(encoding="utf-8"))["run_id"]
+        for entry in old_parent.glob(".opencollab-retired-*")
+    }
+    assert retired_manifests == {"old", "new"}
     assert list(old_parent.glob(".state.json.*.tmp")) == []
 
 
-def test_safe_atomic_write_preserves_primary_error_when_temp_unlink_fails(
+def test_safe_atomic_write_preserves_primary_error_when_retirement_sync_fails(
     tmp_path,
     monkeypatch,
 ):
@@ -356,17 +363,17 @@ def test_safe_atomic_write_preserves_primary_error_when_temp_unlink_fails(
     def fail_write(_fd, _payload):
         raise RuntimeError("primary write failed")
 
-    def fail_unlink(_name, *args, **kwargs):
-        raise OSError("cleanup unlink failed")
+    def fail_retirement_sync(_fd):
+        raise OSError("retirement fsync failed")
 
     monkeypatch.setattr(safe_files_mod.os, "write", fail_write)
-    monkeypatch.setattr(safe_files_mod.os, "unlink", fail_unlink)
+    monkeypatch.setattr(safe_files_mod.os, "fsync", fail_retirement_sync)
 
     with pytest.raises(RuntimeError, match="primary write failed") as raised:
         safe_files_mod.write_regular_bytes_atomic(path, b"payload")
 
     assert any(
-        "temporary unlink" in note and "cleanup unlink failed" in note
+        "temporary retirement" in note and "retirement fsync failed" in note
         for note in raised.value.__notes__
     )
 
@@ -379,7 +386,177 @@ def test_safe_atomic_write_supports_name_max_destination(tmp_path):
     assert path.read_bytes() == b"payload"
 
 
-def test_session_store_preserves_serialization_error_when_temp_unlink_fails(
+def test_safe_atomic_write_compare_and_swap_rejects_stale_target_identity(tmp_path):
+    path = tmp_path / "state.bin"
+    path.write_bytes(b"current")
+    current = path.stat()
+    stale_identity = (current.st_dev, current.st_ino + 1)
+
+    with pytest.raises(OSError, match="target identity changed before commit"):
+        safe_files_mod.write_regular_bytes_atomic(
+            path,
+            b"foreign",
+            expected_target_identity=stale_identity,
+        )
+
+    assert path.read_bytes() == b"current"
+    assert list(tmp_path.glob(".opencollab-retired-*")) == []
+
+
+def test_safe_atomic_write_compare_and_swap_accepts_current_target_identity(tmp_path):
+    path = tmp_path / "state.bin"
+    path.write_bytes(b"old")
+    current = path.stat()
+
+    safe_files_mod.write_regular_bytes_atomic(
+        path,
+        b"new",
+        expected_target_identity=(current.st_dev, current.st_ino),
+    )
+
+    assert path.read_bytes() == b"new"
+
+
+def test_safe_atomic_write_require_absent_refuses_existing_target(tmp_path):
+    path = tmp_path / "state.bin"
+    path.write_bytes(b"current")
+
+    with pytest.raises(FileExistsError, match="target appeared before commit"):
+        safe_files_mod.write_regular_bytes_atomic(
+            path,
+            b"foreign",
+            require_target_absent=True,
+        )
+
+    assert path.read_bytes() == b"current"
+
+
+def test_safe_atomic_write_preserves_foreign_target_after_temp_swap(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "state.bin"
+    path.write_bytes(b"old")
+    victim = tmp_path / "victim.bin"
+    victim.write_bytes(b"victim")
+    real_rename_noreplace = atomic_rename_mod.rename_noreplace
+
+    def swap_temp_before_commit(source, destination, **kwargs):
+        if destination != path.name:
+            return real_rename_noreplace(source, destination, **kwargs)
+        parent_fd = kwargs["src_dir_fd"]
+        detached = f"{source}.detached"
+        os.rename(
+            source,
+            detached,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+        os.symlink(victim, source, dir_fd=parent_fd)
+        return real_rename_noreplace(source, destination, **kwargs)
+
+    monkeypatch.setattr(atomic_rename_mod, "rename_noreplace", swap_temp_before_commit)
+
+    with pytest.raises(OSError, match="changed during replace"):
+        safe_files_mod.write_regular_bytes_atomic(path, b"new")
+
+    assert victim.read_bytes() == b"victim"
+    assert path.is_symlink() and path.resolve() == victim
+    retired = list(tmp_path.glob(".opencollab-retired-*"))
+    assert any(entry.is_file() and not entry.is_symlink() and entry.read_bytes() == b"old" for entry in retired)
+    detached_candidates = list(tmp_path.glob(".opencollab-retired-*.detached"))
+    assert len(detached_candidates) == 1
+    assert detached_candidates[0].read_bytes() == b"new"
+
+
+def test_safe_atomic_write_refuses_blind_cleanup_after_failed_write_temp_swap(
+    tmp_path,
+    monkeypatch,
+):
+    path = tmp_path / "state.bin"
+    victim = tmp_path / "victim.bin"
+    victim.write_bytes(b"victim")
+
+    def swap_temp_then_fail(_fd, _payload):
+        temporary = next(
+            entry
+            for entry in tmp_path.iterdir()
+            if entry.name.startswith(".opencollab-retired-")
+        )
+        temporary.rename(tmp_path / f"{temporary.name}.detached")
+        temporary.symlink_to(victim)
+        raise RuntimeError("primary write failed after replacement")
+
+    monkeypatch.setattr(safe_files_mod.os, "write", swap_temp_then_fail)
+
+    with pytest.raises(RuntimeError, match="primary write failed") as raised:
+        safe_files_mod.write_regular_bytes_atomic(path, b"new")
+
+    assert victim.read_bytes() == b"victim"
+    retired_links = [
+        entry
+        for entry in tmp_path.iterdir()
+        if entry.name.startswith(".opencollab-retired-") and entry.is_symlink()
+    ]
+    assert len(retired_links) == 1
+    assert retired_links[0].resolve() == victim
+    assert any(
+        "retirement candidate no longer matches owned file" in note
+        for note in raised.value.__notes__
+    )
+
+
+def test_session_store_supports_name_max_destination(tmp_path):
+    path = tmp_path / ("x" * 255)
+
+    SessionStore().save_manifest(str(path), {"run_id": "name-max"})
+
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "run_id": "name-max"
+    }
+
+
+def test_session_store_keeps_owned_temp_fd_open_through_replace(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    real_open = safe_files_mod.os.open
+    real_rename_noreplace = atomic_rename_mod.rename_noreplace
+    temporary_fd: int | None = None
+    checked_at_replace = False
+
+    def tracking_open(name, flags, *args, **kwargs):
+        nonlocal temporary_fd
+        fd = real_open(name, flags, *args, **kwargs)
+        if isinstance(name, str) and name.startswith(".opencollab-retired-"):
+            temporary_fd = fd
+        return fd
+
+    def checking_commit(source, destination, **kwargs):
+        nonlocal checked_at_replace
+        if destination != path.name:
+            return real_rename_noreplace(source, destination, **kwargs)
+        assert temporary_fd is not None
+        opened = os.fstat(temporary_fd)
+        named = os.stat(
+            source,
+            dir_fd=kwargs["src_dir_fd"],
+            follow_symlinks=False,
+        )
+        assert (opened.st_dev, opened.st_ino) == (named.st_dev, named.st_ino)
+        checked_at_replace = True
+        return real_rename_noreplace(source, destination, **kwargs)
+
+    monkeypatch.setattr(safe_files_mod.os, "open", tracking_open)
+    monkeypatch.setattr(atomic_rename_mod, "rename_noreplace", checking_commit)
+
+    SessionStore().save_manifest(str(path), {"run_id": "new"})
+
+    assert checked_at_replace is True
+    assert temporary_fd is not None
+    with pytest.raises(OSError):
+        os.fstat(temporary_fd)
+
+
+def test_session_store_preserves_serialization_error_when_retirement_sync_fails(
     tmp_path,
     monkeypatch,
 ):
@@ -388,17 +565,17 @@ def test_session_store_preserves_serialization_error_when_temp_unlink_fails(
     def fail_dump(*_args, **_kwargs):
         raise RuntimeError("primary serialization failed")
 
-    def fail_unlink(_name, *args, **kwargs):
-        raise OSError("cleanup unlink failed")
+    def fail_retirement_sync(_fd):
+        raise OSError("retirement fsync failed")
 
     monkeypatch.setattr(storage_mod.json, "dump", fail_dump)
-    monkeypatch.setattr(storage_mod.os, "unlink", fail_unlink)
+    monkeypatch.setattr(storage_mod.os, "fsync", fail_retirement_sync)
 
     with pytest.raises(RuntimeError, match="primary serialization failed") as raised:
         SessionStore().save_manifest(path, {"run_id": "new"})
 
     assert any(
-        "temporary unlink" in note and "cleanup unlink failed" in note
+        "temporary retirement" in note and "retirement fsync failed" in note
         for note in raised.value.__notes__
     )
 
@@ -409,7 +586,7 @@ def test_session_store_preserves_primary_error_when_parent_close_fails(
 ):
     path = str(tmp_path / "state.json")
     opened_parent_fds: list[int] = []
-    real_open_directory = storage_mod._open_directory_no_symlinks
+    real_open_directory = safe_files_mod._open_directory_no_symlinks
     real_close = storage_mod.os.close
 
     def tracking_open_directory(target):
@@ -426,7 +603,7 @@ def test_session_store_preserves_primary_error_when_parent_close_fails(
     def fail_dump(*_args, **_kwargs):
         raise RuntimeError("primary serialization failed")
 
-    monkeypatch.setattr(storage_mod, "_open_directory_no_symlinks", tracking_open_directory)
+    monkeypatch.setattr(safe_files_mod, "_open_directory_no_symlinks", tracking_open_directory)
     monkeypatch.setattr(storage_mod.json, "dump", fail_dump)
     monkeypatch.setattr(storage_mod.os, "close", fail_parent_close)
 

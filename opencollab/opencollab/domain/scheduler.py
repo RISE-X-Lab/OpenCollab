@@ -11,6 +11,7 @@ SessionTable is the scheduler's registry of all SCBs.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from opencollab.domain.agent import Agent
@@ -71,7 +72,14 @@ class ReviewVerdict:
         # line. Looking at earlier lines lets quoted instructions or a superseded
         # draft verdict override the reviewer's final judgement.
         lines = [line.strip() for line in review_text.splitlines() if line.strip()]
-        passed = bool(lines and lines[-1].upper() == "VERDICT: PASS")
+        passed = bool(
+            lines
+            and re.fullmatch(
+                r"VERDICT: PASS[.!。！]?",
+                lines[-1],
+                flags=re.IGNORECASE,
+            )
+        )
         return cls(passed=passed, raw_text=review_text)
 
 
