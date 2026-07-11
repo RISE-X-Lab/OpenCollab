@@ -4,9 +4,128 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
+import stat
+from collections import deque
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO, Iterator
+
+_SHA256_RE = re.compile(r"[0-9a-fA-F]{64}\Z")
+MAX_JSONL_LINE_BYTES = 64 * 1024 * 1024
+MAX_JSONL_RETAINED_BYTES = 128 * 1024 * 1024
+MAX_JSONL_RETAINED_ROWS = 10_000
+MAX_JSONL_SCAN_BYTES = 256 * 1024 * 1024
+MAX_JSON_DOCUMENT_BYTES = 16 * 1024 * 1024
+SUBMISSION_INTEGRITY_PROVEN = "proven"
+SUBMISSION_INTEGRITY_LEGACY = "legacy_missing_fields"
+SUBMISSION_INTEGRITY_INELIGIBLE = "explicitly_ineligible"
+SUBMISSION_INTEGRITY_MISSING = "missing_metric"
+_REQUIRED_TRUE_SUBMISSION_FIELDS = (
+    "submission_eligible",
+    "execution_quiesced",
+    "patch_extraction_succeeded",
+    "injected_path_cleanup_proven",
+    "harness_artifact_exclusion_proven",
+    "checkpoint_restore_integrity_proven",
+    "task_stage_integrity_proven",
+)
+_REQUIRED_FALSE_SUBMISSION_FIELDS = ("test_patch_isolation_failed",)
+_OPTIONAL_TRUE_SUBMISSION_FIELDS = (
+    "worktree_integrity_proven",
+    "patch_produced",
+)
+
+
+class UnsafeRecordInputError(OSError):
+    """Raised when a harness record path cannot be opened as a regular file."""
+
+
+class RecordInputLimitError(ValueError):
+    """Raised when returning rows would require silently truncating input."""
+
+
+class RecordInputFormatError(ValueError):
+    """Raised when a physical JSONL record cannot be decoded completely."""
+
+
+@contextmanager
+def open_regular_binary(path: Path) -> Iterator[BinaryIO]:
+    """Open one regular file without following its final symlink component."""
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    if nofollow:
+        flags |= nofollow
+
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise UnsafeRecordInputError(f"cannot inspect record input {path}") from exc
+    if not stat.S_ISREG(before.st_mode):
+        raise UnsafeRecordInputError(f"record input is not a regular file: {path}")
+
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise UnsafeRecordInputError(f"cannot safely open record input {path}") from exc
+
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise UnsafeRecordInputError(f"record input is not a regular file: {path}")
+        if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+            raise UnsafeRecordInputError(f"record input changed while opening: {path}")
+        with os.fdopen(fd, "rb") as handle:
+            fd = -1
+            yield handle
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def read_bounded_json(
+    path: Path,
+    *,
+    max_bytes: int | None = None,
+) -> tuple[Any, os.stat_result] | None:
+    """Read a bounded JSON document and return the opened file's metadata."""
+    if max_bytes is None:
+        max_bytes = MAX_JSON_DOCUMENT_BYTES
+    try:
+        with open_regular_binary(path) as handle:
+            opened = os.fstat(handle.fileno())
+            if opened.st_size > max_bytes:
+                return None
+            raw = handle.read(max_bytes + 1)
+            after_read = os.fstat(handle.fileno())
+    except OSError:
+        return None
+    if len(raw) > max_bytes:
+        return None
+    if (
+        opened.st_dev,
+        opened.st_ino,
+        opened.st_size,
+        opened.st_mtime_ns,
+        opened.st_ctime_ns,
+    ) != (
+        after_read.st_dev,
+        after_read.st_ino,
+        after_read.st_size,
+        after_read.st_mtime_ns,
+        after_read.st_ctime_ns,
+    ):
+        return None
+    try:
+        return json.loads(raw.decode("utf-8")), after_read
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        return None
 
 
 @dataclass(frozen=True)
@@ -17,19 +136,62 @@ class PairedRows:
 
 
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    if not path.exists():
-        return rows
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-        if not line.strip():
-            continue
-        try:
-            value = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict):
-            rows.append(value)
-    return rows
+    rows: deque[tuple[int, dict[str, Any]]] = deque()
+    retained_bytes = 0
+    try:
+        with open_regular_binary(path) as handle:
+            opened = os.fstat(handle.fileno())
+            if opened.st_size > MAX_JSONL_SCAN_BYTES:
+                raise RecordInputLimitError(
+                    f"JSONL input exceeds {MAX_JSONL_SCAN_BYTES} bytes: {path}"
+                )
+            remaining = opened.st_size
+            while remaining > 0:
+                line = handle.readline(min(MAX_JSONL_LINE_BYTES + 1, remaining))
+                if not line:
+                    break
+                remaining -= len(line)
+                if len(line) > MAX_JSONL_LINE_BYTES:
+                    raise RecordInputLimitError(
+                        f"JSONL line exceeds {MAX_JSONL_LINE_BYTES} bytes: {path}"
+                    )
+                if not line.strip():
+                    continue
+                try:
+                    value = json.loads(line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                    raise RecordInputFormatError(
+                        f"invalid JSONL record in {path}"
+                    ) from exc
+                if not isinstance(value, dict):
+                    raise RecordInputFormatError(
+                        f"JSONL record must be an object: {path}"
+                    )
+                line_size = len(line)
+                rows.append((line_size, value))
+                retained_bytes += line_size
+                if (
+                    len(rows) > MAX_JSONL_RETAINED_ROWS
+                    or retained_bytes > MAX_JSONL_RETAINED_BYTES
+                ):
+                    raise RecordInputLimitError(
+                        "JSONL input exceeds retained row or byte limit: "
+                        f"{path}"
+                    )
+            after_read = os.fstat(handle.fileno())
+            if (
+                after_read.st_dev != opened.st_dev
+                or after_read.st_ino != opened.st_ino
+                or after_read.st_size != opened.st_size
+                or after_read.st_mtime_ns != opened.st_mtime_ns
+                or after_read.st_ctime_ns != opened.st_ctime_ns
+            ):
+                raise UnsafeRecordInputError(
+                    f"JSONL input changed while reading: {path}"
+                )
+    except FileNotFoundError:
+        return []
+    return [value for _size, value in rows]
 
 
 def prediction_patch(row: dict[str, Any] | None) -> str:
@@ -75,10 +237,138 @@ def patch_sha(patch: str) -> str:
 
 
 def row_patch_sha(row: dict[str, Any] | None) -> str:
+    patch = prediction_patch(row)
+    if patch:
+        return patch_sha(patch)
     explicit = row_explicit_patch_sha(row)
     if explicit:
         return explicit
-    return patch_sha(prediction_patch(row))
+    return ""
+
+
+def embedded_workflow_metric(row: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(row, dict):
+        return None
+    metric = row.get("workflow_metric")
+    if not isinstance(metric, dict):
+        return None
+    if row_task_id(metric) != row_task_id(row):
+        return None
+    if row_record_id(metric) != row_record_id(row):
+        return None
+    prediction_sha = row_patch_sha(row)
+    metric_sha = row_patch_sha(metric)
+    if not prediction_sha or not metric_sha or not patch_sha_matches(prediction_sha, metric_sha):
+        return None
+    return metric
+
+
+def metric_submission_integrity(metric: dict[str, Any] | None) -> str:
+    """Classify explicit submission-integrity fields while preserving old rows."""
+    if not isinstance(metric, dict):
+        return SUBMISSION_INTEGRITY_MISSING
+
+    known_fields = {
+        *_REQUIRED_TRUE_SUBMISSION_FIELDS,
+        *_REQUIRED_FALSE_SUBMISSION_FIELDS,
+        *_OPTIONAL_TRUE_SUBMISSION_FIELDS,
+        "checkpoint_result",
+    }
+    integrity_prefixes = (
+        "submission_",
+        "execution_quies",
+        "patch_extraction",
+        "injected_path_cleanup",
+        "harness_artifact",
+        "checkpoint_restore",
+        "task_stage",
+        "test_patch_isolation",
+        "worktree_integrity",
+        "patch_produced",
+    )
+    has_modern_integrity_signal = bool(known_fields.intersection(metric)) or any(
+        isinstance(field, str) and field.startswith(integrity_prefixes)
+        for field in metric
+    )
+    missing_required = False
+    for field in _REQUIRED_TRUE_SUBMISSION_FIELDS:
+        if field not in metric:
+            missing_required = True
+        elif metric[field] is not True:
+            return SUBMISSION_INTEGRITY_INELIGIBLE
+    for field in _REQUIRED_FALSE_SUBMISSION_FIELDS:
+        if field not in metric:
+            missing_required = True
+        elif metric[field] is not False:
+            return SUBMISSION_INTEGRITY_INELIGIBLE
+    for field in _OPTIONAL_TRUE_SUBMISSION_FIELDS:
+        if field in metric and metric[field] is not True:
+            return SUBMISSION_INTEGRITY_INELIGIBLE
+
+    checkpoint_result = metric.get("checkpoint_result")
+    if (
+        isinstance(checkpoint_result, dict)
+        and "worktree_integrity_proven" in checkpoint_result
+        and checkpoint_result["worktree_integrity_proven"] is not True
+    ):
+        return SUBMISSION_INTEGRITY_INELIGIBLE
+    if isinstance(checkpoint_result, dict):
+        restore_result = checkpoint_result.get("restore")
+        if isinstance(restore_result, dict):
+            if (
+                "worktree_integrity_proven" in restore_result
+                and restore_result["worktree_integrity_proven"] is not True
+            ):
+                return SUBMISSION_INTEGRITY_INELIGIBLE
+            if (
+                restore_result.get("status") == "restored"
+                and "submission_eligible" in restore_result
+                and restore_result["submission_eligible"] is not True
+            ):
+                return SUBMISSION_INTEGRITY_INELIGIBLE
+        abort_result = checkpoint_result.get("abort")
+        if (
+            isinstance(abort_result, dict)
+            and abort_result.get("status") == "checkpoint_abort_timed_out"
+        ):
+            return SUBMISSION_INTEGRITY_INELIGIBLE
+        final_result = checkpoint_result.get("final")
+        if (
+            isinstance(final_result, dict)
+            and final_result.get("status") == "checkpoint_abort_timed_out"
+        ):
+            return SUBMISSION_INTEGRITY_INELIGIBLE
+    if missing_required:
+        if has_modern_integrity_signal:
+            return SUBMISSION_INTEGRITY_INELIGIBLE
+        return SUBMISSION_INTEGRITY_LEGACY
+    return SUBMISSION_INTEGRITY_PROVEN
+
+
+def is_completed_prediction(row: dict[str, Any] | None) -> bool:
+    """Return whether a prediction is safe for a resume/skip decision."""
+    if not isinstance(row, dict):
+        return False
+    patch = prediction_patch(row)
+    if not patch.strip() or not row_record_id(row):
+        return False
+    computed_sha = patch_sha(patch)
+    if not patch_sha_matches(row_explicit_patch_sha(row), computed_sha):
+        return False
+    metric = embedded_workflow_metric(row)
+    if metric is None:
+        return False
+    if metric_submission_integrity(metric) == SUBMISSION_INTEGRITY_INELIGIBLE:
+        return False
+    status = metric_status(metric)
+    returncode = metric.get("runner_returncode")
+    if isinstance(returncode, bool):
+        return False
+    if status == "done":
+        return returncode == 0
+    if status == "done_with_timeout_patch":
+        return returncode == 124
+    return False
 
 
 def patch_sha_matches(left: str | None, right: str | None) -> bool:
@@ -86,7 +376,11 @@ def patch_sha_matches(left: str | None, right: str | None) -> bool:
     right_value = str(right or "")
     if not left_value or not right_value:
         return False
-    return left_value.startswith(right_value) or right_value.startswith(left_value)
+    return (
+        _SHA256_RE.fullmatch(left_value) is not None
+        and _SHA256_RE.fullmatch(right_value) is not None
+        and left_value == right_value
+    )
 
 
 def workflow_result(row: dict[str, Any] | None) -> dict[str, Any]:
@@ -145,6 +439,9 @@ def latest_paired_rows(
             if current_sha and not metric_sha:
                 return PairedRows(prediction, None, "record_id_patch_sha_missing")
             return PairedRows(prediction, metric, "record_id")
+        embedded_metric = embedded_workflow_metric(prediction)
+        if embedded_metric is not None:
+            return PairedRows(prediction, embedded_metric, "embedded_metric")
         return PairedRows(prediction, None, "missing_metric_for_record_id")
 
     if current_sha:
