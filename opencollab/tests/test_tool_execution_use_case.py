@@ -1,10 +1,18 @@
 import asyncio
 import json
+import math
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
+import opencollab.application.tool_execution as tool_execution_module
+import pytest
+from opencollab.adapters.env import Environment
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
-from opencollab.application.tool_execution import ToolExecutionUseCase
+from opencollab.application.tool_execution import (
+    MAX_TOOL_CALLS_PER_BATCH,
+    ToolExecutionUseCase,
+)
 from opencollab.domain.session import SessionState
 from opencollab.domain.tools import LoopDetection
 
@@ -71,6 +79,14 @@ class RuntimeNativeTool:
         return self.output
 
 
+class SideEffectTool(RuntimeNativeTool):
+    parameters = {
+        "type": "object",
+        "required": ["value"],
+        "properties": {"value": {"type": "integer"}},
+    }
+
+
 def event_factory() -> SessionEventFactory:
     factory = default_session_event_factory(aid=-1)
     # Wrap to use SimpleNamespace so tests that previously asserted on a
@@ -104,6 +120,7 @@ def build_use_case(
     environment=None,
     permission_policy=None,
     safety_policy=None,
+    **use_case_kwargs,
 ):
     publisher = event_publisher or FakeEventPublisher()
     use_case = ToolExecutionUseCase(
@@ -115,6 +132,7 @@ def build_use_case(
         tracer=tracer,
         permission_policy=permission_policy,
         safety_policy=safety_policy,
+        **use_case_kwargs,
     )
     return use_case, publisher
 
@@ -134,6 +152,36 @@ def test_tool_execution_use_case_preserves_invalid_json_error():
     assert publisher.events == []
 
 
+def test_tool_execution_use_case_rejects_valid_json_non_object_arguments():
+    use_case, publisher = build_use_case()
+
+    result = run(use_case.process([tool_call(arguments='["not", "an", "object"]')]))
+
+    assert result.messages_to_append == [
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": (
+                "Error: tool arguments must be a JSON object: "
+                '["not", "an", "object"]'
+            ),
+        }
+    ]
+    assert publisher.events == []
+
+
+def test_tool_execution_use_case_handles_non_string_and_preparsed_arguments():
+    tool = RuntimeNativeTool()
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
+
+    invalid = run(use_case.process([tool_call(arguments=7)]))
+    valid = run(use_case.process([tool_call(arguments={"value": 1})]))
+
+    assert "must be a JSON object" in invalid.messages_to_append[0]["content"]
+    assert valid.messages_to_append[0]["content"] == "runtime result"
+    assert tool.runtime_calls[0][0] == {"value": 1}
+
+
 def test_tool_execution_use_case_preserves_unknown_tool_error():
     agent = FakeAgent(tools=[SimpleNamespace(name="known_tool")])
     use_case, publisher = build_use_case(agent=agent)
@@ -148,6 +196,69 @@ def test_tool_execution_use_case_preserves_unknown_tool_error():
         }
     ]
     assert publisher.events == []
+
+
+def test_batch_preflight_prevents_partial_execution_on_late_schema_error():
+    tool = SideEffectTool()
+    use_case, publisher = build_use_case(agent=FakeAgent(tools=[tool]))
+    calls = [
+        {
+            "id": "call-good",
+            "function": {"name": "fake_tool", "arguments": '{"value": 1}'},
+        },
+        {
+            "id": "call-bad",
+            "function": {"name": "fake_tool", "arguments": '{"value": "x"}'},
+        },
+    ]
+
+    result = run(use_case.process(calls))
+
+    assert tool.runtime_calls == []
+    assert publisher.events == []
+    assert len(result.messages_to_append) == 2
+    assert all(
+        "entire tool-call batch rejected before execution" in message["content"]
+        for message in result.messages_to_append
+    )
+
+
+def test_batch_preflight_rejects_duplicate_ids_before_execution():
+    tool = SideEffectTool()
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
+    calls = [
+        {
+            "id": "duplicate",
+            "function": {"name": "fake_tool", "arguments": '{"value": 1}'},
+        },
+        {
+            "id": "duplicate",
+            "function": {"name": "fake_tool", "arguments": '{"value": 2}'},
+        },
+    ]
+
+    result = run(use_case.process(calls))
+
+    assert tool.runtime_calls == []
+    assert all("duplicate tool_call id" in item["content"] for item in result.messages_to_append)
+
+
+def test_batch_preflight_caps_call_count_before_execution():
+    tool = SideEffectTool()
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
+    calls = [
+        {
+            "id": f"call-{index}",
+            "function": {"name": "fake_tool", "arguments": '{"value": 1}'},
+        }
+        for index in range(MAX_TOOL_CALLS_PER_BATCH + 1)
+    ]
+
+    result = run(use_case.process(calls))
+
+    assert tool.runtime_calls == []
+    assert len(result.messages_to_append) == MAX_TOOL_CALLS_PER_BATCH + 1
+    assert all("maximum is" in item["content"] for item in result.messages_to_append)
 
 
 def test_tool_execution_use_case_preserves_loop_detection_event():
@@ -351,6 +462,44 @@ def test_tool_execution_use_case_executes_runtime_native_tool_and_events():
     assert publisher.events[1].data["tool"] == "fake_tool"
 
 
+def test_tool_event_failures_do_not_discard_executed_result():
+    class FailingPublisher:
+        def __init__(self, fail_type):
+            self.fail_type = fail_type
+
+        async def emit(self, event):
+            if event.type == self.fail_type:
+                raise RuntimeError(f"{event.type} failed")
+
+    for fail_type in ("tool_start", "tool_end"):
+        tool = RuntimeNativeTool()
+        use_case, _ = build_use_case(
+            agent=FakeAgent(tools=[tool]),
+            event_publisher=FailingPublisher(fail_type),
+        )
+
+        result = run(use_case.process([tool_call()]))
+
+        assert result.messages_to_append[0]["content"] == "runtime result"
+        assert len(tool.runtime_calls) == 1
+
+
+def test_tool_trace_failure_does_not_discard_executed_result():
+    class FailingTracer:
+        def log_step(self, **kwargs):
+            raise RuntimeError("trace failed")
+
+    tool = RuntimeNativeTool()
+    use_case, _ = build_use_case(
+        agent=FakeAgent(tools=[tool]),
+        tracer=FailingTracer(),
+    )
+
+    result = run(use_case.process([tool_call()]))
+
+    assert result.messages_to_append[0]["content"] == "runtime result"
+
+
 def test_tool_execution_use_case_preserves_trace_payload_capping():
     raw_output = "a" * 10_000
     tool = RuntimeNativeTool(output=raw_output)
@@ -435,6 +584,295 @@ def test_loop_block_short_circuit_counts_toward_hard_brake():
 
     assert state.loop_blocked_since_progress == 1
     assert result.loop_detections == [LoopDetection(tool="fake_tool", count=3)]
+
+
+class RevocableEnvironment(Environment):
+    def __init__(self):
+        self._aborted = False
+        self.writes = []
+
+    async def exec_cmd(self, cmd: str, timeout: float = 120.0):
+        self._ensure_active()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    async def read_file(self, path: str) -> str:
+        self._ensure_active()
+        return ""
+
+    async def write_file(self, path: str, content: str) -> None:
+        self._ensure_active()
+        self.writes.append((path, content))
+
+
+class StubbornLateWriteTool:
+    name = "stubborn_late_writer"
+    default_timeout = 0.005
+    disable_outer_timeout = False
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.cancel_seen = asyncio.Event()
+        self.release = asyncio.Event()
+        self.write_blocked = asyncio.Event()
+
+    async def execute_with_runtime(self, args, runtime):
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancel_seen.set()
+            while not self.release.is_set():
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:
+                    continue
+            try:
+                await runtime.environment.write_file("late.py", "late")
+            except RuntimeError:
+                self.write_blocked.set()
+            return "late completion"
+
+
+def _bounded_tool_use_case(tool, environment):
+    return build_use_case(
+        agent=FakeAgent(tools=[tool]),
+        environment=environment,
+        cancellation_cleanup_timeout=0.01,
+        cancellation_force_timeout=0.01,
+        environment_abort_timeout=0.01,
+    )[0]
+
+
+@pytest.mark.asyncio
+async def test_stubborn_timed_out_tool_cannot_write_after_execute_returns(monkeypatch):
+    monkeypatch.setattr(tool_execution_module, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
+    environment = RevocableEnvironment()
+    tool = StubbornLateWriteTool()
+    use_case = _bounded_tool_use_case(tool, environment)
+
+    started = time.monotonic()
+    output, _latency = await use_case.execute_tool(tool, {})
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.2
+    assert "Tool cancellation cleanup failed" in output
+    assert "environment was revoked" in output
+    assert environment._aborted is True
+    pending = use_case.pending_cleanup_tasks
+    assert pending == ()
+
+    tool.release.set()
+    await asyncio.wait_for(tool.write_blocked.wait(), timeout=0.2)
+
+    assert tool.write_blocked.is_set()
+    assert environment.writes == []
+
+
+@pytest.mark.asyncio
+async def test_stubborn_environment_abort_is_bounded_and_exposed(monkeypatch):
+    monkeypatch.setattr(tool_execution_module, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
+
+    class StubbornAbortEnvironment(RevocableEnvironment):
+        def __init__(self):
+            super().__init__()
+            self.abort_started = asyncio.Event()
+            self.abort_release = asyncio.Event()
+
+        async def abort(self) -> None:
+            self.abort_started.set()
+            while not self.abort_release.is_set():
+                try:
+                    await self.abort_release.wait()
+                except asyncio.CancelledError:
+                    continue
+
+    environment = StubbornAbortEnvironment()
+    tool = StubbornLateWriteTool()
+    use_case = _bounded_tool_use_case(tool, environment)
+
+    started = time.monotonic()
+    output, _latency = await use_case.execute_tool(tool, {})
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 0.2
+    assert environment.abort_started.is_set()
+    assert "environment abort did not quiesce within its bounded timeout" in output
+    pending = use_case.pending_cleanup_tasks
+    assert pending == ()
+
+    tool.release.set()
+    environment.abort_release.set()
+    await asyncio.wait_for(tool.write_blocked.wait(), timeout=0.2)
+
+    assert tool.write_blocked.is_set()
+    assert environment.writes == []
+
+
+@pytest.mark.asyncio
+async def test_cooperative_tool_timeout_keeps_existing_result_shape(monkeypatch):
+    monkeypatch.setattr(tool_execution_module, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
+
+    class CooperativeTimeoutTool:
+        name = "cooperative"
+        default_timeout = 0.005
+        disable_outer_timeout = False
+
+        async def execute_with_runtime(self, args, runtime):
+            await asyncio.Event().wait()
+
+    tool = CooperativeTimeoutTool()
+    environment = RevocableEnvironment()
+    use_case = _bounded_tool_use_case(tool, environment)
+
+    output, _latency = await use_case.execute_tool(tool, {})
+
+    assert output.startswith("Tool execution timed out after ")
+    assert "while running 'cooperative'." in output
+    assert "cleanup failed" not in output
+    assert environment._aborted is False
+    assert use_case.pending_cleanup_tasks == ()
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_success_path_is_unchanged():
+    tool = RuntimeNativeTool(output="success")
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
+
+    output, _latency = await use_case.execute_tool(tool, {"value": 1})
+
+    assert output == "success"
+    assert use_case.pending_cleanup_tasks == ()
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_preserves_caller_cancellation():
+    class CallerCancelledTool:
+        name = "caller_cancelled"
+        default_timeout = None
+        disable_outer_timeout = True
+
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        async def execute_with_runtime(self, args, runtime):
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                self.cancelled.set()
+
+    tool = CallerCancelledTool()
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
+    execution = asyncio.create_task(use_case.execute_tool(tool, {}))
+    await tool.started.wait()
+
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    await asyncio.wait_for(tool.cancelled.wait(), timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_repeated_caller_cancel_cannot_interrupt_late_write_cleanup():
+    class CallerStubbornLateWriteTool(StubbornLateWriteTool):
+        default_timeout = None
+        disable_outer_timeout = True
+
+    environment = RevocableEnvironment()
+    tool = CallerStubbornLateWriteTool()
+    use_case = _bounded_tool_use_case(tool, environment)
+    execution = asyncio.create_task(use_case.execute_tool(tool, {}))
+    await tool.started.wait()
+
+    execution.cancel()
+    await tool.cancel_seen.wait()
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    assert environment._aborted is True
+    pending = use_case.pending_cleanup_tasks
+    assert pending == ()
+    tool.release.set()
+    await asyncio.wait_for(tool.write_blocked.wait(), timeout=0.2)
+
+    assert tool.write_blocked.is_set()
+    assert environment.writes == []
+
+
+@pytest.mark.asyncio
+async def test_caller_cancel_cannot_interrupt_tool_timeout_cleanup(monkeypatch):
+    monkeypatch.setattr(tool_execution_module, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
+    environment = RevocableEnvironment()
+    tool = StubbornLateWriteTool()
+    use_case = _bounded_tool_use_case(tool, environment)
+    execution = asyncio.create_task(use_case.execute_tool(tool, {}))
+
+    await tool.cancel_seen.wait()
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    assert environment._aborted is True
+    pending = use_case.pending_cleanup_tasks
+    assert pending == ()
+    tool.release.set()
+    await asyncio.wait_for(tool.write_blocked.wait(), timeout=0.2)
+
+    assert tool.write_blocked.is_set()
+    assert environment.writes == []
+
+
+@pytest.mark.asyncio
+async def test_simultaneous_outer_and_cleanup_cancel_cannot_spin():
+    use_case, _ = build_use_case()
+    cleanup_started = asyncio.Event()
+
+    async def cleanup():
+        cleanup_started.set()
+        await asyncio.Event().wait()
+
+    cleanup_task = asyncio.create_task(cleanup())
+    owner = asyncio.create_task(
+        use_case._await_owned_cleanup_despite_cancellation(cleanup_task)
+    )
+    await cleanup_started.wait()
+
+    owner.cancel()
+    cleanup_task.cancel()
+
+    await asyncio.wait_for(owner, timeout=0.2)
+    assert cleanup_task.cancelled() is True
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "cancellation_cleanup_timeout",
+        "cancellation_force_timeout",
+        "environment_abort_timeout",
+    ],
+)
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "invalid"])
+def test_tool_cleanup_timeouts_must_be_finite_and_positive(field, value):
+    kwargs = {field: value}
+
+    with pytest.raises(ValueError, match="must be a finite positive number"):
+        build_use_case(**kwargs)
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "invalid"])
+def test_invalid_requested_tool_timeout_falls_back_to_positive_bound(value):
+    tool = SimpleNamespace(default_timeout=None, disable_outer_timeout=False)
+    use_case, _ = build_use_case()
+
+    timeout = use_case.tool_execution_timeout(tool, {"timeout": value})
+
+    assert timeout is not None
+    assert math.isfinite(timeout)
+    assert timeout > 0
 
 
 def test_application_tool_execution_module_does_not_import_outer_layers():

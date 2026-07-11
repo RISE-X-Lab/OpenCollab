@@ -20,15 +20,22 @@ Tool *names* are resolved to concrete Tool instances by ``ContextBuilder`` in
 from __future__ import annotations
 
 import os
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from opencollab.bootstrap.tool_registry import COORDINATION_TOOL_NAMES, KNOWN_TOOL_NAMES
+from opencollab.adapters.safe_files import read_regular_text
+from opencollab.bootstrap.tool_registry import (
+    COORDINATION_TOOL_NAMES,
+    KNOWN_TOOL_NAMES,
+    validate_tool_limits,
+)
 from opencollab.domain.hooks import HOOK_ACTION_TYPES, HOOK_EVENT_NAMES, HookSpec
+from opencollab.domain.identity import role_collision_key, validate_role_identity
 from opencollab.domain.team import Topology
 
 # Default tool bundles, derived from the registry so it stays the single source
@@ -48,6 +55,8 @@ BASE_TOOL_NAMES: tuple[str, ...] = tuple(
 # loading regardless of cwd or install layout. A team file can still override any
 # role's prompt via ``prompt`` / ``prompt_file`` (see ``_resolve_prompt``).
 _PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
+MAX_TEAM_CONFIG_BYTES = 4 * 1024 * 1024
+MAX_ROLE_PROMPT_BYTES = 4 * 1024 * 1024
 
 
 def _load_default_prompt(filename: str) -> str:
@@ -98,7 +107,7 @@ class _HookActionFileModel(BaseModel):
     command: str = Field(min_length=1)
     matcher: str | None = None
     type: str = "command"
-    timeout: float = 30.0
+    timeout: float = Field(default=30.0, gt=0, allow_inf_nan=False)
 
 
 class _TeamFileModel(BaseModel):
@@ -118,6 +127,11 @@ class _TeamFileModel(BaseModel):
     # ``bootstrap.tool_registry.build_tools_for_role``).
     tool_limits: dict[str, dict[str, int]] = Field(default_factory=dict)
 
+    @field_validator("tool_limits", mode="before")
+    @classmethod
+    def _validate_tool_limits(cls, value: object) -> dict[str, dict[str, int]]:
+        return validate_tool_limits(value)
+
 
 @dataclass(frozen=True)
 class TeamConfig:
@@ -130,17 +144,86 @@ class TeamConfig:
     roles: dict[str, RoleConfig] = field(default_factory=dict)
     topology: Topology = field(default_factory=Topology)
     hooks: tuple[HookSpec, ...] = ()
-    entry: str = "lead"
+    entry: str | None = None
     # Tool name -> constructor kwargs (output caps); applied by the registry.
     tool_limits: dict[str, dict[str, int]] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        normalized_tool_limits = validate_tool_limits(self.tool_limits)
+        normalized_roles: dict[str, RoleConfig] = {}
+        role_names: dict[str, str] = {}
+        for raw_name, config in self.roles.items():
+            name = validate_role_identity(raw_name)
+            collision = role_collision_key(name)
+            if collision in role_names:
+                raise ValueError(
+                    "role identities collide after Unicode/case normalization: "
+                    f"{role_names[collision]!r} and {raw_name!r}"
+                )
+            role_names[collision] = name
+            normalized_roles[name] = config
+
+        if self.entry is None:
+            entry = role_names.get("lead")
+            if entry is None:
+                entry = next(iter(normalized_roles), "lead")
+        else:
+            entry = validate_role_identity(self.entry)
+            if normalized_roles:
+                canonical_entry = role_names.get(role_collision_key(entry))
+                if canonical_entry is None:
+                    raise ValueError(
+                        f"entry role '{entry}' is not declared in roles "
+                        f"({sorted(normalized_roles)})."
+                    )
+                entry = canonical_entry
+
+        canonical_edges: dict[str, frozenset[str]] = {}
+        canonical_edge_sources: dict[str, str] = {}
+        for source, destinations in self.topology.edges.items():
+            source_identity = validate_role_identity(source)
+            source_key = role_collision_key(source_identity)
+            if source_key in canonical_edge_sources:
+                raise ValueError(
+                    "topology source identities collide after normalization: "
+                    f"{canonical_edge_sources[source_key]!r} and {source!r}"
+                )
+            canonical_edge_sources[source_key] = source_identity
+            canonical_source = role_names.get(
+                source_key,
+                source_identity,
+            )
+            canonical_destinations = frozenset(
+                role_names.get(
+                    role_collision_key(destination),
+                    validate_role_identity(destination),
+                )
+                for destination in destinations
+            )
+            canonical_edges[canonical_source] = canonical_destinations
+
+        object.__setattr__(self, "roles", normalized_roles)
+        object.__setattr__(self, "entry", entry)
+        object.__setattr__(self, "tool_limits", normalized_tool_limits)
+        object.__setattr__(
+            self,
+            "topology",
+            Topology(edges=canonical_edges, allow_all=self.topology.allow_all),
+        )
+
     def role_for(self, name: str) -> RoleConfig:
         """Return the declared role, or a generic fallback for ad-hoc roles."""
-        return self.roles.get(name) or default_role(name)
+        name = validate_role_identity(name)
+        key = role_collision_key(name)
+        for role, config in self.roles.items():
+            if role_collision_key(role) == key:
+                return config
+        return default_role(name)
 
 
 def default_role(name: str) -> RoleConfig:
     """Generic spec for a role not declared in the team file."""
+    validate_role_identity(name)
     return RoleConfig(prompt=DEFAULT_ROLE_PROMPT, model=None, tools=list(BASE_TOOL_NAMES))
 
 
@@ -158,12 +241,17 @@ def _resolve_entry_role(explicit: str | None, roles: dict[str, RoleConfig]) -> s
     role. An explicit ``entry:`` that names no declared role fails fast.
     """
     if explicit is not None:
-        if explicit not in roles:
+        explicit = validate_role_identity(explicit)
+        canonical = {
+            role_collision_key(role): role
+            for role in roles
+        }.get(role_collision_key(explicit))
+        if canonical is None:
             raise ValueError(
                 f"entry role '{explicit}' is not declared in roles "
                 f"({sorted(roles)})."
             )
-        return explicit
+        return canonical
     if "lead" in roles:
         return "lead"
     if roles:
@@ -194,12 +282,30 @@ def _resolve_prompt(entry: _RoleFileModel, base_dir: Path, role_name: str) -> st
     if entry.prompt is not None:
         return entry.prompt
     if entry.prompt_file is not None:
-        prompt_path = (base_dir / entry.prompt_file).resolve()
-        if not prompt_path.is_file():
-            raise ValueError(
-                f"Role '{role_name}': prompt_file not found: {prompt_path}"
+        prompt_path = Path(os.path.abspath(base_dir / entry.prompt_file))
+        base_absolute = Path(os.path.abspath(base_dir))
+        try:
+            contained = os.path.commonpath((base_absolute, prompt_path)) == str(
+                base_absolute
             )
-        return prompt_path.read_text(encoding="utf-8")
+        except ValueError:
+            contained = False
+        if not contained:
+            raise ValueError(
+                f"Role '{role_name}': prompt_file escapes team directory: "
+                f"{prompt_path}"
+            )
+        try:
+            text = read_regular_text(
+                prompt_path,
+                max_bytes=MAX_ROLE_PROMPT_BYTES,
+            )
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise ValueError(
+                f"Role '{role_name}': prompt_file cannot be read safely: "
+                f"{prompt_path}"
+            ) from exc
+        return text
     raise ValueError(f"Role '{role_name}': must set 'prompt' or 'prompt_file'.")
 
 
@@ -231,8 +337,18 @@ def _build_hook_specs(hooks: dict[str, list[_HookActionFileModel]]) -> tuple[Hoo
 
 def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
     model = _TeamFileModel.model_validate(data or {})
-    roles = {
-        name: RoleConfig(
+    roles: dict[str, RoleConfig] = {}
+    canonical_roles: dict[str, str] = {}
+    for raw_name, entry in model.roles.items():
+        name = validate_role_identity(raw_name)
+        collision = role_collision_key(name)
+        if collision in canonical_roles:
+            raise ValueError(
+                "role identities collide after Unicode/case normalization: "
+                f"{canonical_roles[collision]!r} and {raw_name!r}"
+            )
+        canonical_roles[collision] = name
+        roles[name] = RoleConfig(
             prompt=_resolve_prompt(entry, base_dir, name),
             model=entry.model,
             temperature=entry.temperature,
@@ -240,9 +356,34 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
             thinking_params=entry.thinking_params,
             tools=list(entry.tools),
         )
-        for name, entry in model.roles.items()
-    }
-    edges = {src: frozenset(dsts) for src, dsts in model.topology.items()}
+
+    edges: dict[str, frozenset[str]] = {}
+    edge_sources: dict[str, str] = {}
+    for raw_source, raw_destinations in model.topology.items():
+        source_identity = validate_role_identity(raw_source)
+        source_key = role_collision_key(source_identity)
+        if source_key in edge_sources:
+            raise ValueError(
+                "topology source identities collide after normalization: "
+                f"{edge_sources[source_key]!r} and {raw_source!r}"
+            )
+        edge_sources[source_key] = source_identity
+        source = canonical_roles.get(source_key, source_identity)
+        destinations: list[str] = []
+        destination_keys: set[str] = set()
+        for raw_destination in raw_destinations:
+            destination_identity = validate_role_identity(raw_destination)
+            destination_key = role_collision_key(destination_identity)
+            if destination_key in destination_keys:
+                raise ValueError(
+                    "topology destination identities collide after normalization "
+                    f"for source {raw_source!r}"
+                )
+            destination_keys.add(destination_key)
+            destinations.append(
+                canonical_roles.get(destination_key, destination_identity)
+            )
+        edges[source] = frozenset(destinations)
     return TeamConfig(
         roles=roles,
         topology=Topology(edges=edges, allow_all=False),
@@ -255,18 +396,30 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
 def resolve_team_file(workspace: str | None = None) -> Path | None:
     """Return the team file that ``load_team_config`` would read, or ``None``."""
     for path in _candidate_team_paths(workspace):
-        if path.is_file():
-            return path.resolve()
+        try:
+            inspected = path.lstat()
+        except OSError:
+            continue
+        if stat.S_ISREG(inspected.st_mode):
+            return Path(os.path.abspath(path))
     return None
 
 
 def load_team_config(workspace: str | None = None) -> TeamConfig:
     """Load the team file from the resolved path, or the lead-only default."""
     for path in _candidate_team_paths(workspace):
-        if path.is_file():
-            with open(path, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f)
-            return _build_team_config(data, path.resolve().parent)
+        try:
+            inspected = path.lstat()
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(inspected.st_mode):
+            raise ValueError(f"team config is not a regular file: {path}")
+        try:
+            text = read_regular_text(path, max_bytes=MAX_TEAM_CONFIG_BYTES)
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise ValueError(f"team config cannot be read safely: {path}") from exc
+        data = yaml.safe_load(text)
+        return _build_team_config(data, Path(os.path.abspath(path)).parent)
     return default_team_config()
 
 
