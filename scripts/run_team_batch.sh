@@ -3,16 +3,15 @@
 #
 # Loads the dataset via the swebench Python package (uses HF cache), writes
 # each instance to a temp JSON, then invokes scripts/start_team_run.sh.
-# Skips instances only when the latest row has a non-empty patch and a matching
-# completed workflow identity/status record.
+# Skips instances already present in --output with a non-empty patch.
 #
 # Usage:
 #   scripts/run_team_batch.sh \
 #       --dataset SWE-bench/SWE-bench_Lite \
 #       --split test \
-#       --output /path/to/swebench-eval/predictions-team.jsonl \
+#       --output /home/xuzhenhua/swebench-eval/predictions-team.jsonl \
 #       [--timeout 1500] \
-#       --namespace <registry-namespace> \
+#       [--namespace docker.1panel.live/swebench] \
 #       [--instance-ids id1,id2,...] \
 #       [--limit N] \
 #       [--start-from <instance_id>] \
@@ -25,16 +24,16 @@
 # instances are skipped.
 #
 # The dataset entry is also resolved via swebench.make_test_spec so that the
-# correct local Docker image (with __ → _1776_) is passed to
-# start_team_run.sh via --image. Set OPENCOLLAB_EVAL_PYTHON to the Python
-# executable that has the swebench package installed.
+# correct local docker image (mirror-namespaced, with __ → _1776_) is passed
+# to start_team_run.sh via --image. This means images pulled by
+# /home/xuzhenhua/swebench-eval/pull_all_images.py work out of the box; no
+# retagging needed.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ONE_SHOT="$SCRIPT_DIR/start_team_run.sh"
-EVAL_VENV_PY="${OPENCOLLAB_EVAL_PYTHON:-}"
-BATCH_IO="$SCRIPT_DIR/swe_team_batch_io.py"
+EVAL_VENV_PY="/home/xuzhenhua/swebench-eval/.venv/bin/python"
 
 die() { echo "error: $*" >&2; exit 1; }
 
@@ -46,7 +45,7 @@ dataset="SWE-bench/SWE-bench_Lite"
 split="test"
 output=""
 timeout_secs=1500
-namespace="${OPENCOLLAB_SWEBENCH_NAMESPACE:-}"
+namespace="docker.1panel.live/swebench"
 instance_ids=""
 limit=""
 start_from=""
@@ -73,238 +72,183 @@ while (($#)); do
 done
 
 [ -n "$output" ] || die "--output is required"
-[ -n "$namespace" ] || die "--namespace or OPENCOLLAB_SWEBENCH_NAMESPACE is required"
 [ -x "$ONE_SHOT" ] || die "missing $ONE_SHOT"
-[ -x "$EVAL_VENV_PY" ] || die "set OPENCOLLAB_EVAL_PYTHON to an executable with swebench installed"
-[ -f "$BATCH_IO" ] || die "missing $BATCH_IO"
+[ -x "$EVAL_VENV_PY" ] || die "missing $EVAL_VENV_PY (need swebench package installed)"
 
+mkdir -p "$(dirname "$output")"
 [ -n "$logs_dir" ] || logs_dir="$REPO_ROOT/.opencollab/swebench/_batch_logs/$(date +%Y-%m-%dT%H-%M-%S)"
-prepared_paths="$("$EVAL_VENV_PY" "$BATCH_IO" prepare --output "$output" --logs-dir "$logs_dir")" \
-    || die "batch output/log path preparation failed"
-IFS=$'\t' read -r output logs_dir summary <<< "$prepared_paths"
-[ -n "$output" ] && [ -n "$logs_dir" ] && [ -n "$summary" ] \
-    || die "batch path preparation returned an invalid result"
-
-# Decide which instances to run. Instance JSON and the TSV manifest are written
-# through a held, non-symlink directory descriptor under logs_dir.
-list_file="$logs_dir/_to_run.tsv"
-total="$(HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 "$EVAL_VENV_PY" - "$dataset" "$split" \
-    "${instance_ids:-}" "${limit:-}" "${start_from:-}" "$output" "$retry_empty" \
-    "$logs_dir" "$namespace" "$REPO_ROOT" "$SCRIPT_DIR" "$list_file" <<'PY'
-import hashlib
-import json
-import os
+mkdir -p "$logs_dir"
+summary="$logs_dir/batch.tsv"
+[ -f "$summary" ] || printf 'timestamp\tinstance_id\tstatus\tpatch_bytes\twall_seconds\tloop_alert\n' > "$summary"
+if ! head -n 1 "$summary" | grep -q $'\tloop_alert$'; then
+    "$EVAL_VENV_PY" - "$summary" <<'PY'
 import pathlib
 import sys
 
-(
-    dataset_name,
-    split,
-    ids_csv,
-    limit_s,
-    start_from,
-    output_path,
-    retry_empty_s,
-    logs_dir,
-    namespace,
-    repo_root,
-    script_dir,
-    list_file,
-) = sys.argv[1:13]
+path = pathlib.Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+if not lines:
+    path.write_text("timestamp\tinstance_id\tstatus\tpatch_bytes\twall_seconds\tloop_alert\n", encoding="utf-8")
+    raise SystemExit
+lines[0] = lines[0] + "\tloop_alert"
+for index in range(1, len(lines)):
+    if lines[index].strip():
+        lines[index] = lines[index] + "\tunknown"
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+PY
+fi
+
+# Decide which instances to run. Emit instance JSON to <logs-dir>/<id>.json
+# and a TSV of (instance_id\tjson_path\timage_key) to stdout.
+list_file="$logs_dir/_to_run.tsv"
+HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 "$EVAL_VENV_PY" - "$dataset" "$split" \
+    "${instance_ids:-}" "${limit:-}" "${start_from:-}" "$output" "$retry_empty" \
+    "$logs_dir" "$namespace" > "$list_file" <<'PY'
+import json, os, sys, pathlib
+dataset_name, split, ids_csv, limit_s, start_from, output_path, retry_empty_s, logs_dir, namespace = sys.argv[1:10]
 limit = int(limit_s) if limit_s else None
-if limit is not None and limit <= 0:
-    raise SystemExit("--limit must be a positive integer")
-
-sys.path.insert(0, str(pathlib.Path(repo_root) / "opencollab"))
-sys.path.insert(0, script_dir)
-from opencollab.harness.swe_eval_records import is_completed_prediction, read_jsonl, row_task_id
-from swe_team_batch_io import (
-    atomic_write_at,
-    open_directory,
-    validate_instance_id,
-    validate_tsv_field,
-)
-
-ids_filter = (
-    {validate_instance_id(item.strip()) for item in ids_csv.split(",") if item.strip()}
-    if ids_csv
-    else None
-)
-if start_from:
-    start_from = validate_instance_id(start_from)
+retry_empty = retry_empty_s == "1"
+ids_filter = [i.strip() for i in ids_csv.split(",") if i.strip()] if ids_csv else None
 
 from swebench.harness.utils import load_swebench_dataset
 from swebench.harness.test_spec.test_spec import make_test_spec
-ds = load_swebench_dataset(dataset_name, split)
+ds = list(load_swebench_dataset(dataset_name, split))
 
 # Build map of last seen prediction per instance_id (last line wins).
 seen = {}
 out_path = pathlib.Path(output_path)
-for rec in read_jsonl(out_path):
-    iid = row_task_id(rec)
-    if iid:
-        seen[iid] = rec
+if out_path.exists():
+    with out_path.open() as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            iid = rec.get("instance_id")
+            if iid:
+                seen[iid] = (rec.get("model_patch") or "").strip()
 
 def should_skip(iid):
-    return is_completed_prediction(seen.get(iid))
+    if iid not in seen:
+        return False
+    last_patch = seen[iid]
+    if not last_patch and retry_empty:
+        return False
+    return True
 
-started = not bool(start_from)
-start_found = started
+started = start_from is None or start_from == ""
 count = 0
-manifest_rows = []
-logs_path, logs_fd = open_directory(logs_dir, create=False)
-try:
-    for inst in ds:
-        if not isinstance(inst, dict):
-            raise SystemExit("dataset row must be an object")
-        iid = validate_instance_id(inst.get("instance_id"))
-        if not started:
-            if iid == start_from:
-                started = True
-                start_found = True
-            else:
-                continue
-        if ids_filter is not None and iid not in ids_filter:
+logs_dir = pathlib.Path(logs_dir)
+for inst in ds:
+    iid = inst["instance_id"]
+    if not started:
+        if iid == start_from:
+            started = True
+        else:
             continue
-        if should_skip(iid):
-            continue
-        digest = hashlib.sha256(iid.encode("utf-8")).hexdigest()
-        json_name = f"{digest}.instance.json"
-        json_path = logs_path / json_name
-        atomic_write_at(
-            logs_fd,
-            json_name,
-            json.dumps(inst, ensure_ascii=False).encode("utf-8"),
-            label=json_path,
-        )
-        spec = make_test_spec(inst, namespace=namespace)
-        image_key = validate_tsv_field(spec.instance_image_key, label="image key")
-        manifest_rows.append(
-            "\t".join(
-                (
-                    validate_tsv_field(iid, label="instance_id"),
-                    validate_tsv_field(json_path, label="instance JSON path"),
-                    image_key,
-                    digest,
-                )
-            )
-        )
-        count += 1
-        if limit is not None and count >= limit:
-            break
-    if start_from and not start_found:
-        raise SystemExit(f"--start-from instance was not found: {start_from}")
-    list_path = pathlib.Path(os.path.abspath(list_file))
-    if list_path.parent != logs_path:
-        raise SystemExit("batch manifest escaped logs_dir")
-    payload = (("\n".join(manifest_rows) + "\n") if manifest_rows else "").encode("utf-8")
-    atomic_write_at(logs_fd, list_path.name, payload, label=list_path)
-finally:
-    os.close(logs_fd)
-print(count)
+    if ids_filter is not None and iid not in ids_filter:
+        continue
+    if should_skip(iid):
+        continue
+    json_path = logs_dir / f"{iid.replace('__','-')}.instance.json"
+    json_path.write_text(json.dumps(inst))
+    spec = make_test_spec(inst, namespace=namespace)
+    image_key = spec.instance_image_key
+    print(f"{iid}\t{json_path}\t{image_key}")
+    count += 1
+    if limit is not None and count >= limit:
+        break
 PY
-)" || die "batch manifest generation failed"
-[[ "$total" =~ ^[0-9]+$ ]] || die "batch manifest returned an invalid count"
+
+total=$(wc -l < "$list_file" | tr -d '[:space:]')
 if [ "$total" = "0" ]; then
     echo "Nothing to run — every requested instance already has a (non-empty) prediction."
     exit 0
 fi
-manifest_payload="$("$EVAL_VENV_PY" "$BATCH_IO" display-summary --summary "$list_file")" \
-    || die "batch manifest could not be read safely"
 
 echo "Batch plan: $total instances → $output"
-echo "Per-instance logs: $logs_dir/<instance_id_sha256>.log"
+echo "Per-instance logs: $logs_dir/<instance_id>.log"
 echo "Summary: $summary"
 echo
 
 idx=0
-while IFS=$'\t' read -r iid json_path image_key log_stem <&3; do
+while IFS=$'\t' read -r iid json_path image_key <&3; do
     idx=$((idx+1))
-    log="$logs_dir/${log_stem}.log"
+    log="$logs_dir/${iid}.log"
     printf '[%d/%d] %s  (image=%s)\n' "$idx" "$total" "$iid" "$image_key"
     started_ts=$(date +%s)
     started_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    command=(
-        bash "$ONE_SHOT"
-        --instance-file "$json_path"
-        --output "$output"
-        --image "$image_key"
-        --timeout "$timeout_secs"
-        "${extra[@]}"
-    )
     set +e
-    "$EVAL_VENV_PY" "$BATCH_IO" run-log --log "$log" -- "${command[@]}"
+    bash "$ONE_SHOT" \
+        --instance-file "$json_path" \
+        --output "$output" \
+        --image "$image_key" \
+        --timeout "$timeout_secs" \
+        "${extra[@]}" \
+        > "$log" 2>&1 < /dev/null
     rc=$?
     set -e
     ended_ts=$(date +%s)
     wall=$((ended_ts - started_ts))
 
-    prediction_info="$("$EVAL_VENV_PY" - "$iid" "$output" "$REPO_ROOT" <<'PY'
-import pathlib
-import sys
-
-iid, output, repo_root = sys.argv[1:4]
-sys.path.insert(0, str(pathlib.Path(repo_root) / "opencollab"))
-from opencollab.harness.swe_eval_records import (
-    is_completed_prediction,
-    prediction_patch,
-    read_jsonl,
-    row_task_id,
-)
-
-latest = None
-for row in read_jsonl(pathlib.Path(output)):
-    if row_task_id(row) == iid:
-        latest = row
-patch = prediction_patch(latest)
-print(f"{len(patch.encode('utf-8', errors='surrogatepass'))}\t{int(is_completed_prediction(latest))}")
+    patch_bytes="$("$EVAL_VENV_PY" - "$iid" "$output" <<'PY'
+import json, sys
+iid = sys.argv[1]
+path = sys.argv[2]
+last = ""
+with open(path, "r", encoding="utf-8", errors="surrogateescape") as f:
+    for line in f:
+        line = line.strip()
+        if line:
+            last = line
+if not last:
+    print(0); sys.exit()
+try:
+    rec = json.loads(last)
+except Exception:
+    print(0); sys.exit()
+if rec.get("instance_id") != iid:
+    print(0); sys.exit()
+print(len((rec.get("model_patch") or "").encode("utf-8")))
 PY
     )"
-    IFS=$'\t' read -r patch_bytes prediction_valid <<< "$prediction_info"
-    if [ "$rc" -eq 0 ] && [ "${prediction_valid:-0}" = "1" ]; then
+    if [ "$rc" -eq 0 ] && [ "${patch_bytes:-0}" -gt 0 ]; then
         status="ok"
     elif [ "$rc" -eq 0 ]; then
-        status="invalid_prediction"
+        status="empty_patch"
     else
         status="error_rc${rc}"
     fi
     loop_alert="$("$EVAL_VENV_PY" - "$REPO_ROOT" "$iid" "$log" <<'PY'
+import json
 import pathlib
 import re
 import sys
 
 repo, iid, log_path = sys.argv[1:4]
-sys.path.insert(0, str(pathlib.Path(repo) / "scripts"))
-from swebench_loop_monitor import _load_json, _read_tail_text
-
 monitor = pathlib.Path(repo) / ".opencollab" / "swebench" / iid / "loop_monitor.json"
 if monitor.exists():
     try:
-        value = _load_json(monitor)
-        if isinstance(value, dict):
-            print(value.get("level") or "unknown")
-            raise SystemExit
+        print(json.loads(monitor.read_text()).get("level") or "unknown")
+        raise SystemExit
     except Exception:
         pass
 try:
-    text = _read_tail_text(pathlib.Path(log_path), 1024 * 1024)
-except Exception:
+    text = pathlib.Path(log_path).read_text(errors="ignore")
+except OSError:
     print("unknown")
     raise SystemExit
 matches = re.findall(r"level=(ok|warn|critical)", text)
 print(matches[-1] if matches else "unknown")
 PY
     )"
-    "$EVAL_VENV_PY" "$BATCH_IO" append-summary --summary "$summary" \
-        "$started_iso" "$iid" "$status" "${patch_bytes:-0}" "$wall" "$loop_alert"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$started_iso" "$iid" "$status" "${patch_bytes:-0}" "$wall" "$loop_alert" >> "$summary"
     printf '       → %s (%s bytes, %ss, loop=%s)\n' "$status" "${patch_bytes:-0}" "$wall" "$loop_alert"
-done 3<<< "$manifest_payload"
+done 3< "$list_file"
 
 echo
 echo "Done. Summary:"
-if command -v column >/dev/null 2>&1; then
-    "$EVAL_VENV_PY" "$BATCH_IO" display-summary --summary "$summary" \
-        | column -t -s $'\t'
-else
-    "$EVAL_VENV_PY" "$BATCH_IO" display-summary --summary "$summary"
-fi
+column -t -s $'\t' "$summary" | tail -n +1

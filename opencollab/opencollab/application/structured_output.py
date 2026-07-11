@@ -35,8 +35,6 @@ class StructuredOutputTool:
     """
 
     name = TOOL_NAME
-    default_timeout: float | None = None
-    disable_outer_timeout = False
     description = (
         "Return your final answer as structured data. Call this exactly once, "
         "at the end, with the result object that conforms to the required schema. "

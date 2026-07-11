@@ -5,12 +5,6 @@ CLI.
 
 ## Install
 
-OpenCollab supports Linux and macOS hosts. Its local file adapters require
-descriptor-relative operations, no-follow `stat`, `O_NOFOLLOW`, fd-based
-directory listing, callable `fcntl.flock`, and an atomic no-clobber rename:
-`renameat2(RENAME_NOREPLACE)` on Linux or `renameatx_np(RENAME_EXCL)` on macOS
-10.12 and newer. Missing primitives produce an explicit capability error.
-
 From the repository root with `uv`:
 
 ```bash

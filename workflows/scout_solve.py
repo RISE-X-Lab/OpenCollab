@@ -39,7 +39,7 @@ from typing import Any
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
-from opencollab.adapters.tools.run_tests import verification_run_tests_tool
+from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.workflow_registry import workflow
 
 MAX_SOLVE_ROUNDS = 3
@@ -229,18 +229,11 @@ def _read_tools() -> list[Any]:
 
 
 def _coder_tools() -> list[Any]:
-    return [
-        BashTool(),
-        FileReadTool(),
-        FileWriteTool(),
-        ApplyPatchTool(),
-        verification_run_tests_tool(),
-        GrepTool(),
-    ]
+    return [BashTool(), FileReadTool(), FileWriteTool(), ApplyPatchTool(), RunTestsTool(), GrepTool()]
 
 
 def _tester_tools() -> list[Any]:
-    return [BashTool(), FileReadTool(), verification_run_tests_tool(), GrepTool()]
+    return [BashTool(), FileReadTool(), RunTestsTool(), GrepTool()]
 
 
 async def _explore(ctx: Any, goal: str, dims: list[dict[str, Any]]) -> str:

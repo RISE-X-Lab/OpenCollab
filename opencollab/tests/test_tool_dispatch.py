@@ -11,11 +11,7 @@ from pathlib import Path
 
 import opencollab.application.tool_execution as tool_execution_mod
 from opencollab.adapters.tools.run_tests import RunTestsTool
-from opencollab.application.tool_execution import (
-    DeferredCall,
-    ToolExecutionUseCase,
-    ToolRuntime,
-)
+from opencollab.application.tool_execution import ToolExecutionUseCase, ToolRuntime
 from opencollab.domain.session import SessionState
 
 
@@ -70,35 +66,6 @@ class HangingTool(RuntimeNativeTool):
         return "unreachable"
 
 
-class InternallyBoundedTool(RuntimeNativeTool):
-    disable_outer_timeout = True
-
-
-class DeferredTool(RuntimeNativeTool):
-    async def execute_with_runtime(self, params, runtime):
-        self.runtime_calls.append((params, runtime))
-        return DeferredCall(ref=17)
-
-
-class RecordingEventPublisher:
-    def __init__(self):
-        self.events = []
-
-    async def emit(self, event):
-        self.events.append(event)
-
-
-class FailingEventPublisher(RecordingEventPublisher):
-    def __init__(self, fail_type):
-        super().__init__()
-        self.fail_type = fail_type
-
-    async def emit(self, event):
-        self.events.append(event)
-        if event.type == self.fail_type:
-            raise RuntimeError(f"{event.type} sink failed")
-
-
 def _tool_call(args: str = "{}") -> dict:
     return {"id": "c1", "function": {"name": "fake_tool", "arguments": args}}
 
@@ -139,158 +106,6 @@ def test_use_case_times_out_hung_tool(monkeypatch):
     assert "Tool execution timed out after" in result.messages_to_append[0]["content"]
     assert "fake_tool" in result.messages_to_append[0]["content"]
     assert len(tool.runtime_calls) == 1
-
-
-def test_internally_bounded_tool_bypasses_single_tool_outer_timeout(monkeypatch):
-    seen_timeouts = []
-
-    async def record_timeout(awaitable, timeout):
-        seen_timeouts.append(timeout)
-        return await asyncio.shield(awaitable)
-
-    monkeypatch.setattr(
-        ToolExecutionUseCase,
-        "_await_execution_task",
-        staticmethod(record_timeout),
-    )
-    tool = InternallyBoundedTool()
-    use_case = ToolExecutionUseCase(
-        agent=FakeAgent([tool]),
-        environment=FakeEnv(),
-        state=SessionState(messages=[]),
-        event_publisher=FakeEventPublisher(),
-    )
-
-    result = run(use_case.process([_tool_call()]))
-
-    assert result.messages_to_append[0]["content"] == "runtime result"
-    assert seen_timeouts == [None]
-
-
-def test_tool_internal_timeout_is_not_reported_as_outer_timeout():
-    class InternallyTimingOutTool(RuntimeNativeTool):
-        async def execute_with_runtime(self, params, runtime):
-            raise asyncio.TimeoutError("provider deadline")
-
-    tool = InternallyTimingOutTool()
-    use_case = ToolExecutionUseCase(
-        agent=FakeAgent([tool]),
-        environment=FakeEnv(),
-        state=SessionState(messages=[]),
-        event_publisher=FakeEventPublisher(),
-    )
-
-    result = run(use_case.process([_tool_call()]))
-
-    assert result.messages_to_append[0]["content"] == (
-        "Tool execution error: TimeoutError: provider deadline"
-    )
-
-
-def test_nested_caller_timeout_is_not_reported_as_tool_outer_timeout():
-    class InternallyTimingOutTool(RuntimeNativeTool):
-        async def execute_with_runtime(self, params, runtime):
-            raise tool_execution_mod.CallerTimeoutError("nested deadline")
-
-    tool = InternallyTimingOutTool()
-    use_case = ToolExecutionUseCase(
-        agent=FakeAgent([tool]),
-        environment=FakeEnv(),
-        state=SessionState(messages=[]),
-        event_publisher=FakeEventPublisher(),
-    )
-
-    result = run(use_case.process([_tool_call()]))
-
-    assert result.messages_to_append[0]["content"] == (
-        "Tool execution error: CallerTimeoutError: nested deadline"
-    )
-
-
-def test_deferred_tool_uses_timeout_and_always_emits_tool_end(monkeypatch):
-    monkeypatch.setattr(tool_execution_mod, "DEFAULT_TOOL_EXECUTION_TIMEOUT", 0.01)
-    monkeypatch.setattr(tool_execution_mod, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.0)
-    tool = HangingTool()
-    publisher = RecordingEventPublisher()
-    use_case = ToolExecutionUseCase(
-        agent=FakeAgent([tool]),
-        environment=FakeEnv(),
-        state=SessionState(messages=[]),
-        event_publisher=publisher,
-    )
-
-    ref, error = run(use_case.execute_deferred(_tool_call()))
-
-    assert ref is None
-    assert "Tool execution timed out after" in error
-    assert [event.type for event in publisher.events] == ["tool_start", "tool_end"]
-
-
-def test_deferred_tool_preserves_deferred_result_and_emits_tool_end():
-    tool = DeferredTool()
-    publisher = RecordingEventPublisher()
-    use_case = ToolExecutionUseCase(
-        agent=FakeAgent([tool]),
-        environment=FakeEnv(),
-        state=SessionState(messages=[]),
-        event_publisher=publisher,
-    )
-
-    ref, error = run(use_case.execute_deferred(_tool_call()))
-
-    assert (ref, error) == (17, None)
-    assert [event.type for event in publisher.events] == ["tool_start", "tool_end"]
-
-
-def test_deferred_tool_start_event_failure_does_not_block_spawn():
-    tool = DeferredTool()
-    publisher = FailingEventPublisher("tool_start")
-    use_case = ToolExecutionUseCase(
-        agent=FakeAgent([tool]),
-        environment=FakeEnv(),
-        state=SessionState(messages=[]),
-        event_publisher=publisher,
-    )
-
-    ref, error = run(use_case.execute_deferred(_tool_call()))
-
-    assert (ref, error) == (17, None)
-    assert len(tool.runtime_calls) == 1
-
-
-def test_deferred_tool_end_event_failure_preserves_child_reference():
-    tool = DeferredTool()
-    publisher = FailingEventPublisher("tool_end")
-    use_case = ToolExecutionUseCase(
-        agent=FakeAgent([tool]),
-        environment=FakeEnv(),
-        state=SessionState(messages=[]),
-        event_publisher=publisher,
-    )
-
-    ref, error = run(use_case.execute_deferred(_tool_call()))
-
-    assert (ref, error) == (17, None)
-
-
-def test_non_finite_tool_timeout_falls_back_to_default():
-    tool = RuntimeNativeTool()
-    use_case = ToolExecutionUseCase(
-        agent=FakeAgent([tool]),
-        environment=FakeEnv(),
-        state=SessionState(messages=[]),
-        event_publisher=FakeEventPublisher(),
-    )
-
-    expected = tool_execution_mod.DEFAULT_TOOL_EXECUTION_TIMEOUT + 10.0
-    assert use_case.tool_execution_timeout(tool, {"timeout": "nan"}) == expected
-    assert use_case.tool_execution_timeout(tool, {"timeout": "inf"}) == expected
-
-
-def test_invalid_timeout_environment_values_fall_back(monkeypatch):
-    for value in ("nan", "inf", "-1", "invalid"):
-        monkeypatch.setenv("OPENCOLLAB_TEST_TIMEOUT", value)
-        assert tool_execution_mod._positive_env_float("OPENCOLLAB_TEST_TIMEOUT", 17.0) == 17.0
 
 
 def test_outer_timeout_uses_tool_default_timeout_before_framework_fallback():

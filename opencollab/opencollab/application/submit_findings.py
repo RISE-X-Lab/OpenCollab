@@ -78,8 +78,6 @@ class SubmitFindingsTool:
     """
 
     name = SUBMIT_TOOL_NAME
-    default_timeout: float | None = None
-    disable_outer_timeout = False
     description = (
         "Submit your reconnaissance findings as structured evidence. Call this to "
         "commit your report. Each finding marked verified=true MUST carry an "
@@ -112,22 +110,22 @@ class SubmitFindingsTool:
                 "Validation failed; the output does not conform to the schema. Fix and call "
                 f"{self.name} again. Errors: {joined}"
             )
-        # Abstention describes the report as a whole; it never turns an uncited
-        # verified claim into evidence. Mixed payloads may retain partial cited
-        # findings while abstaining on the remaining dimension.
-        uncited = [
-            i
-            for i, finding in enumerate(params.get("findings") or [])
-            if finding.get("verified")
-            and not str(finding.get("evidence_anchor") or "").strip()
-        ]
-        if uncited:
-            return (
-                "Cite-or-abstain: every finding marked verified=true MUST carry a concrete "
-                "evidence_anchor (file:line or an exact matched string from a real tool "
-                f"result). These findings are missing it: {uncited}. Add the anchor or set "
-                "verified=false, then call submit_findings again. Do NOT fabricate an anchor."
-            )
+        # Cite-or-abstain post-validation: a verified claim without an anchor is
+        # bounced for correction — unless the scout is abstaining wholesale.
+        if not params.get("insufficient_evidence"):
+            uncited = [
+                i
+                for i, finding in enumerate(params.get("findings") or [])
+                if finding.get("verified") and not str(finding.get("evidence_anchor") or "").strip()
+            ]
+            if uncited:
+                return (
+                    "Cite-or-abstain: every finding marked verified=true MUST carry a concrete "
+                    "evidence_anchor (file:line or an exact matched string from a real tool "
+                    f"result). These findings are missing it: {uncited}. Add the anchor, set "
+                    "verified=false, or set insufficient_evidence=true if you truly lack evidence "
+                    f"— then call {self.name} again. Do NOT fabricate an anchor."
+                )
         self.captured = params
         if self._on_capture is not None:
             self._on_capture()

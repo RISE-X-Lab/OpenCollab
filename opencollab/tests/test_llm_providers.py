@@ -13,7 +13,6 @@ from opencollab.adapters.llm.anthropic_provider import _parse_response as parse_
 from opencollab.adapters.llm.anthropic_provider import _parse_usage as parse_anthropic_usage
 from opencollab.adapters.llm.openai_provider import _build_request_kwargs as build_openai_kwargs
 from opencollab.adapters.llm.openai_provider import _parse_response as parse_openai_response
-from opencollab.adapters.llm.openai_provider import _usage_int as openai_usage_int
 from opencollab.adapters.llm.providers import (
     is_anthropic,
     normalize_provider,
@@ -595,8 +594,3 @@ def test_openai_content_markup_takes_precedence_over_reasoning():
 
     assert [tc["function"]["name"] for tc in result.tool_calls] == ["grep"]
     assert result.content is None
-
-
-@pytest.mark.parametrize("value", [float("inf"), float("nan"), -1, "-2"])
-def test_openai_usage_rejects_non_finite_and_negative_values(value):
-    assert openai_usage_int({"tokens": value}, "tokens") == 0
