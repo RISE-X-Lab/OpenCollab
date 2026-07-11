@@ -7,6 +7,8 @@ from typing import Any
 
 from opencollab.adapters.env import Environment, ExecResult
 
+ENV_RECOVERY_PATCH_PREFIX = "/tmp/opencollab-checkpoint-recovery-"
+
 
 def _checkpoint_module():
     return sys.modules["opencollab.harness.swe_checkpoint"]
@@ -77,8 +79,35 @@ async def _prove_failed_restore_clean(
     pending_tasks: set[asyncio.Task[Any]],
 ) -> tuple[bool, str, asyncio.CancelledError | None]:
     """Prove a failed/cancelled apply left no worktree mutation."""
+    try:
+        retirement_collector = getattr(env, "registered_retirement_snapshot", None)
+        retirement_snapshot = await retirement_collector() if callable(retirement_collector) else ()
+        registered_retirements = tuple(
+            item.relative_path for item in retirement_snapshot
+        )
+        base_revision = getattr(env, "patch_base_revision", None)
+        object_directory = getattr(env, "patch_object_directory", None)
+        working_tree = getattr(env, "workspace", None)
+        if not base_revision or not object_directory or not working_tree:
+            raise RuntimeError("patch source was not pinned before task execution")
+    except BaseException as exc:
+        return (
+            False,
+            f"failed restore retirement validation raised {type(exc).__name__}: {exc}",
+            cancellation,
+        )
     proof_task = asyncio.create_task(
-        env.exec_cmd(_checkpoint_module().worktree_diff_command(exclude_paths), timeout=120)
+        env.exec_cmd(
+            _checkpoint_module().worktree_diff_command(
+                exclude_paths,
+                registered_retirement_paths=registered_retirements,
+                retirement_snapshot=retirement_snapshot,
+                base_revision=base_revision,
+                object_directory=object_directory,
+                working_tree=working_tree,
+            ),
+            timeout=120,
+        )
     )
     pending_tasks.add(proof_task)
     result: ExecResult | None = None
@@ -142,4 +171,19 @@ async def _prove_failed_restore_clean(
             "failed checkpoint restore left the worktree dirty",
             cancellation,
         )
+    if callable(retirement_collector):
+        try:
+            refreshed_snapshot = await retirement_collector()
+        except BaseException as exc:
+            return (
+                False,
+                f"failed restore retirement revalidation raised {type(exc).__name__}: {exc}",
+                cancellation,
+            )
+        if tuple(refreshed_snapshot) != tuple(retirement_snapshot):
+            return (
+                False,
+                "retirement artifacts changed during failed restore proof",
+                cancellation,
+            )
     return True, "", cancellation

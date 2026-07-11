@@ -200,8 +200,6 @@ class Scheduler(
         ] = contextvars.ContextVar("review_parent_lease_tracker", default=None)
 
 
-_scheduler_cleanup.Scheduler = Scheduler
-
 _COMPATIBILITY_MODULES = (
     _scheduler_constants,
     _scheduler_persistence,

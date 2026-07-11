@@ -13,10 +13,10 @@ from opencollab.application._scheduler_constants import (
     MAX_FORCED_CLEANUP_TIMEOUT,
 )
 from opencollab.application.async_timeout import force_task_terminal
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.domain.pending import PendingRowError, RowStatus
 
 logger = logging.getLogger(__name__)
-Scheduler: Any = None
 
 
 class SchedulerCleanupMixin:
@@ -68,9 +68,11 @@ class SchedulerCleanupMixin:
                 break
         if cancellation is not None:
             if cleanup_failure is not None:
-                add_note = getattr(cancellation, "add_note", None)
-                if callable(add_note):
-                    add_note(f"scheduler cleanup also failed: {type(cleanup_failure).__name__}: {cleanup_failure}")
+                add_exception_note(
+                    cancellation,
+                    "scheduler cleanup also failed: "
+                    f"{type(cleanup_failure).__name__}: {cleanup_failure}",
+                )
             raise cancellation
         if cleanup_failure is not None:
             raise cleanup_failure
@@ -288,7 +290,7 @@ class SchedulerCleanupMixin:
                 timeout=max(0.0, timeout),
             )
         for task in tasks - pending:
-            Scheduler._consume_background_task(task)
+            SchedulerCleanupMixin._consume_background_task(task)
         return pending
 
     def _persistence_sessions(

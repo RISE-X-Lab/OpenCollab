@@ -203,6 +203,7 @@ def test_cancelled_owner_deadline_keeps_late_old_write_before_new_snapshot(
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(old_owner, timeout=0.6)
         assert isinstance(sub.last_error, TimeoutError)
+        assert len(sub.pending_write_futures) == 1
 
         current = "new"
         new_owner = sub.enqueue()
@@ -210,6 +211,50 @@ def test_cancelled_owner_deadline_keeps_late_old_write_before_new_snapshot(
         await asyncio.sleep(0.03)
         assert new_owner.done() is False
         release_old.set()
+        await asyncio.wait_for(new_owner, timeout=0.6)
+        assert sub.pending_write_futures == ()
+
+    asyncio.run(scenario())
+    assert path.read_text(encoding="utf-8") == "new"
+
+
+def test_serialization_key_orders_writes_across_subscribers(tmp_path):
+    path = tmp_path / "shared-session.json"
+    old_started = threading.Event()
+    old_release = threading.Event()
+
+    def write_old():
+        old_started.set()
+        assert old_release.wait(timeout=2)
+        path.write_text("old", encoding="utf-8")
+
+    def write_new():
+        path.write_text("new", encoding="utf-8")
+
+    old_subscriber = AutoSaveSubscriber(
+        write_old,
+        serialization_key=str(path),
+    )
+    new_subscriber = AutoSaveSubscriber(
+        write_new,
+        serialization_key=str(path),
+    )
+
+    async def scenario():
+        old_owner = old_subscriber.enqueue()
+        assert old_owner is not None
+        assert await asyncio.to_thread(old_started.wait, 1)
+        old_owner.cancel("old run cancelled")
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(old_owner, timeout=0.6)
+        assert len(old_subscriber.pending_write_futures) == 1
+
+        new_owner = new_subscriber.enqueue()
+        assert new_owner is not None
+        await asyncio.sleep(0.03)
+        assert not path.exists()
+
+        old_release.set()
         await asyncio.wait_for(new_owner, timeout=0.6)
 
     asyncio.run(scenario())
@@ -406,6 +451,66 @@ def test_event_bus_external_cancellation_still_propagates():
     asyncio.run(scenario())
 
     assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_event_bus_same_tick_subscriber_and_caller_cancel_propagates_caller():
+    bus = EventBus()
+    started = asyncio.Event()
+    seen = []
+
+    async def blocking(_event):
+        started.set()
+        await asyncio.Event().wait()
+
+    bus.subscribe(blocking)
+    bus.subscribe(lambda event: seen.append(event.type))
+    emit = asyncio.create_task(bus.emit(SessionEvent(type="ping")))
+    await started.wait()
+    subscriber_owner = bus.pending_tasks[0]
+
+    subscriber_owner.cancel("subscriber cancelled")
+    emit.cancel("caller cancelled")
+    with pytest.raises(asyncio.CancelledError):
+        await emit
+
+    assert seen == []
+
+
+@pytest.mark.asyncio
+async def test_event_bus_tracks_cancel_resistant_subscriber_after_emit_cancel():
+    bus = EventBus()
+    started = asyncio.Event()
+    cancellation_seen = asyncio.Event()
+    release = asyncio.Event()
+    mutations = []
+
+    async def stubborn(_event):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancellation_seen.set()
+            await release.wait()
+            mutations.append("late write")
+
+    bus.subscribe(stubborn)
+    emit = asyncio.create_task(bus.emit(SessionEvent(type="ping")))
+    await started.wait()
+    emit.cancel("caller cancelled")
+    with pytest.raises(asyncio.CancelledError):
+        await emit
+    await cancellation_seen.wait()
+
+    pending = bus.pending_tasks
+    assert len(pending) == 1
+    assert mutations == []
+
+    release.set()
+    await pending[0]
+    await asyncio.sleep(0)
+    assert mutations == ["late write"]
+    assert bus.pending_tasks == ()
 
 
 def test_session_with_auto_save_path_writes_on_user_message(tmp_path):

@@ -25,12 +25,14 @@ class SchedulerPersistenceMixin:
         fn: Callable[[], None],
         *,
         prepare_fn: Callable[[], Callable[[], None] | None] | None = None,
+        serialization_key: str | None = None,
     ) -> None:
         """Inject the team-manifest persister (called on every roster change)."""
         self._manifest_writer = fn
         self._manifest_subscriber = AutoSaveSubscriber(
             fn,
             prepare_fn=prepare_fn,
+            serialization_key=serialization_key,
         )
 
     def _write_manifest(self) -> Exception | None:
@@ -72,6 +74,7 @@ class SchedulerPersistenceMixin:
             if subscriber is None:
                 subscriber = AutoSaveSubscriber(
                     lambda: save(save_path),
+                    serialization_key=save_path,
                 )
                 self._fallback_autosavers[aid] = subscriber
             return subscriber.enqueue()

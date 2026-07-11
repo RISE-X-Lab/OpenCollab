@@ -20,6 +20,7 @@ from opencollab.adapters._env_process import (
     _OwnedProcessTimeout,
     _run_thread_owned_process,
 )
+from opencollab.application.exception_notes import add_exception_note
 
 logger = logging.getLogger(__name__)
 
@@ -201,9 +202,7 @@ class DockerExecMixin:
             if not stopped:
                 detail = "cancelled command could not be terminated inside attached container"
                 logger.error(detail)
-                add_note = getattr(exc, "add_note", None)
-                if callable(add_note):
-                    add_note(detail)
+                add_exception_note(exc, detail)
             raise
         except BaseException as original:
             if isinstance(original, _OwnedProcessNotQuiesced):
@@ -213,13 +212,12 @@ class DockerExecMixin:
             except BaseException as cleanup_exc:
                 stopped = False
                 self._aborted = True
-                add_note = getattr(original, "add_note", None)
-                if callable(add_note):
-                    add_note(f"container command cleanup failed: {type(cleanup_exc).__name__}: {cleanup_exc}")
+                add_exception_note(
+                    original,
+                    f"container command cleanup failed: {type(cleanup_exc).__name__}: {cleanup_exc}",
+                )
             if not stopped:
                 detail = "failed command could not be terminated inside container"
                 logger.error(detail)
-                add_note = getattr(original, "add_note", None)
-                if callable(add_note):
-                    add_note(detail)
+                add_exception_note(original, detail)
             raise original

@@ -26,13 +26,44 @@ def fake_team_repo(tmp_path):
     (root / "configs").mkdir()
     (root / "swebench").mkdir()
     (root / "opencollab" / ".venv" / "bin").mkdir(parents=True)
+    fake_testbed = root / "fake-testbed"
+    (fake_testbed / "pkg").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q"], cwd=fake_testbed, check=True)
+    (fake_testbed / "pkg" / "a.py").write_text("old\n", encoding="utf-8")
+    subprocess.run(["git", "add", "pkg/a.py"], cwd=fake_testbed, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=OpenCollab",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "base",
+        ],
+        cwd=fake_testbed,
+        check=True,
+    )
     shutil.copy2(TEAM_RUNNER, root / "scripts" / TEAM_RUNNER.name)
+    for helper_name in (
+        "swe_team_batch_io.py",
+        "swe_team_owner.py",
+        "swe_team_retirement_io.py",
+        "swe_team_run_io.py",
+        "swebench_process.py",
+    ):
+        shutil.copy2(SOURCE_ROOT / "scripts" / helper_name, root / "scripts" / helper_name)
+    shutil.copy2(
+        SOURCE_ROOT / "scripts" / "safe_workspace_snapshot.py",
+        root / "scripts" / "safe_workspace_snapshot.py",
+    )
     (root / "configs" / "team.self.collab.yaml").write_text("agents: []\n")
     (root / "configs" / ".env").write_text("\n")
     (root / "swebench" / "gen_prediction.py").write_text(
         "MAX_EXTRACTED_PATCH_BYTES = 8 * 1024 * 1024\n"
         "def bounded_container_output_command(command, *, max_bytes, label, helper_path=None):\n"
-        "    return 'true'\n",
+        "    return command\n",
         encoding="utf-8",
     )
     shutil.copy2(
@@ -101,10 +132,23 @@ case "$cmd" in
         printf '%064d\n' 0 | tr '0' 'a'
         ;;
     cp)
+        if [ "${*: -1}" = "-" ]; then
+            source_path="${*: -2:1}"
+            if [[ "$source_path" == *"/testbed/.git/." ]]; then
+                tar -C "$FAKE_TESTBED/.git" -cf - .
+            else
+                printf 'new\n' > "$FAKE_TESTBED/pkg/a.py"
+                tar -C "$FAKE_TESTBED" --exclude=.git -cf - .
+            fi
+        fi
         exit 0
         ;;
     exec)
         args=" $* "
+        if [[ "$args" == *"rev-parse --verify"* ]]; then
+            git -C "$FAKE_TESTBED" rev-parse HEAD
+            exit 0
+        fi
         if [[ "$args" == *"container_process_guard.sh stop"* ]]; then
             exit "${FAKE_STOP_RC:-0}"
         fi
@@ -115,6 +159,9 @@ case "$cmd" in
             fi
             exit "${FAKE_AGENT_RC:-0}"
         fi
+        exit 0
+        ;;
+    pause|unpause)
         exit 0
         ;;
     rm)
@@ -175,6 +222,8 @@ esac
             "PATH": f"{fake_bin}:{env.get('PATH', '')}",
             "FAKE_DOCKER_LOG": str(log),
             "FAKE_DOCKER_STATE": str(state),
+            "FAKE_TESTBED": str(fake_testbed),
+            "PYTHONPATH": str(SOURCE_ROOT / "opencollab"),
         }
     )
     return {
@@ -200,6 +249,10 @@ def _run(
     run_env = values["env"].copy()
     if env:
         run_env.update(env)
+        if "PYTHONPATH" in env:
+            run_env["PYTHONPATH"] = os.pathsep.join(
+                (env["PYTHONPATH"], values["env"]["PYTHONPATH"])
+            )
     return subprocess.run(
         [
             "bash",

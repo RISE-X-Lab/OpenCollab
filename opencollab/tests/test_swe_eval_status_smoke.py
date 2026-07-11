@@ -32,6 +32,42 @@ def test_docker_eval_wrapper_accepts_positive_fractional_timeout(monkeypatch):
     assert captured == {"version": "auto", "timeout": 2.5}
 
 
+@pytest.mark.parametrize(
+    ("module_name", "blocked_prefix"),
+    [
+        ("scripts.run_swebench_eval_with_docker_timeout", "docker"),
+        ("scripts.run_swebench_smoke_batch", "swebench.harness"),
+    ],
+)
+def test_smoke_helpers_defer_optional_dependency_imports(
+    module_name,
+    blocked_prefix,
+):
+    code = f"""
+import builtins
+import importlib
+
+original_import = builtins.__import__
+
+def blocked_import(name, *args, **kwargs):
+    if name == {blocked_prefix!r} or name.startswith({blocked_prefix!r} + "."):
+        raise ModuleNotFoundError(name)
+    return original_import(name, *args, **kwargs)
+
+builtins.__import__ = blocked_import
+importlib.import_module({module_name!r})
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).resolve().parents[2],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+
+
 def test_docker_eval_wrapper_blank_primary_falls_back_to_client_timeout(monkeypatch):
     wrapper = importlib.import_module("scripts.run_swebench_eval_with_docker_timeout")
     captured = {}

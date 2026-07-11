@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as json
 import os
 import stat
 import subprocess
@@ -24,6 +25,9 @@ from opencollab.harness.swe_eval_records import (
     read_jsonl,
     row_task_id,
     task_ids,
+)
+from opencollab.harness.swe_eval_records import (
+    row_patch_sha as row_patch_sha,
 )
 
 
@@ -103,19 +107,112 @@ def _status_from_summary_payload(payload: dict[str, Any]) -> tuple[str, int, int
     status = str(payload.get("status") or "")
     if status in TECHNICAL_EVAL_STATUSES or bool(payload.get("error")):
         return "technical_eval_failed", 0, 0
-    if (
-        "resolved_instances" not in payload
-        and "unresolved_instances" not in payload
-        and "resolved_ids" not in payload
-        and "unresolved_ids" not in payload
-        and isinstance(payload.get("resolved"), bool)
-    ):
+    count_fields = {
+        "resolved_instances",
+        "unresolved_instances",
+        "resolved_ids",
+        "unresolved_ids",
+    }
+    has_count_evidence = any(key in payload for key in count_fields)
+    if not has_count_evidence and isinstance(payload.get("resolved"), bool):
         resolved = 1 if payload["resolved"] else 0
         unresolved = 0 if payload["resolved"] else 1
         return status, resolved, unresolved
+    if not has_count_evidence:
+        raise ValueError("evaluation summary has no resolved or unresolved evidence")
     resolved = _summary_count(payload, "resolved_instances", "resolved_ids")
     unresolved = _summary_count(payload, "unresolved_instances", "unresolved_ids")
+    if status == "done" and resolved + unresolved == 0:
+        raise ValueError("completed evaluation summary has no task outcome")
     return status, resolved, unresolved
+
+
+def _plan_evidence_is_complete(
+    tests_status: dict[str, Any],
+    prefix: str,
+    *,
+    require_commands: bool,
+) -> bool:
+    plan = tests_status.get(f"{prefix}_plan")
+    evidence = tests_status.get(f"{prefix}_evidence")
+    if not isinstance(plan, dict) or not isinstance(evidence, list):
+        return False
+    commands = plan.get("commands")
+    if not isinstance(commands, list) or len(evidence) != len(commands):
+        return False
+    if require_commands and not commands:
+        return False
+    if plan.get("coverage_verified") is not True and commands:
+        return False
+    return all(
+        isinstance(item, dict)
+        and isinstance(item.get("status"), int)
+        and not isinstance(item.get("status"), bool)
+        and all(
+            item.get(field) is True
+            for field in (
+                "command_matches_plan",
+                "log_artifact_safe",
+                "target_proof_matches_plan",
+                "artifact_safe",
+            )
+        )
+        for item in evidence
+    )
+
+
+def _direct_eval_done_has_execution_proof(payload: dict[str, Any]) -> bool:
+    if (
+        payload.get("schema") != "opencollab.prolite_direct_eval.v2"
+        or payload.get("status") != "done"
+        or not isinstance(payload.get("resolved"), bool)
+        or payload.get("technical_reasons") != []
+        or payload.get("output_artifact_errors") != []
+        or payload.get("docker_exit") != 0
+        or payload.get("cleanup_quiesced") is not True
+        or not isinstance(payload.get("container_cleanup"), dict)
+        or payload["container_cleanup"].get("ok") is not True
+    ):
+        return False
+    tests_status = payload.get("tests_status")
+    if not isinstance(tests_status, dict):
+        return False
+    if any(
+        tests_status.get(field) != 0
+        for field in (
+            "service_bootstrap_status",
+            "before_repo_status",
+            "model_patch_status",
+            "test_patch_status",
+        )
+    ):
+        return False
+    if not _plan_evidence_is_complete(
+        tests_status,
+        "fail_to_pass",
+        require_commands=True,
+    ) or not _plan_evidence_is_complete(
+        tests_status,
+        "pass_to_pass",
+        require_commands=False,
+    ):
+        return False
+    f2p_status = tests_status.get("fail_to_pass_status")
+    p2p_status = tests_status.get("pass_to_pass_status")
+    if any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in (f2p_status, p2p_status)
+    ):
+        return False
+    f2p_evidence = tests_status["fail_to_pass_evidence"]
+    p2p_evidence = tests_status["pass_to_pass_evidence"]
+    expected_resolved = bool(
+        f2p_status == 0
+        and p2p_status == 0
+        and all(item["status"] == 0 for item in f2p_evidence)
+        and all(item["status"] == 0 for item in p2p_evidence)
+    )
+    return payload["resolved"] is expected_resolved
 
 
 def _reports_from_payload(path: Path, payload: Any) -> list[EvalReport]:
@@ -129,6 +226,15 @@ def _reports_from_payload(path: Path, payload: Any) -> list[EvalReport]:
 
     task_id = str(payload.get("instance_id") or payload.get("task_id") or payload.get("task") or "")
     if task_id:
+        if payload.get("schema") != "opencollab.prolite_direct_eval.v2":
+            return []
+        status_value = str(payload.get("status") or "")
+        if (
+            status_value not in TECHNICAL_EVAL_STATUSES
+            and not bool(payload.get("error"))
+            and not _direct_eval_done_has_execution_proof(payload)
+        ):
+            return []
         try:
             status, resolved, unresolved = _status_from_summary_payload(payload)
         except (TypeError, ValueError):
@@ -154,6 +260,38 @@ def _reports_from_payload(path: Path, payload: Any) -> list[EvalReport]:
     reports: list[EvalReport] = []
     for key, value in payload.items():
         if not isinstance(value, dict):
+            continue
+        schema = str(value.get("schema") or "")
+        if schema.startswith("opencollab.prolite_direct_eval."):
+            status_value = str(value.get("status") or "")
+            if (
+                status_value not in TECHNICAL_EVAL_STATUSES
+                and not bool(value.get("error"))
+                and not _direct_eval_done_has_execution_proof(value)
+            ):
+                continue
+            try:
+                status, resolved, unresolved = _status_from_summary_payload(value)
+            except (TypeError, ValueError):
+                continue
+            reports.append(
+                EvalReport(
+                    task_id=str(key),
+                    patch_sha=str(
+                        value.get("patch_sha256")
+                        or value.get("patch_sha")
+                        or value.get("model_patch_sha256")
+                        or ""
+                    ),
+                    status=status,
+                    record_id=str(
+                        value.get("record_id") or payload.get("record_id") or ""
+                    ),
+                    resolved_count=resolved,
+                    unresolved_count=unresolved,
+                    path=str(path),
+                )
+            )
             continue
         official = _status_from_official_payload(str(key), payload)
         if official is None:
@@ -462,26 +600,20 @@ def _discover_eval_artifacts(
                 relative = str(path.relative_to(side_dir))
             except ValueError:
                 relative = str(path)
-            prior_fingerprint = attempt.prior_reports.get(relative)
-            current_fingerprint = (
-                f"{report_stat.st_mtime_ns}:{report_stat.st_ctime_ns}:"
-                f"{report_stat.st_size}:{report_stat.st_ino}"
-            )
-            if prior_fingerprint == current_fingerprint:
+            if relative in attempt.prior_reports:
                 reports.append(report)
                 continue
         elif (
             attempt.prior_report_fingerprint is not None
             and path == Path(attempt.path).with_name("report.json")
         ):
-            current_fingerprint = (
-                f"{report_stat.st_mtime_ns}:{report_stat.st_ctime_ns}:"
-                f"{report_stat.st_size}:{report_stat.st_ino}"
-            )
-            if attempt.prior_report_fingerprint == current_fingerprint:
+            if attempt.prior_report_fingerprint:
                 reports.append(report)
                 continue
-        elif report_mtime_ns < attempt.started_at_ns:
+        elif attempt.prior_reports is None:
+            reports.append(report)
+            continue
+        if report_mtime_ns < attempt.started_at_ns:
             reports.append(report)
             continue
         reports.append(

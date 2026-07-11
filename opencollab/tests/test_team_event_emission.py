@@ -725,6 +725,10 @@ def test_review_verdict_uses_only_the_final_nonempty_line():
     )
     assert ReviewVerdict.parse(quoted_then_failed).passed is False
     assert ReviewVerdict.parse("Looks good.\nVERDICT: PASS\n").passed is True
+    assert ReviewVerdict.parse("Looks good.\nVERDICT: PASS.\n").passed is True
+    assert ReviewVerdict.parse("Looks good.\nVERDICT: PASS！\n").passed is True
+    assert ReviewVerdict.parse("Looks good.\nVERDICT: PASS?\n").passed is False
+    assert ReviewVerdict.parse("Looks good.\nVERDICT: PASS...\n").passed is False
     assert ReviewVerdict.parse("VERDICT: PASS\nTrailing prose").passed is False
 
 

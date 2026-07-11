@@ -46,6 +46,61 @@ def test_caller_cancellation_cleans_environment_before_propagating(monkeypatch, 
     assert any(is_worktree_diff_cmd(cmd) for cmd in env.cmds)
 
 
+def test_same_tick_caller_and_teardown_self_cancel_still_cleans_environment(
+    monkeypatch,
+    tmp_path,
+):
+    teardown_started = asyncio.Event()
+    release_teardown = asyncio.Event()
+    original_wait = evaluator._wait_for_owned_execution
+    calls = 0
+
+    async def quick_session(**kwargs):
+        return None
+
+    async def self_cancel_once(tasks, workflow_ctx, *, cleanup_timeout):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            teardown_started.set()
+            await release_teardown.wait()
+            raise asyncio.CancelledError("inner teardown cancellation")
+        return await original_wait(
+            tasks,
+            workflow_ctx,
+            cleanup_timeout=cleanup_timeout,
+        )
+
+    monkeypatch.setattr(evaluator, "_run_single_session", quick_session)
+    monkeypatch.setattr(
+        evaluator,
+        "_wait_for_owned_execution",
+        self_cancel_once,
+    )
+    env = FakeEnv()
+
+    async def env_factory(task):
+        return env
+
+    async def scenario():
+        owner = asyncio.create_task(
+            run_eval_task(
+                EvalTask(task_id="dual-cancel", description="fix"),
+                output_dir=str(tmp_path),
+                tools_factory=list,
+                env_factory=env_factory,
+            )
+        )
+        await teardown_started.wait()
+        owner.cancel("caller cancellation")
+        release_teardown.set()
+        with pytest.raises(asyncio.CancelledError):
+            await owner
+
+    run(scenario())
+    assert env.cleaned_up is True
+
+
 def test_single_session_timeout_waits_for_cleanup_and_keeps_metrics(monkeypatch, tmp_path):
     cancel_seen = asyncio.Event()
     release_cancel = asyncio.Event()

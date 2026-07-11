@@ -7,10 +7,12 @@ import os
 import shutil
 import subprocess
 import threading
+from pathlib import Path
 
 import opencollab.adapters.env as env_module
 import opencollab.adapters.worktree_pool as pool_module
 import pytest
+from asyncio_test_support import assert_cancel_note, assert_cancel_reason
 from opencollab.adapters.env import ExecResult, LocalEnvironment, WorktreeEnvironment
 from opencollab.adapters.worktree_pool import WorktreePool
 
@@ -164,7 +166,7 @@ def test_pool_double_cancel_waits_for_partial_cleanup(tmp_path, monkeypatch):
         env.cleanup_release.set()
         with pytest.raises(asyncio.CancelledError) as captured:
             await task
-        assert captured.value.args == ("first cancellation",)
+        assert_cancel_reason(captured.value, "first cancellation")
 
     asyncio.run(scenario())
     assert created[0].cleaned is True
@@ -233,6 +235,43 @@ def test_pool_release_traverses_all_and_retains_only_failures(tmp_path):
     assert pool._envs == []
 
 
+@pytest.mark.asyncio
+async def test_pool_release_finishes_owned_cleanup_before_propagating_cancel(
+    tmp_path,
+    monkeypatch,
+):
+    class SlowWorktree:
+        def __init__(self):
+            self.workspace = "slow-release"
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.cleaned = False
+
+        async def cleanup(self):
+            self.started.set()
+            await self.release.wait()
+            self.cleaned = True
+
+    monkeypatch.setattr(pool_module, "WorktreeEnvironment", SlowWorktree)
+    env = SlowWorktree()
+    pool = WorktreePool(str(tmp_path), use_worktrees=True)
+    pool._envs = [env]
+
+    task = asyncio.create_task(pool.release())
+    await env.started.wait()
+    task.cancel("release cancelled")
+    await asyncio.sleep(0)
+    assert task.done() is False
+
+    env.release.set()
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await task
+
+    assert_cancel_reason(raised.value, "release cancelled")
+    assert env.cleaned is True
+    assert pool._envs == []
+
+
 def test_pool_release_env_failure_is_retained_and_propagated(tmp_path, monkeypatch):
     class FakeWorktree:
         def __init__(self):
@@ -279,6 +318,31 @@ def test_worktree_diff_includes_committed_and_untracked_files(tmp_path):
     assert "+committed change" in diff
     assert "new_file.py" in diff
     assert "+print('untracked')" in diff
+
+
+def test_worktree_cleanup_preserves_replacement_at_owned_path(tmp_path):
+    repo = _init_repo(tmp_path / "repo")
+    env = WorktreeEnvironment(str(repo), branch_name="replacement-guard")
+    workspace = asyncio.run(env.setup())
+    workspace_path = Path(workspace)
+    moved_owned = workspace_path.with_name(f"{workspace_path.name}-moved-owned")
+    saved_foreign = workspace_path.with_name(f"{workspace_path.name}-saved-foreign")
+    workspace_path.rename(moved_owned)
+    workspace_path.mkdir()
+    (workspace_path / "foreign-data").write_text("preserve", encoding="utf-8")
+
+    try:
+        with pytest.raises(OSError, match="ownership changed"):
+            asyncio.run(env.cleanup())
+
+        assert (workspace_path / "foreign-data").read_text(encoding="utf-8") == "preserve"
+    finally:
+        if workspace_path.exists():
+            workspace_path.rename(saved_foreign)
+        if moved_owned.exists():
+            moved_owned.rename(workspace_path)
+        asyncio.run(env.cleanup())
+        shutil.rmtree(saved_foreign, ignore_errors=True)
 
 
 def test_existing_branch_failure_preserves_branch(tmp_path):
@@ -349,14 +413,14 @@ async def test_worktree_directory_fallback_removal_runs_off_event_loop(
     env._worktree_dir = str(worktree)
     entered = threading.Event()
     release = threading.Event()
-    original_rmtree = shutil.rmtree
+    original_remove = env._quarantine_and_remove_owned_worktree_directory
 
-    def blocking_rmtree(path, ignore_errors=False):
+    def blocking_remove(path):
         entered.set()
         assert release.wait(timeout=2)
-        original_rmtree(path, ignore_errors=ignore_errors)
+        original_remove(path)
 
-    monkeypatch.setattr(shutil, "rmtree", blocking_rmtree)
+    monkeypatch.setattr(env, "_quarantine_and_remove_owned_worktree_directory", blocking_remove)
     cleanup_task = asyncio.create_task(env.cleanup())
     assert await asyncio.to_thread(entered.wait, 0.5)
 
@@ -390,16 +454,15 @@ async def test_worktree_cleanup_double_cancel_finishes_prune_and_branch_delete(
 
     entered = threading.Event()
     release = threading.Event()
-    original_rmtree = shutil.rmtree
+    original_remove = env._quarantine_and_remove_owned_worktree_directory
 
-    def blocking_rmtree(path, ignore_errors=False):
-        if os.path.realpath(path) == os.path.realpath(workspace):
-            entered.set()
-            assert release.wait(timeout=2)
-        original_rmtree(path, ignore_errors=ignore_errors)
+    def blocking_remove(path):
+        entered.set()
+        assert release.wait(timeout=2)
+        original_remove(path)
 
     monkeypatch.setattr(env, "_run_git", fail_first_registered_remove)
-    monkeypatch.setattr(shutil, "rmtree", blocking_rmtree)
+    monkeypatch.setattr(env, "_quarantine_and_remove_owned_worktree_directory", blocking_remove)
     cleanup_task = asyncio.create_task(env.cleanup())
     assert await asyncio.to_thread(entered.wait, 1)
 
@@ -414,12 +477,11 @@ async def test_worktree_cleanup_double_cancel_finishes_prune_and_branch_delete(
     with pytest.raises(asyncio.CancelledError) as captured:
         await asyncio.wait_for(cleanup_task, timeout=3)
 
-    assert captured.value.args == ("first cleanup cancellation",)
-    notes = getattr(captured.value, "__notes__", [])
-    assert any(
-        "worktree cleanup failed after cancellation" in note
-        and "simulated remove failure" in note
-        for note in notes
+    assert_cancel_reason(captured.value, "first cleanup cancellation")
+    assert_cancel_note(
+        captured.value,
+        "worktree cleanup failed after cancellation",
+        "simulated remove failure",
     )
     assert env._worktree_dir is None
     assert env._worktree_registered is False
@@ -456,13 +518,13 @@ def test_branch_delete_failure_retries_after_worktree_directory_is_gone(
 
     async def fail_first_delete(*args, **kwargs):
         nonlocal failed_once
-        if args[:2] == ("branch", "-D") and not failed_once:
+        if args[:2] == ("update-ref", "-d") and not failed_once:
             failed_once = True
             return ExecResult(1, "", "simulated delete failure")
         return await original_run_git(*args, **kwargs)
 
     monkeypatch.setattr(env, "_run_git", fail_first_delete)
-    with pytest.raises(OSError, match="git branch -D failed"):
+    with pytest.raises(OSError, match="branch compare-and-delete failed"):
         asyncio.run(env.cleanup())
 
     assert not os.path.exists(workspace)
@@ -485,7 +547,6 @@ def test_partial_add_cleanup_failure_retains_all_retry_state(tmp_path, monkeypat
     env._branch_preexisting = False
     env._branch_cleanup_pending = True
     original_run_git = env._run_git
-    original_rmtree = shutil.rmtree
 
     async def fail_cleanup_commands(*args, **kwargs):
         if args[:3] == ("worktree", "list", "--porcelain"):
@@ -496,18 +557,26 @@ def test_partial_add_cleanup_failure_retains_all_retry_state(tmp_path, monkeypat
             return ExecResult(1, "", "prune failed")
         if args[:3] == ("show-ref", "--verify", "--quiet"):
             return ExecResult(0, "", "")
-        if args[:2] == ("branch", "-D"):
+        if args[:3] == ("show-ref", "--hash", "--verify"):
+            return ExecResult(0, "0" * 40 + "\n", "")
+        if args[:2] == ("update-ref", "-d"):
             return ExecResult(1, "", "branch delete failed")
         raise AssertionError(args)
 
     monkeypatch.setattr(env, "_run_git", fail_cleanup_commands)
-    monkeypatch.setattr(shutil, "rmtree", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        env,
+        "_quarantine_and_remove_owned_worktree_directory",
+        lambda _path: (_ for _ in ()).throw(
+            OSError("worktree quarantine still exists")
+        ),
+    )
     with pytest.raises(OSError) as captured:
         asyncio.run(env.cleanup())
     message = str(captured.value)
     assert "ownership probe failed" in message
     assert "worktree remove failed" in message
-    assert "worktree directory still exists" in message
+    assert "worktree quarantine still exists" in message
     assert "worktree prune failed" in message
     assert env._worktree_dir == str(partial)
     assert env._worktree_add_attempted is True
@@ -515,7 +584,7 @@ def test_partial_add_cleanup_failure_retains_all_retry_state(tmp_path, monkeypat
     assert env._branch_cleanup_pending is True
 
     monkeypatch.setattr(env, "_run_git", original_run_git)
-    monkeypatch.setattr(shutil, "rmtree", original_rmtree)
+    monkeypatch.undo()
     asyncio.run(env.cleanup())
     assert env._worktree_dir is None
     assert env._worktree_add_attempted is False
@@ -600,7 +669,7 @@ def test_get_diff_rejects_truncated_patch(tmp_path, monkeypatch):
     original_exec = env._local_env.exec_cmd
 
     async def truncate_diff(cmd, timeout=120.0):
-        if cmd.startswith("git diff --binary"):
+        if "git diff --cached --binary" in cmd:
             return ExecResult(
                 0,
                 "partial patch",

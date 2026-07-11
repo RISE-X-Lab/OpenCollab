@@ -75,6 +75,23 @@ shellflag=$3
 command=$4
 shift 4
 cleanup() { rm -f -- "$pidfile" "$cancelfile"; }
+wait_for_child_ready() {
+    probe=0
+    child_reaped=0
+    while [ "$probe" -lt 200 ]; do
+        if [ "$child_ready" = "1" ]; then
+            return 0
+        fi
+        if ! kill -0 -- "$child" 2>/dev/null; then
+            wait "$child" 2>/dev/null || true
+            child_reaped=1
+            return 1
+        fi
+        sleep 0.01
+        probe=$((probe + 1))
+    done
+    return 1
+}
 terminate_child() {
     kill -TERM -- "-$child" 2>/dev/null || true
     probe=0
@@ -100,13 +117,31 @@ if [ -e "$cancelfile" ]; then
     cleanup
     exit 143
 fi
+child_ready=0
+trap 'child_ready=1' USR2
 if command -v setsid >/dev/null 2>&1; then
-    setsid bash "$shellflag" "$command" "$@" <&0 &
+    setsid bash -c \
+        'go=0; trap "go=1" USR1; kill -USR2 "$PPID"; while [ "$go" = 0 ]; do sleep 0.01; done; exec bash "$@"' \
+        opencollab-exec "$shellflag" "$command" "$@" <&0 &
 else
     set -m
-    bash "$shellflag" "$command" "$@" <&0 &
+    bash -c \
+        'go=0; trap "go=1" USR1; kill -USR2 "$PPID"; while [ "$go" = 0 ]; do sleep 0.01; done; exec bash "$@"' \
+        opencollab-exec "$shellflag" "$command" "$@" <&0 &
 fi
 child=$!
+if ! wait_for_child_ready || ! kill -0 -- "-$child" 2>/dev/null; then
+    trap - USR2
+    if [ "$child_reaped" != "1" ]; then
+        kill -KILL -- "-$child" 2>/dev/null \
+            || kill -KILL -- "$child" 2>/dev/null \
+            || true
+        wait "$child" 2>/dev/null || true
+    fi
+    cleanup
+    exit 125
+fi
+trap - USR2
 if ! printf '%s\n' "$child" > "$pidfile"; then
     if terminate_child; then
         cleanup
@@ -118,6 +153,13 @@ if [ -e "$cancelfile" ]; then
     if terminate_child; then
         cleanup
         exit 143
+    fi
+    exit 197
+fi
+if ! kill -USR1 -- "$child" 2>/dev/null; then
+    if terminate_child; then
+        cleanup
+        exit 125
     fi
     exit 197
 fi
@@ -195,7 +237,44 @@ esac
 printf '%s\t%s\n' "$bytes" "$digest"
 """.strip()
 
-_DOCKER_CREATE_WRITE_AND_VERIFY = r"""
+_DOCKER_QUARANTINE_REMOVE_FUNCTION = r"""
+quarantine_remove_owned() {
+    remove_target=$1
+    remove_expected=$2
+    if [ ! -e "$remove_target" ] && [ ! -L "$remove_target" ]; then
+        return 0
+    fi
+    remove_parent=$(dirname -- "$remove_target") || return 77
+    command -v flock >/dev/null 2>&1 || return 79
+    exec 9< "$remove_parent" || return 77
+    flock -x 9 || return 77
+    remove_attempt=0
+    while [ "$remove_attempt" -lt 20 ]; do
+        shopt -s nullglob
+        remove_existing=("$remove_parent"/.opencollab-retired-*)
+        shopt -u nullglob
+        if [ "${#remove_existing[@]}" -ge 256 ]; then
+            return 78
+        fi
+        remove_quarantine="$remove_parent/.opencollab-retired-$$-${RANDOM}-${RANDOM}"
+        if ! mv -T -n -- "$remove_target" "$remove_quarantine" 2>/dev/null; then
+            return 77
+        fi
+        if [ ! -e "$remove_target" ] && [ ! -L "$remove_target" ]; then
+            remove_current=$(stat -c '%d:%i' -- "$remove_quarantine" 2>/dev/null) || return 77
+            if [ "$remove_current" != "$remove_expected" ]; then
+                mv -T -n -- "$remove_quarantine" "$remove_target" 2>/dev/null || true
+                return 76
+            fi
+            return 0
+        fi
+        remove_attempt=$((remove_attempt + 1))
+    done
+    return 77
+}
+""".strip()
+
+_DOCKER_CREATE_WRITE_AND_VERIFY = "\n".join((r"""
 target=$1
 umask 077
 set -o noclobber
@@ -204,11 +283,9 @@ if ! exec 3> "$target"; then
 fi
 set +o noclobber
 owned_identity=$(stat -Lc '%d:%i' /proc/self/fd/3 2>/dev/null) || exit 69
+""".strip(), _DOCKER_QUARANTINE_REMOVE_FUNCTION, r"""
 cleanup_owned() {
-    current=$(stat -Lc '%d:%i' -- "$target" 2>/dev/null) || return 0
-    if [ "$current" = "$owned_identity" ]; then
-        rm -f -- "$target"
-    fi
+    quarantine_remove_owned "$target" "$owned_identity"
 }
 trap 'cleanup_owned' EXIT HUP INT TERM
 cat >&3 || exit 74
@@ -229,21 +306,18 @@ esac
 case "$digest" in
     ''|*[!0-9a-f]*) exit 65 ;;
 esac
-current_identity=$(stat -Lc '%d:%i' -- "$target" 2>/dev/null) || exit 75
+current_identity=$(stat -c '%d:%i' -- "$target" 2>/dev/null) || exit 75
 if [ "$current_identity" != "$owned_identity" ]; then
     exit 75
 fi
 trap - EXIT HUP INT TERM
 exec 3>&-
 printf '%s\t%s\t%s\n' "$owned_identity" "$bytes" "$digest"
-""".strip()
+""".strip()))
 
-_DOCKER_REMOVE_OWNED_TEMP = r"""
+_DOCKER_REMOVE_OWNED_TEMP = "\n".join((_DOCKER_QUARANTINE_REMOVE_FUNCTION, r"""
 target=$1
 expected=$2
-current=$(stat -Lc '%d:%i' -- "$target" 2>/dev/null) || exit 0
-if [ "$current" != "$expected" ]; then
-    exit 76
-fi
-rm -f -- "$target"
-""".strip()
+quarantine_remove_owned "$target" "$expected"
+exit $?
+""".strip()))

@@ -38,6 +38,7 @@ from opencollab.adapters.cli.toolbar import format_team_toolbar
 from opencollab.adapters.cli.workflow import app as workflow_app
 from opencollab.adapters.safe_files import read_regular_text
 from opencollab.application.async_timeout import run_with_bounded_shutdown
+from opencollab.application.exception_notes import add_exception_note
 
 app = typer.Typer(
     name="opencollab",
@@ -335,38 +336,39 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
                 except BaseException as exc:
                     tracer_failure = exc
     if primary_failure is not None:
-        add_note = getattr(primary_failure, "add_note", None)
-        if callable(add_note):
-            if repeated_cancellation is not None:
-                add_note("caller cancelled again during scheduler cleanup")
-            if cleanup_failure is not None:
-                add_note(
-                    "scheduler cleanup also failed: "
-                    f"{type(cleanup_failure).__name__}: {cleanup_failure}"
-                )
-            if tracer_failure is not None:
-                add_note(
-                    "tracer close also failed: "
-                    f"{type(tracer_failure).__name__}: {tracer_failure}"
-                )
+        if repeated_cancellation is not None:
+            add_exception_note(
+                primary_failure,
+                "caller cancelled again during scheduler cleanup",
+            )
+        if cleanup_failure is not None:
+            add_exception_note(
+                primary_failure,
+                "scheduler cleanup also failed: "
+                f"{type(cleanup_failure).__name__}: {cleanup_failure}",
+            )
+        if tracer_failure is not None:
+            add_exception_note(
+                primary_failure,
+                "tracer close also failed: "
+                f"{type(tracer_failure).__name__}: {tracer_failure}",
+            )
         raise primary_failure
     if cleanup_failure is not None:
         if tracer_failure is not None:
-            add_note = getattr(cleanup_failure, "add_note", None)
-            if callable(add_note):
-                add_note(
-                    "tracer close also failed: "
-                    f"{type(tracer_failure).__name__}: {tracer_failure}"
-                )
+            add_exception_note(
+                cleanup_failure,
+                "tracer close also failed: "
+                f"{type(tracer_failure).__name__}: {tracer_failure}",
+            )
         raise cleanup_failure
     if repeated_cancellation is not None:
         if tracer_failure is not None:
-            add_note = getattr(repeated_cancellation, "add_note", None)
-            if callable(add_note):
-                add_note(
-                    "tracer close also failed: "
-                    f"{type(tracer_failure).__name__}: {tracer_failure}"
-                )
+            add_exception_note(
+                repeated_cancellation,
+                "tracer close also failed: "
+                f"{type(tracer_failure).__name__}: {tracer_failure}",
+            )
         raise repeated_cancellation
     if tracer_failure is not None:
         raise tracer_failure

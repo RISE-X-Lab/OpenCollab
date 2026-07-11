@@ -342,44 +342,50 @@ os.read = _race_read
 def test_team_runner_rejects_task_file_replacement_during_write(fake_team_repo):
     hook_dir = fake_team_repo["root"] / "write-race-hook"
     hook_dir.mkdir()
+    victim = fake_team_repo["root"] / "moved-task-victim"
     (hook_dir / "sitecustomize.py").write_text(
         """
 import os
 import pathlib
 import tempfile
 
-_original_write = os.write
+_original_replace = os.replace
+_original_stat = os.stat
 _raced = False
 
 
-def _race_write(fd, data):
+def _race_stat(path, *args, **kwargs):
     global _raced
-    written = _original_write(fd, data)
-    if not _raced and bytes(data).startswith(b"# Issue to fix"):
-        opened = os.fstat(fd)
-        for candidate in pathlib.Path(tempfile.gettempdir()).glob("oc_task.*"):
-            try:
-                if candidate.stat().st_ino != opened.st_ino:
-                    continue
-            except FileNotFoundError:
-                continue
-            replacement = candidate.with_name(candidate.name + ".replacement")
-            replacement.write_bytes(b"attacker replacement")
-            os.replace(replacement, candidate)
-            _raced = True
-            break
-    return written
+    name = os.fsdecode(path) if isinstance(path, (str, bytes)) else ""
+    if (
+        not _raced
+        and name.startswith("oc_task.")
+        and kwargs.get("dir_fd") is not None
+    ):
+        candidate = pathlib.Path(tempfile.gettempdir()) / name
+        victim = pathlib.Path(os.environ["OC_TEST_TASK_VICTIM"])
+        _original_replace(candidate, victim)
+        candidate.write_bytes(b"attacker replacement")
+        _raced = True
+    return _original_stat(path, *args, **kwargs)
 
 
-os.write = _race_write
+os.stat = _race_stat
 """,
         encoding="utf-8",
     )
 
-    result = _run(fake_team_repo, env={"PYTHONPATH": str(hook_dir)})
+    result = _run(
+        fake_team_repo,
+        env={
+            "PYTHONPATH": str(hook_dir),
+            "OC_TEST_TASK_VICTIM": str(victim),
+        },
+    )
 
     assert result.returncode != 0
     assert "changed while writing" in result.stderr
+    assert victim.read_bytes() == b""
     assert not fake_team_repo["log"].exists()
 
 
@@ -425,6 +431,15 @@ def test_team_runner_host_state_is_outside_container_writable_session(fake_team_
     docker_log = fake_team_repo["log"].read_text(encoding="utf-8")
     assert f"{fake_team_repo['session']}:/testbed/.opencollab:rw" in docker_log
     assert f"{fake_team_repo['state']}:/testbed/.opencollab:rw" not in docker_log
+    assert re.search(
+        re.escape(str(fake_team_repo["state"]))
+        + r"/internal-retirements-[0-9a-f]{32}\.jsonl:"
+        + r"/run/opencollab-retirements-[0-9a-f]{32}\.jsonl:rw",
+        docker_log,
+    )
+    assert "bounded-diff-command" not in docker_log
+    assert "pause " in docker_log
+    assert "cp " in docker_log and ":/testbed/. -" in docker_log
 
 
 @pytest.mark.parametrize("image", ["--privileged", "-v", "bad image", "https://bad"])

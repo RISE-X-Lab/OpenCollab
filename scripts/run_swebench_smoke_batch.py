@@ -12,8 +12,6 @@ import threading
 import time
 from pathlib import Path
 
-from swebench.harness.test_spec.test_spec import make_test_spec
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PKG_ROOT = REPO_ROOT / "opencollab"
 SCRIPT_ROOT = Path(__file__).resolve().parent
@@ -33,6 +31,7 @@ from opencollab.harness.swe_eval_records import (  # noqa: E402
     MAX_JSONL_RETAINED_ROWS,
     MAX_JSONL_SCAN_BYTES,
 )
+from swebench_smoke_spec import make_test_spec  # noqa: E402
 
 positive_timeout_seconds = process_tools.positive_timeout_seconds
 _ensure_process_tree_quiesced_after_wait = process_tools.ensure_process_tree_quiesced_after_wait

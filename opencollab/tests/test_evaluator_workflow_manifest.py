@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from asyncio_test_support import assert_cancel_note, assert_cancel_reason
 from evaluator_workflow_test_support import (
     Any,
     EvalResult,
@@ -93,6 +94,9 @@ def test_eval_workflow_slow_manifest_is_bounded_and_defers_resources(
     monkeypatch,
     tmp_path,
 ):
+    import opencollab.application.autosave as autosave_mod
+
+    monkeypatch.setattr(autosave_mod, "MAX_CANCELLED_SAVE_WAIT_SECONDS", 0.01)
     started = threading.Event()
     release = threading.Event()
     order: list[str] = []
@@ -215,7 +219,7 @@ def test_deferred_eval_tracer_close_survives_owner_cancellation():
     assert tracer.closed is True
 
 
-def test_deferred_eval_tracer_close_has_final_deadline():
+def test_deferred_eval_tracer_stays_retained_when_dependency_misses_deadline():
     async def scenario():
         dependency_task = asyncio.create_task(asyncio.Event().wait())
 
@@ -241,7 +245,7 @@ def test_deferred_eval_tracer_close_has_final_deadline():
         return tracer, failures_before
 
     tracer, failures_before = run(scenario())
-    assert tracer.closed is True
+    assert tracer.closed is False
     assert len(evaluator._LATE_EVAL_RESOURCE_FAILURES) == failures_before + 1
     assert isinstance(evaluator._LATE_EVAL_RESOURCE_FAILURES[-1], TimeoutError)
 
@@ -291,9 +295,11 @@ def test_eval_workflow_cancel_during_manifest_preserves_cancel_and_adds_note(
 
     cancellation = run(scenario())
 
-    assert cancellation.args == ("primary cancellation",)
-    assert any(
-        "workflow manifest failed" in note and "eval manifest disk failed" in note for note in cancellation.__notes__
+    assert_cancel_reason(cancellation, "primary cancellation")
+    assert_cancel_note(
+        cancellation,
+        "workflow manifest failed",
+        "eval manifest disk failed",
     )
     assert env.cleaned_up is True
 

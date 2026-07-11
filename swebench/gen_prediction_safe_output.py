@@ -17,6 +17,13 @@ from gen_prediction_constants import (
     MAX_OUTPUT_JSONL_BYTES,
     SAFE_FILE_OPEN_RETRIES,
 )
+from opencollab.adapters._owned_file_cleanup import quarantine_unlink_owned_file
+from opencollab.adapters.safe_files import (
+    _open_directory_no_symlinks,
+    create_regular_bytes_atomic,
+    write_regular_bytes_atomic,
+)
+from opencollab.application.exception_notes import add_exception_note
 
 
 def _fsync_directory(path: Path) -> None:
@@ -51,28 +58,51 @@ def _write_all(fd: int, payload: bytes) -> None:
         view = view[written:]
 
 
-def _cleanup_temporary_file(path: Path, original_error: BaseException | None) -> None:
+def _cleanup_temporary_file(
+    path: Path,
+    original_error: BaseException | None,
+    *,
+    owned_fd: int | None = None,
+) -> None:
+    """Retire a temporary path only while its owned descriptor proves identity."""
+    parent_fd = -1
     try:
-        path.unlink()
+        if owned_fd is None:
+            raise OSError(
+                f"refusing temporary-file cleanup without live ownership proof: {path}"
+            )
+        opened = os.fstat(owned_fd)
+        parent_fd = _open_directory_no_symlinks(path.parent)
+        quarantine_unlink_owned_file(
+            parent_fd,
+            path.name,
+            owned_fd,
+            (opened.st_dev, opened.st_ino),
+            path_label=str(path),
+        )
     except FileNotFoundError:
         return
     except BaseException as cleanup_error:
         if original_error is None:
             raise
-        add_note = getattr(original_error, "add_note", None)
-        if callable(add_note):
-            add_note(f"temporary-file unlink failed during cleanup: {type(cleanup_error).__name__}: {cleanup_error}")
+        add_exception_note(
+            original_error,
+            "temporary-file retirement failed during cleanup: "
+            f"{type(cleanup_error).__name__}: {cleanup_error}",
+        )
         return
-    try:
-        _fsync_directory(path.parent)
-    except BaseException as cleanup_error:
-        if original_error is None:
-            raise
-        add_note = getattr(original_error, "add_note", None)
-        if callable(add_note):
-            add_note(
-                f"temporary-file directory fsync failed during cleanup: {type(cleanup_error).__name__}: {cleanup_error}"
-            )
+    finally:
+        if parent_fd >= 0:
+            try:
+                os.close(parent_fd)
+            except BaseException as cleanup_error:
+                if original_error is None:
+                    raise
+                add_exception_note(
+                    original_error,
+                    "temporary-file parent fd close failed during cleanup: "
+                    f"{type(cleanup_error).__name__}: {cleanup_error}",
+                )
 
 
 def _open_regular_file(path: Path, flags: int, mode: int) -> tuple[int, bool]:
@@ -115,45 +145,37 @@ def _open_regular_file(path: Path, flags: int, mode: int) -> tuple[int, bool]:
     raise OSError(f"harness file did not stabilize while opening: {path}")
 
 
-def _atomic_write_bytes(path: Path, payload: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    operation_error: BaseException | None = None
+def _path_matches_open_file(path: Path, fd: int) -> bool:
+    """Return whether ``path`` still names the regular file held by ``fd``.
+
+    The descriptor deliberately remains open while this comparison runs.  An
+    unlinked inode therefore cannot be recycled into a same-number successor
+    and defeat the identity check on filesystems with eager inode reuse.
+    """
     try:
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            _write_all(fd, payload)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.replace(temporary, path)
-        _fsync_directory(path.parent)
-    except BaseException as exc:
-        operation_error = exc
-        raise
-    finally:
-        _cleanup_temporary_file(temporary, operation_error)
+        current = path.lstat()
+    except FileNotFoundError:
+        return False
+    opened = os.fstat(fd)
+    return bool(
+        stat.S_ISREG(opened.st_mode)
+        and stat.S_ISREG(current.st_mode)
+        and (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino)
+    )
+
+
+def _require_path_matches_open_file(path: Path, fd: int) -> None:
+    if not _path_matches_open_file(path, fd):
+        raise OSError(f"output path changed during durable append: {path}")
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    write_regular_bytes_atomic(path, payload)
 
 
 def _atomic_create_bytes(path: Path, payload: bytes) -> None:
     """Atomically create ``path`` without replacing another live owner."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    operation_error: BaseException | None = None
-    try:
-        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        try:
-            _write_all(fd, payload)
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-        os.link(temporary, path)
-        _fsync_directory(path.parent)
-    except BaseException as exc:
-        operation_error = exc
-        raise
-    finally:
-        _cleanup_temporary_file(temporary, operation_error)
+    create_regular_bytes_atomic(path, payload)
 
 
 def _atomic_write_text(path: Path, value: str) -> None:
@@ -301,6 +323,7 @@ def _append_jsonl_durable(path: Path, row: dict) -> None:
     try:
         _acquire_exclusive_lock(fd, label=f"output lock {path}")
         locked = True
+        _require_path_matches_open_file(path, fd)
         size = os.fstat(fd).st_size
         needs_separator = size > 0 and os.pread(fd, 1, size - 1) != b"\n"
         if size + int(needs_separator) + len(payload) > MAX_OUTPUT_JSONL_BYTES:
@@ -310,6 +333,7 @@ def _append_jsonl_durable(path: Path, row: dict) -> None:
         _write_all(fd, payload)
         os.fsync(fd)
         _fsync_directory(path.parent)
+        _require_path_matches_open_file(path, fd)
     finally:
         try:
             if locked:

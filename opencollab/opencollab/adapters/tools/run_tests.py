@@ -60,6 +60,15 @@ _NATIVE_PROBES: tuple[tuple[str, str], ...] = (
 _COUNT_RE = re.compile(
     r"(\d+)\s+(passed|failed|errors?|skipped|xfailed|xpassed|deselected|warnings?)"
 )
+_PYTEST_SUMMARY_RE = re.compile(
+    r"(?:\d+\s+(?:passed|failed|errors?|skipped|xfailed|xpassed|deselected|warnings?)"
+    r"(?:,\s*)?)+\s+in\s+\d+(?:\.\d+)?s(?:\s+\([^)]+\))?",
+    re.IGNORECASE,
+)
+_PYTEST_NO_TESTS_RE = re.compile(
+    r"no tests ran in \d+(?:\.\d+)?s(?:\s+\([^)]+\))?",
+    re.IGNORECASE,
+)
 
 
 class RunTestsTool(Tool):
@@ -275,8 +284,7 @@ def _translate_native_target_args(target: str) -> list[str]:
     return args
 
 
-def _translate_go_single_target(target: str) -> list[str]:
-    package, sep, node = target.partition("::")
+def _normalize_go_package(package: str) -> str:
     package = package.strip()
     if not package:
         package = "./..."
@@ -284,6 +292,12 @@ def _translate_go_single_target(target: str) -> list[str]:
         package = package.rsplit("/", 1)[0] if "/" in package else "."
     if package not in {".", "./..."} and not package.startswith(("./", "../", "/")):
         package = "./" + package.strip("/")
+    return package
+
+
+def _translate_go_single_target(target: str) -> list[str]:
+    package, sep, node = target.partition("::")
+    package = _normalize_go_package(package)
 
     args = [shlex.quote(package)]
     if sep and node.strip():
@@ -370,18 +384,12 @@ def _pytest_no_tests(returncode: int, output: str) -> bool:
 
 
 def _summary_line(output: str) -> str | None:
-    """The last pytest summary line (``==== ... in 0.1s ====``), if any."""
+    """The last complete pytest result summary, with or without ``====``."""
     summary = None
     for line in output.splitlines():
-        s = line.strip()
-        if s.startswith("=") and s.endswith("=") and (
-            " passed" in s
-            or " failed" in s
-            or " error" in s
-            or " skipped" in s
-            or "no tests ran" in s
-        ):
-            summary = s.strip("= ").strip()
+        candidate = line.strip().strip("= ").strip()
+        if _PYTEST_SUMMARY_RE.fullmatch(candidate) or _PYTEST_NO_TESTS_RE.fullmatch(candidate):
+            summary = candidate
     return summary
 
 
@@ -412,12 +420,91 @@ def _target_has_pass_proof(target: str, passed_lines: list[str]) -> bool:
     if not target:
         return True
     normalized = target.removeprefix("./")
+    target_path, has_selector, _selector = normalized.partition("::")
+    target_path = target_path.rstrip("/")
     for line in passed_lines:
-        node_id = line.removeprefix("PASSED ").split(maxsplit=1)[0]
+        node_id = line.removeprefix("PASSED ").strip()
         candidate = node_id.removeprefix("./")
         if candidate == normalized or candidate.startswith(normalized + "::"):
             return True
+        if has_selector and candidate.startswith(normalized + "["):
+            return True
+        candidate_path = candidate.partition("::")[0]
+        if not has_selector and (
+            target_path in {"", "."}
+            or candidate_path == target_path
+            or candidate_path.startswith(target_path + "/")
+        ):
+            return True
     return False
+
+
+def _go_target_specs(target: str) -> list[tuple[str, str | None]]:
+    """Return requested Go packages and optional test selectors.
+
+    A target without ``::`` is always a package (or package pattern), matching
+    the public tool contract. Tests must use ``package::TestName``.
+    """
+    if not target:
+        return [("./...", None)]
+    if "::" in target:
+        raw_targets = [target]
+    else:
+        try:
+            raw_targets = shlex.split(target)
+        except ValueError:
+            raw_targets = [target]
+    specs: list[tuple[str, str | None]] = []
+    for raw_target in raw_targets:
+        package, sep, node = raw_target.partition("::")
+        test_name = node.split("::")[-1].strip() if sep else ""
+        specs.append((_normalize_go_package(package), test_name or None))
+    return specs
+
+
+def _go_package_matches(requested: str, reported: str) -> bool:
+    """Match a CLI package path to ``go test -json``'s import path."""
+    requested = requested.rstrip("/")
+    reported = reported.rstrip("/")
+    if requested in {".", "./..."}:
+        return True
+    if requested.endswith("/..."):
+        prefix = requested[:-4].removeprefix("./").strip("/")
+        return not prefix or reported == prefix or f"/{prefix}/" in f"/{reported}/"
+    relative = requested.removeprefix("./").strip("/")
+    if not relative or requested.startswith(("../", "/")):
+        return reported == requested
+    return reported == relative or reported.endswith("/" + relative)
+
+
+def _go_has_pass_proof(target: str, output: str) -> bool:
+    passed_events: list[tuple[str, str]] = []
+    for line in output.splitlines():
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(event, dict) or event.get("Action") != "pass":
+            continue
+        package = event.get("Package")
+        test_name = event.get("Test")
+        if isinstance(package, str) and package and isinstance(test_name, str) and test_name:
+            passed_events.append((package, test_name))
+
+    for requested_package, requested_test in _go_target_specs(target):
+        matched = False
+        for package, test_name in passed_events:
+            if not _go_package_matches(requested_package, package):
+                continue
+            if requested_test and not (
+                test_name == requested_test or test_name.startswith(requested_test + "/")
+            ):
+                continue
+            matched = True
+            break
+        if not matched:
+            return False
+    return bool(passed_events)
 
 
 def _is_green(
@@ -439,25 +526,7 @@ def _is_green(
             return False
         return _target_has_pass_proof(target, _passed_tests(output))
     if _is_go_runner(runner):
-        requested_test = target.partition("::")[2].split("::")[-1].strip()
-        saw_test_pass = False
-        for line in output.splitlines():
-            try:
-                event = json.loads(line)
-            except (json.JSONDecodeError, TypeError):
-                continue
-            if not isinstance(event, dict) or event.get("Action") != "pass":
-                continue
-            test_name = event.get("Test")
-            if not isinstance(test_name, str) or not test_name:
-                continue
-            saw_test_pass = True
-            if not requested_test or (
-                test_name == requested_test
-                or test_name.startswith(requested_test + "/")
-            ):
-                return True
-        return saw_test_pass and not requested_test
+        return _go_has_pass_proof(target, output)
     # Native runners need an explicit, parser-backed proof adapter before their
     # output can authorize a GREEN verdict. A bare exit code is forgeable via
     # no-op commands and zero-test modes.

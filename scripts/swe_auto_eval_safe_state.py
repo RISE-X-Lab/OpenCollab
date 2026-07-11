@@ -8,8 +8,9 @@ import json
 import os
 import stat
 import time
-import uuid
 from pathlib import Path
+
+from opencollab.adapters.safe_files import write_regular_bytes_atomic
 
 from scripts.swe_auto_eval_constants import HARNESS_LOCK_TIMEOUT_SECONDS
 
@@ -95,69 +96,17 @@ def _write_bytes_atomic_at(
     before = _stat_at(parent_fd, name)
     if before is not None and not stat.S_ISREG(before.st_mode):
         raise OSError(f"refusing non-regular auto-eval destination: {label}")
-    temp_name = f".{name}.{uuid.uuid4().hex}.tmp"
-    temp_created = False
-    operation_error: BaseException | None = None
-    try:
-        temp_fd = os.open(
-            temp_name,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
-            0o600,
-            dir_fd=parent_fd,
-        )
-        temp_created = True
-        try:
-            _write_all(temp_fd, payload)
-            os.fsync(temp_fd)
-        finally:
-            os.close(temp_fd)
-        current = _stat_at(parent_fd, name)
-        if before is None:
-            if current is not None:
-                raise OSError(f"auto-eval destination appeared during write: {label}")
-        elif (
-            current is None
-            or not stat.S_ISREG(current.st_mode)
-            or (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino)
-        ):
-            raise OSError(f"auto-eval destination changed during write: {label}")
-        os.replace(
-            temp_name,
-            name,
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
-        )
-        temp_created = False
-        os.fsync(parent_fd)
-    except BaseException as exc:
-        operation_error = exc
-        raise
-    finally:
-        if temp_created:
-            try:
-                os.unlink(temp_name, dir_fd=parent_fd)
-            except FileNotFoundError:
-                pass
-            except BaseException as cleanup_error:
-                if operation_error is None:
-                    raise
-                add_note = getattr(operation_error, "add_note", None)
-                if callable(add_note):
-                    add_note(
-                        f"temporary-file unlink failed during cleanup: {type(cleanup_error).__name__}: {cleanup_error}"
-                    )
-            else:
-                try:
-                    os.fsync(parent_fd)
-                except BaseException as cleanup_error:
-                    if operation_error is None:
-                        raise
-                    add_note = getattr(operation_error, "add_note", None)
-                    if callable(add_note):
-                        add_note(
-                            "temporary-file directory fsync failed during cleanup: "
-                            f"{type(cleanup_error).__name__}: {cleanup_error}"
-                        )
+    target = Path(os.path.abspath(os.fspath(label)))
+    if target.name != name:
+        raise OSError(f"auto-eval destination label does not match parent entry: {label}")
+    parent = os.fstat(parent_fd)
+    write_regular_bytes_atomic(
+        target,
+        payload,
+        expected_parent_identity=(parent.st_dev, parent.st_ino),
+        expected_target_identity=(before.st_dev, before.st_ino) if before is not None else None,
+        require_target_absent=before is None,
+    )
 
 
 def _write_bytes_atomic(path: Path, payload: bytes) -> None:

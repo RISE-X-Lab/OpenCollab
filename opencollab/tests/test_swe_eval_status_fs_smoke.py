@@ -108,8 +108,11 @@ def test_auto_eval_markdown_write_reports_directory_fsync_failure(
     with pytest.raises(OSError, match="markdown directory fsync failed"):
         driver._write_markdown(output, _auto_eval_summary())
 
-    assert output.exists()
-    assert list(tmp_path.glob(".status.md.*.tmp")) == []
+    assert not output.exists()
+    retired = list(tmp_path.glob(".opencollab-retired-*"))
+    assert len(retired) == 2
+    assert len({(entry.stat().st_dev, entry.stat().st_ino) for entry in retired}) == 1
+    assert list(tmp_path.glob(".oc-*.tmp")) == []
 
 
 def test_auto_eval_json_write_cleans_temp_after_file_fsync_failure(
@@ -127,63 +130,84 @@ def test_auto_eval_json_write_cleans_temp_after_file_fsync_failure(
         driver._write_json(output, {"status": "new"})
 
     assert not output.exists()
-    assert list(tmp_path.glob(".status.json.*.tmp")) == []
+    assert list(tmp_path.glob(".oc-*.tmp")) == []
 
 
-def test_per_instance_atomic_write_preserves_primary_error_when_temp_unlink_fails(
+def test_auto_eval_atomic_write_rejects_parent_replacement(tmp_path, monkeypatch):
+    driver = importlib.import_module("scripts.swe_auto_eval_driver")
+    safe_state = importlib.import_module("scripts.swe_auto_eval_safe_state")
+    parent = tmp_path / "state"
+    parent.mkdir()
+    moved_parent = tmp_path / "state-moved"
+    output = parent / "status.json"
+    output.write_text('{"status":"old"}\n', encoding="utf-8")
+    original_write = safe_state.write_regular_bytes_atomic
+
+    def replace_parent_before_commit(path, payload, **kwargs):
+        parent.rename(moved_parent)
+        parent.mkdir()
+        output.write_text("foreign\n", encoding="utf-8")
+        return original_write(path, payload, **kwargs)
+
+    monkeypatch.setattr(
+        safe_state,
+        "write_regular_bytes_atomic",
+        replace_parent_before_commit,
+    )
+
+    with pytest.raises(OSError, match="parent identity changed"):
+        driver._write_json(output, {"status": "new"})
+
+    assert output.read_text(encoding="utf-8") == "foreign\n"
+    assert (moved_parent / "status.json").read_text(encoding="utf-8") == '{"status":"old"}\n'
+
+
+def test_per_instance_atomic_write_preserves_primary_error_when_retirement_sync_fails(
     tmp_path,
     monkeypatch,
 ):
     runner = importlib.import_module("scripts.run_swebench_eval_per_instance")
-    original_unlink = runner.os.unlink
+    calls = 0
 
     def fail_fsync(_fd):
-        raise OSError("primary file fsync failure")
-
-    def fail_temp_unlink(path, *args, **kwargs):
-        name = os.fspath(path)
-        if name.startswith(".oc-") and name.endswith(".tmp"):
-            raise OSError("secondary temp unlink failure")
-        return original_unlink(path, *args, **kwargs)
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("primary file fsync failure")
+        raise OSError("secondary retirement fsync failure")
 
     monkeypatch.setattr(runner.os, "fsync", fail_fsync)
-    monkeypatch.setattr(runner.os, "unlink", fail_temp_unlink)
     output = tmp_path / "record.json"
 
     with pytest.raises(OSError, match="primary file fsync failure") as captured:
         runner._write_json_atomic(output, {"status": "new"})
 
-    assert any("secondary temp unlink failure" in note for note in getattr(captured.value, "__notes__", []))
-    temporary = next(tmp_path.glob(".oc-*.tmp"))
-    original_unlink(temporary)
+    assert any("secondary retirement fsync failure" in note for note in getattr(captured.value, "__notes__", []))
+    assert len(list(tmp_path.glob(".opencollab-retired-*"))) == 1
 
 
-def test_auto_eval_atomic_write_preserves_primary_error_when_temp_unlink_fails(
+def test_auto_eval_atomic_write_preserves_primary_error_when_retirement_sync_fails(
     tmp_path,
     monkeypatch,
 ):
     driver = importlib.import_module("scripts.swe_auto_eval_driver")
-    original_unlink = driver.os.unlink
+    calls = 0
 
     def fail_fsync(_fd):
-        raise OSError("primary file fsync failure")
-
-    def fail_temp_unlink(path, *args, **kwargs):
-        name = os.fspath(path)
-        if name.startswith(".record.json.") and name.endswith(".tmp"):
-            raise OSError("secondary temp unlink failure")
-        return original_unlink(path, *args, **kwargs)
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("primary file fsync failure")
+        raise OSError("secondary retirement fsync failure")
 
     monkeypatch.setattr(driver.os, "fsync", fail_fsync)
-    monkeypatch.setattr(driver.os, "unlink", fail_temp_unlink)
     output = tmp_path / "record.json"
 
     with pytest.raises(OSError, match="primary file fsync failure") as captured:
         driver._write_json(output, {"status": "new"})
 
-    assert any("secondary temp unlink failure" in note for note in getattr(captured.value, "__notes__", []))
-    temporary = next(tmp_path.glob(".record.json.*.tmp"))
-    original_unlink(temporary)
+    assert any("secondary retirement fsync failure" in note for note in getattr(captured.value, "__notes__", []))
+    assert len(list(tmp_path.glob(".opencollab-retired-*"))) == 1
 
 
 def test_smoke_instance_reader_rejects_symlink(tmp_path):

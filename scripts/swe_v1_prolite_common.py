@@ -23,6 +23,10 @@ DEFAULT_LOCAL_PROXY_BASE_URL = os.environ.get("OPENCOLLAB_LOCAL_PROXY_BASE_URL",
 DEFAULT_REMOTE_PROXY_BASE_URL = os.environ.get("OPENCOLLAB_REMOTE_PROXY_BASE_URL", "")
 REMOTE_HEALTH_SSH_TIMEOUT_FLOOR = 15
 REMOTE_PROXY_TUNNELS: list[subprocess.Popen[str]] = []
+REMOTE_RUNNER = (
+    "from opencollab.harness.swe_v1_remote_runner import run_from_stdin\n"
+    "raise SystemExit(run_from_stdin())\n"
+)
 LOCAL_PROCESS_TERM_GRACE_SECONDS = 5.0
 LOCAL_PROCESS_KILL_REAP_TIMEOUT_SECONDS = 5.0
 LOCAL_PROCESS_CLEANUP_OUTER_SLACK_SECONDS = 1.0

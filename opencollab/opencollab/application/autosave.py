@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import logging
+import os
 import threading
 from typing import Callable
 
@@ -33,9 +34,11 @@ logger = logging.getLogger(__name__)
 MAX_CANCELLED_SAVE_WAIT_SECONDS = 0.25
 MAX_DAEMON_SAVE_WORKERS = 32
 _SAVE_WORKER_SLOTS = threading.BoundedSemaphore(MAX_DAEMON_SAVE_WORKERS)
+_SAVE_RESOURCE_LOCK = threading.Lock()
+_SAVE_RESOURCE_TAILS: dict[str, concurrent.futures.Future[None]] = {}
 
 
-def _submit_daemon_save(
+def _submit_daemon_worker(
     operation: SaveOperation,
 ) -> concurrent.futures.Future[None]:
     """Run blocking persistence without joining its thread at loop shutdown."""
@@ -49,6 +52,9 @@ def _submit_daemon_save(
         return future
 
     def worker() -> None:
+        if not future.set_running_or_notify_cancel():
+            _SAVE_WORKER_SLOTS.release()
+            return
         error: BaseException | None = None
         try:
             operation()
@@ -89,18 +95,68 @@ def _submit_daemon_save(
     return future
 
 
+def _submit_daemon_save(
+    operation: SaveOperation,
+    *,
+    serialization_key: str | None,
+) -> concurrent.futures.Future[None]:
+    """Serialize every writer that targets the same durable resource."""
+    if serialization_key is None:
+        return _submit_daemon_worker(operation)
+
+    result: concurrent.futures.Future[None] = concurrent.futures.Future()
+    result.set_running_or_notify_cancel()
+    with _SAVE_RESOURCE_LOCK:
+        previous = _SAVE_RESOURCE_TAILS.get(serialization_key)
+        _SAVE_RESOURCE_TAILS[serialization_key] = result
+
+    def finish(worker: concurrent.futures.Future[None]) -> None:
+        try:
+            if worker.cancelled():
+                result.cancel()
+            else:
+                error = worker.exception()
+                if error is None:
+                    result.set_result(None)
+                else:
+                    result.set_exception(error)
+        finally:
+            with _SAVE_RESOURCE_LOCK:
+                if _SAVE_RESOURCE_TAILS.get(serialization_key) is result:
+                    _SAVE_RESOURCE_TAILS.pop(serialization_key, None)
+
+    def start_after_previous(
+        _previous: concurrent.futures.Future[None] | None = None,
+    ) -> None:
+        worker = _submit_daemon_worker(operation)
+        worker.add_done_callback(finish)
+
+    if previous is None or previous.done():
+        start_after_previous()
+    else:
+        previous.add_done_callback(start_after_previous)
+    return result
+
+
 class AutoSaveSubscriber(EventPublisherPort):
     def __init__(
         self,
         save_fn: SaveOperation,
         *,
         prepare_fn: PrepareSave | None = None,
+        serialization_key: str | None = None,
     ):
         self._save = save_fn
         self._prepare = prepare_fn
+        self._serialization_key = (
+            os.path.realpath(os.path.abspath(serialization_key))
+            if serialization_key is not None
+            else None
+        )
         self._tail: asyncio.Task[None] | None = None
         self._write_tail: concurrent.futures.Future[None] | None = None
         self._owners: set[asyncio.Task[None]] = set()
+        self._write_owners: set[asyncio.Task[None]] = set()
         self._last_error: Exception | None = None
         self._failure_count = 0
         self._failure_lock = threading.Lock()
@@ -119,7 +175,20 @@ class AutoSaveSubscriber(EventPublisherPort):
     @property
     def pending_tasks(self) -> tuple[asyncio.Task[None], ...]:
         """All live save owners, including a caller-cancelled callback's owner."""
-        return tuple(owner for owner in self._owners if not owner.done())
+        owners = tuple(owner for owner in self._owners if not owner.done())
+        if owners:
+            return owners
+        return tuple(owner for owner in self._write_owners if not owner.done())
+
+    @property
+    def pending_write_futures(
+        self,
+    ) -> tuple[concurrent.futures.Future[None], ...]:
+        """Blocking writes that can still mutate persistence after owners exit."""
+        write = self._write_tail
+        if write is None or write.done():
+            return ()
+        return (write,)
 
     async def emit(self, event: SessionEvent) -> None:
         if event.type not in SAVE_TRIGGERS:
@@ -247,9 +316,15 @@ class AutoSaveSubscriber(EventPublisherPort):
                 owner_timed_out()
                 raise asyncio.CancelledError
 
-        write = _submit_daemon_save(operation)
+        write = _submit_daemon_save(
+            operation,
+            serialization_key=self._serialization_key,
+        )
         self._write_tail = write
         write.add_done_callback(self._write_done)
+        write_owner = loop.create_task(self._observe_write(write, loop))
+        self._write_owners.add(write_owner)
+        write_owner.add_done_callback(self._write_owners.discard)
         if not await wait_for_owned(write):
             owner_timed_out()
             raise asyncio.CancelledError
@@ -260,6 +335,16 @@ class AutoSaveSubscriber(EventPublisherPort):
             pass
         if cancelled:
             raise asyncio.CancelledError
+
+    @staticmethod
+    async def _observe_write(
+        write: concurrent.futures.Future[None],
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        try:
+            await asyncio.shield(asyncio.wrap_future(write, loop=loop))
+        except BaseException:
+            pass
 
     def _write_done(self, write: concurrent.futures.Future[None]) -> None:
         if write.cancelled():

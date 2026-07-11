@@ -270,8 +270,56 @@ def generation_for_task(row):
     }
 
 
-def eval_summary_matches_prediction(summary, prediction, task):
-    if not isinstance(summary, dict) or summary.get("status") != "done":
+def _summary_plan_evidence_valid(tests_status, prefix, expected_plan):
+    if not isinstance(expected_plan, dict):
+        return False
+    reported_plan = tests_status.get(f"{prefix}_plan")
+    evidence = tests_status.get(f"{prefix}_evidence")
+    if reported_plan != expected_plan or not isinstance(evidence, list):
+        return False
+    commands = expected_plan.get("commands")
+    if not isinstance(commands, list) or len(evidence) != len(commands):
+        return False
+    for item in evidence:
+        if not isinstance(item, dict):
+            return False
+        status = item.get("status")
+        if isinstance(status, bool) or not isinstance(status, int):
+            return False
+        if not all(
+            item.get(field) is True
+            for field in (
+                "command_matches_plan",
+                "log_artifact_safe",
+                "target_proof_matches_plan",
+                "artifact_safe",
+            )
+        ):
+            return False
+    return True
+
+
+def eval_summary_matches_prediction(
+    summary,
+    prediction,
+    task,
+    *,
+    eval_spec_sha256="",
+    f2p_plan=None,
+    p2p_plan=None,
+):
+    if (
+        not isinstance(summary, dict)
+        or summary.get("schema") != "opencollab.prolite_direct_eval.v2"
+        or summary.get("status") != "done"
+        or not isinstance(summary.get("resolved"), bool)
+        or summary.get("technical_reasons") != []
+        or summary.get("output_artifact_errors") != []
+        or summary.get("docker_exit") != 0
+        or summary.get("cleanup_quiesced") is not True
+        or not isinstance(summary.get("container_cleanup"), dict)
+        or summary["container_cleanup"].get("ok") is not True
+    ):
         return False
     if not eval_model_patch(prediction).strip():
         return False
@@ -287,7 +335,47 @@ def eval_summary_matches_prediction(summary, prediction, task):
         return False
     if current_record and not previous_record:
         return False
-    return True
+    if eval_spec_sha256 and summary.get("eval_spec_sha256") != eval_spec_sha256:
+        return False
+    tests_status = summary.get("tests_status")
+    if not isinstance(tests_status, dict):
+        return False
+    if any(
+        tests_status.get(field) != 0
+        for field in (
+            "service_bootstrap_status",
+            "before_repo_status",
+            "model_patch_status",
+            "test_patch_status",
+        )
+    ):
+        return False
+    if not _summary_plan_evidence_valid(tests_status, "fail_to_pass", f2p_plan):
+        return False
+    if not _summary_plan_evidence_valid(tests_status, "pass_to_pass", p2p_plan):
+        return False
+    f2p_evidence = tests_status["fail_to_pass_evidence"]
+    p2p_evidence = tests_status["pass_to_pass_evidence"]
+    f2p_status = tests_status.get("fail_to_pass_status")
+    p2p_status = tests_status.get("pass_to_pass_status")
+    if (
+        isinstance(f2p_status, bool)
+        or not isinstance(f2p_status, int)
+        or isinstance(p2p_status, bool)
+        or not isinstance(p2p_status, int)
+    ):
+        return False
+    if f2p_status != next((item["status"] for item in f2p_evidence if item["status"] != 0), 0):
+        return False
+    if p2p_status != next((item["status"] for item in p2p_evidence if item["status"] != 0), 0):
+        return False
+    expected_resolved = bool(
+        f2p_status == 0
+        and p2p_status == 0
+        and all(item["status"] == 0 for item in f2p_evidence)
+        and all(item["status"] == 0 for item in p2p_evidence)
+    )
+    return summary["resolved"] is expected_resolved
 
 
 def eval_log_has_infra_failure(exit_status, log_text):

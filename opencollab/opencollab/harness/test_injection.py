@@ -23,6 +23,9 @@ from collections.abc import Sequence
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
+from opencollab.application.async_timeout import force_task_terminal
+from opencollab.application.exception_notes import add_exception_note
+
 logger = logging.getLogger(__name__)
 
 MAX_TEST_PATCH_BYTES = 8 * 1024 * 1024
@@ -345,7 +348,7 @@ async def _finish_staged_patch_cleanup(
                     cancellation=cancellation,
                 )
                 if stop_error:
-                    cleanup_failure.add_note(stop_error)
+                    add_exception_note(cleanup_failure, stop_error)
                 break
             try:
                 done, _pending = await asyncio.wait(
@@ -366,7 +369,7 @@ async def _finish_staged_patch_cleanup(
                     cancellation=cancellation,
                 )
                 if stop_error:
-                    cleanup_failure.add_note(stop_error)
+                    add_exception_note(cleanup_failure, stop_error)
                 break
 
         if cleanup_failure is None and cleanup_task.done():
@@ -405,68 +408,22 @@ async def _finish_staged_patch_cleanup(
         raise original
 
 
-def _consume_cleanup_result(task: asyncio.Future[Any]) -> None:
-    try:
-        task.result()
-    except BaseException:
-        pass
-
-
 async def _force_stop_task(
     task: asyncio.Task[Any],
     *,
     cancellation: asyncio.CancelledError | None,
 ) -> tuple[bool, asyncio.CancelledError | None, str]:
     """Finish a task that consumed ordinary cancellation after its deadline."""
-    task.cancel()
-    deadline = (
-        asyncio.get_running_loop().time()
-        + MAX_TEST_PATCH_FORCED_TASK_STOP_SECONDS
+    result = await force_task_terminal(
+        task,
+        timeout=MAX_TEST_PATCH_FORCED_TASK_STOP_SECONDS,
+        cancellation=cancellation,
     )
-    while not task.done():
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            break
-        try:
-            await asyncio.wait({task}, timeout=remaining)
-        except asyncio.CancelledError as exc:
-            if cancellation is None:
-                cancellation = exc
-
-    stop_notes: list[str] = []
-    if not task.done():
-        close = getattr(task.get_coro(), "close", None)
-        if callable(close):
-            try:
-                close()
-            except BaseException as exc:
-                stop_notes.append(
-                    "forced coroutine close raised "
-                    f"{type(exc).__name__}: {exc}"
-                )
-        task.cancel()
-        try:
-            await asyncio.wait(
-                {task},
-                timeout=MAX_TEST_PATCH_FORCED_TASK_STOP_SECONDS,
-            )
-        except asyncio.CancelledError as exc:
-            if cancellation is None:
-                cancellation = exc
-
-    if task.done():
-        try:
-            task.result()
-        except asyncio.CancelledError:
-            pass
-        except BaseException as exc:
-            stop_notes.append(
-                f"forced task completion raised {type(exc).__name__}: {exc}"
-            )
-    else:
-        task._log_destroy_pending = False  # type: ignore[attr-defined]
-        stop_notes.append("forced task stop did not reach a terminal state")
-    return task.done(), cancellation, "; ".join(stop_notes)
+    stop_notes = "; ".join(
+        f"forced task termination reported {type(error).__name__}: {error}"
+        for error in result.errors
+    )
+    return result.terminal, result.cancellation, stop_notes
 
 
 async def _compensate_failed_mutation(
@@ -495,7 +452,7 @@ async def _compensate_failed_mutation(
                 "failed test patch rollback exceeded its final deadline",
             )
             if stop_error:
-                rollback_failure.add_note(stop_error)
+                add_exception_note(rollback_failure, stop_error)
             break
         try:
             await asyncio.wait({rollback_task}, timeout=remaining)

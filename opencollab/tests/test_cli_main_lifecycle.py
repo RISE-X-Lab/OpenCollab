@@ -9,6 +9,7 @@ import opencollab.adapters.tui as tui_mod
 import opencollab.bootstrap as bootstrap
 import pytest
 import typer
+from asyncio_test_support import assert_cancel_reason
 
 
 @pytest.mark.parametrize("kind", ["fifo", "symlink", "oversized"])
@@ -179,7 +180,7 @@ async def test_cli_double_cancel_waits_for_cleanup_then_closes_tracer(
     with pytest.raises(asyncio.CancelledError) as cancelled:
         await execution
 
-    assert cancelled.value.args == ("first",)
+    assert_cancel_reason(cancelled.value, "first")
     assert tracer.closed is True
 
 

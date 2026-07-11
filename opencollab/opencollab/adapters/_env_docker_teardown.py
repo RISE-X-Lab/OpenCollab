@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from opencollab.adapters._env_process import _await_owned_operation
+from opencollab.application.exception_notes import add_exception_note
 
 
 class DockerTeardownMixin:
@@ -14,14 +15,25 @@ class DockerTeardownMixin:
         if not failures:
             return
         first_stage, first_failure = failures[0]
-        add_note = getattr(first_failure, "add_note", None)
-        if callable(add_note):
-            add_note(f"Docker {operation} failed during {first_stage}")
-            for stage, failure in failures[1:]:
-                add_note(f"additional Docker {operation} failure during {stage}: {type(failure).__name__}: {failure}")
+        add_exception_note(
+            first_failure,
+            f"Docker {operation} failed during {first_stage}",
+        )
+        for stage, failure in failures[1:]:
+            add_exception_note(
+                first_failure,
+                f"additional Docker {operation} failure during {stage}: "
+                f"{type(failure).__name__}: {failure}",
+            )
         raise first_failure
 
     async def abort(self) -> None:
+        await _await_owned_operation(
+            self._abort_owned(),
+            propagate_cancellation=True,
+        )
+
+    async def _abort_owned(self) -> None:
         await super().abort()
         failures: list[tuple[str, BaseException]] = []
         if not self._attached:
@@ -44,6 +56,12 @@ class DockerTeardownMixin:
         self._raise_teardown_failures("abort", failures)
 
     async def cleanup(self) -> None:
+        await _await_owned_operation(
+            self._cleanup_owned(),
+            propagate_cancellation=True,
+        )
+
+    async def _cleanup_owned(self) -> None:
         if self._attached:
             return
         failures: list[tuple[str, BaseException]] = []

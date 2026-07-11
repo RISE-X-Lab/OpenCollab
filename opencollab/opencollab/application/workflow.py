@@ -34,7 +34,13 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from opencollab.application.async_timeout import CallerTimeoutError, task_is_isolated
+from opencollab.application.async_timeout import (
+    CallerTimeoutError,
+    task_is_isolated,
+)
+from opencollab.application.async_timeout import (
+    abandon_on_timeout as abandon_on_timeout,
+)
 from opencollab.application.extension_valve import RequestExtensionTool
 from opencollab.application.ports import (
     EventPublisherPort,

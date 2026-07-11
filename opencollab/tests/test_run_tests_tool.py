@@ -42,6 +42,14 @@ PASSED tests/test_x.py::test_three
 ========================== 3 passed in 0.05s ==========================
 """
 
+PLAIN_PASS_OUTPUT = """\
+.                                                                        [100%]
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED tests/test_x.py::test_one
+1 passed in 0.04s
+"""
+
 FAIL_OUTPUT = """\
 ========================= test session starts =========================
 collected 3 items
@@ -111,6 +119,80 @@ def test_run_tests_runs_pytest_and_returns_pass_summary():
     assert "Passed tests:" in result
     assert "  - PASSED tests/test_x.py::test_one" in result
     assert "  - PASSED tests/test_x.py::test_three" in result
+
+
+def test_run_tests_accepts_plain_pytest_q_summary():
+    env = FakeEnv(stdout=PLAIN_PASS_OUTPUT)
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        RunTestsTool().execute_with_runtime(
+            {"target": "tests/test_x.py::test_one"},
+            runtime,
+        )
+    )
+
+    assert "passed=1" in result
+    assert "Verdict: GREEN" in result
+
+
+def test_run_tests_directory_target_requires_a_descendant_pass():
+    output = PLAIN_PASS_OUTPUT.replace(
+        "tests/test_x.py::test_one",
+        "tests/unit/test_x.py::test_one",
+    )
+    runtime = ToolRuntime(
+        environment=FakeEnv(stdout=output),
+        safety_policy=None,
+        permission_policy=None,
+    )
+
+    result = run(
+        RunTestsTool().execute_with_runtime({"target": "tests/unit"}, runtime)
+    )
+
+    assert "Verdict: GREEN" in result
+
+    root_runtime = ToolRuntime(
+        environment=FakeEnv(stdout=output),
+        safety_policy=None,
+        permission_policy=None,
+    )
+    root_result = run(
+        RunTestsTool().execute_with_runtime({"target": "."}, root_runtime)
+    )
+    assert "Verdict: GREEN" in root_result
+
+    unrelated_runtime = ToolRuntime(
+        environment=FakeEnv(stdout=output),
+        safety_policy=None,
+        permission_policy=None,
+    )
+    unrelated = run(
+        RunTestsTool().execute_with_runtime({"target": "tests/unitized"}, unrelated_runtime)
+    )
+    assert "Verdict: RED" in unrelated
+
+
+def test_run_tests_preserves_spaces_in_parameterized_node_id_proof():
+    output = PLAIN_PASS_OUTPUT.replace(
+        "tests/test_x.py::test_one",
+        "tests/test_x.py::test_one[x y]",
+    )
+    runtime = ToolRuntime(
+        environment=FakeEnv(stdout=output),
+        safety_policy=None,
+        permission_policy=None,
+    )
+
+    result = run(
+        RunTestsTool().execute_with_runtime(
+            {"target": "tests/test_x.py::test_one[x y]"},
+            runtime,
+        )
+    )
+
+    assert "Verdict: GREEN" in result
 
 
 def test_run_tests_returns_failure_summary_and_traceback_head():
@@ -435,6 +517,61 @@ def test_build_command_go_runner_translates_multiple_packages():
         "PATH=/usr/local/go/bin:/usr/lib/go/bin:/opt/go/bin:$PATH "
         "go test -json ./internal/server/... ./rpc/flipt/... -count=1"
     )
+
+
+def test_build_command_go_runner_treats_bare_target_as_package():
+    from opencollab.adapters.tools.run_tests import _build_command, _is_green
+
+    cmd = _build_command("go test", "TestEvaluate", "")
+    output = (
+        '{"Action":"pass","Package":"module/internal/server","Test":"TestEvaluate"}'
+    )
+
+    assert cmd.endswith("go test -json ./TestEvaluate")
+    assert " -run " not in cmd
+    assert not _is_green(0, output, runner="go test", target="TestEvaluate")
+
+
+def test_go_runner_requires_pass_proof_from_requested_package():
+    from opencollab.adapters.tools.run_tests import _is_green
+
+    unrelated_output = (
+        '{"Action":"pass","Package":"module/internal/other","Test":"TestEvaluate"}'
+    )
+    matching_output = (
+        '{"Action":"pass","Package":"module/internal/server","Test":"TestEvaluate"}'
+    )
+
+    assert not _is_green(
+        0,
+        unrelated_output,
+        runner="go test",
+        target="internal/server",
+    )
+    assert _is_green(
+        0,
+        matching_output,
+        runner="go test",
+        target="internal/server",
+    )
+
+
+def test_go_runner_requires_pass_proof_for_each_requested_package():
+    from opencollab.adapters.tools.run_tests import _is_green
+
+    one_package = (
+        '{"Action":"pass","Package":"module/internal/server","Test":"TestEvaluate"}'
+    )
+    both_packages = "\n".join(
+        [
+            one_package,
+            '{"Action":"pass","Package":"module/rpc/flipt","Test":"TestRPC"}',
+        ]
+    )
+    target = "./internal/server ./rpc/flipt"
+
+    assert not _is_green(0, one_package, runner="go test", target=target)
+    assert _is_green(0, both_packages, runner="go test", target=target)
 
 
 def test_run_tests_rejects_zero_execution_pytest_modes():

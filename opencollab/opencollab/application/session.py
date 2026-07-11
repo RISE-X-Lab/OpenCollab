@@ -14,6 +14,7 @@ from opencollab.application.ports import (
     PermissionPort,
     SafetyPolicyPort,
     SessionStorePort,
+    SnapshotStorePort,
     TracePort,
 )
 from opencollab.application.session_run import SessionRunUseCase
@@ -112,6 +113,7 @@ class Session:
         owned = {
             *self.event_bus.pending_tasks,
             *self.runner.pending_cleanup_tasks,
+            *getattr(self.tool_execution, "pending_cleanup_tasks", ()),
         }
         return tuple(task for task in owned if not task.done())
 
@@ -207,9 +209,8 @@ class Session:
 
     def restore(self, path: str) -> None:
         """Restore a complete snapshot while accepting legacy message-only stores."""
-        loader = getattr(self.store, "load_snapshot", None)
-        if callable(loader):
-            snapshot = loader(path, self.agent.system_prompt)
+        if isinstance(self.store, SnapshotStorePort):
+            snapshot = self.store.load_snapshot(path, self.agent.system_prompt)
         else:
             snapshot = {
                 "messages": self.store.load_messages(path, self.agent.system_prompt)

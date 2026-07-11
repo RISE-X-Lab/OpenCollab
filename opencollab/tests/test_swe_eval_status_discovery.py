@@ -52,8 +52,8 @@ def test_build_snapshots_reads_prediction_metric_and_summary_report(tmp_path):
     snapshots = build_snapshots(run_dir)
 
     row = task_status_row(snapshots[0])
-    assert row["state"] == "eval_done"
-    assert row["eval"]["resolved_count"] == 1
+    assert row["state"] == "ready_for_eval"
+    assert row["eval"]["done_count"] == 0
 
 
 def test_standard_report_without_sha_pairs_with_current_attempt_sidecar(tmp_path):
@@ -86,6 +86,7 @@ def test_standard_report_without_sha_pairs_with_current_attempt_sidecar(tmp_path
                 "patch_sha256": row_patch_sha(prediction),
                 "started_at_ns": started_at_ns,
                 "status": "started",
+                "prior_reports": {},
             }
         ),
         encoding="utf-8",
@@ -183,6 +184,26 @@ def test_build_snapshots_reads_nested_direct_eval_technical_failure(tmp_path):
     assert row["eval"]["done_count"] == 0
 
 
+def test_nested_direct_eval_done_requires_execution_proof(tmp_path):
+    report = tmp_path / "report.json"
+    payload = {
+        "task-1": {
+            "schema": "opencollab.prolite_direct_eval.v2",
+            "status": "done",
+            "resolved": True,
+            "patch_sha256": "a" * 64,
+            "technical_reasons": [],
+            "output_artifact_errors": [],
+            "docker_exit": 0,
+            "cleanup_quiesced": True,
+            "container_cleanup": {"ok": True},
+        }
+    }
+    report.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert discovery_mod._reports_from_payload(report, payload) == []
+
+
 def test_build_snapshots_reads_empty_eval_patch_invalid_as_failure(tmp_path):
     run_dir = tmp_path / "run"
     side_dir = run_dir / "official_eval_auto" / "task-1"
@@ -203,6 +224,7 @@ def test_build_snapshots_reads_empty_eval_patch_invalid_as_failure(tmp_path):
     (side_dir / "summary.json").write_text(
         json.dumps(
             {
+                "schema": "opencollab.prolite_direct_eval.v2",
                 "instance_id": "task-1",
                 "patch_sha256": row_patch_sha(prediction),
                 "status": "empty_eval_patch_invalid",
@@ -514,7 +536,67 @@ def test_discovery_ignores_summary_with_invalid_count_type(tmp_path):
     assert discover_eval_reports(tmp_path) == []
 
 
-def test_discovery_uses_top_level_resolved_boolean_for_summary(tmp_path):
+def test_discovery_ignores_done_summary_without_outcome_evidence(tmp_path):
+    (tmp_path / "invalid.json").write_text(
+        json.dumps(
+            {
+                "instance_id": "task-1",
+                "status": "done",
+                "patch_sha256": "a" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert discover_eval_reports(tmp_path) == []
+
+
+def test_discovery_ignores_done_summary_with_zero_outcome_counts(tmp_path):
+    (tmp_path / "invalid.json").write_text(
+        json.dumps(
+            {
+                "instance_id": "task-1",
+                "status": "done",
+                "resolved_instances": 0,
+                "unresolved_instances": 0,
+                "patch_sha256": "a" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert discover_eval_reports(tmp_path) == []
+
+
+def test_done_summary_without_outcome_evidence_cannot_finish_task(tmp_path):
+    run_dir = tmp_path / "run"
+    _write_ready_eval_pair(run_dir)
+    report_dir = run_dir / "official_eval_auto" / "task-1"
+    report_dir.mkdir(parents=True)
+    (report_dir / "summary.json").write_text(
+        json.dumps(
+            {
+                "instance_id": "task-1",
+                "status": "done",
+                "patch_sha256": row_patch_sha(
+                    json.loads(
+                        (run_dir / "predictions.jsonl").read_text(encoding="utf-8")
+                    )
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    row = task_status_row(build_snapshots(run_dir)[0])
+
+    assert row["state"] == "ready_for_eval"
+    assert row["eval"]["done_count"] == 0
+
+
+def test_discovery_rejects_unknown_top_level_resolved_summary_without_schema(
+    tmp_path,
+):
     for task, resolved in (("task-1", True), ("task-2", False)):
         (tmp_path / f"{task}.json").write_text(
             json.dumps(
@@ -530,10 +612,7 @@ def test_discovery_uses_top_level_resolved_boolean_for_summary(tmp_path):
 
     reports = discover_eval_reports(tmp_path)
 
-    assert [(item.task_id, item.resolved_count, item.unresolved_count) for item in reports] == [
-        ("task-1", 1, 0),
-        ("task-2", 0, 1),
-    ]
+    assert reports == []
 
 
 def test_official_report_with_string_error_is_technical_failure(tmp_path):
@@ -555,7 +634,7 @@ def test_official_report_with_string_error_is_technical_failure(tmp_path):
     assert reports[0].status == "technical_eval_failed"
 
 
-def test_top_level_report_with_string_error_is_technical_failure(tmp_path):
+def test_unknown_top_level_report_with_string_error_is_ignored(tmp_path):
     (tmp_path / "summary.json").write_text(
         json.dumps(
             {
@@ -569,14 +648,15 @@ def test_top_level_report_with_string_error_is_technical_failure(tmp_path):
 
     reports = discover_eval_reports(tmp_path)
 
-    assert reports[0].status == "technical_eval_failed"
+    assert reports == []
 
 
 def test_auto_eval_fingerprints_top_level_task_report_before_new_attempt(tmp_path):
     driver = importlib.import_module("scripts.swe_auto_eval_driver")
     report_path = tmp_path / "summary.json"
+    stale_payload = {"task-1": {"resolved": True}}
     report_path.write_text(
-        json.dumps({"task": "task-1", "resolved": True}),
+        json.dumps(stale_payload),
         encoding="utf-8",
     )
     prior_reports = driver._report_fingerprints(tmp_path, "task-1")
@@ -595,6 +675,9 @@ def test_auto_eval_fingerprints_top_level_task_report_before_new_attempt(tmp_pat
         ),
         encoding="utf-8",
     )
+    report_path.write_text(json.dumps(stale_payload), encoding="utf-8")
+    now_ns = time.time_ns()
+    os.utime(report_path, ns=(now_ns, now_ns))
 
     reports = discover_eval_reports(tmp_path)
 

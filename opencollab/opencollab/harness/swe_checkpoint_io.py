@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import shlex
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -9,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from opencollab.adapters.env import ExecResult
+from opencollab.adapters.git_patch import guarded_staged_diff_command
 from opencollab.adapters.safe_files import (
     read_regular_bytes,
     unlink_regular_file_durable,
@@ -81,19 +81,24 @@ def _truncated_output_error(result: ExecResult, *, label: str) -> str:
     return f"{label} output truncated: {', '.join(parts)}" if parts else ""
 
 
-def worktree_diff_command(exclude_paths: Sequence[str] = ()) -> str:
-    resets = ""
-    for path in exclude_paths:
-        if not str(path).strip():
-            continue
-        resets += f'GIT_INDEX_FILE="$idx" git --literal-pathspecs reset -q HEAD -- {shlex.quote(str(path))} && '
-    return (
-        'tmpdir=$(mktemp -d) || exit 125; idx="$tmpdir/index"; '
-        "trap 'rm -rf -- \"$tmpdir\"' EXIT; "
-        'GIT_INDEX_FILE="$idx" git read-tree HEAD && '
-        'GIT_INDEX_FILE="$idx" git add -A && '
-        f"{resets}"
-        'GIT_INDEX_FILE="$idx" git diff --cached --binary HEAD'
+def worktree_diff_command(
+    exclude_paths: Sequence[str] = (),
+    *,
+    registered_retirement_paths: Sequence[str] = (),
+    retirement_snapshot: Sequence[object] = (),
+    base_revision: str | None = None,
+    object_directory: str | None = None,
+    working_tree: str | None = None,
+) -> str:
+    if base_revision is None:
+        raise ValueError("patch extraction requires a pre-task base object id")
+    return guarded_staged_diff_command(
+        base_revision=base_revision,
+        exclude_paths=exclude_paths,
+        registered_retirement_paths=registered_retirement_paths,
+        retirement_snapshot=retirement_snapshot,
+        object_directory=object_directory,
+        working_tree=working_tree,
     )
 
 

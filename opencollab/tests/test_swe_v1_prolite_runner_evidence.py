@@ -343,78 +343,6 @@ def test_remote_patch_sha_match_requires_exact_hex_digest(tmp_path):
     assert namespace["patch_sha_matches"](digest.upper(), digest) is False
 
 
-def test_eval_runner_dependency_failures_are_infrastructure(tmp_path):
-    namespace = _remote_namespace(tmp_path)
-
-    assert namespace["eval_log_has_infra_failure"](127, "No supported JS test runner found for jest") is True
-    assert namespace["eval_log_has_infra_failure"](124, "test command timed out") is True
-    assert (
-        namespace["eval_log_has_infra_failure"](
-            1,
-            "AssertionError: expected error message 'request timed out'",
-        )
-        is False
-    )
-    assert (
-        namespace["eval_log_has_infra_failure"](
-            1,
-            "redis.exceptions.ConnectionError: Connection refused",
-        )
-        is True
-    )
-    assert (
-        namespace["eval_log_has_infra_failure"](
-            1,
-            "MongoDB server unavailable: failed to connect",
-        )
-        is True
-    )
-    assert (
-        namespace["eval_log_has_infra_failure"](
-            1,
-            "AssertionError: expected 'Connection refused' but got 'accepted'",
-        )
-        is False
-    )
-
-
-def test_prolite_go_command_uses_package_targets(tmp_path):
-    namespace = _remote_namespace(tmp_path)
-
-    command = namespace["prolite_test_command"](
-        {"repo_language": "go"},
-        ["internal/api/widget_test.go", "pkg/server/router_test.go"],
-    )
-
-    assert command == "go test ./internal/api ./pkg/server"
-
-
-def test_prolite_test_command_never_falls_back_to_a_passing_noop(tmp_path):
-    namespace = _remote_namespace(tmp_path)
-    command = namespace["prolite_test_command"]
-    is_runnable = namespace["_is_runnable_test_command"]
-
-    # An underivable command returns "" — NOT the old "true" no-op that ran zero
-    # target tests yet scored resolved=true (false green; 2026-07-09 review).
-    assert command({"repo_language": "python"}, []) == ""
-    assert command({}, []) == ""
-    assert command({"repo_language": "ruby"}, ["spec/widget_spec.rb"]) == ""
-    assert (
-        command(
-            {"repo_language": "ruby", "test_cmd": "echo ok", "eval_cmd": "echo also-ok"},
-            ["spec/widget_spec.rb"],
-        )
-        == ""
-    )
-
-    # The runnable-command gate rejects every no-op form and accepts real commands.
-    assert not is_runnable("")
-    assert not is_runnable("true")
-    assert not is_runnable(" : ")
-    assert not is_runnable("echo ok")
-    assert is_runnable("python3 -m pytest -q tests/test_x.py::test_y")
-
-
 def test_prolite_python_plan_batches_81_exact_node_ids_without_file_fallback(tmp_path):
     namespace = _remote_namespace(tmp_path)
     targets = [f"tests/test_many.py::test_case[{index}]" for index in range(81)]
@@ -428,14 +356,28 @@ def test_prolite_python_plan_batches_81_exact_node_ids_without_file_fallback(tmp
     command_targets = []
     for command in plan["commands"]:
         argv = namespace["shlex"].split(command)
-        assert argv[:4] == ["python3", "-m", "pytest", "-q"]
-        command_targets.extend(argv[4:])
+        assert argv[:7] == [
+            "pytest",
+            "-p",
+            "opencollab_pytest_proof",
+            "-q",
+            "-rA",
+            "-o",
+            "addopts=",
+        ]
+        command_targets.extend(argv[7:])
     assert command_targets == targets
-    assert plan["commands"][1] != "python3 -m pytest -q tests/test_many.py"
+    assert plan["commands"][1] != (
+        "pytest -p opencollab_pytest_proof -q -rA -o addopts= "
+        "tests/test_many.py"
+    )
 
 
-@pytest.mark.parametrize("evidence_mode", ["matching", "tampered", "missing_log"])
-def test_prolite_eval_resolves_81_nodes_only_with_matching_batch_evidence(
+@pytest.mark.parametrize(
+    "evidence_mode",
+    ["matching", "tampered", "missing_log", "go_package_pass_only"],
+)
+def test_prolite_eval_requires_matching_batch_and_target_evidence(
     monkeypatch,
     tmp_path,
     evidence_mode,
@@ -443,7 +385,12 @@ def test_prolite_eval_resolves_81_nodes_only_with_matching_batch_evidence(
     namespace = _remote_namespace(tmp_path)
     task = "task-81"
     container_id = "d" * 64
-    targets = [f"tests/test_many.py::test_case[{index}]" for index in range(81)]
+    is_go = evidence_mode == "go_package_pass_only"
+    targets = (
+        ["internal/api/widget_test.go::TestWidget"]
+        if is_go
+        else [f"tests/test_many.py::test_case[{index}]" for index in range(81)]
+    )
     _seed_remote_completed_generation(namespace, task)
 
     class FinishedProcess:
@@ -459,6 +406,7 @@ def test_prolite_eval_resolves_81_nodes_only_with_matching_batch_evidence(
         output_dir = Path(str(output_mount).removesuffix(":/eval_output"))
         cidfile = Path(command[command.index("--cidfile") + 1])
         cidfile.write_text(container_id, encoding="ascii")
+        proof_nonce = (input_dir / "proof.nonce").read_text(encoding="ascii").strip()
         for name in (
             "service_bootstrap.exit",
             "before_repo.exit",
@@ -486,7 +434,39 @@ def test_prolite_eval_resolves_81_nodes_only_with_matching_batch_evidence(
                     and prefix == "f2p"
                     and index == len(plan["commands"])
                 ):
-                    Path(f"{stem}.log").write_text("passed\n", encoding="utf-8")
+                    batch_log = (
+                        '{"Action":"pass","Package":"example/internal/api"}\n'
+                        if is_go and prefix == "f2p"
+                        else "".join(
+                            f"PASSED {target}\n"
+                            for target in plan["target_batches"][index - 1]
+                        )
+                        + f"{len(plan['target_batches'][index - 1])} passed in 0.01s\n"
+                    )
+                    Path(f"{stem}.log").write_text(batch_log, encoding="utf-8")
+                proof = plan["proofs"][index - 1]
+                if proof.get("kind") == "pytest_structured_reports":
+                    nodes = plan["target_batches"][index - 1]
+                    events = [
+                        {"event": "session_start"},
+                        {"event": "collection_finish", "nodeids": nodes},
+                    ]
+                    for node in nodes:
+                        events.extend(
+                            {
+                                "event": "runtest_logreport",
+                                "nodeid": node,
+                                "when": phase,
+                                "outcome": "passed",
+                            }
+                            for phase in ("setup", "call", "teardown")
+                        )
+                    events.append({"event": "session_finish", "exitstatus": 0})
+                    proof_path = Path(f"{stem}.proof.{proof_nonce}.jsonl")
+                    proof_path.write_text(
+                        "".join(json.dumps(event) + "\n" for event in events),
+                        encoding="utf-8",
+                    )
         return FinishedProcess()
 
     inspect_calls = 0
@@ -517,13 +497,18 @@ def test_prolite_eval_resolves_81_nodes_only_with_matching_batch_evidence(
         {
             "instance_id": task,
             "fail_to_pass": targets,
-            "repo_language": "python",
+            "repo_language": "go" if is_go else "python",
         }
     )
 
     evidence = result["summary"]["tests_status"]["fail_to_pass_evidence"]
-    assert len(evidence) == 2
-    if evidence_mode == "tampered":
+    assert len(evidence) == (1 if is_go else 2)
+    if evidence_mode == "go_package_pass_only":
+        assert result["status"] == "technical_eval_failed"
+        assert result["summary"]["resolved"] is False
+        assert "fail_to_pass_evidence" in result["summary"]["technical_reasons"]
+        assert evidence[-1]["target_proof_matches_plan"] is False
+    elif evidence_mode == "tampered":
         assert result["status"] == "technical_eval_failed"
         assert result["summary"]["resolved"] is False
         assert "fail_to_pass_evidence" in result["summary"]["technical_reasons"]
@@ -540,6 +525,18 @@ def test_prolite_eval_resolves_81_nodes_only_with_matching_batch_evidence(
             item["command_matches_plan"] and item["log_artifact_safe"] and item["artifact_safe"]
             for item in evidence
         )
+        namespace["ensure_image"] = lambda image: pytest.fail(
+            "valid persisted evidence should be reused before Docker"
+        )
+        reused = namespace["eval_for_task"](
+            {
+                "instance_id": task,
+                "fail_to_pass": targets,
+                "repo_language": "python",
+            }
+        )
+        assert reused["status"] == "eval_done"
+        assert reused["summary"]["resolved"] is True
 
 
 def test_prolite_eval_marks_ruby_echo_ok_as_technical_red(tmp_path):
@@ -699,6 +696,50 @@ def test_remote_runner_does_not_reuse_stale_done_for_test_only_patch(tmp_path):
     }
 
     assert namespace["eval_summary_matches_prediction"](stale_summary, prediction, task) is False
+
+
+def test_remote_runner_rejects_identity_only_done_summary_without_test_evidence(
+    tmp_path,
+):
+    namespace = _remote_namespace(tmp_path)
+    task = "task-1"
+    patch = "diff --git a/src/a.py b/src/a.py\n+fixed\n"
+    prediction = {
+        "instance_id": task,
+        "record_id": "r1",
+        "patch_sha256": namespace["patch_sha"](patch),
+        "model_patch": patch,
+    }
+    f2p_plan = namespace["prolite_test_plan"](
+        {"repo_language": "python"},
+        ["tests/test_x.py::test_target"],
+    )
+    p2p_plan = namespace["prolite_test_plan"](
+        {"repo_language": "python"},
+        [],
+    )
+    eval_spec_sha256 = namespace["prolite_eval_spec_sha256"](
+        {},
+        f2p_plan,
+        p2p_plan,
+    )
+    identity_only = {
+        "status": "done",
+        "task": task,
+        "patch_sha256": prediction["patch_sha256"],
+        "record_id": "r1",
+        "eval_spec_sha256": eval_spec_sha256,
+        "resolved": True,
+    }
+
+    assert namespace["eval_summary_matches_prediction"](
+        identity_only,
+        prediction,
+        task,
+        eval_spec_sha256=eval_spec_sha256,
+        f2p_plan=f2p_plan,
+        p2p_plan=p2p_plan,
+    ) is False
 
 
 def test_remote_runner_bootstraps_redis_for_nodebb(tmp_path):

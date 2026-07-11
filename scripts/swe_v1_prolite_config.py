@@ -194,12 +194,14 @@ def remote_http_ok(*, ssh_command: list[str], host: str, base_url: str, timeout:
         return False
 
 
-def loopback_port(base_url: str) -> int:
+def loopback_port(base_url: str, *, default: int | None = None) -> int:
     parsed = urllib.parse.urlparse(base_url)
     if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
         raise RuntimeError(f"proxy URL must be loopback: {base_url}")
     if parsed.port is None:
-        raise RuntimeError(f"proxy URL must include an explicit port: {base_url}")
+        if default is None:
+            raise RuntimeError(f"proxy URL must include an explicit port: {base_url}")
+        return int(default)
     return int(parsed.port)
 
 

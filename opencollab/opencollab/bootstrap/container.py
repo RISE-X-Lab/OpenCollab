@@ -244,6 +244,7 @@ def build_session_runtime(
         auto_save_subscriber = AutoSaveSubscriber(
             auto_save_callback,
             prepare_fn=auto_save_prepare_callback,
+            serialization_key=auto_save_path,
         )
         event_bus.subscribe(auto_save_subscriber)
 

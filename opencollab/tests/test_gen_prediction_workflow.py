@@ -1032,7 +1032,7 @@ def test_workflow_status_preserves_structured_advisory_gap():
 
 def test_container_marker_survives_failed_remove(monkeypatch, tmp_path):
     gpw.gp.write_container_marker(tmp_path, "cid123", "name123")
-    monkeypatch.setattr(gpw.gp, "remove_container", lambda cid: False)
+    monkeypatch.setattr(gpw.gp, "_remove_owned_container", lambda record: False)
 
     removed = gpw.gp.remove_container_and_clear_marker(tmp_path, "cid123")
 

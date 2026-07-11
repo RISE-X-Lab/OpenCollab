@@ -12,9 +12,11 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import opencollab.adapters.env as env_mod
 import pytest
+from asyncio_test_support import assert_cancel_note, assert_cancel_reason
 from opencollab.adapters.env import LocalEnvironment
 
 
@@ -44,6 +46,67 @@ def _closed_pipe_descendant_command(ready, sentinel, *, delay: float = 0.4) -> s
 async def _wait_for_file(path) -> None:
     while not path.exists():
         await asyncio.sleep(0.005)
+
+
+@pytest.mark.asyncio
+async def test_owned_operation_finishes_cleanup_then_rethrows_caller_cancel():
+    release = asyncio.Event()
+    cleaned = asyncio.Event()
+
+    async def cleanup():
+        await release.wait()
+        cleaned.set()
+        return "cleaned"
+
+    owner = asyncio.create_task(
+        env_mod._await_owned_operation(
+            cleanup(),
+            propagate_cancellation=True,
+        )
+    )
+    await asyncio.sleep(0)
+    owner.cancel("caller cancelled")
+    await asyncio.sleep(0)
+    assert owner.done() is False
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await owner
+
+    assert_cancel_reason(raised.value, "caller cancelled")
+    assert cleaned.is_set()
+
+
+@pytest.mark.asyncio
+async def test_owned_transaction_preserves_caller_cancel_when_worker_self_cancels():
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def self_cancelling_worker():
+        started.set()
+        await release.wait()
+        raise asyncio.CancelledError("inner cancellation")
+
+    owner = asyncio.create_task(
+        env_mod._await_owned_transaction(
+            self_cancelling_worker(),
+            failure_note="owned test transaction",
+        )
+    )
+    await started.wait()
+    owner.cancel("caller cancellation")
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await owner
+
+    assert_cancel_reason(raised.value, "caller cancellation")
+    assert_cancel_note(
+        raised.value,
+        "owned test transaction failed after cancellation",
+        "CancelledError",
+    )
 
 
 @pytest.mark.asyncio
@@ -125,7 +188,7 @@ async def test_local_double_cancel_cannot_interrupt_term_kill_and_reap(
     with pytest.raises(asyncio.CancelledError) as captured:
         await asyncio.wait_for(task, timeout=1.0)
 
-    assert captured.value.args == ("first cancellation",)
+    assert_cancel_reason(captured.value, "first cancellation")
     assert task.cancelled() is True
     await asyncio.sleep(0.5)
     assert not sentinel.exists()
@@ -151,6 +214,25 @@ async def test_local_reaps_closed_pipe_descendant_after_leader_exit(
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux subreaper regression")
+async def test_local_subreaper_captures_setsid_descendant_after_leader_exit(tmp_path):
+    sentinel = tmp_path / "setsid-leak"
+    code = (
+        "import os,pathlib,time; child=os.fork(); "
+        "(os._exit(0) if child else None); "
+        "os.setsid(); os.close(1); os.close(2); time.sleep(0.4); "
+        f"pathlib.Path({str(sentinel)!r}).write_text('leaked'); os._exit(0)"
+    )
+    env = LocalEnvironment(str(tmp_path))
+
+    result = await env.exec_cmd(f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}", timeout=2)
+
+    assert result.returncode == 0
+    await asyncio.sleep(0.5)
+    assert not sentinel.exists()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "invalid_timeout",
     [True, False, 0, -1, float("nan"), float("inf"), float("-inf")],
@@ -165,8 +247,8 @@ async def test_local_invalid_timeout_never_spawns(
         spawns += 1
         raise AssertionError("invalid timeout reached Popen")
 
-    monkeypatch.setattr(env_mod, "_PROCESS_POPEN", forbidden_spawn)
     env = LocalEnvironment(str(tmp_path))
+    monkeypatch.setattr(env_mod, "_PROCESS_POPEN", forbidden_spawn)
 
     with pytest.raises(ValueError, match="positive finite"):
         await env.exec_cmd("echo side-effect", timeout=invalid_timeout)
@@ -324,10 +406,10 @@ async def test_cancelled_local_write_waits_for_owned_worker(tmp_path, monkeypatc
     release = threading.Event()
     original_write = env_mod._sync_write_regular_file
 
-    def delayed_write(path, payload):
+    def delayed_write(path, payload, root_fd=None):
         entered.set()
         assert release.wait(timeout=2)
-        original_write(path, payload)
+        original_write(path, payload, root_fd)
 
     monkeypatch.setattr(env_mod, "_sync_write_regular_file", delayed_write)
     env = LocalEnvironment(str(tmp_path))
@@ -344,7 +426,10 @@ async def test_cancelled_local_write_waits_for_owned_worker(tmp_path, monkeypatc
     release.set()
     with pytest.raises(asyncio.CancelledError) as captured:
         await asyncio.wait_for(task, timeout=1)
-    assert captured.value.args == ("first cancellation while write is owned",)
+    assert_cancel_reason(
+        captured.value,
+        "first cancellation while write is owned",
+    )
     assert (tmp_path / "owned.txt").read_text(encoding="utf-8") == "complete"
 
 
@@ -407,9 +492,9 @@ async def test_local_transport_error_plus_cleanup_failure_revokes_environment(
         spawns += 1
         return _HungProcessWithBrokenPipe()
 
+    env = LocalEnvironment(str(tmp_path))
     monkeypatch.setattr(env_mod, "_PROCESS_POPEN", spawn)
     monkeypatch.setattr(env_mod, "_sync_terminate_process_group", lambda proc: False)
-    env = LocalEnvironment(str(tmp_path))
 
     with pytest.raises(env_mod._OwnedProcessNotQuiesced) as captured:
         await env.exec_cmd("broken", timeout=1)
@@ -431,9 +516,9 @@ async def test_local_cancel_cleanup_failure_revokes_environment(tmp_path, monkey
         spawned.set()
         return _StableHungProcess()
 
+    env = LocalEnvironment(str(tmp_path))
     monkeypatch.setattr(env_mod, "_PROCESS_POPEN", spawn)
     monkeypatch.setattr(env_mod, "_sync_terminate_process_group", lambda proc: False)
-    env = LocalEnvironment(str(tmp_path))
     task = asyncio.create_task(env.exec_cmd("hung", timeout=60))
     assert await asyncio.to_thread(spawned.wait, 0.5)
 
@@ -453,6 +538,7 @@ def test_cancel_at_spawn_boundary_survives_event_loop_close(tmp_path, monkeypatc
     spawn_entered = threading.Event()
     release_spawn = threading.Event()
     original_popen = env_mod._PROCESS_POPEN
+    env = LocalEnvironment(str(tmp_path))
 
     def delayed_popen(*args, **kwargs):
         spawn_entered.set()
@@ -467,7 +553,7 @@ def test_cancel_at_spawn_boundary_survives_event_loop_close(tmp_path, monkeypatc
 
     async def scenario():
         task = asyncio.create_task(
-            LocalEnvironment(str(tmp_path)).exec_cmd(
+            env.exec_cmd(
                 _stubborn_grandchild_command(ready, sentinel),
                 timeout=60,
             )
@@ -557,4 +643,179 @@ async def test_local_temp_cleanup_refuses_replaced_foreign_inode(tmp_path, monke
     with pytest.raises(OSError, match="replaced local temporary file"):
         await env.remove_file(owned_path)
 
-    assert open(owned_path, encoding="utf-8").read() == "foreign"
+    assert Path(owned_path).read_text(encoding="utf-8") == "foreign"
+    assert not list(tmp_path.glob(".opencollab-retired-*"))
+
+
+@pytest.mark.asyncio
+async def test_local_temp_cleanup_is_idempotent_under_concurrent_remove(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(env_mod.tempfile, "gettempdir", lambda: str(tmp_path))
+    env = LocalEnvironment(str(tmp_path))
+    owned_path = await env.write_temp_file(
+        "owned",
+        prefix="opencollab-concurrent-",
+        suffix=".tmp",
+    )
+
+    await asyncio.gather(env.remove_file(owned_path), env.remove_file(owned_path))
+
+    assert not os.path.exists(owned_path)
+
+
+@pytest.mark.asyncio
+async def test_local_temp_creation_runs_off_loop_and_records_before_cancel(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(env_mod.tempfile, "gettempdir", lambda: str(tmp_path))
+    original_create = env_mod._sync_create_temp_file
+    entered = threading.Event()
+    release = threading.Event()
+    created_path = None
+
+    def delayed_create(temp_dir, prefix, suffix, payload):
+        nonlocal created_path
+        entered.set()
+        assert release.wait(timeout=2)
+        result = original_create(temp_dir, prefix, suffix, payload)
+        created_path = result[0]
+        return result
+
+    monkeypatch.setattr(env_mod, "_sync_create_temp_file", delayed_create)
+    env = LocalEnvironment(str(tmp_path))
+    task = asyncio.create_task(
+        env.write_temp_file("owned", prefix="opencollab-cancel-", suffix=".tmp")
+    )
+    assert await asyncio.to_thread(entered.wait, 0.5)
+
+    await asyncio.wait_for(asyncio.sleep(0), timeout=0.2)
+    assert task.done() is False
+    task.cancel("cancel temp create")
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert created_path is not None
+    assert created_path in env._temp_file_identities
+    await env.remove_file(created_path)
+    assert not os.path.exists(created_path)
+    await env.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_replaced_local_workspace_is_never_used_for_exec_or_write(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    env = LocalEnvironment(str(workspace))
+    owned_workspace = tmp_path / "owned-workspace"
+    workspace.rename(owned_workspace)
+    workspace.mkdir()
+
+    with pytest.raises(OSError, match="workspace identity changed"):
+        await env.exec_cmd("touch exec-victim")
+    with pytest.raises(OSError, match="workspace identity changed"):
+        await env.write_file("write-victim", "foreign overwrite")
+
+    assert list(workspace.iterdir()) == []
+    await env.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_local_validation_errors_do_not_acquire_workspace_duplicates(
+    tmp_path,
+    monkeypatch,
+):
+    env = LocalEnvironment(str(tmp_path))
+    acquisitions = 0
+    original_acquire = env._acquire_workspace_handle
+
+    def counted_acquire():
+        nonlocal acquisitions
+        acquisitions += 1
+        return original_acquire()
+
+    monkeypatch.setattr(env, "_acquire_workspace_handle", counted_acquire)
+    with pytest.raises(ValueError, match="path components"):
+        await env.write_temp_file("data", prefix="bad/prefix")
+    monkeypatch.setattr(env_mod, "LOCAL_FILE_WRITE_LIMIT_BYTES", 1)
+    with pytest.raises(OSError, match="write limit"):
+        await env.write_file("oversize", "too large")
+    with pytest.raises(OSError, match="write limit"):
+        await env.write_temp_file("too large", prefix="safe-")
+
+    assert acquisitions == 0
+    await env.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_local_cleanup_and_abort_release_workspace_and_temp_descriptors(tmp_path, monkeypatch):
+    monkeypatch.setattr(env_mod.tempfile, "gettempdir", lambda: str(tmp_path))
+    env = LocalEnvironment(str(tmp_path))
+    temp_path = await env.write_temp_file("owned", prefix="cleanup-", suffix=".tmp")
+    workspace_fd = env._workspace_fd
+    temp_fd = env._temp_file_identities[temp_path].fd
+
+    await env.cleanup()
+    await env.cleanup()
+
+    assert not os.path.exists(temp_path)
+    assert env._temp_file_identities == {}
+    with pytest.raises(OSError):
+        os.fstat(workspace_fd)
+    with pytest.raises(OSError):
+        os.fstat(temp_fd)
+
+    abort_workspace = tmp_path / "abort-workspace"
+    abort_workspace.mkdir()
+    aborted = LocalEnvironment(str(abort_workspace))
+    abort_temp = await aborted.write_temp_file(
+        "owned",
+        prefix="abort-",
+        suffix=".tmp",
+    )
+    abort_workspace_fd = aborted._workspace_fd
+    abort_temp_fd = aborted._temp_file_identities[abort_temp].fd
+    await aborted.abort()
+    await aborted.abort()
+
+    assert not os.path.exists(abort_temp)
+    with pytest.raises(OSError):
+        os.fstat(abort_workspace_fd)
+    with pytest.raises(OSError):
+        os.fstat(abort_temp_fd)
+
+
+@pytest.mark.asyncio
+async def test_local_cleanup_retains_retryable_temp_ownership(tmp_path, monkeypatch):
+    monkeypatch.setattr(env_mod.tempfile, "gettempdir", lambda: str(tmp_path))
+    env = LocalEnvironment(str(tmp_path))
+    temp_path = await env.write_temp_file("owned", prefix="retry-", suffix=".tmp")
+    workspace_fd = env._workspace_fd
+    temp_fd = env._temp_file_identities[temp_path].fd
+    original_unlink = env_mod._sync_unlink_file
+    failed = False
+
+    def fail_once(path, identity, root_fd=None):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("transient unlink failure")
+        return original_unlink(path, identity, root_fd)
+
+    monkeypatch.setattr(env_mod, "_sync_unlink_file", fail_once)
+    with pytest.raises(OSError, match="transient unlink failure"):
+        await env.cleanup()
+
+    assert temp_path in env._temp_file_identities
+    os.fstat(workspace_fd)
+    os.fstat(temp_fd)
+
+    await env.cleanup()
+    assert not os.path.exists(temp_path)
+    with pytest.raises(OSError):
+        os.fstat(workspace_fd)
+    with pytest.raises(OSError):
+        os.fstat(temp_fd)
