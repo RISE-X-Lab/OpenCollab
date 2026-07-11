@@ -50,7 +50,7 @@ class WorktreeEnvironment(Environment):
         self._worktree_dir: str | None = None
         self._worktree_dir_fd = -1
         self._worktree_quarantine_dir: str | None = None
-        self._worktree_directory_removed = False
+        self._worktree_directory_removed = True
         self._local_env: LocalEnvironment | None = None
         self._base_commit: str | None = None
         self._worktree_registered = False
@@ -344,6 +344,7 @@ class WorktreeEnvironment(Environment):
         self._branch_preexisting = False
         self._branch_cleanup_pending = True
         self._worktree_dir = os.path.realpath(tempfile.mkdtemp(prefix="opencollab-wt-"))
+        self._worktree_directory_removed = False
         self._capture_worktree_directory_handle()
         self._worktree_add_attempted = True
         self._add_owner_active = True

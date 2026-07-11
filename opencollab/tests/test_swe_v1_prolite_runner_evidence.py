@@ -375,7 +375,7 @@ def test_prolite_python_plan_batches_81_exact_node_ids_without_file_fallback(tmp
 
 @pytest.mark.parametrize(
     "evidence_mode",
-    ["matching", "tampered", "missing_log", "go_package_pass_only"],
+    ["matching", "tampered", "missing_log", "unsafe_late_log", "go_package_pass_only"],
 )
 def test_prolite_eval_requires_matching_batch_and_target_evidence(
     monkeypatch,
@@ -416,6 +416,12 @@ def test_prolite_eval_requires_matching_batch_and_target_evidence(
             "p2p.exit",
         ):
             (output_dir / name).write_text("0\n", encoding="ascii")
+        for name in ("service_bootstrap.log", "model_patch.log", "test_patch.log"):
+            (output_dir / name).write_text("", encoding="utf-8")
+        if evidence_mode == "unsafe_late_log":
+            unsafe = output_dir / "service_bootstrap.log"
+            unsafe.unlink()
+            unsafe.symlink_to(output_dir / "attacker.log")
         for prefix in ("f2p", "p2p"):
             (output_dir / f"{prefix}.command").write_bytes((input_dir / f"{prefix}.command").read_bytes())
             (output_dir / f"{prefix}.log").write_text("", encoding="utf-8")
@@ -518,6 +524,14 @@ def test_prolite_eval_requires_matching_batch_and_target_evidence(
         assert result["summary"]["resolved"] is False
         assert "fail_to_pass_evidence" in result["summary"]["technical_reasons"]
         assert evidence[-1]["log_artifact_safe"] is False
+    elif evidence_mode == "unsafe_late_log":
+        assert result["status"] == "technical_eval_failed"
+        assert result["summary"]["resolved"] is False
+        assert "unsafe_or_missing_output_artifact" in result["summary"]["technical_reasons"]
+        assert any(
+            error.startswith("unsafe:service_bootstrap.log")
+            for error in result["summary"]["output_artifact_errors"]
+        )
     else:
         assert result["status"] == "eval_done"
         assert result["summary"]["resolved"] is True

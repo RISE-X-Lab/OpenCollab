@@ -362,12 +362,17 @@ def run_one(
 
     with print_lock:
         print(f"[{ordinal}/{total}] evaluating {iid}", flush=True)
-    started_at_ns = time.time_ns()
-    prior_report_fingerprint = file_fingerprint(official_report)
     attempt_path = identity_path(official_report)
     try:
         if stop_event is not None and stop_event.is_set():
             return iid, 130
+        # The standard SWE-bench report schema carries no patch identity. Once
+        # this task is exclusively claimed, retire any stale report so a newly
+        # created report can be bound to this attempt by absence-at-start.
+        ensure_directory_no_symlinks(official_report.parent)
+        _unlink_durable(official_report)
+        started_at_ns = time.time_ns()
+        prior_report_fingerprint = ""
         write_identity(
             attempt_path,
             identity,

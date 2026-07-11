@@ -188,6 +188,13 @@ class Scheduler(
         self._manifest_subscriber: AutoSaveSubscriber | None = None
         self._shutting_down = False
         self._cleanup_task: asyncio.Task[None] | None = None
+        self._cleanup_execution_tasks: set[tuple[int, asyncio.Task[Any]]] = set()
+        self._cleanup_delivery_tasks: set[tuple[int, asyncio.Task[Any]]] = set()
+        self._cleanup_environment_abort_tasks: dict[
+            int,
+            tuple[Any, asyncio.Task[Any]],
+        ] = {}
+        self._cleanup_worktree_release_task: asyncio.Task[Any] | None = None
         self._fallback_autosavers: dict[int, AutoSaveSubscriber] = {}
         self._scheduler_persistence_errors: list[Exception] = []
         # A synchronous review loop temporarily yields its caller's turn lease

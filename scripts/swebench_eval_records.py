@@ -632,7 +632,6 @@ def report_is_done(path: Path, instance_id: str, expected_identity: dict) -> boo
         return False
     attempt, _sidecar_stat = sidecar_document
     report_mtime_ns = report_stat.st_mtime_ns
-    current_report_fingerprint = _runner()._stat_fingerprint(report_stat)
     if not isinstance(attempt, dict) or attempt.get("schema") != "opencollab.swe_eval_attempt.v1":
         return False
     if attempt.get("status") not in {"launching", "started", "completed"}:
@@ -644,7 +643,11 @@ def report_is_done(path: Path, instance_id: str, expected_identity: dict) -> boo
     if str(attempt.get("patch_sha256") or "") != str(expected_identity.get("patch_sha256") or ""):
         return False
     if "prior_report_fingerprint" in attempt:
-        return current_report_fingerprint != str(attempt.get("prior_report_fingerprint") or "")
+        # A report format without an embedded patch identity can only be bound
+        # when the destination was absent at attempt start. Rewriting or merely
+        # touching a pre-existing report does not prove which patch was graded.
+        if str(attempt.get("prior_report_fingerprint") or ""):
+            return False
     try:
         return report_mtime_ns >= int(attempt.get("started_at_ns") or 0) > 0
     except (TypeError, ValueError):

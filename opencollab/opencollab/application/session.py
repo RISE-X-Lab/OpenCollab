@@ -44,7 +44,7 @@ class SessionRuntime:
     tool_execution: ToolExecutionUseCase
     runner: SessionRunUseCase
     auto_save_path: str | None
-    auto_save_subscriber: AutoSaveSubscriber | None
+    auto_save_subscriber: AutoSaveSubscriber | None = None
 
 
 class Session:

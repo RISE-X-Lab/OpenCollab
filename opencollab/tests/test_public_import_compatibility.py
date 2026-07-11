@@ -5,12 +5,15 @@ from __future__ import annotations
 import importlib
 
 from opencollab.application.async_timeout import abandon_on_timeout
+from opencollab.application.scheduler_types import QueuedTeammateMessage
+from opencollab.application.session import SessionRuntime
 from opencollab.application.tool_execution import (
     abandon_on_timeout as tool_execution_abandon_on_timeout,
 )
 from opencollab.application.workflow import (
     abandon_on_timeout as workflow_abandon_on_timeout,
 )
+from opencollab.harness import swe_eval_records, swe_v1_remote_records
 from opencollab.harness.evaluator import EvalResult, EvalTask
 from opencollab.harness.evaluator_models import (
     EvalResult as ExtractedEvalResult,
@@ -41,6 +44,21 @@ def test_swe_eval_facades_reexport_patch_digest_helper() -> None:
     assert discovery_row_patch_sha is row_patch_sha
 
 
+def test_remote_runner_reuses_shared_record_identity_helpers() -> None:
+    names = (
+        "prediction_patch",
+        "row_task_id",
+        "row_record_id",
+        "row_explicit_patch_sha",
+        "patch_sha",
+        "row_patch_sha",
+        "embedded_workflow_metric",
+        "patch_sha_matches",
+    )
+    for name in names:
+        assert getattr(swe_v1_remote_records, name) is getattr(swe_eval_records, name)
+
+
 def test_checkpoint_facade_reexports_recovery_prefix() -> None:
     assert ENV_RECOVERY_PATCH_PREFIX == EXTRACTED_ENV_RECOVERY_PATCH_PREFIX
     assert ENV_RECOVERY_PATCH_PREFIX == "/tmp/opencollab-checkpoint-recovery-"
@@ -49,6 +67,28 @@ def test_checkpoint_facade_reexports_recovery_prefix() -> None:
 def test_evaluator_facade_reexports_extracted_models() -> None:
     assert EvalResult is ExtractedEvalResult
     assert EvalTask is ExtractedEvalTask
+
+
+def test_added_runtime_fields_preserve_legacy_construction() -> None:
+    message = QueuedTeammateMessage(
+        from_aid=1,
+        to_aid=2,
+        summary="summary",
+        content="content",
+        xml="<message />",
+    )
+    runtime = SessionRuntime(
+        state=object(),
+        event_bus=object(),
+        llm=object(),
+        store=object(),
+        tool_execution=object(),
+        runner=object(),
+        auto_save_path=None,
+    )
+
+    assert message.sent_at == ""
+    assert runtime.auto_save_subscriber is None
 
 
 def test_split_facades_retain_every_legacy_public_binding() -> None:

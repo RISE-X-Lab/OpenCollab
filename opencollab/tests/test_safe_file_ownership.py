@@ -13,6 +13,7 @@ import opencollab.adapters._owned_file_cleanup as owned_cleanup_mod
 import opencollab.adapters.retirement_registry as retirement_registry_mod
 import opencollab.adapters.safe_files as safe_files_mod
 import pytest
+from opencollab.adapters.storage import SessionStore
 
 
 def test_atomic_rename_rejects_embedded_nul(tmp_path):
@@ -777,3 +778,73 @@ def test_durable_unlink_refuses_retirement_byte_overflow(tmp_path, monkeypatch):
         safe_files_mod.unlink_regular_file_durable(target)
 
     assert target.read_bytes() == b"owned"
+
+
+def test_session_store_reclaims_verified_tombstones_and_compacts_registry(
+    tmp_path,
+    monkeypatch,
+):
+    retirement_log = tmp_path / "retirements.jsonl"
+    retirement_log.touch()
+    monkeypatch.setenv(
+        retirement_registry_mod.INTERNAL_RETIREMENT_LOG_ENV,
+        str(retirement_log),
+    )
+    monkeypatch.setenv(
+        retirement_registry_mod.INTERNAL_RETIREMENT_WORKSPACE_ENV,
+        str(tmp_path),
+    )
+    monkeypatch.setattr(owned_cleanup_mod, "MAX_RETIRED_FILES_PER_DIRECTORY", 4)
+    target = tmp_path / "session.json"
+    store = SessionStore()
+
+    for index in range(20):
+        store.save(str(target), [{"role": "user", "content": str(index)}])
+
+    assert store.load_messages(str(target), "fallback") == [
+        {"role": "user", "content": "19"}
+    ]
+    retired = list(tmp_path.glob(f"{owned_cleanup_mod.RETIRED_FILE_PREFIX}*"))
+    assert len(retired) <= 3
+    assert len(retirement_log.read_bytes().splitlines()) == len(retired)
+    assert set(retirement_registry_mod.registered_retirement_paths(tmp_path)) == {
+        path.name for path in retired
+    }
+
+
+def test_retirement_reclamation_preserves_unregistered_reserved_entries(
+    tmp_path,
+    monkeypatch,
+):
+    target = tmp_path / "session.json"
+    store = SessionStore()
+    store.save(str(target), [{"role": "user", "content": "initial"}])
+    foreign = [
+        tmp_path / f"{owned_cleanup_mod.RETIRED_FILE_PREFIX}foreign-{index}"
+        for index in range(2)
+    ]
+    for path in foreign:
+        path.write_text("foreign", encoding="utf-8")
+    monkeypatch.setattr(owned_cleanup_mod, "MAX_RETIRED_FILES_PER_DIRECTORY", 2)
+
+    with pytest.raises(OSError, match="retired-file count limit"):
+        store.save(str(target), [{"role": "user", "content": "replacement"}])
+
+    assert target.exists()
+    assert all(path.read_text(encoding="utf-8") == "foreign" for path in foreign)
+
+
+def test_repeated_durable_unlink_reclaims_verified_tombstones(tmp_path, monkeypatch):
+    monkeypatch.setattr(owned_cleanup_mod, "MAX_RETIRED_FILES_PER_DIRECTORY", 4)
+
+    for index in range(20):
+        target = tmp_path / f"owned-{index}.json"
+        target.write_text(str(index), encoding="utf-8")
+        assert safe_files_mod.unlink_regular_file_durable(target) is True
+        assert not target.exists()
+
+    retired = list(tmp_path.glob(f"{owned_cleanup_mod.RETIRED_FILE_PREFIX}*"))
+    assert len(retired) == 4
+    assert set(retirement_registry_mod.registered_retirement_paths(tmp_path)) == {
+        path.name for path in retired
+    }

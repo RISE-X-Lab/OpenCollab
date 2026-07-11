@@ -5,7 +5,7 @@ import os
 import sys
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,383 @@ from opencollab.application.session import Session
 from opencollab.application.workflow import WorkflowContext
 from opencollab.harness.evaluator_patch import cleanup_injected_paths_and_extract_patch
 from opencollab.harness.evaluator_task_setup import prepare_eval_run
+
+
+@dataclass
+class _FinalizationState:
+    error: str | None
+    execution_quiesced: bool
+    checkpoint_result: dict[str, Any] | None
+    injected_paths: list[str]
+    harness_artifact_exclusion_proven: bool
+    checkpoint_restore_integrity_proven: bool
+    test_patch_isolation_failed: bool
+    task_stage_integrity_proven: bool
+    persistence_succeeded: bool = True
+    checkpoint_lingering: set[asyncio.Task[Any]] = field(default_factory=set)
+    final_snapshot_lingering: tuple[asyncio.Task[Any], ...] = ()
+    manifest_lingering: tuple[asyncio.Task[Any], ...] = ()
+    environment_revocation_quiesced: bool = False
+    patch: str = ""
+    patch_extraction_succeeded: bool = False
+    injected_path_cleanup_proven: bool = False
+
+
+def _collect_late_stage_outcomes(
+    facade: Any,
+    state: _FinalizationState,
+    stage_tasks: dict[str, asyncio.Task[Any]],
+    observed_stage_results: set[str],
+) -> None:
+    """Adopt stage results that arrived after their caller-side deadline."""
+    if not state.execution_quiesced:
+        return
+    for stage_name, stage_task in stage_tasks.items():
+        if stage_name in observed_stage_results:
+            continue
+        observed_stage_results.add(stage_name)
+        if stage_task.cancelled():
+            if stage_name == "checkpoint_restore":
+                state.checkpoint_restore_integrity_proven = False
+            elif stage_name == "test_patch_injection":
+                state.test_patch_isolation_failed = True
+            continue
+        try:
+            late_value = stage_task.result()
+        except facade.TestPatchIsolationError as exc:
+            if stage_name == "test_patch_injection":
+                state.injected_paths = list(dict.fromkeys((*state.injected_paths, *exc.touched_paths)))
+                state.test_patch_isolation_failed = True
+            state.error = facade._append_harness_error(state.error, f"late {stage_name} failed", exc)
+        except asyncio.CancelledError:
+            if stage_name == "checkpoint_restore":
+                state.checkpoint_restore_integrity_proven = False
+            elif stage_name == "test_patch_injection":
+                state.test_patch_isolation_failed = True
+        except BaseException as exc:
+            state.error = facade._append_harness_error(state.error, f"late {stage_name} failed", exc)
+            if stage_name == "checkpoint_restore":
+                state.checkpoint_restore_integrity_proven = False
+            elif stage_name == "test_patch_injection":
+                state.test_patch_isolation_failed = True
+        else:
+            if stage_name == "checkpoint_restore":
+                if state.checkpoint_result is None:
+                    state.checkpoint_result = {}
+                state.checkpoint_result["restore"] = late_value.to_dict()
+                state.checkpoint_restore_integrity_proven = False
+            elif stage_name == "test_patch_injection":
+                state.injected_paths = list(dict.fromkeys((*state.injected_paths, *late_value)))
+                state.test_patch_isolation_failed = True
+
+
+async def _finalize_checkpoint_and_patch(
+    facade: Any,
+    state: _FinalizationState,
+    *,
+    env: Any,
+    checkpoint: Any,
+    harness_artifact_paths: list[str],
+    cleanup_timeout: float,
+    await_teardown: Callable[[Awaitable[Any]], Awaitable[Any]],
+) -> None:
+    """Stop or abort checkpointing, then clean injected paths and extract the patch."""
+    if not state.execution_quiesced:
+        failure = TimeoutError("owned execution did not quiesce after cancellation; patch extraction skipped")
+        state.error = facade._append_harness_error(state.error, "execution cleanup timed out", failure)
+        if checkpoint is not None:
+            try:
+                checkpoint_quiesced = await await_teardown(checkpoint.abort(timeout=cleanup_timeout))
+            except Exception as exc:
+                checkpoint_quiesced = False
+                state.error = facade._append_harness_error(state.error, "checkpoint abort failed", exc)
+            if state.checkpoint_result is None:
+                state.checkpoint_result = {}
+            state.checkpoint_result["abort"] = {
+                "status": "aborted_non_quiescent_execution" if checkpoint_quiesced else "checkpoint_abort_timed_out"
+            }
+            if not checkpoint_quiesced:
+                state.error = facade._append_harness_error(
+                    state.error,
+                    "checkpoint abort timed out",
+                    TimeoutError("periodic checkpoint capture remained active"),
+                )
+        if env is not None:
+            env._aborted = True
+
+    unsafe_checkpoint = state.test_patch_isolation_failed or not state.checkpoint_restore_integrity_proven
+    if state.execution_quiesced and env and checkpoint is not None and unsafe_checkpoint:
+        try:
+            checkpoint_quiesced = await await_teardown(checkpoint.abort(timeout=cleanup_timeout))
+        except Exception as exc:
+            checkpoint_quiesced = False
+            state.error = facade._append_harness_error(state.error, "checkpoint abort failed", exc)
+        if state.checkpoint_result is None:
+            state.checkpoint_result = {}
+        skipped_status = (
+            "skipped_test_patch_isolation_failure"
+            if state.test_patch_isolation_failed
+            else "skipped_checkpoint_restore_integrity_failure"
+        )
+        state.checkpoint_result["final"] = {
+            "status": skipped_status if checkpoint_quiesced else "checkpoint_abort_timed_out"
+        }
+        if not checkpoint_quiesced:
+            state.error = facade._append_harness_error(
+                state.error,
+                "checkpoint abort timed out",
+                TimeoutError("periodic checkpoint capture remained active"),
+            )
+            state.execution_quiesced = False
+
+    if state.execution_quiesced and env and checkpoint is not None and not unsafe_checkpoint:
+        try:
+            checkpoint_finalized, final_checkpoint, stop_lingering = await await_teardown(
+                facade._stop_checkpoint_bounded(
+                    checkpoint,
+                    env,
+                    exclude_paths=(*state.injected_paths, *harness_artifact_paths),
+                    cleanup_timeout=cleanup_timeout,
+                )
+            )
+            state.checkpoint_lingering.update(stop_lingering)
+            if state.checkpoint_result is None:
+                state.checkpoint_result = {}
+            if checkpoint_finalized:
+                state.checkpoint_result["final"] = final_checkpoint.to_dict()
+            else:
+                state.checkpoint_result["final"] = {"status": "checkpoint_finalization_timed_out"}
+                state.error = facade._append_harness_error(
+                    state.error,
+                    "checkpoint finalization timed out",
+                    TimeoutError("checkpoint stop remained active"),
+                )
+                try:
+                    checkpoint_quiesced = await await_teardown(checkpoint.abort(timeout=cleanup_timeout))
+                    if not checkpoint_quiesced:
+                        state.error = facade._append_harness_error(
+                            state.error,
+                            "checkpoint abort timed out",
+                            TimeoutError("periodic checkpoint capture remained active"),
+                        )
+                except Exception as exc:
+                    state.error = facade._append_harness_error(state.error, "checkpoint abort failed", exc)
+                env._aborted = True
+                state.execution_quiesced = False
+        except Exception as exc:
+            state.error = facade._append_harness_error(state.error, "checkpoint finalization failed", exc)
+
+    (
+        state.injected_path_cleanup_proven,
+        state.patch,
+        state.patch_extraction_succeeded,
+        state.error,
+    ) = await cleanup_injected_paths_and_extract_patch(
+        facade,
+        env=env,
+        execution_quiesced=state.execution_quiesced,
+        injected_paths=state.injected_paths,
+        harness_artifact_paths=harness_artifact_paths,
+        cleanup_timeout=cleanup_timeout,
+        error=state.error,
+        test_patch_isolation_failed=state.test_patch_isolation_failed,
+        harness_artifact_exclusion_proven=state.harness_artifact_exclusion_proven,
+        checkpoint_restore_integrity_proven=state.checkpoint_restore_integrity_proven,
+        task_stage_integrity_proven=state.task_stage_integrity_proven,
+        await_teardown=await_teardown,
+    )
+
+
+async def _cleanup_resources_and_build_result(
+    facade: Any,
+    state: _FinalizationState,
+    *,
+    task: Any,
+    workflow: Any,
+    run_dir: str | None,
+    workflow_ctx: WorkflowContext | None,
+    session: Session | None,
+    checkpoint: Any,
+    owned_execution_tasks: list[asyncio.Task[Any]],
+    tracer: Any,
+    env: Any,
+    cleanup_timeout: float,
+    start: float,
+    await_teardown: Callable[[Awaitable[Any]], Awaitable[Any]],
+) -> Any:
+    """Persist the manifest, release owned resources, and build the public result."""
+    if state.execution_quiesced and workflow_ctx is not None and workflow is not None and run_dir is not None:
+        try:
+            manifest_quiesced, manifest_error, state.manifest_lingering = await await_teardown(
+                facade._persist_eval_workflow_manifest_owned(
+                    run_dir,
+                    task=task,
+                    workflow=workflow,
+                    ctx=workflow_ctx,
+                    cleanup_timeout=cleanup_timeout,
+                )
+            )
+        except Exception as exc:
+            state.persistence_succeeded = False
+            state.error = facade._append_harness_error(state.error, "workflow manifest failed", exc)
+        else:
+            if manifest_error is not None:
+                state.persistence_succeeded = False
+                state.error = facade._append_harness_error(state.error, "workflow manifest failed", manifest_error)
+            if not manifest_quiesced:
+                state.persistence_succeeded = False
+                state.execution_quiesced = False
+                state.error = facade._append_harness_error(
+                    state.error,
+                    "workflow manifest timed out",
+                    TimeoutError("manifest persistence owner remained active"),
+                )
+
+    live_resource_dependencies = {
+        owned
+        for owned in (
+            *owned_execution_tasks,
+            *state.final_snapshot_lingering,
+            *state.manifest_lingering,
+            *state.checkpoint_lingering,
+        )
+        if not owned.done()
+    }
+    if checkpoint is not None:
+        live_resource_dependencies.update(
+            owned
+            for owned in getattr(checkpoint, "pending_tasks", ())
+            if isinstance(owned, asyncio.Task) and not owned.done()
+        )
+    if workflow_ctx is not None:
+        live_resource_dependencies.update(
+            owned
+            for owned in workflow_ctx.pending_cleanup_tasks
+            if isinstance(owned, asyncio.Task) and not owned.done()
+        )
+    if session is not None:
+        live_resource_dependencies.update(
+            owned
+            for owned in getattr(session, "pending_cleanup_tasks", ())
+            if isinstance(owned, asyncio.Task) and not owned.done()
+        )
+    resources_deferred = bool(live_resource_dependencies)
+    if resources_deferred:
+        state.execution_quiesced = False
+        if env is not None:
+            try:
+                state.environment_revocation_quiesced = await await_teardown(
+                    facade._abort_environment(env, cleanup_timeout=cleanup_timeout)
+                )
+            except Exception as exc:
+                state.error = facade._append_harness_error(state.error, "environment abort failed", exc)
+            if not state.environment_revocation_quiesced:
+                state.error = facade._append_harness_error(
+                    state.error,
+                    "environment abort timed out",
+                    TimeoutError("environment abort hook remained active"),
+                )
+        facade._defer_eval_resource_cleanup(
+            tuple(live_resource_dependencies),
+            tracer=tracer,
+            env=env if not state.environment_revocation_quiesced else None,
+        )
+        state.error = facade._append_harness_error(
+            state.error,
+            "resource cleanup deferred",
+            TimeoutError("owned persistence or execution task remained active"),
+        )
+
+    duration = time.monotonic() - start
+    if not resources_deferred:
+        try:
+            tracer.close()
+        except Exception as exc:
+            state.error = facade._append_harness_error(state.error, "tracer close failed", exc)
+    tracer_write_error = getattr(tracer, "write_error", None)
+    if tracer_write_error:
+        state.error = facade._append_harness_error(
+            state.error,
+            "tracer write failed",
+            RuntimeError(str(tracer_write_error)),
+        )
+
+    if env and (not resources_deferred or state.environment_revocation_quiesced):
+        environment_cleaned = False
+        cleanup_raised = False
+        try:
+            environment_cleaned = await await_teardown(
+                facade._cleanup_environment_bounded(env, cleanup_timeout=cleanup_timeout)
+            )
+        except Exception as exc:
+            cleanup_raised = True
+            state.error = facade._append_harness_error(state.error, "environment cleanup failed", exc)
+        if not environment_cleaned:
+            state.execution_quiesced = False
+            state.patch = ""
+            state.patch_extraction_succeeded = False
+            if not cleanup_raised:
+                state.error = facade._append_harness_error(
+                    state.error,
+                    "environment cleanup timed out",
+                    TimeoutError("environment cleanup hook remained active"),
+                )
+            try:
+                abort_quiesced = await await_teardown(facade._abort_environment(env, cleanup_timeout=cleanup_timeout))
+                if not abort_quiesced:
+                    state.error = facade._append_harness_error(
+                        state.error,
+                        "environment abort timed out",
+                        TimeoutError("environment abort hook remained active"),
+                    )
+            except Exception as exc:
+                state.error = facade._append_harness_error(state.error, "environment abort failed", exc)
+
+    if workflow_ctx is not None:
+        sessions = workflow_ctx.sessions
+        tokens_used = facade._aggregate_tokens(sessions)
+        steps = facade._aggregate_steps(sessions)
+        markup_recovered = facade._aggregate_markup_recovery(sessions)
+        workflow_error = getattr(workflow_ctx, "workflow_error", None)
+        if workflow_error:
+            state.error = f"{workflow_error}; {state.error}" if state.error else workflow_error
+    else:
+        tokens_used = session.used_tokens if session else 0
+        steps = session.step_count if session else 0
+        markup_recovered = getattr(session, "markup_recovered", 0) if session else 0
+
+    result = facade.EvalResult(
+        task_id=task.task_id,
+        patch=state.patch,
+        # Any extracted diff remains submittable even when the run reports an error.
+        patch_produced=bool(state.patch.strip()),
+        tokens_used=tokens_used,
+        steps=steps,
+        duration=duration,
+        error=state.error,
+        trajectory_path=tracer.path,
+        markup_recovered=markup_recovered,
+        workflow_result=getattr(workflow_ctx, "workflow_result", None) if workflow_ctx else None,
+        checkpoint_result=state.checkpoint_result,
+        test_patch_isolation_failed=state.test_patch_isolation_failed,
+        execution_quiesced=state.execution_quiesced,
+        patch_extraction_succeeded=state.patch_extraction_succeeded,
+        injected_path_cleanup_proven=state.injected_path_cleanup_proven,
+        harness_artifact_exclusion_proven=state.harness_artifact_exclusion_proven,
+        checkpoint_restore_integrity_proven=state.checkpoint_restore_integrity_proven,
+        task_stage_integrity_proven=state.task_stage_integrity_proven,
+        submission_eligible=(
+            state.execution_quiesced
+            and state.patch_extraction_succeeded
+            and state.injected_path_cleanup_proven
+            and state.harness_artifact_exclusion_proven
+            and state.checkpoint_restore_integrity_proven
+            and state.task_stage_integrity_proven
+            and state.persistence_succeeded
+            and not state.test_patch_isolation_failed
+        ),
+    )
+    return result
 
 
 async def run_eval_task_impl(
@@ -58,26 +435,17 @@ async def run_eval_task_impl(
     run_dir = prepared.run_dir
     tracer = prepared.tracer
     _EnvironmentSetupOwner = facade._EnvironmentSetupOwner
-    _abort_environment = facade._abort_environment
-    _aggregate_markup_recovery = facade._aggregate_markup_recovery
-    _aggregate_steps = facade._aggregate_steps
-    _aggregate_tokens = facade._aggregate_tokens
     _append_harness_error = facade._append_harness_error
-    _cleanup_environment_bounded = facade._cleanup_environment_bounded
-    _defer_eval_resource_cleanup = facade._defer_eval_resource_cleanup
     _finalize_eval_workflow_sessions = facade._finalize_eval_workflow_sessions
     _legacy_result_temp_paths = facade._legacy_result_temp_paths
     _mapped_artifact_path_bound_error = facade._mapped_artifact_path_bound_error
-    _persist_eval_workflow_manifest_owned = facade._persist_eval_workflow_manifest_owned
     _run_single_session = facade._run_single_session
     _run_workflow_mode = facade._run_workflow_mode
-    _stop_checkpoint_bounded = facade._stop_checkpoint_bounded
     _wait_for_owned_execution = facade._wait_for_owned_execution
     _workspace_relative_artifact_paths = facade._workspace_relative_artifact_paths
     _workspace_relative_host_path = facade._workspace_relative_host_path
     apply_test_patch = facade.apply_test_patch
     build_repo_map_via_env = facade.build_repo_map_via_env
-    EvalResult = facade.EvalResult
     RESULT_TEMP_DIRECTORY = facade.RESULT_TEMP_DIRECTORY
     TestPatchIsolationError = facade.TestPatchIsolationError
     WorktreeCheckpoint = facade.WorktreeCheckpoint
@@ -95,7 +463,6 @@ async def run_eval_task_impl(
     checkpoint_result: dict[str, Any] | None = None
     error: str | None = None
     cancellation: asyncio.CancelledError | None = None
-    patch = ""
     injected_paths: list[str] = []
     harness_artifact_paths: list[str] = []
     harness_artifact_exclusion_proven = True
@@ -104,8 +471,7 @@ async def run_eval_task_impl(
     task_stage_integrity_proven = True
     persistence_succeeded = True
     final_snapshot_lingering: tuple[asyncio.Task[Any], ...] = ()
-    manifest_lingering: tuple[asyncio.Task[Any], ...] = ()
-    environment_revocation_quiesced = False
+    finalization_state: _FinalizationState | None = None
 
     def remaining_task_time() -> float:
         remaining = task_deadline - time.monotonic()
@@ -204,12 +570,8 @@ async def run_eval_task_impl(
                 if not checkpoint_restore_integrity_proven:
                     raise RuntimeError("checkpoint restore left worktree integrity unproven")
 
-        # SWE-bench test injection: apply the real FAIL_TO_PASS test into the
-        # workspace BEFORE the workflow runs so the agent can verify against it.
-        # Guarded on extras so single-session / non-SWE-bench paths are
-        # unaffected. Preflight failures skip injection. An uncertain rollback
-        # stops before agent execution and preserves known paths for final
-        # cleanup and temporary-index exclusion.
+        # Inject the real FAIL_TO_PASS test before the workflow, preserving any
+        # uncertain rollback paths for final cleanup and diff exclusion.
         test_patch = (task.extras or {}).get("test_patch")
         if test_patch:
             try:
@@ -228,8 +590,7 @@ async def run_eval_task_impl(
                 exclude_paths=(*injected_paths, *harness_artifact_paths),
             )
 
-        # Orientation up front: a bounded repo map in the system prompt saves
-        # the model its first N steps of ls/find exploration.
+        # A bounded repo map saves the model its first discovery steps.
         repo_map = await await_task_stage(
             "repo_map",
             build_repo_map_via_env(env),
@@ -282,8 +643,7 @@ async def run_eval_task_impl(
             )
 
     except asyncio.CancelledError as exc:
-        # Finish the same checkpoint/diff/tracer/environment teardown below,
-        # then propagate cancellation after every owned resource is released.
+        # Propagate cancellation after every owned resource is released.
         cancellation = exc
         if getattr(exc, "checkpoint_restore_integrity_proven", True) is False:
             checkpoint_restore_integrity_proven = False
@@ -303,11 +663,18 @@ async def run_eval_task_impl(
             except asyncio.CancelledError as exc:
                 if cancellation is None:
                     cancellation = exc
-                    error = _append_harness_error(
-                        error,
-                        "evaluation task cancelled",
-                        RuntimeError("caller cancelled during teardown"),
-                    )
+                    if finalization_state is None:
+                        error = _append_harness_error(
+                            error,
+                            "evaluation task cancelled",
+                            RuntimeError("caller cancelled during teardown"),
+                        )
+                    else:
+                        finalization_state.error = _append_harness_error(
+                            finalization_state.error,
+                            "evaluation task cancelled",
+                            RuntimeError("caller cancelled during teardown"),
+                        )
                 continue
         if owned_task.cancelled():
             raise RuntimeError("owned teardown operation cancelled itself")
@@ -380,393 +747,48 @@ async def run_eval_task_impl(
                 TimeoutError("session persistence owner remained active"),
             )
 
-    # A stage may consume cancellation and return a resource or mutation record
-    # after its caller-side deadline. Adopt every such result before deciding
-    # what must be cleaned or excluded from the candidate diff.
-    if execution_quiesced:
-        for stage_name, stage_task in stage_tasks.items():
-            if stage_name in observed_stage_results:
-                continue
-            observed_stage_results.add(stage_name)
-            if stage_task.cancelled():
-                if stage_name == "checkpoint_restore":
-                    checkpoint_restore_integrity_proven = False
-                elif stage_name == "test_patch_injection":
-                    test_patch_isolation_failed = True
-                continue
-            try:
-                late_value = stage_task.result()
-            except TestPatchIsolationError as exc:
-                if stage_name == "test_patch_injection":
-                    injected_paths = list(dict.fromkeys((*injected_paths, *exc.touched_paths)))
-                    test_patch_isolation_failed = True
-                error = _append_harness_error(
-                    error,
-                    f"late {stage_name} failed",
-                    exc,
-                )
-            except asyncio.CancelledError:
-                if stage_name == "checkpoint_restore":
-                    checkpoint_restore_integrity_proven = False
-                elif stage_name == "test_patch_injection":
-                    test_patch_isolation_failed = True
-            except BaseException as exc:
-                error = _append_harness_error(
-                    error,
-                    f"late {stage_name} failed",
-                    exc,
-                )
-                if stage_name == "checkpoint_restore":
-                    checkpoint_restore_integrity_proven = False
-                elif stage_name == "test_patch_injection":
-                    test_patch_isolation_failed = True
-            else:
-                if stage_name == "checkpoint_restore":
-                    restore_result = late_value
-                    if checkpoint_result is None:
-                        checkpoint_result = {}
-                    checkpoint_result["restore"] = restore_result.to_dict()
-                    checkpoint_restore_integrity_proven = False
-                elif stage_name == "test_patch_injection":
-                    injected_paths = list(dict.fromkeys((*injected_paths, *late_value)))
-                    test_patch_isolation_failed = True
-
-    if not execution_quiesced:
-        failure = TimeoutError("owned execution did not quiesce after cancellation; patch extraction skipped")
-        error = _append_harness_error(error, "execution cleanup timed out", failure)
-        if checkpoint is not None:
-            try:
-                checkpoint_quiesced = await await_teardown(checkpoint.abort(timeout=cleanup_timeout))
-            except Exception as exc:
-                checkpoint_quiesced = False
-                error = _append_harness_error(
-                    error,
-                    "checkpoint abort failed",
-                    exc,
-                )
-            if checkpoint_result is None:
-                checkpoint_result = {}
-            checkpoint_result["abort"] = {
-                "status": ("aborted_non_quiescent_execution" if checkpoint_quiesced else "checkpoint_abort_timed_out")
-            }
-            if not checkpoint_quiesced:
-                error = _append_harness_error(
-                    error,
-                    "checkpoint abort timed out",
-                    TimeoutError("periodic checkpoint capture remained active"),
-                )
-        if env is not None:
-            # Revoke new public operations immediately. Adapter teardown waits
-            # until the still-owned workflow/checkpoint tasks stop using it.
-            env._aborted = True
-
-    if (
-        execution_quiesced
-        and env
-        and checkpoint is not None
-        and (test_patch_isolation_failed or not checkpoint_restore_integrity_proven)
-    ):
-        try:
-            checkpoint_quiesced = await await_teardown(checkpoint.abort(timeout=cleanup_timeout))
-        except Exception as exc:
-            checkpoint_quiesced = False
-            error = _append_harness_error(error, "checkpoint abort failed", exc)
-        if checkpoint_result is None:
-            checkpoint_result = {}
-        checkpoint_result["final"] = {
-            "status": (
-                (
-                    "skipped_test_patch_isolation_failure"
-                    if test_patch_isolation_failed
-                    else "skipped_checkpoint_restore_integrity_failure"
-                )
-                if checkpoint_quiesced
-                else "checkpoint_abort_timed_out"
-            )
-        }
-        if not checkpoint_quiesced:
-            error = _append_harness_error(
-                error,
-                "checkpoint abort timed out",
-                TimeoutError("periodic checkpoint capture remained active"),
-            )
-            execution_quiesced = False
-
-    if (
-        execution_quiesced
-        and env
-        and checkpoint is not None
-        and not test_patch_isolation_failed
-        and checkpoint_restore_integrity_proven
-    ):
-        try:
-            (
-                checkpoint_finalized,
-                final_checkpoint,
-                stop_lingering,
-            ) = await await_teardown(
-                _stop_checkpoint_bounded(
-                    checkpoint,
-                    env,
-                    exclude_paths=(*injected_paths, *harness_artifact_paths),
-                    cleanup_timeout=cleanup_timeout,
-                )
-            )
-            checkpoint_lingering.update(stop_lingering)
-            if checkpoint_result is None:
-                checkpoint_result = {}
-            if checkpoint_finalized:
-                checkpoint_result["final"] = final_checkpoint.to_dict()
-            else:
-                checkpoint_result["final"] = {"status": "checkpoint_finalization_timed_out"}
-                error = _append_harness_error(
-                    error,
-                    "checkpoint finalization timed out",
-                    TimeoutError("checkpoint stop remained active"),
-                )
-                try:
-                    checkpoint_quiesced = await await_teardown(checkpoint.abort(timeout=cleanup_timeout))
-                    if not checkpoint_quiesced:
-                        error = _append_harness_error(
-                            error,
-                            "checkpoint abort timed out",
-                            TimeoutError("periodic checkpoint capture remained active"),
-                        )
-                except Exception as exc:
-                    error = _append_harness_error(
-                        error,
-                        "checkpoint abort failed",
-                        exc,
-                    )
-                env._aborted = True
-                execution_quiesced = False
-        except Exception as exc:
-            error = _append_harness_error(error, "checkpoint finalization failed", exc)
-
-    (
-        injected_path_cleanup_proven,
-        patch,
-        patch_extraction_succeeded,
-        error,
-    ) = await cleanup_injected_paths_and_extract_patch(
-        facade,
-        env=env,
-        execution_quiesced=execution_quiesced,
-        injected_paths=injected_paths,
-        harness_artifact_paths=harness_artifact_paths,
-        cleanup_timeout=cleanup_timeout,
+    state = _FinalizationState(
         error=error,
-        test_patch_isolation_failed=test_patch_isolation_failed,
+        execution_quiesced=execution_quiesced,
+        checkpoint_result=checkpoint_result,
+        injected_paths=injected_paths,
         harness_artifact_exclusion_proven=harness_artifact_exclusion_proven,
         checkpoint_restore_integrity_proven=checkpoint_restore_integrity_proven,
+        test_patch_isolation_failed=test_patch_isolation_failed,
         task_stage_integrity_proven=task_stage_integrity_proven,
+        persistence_succeeded=persistence_succeeded,
+        checkpoint_lingering=checkpoint_lingering,
+        final_snapshot_lingering=final_snapshot_lingering,
+    )
+    finalization_state = state
+    _collect_late_stage_outcomes(facade, state, stage_tasks, observed_stage_results)
+    await _finalize_checkpoint_and_patch(
+        facade,
+        state,
+        env=env,
+        checkpoint=checkpoint,
+        harness_artifact_paths=harness_artifact_paths,
+        cleanup_timeout=cleanup_timeout,
         await_teardown=await_teardown,
     )
-
-    if execution_quiesced and workflow_ctx is not None and workflow is not None and run_dir is not None:
-        try:
-            (
-                manifest_quiesced,
-                manifest_error,
-                manifest_lingering,
-            ) = await await_teardown(
-                _persist_eval_workflow_manifest_owned(
-                    run_dir,
-                    task=task,
-                    workflow=workflow,
-                    ctx=workflow_ctx,
-                    cleanup_timeout=cleanup_timeout,
-                )
-            )
-        except Exception as exc:
-            persistence_succeeded = False
-            error = _append_harness_error(
-                error,
-                "workflow manifest failed",
-                exc,
-            )
-        else:
-            if manifest_error is not None:
-                persistence_succeeded = False
-                error = _append_harness_error(
-                    error,
-                    "workflow manifest failed",
-                    manifest_error,
-                )
-            if not manifest_quiesced:
-                persistence_succeeded = False
-                execution_quiesced = False
-                error = _append_harness_error(
-                    error,
-                    "workflow manifest timed out",
-                    TimeoutError("manifest persistence owner remained active"),
-                )
-
-    live_resource_dependencies: set[asyncio.Task[Any]] = {
-        task
-        for task in (
-            *owned_execution_tasks,
-            *final_snapshot_lingering,
-            *manifest_lingering,
-            *checkpoint_lingering,
-        )
-        if not task.done()
-    }
-    if checkpoint is not None:
-        live_resource_dependencies.update(
-            task
-            for task in getattr(checkpoint, "pending_tasks", ())
-            if isinstance(task, asyncio.Task) and not task.done()
-        )
-    if workflow_ctx is not None:
-        live_resource_dependencies.update(
-            task for task in workflow_ctx.pending_cleanup_tasks if isinstance(task, asyncio.Task) and not task.done()
-        )
-    if session is not None:
-        live_resource_dependencies.update(
-            task
-            for task in getattr(session, "pending_cleanup_tasks", ())
-            if isinstance(task, asyncio.Task) and not task.done()
-        )
-    resources_deferred = bool(live_resource_dependencies)
-    if resources_deferred:
-        execution_quiesced = False
-        if env is not None:
-            try:
-                environment_revocation_quiesced = await await_teardown(
-                    _abort_environment(
-                        env,
-                        cleanup_timeout=cleanup_timeout,
-                    )
-                )
-            except Exception as exc:
-                error = _append_harness_error(
-                    error,
-                    "environment abort failed",
-                    exc,
-                )
-            if not environment_revocation_quiesced:
-                error = _append_harness_error(
-                    error,
-                    "environment abort timed out",
-                    TimeoutError("environment abort hook remained active"),
-                )
-        _defer_eval_resource_cleanup(
-            tuple(live_resource_dependencies),
-            tracer=tracer,
-            env=(env if not environment_revocation_quiesced else None),
-        )
-        error = _append_harness_error(
-            error,
-            "resource cleanup deferred",
-            TimeoutError("owned persistence or execution task remained active"),
-        )
-
-    duration = time.monotonic() - start
-    if not resources_deferred:
-        try:
-            tracer.close()
-        except Exception as exc:
-            error = _append_harness_error(error, "tracer close failed", exc)
-    tracer_write_error = getattr(tracer, "write_error", None)
-    if tracer_write_error:
-        error = _append_harness_error(
-            error,
-            "tracer write failed",
-            RuntimeError(str(tracer_write_error)),
-        )
-
-    if env and (not resources_deferred or environment_revocation_quiesced):
-        environment_cleaned = False
-        cleanup_raised = False
-        try:
-            environment_cleaned = await await_teardown(
-                _cleanup_environment_bounded(
-                    env,
-                    cleanup_timeout=cleanup_timeout,
-                )
-            )
-        except Exception as exc:
-            cleanup_raised = True
-            error = _append_harness_error(error, "environment cleanup failed", exc)
-        if not environment_cleaned:
-            execution_quiesced = False
-            patch = ""
-            patch_extraction_succeeded = False
-            if not cleanup_raised:
-                error = _append_harness_error(
-                    error,
-                    "environment cleanup timed out",
-                    TimeoutError("environment cleanup hook remained active"),
-                )
-            try:
-                abort_quiesced = await await_teardown(
-                    _abort_environment(
-                        env,
-                        cleanup_timeout=cleanup_timeout,
-                    )
-                )
-                if not abort_quiesced:
-                    error = _append_harness_error(
-                        error,
-                        "environment abort timed out",
-                        TimeoutError("environment abort hook remained active"),
-                    )
-            except Exception as exc:
-                error = _append_harness_error(error, "environment abort failed", exc)
-
-    if workflow_ctx is not None:
-        sessions = workflow_ctx.sessions
-        tokens_used = _aggregate_tokens(sessions)
-        steps = _aggregate_steps(sessions)
-        markup_recovered = _aggregate_markup_recovery(sessions)
-        workflow_error = getattr(workflow_ctx, "workflow_error", None)
-        if workflow_error:
-            error = f"{workflow_error}; {error}" if error else workflow_error
-    else:
-        tokens_used = session.used_tokens if session else 0
-        steps = session.step_count if session else 0
-        markup_recovered = getattr(session, "markup_recovered", 0) if session else 0
-
-    result = EvalResult(
-        task_id=task.task_id,
-        patch=patch,
-        # An on-disk diff is a real, submittable patch regardless of how the run
-        # ended — a budget-floor stop or an outer-wall timeout still produces the
-        # patch we grade (django-11564 was graded RESOLVED yet reported
-        # patch_produced=false under the old ``and error is None`` guard).
-        patch_produced=bool(patch.strip()),
-        tokens_used=tokens_used,
-        steps=steps,
-        duration=duration,
-        error=error,
-        trajectory_path=tracer.path,
-        markup_recovered=markup_recovered,
-        workflow_result=getattr(workflow_ctx, "workflow_result", None) if workflow_ctx else None,
-        checkpoint_result=checkpoint_result,
-        test_patch_isolation_failed=test_patch_isolation_failed,
-        execution_quiesced=execution_quiesced,
-        patch_extraction_succeeded=patch_extraction_succeeded,
-        injected_path_cleanup_proven=injected_path_cleanup_proven,
-        harness_artifact_exclusion_proven=harness_artifact_exclusion_proven,
-        checkpoint_restore_integrity_proven=(checkpoint_restore_integrity_proven),
-        task_stage_integrity_proven=task_stage_integrity_proven,
-        submission_eligible=(
-            execution_quiesced
-            and patch_extraction_succeeded
-            and injected_path_cleanup_proven
-            and harness_artifact_exclusion_proven
-            and checkpoint_restore_integrity_proven
-            and task_stage_integrity_proven
-            and persistence_succeeded
-            and not test_patch_isolation_failed
-        ),
+    result = await _cleanup_resources_and_build_result(
+        facade,
+        state,
+        task=task,
+        workflow=workflow,
+        run_dir=run_dir,
+        workflow_ctx=workflow_ctx,
+        session=session,
+        checkpoint=checkpoint,
+        owned_execution_tasks=owned_execution_tasks,
+        tracer=tracer,
+        env=env,
+        cleanup_timeout=cleanup_timeout,
+        start=start,
+        await_teardown=await_teardown,
     )
     if cancellation is not None:
-        if error:
-            add_exception_note(
-                cancellation,
-                f"evaluation teardown diagnostics: {error}",
-            )
+        if state.error:
+            add_exception_note(cancellation, f"evaluation teardown diagnostics: {state.error}")
         raise cancellation
     return result

@@ -191,12 +191,6 @@ def parse_literal_list(value):
     return [text]
 
 
-def prediction_patch(row):
-    if not isinstance(row, dict):
-        return ""
-    return str(row.get("model_patch") or row.get("patch") or "")
-
-
 def is_eval_test_path(path):
     normalized = str(path or "").lstrip("/")
     parts = [part for part in normalized.split("/") if part]
@@ -329,70 +323,6 @@ def filter_model_patch_for_eval(patch):
 
 def eval_model_patch(prediction):
     return filter_model_patch_for_eval(prediction_patch(prediction))
-
-
-def row_task_id(row):
-    if not isinstance(row, dict):
-        return ""
-    return str(row.get("instance_id") or row.get("task_id") or "")
-
-
-def row_record_id(row):
-    if not isinstance(row, dict):
-        return ""
-    return str(row.get("record_id") or row.get("attempt_id") or "")
-
-
-def patch_sha(patch):
-    if not patch:
-        return ""
-    return hashlib.sha256(patch.encode("utf-8", errors="surrogatepass")).hexdigest()
-
-
-def row_patch_sha(row):
-    if not isinstance(row, dict):
-        return ""
-    patch = prediction_patch(row)
-    if patch:
-        return patch_sha(patch)
-    for key in ("patch_sha256", "patch_sha", "model_patch_sha256"):
-        value = row.get(key)
-        if value:
-            return str(value)
-    return ""
-
-
-def row_explicit_patch_sha(row):
-    if not isinstance(row, dict):
-        return ""
-    for key in ("patch_sha256", "patch_sha", "model_patch_sha256"):
-        value = row.get(key)
-        if value:
-            return str(value)
-    return ""
-
-
-def embedded_workflow_metric(row):
-    if not isinstance(row, dict):
-        return None
-    metric = row.get("workflow_metric")
-    if not isinstance(metric, dict):
-        return None
-    if row_task_id(metric) != row_task_id(row):
-        return None
-    if row_record_id(metric) != row_record_id(row):
-        return None
-    prediction_sha = row_patch_sha(row)
-    metric_sha = row_patch_sha(metric)
-    if not prediction_sha or not metric_sha or not patch_sha_matches(prediction_sha, metric_sha):
-        return None
-    return metric
-
-
-def patch_sha_matches(left, right):
-    left = str(left or "")
-    right = str(right or "")
-    return bool(re.fullmatch(r"[0-9a-fA-F]{64}", left) and re.fullmatch(r"[0-9a-fA-F]{64}", right) and left == right)
 
 
 def workflow_status(row):
