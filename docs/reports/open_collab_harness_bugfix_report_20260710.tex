@@ -243,7 +243,7 @@
 
 \subsection{H-39：Manifest 的 daemon write 脱离异步 owner 追踪（P1）}
 
-\textbf{触发动作：}autosave owner 在阻塞的 manifest 写入线程返回前被取消或达到 cleanup timeout。\textbf{错误结果：}异步 task 已结束，但底层 \code{concurrent.futures.Future} 仍能写磁盘；旧清理只查看 task 集合并报告没有 pending owner。\textbf{危害：}workflow/evaluator 返回后 manifest 仍被改写，最终 phase 和恢复状态存在竞态。\textbf{修复与回归测试：}\code{AutoSaveSubscriber} 暴露 \code{pending\_write\_futures}；workflow 与 evaluator 把每个 daemon write 包装成可追踪 task，登记到全局 owner 集合并在结束时消费结果。慢写回归把 cleanup wait 压到极短，确认未完成 future 被报告和保留。
+\textbf{触发动作：}autosave owner 在阻塞的 manifest 写入线程返回前被取消或达到 cleanup timeout。\textbf{错误结果：}异步 task 已结束，但底层 \code{concurrent.futures.Future} 仍能写磁盘；旧清理只查看 task 集合并报告没有 pending owner。若前台 cleanup timeout 同时被当作后台最终期限，CI 调度延迟还会让 tracer 在 manifest 完成前关闭。\textbf{危害：}workflow/evaluator 返回后 manifest 仍被改写，最终 phase、trace 与恢复状态存在竞态。\textbf{修复与回归测试：}\code{AutoSaveSubscriber} 暴露 \code{pending\_write\_futures}；workflow 与 evaluator 把每个 daemon write 包装成可追踪 task，登记到全局 owner 集合并在结束时消费结果。前台保持短超时并及时返回技术失败，后台资源 owner 共享一个固定 2 秒绝对期限，按剩余时间等待 manifest、隔离迟到任务并清理 environment；环境仍未静止时保留 tracer 并记录技术失败。慢写回归把前台 cleanup wait 压到极短，重复验证未完成 future 被报告、保留且资源关闭顺序稳定；阻塞环境回归确认不会提前关闭 tracer。
 
 \subsection{H-40：Local 临时文件与 durable append 缺少持续 inode 固定（P1）}
 

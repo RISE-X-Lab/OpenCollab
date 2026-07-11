@@ -171,7 +171,7 @@ def test_eval_workflow_slow_manifest_is_bounded_and_defers_resources(
         assert env.cleaned_up is True
         assert evaluator._EVAL_MANIFEST_OWNER_TASKS
         release.set()
-        await asyncio.wait_for(tracers[0].closed_event.wait(), timeout=0.5)
+        await asyncio.wait_for(tracers[0].closed_event.wait(), timeout=2.0)
         assert env.cleanup_event.is_set()
         return result
 
@@ -242,6 +242,38 @@ def test_deferred_eval_tracer_stays_retained_when_dependency_misses_deadline():
         )
         dependency_task.cancel()
         await asyncio.gather(dependency_task, return_exceptions=True)
+        return tracer, failures_before
+
+    tracer, failures_before = run(scenario())
+    assert tracer.closed is False
+    assert len(evaluator._LATE_EVAL_RESOURCE_FAILURES) == failures_before + 1
+    assert isinstance(evaluator._LATE_EVAL_RESOURCE_FAILURES[-1], TimeoutError)
+
+
+def test_deferred_eval_tracer_stays_retained_when_environment_misses_deadline():
+    async def scenario():
+        class BlockingEnvironment(FakeEnv):
+            async def cleanup(self):
+                await asyncio.Event().wait()
+
+        class RecordingTracer:
+            def __init__(self):
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        tracer = RecordingTracer()
+        failures_before = len(evaluator._LATE_EVAL_RESOURCE_FAILURES)
+        await asyncio.wait_for(
+            evaluator._cleanup_eval_resources_after_tasks(
+                (),
+                tracer=tracer,
+                env=BlockingEnvironment(),
+                timeout=0.01,
+            ),
+            timeout=0.2,
+        )
         return tracer, failures_before
 
     tracer, failures_before = run(scenario())

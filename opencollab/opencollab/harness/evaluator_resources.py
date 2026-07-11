@@ -461,7 +461,8 @@ async def _cleanup_eval_resources_after_tasks(
                 continue
         _done, pending = waiter.result()
     if pending:
-        await isolate_tasks_from_shutdown(pending, timeout=timeout)
+        remaining = max(deadline - asyncio.get_running_loop().time(), 1e-6)
+        await isolate_tasks_from_shutdown(pending, timeout=remaining)
         _LATE_EVAL_RESOURCE_FAILURES.append(
             TimeoutError(
                 "late evaluator resource dependencies did not quiesce; "
@@ -470,13 +471,15 @@ async def _cleanup_eval_resources_after_tasks(
         )
         return
     if env is not None:
+        remaining = max(deadline - asyncio.get_running_loop().time(), 1e-6)
         try:
             cleaned = await _cleanup_environment_bounded(
                 env,
-                cleanup_timeout=timeout,
+                cleanup_timeout=remaining,
             )
         except BaseException as exc:
             _LATE_EVAL_RESOURCE_FAILURES.append(exc)
+            return
         else:
             if not cleaned:
                 _LATE_EVAL_RESOURCE_FAILURES.append(
@@ -484,6 +487,7 @@ async def _cleanup_eval_resources_after_tasks(
                         "late evaluator environment cleanup did not quiesce"
                     )
                 )
+                return
     try:
         tracer.close()
     except BaseException as exc:
@@ -501,9 +505,8 @@ def _defer_eval_resource_cleanup(
     *,
     tracer: Tracer,
     env: Environment | None,
-    timeout: float,
 ) -> None:
-    late_timeout = min(2.0, max(0.1, timeout))
+    late_timeout = 2.0
     owner = asyncio.create_task(
         _cleanup_eval_resources_after_tasks(
             dependencies,

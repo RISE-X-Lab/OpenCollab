@@ -655,7 +655,6 @@ async def run_eval_task_impl(
             tuple(live_resource_dependencies),
             tracer=tracer,
             env=(env if not environment_revocation_quiesced else None),
-            timeout=cleanup_timeout,
         )
         error = _append_harness_error(
             error,
