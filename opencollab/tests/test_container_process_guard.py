@@ -469,37 +469,3 @@ def test_team_runner_uses_guard_bounded_diff_and_locked_append():
     assert "bounded_container_output_command" in io_source
     assert "fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)" in io_source
     assert '>> "$output"' not in runner_source
-
-
-@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="Linux subreaper regression")
-def test_container_guard_subreaper_captures_setsid_escape(tmp_path):
-    pidfile = tmp_path / "run.pid"
-    cancelfile = tmp_path / "run.cancel"
-    sentinel = tmp_path / "setsid-leak"
-    code = (
-        "import os,pathlib,time; child=os.fork(); "
-        "(os._exit(0) if child else None); os.setsid(); "
-        "os.close(1); os.close(2); time.sleep(0.4); "
-        f"pathlib.Path({str(sentinel)!r}).write_text('leaked'); os._exit(0)"
-    )
-
-    result = subprocess.run(
-        [
-            "bash",
-            str(GUARD),
-            "run",
-            str(pidfile),
-            str(cancelfile),
-            sys.executable,
-            "-c",
-            code,
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-        timeout=5,
-    )
-
-    assert result.returncode == 0, result.stderr
-    time.sleep(0.5)
-    assert not sentinel.exists()

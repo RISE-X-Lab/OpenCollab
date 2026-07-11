@@ -234,12 +234,6 @@ main() {
     local retirement_log_host=""
     local retirement_log_identity=""
     local retirement_log_container="/run/opencollab-retirements-${owner_nonce}.jsonl"
-    local retirement_signing_key_host="" retirement_signing_key_identity=""
-    local retirement_verification_key_host="" retirement_verification_key_identity=""
-    local retirement_key_container="/run/opencollab-retirement-key-${owner_nonce}"
-    local trusted_root="" trusted_git_dir="" workspace_snapshot_dir=""
-    local base_oid=""
-    local container_paused=0
     local run_pidfile="/tmp/opencollab-team-${pid_iid}.pid"
     local run_cancelfile="${run_pidfile}.cancel"
     local process_guard="$REPO_ROOT/scripts/container_process_guard.sh"
@@ -346,20 +340,6 @@ main() {
         retirement_log_identity=""
     }
 
-    retire_internal_retirement_key() {
-        local path identity
-        for path in "${retirement_signing_key_host:-}" "${retirement_verification_key_host:-}"; do
-            [ -z "$path" ] && continue
-            if [ "$path" = "${retirement_signing_key_host:-}" ]; then
-                identity="$retirement_signing_key_identity"
-            else
-                identity="$retirement_verification_key_identity"
-            fi
-            "$py_bin" "$TEAM_RUN_IO" remove-retirement-log "$path" "$identity" || return 125
-        done
-        retirement_signing_key_host=""; retirement_verification_key_host=""
-    }
-
     cleanup() {
         if [ "${cleaned:-0}" = "1" ]; then
             [ -z "${task_file:-}" ] || rm -f "$task_file"
@@ -378,10 +358,6 @@ main() {
         trap 'cleanup_signal=143; force_destroy=1; keep=0' TERM
         local cleanup_rc=0
         local kept_container=0
-        if [ "${container_paused:-0}" = "1" ] && [ -n "${cid:-}" ]; then
-            docker_bounded unpause "$cid" >/dev/null 2>&1 || cleanup_rc=125
-            container_paused=0
-        fi
         if [ -n "${cid:-}" ]; then
             docker_bounded exec "$cid" bash -lc \
                 "chown -R '$host_uid:$host_gid' /testbed/.opencollab" >/dev/null 2>&1 || true
@@ -410,11 +386,7 @@ main() {
             if ! retire_internal_retirement_log; then
                 cleanup_rc=125
             fi
-            if ! retire_internal_retirement_key; then
-                cleanup_rc=125
-            fi
         fi
-        [ -z "${trusted_root:-}" ] || rm -rf -- "$trusted_root"
         [ -z "${task_file:-}" ] || rm -f "$task_file"
         if [ "${patch_persisted:-0}" = "0" ]; then
             [ -z "${patch_file:-}" ] || rm -f "$patch_file"
@@ -501,22 +473,11 @@ main() {
         die "unrecorded pending patch requires recovery: $pending_patch_file"
     fi
 
-    trusted_root="$(readlink -f "$(mktemp -d -t opencollab-harness-trusted.XXXXXX)")"
-    chmod 700 "$trusted_root"
     retirement_log_host="$state_root/internal-retirements-${owner_nonce}.jsonl"
     if ! retirement_log_identity="$("$py_bin" "$TEAM_RUN_IO" \
         create-retirement-log "$retirement_log_host")"; then
         die "could not create the host-owned internal retirement log"
     fi
-    retirement_signing_key_host="$trusted_root/signing.key"
-    retirement_verification_key_host="$trusted_root/verification.key"
-    local key_identities
-    if ! key_identities="$("$py_bin" "$TEAM_RUN_IO" create-retirement-keys \
-        "$retirement_signing_key_host" "$retirement_verification_key_host")"; then
-        die "could not create host-owned internal retirement keys"
-    fi
-    IFS='|' read -r retirement_signing_key_identity \
-        retirement_verification_key_identity <<< "$key_identities"
 
     "$py_bin" "$TEAM_OWNER" create-marker "$owner_marker" \
         "$name" "$state_key" "$owner_nonce"
@@ -550,7 +511,6 @@ main() {
         -e OPENCOLLAB_CONFIG_FILE="$DEFAULT_ENV_FILE"
         -e OPENCOLLAB_EVENTS_FILE="/testbed/.opencollab/events.jsonl"
         -e OPENCOLLAB_INTERNAL_RETIREMENT_LOG="$retirement_log_container"
-        -e OPENCOLLAB_INTERNAL_RETIREMENT_KEY_FILE="$retirement_key_container"
         -e OPENCOLLAB_INTERNAL_RETIREMENT_WORKSPACE="/testbed"
         -e TERM="${TERM:-xterm-256color}"
     )
@@ -611,37 +571,9 @@ main() {
     docker_bounded exec "$cid" bash -lc \
         "printf '/.opencollab/\n' >> /testbed/.git/info/exclude" >/dev/null
 
-    if ! base_oid="$(docker_bounded exec "$cid" env -i PATH=/usr/bin:/bin \
-        HOME=/tmp XDG_CONFIG_HOME=/tmp GIT_CONFIG_NOSYSTEM=1 \
-        GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-        GIT_ATTR_NOSYSTEM=1 git -C /testbed rev-parse --verify 'HEAD^{commit}')"; then
-        force_destroy=1
-        keep=0
-        die "could not pin the task base commit before model execution"
-    fi
-    case "$base_oid" in
-        ''|*[!0-9a-fA-F]*) die "task base commit is malformed" ;;
-    esac
-    if [ "${#base_oid}" -ne 40 ] && [ "${#base_oid}" -ne 64 ]; then
-        die "task base commit has an unsupported object id length"
-    fi
-    trusted_git_dir="$(prepare_real_directory \
-        "$py_bin" "$trusted_root/git" "$trusted_root")"
-    if ! "$timeout_bin" --foreground --kill-after=5 300 docker cp \
-        "$cid:/testbed/.git/." - | \
-        "$py_bin" "$REPO_ROOT/scripts/safe_workspace_snapshot.py" \
-        "$trusted_git_dir" --reject-symlinks >/dev/null; then
-        force_destroy=1
-        keep=0
-        die "could not capture trusted pre-task Git objects"
-    fi
     docker_bounded cp "$task_file" "$cid:/tmp/oc_task.txt"
     docker_bounded exec "$cid" bash "$process_guard" prepare \
         "$run_pidfile" "$run_cancelfile"
-    docker_bounded cp "$retirement_signing_key_host" "$cid:$retirement_key_container"
-    "$py_bin" "$TEAM_RUN_IO" remove-retirement-log \
-        "$retirement_signing_key_host" "$retirement_signing_key_identity"
-    retirement_signing_key_host=""
 
     local inner oc_bin_q model_q
     printf -v oc_bin_q '%q' "$oc_bin"
@@ -682,48 +614,30 @@ main() {
         echo "warn: opencollab exited with code $rc — capturing diff anyway"
     fi
 
-    if ! docker_bounded pause "$cid" >/dev/null; then
-        force_destroy=1
-        keep=0
-        die "container could not be frozen before trusted snapshot extraction"
-    fi
-    container_paused=1
-    workspace_snapshot_dir="$(prepare_real_directory \
-        "$py_bin" "$trusted_root/workspace" "$trusted_root")"
-    if ! "$timeout_bin" --foreground --kill-after=5 300 docker cp \
-        "$cid:/testbed/." - | \
-        "$py_bin" "$REPO_ROOT/scripts/safe_workspace_snapshot.py" \
-        "$workspace_snapshot_dir" --exclude-top .git --exclude-top .opencollab \
-        >/dev/null; then
-        force_destroy=1
-        keep=0
-        die "frozen container workspace snapshot failed bounded validation"
-    fi
     local bounded_diff
-    if ! bounded_diff="$("$py_bin" "$TEAM_RUN_IO" bounded-diff-command \
-        "$REPO_ROOT/swebench" --workspace "$workspace_snapshot_dir" \
-        --retirement-log "$retirement_log_host" \
-        --retirement-key "$retirement_verification_key_host" --portable-snapshot \
-        --base-revision "$base_oid" \
-        --object-directory "$trusted_git_dir/objects" \
+    if ! bounded_diff="$(docker_bounded exec -w /testbed "$cid" "$py_bin" \
+        "$TEAM_RUN_IO" bounded-diff-command "$REPO_ROOT/swebench" --workspace /testbed \
+        --retirement-log "$retirement_log_container" \
         --helper-path "$REPO_ROOT/swebench/gen_prediction_bounded_capture.py")"; then
         force_destroy=1
         keep=0
         echo "error: internal retirement validation failed; refusing patch extraction" >&2
         return 125
     fi
-    "$py_bin" "$TEAM_RUN_IO" remove-retirement-log \
-        "$retirement_verification_key_host" "$retirement_verification_key_identity"
-    retirement_verification_key_host=""
     patch_file="$(readlink -f "$(mktemp "$state_root/extracted-patch.XXXXXX")")"
+    local diff_pidfile="${run_pidfile}.diff"
+    local diff_cancelfile="${diff_pidfile}.cancel"
+    docker_bounded exec "$cid" bash "$process_guard" prepare \
+        "$diff_pidfile" "$diff_cancelfile"
     set +e
-    (
-        cd "$workspace_snapshot_dir" || exit 125
-        "$timeout_bin" --foreground --kill-after=5 120 bash -lc "$bounded_diff"
-    ) > "$patch_file"
+    "$timeout_bin" --foreground --kill-after=5 120 docker exec -w /testbed \
+        "$cid" bash "$process_guard" run "$diff_pidfile" "$diff_cancelfile" \
+        bash -lc "$bounded_diff" > "$patch_file"
     local diff_rc=$?
     set -e
     if [ "$diff_rc" -ne 0 ]; then
+        docker_bounded exec "$cid" bash "$process_guard" stop \
+            "$diff_pidfile" "$diff_cancelfile" >/dev/null 2>&1 || true
         force_destroy=1
         keep=0
         die "bounded patch extraction failed (exit $diff_rc); prediction was not appended"

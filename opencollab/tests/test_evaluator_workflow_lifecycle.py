@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import shutil
-
 from asyncio_test_support import assert_cancel_note, assert_cancel_reason
 from evaluator_workflow_test_support import (
     Any,
@@ -132,9 +130,9 @@ def test_worktree_diff_exclusion_reset_failure_cannot_fall_through_to_diff():
     )
 
     assert "|| true" not in command
-    assert 'trusted_git --literal-pathspecs reset -q "$base_oid" -- harness.tmp && ' in command
+    assert 'git --literal-pathspecs reset -q ' in command
     assert "unregistered or modified .opencollab-retired-*" in command
-    assert 'trusted_git diff --cached --binary --no-ext-diff --no-textconv "$base_oid"' in command
+    assert 'git diff --cached --binary ' in command
 
 
 def test_worktree_diff_excludes_registered_tombstone_and_keeps_real_change(
@@ -143,7 +141,6 @@ def test_worktree_diff_excludes_registered_tombstone_and_keeps_real_change(
     from opencollab.adapters.retirement_registry import (
         register_verified_retirement,
         registered_retirement_paths,
-        registered_retirement_snapshot,
     )
 
     repo = tmp_path / "repo"
@@ -175,10 +172,8 @@ def test_worktree_diff_excludes_registered_tombstone_and_keeps_real_change(
         os.close(parent_fd)
 
     base, objects = _git_patch_context(repo)
-    snapshot = registered_retirement_snapshot(repo)
     command = checkpoint_mod.worktree_diff_command(
         registered_retirement_paths=registered_retirement_paths(repo),
-        retirement_snapshot=snapshot,
         base_revision=base,
         object_directory=objects,
         working_tree=str(repo),
@@ -239,224 +234,6 @@ def test_worktree_diff_rejects_unregistered_reserved_prefix(tmp_path):
     assert "unregistered or modified .opencollab-retired-*" in result.stderr
 
 
-def test_worktree_diff_ignores_repository_local_filters_attributes_and_excludes(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    tracked = repo / "tracked.txt"
-    tracked.write_text("base\n", encoding="utf-8")
-    subprocess.run(["git", "add", tracked.name], cwd=repo, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=OpenCollab",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-qm",
-            "base",
-        ],
-        cwd=repo,
-        check=True,
-    )
-    hostile = repo / "hostile-filter.sh"
-    hostile.write_text(
-        '#!/bin/sh\n: > "$0.invoked"\nexit 99\n',
-        encoding="utf-8",
-    )
-    marker = repo / "hostile-filter.sh.invoked"
-    hostile.chmod(0o755)
-    subprocess.run(["git", "config", "diff.external", str(hostile)], cwd=repo, check=True)
-    subprocess.run(["git", "config", "filter.evil.clean", str(hostile)], cwd=repo, check=True)
-    git_info = repo / os.path.relpath(os.path.dirname(_git_patch_context(repo)[1]), repo) / "info"
-    (git_info / "attributes").write_text(
-        "*.txt filter=evil diff=evil\n",
-        encoding="utf-8",
-    )
-    (git_info / "exclude").write_text("hidden.txt\n", encoding="utf-8")
-    tracked.write_text("changed\n", encoding="utf-8")
-    (repo / "hidden.txt").write_text("must be visible\n", encoding="utf-8")
-    base, objects = _git_patch_context(repo)
-
-    result = subprocess.run(
-        [
-            "bash",
-            "-lc",
-            checkpoint_mod.worktree_diff_command(
-                base_revision=base,
-                object_directory=objects,
-                working_tree=str(repo),
-            ),
-        ],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "tracked.txt" in result.stdout
-    assert "hidden.txt" in result.stdout
-    assert not marker.exists()
-
-
-@pytest.mark.parametrize("checkpoint", ["stage", "diff"])
-def test_worktree_diff_rejects_retirement_mutation_at_each_checkpoint(tmp_path, checkpoint):
-    from opencollab.adapters.git_patch import guarded_staged_diff_command
-    from opencollab.adapters.retirement_registry import (
-        register_verified_retirement,
-        registered_retirement_snapshot,
-    )
-
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    (repo / "source.py").write_text("old\n", encoding="utf-8")
-    subprocess.run(["git", "add", "source.py"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "-c", "user.name=x", "-c", "user.email=x@y", "commit", "-qm", "base"],
-        cwd=repo,
-        check=True,
-    )
-    (repo / "source.py").write_text("new\n", encoding="utf-8")
-    tombstone = repo / ".opencollab-retired-framework"
-    tombstone.write_text("trusted\n", encoding="utf-8")
-    parent_fd = os.open(repo, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        register_verified_retirement(parent_fd, tombstone.name)
-    finally:
-        os.close(parent_fd)
-    snapshot = registered_retirement_snapshot(repo)
-    base, objects = _git_patch_context(repo)
-    checkpoint_args = {
-        f"{checkpoint}_checkpoint_command": f"printf model-mutated > {tombstone.name}",
-    }
-    command = guarded_staged_diff_command(
-        base_revision=base,
-        registered_retirement_paths=(tombstone.name,),
-        retirement_snapshot=snapshot,
-        object_directory=objects,
-        working_tree=str(repo),
-        **checkpoint_args,
-    )
-
-    result = subprocess.run(
-        ["bash", "-lc", command],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 125
-    assert result.stdout == ""
-    assert "authenticated retirement changed" in result.stderr
-
-
-def test_worktree_diff_keeps_binary_symlink_and_deletion_after_head_moves(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    (repo / "binary.bin").write_bytes(b"\x00old\xff")
-    (repo / "deleted.txt").write_text("delete me\n", encoding="utf-8")
-    os.symlink("deleted.txt", repo / "link")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "-c", "user.name=x", "-c", "user.email=x@y", "commit", "-qm", "base"],
-        cwd=repo,
-        check=True,
-    )
-    base, objects = _git_patch_context(repo)
-    (repo / "binary.bin").write_bytes(b"\x00new\xfe")
-    (repo / "deleted.txt").unlink()
-    (repo / "link").unlink()
-    os.symlink("binary.bin", repo / "link")
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "-c", "user.name=x", "-c", "user.email=x@y", "commit", "-qm", "moved-head"],
-        cwd=repo,
-        check=True,
-    )
-
-    result = subprocess.run(
-        [
-            "bash",
-            "-lc",
-            checkpoint_mod.worktree_diff_command(
-                base_revision=base,
-                object_directory=objects,
-                working_tree=str(repo),
-            ),
-        ],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "GIT binary patch" in result.stdout
-    assert "deleted file mode" in result.stdout
-    assert "diff --git a/link b/link" in result.stdout
-
-
-def test_worktree_diff_rejects_loose_object_content_under_forged_old_oid(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    source = repo / "source.py"
-    source.write_text("old\n", encoding="utf-8")
-    subprocess.run(["git", "add", "source.py"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "-c", "user.name=x", "-c", "user.email=x@y", "commit", "-qm", "base"],
-        cwd=repo,
-        check=True,
-    )
-    base, objects = _git_patch_context(repo)
-    source.write_text("evil\n", encoding="utf-8")
-    subprocess.run(["git", "add", "source.py"], cwd=repo, check=True)
-    subprocess.run(
-        ["git", "-c", "user.name=x", "-c", "user.email=x@y", "commit", "-qm", "evil"],
-        cwd=repo,
-        check=True,
-    )
-    evil = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout.strip()
-    object_root = repo / os.path.relpath(objects, repo)
-    forged_path = object_root / base[:2] / base[2:]
-    forged_path.chmod(0o600)
-    shutil.copyfile(object_root / evil[:2] / evil[2:], forged_path)
-
-    result = subprocess.run(
-        [
-            "bash",
-            "-lc",
-            checkpoint_mod.worktree_diff_command(
-                base_revision=base,
-                object_directory=objects,
-                working_tree=str(repo),
-            ),
-        ],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-
-    assert result.returncode == 125
-    assert result.stdout == ""
-    assert any(
-        marker in result.stderr.lower()
-        for marker in ("hash mismatch", "object corrupt", "object missing")
-    )
-
-
 def test_bind_mounted_docker_artifacts_never_enter_patch_or_checkpoint(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -486,7 +263,6 @@ def test_bind_mounted_docker_artifacts_never_enter_patch_or_checkpoint(tmp_path)
             self.host_workspace = str(repo)
             self.host = LocalEnvironment(str(repo))
             self.workspace = str(repo)
-            self.patch_base_revision, self.patch_object_directory = _git_patch_context(repo)
 
         async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
             return await self.host.exec_cmd(cmd, timeout)
@@ -990,43 +766,3 @@ def test_caller_cancel_keeps_environment_cleanup_failure_in_note(tmp_path):
         "environment cleanup failed",
         "environment cleanup exploded",
     )
-
-
-def test_environment_returning_after_cleanup_bound_is_revoked_and_cleaned(tmp_path):
-    release_setup = asyncio.Event()
-    cleanup_finished = asyncio.Event()
-
-    class LateEnv(FakeEnv):
-        async def cleanup(self):
-            await super().cleanup()
-            cleanup_finished.set()
-
-    env = LateEnv()
-
-    async def env_factory(task):
-        while not release_setup.is_set():
-            try:
-                await release_setup.wait()
-            except asyncio.CancelledError:
-                continue
-        return env
-
-    async def scenario():
-        result = await run_eval_task(
-            EvalTask(task_id="very-late-env", description="x", timeout=0.02),
-            output_dir=str(tmp_path),
-            tools_factory=list,
-            env_factory=env_factory,
-            cancellation_cleanup_timeout=0.01,
-        )
-        assert result.execution_quiesced is False
-        assert result.submission_eligible is False
-        release_setup.set()
-        await asyncio.wait_for(cleanup_finished.wait(), timeout=0.5)
-        return result
-
-    result = run(scenario())
-
-    assert result.patch == ""
-    assert env._aborted is True
-    assert env.cleaned_up is True

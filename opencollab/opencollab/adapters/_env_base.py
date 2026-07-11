@@ -25,8 +25,6 @@ class Environment:
     source_workspace: str | None = None
     local_filesystem: bool = False
     process_isolated: bool = False
-    patch_base_revision: str | None = None
-    patch_object_directory: str | None = None
     _aborted: bool = False
 
     def _ensure_active(self) -> None:
@@ -62,10 +60,6 @@ class Environment:
 
     async def registered_retirement_paths(self) -> tuple[str, ...]:
         """Return exact, unchanged internal tombstones under the workspace."""
-        return ()
-
-    async def registered_retirement_snapshot(self) -> tuple[object, ...]:
-        """Return authenticated metadata used by patch extraction checkpoints."""
         return ()
 
     async def cleanup(self) -> None:

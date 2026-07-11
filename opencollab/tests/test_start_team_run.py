@@ -437,9 +437,9 @@ def test_team_runner_host_state_is_outside_container_writable_session(fake_team_
         + r"/run/opencollab-retirements-[0-9a-f]{32}\.jsonl:rw",
         docker_log,
     )
-    assert "bounded-diff-command" not in docker_log
-    assert "pause " in docker_log
-    assert "cp " in docker_log and ":/testbed/. -" in docker_log
+    assert "bounded-diff-command" in docker_log
+    assert "pause " not in docker_log
+    assert ":/testbed/. -" not in docker_log
 
 
 @pytest.mark.parametrize("image", ["--privileged", "-v", "bad image", "https://bad"])

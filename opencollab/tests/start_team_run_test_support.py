@@ -49,15 +49,10 @@ def fake_team_repo(tmp_path):
     for helper_name in (
         "swe_team_batch_io.py",
         "swe_team_owner.py",
-        "swe_team_retirement_io.py",
         "swe_team_run_io.py",
         "swebench_process.py",
     ):
         shutil.copy2(SOURCE_ROOT / "scripts" / helper_name, root / "scripts" / helper_name)
-    shutil.copy2(
-        SOURCE_ROOT / "scripts" / "safe_workspace_snapshot.py",
-        root / "scripts" / "safe_workspace_snapshot.py",
-    )
     (root / "configs" / "team.self.collab.yaml").write_text("agents: []\n")
     (root / "configs" / ".env").write_text("\n")
     (root / "swebench" / "gen_prediction.py").write_text(

@@ -121,24 +121,12 @@ class WorktreeCheckpoint:
             )
         exclude_paths = tuple(exclude_paths) + self._artifact_exclude_paths(env)
         try:
-            retirement_collector = getattr(env, "registered_retirement_snapshot", None)
-            retirement_snapshot = await retirement_collector() if callable(retirement_collector) else ()
-            registered_retirements = tuple(
-                item.relative_path for item in retirement_snapshot
-            )
-            base_revision = getattr(env, "patch_base_revision", None)
-            object_directory = getattr(env, "patch_object_directory", None)
-            working_tree = getattr(env, "workspace", None)
-            if not base_revision or not object_directory or not working_tree:
-                raise RuntimeError("patch source was not pinned before task execution")
+            retirement_collector = getattr(env, "registered_retirement_paths", None)
+            registered_retirements = await retirement_collector() if callable(retirement_collector) else ()
             result = await env.exec_cmd(
                 worktree_diff_command(
                     exclude_paths,
                     registered_retirement_paths=registered_retirements,
-                    retirement_snapshot=retirement_snapshot,
-                    base_revision=base_revision,
-                    object_directory=object_directory,
-                    working_tree=working_tree,
                 ),
                 timeout=120,
             )
@@ -157,7 +145,7 @@ class WorktreeCheckpoint:
                     reason=reason,
                     error=f"retirement artifact validation failed: {type(exc).__name__}: {exc}",
                 )
-            if tuple(refreshed_snapshot) != tuple(retirement_snapshot):
+            if tuple(refreshed_snapshot) != tuple(registered_retirements):
                 return self._write_failure(
                     reason=reason,
                     error="retirement artifacts changed during checkpoint extraction",
@@ -364,16 +352,8 @@ class WorktreeCheckpoint:
             *self._artifact_exclude_paths(env),
         )
         try:
-            retirement_collector = getattr(env, "registered_retirement_snapshot", None)
-            retirement_snapshot = await retirement_collector() if callable(retirement_collector) else ()
-            registered_retirements = tuple(
-                item.relative_path for item in retirement_snapshot
-            )
-            base_revision = getattr(env, "patch_base_revision", None)
-            object_directory = getattr(env, "patch_object_directory", None)
-            working_tree = getattr(env, "workspace", None)
-            if not base_revision or not object_directory or not working_tree:
-                raise RuntimeError("patch source was not pinned before task execution")
+            retirement_collector = getattr(env, "registered_retirement_paths", None)
+            registered_retirements = await retirement_collector() if callable(retirement_collector) else ()
         except Exception as exc:
             return CheckpointResult(
                 status="failed",
@@ -385,10 +365,6 @@ class WorktreeCheckpoint:
             worktree_diff_command(
                 restore_exclude_paths,
                 registered_retirement_paths=registered_retirements,
-                retirement_snapshot=retirement_snapshot,
-                base_revision=base_revision,
-                object_directory=object_directory,
-                working_tree=working_tree,
             ),
             timeout=120,
         )

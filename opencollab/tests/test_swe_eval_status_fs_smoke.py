@@ -110,8 +110,9 @@ def test_auto_eval_markdown_write_reports_directory_fsync_failure(
 
     assert not output.exists()
     retired = list(tmp_path.glob(".opencollab-retired-*"))
-    assert len(retired) == 2
-    assert len({(entry.stat().st_dev, entry.stat().st_ino) for entry in retired}) == 1
+    assert len(retired) == 1
+    assert retired[0].is_file()
+    assert retired[0].stat().st_nlink == 1
     assert list(tmp_path.glob(".oc-*.tmp")) == []
 
 

@@ -22,8 +22,8 @@ from opencollab.adapters._env_file_io import (
     _positive_finite_timeout,
     _run_owned_blocking_io,
 )
+from opencollab.adapters._env_git_repository import _PinnedGitRepository, trusted_git_command
 from opencollab.adapters._env_local import LocalEnvironment
-from opencollab.adapters._env_pinned_git import _PinnedGitRepository, trusted_git_command
 from opencollab.adapters._env_process import (
     _await_owned_operation,
     _OwnedProcessNotQuiesced,
@@ -31,10 +31,7 @@ from opencollab.adapters._env_process import (
     _run_thread_owned_process,
     _ThreadProcessResult,
 )
-from opencollab.adapters._env_worktree_patch import (
-    capture_worktree_patch_source,
-    collect_worktree_patch,
-)
+from opencollab.adapters.git_patch import guarded_staged_diff_command
 from opencollab.application.exception_notes import add_exception_note
 
 logger = logging.getLogger(__name__)
@@ -56,8 +53,6 @@ class WorktreeEnvironment(Environment):
         self._worktree_directory_removed = False
         self._local_env: LocalEnvironment | None = None
         self._base_commit: str | None = None
-        self.patch_base_revision = None
-        self.patch_object_directory = None
         self._worktree_registered = False
         self._worktree_add_attempted = False
         self._branch_preexisting: bool | None = None
@@ -316,10 +311,10 @@ class WorktreeEnvironment(Environment):
         if self._branch_preexisting:
             raise RuntimeError(f"git worktree add failed: branch {self._branch} already exists")
 
-        self._base_commit, self.patch_object_directory = (
-            await capture_worktree_patch_source(self._run_git, self._source)
-        )
-        self.patch_base_revision = self._base_commit
+        base_result = await self._run_git("rev-parse", "--verify", "HEAD^{commit}")
+        if base_result.returncode != 0 or base_result.stdout_truncated or base_result.stderr_truncated:
+            raise RuntimeError("cannot resolve worktree base commit")
+        self._base_commit = base_result.stdout.strip()
 
         def compensate_claim(result: _ThreadProcessResult) -> None:
             if result.returncode != 0 or not result.cleanup_quiesced:
@@ -722,14 +717,18 @@ class WorktreeEnvironment(Environment):
             return ""
         if not self._base_commit:
             raise RuntimeError("worktree base commit is unavailable")
-        if not self.patch_object_directory:
-            raise RuntimeError("worktree object directory is unavailable")
-        return await collect_worktree_patch(
-            self._local_env,
-            base_oid=self._base_commit,
-            object_directory=self.patch_object_directory,
-            workspace=self.workspace,
+        retirements = await self._local_env.registered_retirement_paths()
+        result = await self._local_env.exec_cmd(
+            guarded_staged_diff_command(
+                base_revision=self._base_commit,
+                registered_retirement_paths=retirements,
+            )
         )
+        if result.stdout_truncated or result.stderr_truncated:
+            raise RuntimeError("worktree diff exceeded capture limit")
+        if result.returncode != 0:
+            raise RuntimeError("worktree diff extraction failed")
+        return result.stdout
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         self._ensure_active()
         if not self._local_env:
@@ -753,12 +752,6 @@ class WorktreeEnvironment(Environment):
         if not self._local_env:
             await self.setup()
         return await self._local_env.registered_retirement_paths()
-
-    async def registered_retirement_snapshot(self) -> tuple[object, ...]:
-        self._ensure_active()
-        if not self._local_env:
-            await self.setup()
-        return await self._local_env.registered_retirement_snapshot()
 
     async def write_temp_file(
         self,
