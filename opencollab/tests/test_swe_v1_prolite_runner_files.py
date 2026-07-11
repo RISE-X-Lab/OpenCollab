@@ -488,8 +488,9 @@ def test_local_report_json_commit_marker_rejects_concurrent_replacement(
     def replace_json_after_markdown(path, payload, **kwargs):
         result = original_write(path, payload, **kwargs)
         if path == md_path:
-            json_path.unlink()
-            json_path.write_text("foreign\n", encoding="utf-8")
+            successor = tmp_path / "foreign.json"
+            successor.write_text("foreign\n", encoding="utf-8")
+            os.replace(successor, json_path)
         return result
 
     monkeypatch.setattr(runner, "write_regular_bytes_atomic", replace_json_after_markdown)
@@ -535,8 +536,9 @@ def test_remote_atomic_write_rejects_concurrent_target_replacement(
     original_write = namespace["write_regular_bytes_atomic"]
 
     def replace_before_commit(path, payload, **kwargs):
-        path.unlink()
-        path.write_bytes(b"foreign")
+        successor = tmp_path / "foreign.json"
+        successor.write_bytes(b"foreign")
+        os.replace(successor, path)
         return original_write(path, payload, **kwargs)
 
     namespace["write_regular_bytes_atomic"] = replace_before_commit

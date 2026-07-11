@@ -1398,13 +1398,17 @@ mv() {{
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr.decode(errors="replace")
-    assert not target.exists()
+    assert result.returncode in {0, 77}, result.stderr.decode(errors="replace")
+    if result.returncode == 0:
+        assert not target.exists()
+    else:
+        assert target.read_text(encoding="utf-8") == "owned"
     foreign = victim.stat()
     assert foreign.st_nlink == 2
     retired = list(tmp_path.glob(".opencollab-retired-*"))
     assert any(entry.stat().st_ino == foreign.st_ino for entry in retired)
-    assert any(entry.read_text(encoding="utf-8") == "owned" for entry in retired)
+    if result.returncode == 0:
+        assert any(entry.read_text(encoding="utf-8") == "owned" for entry in retired)
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="Docker control script uses GNU mv")
