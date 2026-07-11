@@ -1106,7 +1106,7 @@ async def test_run_workflow_slow_manifest_is_bounded_and_defers_tracer_close(
     finally:
         release.set()
 
-    await asyncio.wait_for(tracers[0].closed_event.wait(), timeout=0.5)
+    await asyncio.wait_for(tracers[0].closed_event.wait(), timeout=2.0)
     assert order.index("manifest-end") < order.index("tracer-close")
     assert os.path.exists(tmp_path / "run" / "workflow.json")
 

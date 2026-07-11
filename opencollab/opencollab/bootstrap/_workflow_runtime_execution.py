@@ -267,7 +267,6 @@ async def run_workflow(
                     ctx,
                     tracer,
                     (*lingering_cleanup_tasks, *manifest_lingering_tasks),
-                    timeout=cleanup_timeout,
                 )
                 tracer_close_deferred = True
             else:
@@ -342,5 +341,4 @@ async def run_workflow(
                     ctx,
                     tracer,
                     lingering_cleanup_tasks,
-                    timeout=cleanup_timeout,
                 )

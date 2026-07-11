@@ -395,7 +395,7 @@ async def _wait_for_late_quiescence(
         saw_empty = False
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
-            await isolate_tasks_from_shutdown(pending, timeout=timeout)
+            await isolate_tasks_from_shutdown(pending, timeout=1e-6)
             return False
         waiter = asyncio.create_task(asyncio.wait(pending, timeout=remaining))
         while True:
@@ -408,7 +408,7 @@ async def _wait_for_late_quiescence(
                 continue
         _done, still_pending = waiter.result()
         if still_pending and asyncio.get_running_loop().time() >= deadline:
-            await isolate_tasks_from_shutdown(still_pending, timeout=timeout)
+            await isolate_tasks_from_shutdown(still_pending, timeout=1e-6)
             return False
         extras.update(still_pending)
 
@@ -448,10 +448,8 @@ def _defer_owned_tracer_close(
     ctx: WorkflowContext,
     tracer: TracePort,
     extra_tasks: Sequence[asyncio.Future[Any]],
-    *,
-    timeout: float,
 ) -> None:
-    late_timeout = min(2.0, max(0.1, timeout))
+    late_timeout = 2.0
     owner = asyncio.create_task(
         _close_tracer_after_late_cleanup(
             ctx,
