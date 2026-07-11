@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from opencollab.harness import (
+    swe_v1_remote_artifacts,
     swe_v1_remote_commands,
     swe_v1_remote_core,
     swe_v1_remote_evaluation,
@@ -25,6 +26,7 @@ _RUNTIME_MODULES = (
     swe_v1_remote_records,
     swe_v1_remote_commands,
     swe_v1_remote_generation,
+    swe_v1_remote_artifacts,
     swe_v1_remote_evaluation,
 )
 

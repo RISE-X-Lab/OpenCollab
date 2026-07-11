@@ -14,6 +14,8 @@ import threading
 import time
 from pathlib import Path
 
+import opencollab.adapters._env_local as local_mod
+import opencollab.adapters._env_process as process_mod
 import opencollab.adapters.env as env_mod
 import pytest
 from asyncio_test_support import assert_cancel_note, assert_cancel_reason
@@ -767,3 +769,93 @@ async def test_local_cleanup_and_abort_release_workspace_and_temp_descriptors(tm
         os.fstat(abort_workspace_fd)
     with pytest.raises(OSError):
         os.fstat(abort_temp_fd)
+
+
+@pytest.mark.asyncio
+async def test_local_abort_waits_for_active_command_group_before_returning(tmp_path):
+    env = LocalEnvironment(str(tmp_path))
+    started = tmp_path / "started"
+    late = tmp_path / "late"
+    command = f"touch {shlex.quote(str(started))}; sleep 0.5; touch {shlex.quote(str(late))}"
+    command_task = asyncio.create_task(env.exec_cmd(command, timeout=5))
+    await _wait_for_file(started)
+
+    await env.abort()
+    result = await command_task
+
+    assert result.returncode != 0
+    assert not late.exists()
+    await asyncio.sleep(0.6)
+    assert not late.exists()
+    with pytest.raises(RuntimeError, match="aborted"):
+        await env.exec_cmd("touch should-not-run")
+
+
+@pytest.mark.asyncio
+async def test_local_cleanup_waits_for_active_command_group_before_returning(tmp_path):
+    env = LocalEnvironment(str(tmp_path))
+    started = tmp_path / "cleanup-started"
+    late = tmp_path / "cleanup-late"
+    command = f"touch {shlex.quote(str(started))}; sleep 0.5; touch {shlex.quote(str(late))}"
+    command_task = asyncio.create_task(env.exec_cmd(command, timeout=5))
+    await _wait_for_file(started)
+
+    await env.cleanup()
+    result = await command_task
+
+    assert result.returncode != 0
+    await asyncio.sleep(0.6)
+    assert not late.exists()
+
+
+@pytest.mark.asyncio
+async def test_revoked_process_operation_never_spawns_after_registry_attach(monkeypatch):
+    registry = local_mod._ActiveProcessOperations()
+    token = registry.begin()
+    owner = process_mod._ThreadProcessOwner(
+        "touch should-not-run",
+        shell=True,
+        cwd=None,
+        cwd_fd=None,
+        timeout=1.0,
+        input_data=None,
+        late_compensation=None,
+    )
+
+    def forbidden_popen(*args, **kwargs):
+        raise AssertionError("revoked command reached Popen")
+
+    monkeypatch.setattr(process_mod, "_PROCESS_POPEN", forbidden_popen)
+    abort_task = asyncio.create_task(registry.abort())
+    await asyncio.sleep(0)
+    registry.attach(token, owner)
+    owner.start()
+    registry.finish(token)
+
+    await abort_task
+    assert owner.finished.is_set()
+    assert owner.result.returncode == -int(signal.SIGTERM)
+
+
+@pytest.mark.asyncio
+async def test_local_cleanup_recovers_when_process_owner_thread_cannot_start(
+    monkeypatch,
+    tmp_path,
+):
+    original_start = threading.Thread.start
+
+    def fail_process_owner_start(thread):
+        if thread.name.startswith("opencollab-process-owner-"):
+            raise RuntimeError("thread unavailable")
+        return original_start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", fail_process_owner_start)
+    env = LocalEnvironment(str(tmp_path))
+    workspace_fd = env._workspace_fd
+
+    with pytest.raises(RuntimeError, match="thread unavailable"):
+        await env.exec_cmd("true")
+    await env.cleanup()
+
+    with pytest.raises(OSError):
+        os.fstat(workspace_fd)

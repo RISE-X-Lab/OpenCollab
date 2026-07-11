@@ -267,7 +267,12 @@ class _ThreadProcessOwner:
         )
 
     def start(self) -> None:
-        self._thread.start()
+        try:
+            self._thread.start()
+        except BaseException as exc:
+            self.result.error = exc
+            self._finished.set()
+            raise
 
     def cancel(self) -> None:
         self._cancel_requested.set()
@@ -356,6 +361,9 @@ class _ThreadProcessOwner:
         deadline = time.monotonic() + self._timeout
         interrupted = False
         try:
+            if self._cancel_requested.is_set():
+                self.result.returncode = -int(signal.SIGTERM)
+                return
             popen_kwargs = {
                 "shell": self._shell,
                 "cwd": self._cwd,
@@ -505,6 +513,7 @@ async def _run_thread_owned_process(
     timeout_name: str,
     input_data: bytes | None = None,
     late_compensation: Callable[["_ThreadProcessResult"], None] | None = None,
+    owner_started: Callable[[_ThreadProcessOwner], None] | None = None,
 ) -> _ThreadProcessResult:
     timeout_seconds = _positive_finite_timeout(timeout, name=timeout_name)
     owner = _ThreadProcessOwner(
@@ -516,6 +525,8 @@ async def _run_thread_owned_process(
         input_data=input_data,
         late_compensation=late_compensation,
     )
+    if owner_started is not None:
+        owner_started(owner)
     owner.start()
     wait_bound = (
         timeout_seconds

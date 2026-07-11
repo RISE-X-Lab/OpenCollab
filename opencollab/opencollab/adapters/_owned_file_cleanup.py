@@ -12,7 +12,9 @@ from opencollab.adapters import _atomic_rename
 from opencollab.adapters._posix_file_support import require_posix_file_support
 from opencollab.adapters.retirement_registry import (
     RETIRED_FILE_PREFIX,
+    forget_verified_retirements,
     register_verified_retirement,
+    verified_retirement_identities,
 )
 from opencollab.application.exception_notes import add_exception_note
 
@@ -78,6 +80,114 @@ def _retired_usage(parent_fd: int) -> tuple[int, int]:
     return count, total_bytes
 
 
+def _retirement_identity(
+    parent: os.stat_result,
+    entry: os.stat_result,
+) -> tuple[int, ...]:
+    return (
+        parent.st_dev,
+        parent.st_ino,
+        entry.st_dev,
+        entry.st_ino,
+        stat.S_IFMT(entry.st_mode),
+        entry.st_size,
+        entry.st_mtime_ns,
+        entry.st_ctime_ns,
+        entry.st_nlink,
+    )
+
+
+def reclaim_verified_retirements(
+    parent_fd: int,
+    *,
+    additional_files: int,
+    additional_bytes: int,
+    path_label: str,
+    lock_held: bool = False,
+    excluded_names: frozenset[str] = frozenset(),
+) -> tuple[str, ...]:
+    """Reclaim only unchanged, registry-backed tombstones needed for capacity."""
+    _validate_retirement_reservation(additional_files, additional_bytes)
+
+    def reclaim() -> tuple[str, ...]:
+        retired_count, retired_bytes = _retired_usage(parent_fd)
+        count_excess = max(
+            0,
+            retired_count + additional_files - MAX_RETIRED_FILES_PER_DIRECTORY,
+        )
+        byte_excess = max(
+            0,
+            retired_bytes + additional_bytes - MAX_RETIRED_BYTES_PER_DIRECTORY,
+        )
+        if count_excess == 0 and byte_excess == 0:
+            return ()
+
+        parent = os.fstat(parent_fd)
+        reclaimed: list[str] = []
+        for name, registered_identity in verified_retirement_identities(parent_fd):
+            if count_excess == 0 and byte_excess == 0:
+                break
+            if name in excluded_names:
+                continue
+            try:
+                before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                continue
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or _retirement_identity(parent, before) != registered_identity
+            ):
+                continue
+            flags = (
+                os.O_RDONLY
+                | getattr(os, "O_NONBLOCK", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            owned_fd = os.open(name, flags, dir_fd=parent_fd)
+            try:
+                opened = os.fstat(owned_fd)
+                current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if (
+                    _retirement_identity(parent, opened) != registered_identity
+                    or _retirement_identity(parent, current) != registered_identity
+                ):
+                    continue
+                os.unlink(name, dir_fd=parent_fd)
+                detached = os.fstat(owned_fd)
+                if (
+                    (detached.st_dev, detached.st_ino)
+                    != (opened.st_dev, opened.st_ino)
+                    or detached.st_nlink != max(0, opened.st_nlink - 1)
+                ):
+                    raise OSError(
+                        f"verified retirement unlink was not bound to its owned inode: {path_label}"
+                    )
+                reclaimed.append(name)
+                retired_count -= 1
+                retired_bytes -= max(opened.st_size, 0)
+                count_excess = max(
+                    0,
+                    retired_count + additional_files - MAX_RETIRED_FILES_PER_DIRECTORY,
+                )
+                byte_excess = max(
+                    0,
+                    retired_bytes + additional_bytes - MAX_RETIRED_BYTES_PER_DIRECTORY,
+                )
+            finally:
+                os.close(owned_fd)
+
+        if reclaimed:
+            os.fsync(parent_fd)
+            forget_verified_retirements(parent_fd, tuple(reclaimed))
+        return tuple(reclaimed)
+
+    if lock_held:
+        return reclaim()
+    with retirement_lock(parent_fd):
+        return reclaim()
+
+
 def require_retirement_capacity(
     parent_fd: int,
     *,
@@ -87,15 +197,7 @@ def require_retirement_capacity(
 ) -> None:
     """Require room for a complete cooperative retirement transaction."""
     require_posix_file_support()
-    if (
-        isinstance(additional_files, bool)
-        or not isinstance(additional_files, int)
-        or isinstance(additional_bytes, bool)
-        or not isinstance(additional_bytes, int)
-    ):
-        raise TypeError("retirement capacity reservation must use integers")
-    if additional_files < 0 or additional_bytes < 0:
-        raise ValueError("retirement capacity reservation cannot be negative")
+    _validate_retirement_reservation(additional_files, additional_bytes)
     retired_count, retired_bytes = _retired_usage(parent_fd)
     if retired_count + additional_files > MAX_RETIRED_FILES_PER_DIRECTORY:
         raise OSError(
@@ -107,6 +209,21 @@ def require_retirement_capacity(
             f"retired-file byte limit reached for parent of {path_label}: "
             f"{retired_bytes} existing, {additional_bytes} required bytes"
         )
+
+
+def _validate_retirement_reservation(
+    additional_files: object,
+    additional_bytes: object,
+) -> None:
+    if (
+        isinstance(additional_files, bool)
+        or not isinstance(additional_files, int)
+        or isinstance(additional_bytes, bool)
+        or not isinstance(additional_bytes, int)
+    ):
+        raise TypeError("retirement capacity reservation must use integers")
+    if additional_files < 0 or additional_bytes < 0:
+        raise ValueError("retirement capacity reservation cannot be negative")
 
 
 def _check_retirement_capacity(parent_fd: int, size: int, path_label: str) -> None:
@@ -133,6 +250,14 @@ def _retire_entry_locked(
             current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         except FileNotFoundError:
             return None
+        reclaim_verified_retirements(
+            parent_fd,
+            additional_files=1,
+            additional_bytes=max(current.st_size, 0),
+            path_label=path_label,
+            lock_held=True,
+            excluded_names=frozenset({name}),
+        )
         _check_retirement_capacity(parent_fd, current.st_size, path_label)
         retired = _new_retired_name()
         try:
@@ -199,6 +324,7 @@ def create_owned_retirement_candidate(
         raise TypeError("retirement candidate byte reservation must be an integer")
     if candidate_bytes < 0:
         raise ValueError("retirement candidate byte reservation cannot be negative")
+    _validate_retirement_reservation(required_files, required_bytes)
     flags = (
         os.O_WRONLY
         | os.O_CREAT
@@ -212,6 +338,13 @@ def create_owned_retirement_candidate(
     result: tuple[str, int, tuple[int, int], int] | None = None
     try:
         with retirement_lock(parent_fd):
+            reclaim_verified_retirements(
+                parent_fd,
+                additional_files=required_files,
+                additional_bytes=required_bytes + candidate_bytes,
+                path_label=path_label,
+                lock_held=True,
+            )
             require_retirement_capacity(
                 parent_fd,
                 additional_files=required_files,
@@ -565,6 +698,7 @@ __all__ = [
     "create_owned_retirement_candidate",
     "finalize_owned_retirement_candidate",
     "quarantine_unlink_owned_file",
+    "reclaim_verified_retirements",
     "refresh_verified_retirement_record",
     "require_retirement_capacity",
     "retire_owned_file",

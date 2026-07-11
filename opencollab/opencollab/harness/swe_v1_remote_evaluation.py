@@ -3,6 +3,10 @@
 # ruff: noqa: E501, F403, F405
 
 from opencollab.harness import swe_v1_remote_cleanup as remote_cleanup
+from opencollab.harness.swe_v1_remote_artifacts import (
+    derive_eval_verdict,
+    read_eval_output_artifacts,
+)
 from opencollab.harness.swe_v1_remote_commands import *
 from opencollab.harness.swe_v1_remote_core import *
 from opencollab.harness.swe_v1_remote_generation import *
@@ -375,147 +379,38 @@ exit 0
             container_name,
         )
 
-    output_artifact_errors = []
-
-    def read_exit(name, default=99):
-        path = output_dir / name
-        try:
-            with open_regular_binary(path) as handle:
-                opened = os.fstat(handle.fileno())
-                if opened.st_size > MAX_EXIT_STATUS_BYTES:
-                    raise RecordInputLimitError(f"exit status exceeds byte limit: {path}")
-                raw = handle.read(MAX_EXIT_STATUS_BYTES + 1)
-            text = raw.decode("ascii").strip()
-            if not re.fullmatch(r"-?[0-9]+", text):
-                raise RecordInputFormatError(f"invalid exit status: {path}")
-            return int(text)
-        except FileNotFoundError:
-            output_artifact_errors.append(f"missing:{name}")
-            return default
-        except (OSError, ValueError, UnicodeDecodeError) as exc:
-            output_artifact_errors.append(f"unsafe:{name}:{type(exc).__name__}")
-            return default
-
-    def read_text(name, limit=4000):
-        try:
-            return read_tail_text(output_dir / name, limit)
-        except OSError as exc:
-            output_artifact_errors.append(f"unsafe:{name}:{type(exc).__name__}")
-            return ""
-
-    def read_required_text(name, limit=4000):
-        path = output_dir / name
-        try:
-            with open_regular_binary(path) as handle:
-                size = os.fstat(handle.fileno()).st_size
-                if size > limit:
-                    raise RecordInputLimitError(
-                        f"required output artifact exceeds byte limit: {path}"
-                    )
-                return handle.read(limit + 1).decode("utf-8", errors="replace")
-        except FileNotFoundError:
-            output_artifact_errors.append(f"missing:{name}")
-            return ""
-        except (OSError, ValueError) as exc:
-            output_artifact_errors.append(f"unsafe:{name}:{type(exc).__name__}")
-            return ""
-
-    def read_plan_evidence(prefix, plan):
-        evidence = []
-        for index, expected_command in enumerate(plan["commands"], 1):
-            stem = f"{prefix}.batch_{index:03d}"
-            error_count = len(output_artifact_errors)
-            status = read_exit(f"{stem}.exit")
-            observed_command = read_text(f"{stem}.command", MAX_LOG_TAIL_BYTES).rstrip("\n")
-            log_error_count = len(output_artifact_errors)
-            log_text = read_required_text(f"{stem}.log", MAX_LOG_TAIL_BYTES)
-            log_artifact_safe = len(output_artifact_errors) == log_error_count
-            proofs = plan.get("proofs") or []
-            proof = proofs[index - 1] if index <= len(proofs) else None
-            proof_text = ""
-            if isinstance(proof, dict) and proof.get("kind") == "pytest_structured_reports":
-                proof_text = read_required_text(
-                    f"{stem}.proof.{proof_nonce}.jsonl",
-                    MAX_LOG_TAIL_BYTES,
-                )
-            evidence.append(
-                {
-                    "batch": index,
-                    "status": status,
-                    "command_matches_plan": observed_command == expected_command,
-                    "log_artifact_safe": log_artifact_safe,
-                    "target_proof_matches_plan": _plan_log_proof_matches(
-                        proof,
-                        log_text,
-                        proof_text,
-                    ),
-                    "artifact_safe": len(output_artifact_errors) == error_count,
-                }
-            )
-        return evidence
-
-    def plan_evidence_complete(plan, evidence):
-        return (
-            bool(plan["commands"])
-            and len(evidence) == len(plan["commands"])
-            and all(
-                item["command_matches_plan"]
-                and item["log_artifact_safe"]
-                and item["target_proof_matches_plan"]
-                and item["artifact_safe"]
-                for item in evidence
-            )
-        )
-
-    def aggregate_plan_status(evidence):
-        return next((item["status"] for item in evidence if item["status"] != 0), 0)
-
-    service_status = read_exit("service_bootstrap.exit", 0)
-    before_status = read_exit("before_repo.exit")
-    model_status = read_exit("model_patch.exit")
-    test_status = read_exit("test_patch.exit")
-    f2p_status = read_exit("f2p.exit")
-    p2p_status = read_exit("p2p.exit", 0)
-    f2p_log_tail = read_text("f2p.log")
-    p2p_log_tail = read_text("p2p.log")
-    f2p_evidence = read_plan_evidence("f2p", f2p_plan)
-    p2p_evidence = read_plan_evidence("p2p", p2p_plan) if p2p_plan["commands"] else []
-    f2p_evidence_complete = plan_evidence_complete(f2p_plan, f2p_evidence)
-    p2p_evidence_complete = not p2p_plan["commands"] or plan_evidence_complete(p2p_plan, p2p_evidence)
-    technical_reasons = []
-    if output_artifact_errors:
-        technical_reasons.append("unsafe_or_missing_output_artifact")
-    if not f2p_evidence_complete or aggregate_plan_status(f2p_evidence) != f2p_status:
-        technical_reasons.append("fail_to_pass_evidence")
-    if not p2p_evidence_complete or (p2p_evidence and aggregate_plan_status(p2p_evidence) != p2p_status):
-        technical_reasons.append("pass_to_pass_evidence")
-    if docker_exit != 0:
-        technical_reasons.append("docker_exit")
-    if not cleanup_quiesced:
-        technical_reasons.append("process_cleanup")
-    if not container_cleanup.get("ok"):
-        technical_reasons.append("container_cleanup")
-    if service_status != 0:
-        technical_reasons.append("service_bootstrap")
-    if before_status != 0:
-        technical_reasons.append("before_repo")
-    if model_status != 0:
-        technical_reasons.append("model_patch")
-    if test_status != 0:
-        technical_reasons.append("test_patch")
-    if eval_log_has_infra_failure(f2p_status, f2p_log_tail):
-        technical_reasons.append("fail_to_pass_infra")
-    if eval_log_has_infra_failure(p2p_status, p2p_log_tail):
-        technical_reasons.append("pass_to_pass_infra")
-    technical_error = bool(technical_reasons)
-    resolved = bool(
-        not technical_error
-        and f2p_status == 0
-        and p2p_status == 0
-        and all(item["status"] == 0 for item in f2p_evidence)
-        and all(item["status"] == 0 for item in p2p_evidence)
+    artifacts = read_eval_output_artifacts(
+        output_dir,
+        f2p_plan,
+        p2p_plan,
+        proof_nonce,
     )
-    summary_status = "technical_eval_failed" if technical_error else "done"
+    verdict = derive_eval_verdict(
+        artifacts,
+        docker_exit=docker_exit,
+        cleanup_quiesced=cleanup_quiesced,
+        container_cleanup=container_cleanup,
+    )
+    output_artifact_errors = artifacts["output_artifact_errors"]
+    service_status = artifacts["service_status"]
+    before_status = artifacts["before_status"]
+    model_status = artifacts["model_status"]
+    test_status = artifacts["test_status"]
+    f2p_status = artifacts["f2p_status"]
+    p2p_status = artifacts["p2p_status"]
+    f2p_log_tail = artifacts["f2p_log_tail"]
+    p2p_log_tail = artifacts["p2p_log_tail"]
+    f2p_evidence = artifacts["f2p_evidence"]
+    p2p_evidence = artifacts["p2p_evidence"]
+    f2p_command = artifacts["f2p_command"]
+    p2p_command = artifacts["p2p_command"]
+    service_bootstrap_log_tail = artifacts["service_bootstrap_log_tail"]
+    model_patch_log_tail = artifacts["model_patch_log_tail"]
+    test_patch_log_tail = artifacts["test_patch_log_tail"]
+    technical_reasons = verdict["technical_reasons"]
+    technical_error = verdict["technical_error"]
+    resolved = verdict["resolved"]
+    summary_status = verdict["summary_status"]
     report = {
         "schema": "opencollab.prolite_direct_eval.v2",
         "status": summary_status,
@@ -546,13 +441,13 @@ exit 0
             "pass_to_pass_plan": p2p_plan,
             "fail_to_pass_evidence": f2p_evidence,
             "pass_to_pass_evidence": p2p_evidence,
-            "f2p_command": read_text("f2p.command", 1000),
-            "p2p_command": read_text("p2p.command", 1000),
-            "service_bootstrap_log_tail": read_text("service_bootstrap.log"),
+            "f2p_command": f2p_command,
+            "p2p_command": p2p_command,
+            "service_bootstrap_log_tail": service_bootstrap_log_tail,
             "f2p_log_tail": f2p_log_tail,
             "p2p_log_tail": p2p_log_tail,
-            "model_patch_log_tail": read_text("model_patch.log"),
-            "test_patch_log_tail": read_text("test_patch.log"),
+            "model_patch_log_tail": model_patch_log_tail,
+            "test_patch_log_tail": test_patch_log_tail,
         },
     }
     write_json(report_path, {task: report})
