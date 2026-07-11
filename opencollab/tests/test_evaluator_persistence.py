@@ -289,8 +289,9 @@ def test_save_results_rejects_concurrent_successor_before_commit(
     original_write = evaluator.write_regular_file_atomic
 
     def replace_before_write(path, writer, **kwargs):
-        output.unlink()
-        output.write_text("successor\n", encoding="utf-8")
+        successor = tmp_path / "successor.jsonl"
+        successor.write_text("successor\n", encoding="utf-8")
+        os.replace(successor, output)
         return original_write(path, writer, **kwargs)
 
     monkeypatch.setattr(evaluator, "write_regular_file_atomic", replace_before_write)

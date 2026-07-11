@@ -80,9 +80,9 @@ async def test_local_atomic_write_refuses_concurrent_successor(
         nonlocal injected
         result = real_fsync(fd)
         if not injected and stat.S_ISREG(os.fstat(fd).st_mode):
-            if target.exists():
-                target.unlink()
-            target.write_text("successor", encoding="utf-8")
+            successor = tmp_path / "successor.txt"
+            successor.write_text("successor", encoding="utf-8")
+            os.replace(successor, target)
             injected = True
         return result
 

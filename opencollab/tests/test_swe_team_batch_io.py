@@ -241,8 +241,9 @@ def test_batch_log_rejects_successor_replacement_after_child_start(
     real_popen = batch_io.subprocess.Popen
 
     def replace_log_then_start(*args, **kwargs):
-        log.unlink()
-        log.write_bytes(b"successor")
+        successor = logs / "successor.log"
+        successor.write_bytes(b"successor")
+        os.replace(successor, log)
         return real_popen(*args, **kwargs)
 
     monkeypatch.setattr(batch_io.subprocess, "Popen", replace_log_then_start)

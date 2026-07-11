@@ -62,9 +62,9 @@ def test_atomic_write_cas_refuses_successor_installed_during_parent_verification
         nonlocal injected
         result = original_verify(*args, **kwargs)
         if not injected and kwargs["phase"] == "before":
-            if target.exists():
-                target.unlink()
-            target.write_bytes(b"successor")
+            successor = tmp_path / "successor.json"
+            successor.write_bytes(b"successor")
+            os.replace(successor, target)
             injected = True
         return result
 

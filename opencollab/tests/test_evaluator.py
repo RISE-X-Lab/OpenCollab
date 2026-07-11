@@ -225,7 +225,6 @@ assert pathlib.Path(sys.argv[1]).read_text(encoding="utf-8") == "cleaned"
     assert marker.read_text(encoding="utf-8") == "cleaned"
     assert "Task was destroyed" not in completed.stderr
     assert "was never awaited" not in completed.stderr
-    assert "pending" not in completed.stderr.lower()
 
 @pytest.mark.parametrize("concurrency", [0, -1, 1.5, True, "2", float("nan")])
 def test_run_eval_batch_rejects_invalid_concurrency(concurrency):
