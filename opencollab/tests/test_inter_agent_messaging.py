@@ -122,6 +122,7 @@ def test_send_message_to_idle_target_schedules_background_run():
         SessionControlBlock(aid=1, parent_aid=0, agent=teammate.agent, state=teammate.state)
     )
     scheduler._sessions[1] = teammate
+
     async def scenario():
         ack = await scheduler.send_message(0, 1, "hello", "please review")
         await scheduler._tasks[1]
@@ -132,79 +133,6 @@ def test_send_message_to_idle_target_schedules_background_run():
     assert ack == "Message queued to aid 1."
     assert len(teammate.added) == 1
     assert scheduler.table.get(1).result == "message result"
-
-
-def test_message_events_cannot_strand_a_durable_delivery():
-    class FailingPublisher:
-        async def emit(self, event):
-            if event.type in {"agent_message_sent", "agent_message_delivered"}:
-                raise RuntimeError("observer down")
-
-    teammate = FakeSession(["message result"], role="coder")
-    scheduler = Scheduler(
-        session_factory=FakeFactory(teammate),
-        worktree_pool=WorktreePool(".", use_worktrees=False),
-        event_sink=FailingPublisher(),
-    )
-    scheduler.register_lead(FakeSession([], role="lead"))
-    teammate.state.set_phase(SessionPhase.DONE)
-    scheduler.table.add(
-        SessionControlBlock(aid=1, parent_aid=0, agent=teammate.agent, state=teammate.state)
-    )
-    scheduler._sessions[1] = teammate
-
-    async def scenario():
-        ack = await scheduler.send_message(0, 1, "hello", "please review")
-        await scheduler._tasks[1]
-        return ack
-
-    assert run(scenario()) == "Message queued to aid 1."
-    assert scheduler.table.get(1).result == "message result"
-    assert scheduler._message_inbox.get(1) == []
-    assert teammate.state.pending_user_messages == []
-
-
-def test_message_sent_event_can_reenter_same_target_without_locking_up():
-    teammate = FakeSession(["first handled", "second handled"], role="coder")
-    holder = {}
-
-    class ReentrantPublisher:
-        def __init__(self):
-            self.reentered = False
-
-        async def emit(self, event):
-            if event.type == "agent_message_sent" and not self.reentered:
-                self.reentered = True
-                await holder["scheduler"].send_message(
-                    0, 1, "nested", "second message"
-                )
-
-    publisher = ReentrantPublisher()
-    scheduler = Scheduler(
-        session_factory=FakeFactory(teammate),
-        worktree_pool=WorktreePool(".", use_worktrees=False),
-        event_sink=publisher,
-    )
-    holder["scheduler"] = scheduler
-    scheduler.register_lead(FakeSession([], role="lead"))
-    teammate.state.set_phase(SessionPhase.DONE)
-    scheduler.table.add(
-        SessionControlBlock(aid=1, parent_aid=0, agent=teammate.agent, state=teammate.state)
-    )
-    scheduler._sessions[1] = teammate
-
-    async def scenario():
-        await asyncio.wait_for(
-            scheduler.send_message(0, 1, "outer", "first message"), timeout=0.5
-        )
-        await _wait_agent_idle(scheduler, 1)
-
-    run(scenario())
-
-    assert publisher.reentered is True
-    assert len(teammate.added) == 2
-    assert "first message" in teammate.added[0]
-    assert "second message" in teammate.added[1]
 
 
 def test_send_message_to_busy_target_autosaves_pending_xml(tmp_path):
@@ -231,118 +159,6 @@ def test_send_message_to_busy_target_autosaves_pending_xml(tmp_path):
     )
 
 
-def test_delivery_autosave_never_contains_message_and_same_pending_sidecar(tmp_path):
-    class AutosavingOnAdd(PersistingFakeSession):
-        def __init__(self, path):
-            super().__init__(["handled"], role="coder", auto_save_path=path)
-            self.snapshots = []
-
-        def save(self, path):
-            obj = {"messages": self.state.enriched_messages()}
-            if self.state.pending_user_messages:
-                obj["pending_messages"] = self.state.enriched_pending_user_messages()
-            self.snapshots.append(obj)
-
-        async def add_user_message(self, content):
-            self.state.append_message({"role": "user", "content": content})
-            self.state.reset_for_user_turn()
-            self.save(self.auto_save_path)
-
-    teammate = AutosavingOnAdd(tmp_path / "agent.json")
-    scheduler, _ = _build_scheduler(teammate)
-    teammate.state.set_phase(SessionPhase.DONE)
-    scheduler.table.add(
-        SessionControlBlock(aid=1, parent_aid=0, agent=teammate.agent, state=teammate.state)
-    )
-    scheduler._sessions[1] = teammate
-
-    async def scenario():
-        await scheduler.send_message(0, 1, "once", "deliver exactly once")
-        await scheduler._tasks[1]
-
-    run(scenario())
-
-    delivery_snapshots = [
-        snapshot
-        for snapshot in teammate.snapshots
-        if any("deliver exactly once" in str(message.get("content")) for message in snapshot["messages"])
-    ]
-    assert delivery_snapshots
-    assert all("pending_messages" not in snapshot for snapshot in delivery_snapshots)
-
-
-def test_add_user_message_failure_rolls_back_inbox_and_session_state():
-    class FailingAdd(FakeSession):
-        async def add_user_message(self, content):
-            self.state.append_message({"role": "user", "content": content})
-            self.state.reset_for_user_turn()
-            raise RuntimeError("append hook failed")
-
-    teammate = FailingAdd([], role="coder")
-    scheduler, _ = _build_scheduler(teammate)
-    teammate.state.set_phase(SessionPhase.DONE)
-    scheduler.table.add(
-        SessionControlBlock(aid=1, parent_aid=0, agent=teammate.agent, state=teammate.state)
-    )
-    scheduler._sessions[1] = teammate
-
-    allocation_before = scheduler.allocated_tokens
-
-    with pytest.raises(RuntimeError, match="append hook failed"):
-        run(scheduler.send_message(0, 1, "retry", "keep durable"))
-
-    assert teammate.state.phase is SessionPhase.DONE
-    assert teammate.state.messages == []
-    assert len(teammate.state.pending_user_messages) == 1
-    assert len(scheduler._message_inbox[1]) == 1
-    assert 1 not in scheduler._tasks
-    assert scheduler.allocated_tokens == allocation_before
-    assert 1 not in scheduler._child_reservation
-
-
-def test_multiple_queued_messages_are_delivered_as_one_timestamped_user_turn():
-    teammate = FakeSession(["message result"], role="coder")
-    scheduler, events = _build_scheduler(teammate)
-    teammate.state.set_phase(SessionPhase.AWAITING_EVENTS)
-    scheduler.table.add(
-        SessionControlBlock(aid=1, parent_aid=0, agent=teammate.agent, state=teammate.state)
-    )
-    scheduler._sessions[1] = teammate
-    second_sender = FakeSession([], role="reviewer")
-    scheduler.table.add(
-        SessionControlBlock(
-            aid=2,
-            parent_aid=0,
-            agent=second_sender.agent,
-            state=second_sender.state,
-        )
-    )
-    scheduler._sessions[2] = second_sender
-
-    async def scenario():
-        await scheduler.send_message(0, 1, "first", "alpha <one>")
-        await scheduler.send_message(2, 1, "second", "beta & two")
-        sent_at = [message.sent_at for message in scheduler._message_inbox[1]]
-        teammate.state.set_phase(SessionPhase.DONE)
-        await scheduler._drain_message_inbox(1)
-        await scheduler._tasks[1]
-        return sent_at
-
-    sent_at = run(scenario())
-
-    assert len(teammate.added) == 1
-    delivery = teammate.added[0]
-    assert delivery.startswith('<teammate-messages count="2">')
-    assert f'teammate_id="A0" summary="first" sent_at="{sent_at[0]}"' in delivery
-    assert f'teammate_id="A2" summary="second" sent_at="{sent_at[1]}"' in delivery
-    assert "alpha &lt;one&gt;" in delivery
-    assert "beta &amp; two" in delivery
-    delivered = [
-        event for event in _scheduler_events(events) if event.type == "agent_message_delivered"
-    ]
-    assert len(delivered) == 2
-
-
 def test_send_message_to_self_is_rejected():
     teammate = FakeSession([], role="coder")
     scheduler, _ = _build_scheduler(teammate)
@@ -355,26 +171,6 @@ def test_send_message_to_unknown_aid_is_rejected():
     scheduler, _ = _build_scheduler(teammate)
     result = run(scheduler.send_message(0, 99, "hi", "there"))
     assert "no agent with aid 99" in result
-
-
-def test_send_message_from_unknown_aid_is_rejected_before_mutation():
-    teammate = FakeSession([], role="coder")
-    scheduler, _ = _build_scheduler(teammate)
-
-    result = run(scheduler.send_message(99, 0, "hi", "there"))
-
-    assert "no sending agent with aid 99" in result
-    assert scheduler._message_inbox.get(0) in (None, [])
-
-
-def test_spawn_from_unknown_parent_is_rejected_even_without_topology_rules():
-    teammate = FakeSession([], role="coder")
-    scheduler, _ = _build_scheduler(teammate)
-
-    with pytest.raises(ValueError, match="no parent with aid 99"):
-        run(scheduler.spawn(99, "coder", "task"))
-
-    assert scheduler.table.get(1) is None
 
 
 def test_spawn_denied_by_topology_raises_permission_error():

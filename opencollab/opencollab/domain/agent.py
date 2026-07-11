@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from opencollab.domain.identity import validate_role_identity
 from opencollab.domain.tools import ToolSpec
 
 
@@ -49,9 +48,6 @@ class Agent:
     thinking: bool = False
     thinking_params: dict = field(default_factory=dict)
     tool_choice: str | None = None
-
-    def __post_init__(self) -> None:
-        self.name = validate_role_identity(self.name)
 
     def tool_schemas(self) -> list[dict]:
         """Generate OpenAI-format tool schemas for LLM function calling."""

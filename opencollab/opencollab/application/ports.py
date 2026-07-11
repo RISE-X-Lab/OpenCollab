@@ -21,26 +21,6 @@ class EnvironmentPort(Protocol):
     async def write_file(self, path: str, content: str) -> None:
         ...
 
-    async def write_temp_file(
-        self,
-        content: str,
-        *,
-        prefix: str,
-        suffix: str = ".tmp",
-    ) -> str:
-        ...
-
-    async def remove_file(self, path: str) -> None:
-        ...
-
-    async def registered_retirement_paths(self) -> tuple[str, ...]:
-        """Return exact unchanged framework tombstones under the workspace."""
-        ...
-
-    async def abort(self) -> None:
-        """Revoke future side effects and stop owned environment resources."""
-        ...
-
 
 @runtime_checkable
 class DiffCapablePort(Protocol):
@@ -162,8 +142,6 @@ class ToolPort(Protocol):
     name: str
     description: str
     parameters: dict[str, Any]
-    default_timeout: float | None
-    disable_outer_timeout: bool
 
     def to_openai_schema(self) -> dict[str, Any]:
         ...
@@ -399,18 +377,6 @@ class SessionStorePort(Protocol):
         ...
 
 
-@runtime_checkable
-class SnapshotStorePort(Protocol):
-    """Optional complete-session snapshot reader."""
-
-    def load_snapshot(
-        self,
-        path: str,
-        system_prompt: str,
-    ) -> dict[str, Any]:
-        ...
-
-
 class TracePort(Protocol):
     """Trajectory recorder surface."""
 
@@ -439,7 +405,4 @@ class WorktreePoolPort(Protocol):
         ...
 
     async def release(self) -> None:
-        ...
-
-    async def release_env(self, env: EnvironmentPort) -> None:
         ...

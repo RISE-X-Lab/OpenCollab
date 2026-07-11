@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
-from typing import Callable
 
 from opencollab.adapters.hooks import ShellHookRunner
 from opencollab.adapters.storage import SessionStore
@@ -116,27 +115,16 @@ def build_scheduler(
         run_id = os.path.basename(run_dir)
         started_at = datetime.now(timezone.utc).isoformat()
 
-        def _manifest_payload() -> dict:
-            return {
+        def _write_manifest() -> None:
+            store.save_manifest(manifest_path, {
                 "run_id": run_id,
                 "started_at": started_at,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "team_file": str(team_file) if team_file else None,
                 "agents": scheduler.team_snapshot(),
-            }
+            })
 
-        def _write_manifest() -> None:
-            store.save_manifest(manifest_path, _manifest_payload())
-
-        def _prepare_manifest() -> Callable[[], None]:
-            payload = _manifest_payload()
-            return lambda: store.save_manifest(manifest_path, payload)
-
-        scheduler.set_manifest_writer(
-            _write_manifest,
-            prepare_fn=_prepare_manifest,
-            serialization_key=manifest_path,
-        )
+        scheduler.set_manifest_writer(_write_manifest)
 
     scheduler.create_init_process(
         LaunchSpec(session_file=session_file, auto_save_path=lead_save_path)

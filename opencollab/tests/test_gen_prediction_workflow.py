@@ -8,7 +8,6 @@ module from the repo-root ``swebench/`` dir, the same way the script bootstraps.
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import shlex
 import shutil
@@ -52,54 +51,6 @@ def test_fail_to_pass_ids_parses_json_string():
 def test_fail_to_pass_ids_accepts_list_and_missing():
     assert gpw._fail_to_pass_ids({"FAIL_TO_PASS": ["a", "b"]}) == ["a", "b"]
     assert gpw._fail_to_pass_ids({}) == []
-
-
-@pytest.mark.parametrize(
-    ("max_steps", "budget", "timeout"),
-    [
-        (0, 100, 5.0),
-        (5, 0, 5.0),
-        (5, 100, 0),
-        (5, 100, float("nan")),
-        (5, 100, float("inf")),
-    ],
-)
-def test_workflow_generation_limits_share_single_agent_validation(
-    max_steps,
-    budget,
-    timeout,
-):
-    with pytest.raises(ValueError):
-        gpw.gp.validate_generation_limits(
-            max_steps=max_steps,
-            budget=budget,
-            timeout=timeout,
-        )
-
-
-@pytest.mark.parametrize(
-    "checkpoint_interval",
-    [-1, float("nan"), float("inf"), True, "bad"],
-)
-def test_workflow_generation_rejects_invalid_checkpoint_interval(
-    checkpoint_interval,
-):
-    with pytest.raises(ValueError, match="checkpoint-interval"):
-        gpw.validate_workflow_limits(
-            max_steps=5,
-            budget=100,
-            timeout=5,
-            checkpoint_interval=checkpoint_interval,
-        )
-
-
-def test_workflow_generation_accepts_disabled_checkpointing():
-    assert gpw.validate_workflow_limits(
-        max_steps=5,
-        budget=100,
-        timeout=5,
-        checkpoint_interval=0,
-    ) == (5, 100, 5.0, 0.0)
 
 
 def test_build_task_lists_target_tests_without_literal_values():
@@ -189,10 +140,7 @@ def test_workflow_result_extracts_allowed_and_disallowed_paths():
         "disallowed_patch_paths": ["tests/test_widget.py"],
     }
 
-    assert gpw._workflow_allowed_patch_paths(result) == {
-        "b/pkg/widget.py",
-        "src/core.py",
-    }
+    assert gpw._workflow_allowed_patch_paths(result) == {"pkg/widget.py", "src/core.py"}
     assert gpw._workflow_disallowed_patch_paths(result) == {"tests/test_widget.py"}
 
 
@@ -233,169 +181,12 @@ def test_empty_allowlist_removes_every_patch_path_for_guarded_workflow():
     assert gpw._patch_paths_to_remove(patch, allowed_paths=set()) == ["pkg/widget.py"]
 
 
-def test_agent_allowlist_cannot_override_test_artifact_blacklist():
-    patch = "diff --git a/src/test_parser.py b/src/test_parser.py"
-
-    assert gpw._patch_paths_to_remove(
-        patch,
-        allowed_paths={"src/test_parser.py"},
-    ) == ["src/test_parser.py"]
-
-
-@pytest.mark.parametrize(
-    "path",
-    ["tests/test_bug.py", ".opencollab-validation/probe.py"],
-)
-def test_agent_allowlist_cannot_admit_blind_validation_artifact(path):
-    patch = f"diff --git a/{path} b/{path}"
-
-    assert gpw._patch_paths_to_remove(
-        patch,
-        allowed_paths={path},
-        disallowed_paths=set(),
-    ) == [path]
-
-
-def test_patch_paths_decode_default_git_c_quoted_unicode(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    source = repo / "src"
-    source.mkdir()
-    target = source / "café.py"
-    target.write_text("old\n", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=repo, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=OpenCollab",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-qm",
-            "base",
-        ],
-        cwd=repo,
-        check=True,
-    )
-    target.write_text("new\n", encoding="utf-8")
-    patch = subprocess.run(
-        ["git", "diff"],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout
-
-    assert "\\303\\251" in patch
-    assert gpw._patch_paths(patch) == ["src/café.py"]
-    assert gpw._patch_paths_to_remove(
-        patch,
-        allowed_paths={"src/café.py"},
-    ) == []
-
-
-def test_patch_path_normalization_preserves_repo_relative_b_directory():
-    patch = "diff --git a/b/foo.py b/b/foo.py"
-
-    assert gpw._normalize_patch_path("b/foo.py") == "b/foo.py"
-    assert gpw._patch_entries(patch) == [("b/foo.py", "b/foo.py")]
-    assert gpw._patch_paths(patch) == ["b/foo.py"]
-    assert gpw._patch_paths_to_remove(
-        patch,
-        allowed_paths={"b/foo.py"},
-    ) == []
-    assert gpw._patch_paths_to_remove(
-        patch,
-        allowed_paths={"foo.py"},
-    ) == ["b/foo.py"]
-
-
-def test_test_to_allowed_rename_removes_both_endpoints():
-    patch = "\n".join(
-        [
-            "diff --git a/tests/test_widget.py b/pkg/widget.py",
-            "similarity index 100%",
-            "rename from tests/test_widget.py",
-            "rename to pkg/widget.py",
-        ]
-    )
-
-    assert gpw._patch_paths_to_remove(
-        patch,
-        allowed_paths={"pkg/widget.py"},
-    ) == ["tests/test_widget.py", "pkg/widget.py"]
-
-
-def test_copy_with_unallowed_endpoint_removes_both_endpoints():
-    patch = "\n".join(
-        [
-            "diff --git a/pkg/widget.py b/tmp/validation_copy.py",
-            "similarity index 100%",
-            "copy from pkg/widget.py",
-            "copy to tmp/validation_copy.py",
-        ]
-    )
-
-    assert gpw._patch_paths_to_remove(
-        patch,
-        allowed_paths={"pkg/widget.py"},
-    ) == ["pkg/widget.py", "tmp/validation_copy.py"]
-
-
-def test_git_c_quoted_unicode_rename_removes_both_endpoints(tmp_path):
-    repo = tmp_path / "repo"
-    repo.mkdir()
-    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
-    source_dir = repo / "tests"
-    source_dir.mkdir()
-    source = source_dir / "naïve.py"
-    source.write_text("value = 1\n", encoding="utf-8")
-    subprocess.run(["git", "add", "."], cwd=repo, check=True)
-    subprocess.run(
-        [
-            "git",
-            "-c",
-            "user.name=OpenCollab",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-qm",
-            "base",
-        ],
-        cwd=repo,
-        check=True,
-    )
-    target_dir = repo / "src"
-    target_dir.mkdir()
-    target = target_dir / "café.py"
-    source.rename(target)
-    subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
-    patch = subprocess.run(
-        ["git", "diff", "--cached", "--find-renames"],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=True,
-    ).stdout
-
-    assert "rename from" in patch
-    assert "\\303\\257" in patch
-    assert "\\303\\251" in patch
-    assert gpw._patch_entries(patch) == [("tests/naïve.py", "src/café.py")]
-    assert gpw._patch_paths_to_remove(
-        patch,
-        allowed_paths={"src/café.py"},
-    ) == ["tests/naïve.py", "src/café.py"]
-
-
 def test_extract_patch_guarded_reextracts_after_cleanup(monkeypatch):
     patches = [
         "\n".join(
             [
                 "diff --git a/pkg/widget.py b/pkg/widget.py",
-                "diff --git a/tmp/check.py b/pkg/from_check.py",
+                "diff --git a/tmp/check.py b/tmp/check.py",
             ]
         ),
         "diff --git a/pkg/widget.py b/pkg/widget.py",
@@ -416,23 +207,22 @@ def test_extract_patch_guarded_reextracts_after_cleanup(monkeypatch):
     patch, cleanup = gpw.extract_patch_guarded(
         "cid",
         guard_validation_artifacts=True,
-        allowed_paths={"pkg/widget.py", "tmp/check.py", "pkg/from_check.py"},
+        allowed_paths={"pkg/widget.py", "tmp/check.py"},
         disallowed_paths={"tmp/check.py"},
     )
 
-    assert cleanup == ["tmp/check.py", "pkg/from_check.py"]
-    assert removed == ["tmp/check.py", "pkg/from_check.py"]
+    assert cleanup == ["tmp/check.py"]
+    assert removed == ["tmp/check.py"]
     assert patch == "diff --git a/pkg/widget.py b/pkg/widget.py"
 
 
-def test_cleanup_patch_paths_command_has_literal_git_fallbacks():
+def test_cleanup_patch_paths_command_has_legacy_git_fallbacks():
     cmd = gpw._cleanup_patch_paths_command(["yarn.lock", "tmp/check file.py"])
 
-    assert "git --literal-pathspecs restore --staged --worktree --" in cmd
-    assert "git --literal-pathspecs reset -q HEAD --" in cmd
-    assert "git --literal-pathspecs checkout --" in cmd
-    assert "git --literal-pathspecs clean -fdq --" in cmd
-    assert cmd.count("git --literal-pathspecs") == 4
+    assert "git restore --staged --worktree --" in cmd
+    assert "git reset -q HEAD --" in cmd
+    assert "git checkout --" in cmd
+    assert "git clean -fdq --" in cmd
     assert "'tmp/check file.py'" in cmd
 
 
@@ -470,65 +260,6 @@ def test_cleanup_patch_paths_command_removes_tracked_noise_without_touching_allo
     assert (repo / "yarn.lock").read_text(encoding="utf-8") == "lock\n"
 
 
-def test_cleanup_patch_paths_command_restores_both_rename_endpoints(tmp_path):
-    repo = tmp_path
-
-    def run(args):
-        return subprocess.run(
-            args,
-            cwd=repo,
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-
-    run(["git", "init", "-q"])
-    tests_dir = repo / "tests"
-    tests_dir.mkdir()
-    test_path = tests_dir / "test_widget.py"
-    test_path.write_text("test data\n", encoding="utf-8")
-    allowed_path = repo / "widget.py"
-    allowed_path.write_text("old\n", encoding="utf-8")
-    run(["git", "add", "."])
-    run(
-        [
-            "git",
-            "-c",
-            "user.name=OpenCollab",
-            "-c",
-            "user.email=test@example.com",
-            "commit",
-            "-qm",
-            "base",
-        ]
-    )
-
-    renamed_path = repo / "widget_from_test.py"
-    test_path.rename(renamed_path)
-    allowed_path.write_text("new\n", encoding="utf-8")
-    run(["git", "add", "-A"])
-    patch = run(["git", "diff", "--cached", "--find-renames"]).stdout
-    violations = gpw._patch_paths_to_remove(
-        patch,
-        allowed_paths={"widget.py", "widget_from_test.py"},
-    )
-
-    assert violations == ["tests/test_widget.py", "widget_from_test.py"]
-    subprocess.run(
-        ["bash", "-lc", gpw._cleanup_patch_paths_command(violations)],
-        cwd=repo,
-        text=True,
-        capture_output=True,
-        check=True,
-    )
-
-    assert run(["git", "diff", "--cached", "--name-only"]).stdout.splitlines() == [
-        "widget.py"
-    ]
-    assert test_path.read_text(encoding="utf-8") == "test data\n"
-    assert not renamed_path.exists()
-
-
 def test_cleanup_patch_paths_command_falls_back_when_git_restore_is_missing(tmp_path):
     real_git = shutil.which("git")
     if not real_git:
@@ -543,8 +274,7 @@ def test_cleanup_patch_paths_command_falls_back_when_git_restore_is_missing(tmp_
         "\n".join(
             [
                 "#!/usr/bin/env bash",
-                "if [ \"$1\" = \"--literal-pathspecs\" ] "
-                "&& [ \"$2\" = \"restore\" ]; then",
+                "if [ \"$1\" = \"restore\" ]; then",
                 "  echo 'git restore unavailable' >&2",
                 "  exit 1",
                 "fi",
@@ -652,9 +382,7 @@ def test_generate_forwards_checkpoint_options(monkeypatch, tmp_path):
         )
 
     monkeypatch.setattr(gpw, "run_eval_task", fake_run_eval_task)
-    monkeypatch.setattr(
-        gpw.gp, "start_container", lambda image, name, owner_token: "cid"
-    )
+    monkeypatch.setattr(gpw.gp, "start_container", lambda image, name: "cid")
     monkeypatch.setattr(gpw.gp, "remove_container_and_clear_marker", lambda run_dir, cid: True)
     monkeypatch.setattr(
         gpw,
@@ -690,111 +418,7 @@ def test_generate_forwards_checkpoint_options(monkeypatch, tmp_path):
     assert captured["kwargs"]["resume_from_checkpoint"] is True
 
 
-@pytest.mark.parametrize(
-    "result_flags",
-    [
-        {
-            "test_patch_isolation_failed": True,
-            "submission_eligible": False,
-        },
-        {
-            "execution_quiesced": False,
-            "submission_eligible": False,
-        },
-        {
-            "patch_extraction_succeeded": False,
-            "submission_eligible": False,
-        },
-        {
-            "injected_path_cleanup_proven": False,
-            "submission_eligible": False,
-        },
-    ],
-    ids=[
-        "test-patch-isolation",
-        "execution-not-quiesced",
-        "internal-extraction-failed",
-        "injected-cleanup-unproven",
-    ],
-)
-def test_generate_skips_outer_extraction_for_ineligible_eval_result(
-    monkeypatch,
-    tmp_path,
-    result_flags,
-):
-    async def fake_run_eval_task(task, **kwargs):
-        return EvalResult(
-            task_id=task.task_id,
-            patch="",
-            patch_produced=False,
-            tokens_used=0,
-            steps=0,
-            duration=1.0,
-            error="harness integrity failure",
-            **result_flags,
-        )
-
-    finalized = []
-    monkeypatch.setattr(gpw, "run_eval_task", fake_run_eval_task)
-    monkeypatch.setattr(
-        gpw.gp,
-        "start_container_with_marker",
-        lambda image, name, run_dir: "cid",
-    )
-    monkeypatch.setattr(
-        gpw,
-        "extract_patch_guarded",
-        lambda *args, **kwargs: pytest.fail("outer patch extraction must be skipped"),
-    )
-    monkeypatch.setattr(
-        gpw.gp,
-        "finalize_container_ownership",
-        lambda **kwargs: finalized.append(kwargs),
-    )
-    output = tmp_path / "predictions.jsonl"
-    metrics_output = tmp_path / "metrics.jsonl"
-    args = SimpleNamespace(
-        timeout=10,
-        budget=1000,
-        max_steps=3,
-        keep_container=False,
-        blind_validation=False,
-        checkpoint_interval_seconds=0,
-        resume=False,
-        output=str(output),
-        metrics=str(metrics_output),
-        model_name="model",
-        _persist_output_after_cleanup=True,
-    )
-    cfg = {
-        "model": "m",
-        "provider": "openai",
-        "api_key": "k",
-        "base_url": "http://local",
-        "temperature": 0.0,
-        "thinking": False,
-    }
-
-    patch, metrics = asyncio.run(
-        gpw.generate(
-            FIXTURE,
-            "image",
-            cfg,
-            args,
-            gpw.generate_review_fix,
-            "generate_review_fix",
-        )
-    )
-
-    assert patch == ""
-    assert metrics["submission_eligible"] is False
-    assert metrics["patch_produced"] is False
-    assert len(finalized) == 1
-    assert finalized[0]["cid"] == "cid"
-    assert json.loads(output.read_text(encoding="utf-8"))["model_patch"] == ""
-
-
-def test_generate_persists_completed_patch_only_after_container_cleanup(monkeypatch, tmp_path):
+def test_generate_marks_non_error_patch_as_done(monkeypatch):
     async def fake_run_eval_task(task, **kwargs):
         return EvalResult(
             task_id=task.task_id,
@@ -807,19 +431,8 @@ def test_generate_persists_completed_patch_only_after_container_cleanup(monkeypa
         )
 
     monkeypatch.setattr(gpw, "run_eval_task", fake_run_eval_task)
-    monkeypatch.setattr(
-        gpw.gp, "start_container", lambda image, name, owner_token: "cid"
-    )
-    output = tmp_path / "predictions.jsonl"
-    metrics_output = tmp_path / "metrics.jsonl"
-    cleanup_observations = []
-
-    def fake_cleanup(run_dir, cid):
-        cleanup_observations.append(output.exists())
-        gpw.gp.clear_container_marker(run_dir, cid)
-        return True
-
-    monkeypatch.setattr(gpw.gp, "remove_container_and_clear_marker", fake_cleanup)
+    monkeypatch.setattr(gpw.gp, "start_container", lambda image, name: "cid")
+    monkeypatch.setattr(gpw.gp, "remove_container_and_clear_marker", lambda run_dir, cid: True)
     monkeypatch.setattr(
         gpw,
         "extract_patch_guarded",
@@ -833,10 +446,7 @@ def test_generate_persists_completed_patch_only_after_container_cleanup(monkeypa
         blind_validation=False,
         checkpoint_interval_seconds=0,
         resume=False,
-        output=str(output),
-        metrics=str(metrics_output),
-        model_name="model",
-        _persist_output_after_cleanup=True,
+        output="predictions.jsonl",
     )
     cfg = {
         "model": "m",
@@ -852,187 +462,11 @@ def test_generate_persists_completed_patch_only_after_container_cleanup(monkeypa
     )
 
     assert metrics["workflow_status"] == "done"
-    assert cleanup_observations == [False]
-    assert json.loads(output.read_text(encoding="utf-8"))["model_patch"].strip()
-    assert json.loads(metrics_output.read_text(encoding="utf-8"))["workflow_status"] == "done"
-
-
-def test_generate_output_symlink_race_cleans_active_container(monkeypatch, tmp_path):
-    async def fake_run_eval_task(task, **kwargs):
-        return EvalResult(
-            task_id=task.task_id,
-            patch="diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n",
-            patch_produced=True,
-            tokens_used=1,
-            steps=1,
-            duration=1.0,
-            workflow_result={},
-        )
-
-    monkeypatch.setattr(gpw, "run_eval_task", fake_run_eval_task)
-    monkeypatch.setattr(
-        gpw.gp, "start_container", lambda image, name, owner_token: "cid"
-    )
-    output = tmp_path / "predictions.jsonl"
-    victim = tmp_path / "victim.jsonl"
-    victim.write_text("unchanged\n", encoding="utf-8")
-
-    def race_output_before_staging(*args, **kwargs):
-        output.symlink_to(victim)
-        return "diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n", []
-
-    monkeypatch.setattr(gpw, "extract_patch_guarded", race_output_before_staging)
-    removed = []
-
-    def cleanup_owned_container(run_dir, cid):
-        removed.append(cid)
-        gpw.gp.clear_container_marker(run_dir, cid)
-        return True
-
-    monkeypatch.setattr(
-        gpw.gp,
-        "remove_container_and_clear_marker",
-        cleanup_owned_container,
-    )
-    args = SimpleNamespace(
-        timeout=10,
-        budget=1000,
-        max_steps=3,
-        keep_container=True,
-        blind_validation=False,
-        checkpoint_interval_seconds=0,
-        resume=False,
-        output=str(output),
-        metrics=str(tmp_path / "metrics.jsonl"),
-        model_name="model",
-        _persist_output_after_cleanup=True,
-    )
-    cfg = {
-        "model": "m",
-        "provider": "openai",
-        "api_key": "k",
-        "base_url": "http://local",
-        "temperature": 0.0,
-        "thinking": False,
-    }
-
-    with pytest.raises(ValueError, match="regular file or absent"):
-        asyncio.run(
-            gpw.generate(
-                FIXTURE,
-                "image",
-                cfg,
-                args,
-                gpw.generate_review_fix,
-                "generate_review_fix",
-            )
-        )
-
-    assert removed == ["cid"]
-    assert victim.read_text(encoding="utf-8") == "unchanged\n"
-    assert not list((tmp_path / ".opencollab" / "pending_outputs").glob("*.json"))
-    assert not list((tmp_path / ".opencollab" / "container_owners").glob("*.json"))
-
-
-def test_generate_cleanup_failure_does_not_publish_done(monkeypatch, tmp_path):
-    async def fake_run_eval_task(task, **kwargs):
-        return EvalResult(
-            task_id=task.task_id,
-            patch="diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n",
-            patch_produced=True,
-            tokens_used=1,
-            steps=1,
-            duration=1.0,
-            workflow_result={},
-        )
-
-    monkeypatch.setattr(gpw, "run_eval_task", fake_run_eval_task)
-    monkeypatch.setattr(
-        gpw.gp, "start_container", lambda image, name, owner_token: "cid"
-    )
-    monkeypatch.setattr(
-        gpw.gp, "remove_container_and_clear_marker", lambda run_dir, cid: False
-    )
-    monkeypatch.setattr(
-        gpw,
-        "extract_patch_guarded",
-        lambda *args, **kwargs: ("diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n", []),
-    )
-    output = tmp_path / "predictions.jsonl"
-    args = SimpleNamespace(
-        timeout=10,
-        budget=1000,
-        max_steps=3,
-        keep_container=False,
-        blind_validation=False,
-        checkpoint_interval_seconds=0,
-        resume=False,
-        output=str(output),
-        metrics=str(tmp_path / "metrics.jsonl"),
-        model_name="model",
-        _persist_output_after_cleanup=True,
-    )
-    cfg = {
-        "model": "m",
-        "provider": "openai",
-        "api_key": "k",
-        "base_url": "http://local",
-        "temperature": 0.0,
-        "thinking": False,
-    }
-
-    with pytest.raises(RuntimeError, match="technical container cleanup failed"):
-        asyncio.run(
-            gpw.generate(
-                FIXTURE,
-                "image",
-                cfg,
-                args,
-                gpw.generate_review_fix,
-                "generate_review_fix",
-            )
-        )
-
-    assert not output.exists()
-    assert list((tmp_path / ".opencollab" / "pending_outputs").glob("*.json"))
-    assert list((tmp_path / ".opencollab" / "container_owners").glob("*.json"))
-
-
-def test_workflow_status_does_not_relabel_provider_failure_as_timeout_patch():
-    result = EvalResult(
-        task_id="task-1",
-        patch="diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n",
-        patch_produced=True,
-        tokens_used=1,
-        steps=1,
-        duration=1.0,
-        error="TimeoutError: provider request timed out",
-    )
-
-    status = gpw._workflow_status_for_result(result, result.patch)
-
-    assert status == "error"
-
-
-def test_workflow_status_preserves_structured_advisory_gap():
-    result = EvalResult(
-        task_id="task-1",
-        patch="diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n",
-        patch_produced=True,
-        tokens_used=1,
-        steps=1,
-        duration=1.0,
-        workflow_result={"status": "advisory_gap", "done_with_advisory_gap": True},
-    )
-
-    status = gpw._workflow_status_for_result(result, result.patch)
-
-    assert status == "advisory_gap"
 
 
 def test_container_marker_survives_failed_remove(monkeypatch, tmp_path):
     gpw.gp.write_container_marker(tmp_path, "cid123", "name123")
-    monkeypatch.setattr(gpw.gp, "_remove_owned_container", lambda record: False)
+    monkeypatch.setattr(gpw.gp, "remove_container", lambda cid: False)
 
     removed = gpw.gp.remove_container_and_clear_marker(tmp_path, "cid123")
 
@@ -1057,5 +491,3 @@ def test_output_records_share_record_id_and_patch_sha():
     assert prediction["patch_sha256"] == gpw._patch_sha256(patch)
     assert metrics["patch_sha256"] == prediction["patch_sha256"]
     assert metrics["instance_id"] == prediction["instance_id"]
-    assert metrics["runner_returncode"] == 0
-    assert prediction["workflow_metric"]["runner_returncode"] == 0

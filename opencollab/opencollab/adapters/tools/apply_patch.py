@@ -111,7 +111,7 @@ class ApplyPatchTool(Tool):
             path = safety_policy.check_path(path)
 
         try:
-            async with host_write_lock(path, env):
+            with host_write_lock(path, env):
                 try:
                     current = await env.read_file(path)
                 except FileNotFoundError:
