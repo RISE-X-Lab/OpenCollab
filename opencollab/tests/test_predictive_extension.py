@@ -427,11 +427,28 @@ def test_t2_justified_extension_granted_then_hard_cap_forces_submit():
     llm = FakeLLM(
         [
             # turn 1 (OFFER): the scout justifies with a concrete, falsifiable reason.
-            llm_response(tool_calls=[ext_call(_GOOD_REASON)], total_tokens=1_000, finish_reason="tool_calls"),
+            llm_response(
+                tool_calls=[ext_call(_GOOD_REASON)],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),
             # turn 2 (granted extension): one more read.
-            llm_response(tool_calls=[tool_call(name="file_read", arguments="{}")], total_tokens=1_000, finish_reason="tool_calls"),
+            llm_response(
+                tool_calls=[tool_call(name="file_read", arguments="{}")],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),
             # turn 3 (forced wind-down, cap reached): submit.
-            llm_response(tool_calls=[tool_call(name="submit_findings", arguments=json.dumps(_captured()))], total_tokens=1_000, finish_reason="tool_calls"),
+            llm_response(
+                tool_calls=[
+                    tool_call(
+                        name="submit_findings",
+                        arguments=json.dumps(_captured()),
+                    )
+                ],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),
         ]
     )
     state = agent_state()
@@ -462,9 +479,22 @@ def test_t2_vacuous_reason_denied_immediately_forces_submit():
     llm = FakeLLM(
         [
             # OFFER turn: a vacuous reason.
-            llm_response(tool_calls=[ext_call("let me keep looking a bit more")], total_tokens=1_000, finish_reason="tool_calls"),
+            llm_response(
+                tool_calls=[ext_call("let me keep looking a bit more")],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),
             # forced submit turn.
-            llm_response(tool_calls=[tool_call(name="submit_findings", arguments=json.dumps(_captured()))], total_tokens=1_000, finish_reason="tool_calls"),
+            llm_response(
+                tool_calls=[
+                    tool_call(
+                        name="submit_findings",
+                        arguments=json.dumps(_captured()),
+                    )
+                ],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),
         ]
     )
     state = agent_state()
@@ -492,10 +522,31 @@ def test_t2_duplicate_reason_denied_through_runner():
     agent = Agent(name="scout", system_prompt="s", tools=[_ExecReadStub(), submit])
     llm = FakeLLM(
         [
-            llm_response(tool_calls=[ext_call(_GOOD_REASON)], total_tokens=1_000, finish_reason="tool_calls"),      # offer 1 -> granted
-            llm_response(tool_calls=[tool_call(name="file_read", arguments="{}")], total_tokens=1_000, finish_reason="tool_calls"),  # granted read
-            llm_response(tool_calls=[ext_call(_GOOD_REASON, call_id="ext-2")], total_tokens=1_000, finish_reason="tool_calls"),  # offer 2 -> dup
-            llm_response(tool_calls=[tool_call(name="submit_findings", arguments=json.dumps(_captured()))], total_tokens=1_000, finish_reason="tool_calls"),  # forced submit
+            llm_response(
+                tool_calls=[ext_call(_GOOD_REASON)],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),  # offer 1 -> granted
+            llm_response(
+                tool_calls=[tool_call(name="file_read", arguments="{}")],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),  # granted read
+            llm_response(
+                tool_calls=[ext_call(_GOOD_REASON, call_id="ext-2")],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),  # offer 2 -> duplicate
+            llm_response(
+                tool_calls=[
+                    tool_call(
+                        name="submit_findings",
+                        arguments=json.dumps(_captured()),
+                    )
+                ],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),  # forced submit
         ]
     )
     state = agent_state()
@@ -522,7 +573,13 @@ def test_offer_turn_voluntary_submit_commits_without_consuming_extension():
     ext = RequestExtensionTool()
     agent = Agent(name="scout", system_prompt="s", tools=[_ExecReadStub(), submit])
     llm = FakeLLM(
-        [llm_response(tool_calls=[tool_call(arguments=json.dumps(_captured()))], total_tokens=1_000, finish_reason="tool_calls")]
+        [
+            llm_response(
+                tool_calls=[tool_call(arguments=json.dumps(_captured()))],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            )
+        ]
     )
     state = agent_state()
     runner = build_runner(
@@ -571,7 +628,13 @@ def test_valve_not_offered_when_no_extension_tool_wired():
     agent = Agent(name="scout", system_prompt="s", tools=[_ExecReadStub(), submit])
     state = agent_state()
     llm = FakeLLM(
-        [llm_response(tool_calls=[tool_call(arguments=json.dumps(_captured()))], total_tokens=1_000, finish_reason="tool_calls")]
+        [
+            llm_response(
+                tool_calls=[tool_call(arguments=json.dumps(_captured()))],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            )
+        ]
     )
     runner = build_runner(
         state=state, agent=agent, llm=llm, tool_execution=CapturingToolExecution(agent),
