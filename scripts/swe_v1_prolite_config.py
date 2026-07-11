@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import json
 import os
 import re
+import secrets
 import shlex
 import stat
 import subprocess
@@ -361,11 +363,33 @@ def ensure_remote_proxy(
 
 
 def sync_runtime(*, ssh_command: list[str], host: str, remote_runtime_repo: str) -> dict[str, Any]:
-    synced: list[str] = []
-    synced_dirs: list[str] = []
+    synced = list(SYNC_FILES)
+    synced_dirs = list(SYNC_DIRS)
+    missing = [
+        rel
+        for rel in synced
+        if not (REPO_ROOT / rel).is_file()
+    ]
+    missing.extend(
+        rel
+        for rel in synced_dirs
+        if not (REPO_ROOT / rel).is_dir()
+    )
+    if missing:
+        raise RuntimeError("required runtime inputs are missing: " + ", ".join(sorted(missing)))
+
+    target = remote_runtime_repo.rstrip("/")
+    if not target or target in {".", "..", "/"}:
+        raise ValueError("remote_runtime_repo must identify a dedicated runtime directory")
+    target_parent = str(Path(target).parent)
+    token = secrets.token_hex(8)
+    remote_archive = f"{target}.archive.{token}.tgz"
+    remote_staging = f"{target}.staging.{token}"
+    remote_backup = f"{target}.backup.{token}"
     ssh_part = " ".join(shlex.quote(part) for part in ssh_command)
     with tempfile.TemporaryDirectory(prefix="swe-v1-runtime-") as tmp_dir:
         archive_path = Path(tmp_dir) / "runtime.tgz"
+        manifest_path = Path(tmp_dir) / "runtime-manifest.json"
 
         def archive_filter(tar_info: tarfile.TarInfo) -> tarfile.TarInfo | None:
             parts = Path(tar_info.name).parts
@@ -374,60 +398,93 @@ def sync_runtime(*, ssh_command: list[str], host: str, remote_runtime_repo: str)
             return tar_info
 
         with tarfile.open(archive_path, "w:gz") as archive:
-            for rel in SYNC_FILES:
+            for rel in synced:
                 local_path = REPO_ROOT / rel
-                if not local_path.exists():
-                    continue
                 archive.add(local_path, arcname=rel, filter=archive_filter)
-                synced.append(rel)
-            for rel in SYNC_DIRS:
+            for rel in synced_dirs:
                 local_path = REPO_ROOT / rel
-                if not local_path.exists():
-                    continue
                 archive.add(local_path, arcname=rel, filter=archive_filter)
-                synced_dirs.append(rel)
-        run_checked([*ssh_command, host, "mkdir -p " + shlex.quote(remote_runtime_repo)], timeout=60)
-        remote_archive = remote_runtime_repo.rstrip("/") + "/runtime.tgz"
+            manifest = {
+                "version": 1,
+                "synced": synced,
+                "synced_dirs": synced_dirs,
+                "archive_members": sorted(
+                    member.name
+                    for member in archive.getmembers()
+                    if member.isfile() or member.issym()
+                ),
+            }
+            manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            archive.add(manifest_path, arcname="runtime-manifest.json")
+
+        run_checked([*ssh_command, host, "mkdir -p -- " + shlex.quote(target_parent)], timeout=60)
         run_checked(["rsync", "-az", "-e", ssh_part, str(archive_path), f"{host}:{remote_archive}"], timeout=300)
-        run_checked(
-            [*ssh_command, host, "tar -xzf " + shlex.quote(remote_archive) + " -C " + shlex.quote(remote_runtime_repo)],
-            timeout=300,
-        )
     sh_files = [rel for rel in synced if rel.endswith(".sh")]
-    if sh_files:
-        run_checked(
-            [
-                *ssh_command,
-                host,
-                "cd "
-                + shlex.quote(remote_runtime_repo)
-                + " && chmod +x "
-                + " ".join(shlex.quote(rel) for rel in sh_files),
-            ],
-            timeout=60,
-        )
     compile_targets = [
         rel
         for rel in ("scripts", "swebench", "workflows", *SYNC_DIRS)
         if rel in synced_dirs or any(item == rel or item.startswith(rel + "/") for item in synced)
     ]
+    install_lines = [
+        "set -eu",
+        "target=" + shlex.quote(target),
+        "stage=" + shlex.quote(remote_staging),
+        "backup=" + shlex.quote(remote_backup),
+        "archive=" + shlex.quote(remote_archive),
+        "target_moved=0",
+        "installed=0",
+        "cleanup() {",
+        '  if [ "$target_moved" -eq 1 ] && [ "$installed" -eq 0 ] && '
+        '     { [ ! -e "$target" ] && [ ! -L "$target" ]; }; then',
+        '    mv -- "$backup" "$target" || true',
+        "  fi",
+        '  rm -rf -- "$stage"',
+        '  rm -f -- "$archive"',
+        "}",
+        "trap cleanup EXIT HUP INT TERM",
+        'if [ -e "$target" ] || [ -L "$target" ]; then',
+        '  current_manifest="$target/runtime-manifest.json"',
+        '  legacy_archive="$target/runtime.tgz"',
+        '  if { [ ! -f "$current_manifest" ] || [ -L "$current_manifest" ]; } &&',
+        '     { [ ! -f "$legacy_archive" ] || [ -L "$legacy_archive" ]; }; then',
+        '    echo "refusing to replace an unmarked runtime directory: $target" >&2',
+        "    exit 1",
+        "  fi",
+        "fi",
+        'test ! -e "$stage" && test ! -L "$stage"',
+        'test ! -e "$backup" && test ! -L "$backup"',
+        'mkdir -- "$stage"',
+        'tar -xzf "$archive" -C "$stage"',
+    ]
+    prepare_commands: list[str] = []
+    if sh_files:
+        prepare_commands.append("chmod +x " + " ".join(shlex.quote(rel) for rel in sh_files))
     if compile_targets:
-        run_checked(
-            [
-                *ssh_command,
-                host,
-                "cd "
-                + shlex.quote(remote_runtime_repo)
-                + " && python3 -m compileall -q "
-                + " ".join(shlex.quote(rel) for rel in compile_targets),
-            ],
-            timeout=180,
+        prepare_commands.append(
+            "python3 -m compileall -q " + " ".join(shlex.quote(rel) for rel in compile_targets)
         )
+    if prepare_commands:
+        install_lines.append('(cd "$stage" && ' + " && ".join(prepare_commands) + ")")
+    install_lines.extend(
+        [
+            'if [ -e "$target" ] || [ -L "$target" ]; then',
+            '  mv -- "$target" "$backup"',
+            "  target_moved=1",
+            "fi",
+            'mv -- "$stage" "$target"',
+            "installed=1",
+            'if [ "$target_moved" -eq 1 ]; then rm -rf -- "$backup"; fi',
+            'rm -f -- "$archive"',
+            "trap - EXIT HUP INT TERM",
+        ]
+    )
+    run_checked([*ssh_command, host, "\n".join(install_lines)], timeout=300)
     return {
-        "remote_runtime_repo": remote_runtime_repo,
+        "remote_runtime_repo": target,
         "synced": synced,
         "synced_dirs": synced_dirs,
         "compile_targets": compile_targets,
+        "manifest": "runtime-manifest.json",
     }
 
 

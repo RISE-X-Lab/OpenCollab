@@ -356,6 +356,27 @@ def test_existing_branch_failure_preserves_branch(tmp_path):
     assert _branch_exists(repo, "existing-review")
 
 
+def test_mkdtemp_failure_after_branch_claim_releases_branch_and_source_handle(
+    tmp_path,
+    monkeypatch,
+):
+    repo = _init_repo(tmp_path / "repo")
+    branch = "mkdtemp-rollback"
+    env = WorktreeEnvironment(str(repo), branch_name=branch)
+
+    def fail_mkdtemp(*args, **kwargs):
+        raise OSError("temporary directory unavailable")
+
+    monkeypatch.setattr(env_module.tempfile, "mkdtemp", fail_mkdtemp)
+    with pytest.raises(OSError, match="temporary directory unavailable"):
+        asyncio.run(env.setup())
+
+    assert not _branch_exists(repo, branch)
+    assert env._branch_cleanup_pending is False
+    assert env._source_handle.fd == -1
+    asyncio.run(env.cleanup())
+
+
 def test_branch_created_after_probe_is_never_deleted_as_ours(tmp_path, monkeypatch):
     repo = _init_repo(tmp_path / "repo")
     branch = "raced-foreign-branch"

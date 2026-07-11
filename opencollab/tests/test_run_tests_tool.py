@@ -1,6 +1,7 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
 from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -501,6 +502,43 @@ def test_build_command_native_runner_quotes_translated_target():
     assert cmd == "python bin/test tests/test_x.py 'test_two; touch pwned'"
 
 
+@pytest.mark.parametrize(
+    "runner",
+    [
+        "uv run pytest",
+        "poetry run pytest",
+        "pipenv run pytest",
+        "coverage run -m pytest",
+        "env PYTHONHASHSEED=0 python -m pytest",
+        "python -X dev -m pytest",
+    ],
+)
+def test_build_command_supports_safe_pytest_wrappers(runner):
+    from opencollab.adapters.tools.run_tests import _build_command, _is_green
+
+    target = "tests/test_x.py::test_two"
+    cmd = _build_command(runner, target, "")
+    output = f"PASSED {target}\n1 passed in 0.01s\n"
+
+    assert cmd.endswith(f"-q {target}")
+    assert _is_green(0, output, runner=runner, target=target)
+
+
+@pytest.mark.parametrize(
+    "runner",
+    [
+        'sh -c "pytest tests/test_x.py"',
+        'python -c "print(\"1 passed in 0.01s\")" -m pytest',
+        "env --ignore-environment pytest",
+        "uv tool run pytest",
+    ],
+)
+def test_pytest_runner_rejects_unsupported_or_shell_wrappers(runner):
+    from opencollab.adapters.tools.run_tests import _is_pytest_runner
+
+    assert not _is_pytest_runner(runner)
+
+
 def test_build_command_go_runner_translates_package_and_test_name():
     from opencollab.adapters.tools.run_tests import _build_command
     cmd = _build_command("go test", "internal/server/evaluator_test.go::TestEvaluate", "")
@@ -604,6 +642,56 @@ def test_run_tests_rejects_noop_runner_green_forgery():
     )
 
     assert "Verdict: RED" in result
+
+
+def test_run_tests_rejects_shell_wrapped_pytest_output_forgery():
+    target = "tests/test_x.py::test_one"
+    forged = f"PASSED {target}\n1 passed in 0.01s\n"
+    runtime = ToolRuntime(
+        environment=FakeEnv(stdout=forged, returncode=0),
+        safety_policy=None,
+        permission_policy=None,
+    )
+
+    tool = RunTestsTool()
+    result = run(
+        tool.execute_with_runtime(
+            {"runner": 'sh -c "printf forged" pytest', "target": target},
+            runtime,
+        )
+    )
+
+    assert "Verdict: RED" in result
+    assert tool.verified_targets == frozenset()
+
+
+def test_run_tests_rejects_multiple_pytest_result_summaries():
+    from opencollab.adapters.tools.run_tests import _is_green
+
+    target = "tests/test_x.py::test_one"
+    output = (
+        f"FAILED {target} - assertion failed\n"
+        "1 failed in 0.01s\n"
+        f"PASSED {target}\n"
+        "1 passed in 0.01s\n"
+    )
+
+    assert not _is_green(0, output, target=target)
+
+
+def test_run_tests_records_only_parser_backed_green_targets():
+    target = "tests/test_x.py::test_one"
+    runtime = ToolRuntime(
+        environment=FakeEnv(stdout=PLAIN_PASS_OUTPUT, returncode=0),
+        safety_policy=None,
+        permission_policy=None,
+    )
+
+    tool = RunTestsTool()
+    result = run(tool.execute_with_runtime({"target": target}, runtime))
+
+    assert "Verdict: GREEN" in result
+    assert tool.verified_targets == frozenset({target})
 
 
 def test_run_tests_requires_named_target_pass_proof():

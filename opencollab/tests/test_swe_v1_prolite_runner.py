@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
+import shutil
 import tarfile
+from pathlib import Path
 
 from swe_v1_prolite_runner_test_support import (
     SimpleNamespace,
@@ -10,6 +13,24 @@ from swe_v1_prolite_runner_test_support import (
     subprocess,
     sys,
 )
+
+
+def _run_runtime_sync_command_locally(command, *, timeout=120, input_text=None):
+    if command[0] == "rsync":
+        destination = Path(command[-1].split(":", 1)[1])
+        shutil.copy2(command[-2], destination)
+        return subprocess.CompletedProcess(command, 0, "", "")
+    assert command[:2] == ["ssh", "remote-host"]
+    result = subprocess.run(
+        ["sh", "-c", command[-1]],
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr or result.stdout)
+    return result
 
 
 @pytest.mark.parametrize(
@@ -197,6 +218,64 @@ def test_runtime_archive_imports_generation_entrypoints_from_clean_directory(mon
         "gen_prediction_safe_output.py",
     ):
         assert (extracted / "swebench" / name).is_file()
+
+
+def test_runtime_sync_requires_every_declared_input(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(runner, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(runner, "SYNC_FILES", ["missing.py"])
+    monkeypatch.setattr(runner, "SYNC_DIRS", ["missing-package"])
+    monkeypatch.setattr(runner, "run_checked", lambda *args, **kwargs: calls.append(args))
+
+    with pytest.raises(RuntimeError, match="missing-package, missing.py"):
+        runner.sync_runtime(
+            ssh_command=["ssh"],
+            host="remote-host",
+            remote_runtime_repo="/remote/runtime",
+        )
+
+    assert calls == []
+
+
+def test_runtime_sync_replaces_reused_directory_with_manifested_snapshot(monkeypatch, tmp_path):
+    remote_runtime = tmp_path / "remote-runtime"
+    remote_runtime.mkdir()
+    (remote_runtime / "runtime.tgz").write_bytes(b"legacy runtime marker")
+    (remote_runtime / "stale_module.py").write_text("STALE = True\n", encoding="utf-8")
+
+    monkeypatch.setattr(runner, "run_checked", _run_runtime_sync_command_locally)
+
+    summary = runner.sync_runtime(
+        ssh_command=["ssh"],
+        host="remote-host",
+        remote_runtime_repo=str(remote_runtime),
+    )
+
+    assert not (remote_runtime / "stale_module.py").exists()
+    manifest = json.loads((remote_runtime / "runtime-manifest.json").read_text(encoding="utf-8"))
+    assert manifest["synced"] == summary["synced"]
+    assert manifest["synced_dirs"] == summary["synced_dirs"]
+    assert "opencollab/opencollab/application/session.py" in manifest["archive_members"]
+    assert not list(tmp_path.glob("remote-runtime.*"))
+
+
+def test_runtime_sync_refuses_to_replace_unmarked_directory(monkeypatch, tmp_path):
+    remote_runtime = tmp_path / "user-directory"
+    remote_runtime.mkdir()
+    user_file = remote_runtime / "notes.txt"
+    user_file.write_text("keep me\n", encoding="utf-8")
+
+    monkeypatch.setattr(runner, "run_checked", _run_runtime_sync_command_locally)
+
+    with pytest.raises(RuntimeError, match="unmarked runtime directory"):
+        runner.sync_runtime(
+            ssh_command=["ssh"],
+            host="remote-host",
+            remote_runtime_repo=str(remote_runtime),
+        )
+
+    assert user_file.read_text(encoding="utf-8") == "keep me\n"
+    assert not list(tmp_path.glob("user-directory.*"))
 
 def test_ensure_remote_proxy_falls_back_when_default_remote_port_is_busy():
     calls: list[list[str]] = []
