@@ -15,11 +15,8 @@ trust the store and never re-cap.
 from __future__ import annotations
 
 import logging
-import os
-import stat
 from pathlib import Path
 
-from opencollab.adapters.safe_files import read_regular_text
 from opencollab.adapters.tools._output import truncate
 from opencollab.domain.skill import SkillManifest
 
@@ -31,9 +28,6 @@ logger = logging.getLogger(__name__)
 # (head+tail with a "… truncated …" marker) does the actual capping.
 SKILL_BODY_MAX_CHARS = 8000
 SKILL_DESCRIPTION_MAX_CHARS = 500
-MAX_SKILL_FILE_BYTES = 4 * 1024 * 1024
-MAX_SKILL_PACKAGES = 256
-MAX_SKILL_ROOT_ENTRIES = 4_096
 
 _FRONTMATTER_DELIMITER = "---"
 
@@ -80,43 +74,15 @@ class FileSkillStore:
         self._load(Path(root))
 
     def _load(self, root: Path) -> None:
-        try:
-            inspected = root.lstat()
-        except OSError:
+        if not root.is_dir():
             return
-        if not stat.S_ISDIR(inspected.st_mode):
-            return
-        skill_dirs: list[Path] = []
-        with os.scandir(root) as entries:
-            scanned = 0
-            for entry in entries:
-                scanned += 1
-                if scanned > MAX_SKILL_ROOT_ENTRIES:
-                    raise ValueError(
-                        "skills root entries exceed limit of "
-                        f"{MAX_SKILL_ROOT_ENTRIES}"
-                    )
-                try:
-                    is_directory = entry.is_dir(follow_symlinks=False)
-                except OSError:
-                    continue
-                if not is_directory:
-                    continue
-                skill_dirs.append(Path(entry.path))
-                if len(skill_dirs) > MAX_SKILL_PACKAGES:
-                    raise ValueError(
-                        f"skill packages exceed limit of {MAX_SKILL_PACKAGES}"
-                    )
-        for skill_dir in sorted(skill_dirs):
+        for skill_dir in sorted(p for p in root.iterdir() if p.is_dir()):
             self._load_one(skill_dir / "SKILL.md")
 
     def _load_one(self, skill_md: Path) -> None:
         try:
-            text = read_regular_text(
-                skill_md,
-                max_bytes=MAX_SKILL_FILE_BYTES,
-            )
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            text = skill_md.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
             logger.debug("skipping unreadable skill %s: %s", skill_md, exc)
             return
         try:

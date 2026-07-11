@@ -32,8 +32,6 @@ from __future__ import annotations
 import ast
 import os
 import re
-import stat
-import unicodedata
 from typing import Any
 
 # -- integrity guard --------------------------------------------------------- #
@@ -55,8 +53,6 @@ _SKIP_DIRS = frozenset(
 _MAX_FILE_BYTES = 2_000_000
 # Bound on how many call sites we surface (the count is always exact).
 _MAX_CALL_SITES = 40
-_MAX_SOURCE_TREE_ENTRIES = 100_000
-_MAX_SOURCE_FILES = 20_000
 
 
 class FactSheetIntegrityError(Exception):
@@ -77,7 +73,7 @@ def is_answer_path(path: str) -> bool:
     ``_output.jsonl``. Accepts absolute or relative, ``\\`` or ``/`` separators.
     """
     p = str(path).replace("\\", "/")
-    parts = [unicodedata.normalize("NFC", c).casefold() for c in p.split("/") if c]
+    parts = [c for c in p.split("/") if c]
     if any(c in _ANSWER_DIR_COMPONENTS for c in parts):
         return True
     name = parts[-1] if parts else p
@@ -129,256 +125,55 @@ def _class_qualifier(qualname: str) -> str | None:
     return qualname.rsplit(".", 1)[0] if "." in qualname else None
 
 
-def _directory_flags() -> int:
-    return (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
-
-
-def _read_source_at(parent_fd: int, name: str, display_path: str) -> str:
-    before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    if not stat.S_ISREG(before.st_mode):
-        raise OSError(f"source input is not a regular file: {display_path}")
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_NONBLOCK", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
-    fd = os.open(name, flags, dir_fd=parent_fd)
-    try:
-        opened = os.fstat(fd)
-        if (
-            not stat.S_ISREG(opened.st_mode)
-            or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-        ):
-            raise OSError(f"source input changed while opening: {display_path}")
-        if opened.st_size > _MAX_FILE_BYTES:
-            raise ValueError(
-                f"source input exceeds {_MAX_FILE_BYTES} bytes: {display_path}"
-            )
-        chunks: list[bytes] = []
-        remaining = _MAX_FILE_BYTES + 1
-        while remaining > 0:
-            chunk = os.read(fd, min(65_536, remaining))
-            if not chunk:
-                break
-            chunks.append(chunk)
-            remaining -= len(chunk)
-        after = os.fstat(fd)
-    finally:
-        os.close(fd)
-    payload = b"".join(chunks)
-    if len(payload) > _MAX_FILE_BYTES:
-        raise ValueError(
-            f"source input exceeds {_MAX_FILE_BYTES} bytes: {display_path}"
-        )
-    before_identity = (
-        opened.st_dev,
-        opened.st_ino,
-        opened.st_size,
-        opened.st_mtime_ns,
-        opened.st_ctime_ns,
-    )
-    after_identity = (
-        after.st_dev,
-        after.st_ino,
-        after.st_size,
-        after.st_mtime_ns,
-        after.st_ctime_ns,
-    )
-    if before_identity != after_identity:
-        raise OSError(f"source input changed while reading: {display_path}")
-    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    if (
-        not stat.S_ISREG(current.st_mode)
-        or (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino)
-    ):
-        raise OSError(f"source input changed while reading: {display_path}")
-    return payload.decode("utf-8", errors="replace")
-
-
-def _open_relative_parent(root_fd: int, relpath: str) -> tuple[int, str]:
-    normalized = relpath.replace("\\", "/")
-    parts = [part for part in normalized.split("/") if part]
-    if (
-        not parts
-        or normalized.startswith("/")
-        or any(part in {".", ".."} for part in parts)
-        or is_answer_path(normalized)
-    ):
-        raise OSError(f"unsafe source path: {relpath}")
-    fd = os.dup(root_fd)
-    try:
-        for component in parts[:-1]:
-            before = os.stat(component, dir_fd=fd, follow_symlinks=False)
-            if not stat.S_ISDIR(before.st_mode):
-                raise OSError(f"source parent is not a real directory: {relpath}")
-            child_fd = os.open(component, _directory_flags(), dir_fd=fd)
-            opened = os.fstat(child_fd)
-            if (
-                not stat.S_ISDIR(opened.st_mode)
-                or (before.st_dev, before.st_ino)
-                != (opened.st_dev, opened.st_ino)
-            ):
-                os.close(child_fd)
-                raise OSError(f"source parent changed while opening: {relpath}")
-            os.close(fd)
-            fd = child_fd
-        result = fd
-        fd = -1
-        return result, parts[-1]
-    finally:
-        if fd >= 0:
-            os.close(fd)
-
-
-def _read_relative_source(root: str, relpath: str) -> str:
-    root_fd = os.open(os.path.realpath(root), _directory_flags())
-    parent_fd = -1
-    try:
-        parent_fd, name = _open_relative_parent(root_fd, relpath)
-        return _read_source_at(parent_fd, name, relpath)
-    finally:
-        if parent_fd >= 0:
-            os.close(parent_fd)
-        os.close(root_fd)
-
-
-def _read_source_text(path: str) -> str:
-    absolute = os.path.abspath(path)
-    root = os.path.dirname(absolute) or os.sep
-    return _read_relative_source(root, os.path.basename(absolute))
-
-
 def _iter_source_files(root: str):
-    """Yield stable ``(relpath, source)`` pairs without following directory links."""
-    root = os.path.realpath(root)
-    root_fd = os.open(root, _directory_flags())
-    pending: list[tuple[int, tuple[str, ...]]] = [(root_fd, ())]
-    scanned = 0
-    source_files = 0
-    try:
-        while pending:
-            directory_fd, relative_parts = pending.pop()
-            try:
-                entries = os.scandir(directory_fd)
-            except OSError as exc:
-                os.close(directory_fd)
-                raise FactSheetIntegrityError(
-                    f"cannot enumerate source directory: {'/'.join(relative_parts) or '.'}"
-                ) from exc
-            try:
-                with entries:
-                    for entry in entries:
-                        scanned += 1
-                        if scanned > _MAX_SOURCE_TREE_ENTRIES:
-                            raise FactSheetIntegrityError(
-                                "source tree exceeds entry limit of "
-                                f"{_MAX_SOURCE_TREE_ENTRIES}"
-                            )
-                        normalized_name = unicodedata.normalize(
-                            "NFC", entry.name
-                        ).casefold()
-                        if normalized_name in _SKIP_DIRS or is_answer_path(entry.name):
-                            continue
-                        rel_parts = (*relative_parts, entry.name)
-                        relpath = os.path.join(*rel_parts)
-                        try:
-                            inspected = entry.stat(follow_symlinks=False)
-                        except OSError as exc:
-                            raise FactSheetIntegrityError(
-                                f"cannot inspect source entry: {relpath}"
-                            ) from exc
-                        if stat.S_ISDIR(inspected.st_mode):
-                            child_fd = os.open(
-                                entry.name,
-                                _directory_flags(),
-                                dir_fd=directory_fd,
-                            )
-                            opened = os.fstat(child_fd)
-                            if (
-                                not stat.S_ISDIR(opened.st_mode)
-                                or (inspected.st_dev, inspected.st_ino)
-                                != (opened.st_dev, opened.st_ino)
-                            ):
-                                os.close(child_fd)
-                                raise FactSheetIntegrityError(
-                                    f"source directory changed while opening: {relpath}"
-                                )
-                            pending.append((child_fd, rel_parts))
-                            continue
-                        if not stat.S_ISREG(inspected.st_mode) or not entry.name.endswith(
-                            ".py"
-                        ):
-                            continue
-                        if is_answer_path(relpath):
-                            continue
-                        source_files += 1
-                        if source_files > _MAX_SOURCE_FILES:
-                            raise FactSheetIntegrityError(
-                                f"source files exceed limit of {_MAX_SOURCE_FILES}"
-                            )
-                        yield relpath, _read_source_at(
-                            directory_fd,
-                            entry.name,
-                            relpath,
-                        )
-            finally:
-                os.close(directory_fd)
-    finally:
-        for directory_fd, _relative_parts in pending:
-            try:
-                os.close(directory_fd)
-            except OSError:
-                pass
+    """Yield ``(abspath, relpath)`` for every ``.py`` file under ``root`` that is
+    NOT an answer artifact and not inside a pruned/answer directory."""
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Prune skip-dirs and any answer-ish directory IN PLACE so os.walk never
+        # descends into them.
+        dirnames[:] = [
+            d for d in dirnames if d not in _SKIP_DIRS and not is_answer_path(d)
+        ]
+        for fn in filenames:
+            if not fn.endswith(".py"):
+                continue
+            abspath = os.path.join(dirpath, fn)
+            relpath = os.path.relpath(abspath, root)
+            if is_answer_path(relpath) or is_answer_path(abspath):
+                continue
+            yield abspath, relpath
 
 
 def _resolve_target_file(
     root: str, stub_file: str | None, short_name: str
-) -> tuple[str, str] | None:
+) -> str | None:
     """Locate the in-workspace ``.py`` file defining the target function.
 
     Prefers the stub path named in the goal; falls back to the first source file
     that defines ``def <short_name>``. Always returns a path under ``root`` that
     passes the answer guard, or ``None``.
     """
-    root = os.path.realpath(root)
-
-    def contained_candidate(value: str) -> tuple[str, str] | None:
-        candidate = os.path.abspath(value)
-        try:
-            contained = os.path.commonpath((root, candidate)) == root
-        except ValueError:
-            contained = False
-        if not contained or is_answer_path(candidate):
-            return None
-        relpath = os.path.relpath(candidate, root)
-        try:
-            source = _read_relative_source(root, relpath)
-        except (OSError, UnicodeDecodeError, ValueError):
-            return None
-        return relpath, source
-
     if stub_file:
         cand = stub_file if os.path.isabs(stub_file) else os.path.join(root, stub_file)
-        accepted = contained_candidate(os.path.normpath(cand))
-        if accepted is not None:
-            return accepted
+        cand = os.path.normpath(cand)
+        if os.path.isfile(cand) and not is_answer_path(cand):
+            return cand
         # Try interpreting it as a path relative to root even if it looked absolute.
         tail = stub_file.replace("\\", "/").lstrip("/")
         cand2 = os.path.normpath(os.path.join(root, tail))
-        accepted = contained_candidate(cand2)
-        if accepted is not None:
-            return accepted
+        if os.path.isfile(cand2) and not is_answer_path(cand2):
+            return cand2
     # Fallback: search for a definition of the short name.
     def_re = re.compile(rf"^\s*(?:async\s+)?def\s+{re.escape(short_name)}\s*\(", re.M)
-    for relpath, source in _iter_source_files(root):
-        if def_re.search(source):
-            return relpath, source
+    for abspath, _rel in _iter_source_files(root):
+        try:
+            if os.path.getsize(abspath) > _MAX_FILE_BYTES:
+                continue
+            with open(abspath, "r", encoding="utf-8", errors="replace") as fh:
+                if def_re.search(fh.read()):
+                    return abspath
+        except OSError:
+            continue
     return None
 
 
@@ -511,8 +306,14 @@ def _scan_call_sites(
     sites: list[str] = []
     total = 0
     scanned: list[str] = []
-    for relpath, source in _iter_source_files(root):
-        lines = source.splitlines()
+    for abspath, relpath in _iter_source_files(root):
+        try:
+            if os.path.getsize(abspath) > _MAX_FILE_BYTES:
+                continue
+            with open(abspath, "r", encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()
+        except OSError:
+            continue
         scanned.append(relpath)
         for i, line in enumerate(lines, start=1):
             if relpath == target_rel and i == def_lineno:
@@ -541,11 +342,12 @@ def build_fact_sheet(workspace_root: str | None, goal: str) -> dict[str, Any] | 
     short = _short_name(qualname)
     class_qual = _class_qualifier(qualname)
 
-    target = _resolve_target_file(workspace_root, stub_file, short)
-    if not target:
+    target_abs = _resolve_target_file(workspace_root, stub_file, short)
+    if not target_abs:
         return None
-    target_rel, source = target
     try:
+        with open(target_abs, "r", encoding="utf-8", errors="replace") as fh:
+            source = fh.read()
         tree = ast.parse(source)
     except (OSError, SyntaxError, ValueError):
         return None
@@ -554,6 +356,7 @@ def build_fact_sheet(workspace_root: str | None, goal: str) -> dict[str, Any] | 
     if fn_node is None:
         return None
 
+    target_rel = os.path.relpath(target_abs, workspace_root)
     is_method = enclosing is not None
     docstring = ast.get_docstring(fn_node) or ""
     referenced = _annotation_types(fn_node) + _class_defs(tree)

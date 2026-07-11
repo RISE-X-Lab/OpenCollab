@@ -19,7 +19,7 @@ from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.tools.git_diff import GitDiffTool
-from opencollab.adapters.tools.run_tests import verification_run_tests_tool
+from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.workflow_registry import workflow
 
 MAX_APPROVED_PRE_TESTS = 5
@@ -571,14 +571,7 @@ def _read_tools() -> list[Any]:
 
 
 def _coder_tools() -> list[Any]:
-    return [
-        BashTool(),
-        FileReadTool(),
-        FileWriteTool(),
-        ApplyPatchTool(),
-        verification_run_tests_tool(),
-        GrepTool(),
-    ]
+    return [BashTool(), FileReadTool(), FileWriteTool(), ApplyPatchTool(), RunTestsTool(), GrepTool()]
 
 
 def _tester_tools() -> list[Any]:
@@ -589,7 +582,7 @@ def _tester_tools() -> list[Any]:
     return [
         BashTool(),
         FileReadTool(),
-        verification_run_tests_tool(),
+        RunTestsTool(allow_runner_override=False, allow_extra_args=False),
         GrepTool(),
         GitDiffTool(),
     ]

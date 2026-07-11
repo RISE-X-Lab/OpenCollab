@@ -11,25 +11,16 @@ from __future__ import annotations
 
 def truncate(text: str, max_chars: int, label: str | None = None) -> str:
     """Keep head + tail, drop the middle to avoid context explosion."""
-    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars <= 0:
-        raise ValueError("max_chars must be a positive integer")
     if len(text) <= max_chars:
         return text
+    half = max_chars // 2
     dropped = len(text) - max_chars
     marker = (
         f"\n\n... [{dropped} chars of {label} truncated] ...\n\n"
         if label is not None
         else f"\n\n... [{dropped} chars truncated] ...\n\n"
     )
-    if len(marker) >= max_chars:
-        return marker[:max_chars]
-    source_budget = max_chars - len(marker)
-    head = (source_budget + 1) // 2
-    tail = source_budget - head
-    suffix = text[-tail:] if tail else ""
-    result = text[:head] + marker + suffix
-    assert len(result) <= max_chars
-    return result
+    return text[:half] + marker + text[-half:]
 
 
 __all__ = ["truncate"]

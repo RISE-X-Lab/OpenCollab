@@ -18,8 +18,8 @@ Run with the OpenCollab venv (it must import `opencollab`):
 
 ```bash
 opencollab/.venv/bin/python swebench/gen_prediction.py \
-    --instance-file /path/to/swebench-eval/instance_sympy-20590.json \
-    --output /path/to/swebench-eval/predictions-opencollab.jsonl
+    --instance-file /home/xuzhenhua/swebench-eval/instance_sympy-20590.json \
+    --output /home/xuzhenhua/swebench-eval/predictions-opencollab.jsonl
 ```
 
 ## Team-mode batch runs

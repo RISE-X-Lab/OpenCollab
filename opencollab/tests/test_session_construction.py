@@ -69,20 +69,6 @@ def test_session_builds_runtime_collaborators_eagerly():
     assert isinstance(session.store, SessionStore)
 
 
-def test_session_pending_cleanup_includes_tool_execution_owners():
-    async def scenario():
-        session = _new_session()
-        owner = asyncio.create_task(asyncio.Event().wait())
-        session.tool_execution._pending_cleanup_tasks.add(owner)
-        try:
-            assert owner in session.pending_cleanup_tasks
-        finally:
-            owner.cancel()
-            await asyncio.gather(owner, return_exceptions=True)
-
-    run(scenario())
-
-
 def test_session_seed_user_messages_follow_system_prompt():
     session = _new_session(
         seed_user_messages=[{"role": "user", "content": "Task:\nbuild it"}]

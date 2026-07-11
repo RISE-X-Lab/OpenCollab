@@ -65,12 +65,7 @@ class ScriptedCtx:
 
     async def agent(self, prompt, *, schema=None, label=None, tools=None, **kw):
         self.agent_calls.append({"prompt": prompt, "label": label, "schema": schema, **kw})
-        reply = self._replies.pop(0) if self._replies else None
-        if isinstance(reply, dict) and tools:
-            for tool in tools:
-                if getattr(tool, "name", "") == "run_tests":
-                    tool._verified_targets.update(reply.get("tests_run") or ())
-        return reply
+        return self._replies.pop(0) if self._replies else None
 
     async def parallel(self, thunks):
         return [await t() for t in thunks]

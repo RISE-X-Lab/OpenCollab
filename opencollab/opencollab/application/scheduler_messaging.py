@@ -15,8 +15,6 @@ helpers defined on ``Scheduler``.
 from __future__ import annotations
 
 import asyncio
-import copy
-import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape, quoteattr
 
 from opencollab.application.scheduler_types import QueuedTeammateMessage
@@ -37,10 +35,6 @@ class MessagingMixin:
         """
         if to_aid == from_aid:
             return "Error: an agent cannot message itself."
-        if self._shutting_down:
-            return "Error: scheduler is shutting down."
-        if self._sessions.get(from_aid) is None or self.table.get(from_aid) is None:
-            return f"Error: no sending agent with aid {from_aid}."
         target = self._sessions.get(to_aid)
         if target is None:
             return f"Error: no agent with aid {to_aid}."
@@ -53,88 +47,32 @@ class MessagingMixin:
             )
 
         lock = self._locks.setdefault(to_aid, asyncio.Lock())
-        delivered_events = []
         async with lock:
-            if self._shutting_down:
-                return "Error: scheduler is shutting down."
-            xml = self._format_teammate_message(from_aid, summary, content)
-            target.state.queue_pending_user_message(
-                {
-                    "role": "user",
-                    "content": xml,
-                    "message_content": content,
-                    "from_aid": from_aid,
-                    "to_aid": to_aid,
-                    "summary": summary,
-                }
-            )
-            sent_at = str(target.state.pending_user_messages[-1]["timestamp"])
             message = QueuedTeammateMessage(
                 from_aid=from_aid,
                 to_aid=to_aid,
                 summary=summary,
                 content=content,
-                xml=xml,
-                sent_at=sent_at,
+                xml=self._format_teammate_message(from_aid, summary, content),
             )
             self._message_inbox.setdefault(to_aid, []).append(message)
-            self._autosave_session(to_aid)
-            delivered_events = await self._drain_message_inbox_locked(to_aid)
-        # Scheduler events are observational and may re-enter send_message. Emit
-        # only after releasing the per-target lock, and isolate sink failures so
-        # durable queue mutation and the drive task cannot be rolled back halfway.
-        await self._safe_emit_scheduler_event(
-            self._events.agent_message_sent(
-                from_aid, to_aid, self._role_of(to_aid), summary
+            target.state.queue_pending_user_message(
+                {
+                    "role": "user",
+                    "content": message.xml,
+                    "from_aid": from_aid,
+                    "to_aid": to_aid,
+                    "summary": summary,
+                }
             )
-        )
-        for event in delivered_events:
-            await self._safe_emit_scheduler_event(event)
-        return f"Message queued to aid {to_aid}."
-
-    def _restore_message_inbox(self, aid: int, state: object) -> None:
-        """Rebuild scheduler-owned delivery records from a durable sidecar."""
-        pending = getattr(state, "pending_user_messages", None)
-        if not isinstance(pending, list) or not pending:
-            return
-        restored: list[QueuedTeammateMessage] = []
-        for item in pending:
-            if not isinstance(item, dict) or not item.get("content"):
-                continue
-            xml = str(item["content"])
-            restored.append(
-                QueuedTeammateMessage(
-                    from_aid=self._restored_aid(item.get("from_aid"), default=-1),
-                    to_aid=self._restored_aid(item.get("to_aid"), default=aid),
-                    summary=str(item.get("summary") or "restored teammate message"),
-                    content=str(
-                        item.get("message_content")
-                        or self._message_content_from_xml(xml)
-                    ),
-                    xml=xml,
-                    sent_at=str(item.get("timestamp") or ""),
+            self._autosave_session(to_aid)
+            await self.emit_scheduler_event(
+                self._events.agent_message_sent(
+                    from_aid, to_aid, self._role_of(to_aid), summary
                 )
             )
-        if restored:
-            self._message_inbox[aid] = restored
-
-    @staticmethod
-    def _restored_aid(value: object, *, default: int) -> int:
-        try:
-            return int(value)
-        except (TypeError, ValueError, OverflowError):
-            return default
-
-    @staticmethod
-    def _message_content_from_xml(xml: str) -> str:
-        try:
-            root = ET.fromstring(xml)
-        except ET.ParseError:
-            return xml
-        content = "".join(root.itertext())
-        if content.startswith("\n") and content.endswith("\n"):
-            return content[1:-1]
-        return content
+            await self._drain_message_inbox_locked(to_aid)
+        return f"Message queued to aid {to_aid}."
 
     @staticmethod
     def _format_teammate_message(from_aid: int, summary: str, content: str) -> str:
@@ -146,52 +84,24 @@ class MessagingMixin:
             "</teammate-message>"
         )
 
-    @staticmethod
-    def _format_teammate_message_batch(messages: list[QueuedTeammateMessage]) -> str:
-        envelopes = []
-        for message in messages:
-            sender = f"A{message.from_aid}"
-            envelopes.append(
-                f"<teammate-message teammate_id={quoteattr(sender)} "
-                f"summary={quoteattr(message.summary)} "
-                f"sent_at={quoteattr(message.sent_at)}>\n"
-                f"{escape(message.content)}\n"
-                "</teammate-message>"
-            )
-        return (
-            f'<teammate-messages count="{len(messages)}">\n'
-            + "\n".join(envelopes)
-            + "\n</teammate-messages>"
-        )
-
     async def _drain_message_inbox(self, aid: int, *, allow_current_task: bool = False) -> None:
         lock = self._locks.setdefault(aid, asyncio.Lock())
         async with lock:
-            events = await self._drain_message_inbox_locked(
-                aid, allow_current_task=allow_current_task
-            )
-        for event in events:
-            await self._safe_emit_scheduler_event(event)
-
-    async def _drain_ready_message_inboxes(self) -> None:
-        """Retry durable messages when another turn has returned budget headroom."""
-        for aid in list(self._message_inbox):
-            if self._message_inbox.get(aid):
-                await self._drain_message_inbox(aid)
+            await self._drain_message_inbox_locked(aid, allow_current_task=allow_current_task)
 
     async def _drain_message_inbox_locked(
         self,
         aid: int,
         *,
         allow_current_task: bool = False,
-    ) -> list[object]:
+    ) -> None:
         inbox = self._message_inbox.get(aid)
         if not inbox:
-            return []
+            return
         session = self._sessions.get(aid)
         scb = self.table.get(aid)
         if session is None or scb is None:
-            return []
+            return
         task = self._tasks.get(aid)
         current_task = asyncio.current_task()
         if (
@@ -199,68 +109,16 @@ class MessagingMixin:
             and not task.done()
             and not (allow_current_task and task is current_task)
         ):
-            return []
+            return
         if scb.state.phase is SessionPhase.AWAITING_EVENTS or not scb.state.pending_events.is_empty():
-            return []
-        prior_lease = self._current_turn_budget(aid)
-        if self._shutting_down or not self._reserve_message_budget(aid):
-            return []
+            return
 
         messages = list(inbox)
-        delivery = (
-            messages[0].xml
-            if len(messages) == 1
-            else self._format_teammate_message_batch(messages)
-        )
-        state_snapshot = copy.deepcopy(session.state.__dict__)
-        del inbox[: len(messages)]
+        inbox.clear()
         for message in messages:
             session.state.discard_pending_user_message(message.xml)
-
-        record: dict[str, object] = {
-            "aid": aid,
-            "session": session,
-            "inbox": inbox,
-            "messages": messages,
-            "state_snapshot": state_snapshot,
-            "prior_lease": prior_lease,
-            "lease_restored": False,
-            "invalidated": False,
-            "committed": False,
-            "callback_attached": False,
-        }
-        add_task = asyncio.create_task(session.add_user_message(delivery))
-        record["add_task"] = add_task
-        self._message_delivery_records[aid] = record
-        if current_task is not None:
-            self._message_delivery_tasks[aid] = current_task
-        try:
-            # Shield separates outer delivery ownership from a cancellation-
-            # resistant add hook. Cleanup cancels the outer task to release this
-            # recipient lock immediately, then handles the inner task separately.
-            await asyncio.shield(add_task)
-        except BaseException:
-            self._rollback_message_delivery_locked(aid, record)
-            if not add_task.done():
-                add_task.cancel()
-            self._attach_late_message_restore(aid, record, add_task)
-            raise
-        finally:
-            if self._message_delivery_tasks.get(aid) is current_task:
-                self._message_delivery_tasks.pop(aid, None)
-
-        if self._shutting_down or record.get("invalidated", False):
-            self._rollback_message_delivery_locked(aid, record)
-            self._attach_late_message_restore(aid, record, add_task)
-            return []
-        record["committed"] = True
-        if self._message_delivery_records.get(aid) is record:
-            self._message_delivery_records.pop(aid, None)
-        self._autosave_session(aid)
-
-        self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
-        return [
-            (
+            await session.add_user_message(message.xml)
+            await self.emit_scheduler_event(
                 self._events.agent_message_delivered(
                     message.from_aid,
                     message.to_aid,
@@ -268,72 +126,6 @@ class MessagingMixin:
                     len(message.content),
                 )
             )
-            for message in messages
-        ]
-
-    def _rollback_message_delivery_locked(
-        self,
-        aid: int,
-        record: dict[str, object],
-    ) -> None:
-        """Restore one recipient turn while its per-aid lock is held."""
-        session = record["session"]
-        inbox = record["inbox"]
-        messages = record["messages"]
-        state_snapshot = record["state_snapshot"]
-        session.state.__dict__.clear()
-        session.state.__dict__.update(copy.deepcopy(state_snapshot))
-        inbox[:] = list(messages)
-        if not record.get("lease_restored", False):
-            self._release_turn_budget(aid)
-            self._restore_turn_budget(aid, record.get("prior_lease"))
-            record["lease_restored"] = True
-        add_task = record.get("add_task")
-        if isinstance(add_task, asyncio.Task) and not add_task.done():
-            record["late_restore_required"] = True
-        record["invalidated"] = True
         self._autosave_session(aid)
 
-    def _attach_late_message_restore(
-        self,
-        aid: int,
-        record: dict[str, object],
-        add_task: asyncio.Task[object],
-    ) -> None:
-        """Reapply the snapshot after a cancellation-resistant add finally exits."""
-        if record.get("callback_attached", False):
-            return
-        if add_task.done() and not record.get("late_restore_required", False):
-            self._consume_background_task(add_task)
-            if self._message_delivery_records.get(aid) is record:
-                self._message_delivery_records.pop(aid, None)
-            if self._lead_turn_record is record:
-                self._lead_turn_record = None
-            return
-        record["callback_attached"] = True
-
-        def restore_after_add(done: asyncio.Task[object]) -> None:
-            self._consume_background_task(done)
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                return
-            loop.create_task(self._restore_late_message_delivery(aid, record))
-
-        add_task.add_done_callback(restore_after_add)
-
-    async def _restore_late_message_delivery(
-        self,
-        aid: int,
-        record: dict[str, object],
-    ) -> None:
-        lock = self._locks.setdefault(aid, asyncio.Lock())
-        async with lock:
-            if record.get("invalidated", False):
-                self._rollback_message_delivery_locked(aid, record)
-                if record.get("cleanup_terminal", False):
-                    self._finalize_cleanup_failure(aid)
-        if self._message_delivery_records.get(aid) is record:
-            self._message_delivery_records.pop(aid, None)
-        if self._lead_turn_record is record:
-            self._lead_turn_record = None
+        self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))

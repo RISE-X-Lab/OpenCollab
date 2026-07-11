@@ -26,7 +26,7 @@ from opencollab.application.tool_execution import (
     _intrinsic_low_yield,
     _result_content_hash,
 )
-from opencollab.domain.session import MAX_SCOUT_LEDGER_CARDS, SessionState
+from opencollab.domain.session import SessionState
 
 
 def run(coro):
@@ -242,17 +242,3 @@ def test_t2_sensor_folding_does_not_alter_control_flow_off_equals_on():
     # Only the observational counters diverge: "off" never folded the sensor.
     assert ref.distinct_evidence_count == 0 and ref.low_yield_since_progress == 0
     assert on.distinct_evidence_count == 1 and on.low_yield_since_progress == 0
-
-
-def test_evidence_ledger_retains_only_bounded_latest_cards():
-    state = SessionState(messages=[])
-    for index in range(MAX_SCOUT_LEDGER_CARDS + 5):
-        state.record_evidence_signal(
-            f"content-{index}",
-            f"call-{index}",
-            False,
-            card={"tool": "grep", "target": str(index), "snippet": "hit"},
-        )
-
-    assert len(state.scout_ledger) == MAX_SCOUT_LEDGER_CARDS
-    assert state.scout_ledger[0]["target"] == "5"

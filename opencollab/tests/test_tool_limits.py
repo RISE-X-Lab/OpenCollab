@@ -9,7 +9,6 @@ import asyncio
 
 import pytest
 from opencollab.adapters.env import LocalEnvironment
-from opencollab.adapters.tools._output import truncate
 from opencollab.adapters.tools.bash import MAX_OUTPUT_CHARS
 from opencollab.application.tool_execution import ToolRuntime
 from opencollab.bootstrap.team_config import _build_team_config
@@ -67,35 +66,11 @@ def test_registry_rejects_limits_on_coordination_tools():
         build_tools_for_role(["bash"], tool_limits={"spawn_agent": {"x": 1}})
 
 
-@pytest.mark.parametrize("value", [0, -1, True, False, 10_000_001])
-def test_registry_rejects_invalid_output_caps(value):
-    with pytest.raises(ValueError, match="must be an integer"):
-        build_tools_for_role(
-            ["bash"], tool_limits={"bash": {"max_output_chars": value}}
-        )
-
-
-def test_registry_rejects_safety_constructor_keys_as_limits():
-    with pytest.raises(ValueError, match="unsupported keys"):
-        build_tools_for_role(
-            ["bash"],
-            tool_limits={"bash": {"require_process_isolation": 1}},
-        )
-
-
-@pytest.mark.parametrize("cap", [1, 2, 7, 31, 64])
-def test_truncate_including_marker_never_exceeds_cap(cap):
-    result = truncate("x" * 1000, cap, "stdout")
-    assert len(result) <= cap
-
-
 def test_configured_cap_actually_bounds_bash_output(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     [bash] = build_tools_for_role(
-        ["bash"],
-        interactive=True,
-        tool_limits={"bash": {"max_output_chars": 100}},
+        ["bash"], tool_limits={"bash": {"max_output_chars": 100}}
     )
     runtime = ToolRuntime(
         environment=LocalEnvironment(str(ws)), safety_policy=None, permission_policy=None

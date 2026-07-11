@@ -12,6 +12,7 @@ shadow the configured provider key.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any, Optional
@@ -24,7 +25,6 @@ from opencollab.adapters.cli.config_resolve import (
     print_missing_key_hint,
     resolve_config,
 )
-from opencollab.application.async_timeout import run_with_bounded_shutdown
 from opencollab.application.ports import EventPublisherPort
 from opencollab.application.workflow_registry import Registry
 from opencollab.bootstrap.session_factory import WORKFLOW_RUN_PREFIX, make_run_dir
@@ -131,7 +131,7 @@ def run_cmd(
     save_dir = make_run_dir(workspace, prefix=WORKFLOW_RUN_PREFIX) if save else None
 
     event_sink: EventPublisherPort = _ConsoleEventSink(console)
-    result = run_with_bounded_shutdown(
+    result = asyncio.run(
         run_workflow(
             spec,
             parsed_args,

@@ -7,8 +7,6 @@ from typing import Any
 
 from opencollab.domain.pending import PendingEventTable
 
-MAX_SCOUT_LEDGER_CARDS = 256
-
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -429,8 +427,6 @@ class SessionState:
                     "snippet": card.get("snippet", ""),
                 }
             )
-            if len(self.scout_ledger) > MAX_SCOUT_LEDGER_CARDS:
-                del self.scout_ledger[:-MAX_SCOUT_LEDGER_CARDS]
 
     def remember_tool_call_hash(self, call_hash: str, max_window: int | None = None) -> None:
         self.recent_call_hashes.append(call_hash)

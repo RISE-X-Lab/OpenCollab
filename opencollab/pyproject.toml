@@ -14,8 +14,7 @@ keywords = ["llm", "agent", "multi-agent", "coding-agent", "swe-bench", "softwar
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "Operating System :: POSIX :: Linux",
-    "Operating System :: MacOS",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -52,6 +51,3 @@ Issues = "https://github.com/YihongDong/OpenCollab/issues"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = [".", ".."]
-testpaths = ["tests"]
-norecursedirs = ["eval_work", ".git", ".venv", "__pycache__"]
