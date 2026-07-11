@@ -9,13 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from typing import Any
 
+import pytest
 from opencollab.adapters.worktree_pool import WorktreePool
+from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
-from opencollab.domain.events import SchedulerEvent
-from opencollab.domain.session import SessionState
+from opencollab.application.session_run import GenerationTimeoutError
+from opencollab.bootstrap.session_factory import build_session
+from opencollab.domain.agent import Agent
+from opencollab.domain.events import SchedulerEvent, SessionRuntimeEvent
+from opencollab.domain.scheduler import ReviewVerdict, SessionControlBlock
+from opencollab.domain.session import SessionPhase, SessionState
 
 
 def run(coro):
@@ -51,6 +58,7 @@ class _FakeTeammateSession:
         self.added.append(content)
 
     async def run_loop(self) -> str:
+        self.state.set_phase(SessionPhase.DONE)
         return self._result
 
 
@@ -85,12 +93,14 @@ class _FakeSessionFactory:
         # Map of role -> queue of canned results.
         self._queues = {role: list(results) for role, results in role_results.items()}
         self.built: list[tuple[str, int]] = []
+        self.built_tasks: list[tuple[str, str]] = []
 
     def build_lead_session(self, **kwargs):
         return _FakeLeadSession()
 
     def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None, task=None, context=""):
         self.built.append((role, budget))
+        self.built_tasks.append((role, task or ""))
         queue = self._queues.get(role, [])
         result = queue.pop(0) if queue else ""
         return _FakeTeammateSession(result, role=role)
@@ -165,6 +175,77 @@ def test_spawn_autosaves_parent_tool_call(monkeypatch, tmp_path):
     assert saved["messages"][-1]["tool_calls"][0]["function"]["name"] == "spawn_agent"
 
 
+def test_spawn_lifecycle_slow_autosave_keeps_event_loop_responsive(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+    scheduler, _ = _build_scheduler(None, {"analyst": ["done"]})
+    lead = scheduler.lead_session
+    lead.auto_save_path = str(tmp_path / "lead.json")
+
+    def slow_save(path: str) -> None:
+        started.set()
+        assert release.wait(timeout=2.0)
+        _FakeLeadSession.save(lead, path)
+
+    lead.save = slow_save
+
+    async def scenario():
+        aid = await scheduler.spawn(0, "analyst", "investigate")
+        assert await asyncio.to_thread(started.wait, 1.0)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.Event().wait(), timeout=0.02)
+        owners = scheduler._fallback_autosavers[0].pending_tasks
+        assert owners
+        release.set()
+        await asyncio.gather(*owners, return_exceptions=True)
+        await scheduler._tasks[aid]
+        await scheduler.cleanup()
+
+    run(scenario())
+
+
+def test_message_queue_slow_autosave_keeps_event_loop_responsive(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+    scheduler, _ = _build_scheduler(None, {})
+    target = _FakeTeammateSession("unused", role="coder")
+    target.state.aid = 1
+    target.state.set_phase(SessionPhase.AWAITING_EVENTS)
+    target.auto_save_path = str(tmp_path / "target.json")
+
+    def slow_save(path: str) -> None:
+        started.set()
+        assert release.wait(timeout=2.0)
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump({"messages": target.state.enriched_messages()}, handle)
+
+    target.save = slow_save
+    scheduler.table.add(
+        SessionControlBlock(
+            aid=1,
+            parent_aid=0,
+            agent=target.agent,
+            state=target.state,
+        )
+    )
+    scheduler._sessions[1] = target
+
+    async def scenario():
+        result = await scheduler.send_message(0, 1, "question", "are you there?")
+        assert result == "Message queued to aid 1."
+        assert await asyncio.to_thread(started.wait, 1.0)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.Event().wait(), timeout=0.02)
+        owners = scheduler._fallback_autosavers[1].pending_tasks
+        assert owners
+        release.set()
+        await asyncio.gather(*owners, return_exceptions=True)
+        target.auto_save_path = None
+        await scheduler.cleanup()
+
+    run(scenario())
+
+
 def test_cleanup_autosaves_live_sessions(monkeypatch, tmp_path):
     scheduler, _ = _build_scheduler(monkeypatch, {})
     lead = scheduler.lead_session
@@ -176,6 +257,393 @@ def test_cleanup_autosaves_live_sessions(monkeypatch, tmp_path):
     with open(lead.auto_save_path) as f:
         saved = json.load(f)
     assert saved["messages"][-1]["content"] == "latest state"
+
+
+def test_cleanup_drains_queued_autosaves_before_final_snapshot(tmp_path):
+    first_started = threading.Event()
+    second_started = threading.Event()
+    release_first = threading.Event()
+    release_second = threading.Event()
+    save_path = str(tmp_path / "agent_0_lead.json")
+    call_count = 0
+
+    def stale_autosave() -> None:
+        nonlocal call_count
+        call_count += 1
+        current = call_count
+        if current == 1:
+            first_started.set()
+            assert release_first.wait(timeout=2.0)
+        else:
+            second_started.set()
+            assert release_second.wait(timeout=2.0)
+        with open(save_path, "w", encoding="utf-8") as handle:
+            json.dump({"messages": [{"role": "assistant", "content": f"old-{current}"}]}, handle)
+
+    subscriber = AutoSaveSubscriber(stale_autosave)
+
+    class LeadWithOwnedAutosave(_FakeLeadSession):
+        def __init__(self):
+            super().__init__()
+            self.auto_save_path = save_path
+            self.event_bus = EventBus(subscriber)
+
+        @property
+        def pending_cleanup_tasks(self):
+            return self.event_bus.pending_tasks
+
+        @property
+        def persistence_errors(self):
+            return (subscriber.last_error,) if subscriber.last_error else ()
+
+    scheduler = Scheduler(
+        session_factory=_FakeSessionFactory({}),
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(),
+    )
+    lead = LeadWithOwnedAutosave()
+    scheduler.register_lead(lead)
+    lead.state.append_message({"role": "assistant", "content": "latest state"})
+
+    async def scenario():
+        first_waiter = asyncio.create_task(
+            lead.event_bus.emit(SessionRuntimeEvent(type="step_end"))
+        )
+        assert await asyncio.to_thread(first_started.wait, 1.0)
+        second_waiter = asyncio.create_task(
+            lead.event_bus.emit(SessionRuntimeEvent(type="step_end"))
+        )
+        while len(subscriber.pending_tasks) < 2:
+            await asyncio.sleep(0)
+        first_waiter.cancel()
+        second_waiter.cancel()
+        await asyncio.gather(first_waiter, second_waiter, return_exceptions=True)
+
+        cleanup = asyncio.create_task(scheduler.cleanup(cleanup_timeout=0.2))
+        await asyncio.sleep(0.02)
+        assert cleanup.done() is False
+        release_first.set()
+        assert await asyncio.to_thread(second_started.wait, 0.5)
+        assert cleanup.done() is False
+        release_second.set()
+        await cleanup
+
+    run(scenario())
+    with open(save_path, encoding="utf-8") as handle:
+        saved = json.load(handle)
+    assert saved["messages"][-1]["content"] == "latest state"
+
+
+def test_cleanup_surfaces_final_session_snapshot_failure(tmp_path):
+    error = OSError("final snapshot failed")
+
+    class FailingLead(_FakeLeadSession):
+        def __init__(self):
+            super().__init__()
+            self.auto_save_path = str(tmp_path / "agent_0_lead.json")
+
+        def save(self, path: str) -> None:
+            raise error
+
+    scheduler = Scheduler(
+        session_factory=_FakeSessionFactory({}),
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(),
+    )
+    scheduler.register_lead(FailingLead())
+
+    with pytest.raises(
+        RuntimeError,
+        match="technical scheduler cleanup failed: session persistence failed",
+    ) as caught:
+        run(scheduler.cleanup())
+    assert caught.value.__cause__ is error
+
+
+def test_cleanup_reports_nonquiescent_autosave_before_late_release(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+    save_path = str(tmp_path / "agent_0_lead.json")
+    with open(save_path, "w", encoding="utf-8") as handle:
+        json.dump({"messages": [{"role": "assistant", "content": "previous"}]}, handle)
+
+    def late_autosave() -> None:
+        started.set()
+        assert release.wait(timeout=2.0)
+        with open(save_path, "w", encoding="utf-8") as handle:
+            json.dump({"messages": [{"role": "assistant", "content": "late-old"}]}, handle)
+
+    subscriber = AutoSaveSubscriber(late_autosave)
+
+    class LeadWithLateAutosave(_FakeLeadSession):
+        def __init__(self):
+            super().__init__()
+            self.auto_save_path = save_path
+            self.event_bus = EventBus(subscriber)
+
+        @property
+        def pending_cleanup_tasks(self):
+            return self.event_bus.pending_tasks
+
+        @property
+        def persistence_errors(self):
+            return (subscriber.last_error,) if subscriber.last_error else ()
+
+    scheduler = Scheduler(
+        session_factory=_FakeSessionFactory({}),
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(),
+    )
+    lead = LeadWithLateAutosave()
+    scheduler.register_lead(lead)
+    lead.state.append_message({"role": "assistant", "content": "latest"})
+
+    async def scenario():
+        waiter = asyncio.create_task(
+            lead.event_bus.emit(SessionRuntimeEvent(type="step_end"))
+        )
+        assert await asyncio.to_thread(started.wait, 1.0)
+        waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+
+        with pytest.raises(
+            RuntimeError,
+            match="technical scheduler cleanup failed: session-owned tasks did not quiesce",
+        ):
+            await scheduler.cleanup(cleanup_timeout=0.01)
+        with open(save_path, encoding="utf-8") as handle:
+            assert json.load(handle)["messages"][-1]["content"] == "previous"
+
+        pending = subscriber.pending_tasks
+        assert pending
+        release.set()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    run(scenario())
+    with open(save_path, encoding="utf-8") as handle:
+        assert json.load(handle)["messages"][-1]["content"] == "late-old"
+
+
+def test_cleanup_surfaces_sticky_subscriber_persistence_error(tmp_path):
+    error = OSError("background snapshot failed")
+
+    def failed_autosave() -> None:
+        raise error
+
+    subscriber = AutoSaveSubscriber(failed_autosave)
+
+    class LeadWithFailedAutosave(_FakeLeadSession):
+        def __init__(self):
+            super().__init__()
+            self.auto_save_path = str(tmp_path / "agent_0_lead.json")
+            self.event_bus = EventBus(subscriber)
+
+        @property
+        def pending_cleanup_tasks(self):
+            return self.event_bus.pending_tasks
+
+        @property
+        def persistence_errors(self):
+            return (subscriber.last_error,) if subscriber.last_error else ()
+
+    scheduler = Scheduler(
+        session_factory=_FakeSessionFactory({}),
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(),
+    )
+    lead = LeadWithFailedAutosave()
+    scheduler.register_lead(lead)
+
+    async def scenario():
+        await lead.event_bus.emit(SessionRuntimeEvent(type="step_end"))
+        with pytest.raises(
+            RuntimeError,
+            match="technical scheduler cleanup failed: session persistence failed",
+        ) as caught:
+            await scheduler.cleanup()
+        assert caught.value.__cause__ is error
+
+    run(scenario())
+
+
+def test_cleanup_bounds_blocking_final_snapshot_and_keeps_owner_visible(tmp_path):
+    started = threading.Event()
+    release = threading.Event()
+    save_path = str(tmp_path / "agent_0_lead.json")
+
+    class BlockingFinalLead(_FakeLeadSession):
+        def __init__(self):
+            super().__init__()
+            self.auto_save_path = save_path
+
+        def save(self, path: str) -> None:
+            started.set()
+            assert release.wait(timeout=2.0)
+            super().save(path)
+
+    scheduler = Scheduler(
+        session_factory=_FakeSessionFactory({}),
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(),
+    )
+    lead = BlockingFinalLead()
+    scheduler.register_lead(lead)
+    lead.state.append_message({"role": "assistant", "content": "latest"})
+
+    async def scenario():
+        cleanup = asyncio.create_task(scheduler.cleanup(cleanup_timeout=0.01))
+        assert await asyncio.to_thread(started.wait, 1.0)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.Event().wait(), timeout=0.02)
+        assert cleanup.done() is False
+        with pytest.raises(
+            RuntimeError,
+            match="technical scheduler cleanup failed: session-owned tasks did not quiesce",
+        ):
+            await cleanup
+        pending = scheduler._fallback_autosavers[0].pending_tasks
+        assert pending
+        release.set()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    run(scenario())
+    with open(save_path, encoding="utf-8") as handle:
+        assert json.load(handle)["messages"][-1]["content"] == "latest"
+
+
+def test_cleanup_surfaces_sticky_manifest_failure_after_later_success():
+    scheduler, _ = _build_scheduler(None, {})
+    error = OSError("first manifest failed")
+    calls = 0
+
+    def flaky_manifest() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise error
+
+    scheduler.set_manifest_writer(flaky_manifest)
+    assert scheduler._write_manifest() is error
+    assert scheduler._write_manifest() is None
+
+    with pytest.raises(
+        RuntimeError,
+        match="technical scheduler cleanup failed: session persistence failed",
+    ) as caught:
+        run(scheduler.cleanup())
+    assert caught.value.__cause__ is error
+
+
+def test_cleanup_surfaces_final_manifest_failure():
+    scheduler, _ = _build_scheduler(None, {})
+    error = OSError("final manifest failed")
+
+    def failed_manifest() -> None:
+        raise error
+
+    scheduler.set_manifest_writer(failed_manifest)
+    with pytest.raises(
+        RuntimeError,
+        match="technical scheduler cleanup failed: session persistence failed",
+    ) as caught:
+        run(scheduler.cleanup())
+    assert caught.value.__cause__ is error
+
+
+def test_cleanup_bounds_blocking_final_manifest_and_keeps_owner_visible():
+    scheduler, _ = _build_scheduler(None, {})
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocking_manifest() -> None:
+        started.set()
+        assert release.wait(timeout=2.0)
+
+    scheduler.set_manifest_writer(blocking_manifest)
+
+    async def scenario():
+        cleanup = asyncio.create_task(scheduler.cleanup(cleanup_timeout=0.01))
+        assert await asyncio.to_thread(started.wait, 1.0)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.Event().wait(), timeout=0.02)
+        with pytest.raises(
+            RuntimeError,
+            match="technical scheduler cleanup failed: session-owned tasks did not quiesce",
+        ):
+            await cleanup
+        assert scheduler._manifest_subscriber is not None
+        pending = scheduler._manifest_subscriber.pending_tasks
+        assert pending
+        release.set()
+        await asyncio.gather(*pending, return_exceptions=True)
+
+    run(scenario())
+
+
+def test_team_cleanup_tracks_abandoned_provider_task_until_exit():
+    class CancellationResistantLLM:
+        def __init__(self):
+            self.cancel_seen = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancel_seen.set()
+                while not self.release.is_set():
+                    try:
+                        await self.release.wait()
+                    except asyncio.CancelledError:
+                        continue
+                raise
+
+    llm = CancellationResistantLLM()
+    session = build_session(
+        agent=Agent(
+            name="lead",
+            system_prompt="sys",
+            tools=[],
+            model="test-model",
+            provider="test",
+        ),
+        llm=llm,
+        llm_timeout=0.01,
+    )
+    scheduler = Scheduler(
+        session_factory=_FakeSessionFactory({}),
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(),
+    )
+    scheduler.register_lead(session)
+
+    async def scenario():
+        await session.add_user_message("trigger provider timeout")
+        with pytest.raises(GenerationTimeoutError):
+            await session.run_loop()
+        await asyncio.wait_for(llm.cancel_seen.wait(), timeout=0.5)
+        assert session.pending_cleanup_tasks
+        terminal_reason = session.state.terminal_reason
+
+        pending = session.pending_cleanup_tasks
+        try:
+            with pytest.raises(
+                RuntimeError,
+                match="technical scheduler cleanup failed: session-owned tasks did not quiesce",
+            ):
+                await scheduler.cleanup(cleanup_timeout=0.01)
+            assert pending
+            assert session.state.phase is SessionPhase.ERROR
+            assert session.state.terminal_reason == terminal_reason
+        finally:
+            llm.release.set()
+            await asyncio.gather(*pending, return_exceptions=True)
+        assert session.pending_cleanup_tasks == ()
+        assert session.state.phase is SessionPhase.ERROR
+        assert session.state.terminal_reason == terminal_reason
+
+    run(scenario())
 
 
 def test_spawn_trims_task_field_to_100_chars(monkeypatch):
@@ -242,6 +710,88 @@ def test_spawn_with_review_iterates_when_reviewer_fails(monkeypatch):
     assert review_loops[1].data["verdict"] == "FAIL"
     assert review_loops[2].data["iteration"] == 2
     assert review_loops[3].data["verdict"] == "PASS"
+
+    factory = scheduler._session_factory
+    second_coder_task = [task for role, task in factory.built_tasks if role == "coder"][1]
+    assert "v1 impl" in second_coder_task
+    assert "Reapply the previous implementation" in second_coder_task
+
+
+def test_review_verdict_uses_only_the_final_nonempty_line():
+    quoted_then_failed = (
+        "The prompt mentioned VERDICT: PASS.\n"
+        "The implementation still has a race.\n"
+        "VERDICT: FAIL\n\n"
+    )
+    assert ReviewVerdict.parse(quoted_then_failed).passed is False
+    assert ReviewVerdict.parse("Looks good.\nVERDICT: PASS\n").passed is True
+    assert ReviewVerdict.parse("Looks good.\nVERDICT: PASS.\n").passed is True
+    assert ReviewVerdict.parse("Looks good.\nVERDICT: PASS！\n").passed is True
+    assert ReviewVerdict.parse("Looks good.\nVERDICT: PASS?\n").passed is False
+    assert ReviewVerdict.parse("Looks good.\nVERDICT: PASS...\n").passed is False
+    assert ReviewVerdict.parse("VERDICT: PASS\nTrailing prose").passed is False
+
+
+def test_spawn_with_review_ignores_review_event_sink_failures(monkeypatch):
+    factory = _FakeSessionFactory(
+        {"coder": ["implemented"], "reviewer": ["VERDICT: PASS"]}
+    )
+
+    async def sink(event):
+        if isinstance(event, SchedulerEvent) and event.type.startswith("review_"):
+            raise RuntimeError("observer failed")
+
+    scheduler = Scheduler(
+        session_factory=factory,
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(sink),
+    )
+    scheduler.register_lead(_FakeLeadSession())
+
+    result = run(scheduler.spawn_with_review(0, "write fn"))
+
+    assert "PASSED after 1 iteration" in result
+
+
+def test_spawn_with_review_restores_parent_turn_budget(monkeypatch):
+    scheduler, _ = _build_scheduler(
+        monkeypatch,
+        {"coder": ["implemented"], "reviewer": ["VERDICT: PASS"]},
+    )
+
+    async def scenario() -> str:
+        parent = scheduler.table.get(0)
+        assert parent is not None
+        parent.state.set_phase(SessionPhase.EXECUTING_TOOLS)
+        scheduler._tasks[0] = asyncio.current_task()
+        try:
+            result = await scheduler.spawn_with_review(0, "write fn")
+            assert scheduler._lead_reservation is not None
+            assert scheduler.allocated_tokens <= scheduler._max_budget_tokens
+            return result
+        finally:
+            scheduler._tasks.pop(0, None)
+
+    assert "PASSED after 1 iteration" in run(scenario())
+
+
+def test_external_spawn_with_review_preserves_seed_for_later_spawn(monkeypatch):
+    scheduler, _ = _build_scheduler(
+        monkeypatch,
+        {
+            "coder": ["implemented", "follow-up complete"],
+            "reviewer": ["VERDICT: PASS"],
+        },
+    )
+
+    async def scenario() -> None:
+        result = await scheduler.spawn_with_review(0, "write fn")
+        assert "PASSED after 1 iteration" in result
+        aid = await scheduler.spawn(0, "coder", "later independent task")
+        assert scheduler._session_factory.built[-1][1] > 0
+        await scheduler._tasks[aid]
+
+    run(scenario())
 
 
 def test_spawn_does_not_emit_session_tool_events(monkeypatch):

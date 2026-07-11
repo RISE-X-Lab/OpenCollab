@@ -1062,39 +1062,45 @@ async def _run_attempt(
     )
 
     await ctx.phase(f"diff-risk:r{attempt}")
-    branch_risk_task = lambda: ctx.agent(
-        DIFF_RISK_BRANCH_PROMPT.format(
-            rules=SHARED_RULES,
-            goal=goal,
-            tribunal=_dump(tribunal),
-            patch_verdict=_dump(etv_report),
-        ),
-        schema=DIFF_RISK_SCHEMA,
-        label=f"branch-boundary-attack:r{attempt}",
-        tools=_tester_tools(),
-    )
-    regression_risk_task = lambda: ctx.agent(
-        DIFF_RISK_REGRESSION_PROMPT.format(
-            rules=SHARED_RULES,
-            goal=goal,
-            tribunal=_dump(tribunal),
-            patch_verdict=_dump(etv_report),
-        ),
-        schema=DIFF_RISK_SCHEMA,
-        label=f"regression-scan:r{attempt}",
-        tools=_tester_tools(),
-    )
-    observable_risk_task = lambda: ctx.agent(
-        DIFF_RISK_OBSERVABLE_PROMPT.format(
-            rules=SHARED_RULES,
-            goal=goal,
-            inventory=_dump(inventory),
-            patch_verdict=_dump(etv_report),
-        ),
-        schema=DIFF_RISK_SCHEMA,
-        label=f"observable-diff-review:r{attempt}",
-        tools=_tester_tools(),
-    )
+    def branch_risk_task():
+        return ctx.agent(
+            DIFF_RISK_BRANCH_PROMPT.format(
+                rules=SHARED_RULES,
+                goal=goal,
+                tribunal=_dump(tribunal),
+                patch_verdict=_dump(etv_report),
+            ),
+            schema=DIFF_RISK_SCHEMA,
+            label=f"branch-boundary-attack:r{attempt}",
+            tools=_tester_tools(),
+        )
+
+    def regression_risk_task():
+        return ctx.agent(
+            DIFF_RISK_REGRESSION_PROMPT.format(
+                rules=SHARED_RULES,
+                goal=goal,
+                tribunal=_dump(tribunal),
+                patch_verdict=_dump(etv_report),
+            ),
+            schema=DIFF_RISK_SCHEMA,
+            label=f"regression-scan:r{attempt}",
+            tools=_tester_tools(),
+        )
+
+    def observable_risk_task():
+        return ctx.agent(
+            DIFF_RISK_OBSERVABLE_PROMPT.format(
+                rules=SHARED_RULES,
+                goal=goal,
+                inventory=_dump(inventory),
+                patch_verdict=_dump(etv_report),
+            ),
+            schema=DIFF_RISK_SCHEMA,
+            label=f"observable-diff-review:r{attempt}",
+            tools=_tester_tools(),
+        )
+
     branch_risk, regression_risk, observable_risk = await ctx.parallel([
         branch_risk_task,
         regression_risk_task,

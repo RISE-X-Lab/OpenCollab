@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import random
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from opencollab.adapters.llm.errors import is_context_overflow_error
@@ -16,6 +19,7 @@ RETRYABLE_MESSAGE_FRAGMENTS = ("rate limit", "429", "timeout", "temporarily unav
 
 # Small random jitter (seconds) added to each backoff to reduce thundering herd.
 RETRY_JITTER_MAX_SECONDS = 0.25
+MAX_RETRY_AFTER_SECONDS = 300.0
 
 
 async def with_retry(call_factory, max_retries: int) -> Any:
@@ -62,7 +66,11 @@ def is_retryable_error(error: Exception) -> bool:
     return any(k in msg for k in RETRYABLE_MESSAGE_FRAGMENTS)
 
 
-def extract_retry_after_seconds(error: Exception) -> float | None:
+def extract_retry_after_seconds(
+    error: Exception,
+    *,
+    now: datetime | None = None,
+) -> float | None:
     """The Retry-After header value from ``error``'s response, if present."""
     response = getattr(error, "response", None)
     headers = getattr(response, "headers", None) if response is not None else None
@@ -73,6 +81,16 @@ def extract_retry_after_seconds(error: Exception) -> float | None:
     if value is None:
         return None
     try:
-        return float(value)
+        seconds = float(value)
     except (TypeError, ValueError):
+        try:
+            retry_at = parsedate_to_datetime(str(value))
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=timezone.utc)
+        reference = now or datetime.now(timezone.utc)
+        seconds = (retry_at - reference).total_seconds()
+    if not math.isfinite(seconds) or seconds < 0:
         return None
+    return min(seconds, MAX_RETRY_AFTER_SECONDS)

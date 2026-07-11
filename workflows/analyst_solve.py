@@ -503,15 +503,14 @@ def _f2p_gate(verdict: Any, fail_to_pass: list[str]) -> str | None:
     """Hard-gate a tester PASS on the real FAIL_TO_PASS node-ids (D2).
 
     Returns ``None`` when the PASS may stand, or a findings string when it must
-    be overridden to not-passed. The gate fires only when ``fail_to_pass`` is
-    non-empty (injection succeeded); an empty list means the harness could not
-    inject the tests, so the verdict is trusted as-is — preserving today's
-    behavior. Defense in depth: even a PASS verdict must carry machine-checkable
-    proof — ``failed_count == 0`` AND every required node-id present in
-    ``tests_run`` — or it does not count.
+    be overridden to not-passed. The gate fires whenever ``fail_to_pass`` is
+    non-empty, regardless of whether a test patch was supplied. Defense in
+    depth: even a PASS verdict must carry machine-checkable proof —
+    ``failed_count == 0`` AND every required node-id present in ``tests_run`` —
+    or it does not count.
     """
     if not fail_to_pass:
-        return None  # nothing to inject -> bypass the gate
+        return None  # no benchmark target ids were declared
     if not isinstance(verdict, dict):
         return None  # not a PASS to override; the caller handles dead/FAIL verdicts
     failed = verdict.get("failed_count")
@@ -1363,8 +1362,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     # "verified" requires not just a PASS label but the named FAIL_TO_PASS tests
     # green: when ids were injected, the final verdict must also clear the f2p
     # gate (failed_count == 0 AND every required node-id in tests_run). With no
-    # ids (gate bypassed) this collapses to the bare verdict == PASS check,
-    # preserving today's behavior.
+    # declared ids this collapses to the bare verdict == PASS check.
     verified = (
         isinstance(final_verdict, dict)
         and final_verdict.get("verdict") == "PASS"

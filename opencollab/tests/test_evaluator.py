@@ -1,54 +1,23 @@
-import asyncio
-import json
+from __future__ import annotations
 
-from opencollab.adapters.env import Environment, ExecResult
-from opencollab.adapters.llm import LLMResponse, Usage
-from opencollab.bootstrap import container
-from opencollab.harness import evaluator
-from opencollab.harness.evaluator import (
+from evaluator_test_support import (
+    Environment,
     EvalResult,
     EvalTask,
+    FakeEnv,
+    FakeLLMClient,
+    LocalEnvironment,
+    asyncio,
+    container,
+    evaluator,
+    os,
+    pytest,
+    run,
+    run_eval_batch,
     run_eval_task,
-    save_results,
+    subprocess,
+    sys,
 )
-
-
-def run(coro):
-    return asyncio.run(coro)
-
-
-def is_worktree_diff_cmd(cmd: str) -> bool:
-    return "git diff --cached --binary HEAD" in cmd
-
-
-class FakeLLMClient:
-    def __init__(self, *args, **kwargs):
-        self.calls = []
-
-    async def complete(self, messages, tools=None, temperature=0.0):
-        self.calls.append(messages)
-        return LLMResponse(
-            content="done",
-            tool_calls=[],
-            usage=Usage(input_tokens=3, output_tokens=2),
-            finish_reason="stop",
-        )
-
-
-class FakeEnv(Environment):
-    def __init__(self, diff="diff --git a/x b/x\n+new\n"):
-        self.diff = diff
-        self.cleaned_up = False
-        self.cmds = []
-
-    async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
-        self.cmds.append(cmd)
-        if is_worktree_diff_cmd(cmd) or cmd.startswith("git diff"):
-            return ExecResult(returncode=0, stdout=self.diff, stderr="")
-        return ExecResult(returncode=0, stdout="", stderr="")
-
-    async def cleanup(self) -> None:
-        self.cleaned_up = True
 
 
 def test_run_eval_task_produces_patch(monkeypatch, tmp_path):
@@ -72,7 +41,6 @@ def test_run_eval_task_produces_patch(monkeypatch, tmp_path):
     assert result.error is None
     assert env.cleaned_up is True
 
-
 def test_run_eval_task_empty_diff_not_produced(monkeypatch, tmp_path):
     monkeypatch.setattr(container, "LLMClient", FakeLLMClient)
 
@@ -89,445 +57,569 @@ def test_run_eval_task_empty_diff_not_produced(monkeypatch, tmp_path):
     assert result.patch_produced is False
     assert result.patch == ""
 
-
-def test_run_eval_task_staged_extraction_includes_new_files(monkeypatch, tmp_path):
-    monkeypatch.setattr(container, "LLMClient", FakeLLMClient)
-    env = FakeEnv(
-        diff=(
-            "diff --git a/new_module.py b/new_module.py\n"
-            "new file mode 100644\n"
-            "--- /dev/null\n"
-            "+++ b/new_module.py\n"
-            "@@ -0,0 +1 @@\n"
-            "+value = 1\n"
-        )
-    )
+@pytest.mark.parametrize("description", [None, 1, {}, []])
+def test_invalid_task_description_is_rejected_before_side_effects(
+    tmp_path,
+    description,
+):
+    output_dir = tmp_path / "output"
+    factory_called = False
 
     async def env_factory(task):
-        return env
+        nonlocal factory_called
+        factory_called = True
+        return FakeEnv()
+
+    with pytest.raises(ValueError, match="description"):
+        run(
+            run_eval_task(
+                EvalTask(task_id="invalid-description", description=description),
+                output_dir=str(output_dir),
+                env_factory=env_factory,
+            )
+        )
+
+    assert factory_called is False
+    assert output_dir.exists() is False
+
+@pytest.mark.parametrize("max_tokens", [True, 0, -1, 1.5, "2", float("nan")])
+def test_invalid_task_max_tokens_is_rejected_before_side_effects(
+    tmp_path,
+    max_tokens,
+):
+    output_dir = tmp_path / "output"
+
+    with pytest.raises(ValueError, match="max_tokens"):
+        run(
+            run_eval_task(
+                EvalTask(
+                    task_id="invalid-max-tokens",
+                    description="fix",
+                    max_tokens=max_tokens,
+                ),
+                output_dir=str(output_dir),
+            )
+        )
+
+    assert output_dir.exists() is False
+
+@pytest.mark.parametrize("max_steps", [True, 0, -1, 1.5, "2", float("nan")])
+def test_invalid_max_steps_is_rejected_before_side_effects(tmp_path, max_steps):
+    output_dir = tmp_path / "output"
+
+    with pytest.raises(ValueError, match="max_steps"):
+        run(
+            run_eval_task(
+                EvalTask(task_id="invalid-max-steps", description="fix"),
+                output_dir=str(output_dir),
+                max_steps=max_steps,
+            )
+        )
+
+    assert output_dir.exists() is False
+
+def test_task_timeout_includes_environment_setup_before_workflow(tmp_path):
+    workflow_ran = False
+    setup_cancelled = False
+
+    async def env_factory(task):
+        nonlocal setup_cancelled
+        try:
+            await asyncio.sleep(0.2)
+        except asyncio.CancelledError:
+            setup_cancelled = True
+            raise
+        return FakeEnv()
+
+    async def workflow(ctx, args):
+        nonlocal workflow_ran
+        workflow_ran = True
+        return {"status": "done"}
 
     result = run(
         run_eval_task(
-            EvalTask(task_id="new-file", description="add file"),
+            EvalTask(task_id="setup-timeout", description="fix", timeout=0.01),
             output_dir=str(tmp_path),
             tools_factory=list,
             env_factory=env_factory,
+            workflow=workflow,
         )
     )
 
-    assert any(is_worktree_diff_cmd(cmd) for cmd in env.cmds)
-    assert "new file mode" in result.patch
-    assert result.patch_produced is True
+    assert setup_cancelled is True
+    assert workflow_ran is False
+    assert result.error == "Task timed out after 0.01s"
+    assert result.patch == ""
+    assert result.patch_extraction_succeeded is False
+    assert result.submission_eligible is False
+    assert result.duration < 0.2
+
+def test_asyncio_run_shutdown_finishes_third_cancel_late_environment_cleanup(
+    tmp_path,
+):
+    marker = tmp_path / "late-environment-cleaned"
+    output_dir = tmp_path / "output"
+    package_root = os.path.dirname(os.path.dirname(__file__))
+    script = r'''
+import asyncio
+import pathlib
+import sys
+
+from opencollab.adapters.env import Environment, ExecResult
+from opencollab.harness.evaluator import EvalTask, run_eval_task
 
 
-def test_run_eval_task_honors_injected_params(monkeypatch, tmp_path):
-    monkeypatch.setattr(container, "LLMClient", FakeLLMClient)
-    captured = {}
-    sentinel_tool = object()
+class LateEnvironment(Environment):
+    async def exec_cmd(self, cmd, timeout=120.0):
+        return ExecResult(0, "", "")
 
-    real_build_session = evaluator.build_session
+    async def cleanup(self):
+        await asyncio.sleep(0.003)
+        pathlib.Path(sys.argv[1]).write_text("cleaned", encoding="utf-8")
 
-    def spy_build_session(*, agent, max_steps, **kwargs):
-        captured["prompt"] = agent.system_prompt
-        captured["tools"] = list(agent.tools)
-        captured["max_steps"] = max_steps
-        captured["temperature"] = agent.temperature
-        return real_build_session(agent=agent, max_steps=max_steps, **kwargs)
 
-    monkeypatch.setattr(evaluator, "build_session", spy_build_session)
+environment = LateEnvironment()
+cancellations = 0
+
+
+async def cancellation_insensitive_factory(_task):
+    global cancellations
+    while True:
+        try:
+            await asyncio.sleep(3600)
+        except asyncio.CancelledError:
+            cancellations += 1
+            if cancellations >= 3:
+                return environment
+
+
+async def main():
+    result = await run_eval_task(
+        EvalTask(task_id="loop-close-late-env", description="x", timeout=0.03),
+        output_dir=sys.argv[2],
+        tools_factory=list,
+        env_factory=cancellation_insensitive_factory,
+        cancellation_cleanup_timeout=0.01,
+    )
+    assert result.execution_quiesced is False
+    assert result.submission_eligible is False
+    assert cancellations == 3
+
+
+asyncio.run(main(), debug=True)
+assert cancellations == 3
+assert pathlib.Path(sys.argv[1]).read_text(encoding="utf-8") == "cleaned"
+'''
+    process_env = dict(os.environ)
+    process_env["PYTHONPATH"] = package_root
+    completed = subprocess.run(
+        [sys.executable, "-c", script, str(marker), str(output_dir)],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=process_env,
+        check=False,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert marker.read_text(encoding="utf-8") == "cleaned"
+    assert "Task was destroyed" not in completed.stderr
+    assert "was never awaited" not in completed.stderr
+
+@pytest.mark.parametrize("concurrency", [0, -1, 1.5, True, "2", float("nan")])
+def test_run_eval_batch_rejects_invalid_concurrency(concurrency):
+    with pytest.raises(ValueError, match="concurrency must be a positive integer"):
+        run(run_eval_batch([], concurrency=concurrency))
+
+def test_run_eval_batch_marks_unhandled_result_integrity_unknown(monkeypatch):
+    async def fail_run_eval_task(task, **kwargs):
+        raise RuntimeError("unexpected evaluator failure")
+
+    monkeypatch.setattr(evaluator, "run_eval_task", fail_run_eval_task)
+
+    result = run(
+        run_eval_batch([EvalTask(task_id="broken", description="fix")])
+    )[0]
+
+    assert result.patch == ""
+    assert result.patch_produced is False
+    assert result.execution_quiesced is False
+    assert result.patch_extraction_succeeded is False
+    assert result.injected_path_cleanup_proven is False
+    assert result.submission_eligible is False
+
+@pytest.mark.parametrize(
+    "task_id",
+    [
+        "",
+        ".",
+        "..",
+        "../escaped",
+        "/tmp/escaped",
+        "nested/task",
+        "nested\\task",
+        "C:\\escaped",
+        "control\x1f",
+        "x" * 241,
+        "lone-surrogate-\ud800",
+        "low-surrogate-\udcff",
+    ],
+)
+def test_run_eval_task_rejects_unsafe_task_id_before_side_effects(
+    task_id,
+    tmp_path,
+):
+    output_dir = tmp_path / "output"
+    env_factory_called = False
 
     async def env_factory(task):
+        nonlocal env_factory_called
+        env_factory_called = True
         return FakeEnv()
 
-    run(run_eval_task(
-        EvalTask(task_id="t3", description="task"),
-        output_dir=str(tmp_path),
-        prompt="CUSTOM PROMPT",
-        tools_factory=lambda: [sentinel_tool],
-        env_factory=env_factory,
-        max_steps=7,
-        temperature=0.55,
-    ))
-
-    assert captured["prompt"] == "CUSTOM PROMPT"
-    assert captured["tools"] == [sentinel_tool]
-    assert captured["max_steps"] == 7
-    assert captured["temperature"] == 0.55
-
-
-class CapturingLLMClient:
-    """Fake LLM client that records every kwarg passed to ``complete``.
-
-    Accepts ``**kwargs`` so a forwarded ``top_p`` (or ``thinking`` etc.) does
-    not raise — lets a test assert the sampling knob reaches the provider call.
-    """
-
-    last_kwargs: dict = {}
-
-    def __init__(self, *args, **kwargs):
-        pass
-
-    async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
-        CapturingLLMClient.last_kwargs = {"temperature": temperature, **kwargs}
-        return LLMResponse(
-            content="done",
-            tool_calls=[],
-            usage=Usage(input_tokens=3, output_tokens=2),
-            finish_reason="stop",
+    with pytest.raises(ValueError, match="path-safe"):
+        run(
+            run_eval_task(
+                EvalTask(task_id=task_id, description="fix"),
+                output_dir=str(output_dir),
+                tools_factory=list,
+                env_factory=env_factory,
+            )
         )
 
+    assert env_factory_called is False
+    assert output_dir.exists() is False
 
-def test_run_eval_task_forwards_top_p_to_agent_and_provider(monkeypatch, tmp_path):
-    # The eval path must put top_p on the Agent AND carry it into the provider
-    # ``complete`` call, mirroring temperature. This is the latent eval-gap fix:
-    # a configured top_p (like OPENCOLLAB_TOP_P) actually takes effect.
-    CapturingLLMClient.last_kwargs = {}
-    monkeypatch.setattr(container, "LLMClient", CapturingLLMClient)
-    captured = {}
+def test_run_eval_batch_rejects_duplicate_task_ids_before_start(monkeypatch):
+    started = False
 
-    real_build_session = evaluator.build_session
+    async def fake_run_eval_task(task, **kwargs):
+        nonlocal started
+        started = True
+        raise AssertionError("duplicate batch must not start")
 
-    def spy_build_session(*, agent, max_steps, **kwargs):
-        captured["temperature"] = agent.temperature
-        captured["top_p"] = agent.top_p
-        return real_build_session(agent=agent, max_steps=max_steps, **kwargs)
-
-    monkeypatch.setattr(evaluator, "build_session", spy_build_session)
-
-    async def env_factory(task):
-        return FakeEnv()
-
-    run(run_eval_task(
-        EvalTask(task_id="tp", description="task"),
-        output_dir=str(tmp_path),
-        tools_factory=list,
-        env_factory=env_factory,
-        temperature=0.3,
-        top_p=0.85,
-    ))
-
-    assert captured["temperature"] == 0.3
-    assert captured["top_p"] == 0.85
-    # And it actually reached the provider call (not just stored on the Agent).
-    assert CapturingLLMClient.last_kwargs.get("top_p") == 0.85
-
-
-def test_run_eval_task_top_p_unset_omits_it_from_provider_call(monkeypatch, tmp_path):
-    # Default top_p (None) leaves the Agent default None and is NOT forwarded to
-    # the provider call — so the request is byte-identical to today's behavior.
-    CapturingLLMClient.last_kwargs = {}
-    monkeypatch.setattr(container, "LLMClient", CapturingLLMClient)
-    captured = {}
-
-    real_build_session = evaluator.build_session
-
-    def spy_build_session(*, agent, max_steps, **kwargs):
-        captured["top_p"] = agent.top_p
-        return real_build_session(agent=agent, max_steps=max_steps, **kwargs)
-
-    monkeypatch.setattr(evaluator, "build_session", spy_build_session)
-
-    async def env_factory(task):
-        return FakeEnv()
-
-    run(run_eval_task(
-        EvalTask(task_id="tp0", description="task"),
-        output_dir=str(tmp_path),
-        tools_factory=list,
-        env_factory=env_factory,
-    ))
-
-    assert captured["top_p"] is None
-    assert "top_p" not in CapturingLLMClient.last_kwargs
-
-
-def test_default_tools_match_curated_team_surface():
-    # The headless eval agent must exercise the same curated toolset as team
-    # roles — in particular run_tests/git_diff/apply_patch, which the bash
-    # description deflects to. Guards against the two paths drifting apart.
-    names = [t.name for t in evaluator.default_tools()]
-    assert names == [
-        "bash",
-        "file_read",
-        "file_write",
-        "apply_patch",
-        "run_tests",
-        "git_diff",
-        "grep",
+    monkeypatch.setattr(evaluator, "run_eval_task", fake_run_eval_task)
+    tasks = [
+        EvalTask(task_id="duplicate", description="first"),
+        EvalTask(task_id="duplicate", description="second"),
     ]
 
+    with pytest.raises(ValueError, match="must be unique"):
+        run(run_eval_batch(tasks))
 
-# --------------------------------------------------------------------------- #
-# inject-f2p: extras passthrough, test injection, diff-exclusion
-# --------------------------------------------------------------------------- #
+    assert started is False
 
+@pytest.mark.parametrize(
+    "task_ids",
+    [
+        ("Task", "task"),
+        ("caf\N{LATIN SMALL LETTER E WITH ACUTE}", "cafe\N{COMBINING ACUTE ACCENT}"),
+    ],
+    ids=["case-fold", "unicode-normalization"],
+)
+def test_run_eval_batch_rejects_filesystem_equivalent_task_ids(task_ids):
+    tasks = [EvalTask(task_id=task_id, description="fix") for task_id in task_ids]
 
-def test_eval_task_round_trips_extras():
-    # extras defaults to None and carries an arbitrary benchmark dict unchanged.
-    assert EvalTask(task_id="t", description="d").extras is None
-    extras = {"test_patch": "diff...", "fail_to_pass": ["pkg::test_a"]}
-    task = EvalTask(task_id="t", description="d", extras=extras)
-    assert task.extras == extras
+    with pytest.raises(ValueError, match="must be unique"):
+        run(run_eval_batch(tasks))
 
-
-class InjectFakeEnv(Environment):
-    """Env that faithfully models git's per-path revert of injected test files.
-
-    Models the real driver's contamination surface: the submitted patch is
-    extracted with ``git add -A && git diff --cached`` (``staged_diff`` here), so
-    any injected test edit still in the tree at extraction time LEAKS. Each
-    injected path can be a tracked modification (revertible with
-    ``git checkout --``) or a brand-new untracked file (which ``git checkout``
-    canNOT remove — it errors rc=1 — and only ``git clean -fq`` deletes). A path
-    is excluded from the extracted diff only once it has been BOTH checked out and
-    cleaned per-path, matching the production exclusion. This exposes the new-file
-    leak the old always-succeeds fake hid.
-    """
-
-    def __init__(self, src_path="src/app.py", mod_path=None, new_path=None):
-        self.src_path = src_path
-        self.mod_path = mod_path  # injected tracked-file modification (or None)
-        self.new_path = new_path  # injected brand-new untracked file (or None)
-        # A path is "present in the working tree" (and thus leaks into the staged
-        # diff) until reverted. Tracked mods clear on checkout; new files clear
-        # only on clean (checkout errors on them).
-        self.checked_out: set[str] = set()
-        self.cleaned: set[str] = set()
-        self.cmds: list[str] = []
-        self.cleaned_up = False
-
-    async def write_file(self, path: str, content: str) -> None:
-        pass
-
-    def _leaks(self, path: str | None, *, untracked: bool) -> bool:
-        if not path:
-            return False
-        if untracked:
-            return path not in self.cleaned  # only `git clean` removes it
-        return path not in self.checked_out  # `git checkout` reverts it
-
-    async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
-        self.cmds.append(cmd)
-        if cmd.startswith("git apply"):
-            return ExecResult(returncode=0, stdout="", stderr="")
-        if cmd.startswith("git checkout -- "):
-            path = cmd[len("git checkout -- "):].strip().strip("'\"")
-            # git checkout errors (rc=1) on an untracked/new path and reverts
-            # nothing; it restores a tracked modification.
-            if path == self.new_path:
-                return ExecResult(
-                    returncode=1,
-                    stdout="",
-                    stderr=f"error: pathspec '{path}' did not match any file(s) known to git",
+@pytest.mark.parametrize(
+    "paths, message",
+    [
+        (
+            tuple(
+                f"artifact-{index}"
+                for index in range(
+                    evaluator.MAX_TASK_HARNESS_ARTIFACT_PATHS + 1
                 )
-            self.checked_out.add(path)
-            return ExecResult(returncode=0, stdout="", stderr="")
-        if cmd.startswith("git clean -fq -- "):
-            path = cmd[len("git clean -fq -- "):].strip().strip("'\"")
-            self.cleaned.add(path)
-            return ExecResult(returncode=0, stdout="", stderr="")
-        if is_worktree_diff_cmd(cmd) or cmd.startswith("git diff"):
-            parts = [f"diff --git a/{self.src_path} b/{self.src_path}\n+fix\n"]
-            if self._leaks(self.mod_path, untracked=False):
-                parts.append(f"diff --git a/{self.mod_path} b/{self.mod_path}\n+assert thing\n")
-            if self._leaks(self.new_path, untracked=True):
-                parts.append(
-                    f"diff --git a/{self.new_path} b/{self.new_path}\n"
-                    f"new file mode 100644\n+brand new test\n"
-                )
-            return ExecResult(returncode=0, stdout="".join(parts), stderr="")
-        return ExecResult(returncode=0, stdout="", stderr="")
-
-    async def cleanup(self) -> None:
-        self.cleaned_up = True
-
-
-def test_diff_exclusion_omits_injected_test_paths(tmp_path):
-    # Injected test_patch that MODIFIES an existing tracked test file.
-    env = InjectFakeEnv(mod_path="tests/test_app.py")
-
-    async def env_factory(task):
-        return env
-
-    seen = {}
-
-    async def wf(ctx, args):
-        seen["args"] = args
-        return "done"
-
-    result = run(
-        run_eval_task(
-            EvalTask(
-                task_id="t-inj",
-                description="fix it",
-                extras={
-                    "test_patch": (
-                        "diff --git a/tests/test_app.py b/tests/test_app.py\n"
-                        "--- a/tests/test_app.py\n+++ b/tests/test_app.py\n"
-                        "@@ -1 +1,2 @@\n x=1\n+assert thing\n"
-                    ),
-                    "fail_to_pass": ["tests/test_app.py::test_thing"],
-                },
             ),
-            output_dir=str(tmp_path),
-            tools_factory=list,
-            env_factory=env_factory,
-            workflow=wf,
-        )
-    )
-
-    # The injected test path was checked out before extraction.
-    assert "tests/test_app.py" in env.checked_out
-    checkout_cmds = [c for c in env.cmds if c.startswith("git checkout --")]
-    assert checkout_cmds and "tests/test_app.py" in checkout_cmds[0]
-    # The submitted patch contains the source edit but NOT the injected test.
-    assert "src/app.py" in result.patch
-    assert "tests/test_app.py" not in result.patch
-    # The workflow saw fail_to_pass and the injected paths in its args dict.
-    assert seen["args"]["fail_to_pass"] == ["tests/test_app.py::test_thing"]
-    assert seen["args"]["injected_test_paths"] == ["tests/test_app.py"]
-
-
-def test_diff_exclusion_omits_injected_new_test_file(tmp_path):
-    # Regression for the new-file leak: SWE-bench test_patches commonly ADD a new
-    # test file. `git checkout --` cannot remove an untracked file (errors rc=1);
-    # the production exclusion must also `git clean -fq` it. The submitted patch is
-    # extracted with `git add -A && git diff --cached`, so a surviving new file
-    # would otherwise be staged and leak -> double-apply at grading time (D1).
-    env = InjectFakeEnv(new_path="tests/test_new.py")
-
-    async def env_factory(task):
-        return env
-
-    async def wf(ctx, args):
-        return "done"
-
-    result = run(
-        run_eval_task(
-            EvalTask(
-                task_id="t-inj-new",
-                description="fix it",
-                extras={
-                    "test_patch": (
-                        "diff --git a/tests/test_new.py b/tests/test_new.py\n"
-                        "new file mode 100644\n--- /dev/null\n+++ b/tests/test_new.py\n"
-                        "@@ -0,0 +1 @@\n+brand new test\n"
-                    ),
-                    "fail_to_pass": ["tests/test_new.py::test_new"],
-                },
-            ),
-            output_dir=str(tmp_path),
-            tools_factory=list,
-            env_factory=env_factory,
-            workflow=wf,
-        )
-    )
-
-    # The injected new file was cleaned (checkout alone cannot remove it).
-    assert "tests/test_new.py" in env.cleaned
-    # The submitted patch contains the source edit but NOT the injected new test.
-    assert "src/app.py" in result.patch
-    assert "tests/test_new.py" not in result.patch
-
-
-def test_diff_exclusion_one_new_file_does_not_strand_other_injected_edits(tmp_path):
-    # A mixed test_patch (new file + modified existing file) must not let the new
-    # file abort reverting the rest. The old single-command `git checkout -- p1 p2`
-    # aborted entirely (rc=1) on the untracked path, stranding the tracked edit in
-    # the submitted patch. Per-path revert keeps each independent.
-    env = InjectFakeEnv(mod_path="tests/test_exist.py", new_path="tests/test_brand_new.py")
-
-    async def env_factory(task):
-        return env
-
-    async def wf(ctx, args):
-        return "done"
-
-    result = run(
-        run_eval_task(
-            EvalTask(
-                task_id="t-inj-mixed",
-                description="fix it",
-                extras={
-                    "test_patch": (
-                        "diff --git a/tests/test_exist.py b/tests/test_exist.py\n"
-                        "--- a/tests/test_exist.py\n+++ b/tests/test_exist.py\n"
-                        "@@ -1 +1,2 @@\n x=1\n+assert thing\n"
-                        "diff --git a/tests/test_brand_new.py b/tests/test_brand_new.py\n"
-                        "new file mode 100644\n--- /dev/null\n+++ b/tests/test_brand_new.py\n"
-                        "@@ -0,0 +1 @@\n+brand new test\n"
-                    ),
-                    "fail_to_pass": ["tests/test_brand_new.py::test_new"],
-                },
-            ),
-            output_dir=str(tmp_path),
-            tools_factory=list,
-            env_factory=env_factory,
-            workflow=wf,
-        )
-    )
-
-    # Both injected paths reverted: the tracked mod checked out, the new file cleaned.
-    assert "tests/test_exist.py" in env.checked_out
-    assert "tests/test_brand_new.py" in env.cleaned
-    # Neither injected test leaks; only the source edit remains.
-    assert "src/app.py" in result.patch
-    assert "tests/test_exist.py" not in result.patch
-    assert "tests/test_brand_new.py" not in result.patch
-
-
-def test_workflow_args_drop_fail_to_pass_when_not_injected(tmp_path):
-    # With no test_patch (nothing injected), fail_to_pass MUST NOT reach the
-    # workflow: the F2P hard-gate keys on it, and the named tests do not exist at
-    # the base commit, so forwarding the ids would make the gate unsatisfiable
-    # rather than bypassed. Coupling fail_to_pass to injection success keeps the
-    # gate's documented "no injection -> trust the verdict" invariant.
-    env = FakeEnv()
-
-    async def env_factory(task):
-        return env
-
-    seen = {}
-
-    async def wf(ctx, args):
-        seen["args"] = args
-        return "done"
-
-    run(
-        run_eval_task(
-            EvalTask(
-                task_id="t-f2p",
-                description="x",
-                extras={"fail_to_pass": ["pkg::test_a", "pkg::test_b"]},
-            ),
-            output_dir=str(tmp_path),
-            tools_factory=list,
-            env_factory=env_factory,
-            workflow=wf,
-        )
-    )
-
-    # No test_patch -> nothing injected -> fail_to_pass dropped, gate bypassed.
-    assert "fail_to_pass" not in seen["args"]
-    assert "injected_test_paths" not in seen["args"]
-
-
-def test_save_results_writes_patch_produced_key(tmp_path):
-    results = [
-        EvalResult(
-            task_id="t1",
-            patch="diff --git\n+x\n",
-            patch_produced=True,
-            tokens_used=5,
-            steps=1,
-            duration=0.123,
+            "path-count",
         ),
-    ]
-    out = tmp_path / "results.jsonl"
-    save_results(results, str(out))
+        (
+            ("x" * (evaluator.MAX_TASK_HARNESS_ARTIFACT_PATH_BYTES + 1),),
+            "aggregate-byte",
+        ),
+        (("bad\0path",), "filesystem-safe"),
+        (("bad\udcffpath",), "filesystem-safe"),
+    ],
+    ids=["count", "bytes", "nul", "surrogate"],
+)
+def test_harness_artifact_inputs_are_bounded_before_side_effects(
+    paths,
+    message,
+    tmp_path,
+):
+    output_dir = tmp_path / "output"
+    env_factory_called = False
 
-    record = json.loads(out.read_text().strip())
-    assert record["patch_produced"] is True
-    assert "success" not in record
-    assert record["task_id"] == "t1"
-    assert record["patch_lines"] == 2
+    async def env_factory(task):
+        nonlocal env_factory_called
+        env_factory_called = True
+        return FakeEnv()
+
+    with pytest.raises(ValueError, match=message):
+        run(
+            run_eval_task(
+                EvalTask(
+                    task_id="bounded-artifacts",
+                    description="fix",
+                    harness_artifact_paths=paths,
+                ),
+                output_dir=str(output_dir),
+                tools_factory=list,
+                env_factory=env_factory,
+            )
+        )
+
+    assert env_factory_called is False
+    assert output_dir.exists() is False
+
+@pytest.mark.parametrize("concurrency", [1, 2])
+def test_default_batch_isolates_tasks_sharing_one_local_repo(
+    concurrency,
+    tmp_path,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "base.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "base.py"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=OpenCollab",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "base",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    ready = 0
+    both_ready = asyncio.Event()
+
+    async def workflow(ctx, args):
+        nonlocal ready
+        task_id = args["task_id"]
+        await ctx.env.write_file(f"{task_id}.txt", f"{task_id}\n")
+        if concurrency == 2:
+            ready += 1
+            if ready == 2:
+                both_ready.set()
+            await both_ready.wait()
+        return {"status": "done"}
+
+    tasks = [
+        EvalTask(task_id="one", description="first", repo_path=str(repo)),
+        EvalTask(task_id="two", description="second", repo_path=str(repo)),
+    ]
+    results = run(
+        run_eval_batch(
+            tasks,
+            concurrency=concurrency,
+            output_dir=str(tmp_path / "output"),
+            tools_factory=list,
+            workflow=workflow,
+        )
+    )
+    by_id = {result.task_id: result for result in results}
+
+    assert by_id["one"].submission_eligible is True
+    assert "one.txt" in by_id["one"].patch
+    assert "two.txt" not in by_id["one"].patch
+    assert by_id["two"].submission_eligible is True
+    assert "two.txt" in by_id["two"].patch
+    assert "one.txt" not in by_id["two"].patch
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout
+    assert status == ""
+
+def test_default_docker_task_without_repo_path_does_not_create_host_backing(
+    monkeypatch,
+):
+    observed: dict[str, object] = {}
+
+    class FakeDockerEnvironment(Environment):
+        def __init__(self, *, image, backing_environment=None):
+            observed["image"] = image
+            observed["backing"] = backing_environment
+
+        async def setup(self, mount_dir=None):
+            observed["mount_dir"] = mount_dir
+            return "cid"
+
+        async def cleanup(self) -> None:
+            observed["cleaned"] = True
+
+    class ForbiddenWorktree:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("repo-less Docker task must use its image workspace")
+
+    monkeypatch.setattr(evaluator, "DockerEnvironment", FakeDockerEnvironment)
+    monkeypatch.setattr(evaluator, "WorktreeEnvironment", ForbiddenWorktree)
+
+    env = run(
+        evaluator.default_env_factory(
+            EvalTask(
+                task_id="image-owned-repo",
+                description="fix",
+                docker_image="benchmark:latest",
+            )
+        )
+    )
+
+    assert isinstance(env, FakeDockerEnvironment)
+    assert observed == {
+        "image": "benchmark:latest",
+        "backing": None,
+        "mount_dir": None,
+    }
+
+def test_default_worktree_maps_source_repo_artifact_into_isolated_workspace(
+    tmp_path,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "source.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "source.py"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=OpenCollab",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "base",
+        ],
+        cwd=repo,
+        check=True,
+    )
+    tasks_path = repo / "tasks.jsonl"
+    tasks_path.write_text('{"task_id": "mapped"}\n', encoding="utf-8")
+
+    async def workflow(ctx, args):
+        await ctx.env.write_file("tasks.jsonl", '{"agent": "rewrote"}\n')
+        return {"status": "done"}
+
+    result = run(
+        run_eval_task(
+            EvalTask(
+                task_id="source-artifact-map",
+                description="fix",
+                repo_path=str(repo),
+                harness_artifact_paths=(str(tasks_path),),
+            ),
+            output_dir=str(tmp_path / "output"),
+            tools_factory=list,
+            workflow=workflow,
+        )
+    )
+
+    assert result.patch == ""
+    assert result.patch_extraction_succeeded is True
+    assert result.harness_artifact_exclusion_proven is True
+    assert result.submission_eligible is True
+    assert tasks_path.read_text(encoding="utf-8") == '{"task_id": "mapped"}\n'
+
+
+def test_default_worktree_rejects_model_file_in_reserved_retirement_namespace(
+    tmp_path,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    (repo / "source.py").write_text("value = 1\n", encoding="utf-8")
+    subprocess.run(["git", "add", "source.py"], cwd=repo, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=OpenCollab",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "base",
+        ],
+        cwd=repo,
+        check=True,
+    )
+
+    async def workflow(ctx, args):
+        created = await ctx.env.exec_cmd(
+            "printf %s hidden-model-change > .opencollab-retired-model-hidden.py"
+        )
+        assert created.returncode == 0
+        return {"status": "done"}
+
+    result = run(
+        run_eval_task(
+            EvalTask(
+                task_id="reserved-retirement-prefix",
+                description="fix",
+                repo_path=str(repo),
+            ),
+            output_dir=str(tmp_path / "output"),
+            tools_factory=list,
+            workflow=workflow,
+        )
+    )
+
+    assert result.patch == ""
+    assert result.patch_extraction_succeeded is False
+    assert result.submission_eligible is False
+    assert "unregistered or modified .opencollab-retired-*" in (result.error or "")
+
+def test_non_local_environment_never_maps_host_artifact_paths_into_container():
+    class NonLocalEnv(Environment):
+        workspace = "/testbed"
+        local_filesystem = False
+
+    assert evaluator._workspace_relative_artifact_paths(
+        NonLocalEnv(),
+        ["/testbed/eval_results", "/testbed/results.jsonl"],
+    ) == []
+
+def test_bind_mapped_environment_maps_host_artifacts_into_container_paths(tmp_path):
+    class BindMappedEnv(Environment):
+        workspace = "/workspace"
+        local_filesystem = False
+
+        def __init__(self, host_workspace):
+            self.host_workspace = str(host_workspace)
+
+    repo = tmp_path / "repo"
+    artifacts = repo / "eval_results" / "trajectories"
+    artifacts.mkdir(parents=True)
+
+    assert evaluator._workspace_relative_artifact_paths(
+        BindMappedEnv(repo),
+        [artifacts, repo / "eval_results" / "results.jsonl"],
+    ) == [
+        "eval_results/trajectories",
+        "eval_results/results.jsonl",
+    ]
+
+def test_host_artifact_mapping_follows_external_alias_back_into_workspace(tmp_path):
+    repo = tmp_path / "repo"
+    output = repo / "eval_results"
+    output.mkdir(parents=True)
+    alias = tmp_path / "output-alias"
+    alias.symlink_to(output, target_is_directory=True)
+    env = LocalEnvironment(str(repo))
+
+    assert evaluator._workspace_relative_artifact_paths(
+        env,
+        [alias / "trajectories"],
+    ) == ["eval_results/trajectories"]

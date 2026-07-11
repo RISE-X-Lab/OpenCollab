@@ -21,6 +21,7 @@ from opencollab.adapters.tools.fs import (
     FileWriteTool,
     GrepTool,
 )
+from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.tool_execution import ToolRuntime
 
 
@@ -82,6 +83,53 @@ def test_grep_bounds_output_chars(tmp_path):
 
     assert "truncated" in result
     assert len(result) < MAX_GREP_CHARS + 500
+
+
+def test_headless_command_tools_and_grep_cannot_read_outside_secret(tmp_path):
+    ws = _workspace(tmp_path)
+    secret = tmp_path / "ground_truth_secret.txt"
+    secret.write_text("SWE_ANSWER_TOKEN", encoding="utf-8")
+    runtime = _runtime(ws)
+
+    grep_result = run(
+        GrepTool().execute_with_runtime(
+            {"pattern": "SWE_ANSWER_TOKEN", "path": str(secret)}, runtime
+        )
+    )
+    bash_result = run(
+        BashTool(require_process_isolation=True).execute_with_runtime(
+            {"command": f"cat {secret}"}, runtime
+        )
+    )
+    tests_result = run(
+        RunTestsTool(
+            allow_runner_override=False,
+            allow_extra_args=False,
+            require_process_isolation=True,
+        ).execute_with_runtime(
+            {"runner": f"cat {secret}"}, runtime
+        )
+    )
+
+    for result in (grep_result, bash_result, tests_result):
+        assert "SWE_ANSWER_TOKEN" not in result
+        assert result.startswith("Error:")
+
+
+def test_headless_command_tools_cannot_modify_outside_file(tmp_path):
+    ws = _workspace(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("original", encoding="utf-8")
+    runtime = _runtime(ws)
+
+    result = run(
+        BashTool(require_process_isolation=True).execute_with_runtime(
+            {"command": f"printf pwned > {outside}"}, runtime
+        )
+    )
+
+    assert result.startswith("Error:")
+    assert outside.read_text(encoding="utf-8") == "original"
 
 
 def test_str_replace_not_found_points_at_apply_patch(tmp_path):

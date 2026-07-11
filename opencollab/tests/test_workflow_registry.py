@@ -8,6 +8,7 @@ import arbitrary files), so it is exercised here against a tmp_path directory.
 
 from __future__ import annotations
 
+import os
 import textwrap
 
 import pytest
@@ -232,3 +233,51 @@ def test_discover_workflows_dedupes_aliased_workflow(tmp_path):
 
     reg = discover_workflows(str(wf_dir))
     assert [s.name for s in reg.list_specs()] == ["alpha"]
+
+
+@pytest.mark.parametrize("kind", ["fifo", "symlink", "oversized"])
+def test_discover_workflows_rejects_unsafe_or_oversized_source(
+    tmp_path,
+    monkeypatch,
+    kind,
+):
+    from opencollab.bootstrap import workflow_runtime
+
+    wf_dir = tmp_path / "workflows"
+    wf_dir.mkdir()
+    source = wf_dir / "unsafe.py"
+    if kind == "fifo":
+        os.mkfifo(source)
+    elif kind == "symlink":
+        outside = tmp_path / "outside.py"
+        outside.write_text("raise RuntimeError('must not import')\n", encoding="utf-8")
+        source.symlink_to(outside)
+    else:
+        source.write_text("x" * 65, encoding="utf-8")
+        monkeypatch.setattr(workflow_runtime, "MAX_WORKFLOW_SOURCE_BYTES", 64)
+
+    with pytest.raises(ValueError, match="workflow source"):
+        workflow_runtime.discover_workflows(str(wf_dir))
+
+
+def test_discover_workflows_rejects_symlink_directory(tmp_path):
+    from opencollab.bootstrap.workflow_runtime import discover_workflows
+
+    real = tmp_path / "real"
+    real.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="not a real directory"):
+        discover_workflows(str(linked))
+
+
+def test_discover_workflows_directory_enumeration_is_bounded(tmp_path, monkeypatch):
+    from opencollab.bootstrap import workflow_runtime
+
+    for index in range(4):
+        (tmp_path / f"entry-{index}").touch()
+    monkeypatch.setattr(workflow_runtime, "MAX_WORKFLOW_DIRECTORY_ENTRIES", 3)
+
+    with pytest.raises(ValueError, match="entries exceed limit"):
+        workflow_runtime.discover_workflows(str(tmp_path))
