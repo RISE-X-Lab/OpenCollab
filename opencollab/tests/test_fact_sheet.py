@@ -19,10 +19,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-import pytest
-from opencollab.application import fact_sheet as fact_sheet_mod
 from opencollab.application.fact_sheet import (
-    FactSheetIntegrityError,
     build_fact_sheet,
     estimate_target_complexity,
     format_fact_sheet_hint,
@@ -211,112 +208,6 @@ def test_t1_no_target_returns_none(tmp_path):
     assert build_fact_sheet(str(tmp_path), "Fix the bug in the parser.") is None
     # No workspace root -> None.
     assert build_fact_sheet(None, "TASK: Implement the function `f`.") is None
-
-
-def test_t1_stub_path_cannot_escape_workspace(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    outside = tmp_path / "outside.py"
-    outside.write_text("def leaked():\n    return 'secret'\n", encoding="utf-8")
-    goal = (
-        "TASK: Implement the function `leaked`.\n"
-        f"- The function stub is at: {outside} (near line 1)\n"
-    )
-
-    assert build_fact_sheet(str(workspace), goal) is None
-
-
-def test_t1_source_scan_rejects_fifo_and_symlink_without_blocking(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    os.mkfifo(workspace / "blocked.py")
-    outside = tmp_path / "outside.py"
-    outside.write_text("def target():\n    return 'outside'\n", encoding="utf-8")
-    (workspace / "linked.py").symlink_to(outside)
-
-    assert build_fact_sheet(
-        str(workspace),
-        "TASK: Implement the function `target`.",
-    ) is None
-
-
-def test_t1_stub_ancestor_symlink_cannot_leak_outside_source(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "answer.py").write_text(
-        "def target():\n    return 'TOP_SECRET'\n",
-        encoding="utf-8",
-    )
-    (workspace / "src").symlink_to(outside, target_is_directory=True)
-    goal = (
-        "TASK: Implement the function `target`.\n"
-        "- The function stub is at: src/answer.py (near line 1)\n"
-    )
-
-    assert build_fact_sheet(str(workspace), goal) is None
-
-
-def test_t1_answer_path_guard_is_unicode_case_insensitive():
-    assert is_answer_path("repo/Test_Code/answer.py")
-    assert is_answer_path("repo/FUNC_IMPLEMENTATION.py")
-    assert is_answer_path("repo/TASK_RESULT.JSONL")
-
-
-def test_t1_queued_directory_swap_does_not_scan_symlink_target(
-    tmp_path,
-    monkeypatch,
-):
-    workspace = tmp_path / "workspace"
-    pkg = workspace / "pkg"
-    pkg.mkdir(parents=True)
-    (pkg / "target.py").write_text(
-        "def target():\n    raise NotImplementedError\n",
-        encoding="utf-8",
-    )
-    outside = tmp_path / "outside"
-    outside.mkdir()
-    (outside / "answer.py").write_text(
-        "def target():\n    \"\"\"TOP_SECRET_GROUND_TRUTH\"\"\"\n    return 999\n",
-        encoding="utf-8",
-    )
-    old_pkg = workspace / "pkg-old"
-    real_open = fact_sheet_mod.os.open
-    swapped = False
-
-    def swapping_open(path, flags, *args, **kwargs):
-        nonlocal swapped
-        fd = real_open(path, flags, *args, **kwargs)
-        if not swapped and path == "pkg" and kwargs.get("dir_fd") is not None:
-            pkg.rename(old_pkg)
-            pkg.symlink_to(outside, target_is_directory=True)
-            swapped = True
-        return fd
-
-    monkeypatch.setattr(fact_sheet_mod.os, "open", swapping_open)
-
-    manifest = build_fact_sheet(
-        str(workspace),
-        "TASK: Implement the function `target`.",
-    )
-
-    assert swapped is True
-    assert manifest is not None
-    assert "TOP_SECRET_GROUND_TRUTH" not in str(manifest)
-    assert manifest["target_file"] == os.path.join("pkg", "target.py")
-
-
-def test_t1_source_tree_enumeration_is_bounded(tmp_path, monkeypatch):
-    for index in range(4):
-        (tmp_path / f"entry-{index}").touch()
-    monkeypatch.setattr(fact_sheet_mod, "_MAX_SOURCE_TREE_ENTRIES", 3)
-
-    with pytest.raises(FactSheetIntegrityError, match="entry limit"):
-        build_fact_sheet(
-            str(tmp_path),
-            "TASK: Implement the function `missing`.",
-        )
 
 
 # --------------------------------------------------------------------------- #

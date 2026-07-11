@@ -13,7 +13,6 @@ from __future__ import annotations
 import copy
 import os
 import re
-import stat
 import uuid
 from datetime import datetime
 from typing import Any, Callable
@@ -39,7 +38,6 @@ from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
 from opencollab.bootstrap.team_config import TeamConfig, default_team_config
 from opencollab.domain.agent import Agent
-from opencollab.domain.identity import role_storage_slug, validate_role_identity
 
 
 def _team_budget_guard(scheduler: SchedulerPort | None) -> Callable[[], bool] | None:
@@ -55,16 +53,7 @@ def _team_budget_guard(scheduler: SchedulerPort | None) -> Callable[[], bool] | 
 
 def agent_save_path(save_dir: str, aid: int, role: str) -> str:
     """Per-agent transcript path within a run folder: ``agent_<aid>_<role>.json``."""
-    if isinstance(aid, bool) or not isinstance(aid, int) or aid < 0:
-        raise ValueError("agent id must be a non-negative integer")
-    role_component = role_storage_slug(role)
-    base = os.path.abspath(save_dir)
-    path = os.path.abspath(
-        os.path.join(base, f"agent_{aid}_{role_component}.json")
-    )
-    if os.path.commonpath((base, path)) != base:
-        raise ValueError("agent transcript path escapes run directory")
-    return path
+    return os.path.join(save_dir, f"agent_{aid}_{role}.json")
 
 
 # A workflow run folder groups one workflow's per-role conversation transcripts
@@ -122,143 +111,12 @@ def make_run_dir(workspace: str, *, prefix: str = "") -> str:
     if a same-second folder already exists, so two runs started within the same
     second do not collide.
     """
-    if (
-        not isinstance(prefix, str)
-        or "/" in prefix
-        or "\\" in prefix
-        or any(ord(character) < 32 or ord(character) == 127 for character in prefix)
-        or len(prefix.encode("utf-8", errors="surrogatepass")) > 32
-    ):
-        raise ValueError("run directory prefix must be one short safe component")
-    workspace_root = os.path.realpath(workspace)
-    directory_flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    try:
-        workspace_fd = os.open(workspace_root, directory_flags)
-    except OSError as exc:
-        raise ValueError(f"workspace is not a real directory: {workspace}") from exc
-    opencollab_fd = -1
-    sessions_fd = -1
-    base = os.path.join(workspace_root, ".opencollab", "sessions")
-    try:
-        opencollab_fd = _open_or_create_child_directory(
-            workspace_fd,
-            ".opencollab",
-        )
-        sessions_fd = _open_or_create_child_directory(
-            opencollab_fd,
-            "sessions",
-        )
-        stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-        for attempt in range(1_000):
-            suffix = "" if attempt == 0 else f"-{uuid.uuid4().hex[:8]}"
-            name = f"{prefix}{stamp}{suffix}"
-            try:
-                os.mkdir(name, 0o700, dir_fd=sessions_fd)
-            except FileExistsError:
-                continue
-            run_fd = -1
-            verify_opencollab_fd = -1
-            verify_sessions_fd = -1
-            verify_run_fd = -1
-            try:
-                run_fd = _open_existing_child_directory(sessions_fd, name)
-                verify_opencollab_fd = _open_existing_child_directory(
-                    workspace_fd,
-                    ".opencollab",
-                )
-                verify_sessions_fd = _open_existing_child_directory(
-                    verify_opencollab_fd,
-                    "sessions",
-                )
-                verify_run_fd = _open_existing_child_directory(
-                    verify_sessions_fd,
-                    name,
-                )
-                pairs = (
-                    (opencollab_fd, verify_opencollab_fd),
-                    (sessions_fd, verify_sessions_fd),
-                    (run_fd, verify_run_fd),
-                )
-                if any(
-                    (os.fstat(original).st_dev, os.fstat(original).st_ino)
-                    != (os.fstat(verified).st_dev, os.fstat(verified).st_ino)
-                    for original, verified in pairs
-                ):
-                    raise OSError("run directory parent chain changed during reservation")
-                return os.path.join(base, name)
-            except BaseException:
-                try:
-                    os.rmdir(name, dir_fd=sessions_fd)
-                except OSError:
-                    pass
-                raise
-            finally:
-                for fd in (
-                    verify_run_fd,
-                    verify_sessions_fd,
-                    verify_opencollab_fd,
-                    run_fd,
-                ):
-                    if fd >= 0:
-                        os.close(fd)
-    finally:
-        if sessions_fd >= 0:
-            os.close(sessions_fd)
-        if opencollab_fd >= 0:
-            os.close(opencollab_fd)
-        os.close(workspace_fd)
-    raise OSError("could not reserve a unique run directory")
-
-
-def _open_or_create_child_directory(parent_fd: int, name: str) -> int:
-    try:
-        os.mkdir(name, 0o700, dir_fd=parent_fd)
-    except FileExistsError:
-        pass
-    before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    if not stat.S_ISDIR(before.st_mode):
-        raise ValueError(f"run directory parent is not a real directory: {name}")
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    fd = os.open(name, flags, dir_fd=parent_fd)
-    opened = os.fstat(fd)
-    if (
-        not stat.S_ISDIR(opened.st_mode)
-        or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-    ):
-        os.close(fd)
-        raise OSError(f"run directory parent changed while opening: {name}")
-    return fd
-
-
-def _open_existing_child_directory(parent_fd: int, name: str) -> int:
-    before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    if not stat.S_ISDIR(before.st_mode):
-        raise ValueError(f"run directory component is not a real directory: {name}")
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    fd = os.open(name, flags, dir_fd=parent_fd)
-    opened = os.fstat(fd)
-    if (
-        not stat.S_ISDIR(opened.st_mode)
-        or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-    ):
-        os.close(fd)
-        raise OSError(f"run directory component changed while opening: {name}")
-    return fd
+    base = os.path.join(workspace, ".opencollab", "sessions")
+    stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    run_dir = os.path.join(base, f"{prefix}{stamp}")
+    if os.path.exists(run_dir):
+        run_dir = f"{run_dir}-{uuid.uuid4().hex[:4]}"
+    return run_dir
 
 
 def build_session(
@@ -303,7 +161,6 @@ def build_session(
         llm_timeout=llm_timeout,
         store=store,
         auto_save_callback=session._auto_save,
-        auto_save_prepare_callback=session._prepare_auto_save,
         aid=aid,
         seed_user_messages=seed_user_messages,
         shaper=shaper,
@@ -329,9 +186,9 @@ def load_session(
     agent: Agent,
     **kwargs: Any,
 ) -> Session:
-    """Build a session and restore the snapshot at ``path``."""
+    """Build a session and replace its messages with the JSONL at ``path``."""
     session = build_session(agent=agent, **kwargs)
-    session.restore(path)
+    session.messages = session.store.load_messages(path, agent.system_prompt)
     return session
 
 
@@ -385,7 +242,6 @@ def build_spawn_session(
     ``add_user_message`` is needed. Delegates to ``DefaultSessionFactory`` so the
     spawn-session assembly lives in one place.
     """
-    role = validate_role_identity(role)
     factory = DefaultSessionFactory(cfg, team_cfg=team_cfg)
     return factory.build_spawn_session(
         role=role,
@@ -449,7 +305,6 @@ class DefaultSessionFactory:
         task: str | None = None,
         context: str = "",
     ) -> Session:
-        role = validate_role_identity(role)
         cfg = self._cfg
         safety_policy = (
             cfg.safety_policy_factory(env)

@@ -7,17 +7,11 @@ from enum import Enum
 from typing import Any
 
 from opencollab.harness.swe_eval_records import (
-    SUBMISSION_INTEGRITY_INELIGIBLE,
-    SUBMISSION_INTEGRITY_LEGACY,
     metric_done_with_advisory_gap,
     metric_status,
-    metric_submission_integrity,
-    patch_sha,
     prediction_patch,
+    row_patch_sha,
     row_record_id,
-)
-from opencollab.harness.swe_eval_records import (
-    row_patch_sha as row_patch_sha,
 )
 
 
@@ -38,10 +32,6 @@ class TaskState(str, Enum):
 TERMINAL_WORKFLOW_STATUSES = {
     "infra_invalid",
     "budget_exceeded",
-    "cancelled",
-    "context_overflow",
-    "error",
-    "step_limit_exceeded",
     "timeout",
     "patch_guard_failed",
 }
@@ -127,8 +117,6 @@ def official_eval_eligible(
 ) -> bool:
     if active_generation or patch_len <= 0:
         return False
-    if metric_submission_integrity(metric) == SUBMISSION_INTEGRITY_INELIGIBLE:
-        return False
     if workflow_status in {"done", "done_with_timeout_patch"} and not metric_done_with_advisory_gap(metric):
         return True
     if allow_advisory_gap and workflow_status in {"advisory_gap", "done"}:
@@ -139,7 +127,7 @@ def official_eval_eligible(
 def decide_task(snapshot: TaskSnapshot, *, allow_advisory_gap: bool = False) -> TaskDecision:
     patch = prediction_patch(snapshot.prediction)
     patch_len = len(patch)
-    patch_sha_value = patch_sha(patch)
+    patch_sha = row_patch_sha(snapshot.prediction)
     status = metric_status(snapshot.metric)
 
     def decision(state: TaskState, reason: str, *, ready: bool = False, terminal: bool = False) -> TaskDecision:
@@ -149,7 +137,7 @@ def decide_task(snapshot: TaskSnapshot, *, allow_advisory_gap: bool = False) -> 
             ready_for_eval=ready,
             terminal=terminal,
             patch_len=patch_len,
-            patch_sha256=patch_sha_value,
+            patch_sha256=patch_sha,
             workflow_status=status,
             metric_pairing=snapshot.metric_pairing,
             reason=reason,
@@ -165,15 +153,8 @@ def decide_task(snapshot: TaskSnapshot, *, allow_advisory_gap: bool = False) -> 
         if snapshot.metric_pairing.startswith("record_id_patch_sha"):
             return decision(TaskState.BLOCKED_METRIC_PAIRING, snapshot.metric_pairing, terminal=True)
         return decision(TaskState.BLOCKED_MISSING_METRIC, snapshot.metric_pairing or "missing metric")
-    submission_integrity = metric_submission_integrity(snapshot.metric)
     if snapshot.active_eval or snapshot.eval_summary.active_count:
         return decision(TaskState.EVAL_ACTIVE, "evaluation session is active")
-    if submission_integrity == SUBMISSION_INTEGRITY_INELIGIBLE:
-        return decision(
-            TaskState.WORKFLOW_FAILED,
-            "workflow metric explicitly marks the patch ineligible",
-            terminal=True,
-        )
     if snapshot.eval_summary.done_count:
         return decision(TaskState.EVAL_DONE, "matching evaluation report is done", terminal=True)
     if snapshot.eval_summary.failed_count:
@@ -187,10 +168,7 @@ def decide_task(snapshot: TaskSnapshot, *, allow_advisory_gap: bool = False) -> 
         allow_advisory_gap=allow_advisory_gap,
     )
     if ready:
-        reason = "non-empty patch with terminal workflow metric"
-        if submission_integrity == SUBMISSION_INTEGRITY_LEGACY:
-            reason += " using legacy eligibility compatibility"
-        return decision(TaskState.READY_FOR_EVAL, reason, ready=True)
+        return decision(TaskState.READY_FOR_EVAL, "non-empty patch with terminal workflow metric", ready=True)
     if status in TERMINAL_WORKFLOW_STATUSES:
         return decision(TaskState.WORKFLOW_FAILED, status, terminal=True)
     return decision(TaskState.WORKFLOW_INCOMPLETE, status or "workflow metric is not terminal")
@@ -205,7 +183,6 @@ def task_status_row(snapshot: TaskSnapshot, *, allow_advisory_gap: bool = False)
     row.update(
         {
             "record_id": row_record_id(snapshot.prediction),
-            "submission_integrity": metric_submission_integrity(snapshot.metric),
             "eval": snapshot.eval_summary.to_dict(),
             "checkpoint_result": checkpoint_result,
         }

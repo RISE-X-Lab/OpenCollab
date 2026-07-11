@@ -5,51 +5,21 @@ Tracks every Session as a SessionControlBlock in a SessionTable:
 - Agents run in parallel via asyncio.create_task
 - Results are delivered to parents via message injection into parent state
 
-The class is assembled from cohesive application-layer mixins:
-- focused local mixins cover persistence/budgets, team views, the public run
-  loop, bounded cleanup, and review waits
+The class is assembled from three cohesive mixins, each in its own module:
 - ``LifecycleMixin`` (``scheduler_lifecycle``) — register/spawn/drive/wake/deliver
 - ``MessagingMixin`` (``scheduler_messaging``) — teammate-message inbox
 - ``InflightDedupMixin`` (``scheduler_dedup``) — single-flight spawn dedup
 
-This module keeps construction and the compatibility import surface.
+This module keeps the run-loop orchestration, roster snapshots, and the shared
+helpers (manifest/autosave, topology check, event emission) the mixins rely on.
 """
-
-# ruff: noqa: F401
 
 from __future__ import annotations
 
 import asyncio
-import contextvars
-import copy
-import inspect
 import logging
-import math
-import sys
-import types
 from typing import Any, Callable
 
-from opencollab.application import (
-    _scheduler_cleanup,
-    _scheduler_constants,
-    _scheduler_persistence,
-    _scheduler_review,
-    _scheduler_run,
-    _scheduler_team,
-)
-from opencollab.application._scheduler_cleanup import SchedulerCleanupMixin
-from opencollab.application._scheduler_constants import (
-    DEFAULT_SCHEDULER_CLEANUP_TIMEOUT,
-    MAX_FORCED_CLEANUP_TIMEOUT,
-    WORKTREE_DIFF_KEEP_CHARS,
-    WORKTREE_DIFF_MAX_CHARS,
-)
-from opencollab.application._scheduler_persistence import SchedulerPersistenceMixin
-from opencollab.application._scheduler_review import SchedulerReviewMixin
-from opencollab.application._scheduler_run import SchedulerRunMixin
-from opencollab.application._scheduler_team import SchedulerTeamMixin
-from opencollab.application.async_timeout import force_task_terminal
-from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.events import (
     SchedulerEventFactory,
     default_scheduler_event_factory,
@@ -69,24 +39,19 @@ from opencollab.application.scheduler_messaging import MessagingMixin
 from opencollab.application.scheduler_types import LaunchSpec, QueuedTeammateMessage
 from opencollab.application.self_collaboration import run_spawn_with_review
 from opencollab.domain.events import SchedulerEvent
-from opencollab.domain.identity import role_collision_key, validate_role_identity
-from opencollab.domain.pending import PendingRowError, RowStatus
 from opencollab.domain.scheduler import SessionTable, lead_reserve, split_budget
 from opencollab.domain.session import SessionPhase
 from opencollab.domain.team import Topology
 
 logger = logging.getLogger(__name__)
 
-class Scheduler(
-    SchedulerPersistenceMixin,
-    SchedulerTeamMixin,
-    SchedulerRunMixin,
-    SchedulerCleanupMixin,
-    SchedulerReviewMixin,
-    LifecycleMixin,
-    MessagingMixin,
-    InflightDedupMixin,
-):
+# Worktree diffs appended to a child's result are bounded so one huge diff
+# can't blow up the parent's context; oversize diffs keep head + tail.
+WORKTREE_DIFF_MAX_CHARS = 12_000
+WORKTREE_DIFF_KEEP_CHARS = 6_000  # kept from each end when truncating
+
+
+class Scheduler(LifecycleMixin, MessagingMixin, InflightDedupMixin):
     """Passive scheduler that tracks SCBs and runs agents in parallel.
 
     Design:
@@ -119,42 +84,17 @@ class Scheduler(
         self._topology = topology
         # Configured role names (from the team config), in declaration order.
         # Used by ``team_roster`` to surface the team before anything spawns.
-        normalized_roles: list[str] = []
-        role_keys: set[str] = set()
-        for raw_role in roles:
-            role = validate_role_identity(raw_role)
-            collision_key = role_collision_key(role)
-            if collision_key in role_keys:
-                raise ValueError(
-                    "configured scheduler roles collide after normalization"
-                )
-            role_keys.add(collision_key)
-            normalized_roles.append(role)
-        self._roles = tuple(normalized_roles)
+        self._roles = roles
 
         self.table = SessionTable()
         self._tasks: dict[int, asyncio.Task] = {}
-        # ``spawn`` owns resources before the child driver exists. Track that
-        # pre-driver window separately so cleanup can cancel/abort/finalize an
-        # external spawn blocked in worktree setup or lifecycle event delivery.
-        self._startup_tasks: dict[int, asyncio.Task[Any]] = {}
-        self._startup_envs: dict[int, Any] = {}
-        self._startup_origin: dict[int, tuple[int, str]] = {}
         self._sessions: dict[int, Any] = {}
         self._locks: dict[int, asyncio.Lock] = {}
-        self._run_lock = asyncio.Lock()
-        self._active_run_tasks: set[asyncio.Task[Any]] = set()
-        self._lead_turn_record: dict[str, Any] | None = None
         self._lead_session: Any | None = None
         # child aid -> (parent aid, tool_call_id) for deferred spawns: lets a
         # child's completion fill the exact pending row that suspended its
         # parent. Absent for legacy fire-and-forget spawns (tool_call_id=None).
         self._spawn_origin: dict[int, tuple[int, str]] = {}
-        # Children whose result row was atomically filled before teardown began.
-        # Cleanup may cancel their task while it is only emitting an observational
-        # post-delivery event; this marker preserves the already-committed child /
-        # parent terminal pair instead of rewriting only the child to CANCELLED.
-        self._delivery_committed: set[int] = set()
         # Single-flight spawn dedup: task key -> the aid currently handling it,
         # plus the reverse map for release. A (role, task) is reserved at spawn
         # and freed when the child reaches a terminal phase, so a model that
@@ -163,72 +103,281 @@ class Scheduler(
         # the same task twice", which prompt guidance alone cannot guarantee.
         self._inflight: dict[str, int] = {}
         self._inflight_key_of: dict[int, str] = {}
-        # Per-active-turn token leases. A lease records the session's token count
-        # when the grant was made, so consumed tokens replace reserved headroom
-        # instead of being counted twice. Releasing a terminal turn returns only
-        # its *unspent* grant; tokens already consumed remain in ``used_tokens``.
-        # The Lead lease is separate because several arithmetic tests seed it
-        # without registering a real aid=0 session.
-        self._lead_reservation: tuple[int, int] | None = None
+        # Reserve-at-allocation budget bookkeeping. ``_allocated_tokens`` is the
+        # sum of budget already handed out against the global pool: the Lead
+        # reserve (seeded at lead registration) plus every live child's granted
+        # cap. Each spawn grants from ``_max_budget_tokens - _allocated_tokens``
+        # and adds its grant here *synchronously, before any await*, so a batch /
+        # duplicate spawn already sees the updated allocation and the sum of
+        # grants can never oversubscribe the global ceiling. A child's grant is
+        # reclaimed (subtracted) when it reaches a terminal phase, so an
+        # early-finishing child never strands budget that a later spawn could use.
+        self._allocated_tokens: int = 0
         self._child_reservation: dict[int, int] = {}
-        self._reservation_baseline: dict[int, int] = {}
         # aid -> queued teammate messages waiting to be appended as user
         # messages once that session is not running or suspended on pending work.
         self._message_inbox: dict[int, list[QueuedTeammateMessage]] = {}
-        # A recipient turn is transactional across ``add_user_message``. The
-        # outer delivery task and its rollback record stay owned until the add
-        # commits, letting cleanup cancel a blocked external send and restore the
-        # pre-delivery state even when the inner add coroutine ignores cancellation.
-        self._message_delivery_tasks: dict[int, asyncio.Task[Any]] = {}
-        self._message_delivery_records: dict[int, dict[str, Any]] = {}
         # Optional bootstrap-injected callback that persists a team.json manifest
         # from the current roster. Kept as a callback so the application layer
         # stays free of filesystem I/O.
         self._manifest_writer: Callable[[], None] | None = None
-        self._manifest_subscriber: AutoSaveSubscriber | None = None
-        self._shutting_down = False
-        self._cleanup_task: asyncio.Task[None] | None = None
-        self._cleanup_execution_tasks: set[tuple[int, asyncio.Task[Any]]] = set()
-        self._cleanup_delivery_tasks: set[tuple[int, asyncio.Task[Any]]] = set()
-        self._cleanup_environment_abort_tasks: dict[
-            int,
-            tuple[Any, asyncio.Task[Any]],
-        ] = {}
-        self._cleanup_worktree_release_task: asyncio.Task[Any] | None = None
-        self._fallback_autosavers: dict[int, AutoSaveSubscriber] = {}
-        self._scheduler_persistence_errors: list[Exception] = []
-        # A synchronous review loop temporarily yields its caller's turn lease
-        # through ordinary ``spawn`` calls. Context-local accounting records only
-        # leases actually released by this review invocation, so an external API
-        # call that never suspended its parent cannot accidentally expand the
-        # Lead reservation when the review returns.
-        self._review_parent_lease_tracker: contextvars.ContextVar[
-            tuple[int, dict[str, int]] | None
-        ] = contextvars.ContextVar("review_parent_lease_tracker", default=None)
 
+    def set_manifest_writer(self, fn: Callable[[], None]) -> None:
+        """Inject the team-manifest persister (called on every roster change)."""
+        self._manifest_writer = fn
 
-_COMPATIBILITY_MODULES = (
-    _scheduler_constants,
-    _scheduler_persistence,
-    _scheduler_team,
-    _scheduler_run,
-    _scheduler_cleanup,
-    _scheduler_review,
-)
-
-
-class _SchedulerFacade(types.ModuleType):
-    """Mirror patched compatibility names into focused scheduler modules."""
-
-    def __setattr__(self, name: str, value: object) -> None:
-        super().__setattr__(name, value)
-        if name.startswith("__"):
+    def _write_manifest(self) -> None:
+        if self._manifest_writer is None:
             return
-        for module in _COMPATIBILITY_MODULES:
-            if hasattr(module, name):
-                setattr(module, name, value)
+        try:
+            self._manifest_writer()
+        except Exception as exc:  # best-effort, mirrors AutoSaveSubscriber
+            logger.debug("manifest write failed: %s", exc)
 
+    def _autosave_session(self, aid: int) -> None:
+        session = self._sessions.get(aid)
+        if session is None:
+            return
+        save_path = getattr(session, "auto_save_path", None)
+        save = getattr(session, "save", None)
+        if not save_path or not callable(save):
+            return
+        try:
+            save(save_path)
+        except Exception as exc:  # best-effort, mirrors AutoSaveSubscriber
+            logger.debug("session auto-save failed for aid %s: %s", aid, exc)
 
-sys.modules[__name__].__class__ = _SchedulerFacade
+    def _autosave_all_sessions(self) -> None:
+        for aid in list(self._sessions):
+            self._autosave_session(aid)
+
+    @property
+    def events(self) -> SchedulerEventFactory:
+        """The scheduler-event builders (the orchestration event vocabulary)."""
+        return self._events
+
+    @property
+    def used_tokens(self) -> int:
+        """Total tokens across all agents."""
+        return self.table.total_used_tokens
+
+    @property
+    def allocated_tokens(self) -> int:
+        """Budget reserved against the global pool (Lead reserve + live grants)."""
+        return self._allocated_tokens
+
+    @property
+    def budget_exhausted(self) -> bool:
+        """True once the team's *aggregate* spend has reached the global cap.
+
+        Defense-in-depth companion to the per-session budget check: even though
+        reserve-at-allocation keeps the sum of grants under the ceiling, a
+        session may overshoot its own cap (a single LLM turn returns more tokens
+        than budgeted). This catches the team total regardless of how the spend
+        is distributed across sessions.
+        """
+        return self.used_tokens >= self._max_budget_tokens
+
+    def _seed_lead_reservation(self) -> None:
+        """Seed the running allocation with the Lead's reserve (idempotent).
+
+        Called when agent 0 is registered. The Lead keeps the full pool as its
+        own cap (it is the parent), but for the purpose of dividing the pool
+        among children it reserves only ``lead_reserve(total)`` — the first child
+        is granted from ``total - lead_reserve(total)``.
+        """
+        self._allocated_tokens = lead_reserve(self._max_budget_tokens)
+
+    def _reserve_child_budget(self, aid: int) -> int:
+        """Grant a child its cap from the unallocated remainder and book it.
+
+        Synchronous (no await): a duplicate / batched spawn that runs before the
+        first child's await already sees the updated ``_allocated_tokens``.
+        Returns the granted cap.
+        """
+        grant = split_budget(self._max_budget_tokens, self._allocated_tokens)
+        self._allocated_tokens += grant
+        self._child_reservation[aid] = grant
+        return grant
+
+    def _release_child_budget(self, aid: int) -> None:
+        """Reclaim a terminal child's reservation so later spawns can reuse it.
+
+        Idempotent: a child is finalized at most once per reservation.
+        """
+        grant = self._child_reservation.pop(aid, None)
+        if grant is not None:
+            self._allocated_tokens = max(0, self._allocated_tokens - grant)
+
+    @property
+    def lead_session(self) -> Any:
+        """Agent 0's session (the interactive entry)."""
+        return self._lead_session
+
+    def _role_of(self, aid: int) -> str:
+        scb = self.table.get(aid)
+        return scb.agent.name if scb is not None else "?"
+
+    def _check_topology(self, src_aid: int, dst_role: str, *, verb: str) -> None:
+        """Raise ``PermissionError`` if the topology forbids src → dst_role."""
+        if self._topology is None:
+            return
+        src_role = self._role_of(src_aid)
+        if not self._topology.allows(src_role, dst_role):
+            raise PermissionError(
+                f"Role '{src_role}' is not permitted to {verb} '{dst_role}' "
+                f"under the team topology."
+            )
+
+    def team_snapshot(self) -> list[dict[str, Any]]:
+        """Read-only roster of every tracked (live) agent, ordered by aid."""
+        snapshot: list[dict[str, Any]] = []
+        for aid in sorted(self.table.entries):
+            scb = self.table.entries[aid]
+            task = self._tasks.get(aid)
+            snapshot.append(
+                {
+                    "aid": aid,
+                    "role": scb.agent.name,
+                    "parent_aid": scb.parent_aid,
+                    "phase": scb.state.phase.value,
+                    "busy": task is not None and not task.done(),
+                }
+            )
+        return snapshot
+
+    def team_roster(self) -> list[dict[str, Any]]:
+        """Full configured team for the prompt toolbar: every live agent plus
+        each configured role that has no live agent yet (``aid=None``, phase
+        ``"available"``). Unlike ``team_snapshot`` (live agents only, used to
+        message teammates by aid), this surfaces the team the user defined in
+        the team config before anything has spawned.
+        """
+        live = self.team_snapshot()
+        live_roles = {entry["role"] for entry in live}
+        available = [
+            {
+                "aid": None,
+                "role": role,
+                "parent_aid": None,
+                "phase": "available",
+                "busy": False,
+            }
+            for role in self._roles
+            if role not in live_roles
+        ]
+        return live + available
+
+    async def _append_worktree_diff(self, env: EnvironmentPort, result: str) -> str:
+        """If env is a worktree, append its diff to the result."""
+        if not isinstance(env, DiffCapablePort):
+            return result
+        diff = await env.get_diff()
+        if not diff:
+            return result
+        if len(diff) > WORKTREE_DIFF_MAX_CHARS:
+            diff = (
+                diff[:WORKTREE_DIFF_KEEP_CHARS]
+                + f"\n\n... [{len(diff) - WORKTREE_DIFF_MAX_CHARS} chars truncated] ...\n\n"
+                + diff[-WORKTREE_DIFF_KEEP_CHARS:]
+            )
+        return result + f"\n\n[Changes made in worktree]\n```diff\n{diff}\n```"
+
+    async def emit_scheduler_event(self, event: SchedulerEvent) -> None:
+        """Emit a pre-built scheduler event via the event sink.
+
+        Events are built through ``self._events`` (a ``SchedulerEventFactory``)
+        so the orchestration vocabulary lives in one place; the sink is a
+        required ``EventPublisherPort``, so emission is a single ``emit``.
+        """
+        await self._event_sink.emit(event)
+
+    async def run(self, user_message: str) -> str:
+        """Send message to lead and run until the whole team is quiescent.
+
+        A session that suspends on deferred work (``AWAITING_EVENTS``) returns
+        its task while its children run; a child's completion re-activates it
+        with a fresh task. So "all tasks done" is no longer the end — the team
+        is finished only when no task is running, no pending table is
+        outstanding, and every session is terminal or idle (``_quiescent``).
+        """
+        if self._lead_session is None:
+            raise RuntimeError("Scheduler has no lead session. Call create_init_process() first.")
+
+        await self._lead_session.add_user_message(user_message)
+        self._tasks[0] = asyncio.create_task(self._drive_agent(0, self._lead_session))
+
+        while True:
+            for done_aid in [a for a, t in self._tasks.items() if t.done()]:
+                del self._tasks[done_aid]
+            pending = list(self._tasks.values())
+            if not pending:
+                if self._quiescent():
+                    break
+                # All tasks drained but a wake's resume task may be mid-creation
+                # (or a pending table is still open) — yield and re-check rather
+                # than exit early. Non-empty pending tables keep us looping
+                # without busy-spinning.
+                await asyncio.sleep(0)
+                continue
+            await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+
+        self._write_manifest()
+
+        # Return lead's last assistant message content
+        for msg in reversed(self._lead_session.state.messages):
+            if msg.get("role") == "assistant" and msg.get("content"):
+                return msg["content"]
+        return ""
+
+    def _quiescent(self) -> bool:
+        """True when no session is mid-flight: none is awaiting events, none has
+        an outstanding pending table, and every phase is terminal or idle.
+        """
+        for scb in self.table.entries.values():
+            if self._message_inbox.get(scb.aid):
+                return False
+            if not scb.state.pending_events.is_empty():
+                return False
+            if not (scb.state.phase.is_terminal() or scb.state.phase is SessionPhase.IDLE):
+                return False
+        return True
+
+    async def cleanup(self) -> None:
+        """Cancel pending tasks and clean up worktree environments."""
+        for task in self._tasks.values():
+            if not task.done():
+                task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+        self._tasks.clear()
+        self._autosave_all_sessions()
+        self._write_manifest()
+        await self._worktree_pool.release()
+
+    async def wait_for(self, aid: int) -> None:
+        """Wait until ``aid``'s current driving task settles.
+
+        Returns immediately when no task is tracked for ``aid``. A session
+        that suspends on deferred work returns its task while its children
+        run, so this waits for the current task only, not for the session to
+        reach a terminal phase.
+        """
+        task = self._tasks.get(aid)
+        if task is not None:
+            await task
+
+    async def spawn_with_review(
+        self,
+        parent_aid: int,
+        task: str,
+        context: str = "",
+        max_iterations: int = 3,
+    ) -> str:
+        """Self-Collaboration: Coder -> Reviewer loop (see ``self_collaboration``)."""
+        return await run_spawn_with_review(
+            self, parent_aid, task, context, max_iterations
+        )
+
 
 __all__ = ["LaunchSpec", "QueuedTeammateMessage", "Scheduler"]

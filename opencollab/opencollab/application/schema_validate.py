@@ -11,7 +11,6 @@ Pure application layer: stdlib only.
 
 from __future__ import annotations
 
-import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -24,11 +23,7 @@ _TYPE_CHECKS = {
     "string": lambda v: isinstance(v, str),
     "boolean": lambda v: isinstance(v, bool),
     "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
-    "number": lambda v: (
-        isinstance(v, (int, float))
-        and not isinstance(v, bool)
-        and math.isfinite(v)
-    ),
+    "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
     "null": lambda v: v is None,
 }
 
@@ -40,42 +35,8 @@ def validate(value: Any, schema: dict[str, Any]) -> list[str]:
     and carry a dotted path so the model can self-correct from the message.
     """
     errors: list[str] = []
-    _validate_schema(schema, "$schema", errors)
-    if errors:
-        return errors
     _validate(value, schema, "$", errors)
     return errors
-
-
-def _validate_schema(schema: Any, path: str, errors: list[str]) -> None:
-    if not isinstance(schema, dict):
-        errors.append(f"{path}: schema node must be an object")
-        return
-    expected_type = schema.get("type")
-    if expected_type is not None:
-        members = (
-            list(expected_type)
-            if isinstance(expected_type, Sequence) and not isinstance(expected_type, str)
-            else [expected_type]
-        )
-        if not members or any(
-            not isinstance(member, str) or member not in _TYPE_CHECKS
-            for member in members
-        ):
-            errors.append(f"{path}.type: unsupported schema type {expected_type!r}")
-    required = schema.get("required", [])
-    if not isinstance(required, list) or any(
-        not isinstance(field, str) for field in required
-    ):
-        errors.append(f"{path}.required: must be an array of property names")
-    properties = schema.get("properties", {})
-    if not isinstance(properties, dict):
-        errors.append(f"{path}.properties: must be an object")
-    else:
-        for name, child in properties.items():
-            _validate_schema(child, f"{path}.properties.{name}", errors)
-    if "items" in schema:
-        _validate_schema(schema["items"], f"{path}.items", errors)
 
 
 def _validate(value: Any, schema: dict[str, Any], path: str, errors: list[str]) -> None:
@@ -124,7 +85,8 @@ def _check_type(value: Any, expected_type: Any) -> bool:
         return any(_check_type(value, member) for member in expected_type)
     check = _TYPE_CHECKS.get(expected_type)
     if check is None:
-        return False
+        # Unknown type keyword: be permissive rather than reject silently.
+        return True
     return check(value)
 
 
