@@ -42,6 +42,14 @@ PASSED tests/test_x.py::test_three
 ========================== 3 passed in 0.05s ==========================
 """
 
+PLAIN_PASS_OUTPUT = """\
+.                                                                        [100%]
+==================================== PASSES ====================================
+=========================== short test summary info ============================
+PASSED tests/test_x.py::test_one
+1 passed in 0.04s
+"""
+
 FAIL_OUTPUT = """\
 ========================= test session starts =========================
 collected 3 items
@@ -111,6 +119,80 @@ def test_run_tests_runs_pytest_and_returns_pass_summary():
     assert "Passed tests:" in result
     assert "  - PASSED tests/test_x.py::test_one" in result
     assert "  - PASSED tests/test_x.py::test_three" in result
+
+
+def test_run_tests_accepts_plain_pytest_q_summary():
+    env = FakeEnv(stdout=PLAIN_PASS_OUTPUT)
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        RunTestsTool().execute_with_runtime(
+            {"target": "tests/test_x.py::test_one"},
+            runtime,
+        )
+    )
+
+    assert "passed=1" in result
+    assert "Verdict: GREEN" in result
+
+
+def test_run_tests_directory_target_requires_a_descendant_pass():
+    output = PLAIN_PASS_OUTPUT.replace(
+        "tests/test_x.py::test_one",
+        "tests/unit/test_x.py::test_one",
+    )
+    runtime = ToolRuntime(
+        environment=FakeEnv(stdout=output),
+        safety_policy=None,
+        permission_policy=None,
+    )
+
+    result = run(
+        RunTestsTool().execute_with_runtime({"target": "tests/unit"}, runtime)
+    )
+
+    assert "Verdict: GREEN" in result
+
+    root_runtime = ToolRuntime(
+        environment=FakeEnv(stdout=output),
+        safety_policy=None,
+        permission_policy=None,
+    )
+    root_result = run(
+        RunTestsTool().execute_with_runtime({"target": "."}, root_runtime)
+    )
+    assert "Verdict: GREEN" in root_result
+
+    unrelated_runtime = ToolRuntime(
+        environment=FakeEnv(stdout=output),
+        safety_policy=None,
+        permission_policy=None,
+    )
+    unrelated = run(
+        RunTestsTool().execute_with_runtime({"target": "tests/unitized"}, unrelated_runtime)
+    )
+    assert "Verdict: RED" in unrelated
+
+
+def test_run_tests_preserves_spaces_in_parameterized_node_id_proof():
+    output = PLAIN_PASS_OUTPUT.replace(
+        "tests/test_x.py::test_one",
+        "tests/test_x.py::test_one[x y]",
+    )
+    runtime = ToolRuntime(
+        environment=FakeEnv(stdout=output),
+        safety_policy=None,
+        permission_policy=None,
+    )
+
+    result = run(
+        RunTestsTool().execute_with_runtime(
+            {"target": "tests/test_x.py::test_one[x y]"},
+            runtime,
+        )
+    )
+
+    assert "Verdict: GREEN" in result
 
 
 def test_run_tests_returns_failure_summary_and_traceback_head():
@@ -298,14 +380,20 @@ def test_run_tests_falls_back_to_native_runner_when_pytest_missing():
     assert any("python bin/test" in c for c in cmds)
     native = next(c for c in cmds if "python bin/test" in c)
     assert "::" not in native and "test_two" in native
-    assert "Verdict: GREEN" in result
+    assert "Verdict: RED" in result
+    assert "no parser-backed executed-test proof" in result
 
 
 def test_run_tests_falls_back_to_go_runner_when_pytest_missing():
     env = ScriptedEnv([
         ("python -m pytest", 1, "No module named pytest"),
         ("test -f go.mod", 0, ""),
-        ("go test ./internal/server", 0, "ok\tmodule/internal/server\t0.01s"),
+        (
+            "go test -json ./internal/server",
+            0,
+            '{"Action":"pass","Package":"module/internal/server",'
+            '"Test":"TestEvaluate"}',
+        ),
     ])
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
@@ -316,7 +404,7 @@ def test_run_tests_falls_back_to_go_runner_when_pytest_missing():
     )
 
     cmds = [c for c, _ in env.exec_calls]
-    assert any("go test ./internal/server" in c for c in cmds)
+    assert any("go test -json ./internal/server" in c for c in cmds)
     assert "runner override is disabled" not in result
     assert "Verdict: GREEN" in result
 
@@ -325,7 +413,12 @@ def test_run_tests_falls_back_to_go_runner_when_pytest_finds_no_tests():
     env = ScriptedEnv([
         ("python -m pytest", 5, "no tests ran in 0.01s"),
         ("test -f go.mod", 0, ""),
-        ("go test ./internal/server", 0, "ok\tmodule/internal/server\t0.01s"),
+        (
+            "go test -json ./internal/server",
+            0,
+            '{"Action":"pass","Package":"module/internal/server",'
+            '"Test":"TestEvaluate"}',
+        ),
     ])
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
@@ -336,7 +429,7 @@ def test_run_tests_falls_back_to_go_runner_when_pytest_finds_no_tests():
     )
 
     cmds = [c for c, _ in env.exec_calls]
-    assert any("go test ./internal/server" in c for c in cmds)
+    assert any("go test -json ./internal/server" in c for c in cmds)
     assert "no tests ran" not in result
     assert "Verdict: GREEN" in result
 
@@ -358,7 +451,7 @@ def test_run_tests_native_fallback_quotes_translated_target():
     cmds = [c for c, _ in env.exec_calls]
     native = next(c for c in cmds if "python bin/test" in c)
     assert native == "python bin/test tests/test_x.py 'test_two; touch pwned'"
-    assert "Verdict: GREEN" in result
+    assert "Verdict: RED" in result
 
 
 def test_run_tests_pinned_runner_suppresses_autodetect():
@@ -369,7 +462,7 @@ def test_run_tests_pinned_runner_suppresses_autodetect():
     assert not any(c.startswith("test -x") for c in cmds)
 
 
-def test_run_tests_native_green_without_summary_line():
+def test_run_tests_native_exit_zero_without_proof_is_red():
     env = ScriptedEnv([
         ("python -m pytest", 1, "No module named pytest"),
         ("test -f tox.ini", 0, ""),
@@ -377,8 +470,8 @@ def test_run_tests_native_green_without_summary_line():
     ])
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
     result = run(RunTestsTool().execute_with_runtime({}, runtime))
-    assert "Verdict: GREEN" in result
-    assert "could not parse" not in result
+    assert "Verdict: RED" in result
+    assert "no parser-backed executed-test proof" in result
 
 
 def test_run_tests_escalates_after_repeated_same_target_failures():
@@ -413,7 +506,7 @@ def test_build_command_go_runner_translates_package_and_test_name():
     cmd = _build_command("go test", "internal/server/evaluator_test.go::TestEvaluate", "")
     assert cmd == (
         "PATH=/usr/local/go/bin:/usr/lib/go/bin:/opt/go/bin:$PATH "
-        "go test ./internal/server -run TestEvaluate"
+        "go test -json ./internal/server -run TestEvaluate"
     )
 
 
@@ -422,8 +515,111 @@ def test_build_command_go_runner_translates_multiple_packages():
     cmd = _build_command("go test", "./internal/server/... ./rpc/flipt/...", "-count=1")
     assert cmd == (
         "PATH=/usr/local/go/bin:/usr/lib/go/bin:/opt/go/bin:$PATH "
-        "go test ./internal/server/... ./rpc/flipt/... -count=1"
+        "go test -json ./internal/server/... ./rpc/flipt/... -count=1"
     )
+
+
+def test_build_command_go_runner_treats_bare_target_as_package():
+    from opencollab.adapters.tools.run_tests import _build_command, _is_green
+
+    cmd = _build_command("go test", "TestEvaluate", "")
+    output = (
+        '{"Action":"pass","Package":"module/internal/server","Test":"TestEvaluate"}'
+    )
+
+    assert cmd.endswith("go test -json ./TestEvaluate")
+    assert " -run " not in cmd
+    assert not _is_green(0, output, runner="go test", target="TestEvaluate")
+
+
+def test_go_runner_requires_pass_proof_from_requested_package():
+    from opencollab.adapters.tools.run_tests import _is_green
+
+    unrelated_output = (
+        '{"Action":"pass","Package":"module/internal/other","Test":"TestEvaluate"}'
+    )
+    matching_output = (
+        '{"Action":"pass","Package":"module/internal/server","Test":"TestEvaluate"}'
+    )
+
+    assert not _is_green(
+        0,
+        unrelated_output,
+        runner="go test",
+        target="internal/server",
+    )
+    assert _is_green(
+        0,
+        matching_output,
+        runner="go test",
+        target="internal/server",
+    )
+
+
+def test_go_runner_requires_pass_proof_for_each_requested_package():
+    from opencollab.adapters.tools.run_tests import _is_green
+
+    one_package = (
+        '{"Action":"pass","Package":"module/internal/server","Test":"TestEvaluate"}'
+    )
+    both_packages = "\n".join(
+        [
+            one_package,
+            '{"Action":"pass","Package":"module/rpc/flipt","Test":"TestRPC"}',
+        ]
+    )
+    target = "./internal/server ./rpc/flipt"
+
+    assert not _is_green(0, one_package, runner="go test", target=target)
+    assert _is_green(0, both_packages, runner="go test", target=target)
+
+
+def test_run_tests_rejects_zero_execution_pytest_modes():
+    runtime = ToolRuntime(
+        environment=FakeEnv(stdout="collected 3 items", returncode=0),
+        safety_policy=None,
+        permission_policy=None,
+    )
+
+    collect_only = run(
+        RunTestsTool().execute_with_runtime({"extra_args": "--collect-only"}, runtime)
+    )
+    help_only = run(
+        RunTestsTool().execute_with_runtime({"extra_args": "--help"}, runtime)
+    )
+
+    assert "Verdict: RED" in collect_only
+    assert "Verdict: RED" in help_only
+
+
+def test_run_tests_rejects_noop_runner_green_forgery():
+    runtime = ToolRuntime(
+        environment=FakeEnv(stdout="ok", returncode=0),
+        safety_policy=None,
+        permission_policy=None,
+    )
+
+    result = run(
+        RunTestsTool().execute_with_runtime({"runner": "true"}, runtime)
+    )
+
+    assert "Verdict: RED" in result
+
+
+def test_run_tests_requires_named_target_pass_proof():
+    runtime = ToolRuntime(
+        environment=FakeEnv(stdout=PASS_OUTPUT, returncode=0),
+        safety_policy=None,
+        permission_policy=None,
+    )
+
+    result = run(
+        RunTestsTool().execute_with_runtime(
+            {"target": "tests/test_x.py::test_missing"}, runtime
+        )
+    )
+
+    assert "Verdict: RED" in result
 
 
 def test_go_runner_command_not_found_is_not_reported_as_pytest_missing():

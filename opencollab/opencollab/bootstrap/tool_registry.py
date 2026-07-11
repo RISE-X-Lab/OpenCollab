@@ -61,6 +61,54 @@ COORDINATION_TOOL_NAMES: frozenset[str] = frozenset(SCHEDULER_TOOL_FACTORIES)
 COMPACTABLE_TOOL_NAMES: frozenset[str] = (
     frozenset({"bash", "file_read", "grep", "git_diff", "run_tests"}) & KNOWN_TOOL_NAMES
 )
+MAX_CONFIGURED_TOOL_OUTPUT_CHARS = 10_000_000
+TOOL_LIMIT_FIELDS: dict[str, frozenset[str]] = {
+    "bash": frozenset({"max_output_chars"}),
+    "git_diff": frozenset({"max_diff_chars", "max_status_chars"}),
+    "run_tests": frozenset({"max_traceback_chars"}),
+    "file_read": frozenset({"max_read_chars"}),
+    "grep": frozenset({"max_grep_chars"}),
+}
+
+
+def validate_tool_limits(
+    raw: object,
+) -> dict[str, dict[str, int]]:
+    """Validate output caps without bool coercion or constructor-key leakage."""
+    if not isinstance(raw, dict):
+        raise ValueError("tool_limits must be a mapping")
+    normalized: dict[str, dict[str, int]] = {}
+    for tool_name, kwargs in raw.items():
+        if not isinstance(tool_name, str) or tool_name not in KNOWN_TOOL_NAMES:
+            raise ValueError(f"tool_limits names unknown tools [{tool_name!r}]")
+        if not isinstance(kwargs, dict):
+            raise ValueError(f"tool_limits for '{tool_name}' must be a mapping")
+        if tool_name in SCHEDULER_TOOL_FACTORIES:
+            raise ValueError(
+                f"tool_limits not supported for coordination tools ['{tool_name}']."
+            )
+        allowed = TOOL_LIMIT_FIELDS.get(tool_name, frozenset())
+        unsupported = set(kwargs) - allowed
+        if unsupported:
+            raise ValueError(
+                f"tool_limits for '{tool_name}' has unsupported keys "
+                f"{sorted(unsupported)}"
+            )
+        normalized_kwargs: dict[str, int] = {}
+        for key, value in kwargs.items():
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, int)
+                or value <= 0
+                or value > MAX_CONFIGURED_TOOL_OUTPUT_CHARS
+            ):
+                raise ValueError(
+                    f"tool_limits {tool_name}.{key} must be an integer in "
+                    f"1..{MAX_CONFIGURED_TOOL_OUTPUT_CHARS}"
+                )
+            normalized_kwargs[key] = value
+        normalized[tool_name] = normalized_kwargs
+    return normalized
 
 
 def build_tools_for_role(
@@ -79,13 +127,7 @@ def build_tools_for_role(
     team file can tune per-tool output budgets to its backend. Unknown names or
     kwargs raise — fail fast at startup.
     """
-    limits = tool_limits or {}
-    unknown = set(limits) - KNOWN_TOOL_NAMES
-    if unknown:
-        raise ValueError(
-            f"tool_limits names unknown tools {sorted(unknown)}. "
-            f"Known tools: {sorted(KNOWN_TOOL_NAMES)}"
-        )
+    limits = validate_tool_limits(tool_limits or {})
     uncappable = set(limits) & frozenset(SCHEDULER_TOOL_FACTORIES)
     if uncappable:
         raise ValueError(
@@ -96,7 +138,14 @@ def build_tools_for_role(
         if name == "ask_user" and not interactive:
             continue
         if name in STATELESS_TOOL_FACTORIES:
-            tools.append(_instantiate(name, STATELESS_TOOL_FACTORIES[name], limits))
+            tools.append(
+                _instantiate(
+                    name,
+                    STATELESS_TOOL_FACTORIES[name],
+                    limits,
+                    headless=not interactive,
+                )
+            )
         elif name in SCHEDULER_TOOL_FACTORIES:
             if scheduler is None:
                 raise ValueError(
@@ -121,9 +170,19 @@ def _instantiate(
     name: str,
     factory: Callable[..., Tool],
     limits: dict[str, dict[str, int]],
+    *,
+    headless: bool,
 ) -> Tool:
     """Build a stateless tool, applying any configured limit kwargs."""
-    kwargs = limits.get(name, {})
+    kwargs: dict[str, object] = dict(limits.get(name, {}))
+    if headless and name == "bash":
+        kwargs["require_process_isolation"] = True
+    elif headless and name == "run_tests":
+        kwargs.update(
+            allow_runner_override=False,
+            allow_extra_args=False,
+            require_process_isolation=True,
+        )
     try:
         return factory(**kwargs)
     except TypeError as e:
@@ -139,5 +198,6 @@ __all__ = [
     "KNOWN_TOOL_NAMES",
     "COORDINATION_TOOL_NAMES",
     "COMPACTABLE_TOOL_NAMES",
+    "validate_tool_limits",
     "build_tools_for_role",
 ]

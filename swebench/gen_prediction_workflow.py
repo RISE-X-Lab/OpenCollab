@@ -18,12 +18,12 @@ internally.
 Generate (OpenCollab venv, absolute paths in background shells)::
 
     opencollab/.venv/bin/python swebench/gen_prediction_workflow.py \
-        --instance-file /home/xuzhenhua/swebench-eval/instance_sympy-20590.json \
-        --output /home/xuzhenhua/swebench-eval/predictions-review-fix.jsonl
+        --instance-file /path/to/swebench-eval/instance_sympy-20590.json \
+        --output /path/to/swebench-eval/predictions-review-fix.jsonl
 
 Grade with the official harness (separate venv)::
 
-    cd /home/xuzhenhua/swebench-eval && HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
+    cd /path/to/swebench-eval && HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 \
     .venv/bin/python -m swebench.harness.run_evaluation \
         -p predictions-review-fix.jsonl -i sympy__sympy-20590 \
         -id review-fix-1 --cache_level env --report_dir reports
@@ -32,9 +32,9 @@ Grade with the official harness (separate venv)::
 from __future__ import annotations
 
 import argparse
-import asyncio
 import hashlib
 import json
+import math
 import os
 import shlex
 import sys
@@ -53,6 +53,43 @@ from opencollab.adapters.env import DockerEnvironment  # noqa: E402
 from opencollab.bootstrap.config import get_config  # noqa: E402
 from opencollab.bootstrap.workflow_runtime import discover_workflows  # noqa: E402
 from opencollab.harness.evaluator import EvalTask, run_eval_task  # noqa: E402
+from opencollab.harness.test_injection import _decode_git_c_path  # noqa: E402
+
+
+def validate_workflow_limits(
+    *,
+    max_steps: object,
+    budget: object,
+    timeout: object,
+    checkpoint_interval: object,
+) -> tuple[int, int, float, float]:
+    normalized_steps, normalized_budget, normalized_timeout = (
+        gp.validate_generation_limits(
+            max_steps=max_steps,
+            budget=budget,
+            timeout=timeout,
+        )
+    )
+    if isinstance(checkpoint_interval, bool):
+        raise ValueError(
+            "--checkpoint-interval-seconds must be a finite non-negative number"
+        )
+    try:
+        normalized_checkpoint = float(checkpoint_interval)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "--checkpoint-interval-seconds must be a finite non-negative number"
+        ) from exc
+    if not math.isfinite(normalized_checkpoint) or normalized_checkpoint < 0:
+        raise ValueError(
+            "--checkpoint-interval-seconds must be a finite non-negative number"
+        )
+    return (
+        normalized_steps,
+        normalized_budget,
+        normalized_timeout,
+        normalized_checkpoint,
+    )
 from opencollab.harness.workflows import generate_review_fix  # noqa: E402
 
 # Team-baseline parity: use the current default per-instance cap for comparable
@@ -150,30 +187,73 @@ def _resolve_blind_validation(workflow_fn, explicit: bool | None, workflow_label
     return _blind_validation_default(_workflow_name(workflow_fn, workflow_label), explicit)
 
 
-def _patch_paths(patch: str) -> list[str]:
-    paths: list[str] = []
+def _patch_entries(patch: str) -> list[tuple[str, str]]:
+    entries: list[tuple[str, str]] = []
     for line in patch.splitlines():
         if not line.startswith("diff --git "):
             continue
-        try:
-            parts = shlex.split(line)
-        except ValueError:
+        tokens = _git_diff_header_tokens(line)
+        if len(tokens) < 2:
             continue
-        if len(parts) < 4:
-            continue
-        path = parts[3]
-        if path.startswith("b/"):
-            path = path[2:]
-        if path and path != "/dev/null":
-            paths.append(path)
-    return paths
+        old_path = _git_diff_endpoint(tokens[0], "a")
+        new_path = _git_diff_endpoint(tokens[1], "b")
+        if old_path or new_path:
+            entries.append((old_path, new_path))
+    return entries
+
+
+def _patch_paths(patch: str) -> list[str]:
+    paths: dict[str, None] = {}
+    for old_path, new_path in _patch_entries(patch):
+        for path in (old_path, new_path):
+            if path:
+                paths.setdefault(path, None)
+    return list(paths)
+
+
+def _git_diff_header_tokens(header: str) -> list[str]:
+    text = str(header or "").strip()
+    prefix = "diff --git "
+    if not text.startswith(prefix):
+        return []
+    text = text[len(prefix) :]
+    tokens: list[str] = []
+    index = 0
+    while index < len(text) and len(tokens) < 2:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        start = index
+        if text[index] == '"':
+            index += 1
+            while index < len(text):
+                if text[index] == "\\":
+                    index += 2
+                    continue
+                if text[index] == '"':
+                    index += 1
+                    break
+                index += 1
+        else:
+            while index < len(text) and not text[index].isspace():
+                index += 1
+        tokens.append(text[start:index])
+    return tokens
+
+
+def _git_diff_endpoint(token: str, side: str) -> str:
+    path = _decode_git_c_path(token)
+    if path == "/dev/null":
+        return ""
+    prefix = f"{side}/"
+    if path.startswith(prefix):
+        path = path[len(prefix) :]
+    return path
 
 
 def _normalize_patch_path(path: str) -> str:
-    normalized = path.strip().replace("\\", "/").lstrip("/")
-    if normalized.startswith("a/") or normalized.startswith("b/"):
-        normalized = normalized[2:]
-    return normalized
+    return path.strip().replace("\\", "/").lstrip("/")
 
 
 def _workflow_allowed_patch_paths(workflow_result: object) -> set[str] | None:
@@ -242,6 +322,18 @@ def _result_metrics(result) -> dict:
     }
 
 
+def _workflow_status_for_result(result, patch: str) -> str:
+    error = str(getattr(result, "error", None) or "")
+    if error:
+        if error.startswith("Task timed out after ") and patch.strip():
+            return "done_with_timeout_patch"
+        return "error"
+    workflow_result = getattr(result, "workflow_result", None)
+    if isinstance(workflow_result, dict) and workflow_result.get("status"):
+        return str(workflow_result["status"])
+    return "done" if patch.strip() else ""
+
+
 def build_output_records(
     *,
     instance_id: str,
@@ -252,19 +344,23 @@ def build_output_records(
 ) -> tuple[dict, dict]:
     record_id = record_id or uuid.uuid4().hex
     patch_sha256 = _patch_sha256(patch)
-    prediction = {
-        "instance_id": instance_id,
-        "record_id": record_id,
-        "patch_sha256": patch_sha256,
-        "model_name_or_path": model_name,
-        "model_patch": patch,
-    }
     metric_record = {
         **metrics,
         "instance_id": instance_id,
         "record_id": record_id,
         "patch_sha256": patch_sha256,
         "model_name_or_path": model_name,
+    }
+    metric_record["runner_returncode"] = gp.runner_returncode_for_metrics(
+        metric_record
+    )
+    prediction = {
+        "instance_id": instance_id,
+        "record_id": record_id,
+        "patch_sha256": patch_sha256,
+        "model_name_or_path": model_name,
+        "model_patch": patch,
+        "workflow_metric": metric_record,
     }
     return prediction, metric_record
 
@@ -299,19 +395,29 @@ def _patch_paths_to_remove(
     allowed_paths: set[str] | None = None,
     disallowed_paths: set[str] | None = None,
 ) -> list[str]:
-    disallowed_paths = disallowed_paths or set()
-    remove: list[str] = []
-    for path in _patch_paths(patch):
-        normalized = _normalize_patch_path(path)
-        if normalized in disallowed_paths:
-            remove.append(path)
-            continue
-        if _looks_like_validation_artifact(normalized):
-            remove.append(path)
-            continue
-        if allowed_paths is not None and normalized not in allowed_paths:
-            remove.append(path)
-    return remove
+    normalized_allowed = (
+        {_normalize_patch_path(path) for path in allowed_paths}
+        if allowed_paths is not None
+        else None
+    )
+    normalized_disallowed = {
+        _normalize_patch_path(path) for path in (disallowed_paths or set())
+    }
+    remove: dict[str, None] = {}
+    for old_path, new_path in _patch_entries(patch):
+        endpoints = [path for path in (old_path, new_path) if path]
+        violates_guard = any(
+            path in normalized_disallowed
+            or _looks_like_validation_artifact(path)
+            or (
+                normalized_allowed is not None and path not in normalized_allowed
+            )
+            for path in endpoints
+        )
+        if violates_guard:
+            for path in endpoints:
+                remove.setdefault(path, None)
+    return list(remove)
 
 
 def _remove_patch_paths(cid: str, paths: list[str]) -> None:
@@ -326,10 +432,12 @@ def _cleanup_patch_paths_command(paths: list[str]) -> str:
     quoted = " ".join(shlex.quote(path) for path in paths)
     return "\n".join(
         [
-            f"git restore --staged --worktree -- {quoted} 2>/dev/null || true",
-            f"git reset -q HEAD -- {quoted} 2>/dev/null || true",
-            f"git checkout -- {quoted} 2>/dev/null || true",
-            f"git clean -fdq -- {quoted}",
+            "git --literal-pathspecs restore --staged --worktree -- "
+            f"{quoted} 2>/dev/null || true",
+            "git --literal-pathspecs reset -q HEAD -- "
+            f"{quoted} 2>/dev/null || true",
+            f"git --literal-pathspecs checkout -- {quoted} 2>/dev/null || true",
+            f"git --literal-pathspecs clean -fdq -- {quoted}",
         ]
     )
 
@@ -377,10 +485,18 @@ async def generate(
     """Run the chosen workflow in a fresh container; return (patch, metrics)."""
     iid = instance["instance_id"]
     name = gp.unique_container_name("oc-wf-", iid)
-    cid = gp.start_container(image, name)
     run_dir = Path(args.output).parent
-    gp.write_container_marker(run_dir, cid, name)
+    cid = gp.start_container_with_marker(image, name, run_dir)
     print(f"Container: {cid}")
+    patch = ""
+    metrics: dict = {}
+    output_path: Path | None = None
+    metrics_path: Path | None = None
+    record: dict | None = None
+    metric_record: dict | None = None
+    pending_path: Path | None = None
+    pending_required = False
+    generation_error: BaseException | None = None
     try:
         # Attach mode: run_eval_task's internal env.cleanup() no-ops on attached
         # containers, so the container survives for baseline-style extraction.
@@ -443,32 +559,108 @@ async def generate(
         workflow_allowlist_missing = guard_patch_paths and allowed_paths is None
         if workflow_allowlist_missing:
             allowed_paths = set()
-        patch, removed_validation_artifacts = extract_patch_guarded(
-            cid,
-            guard_validation_artifacts=guard_patch_paths,
-            allowed_paths=allowed_paths,
-            disallowed_paths=_workflow_disallowed_patch_paths(workflow_result),
-        )
-    finally:
-        if not args.keep_container:
-            gp.remove_container_and_clear_marker(run_dir, cid)
+        if result.submission_eligible and not result.test_patch_isolation_failed:
+            patch, removed_validation_artifacts = extract_patch_guarded(
+                cid,
+                guard_validation_artifacts=guard_patch_paths,
+                allowed_paths=allowed_paths,
+                disallowed_paths=_workflow_disallowed_patch_paths(workflow_result),
+            )
         else:
-            print(f"  (left container {cid} running: {name})")
+            patch = ""
+            removed_validation_artifacts = []
+        metrics = _result_metrics(result)
+        metrics["patch_produced"] = bool(patch.strip())
+        metrics["submitted_patch_chars"] = len(patch)
+        if not metrics.get("workflow_status"):
+            metrics["workflow_status"] = _workflow_status_for_result(result, patch)
+        if workflow_allowlist_missing:
+            metrics["workflow_allowlist_missing"] = True
+        if removed_validation_artifacts:
+            metrics["validation_artifacts_removed"] = removed_validation_artifacts
+        if getattr(args, "_persist_output_after_cleanup", False):
+            output_path = Path(args.output)
+            metrics_path_arg = getattr(args, "metrics", None)
+            metrics_path = (
+                Path(metrics_path_arg)
+                if metrics_path_arg
+                else gp.default_metrics_path(output_path)
+            )
+            persisted_model_name = getattr(args, "model_name", None) or (
+                f"opencollab-{_workflow_name(workflow_fn, workflow_label)}-{cfg['model']}"
+            )
+            record, metric_record = build_output_records(
+                instance_id=iid,
+                model_name=persisted_model_name,
+                patch=patch,
+                metrics=metrics,
+            )
+            pending_required = bool(patch.strip())
+            if pending_required:
+                pending_path = gp.persist_pending_output(
+                    run_dir=run_dir,
+                    predictions_path=output_path,
+                    metrics_path=metrics_path,
+                    prediction=record,
+                    metric=metric_record,
+                    cid=cid,
+                    name=name,
+                )
+    except BaseException as exc:
+        generation_error = exc
+        raise
+    finally:
+        preserve_container = (
+            pending_required
+            and pending_path is None
+            and gp.output_staging_requires_container_preservation(
+                run_dir,
+                cid=cid,
+                name=name,
+            )
+        )
+        if preserve_container:
+            metrics["container_preservation_required"] = True
+        else:
+            completed = generation_error is None and gp.metrics_have_completed_identity(
+                metrics,
+                patch,
+            )
+            try:
+                gp.finalize_container_ownership(
+                    run_dir=run_dir,
+                    cid=cid,
+                    name=name,
+                    keep_container=args.keep_container if generation_error is None else False,
+                    completed=completed,
+                    metrics=metrics,
+                )
+            except BaseException as cleanup_error:
+                if generation_error is None:
+                    raise
+                add_note = getattr(generation_error, "add_note", None)
+                if callable(add_note):
+                    add_note(
+                        "container cleanup failed after generation error: "
+                        f"{type(cleanup_error).__name__}: {cleanup_error}"
+                    )
 
-    metrics = _result_metrics(result)
-    metrics["patch_produced"] = bool(patch.strip())
-    metrics["submitted_patch_chars"] = len(patch)
-    if not metrics.get("workflow_status"):
-        if result.error and patch.strip():
-            metrics["workflow_status"] = "done_with_timeout_patch"
-        elif result.error:
-            metrics["workflow_status"] = "error"
-        elif patch.strip():
-            metrics["workflow_status"] = "done"
-    if workflow_allowlist_missing:
-        metrics["workflow_allowlist_missing"] = True
-    if removed_validation_artifacts:
-        metrics["validation_artifacts_removed"] = removed_validation_artifacts
+    if getattr(args, "_persist_output_after_cleanup", False):
+        if (
+            output_path is None
+            or metrics_path is None
+            or record is None
+            or metric_record is None
+        ):
+            raise RuntimeError("workflow output record was not built")
+        if pending_path is not None:
+            publish_status = gp.publish_pending_output(run_dir, pending_path)
+            if publish_status == "deferred":
+                raise RuntimeError(
+                    "pending workflow output remained blocked by container ownership"
+                )
+        else:
+            gp.append_output_records(output_path, metrics_path, record, metric_record)
     return patch, metrics
 
 
@@ -479,7 +671,7 @@ def main() -> None:
     ap.add_argument("--instance-file", required=True, help="JSON file with one instance")
     ap.add_argument("--output", required=True, help="Predictions JSONL to append to")
     ap.add_argument("--metrics", default=None,
-                    help="Metrics JSONL to append to (default: <output>.metrics.jsonl)")
+                    help="Metrics JSONL to append to (default: metrics.jsonl beside --output)")
     ap.add_argument("--image", default=None, help="Override container image")
     ap.add_argument("--arch", default="x86_64")
     ap.add_argument("--model", default=None)
@@ -514,8 +706,23 @@ def main() -> None:
     )
     ap.add_argument("--keep-container", action="store_true")
     args = ap.parse_args()
+    try:
+        (
+            args.max_steps,
+            args.budget,
+            args.timeout,
+            args.checkpoint_interval_seconds,
+        ) = validate_workflow_limits(
+            max_steps=args.max_steps,
+            budget=args.budget,
+            timeout=args.timeout,
+            checkpoint_interval=args.checkpoint_interval_seconds,
+        )
+    except (TypeError, ValueError) as exc:
+        ap.error(str(exc))
+    out_path, _metrics_path = gp.output_paths(args.output, args.metrics)
 
-    instance = json.loads(Path(args.instance_file).read_text())
+    instance = gp.load_instance(args.instance_file)
     iid = instance["instance_id"]
     image = args.image or f"sweb.eval.{args.arch}.{iid}:latest"
 
@@ -552,22 +759,12 @@ def main() -> None:
         f"{' resume' if args.resume else ''}"
     )
 
-    patch, metrics = asyncio.run(generate(instance, image, cfg, args, workflow_fn, wf_label))
-
-    out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    record, metric_record = build_output_records(
-        instance_id=iid,
-        model_name=model_name,
-        patch=patch,
-        metrics=metrics,
+    args.model_name = model_name
+    args._persist_output_after_cleanup = True
+    patch, metrics = gp.run_with_bounded_shutdown(
+        generate(instance, image, cfg, args, workflow_fn, wf_label)
     )
-    with out_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(record) + "\n")
-
-    metrics_path = Path(args.metrics or f"{args.output}.metrics.jsonl")
-    with metrics_path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(metric_record) + "\n")
 
     if patch.strip():
         print(f"\nPatch ({len(patch)} chars) written to {out_path}")
@@ -575,6 +772,9 @@ def main() -> None:
         print("\n".join(patch.splitlines()[:40]))
     else:
         print("\nWARNING: empty patch (workflow made no tracked changes)")
+
+    if not gp.metrics_have_completed_identity(metrics, patch):
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

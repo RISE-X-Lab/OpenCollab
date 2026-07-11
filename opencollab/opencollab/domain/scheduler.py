@@ -11,6 +11,7 @@ SessionTable is the scheduler's registry of all SCBs.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from opencollab.domain.agent import Agent
@@ -24,24 +25,24 @@ def lead_reserve(total: int) -> int:
     the seed value of the scheduler's running ``_allocated_tokens`` so the very
     first child is granted from ``total - lead_reserve(total)``.
     """
-    return max(10_000, total // 4)
+    return min(total, max(10_000, total // 4))
 
 
 def split_budget(total: int, allocated: int) -> int:
     """How many tokens a spawned agent gets, given the budget already handed out.
 
     ``allocated`` is the sum of budget already reserved against the global pool
-    (the Lead reserve plus every live child's granted cap). The grant is the
-    unallocated remainder ``total - allocated``, floored at 10_000. Flooring can
-    push the *sum* of grants past ``total`` only in the exhausted tail (each
-    starving child still gets the 10_000 minimum); above the floor the running
-    sum of grants never exceeds ``total``.
+    (the Lead reserve plus every live child's granted cap). A live child receives
+    at most one lead-sized share, clamped to the unallocated remainder. This
+    preserves three-way fan-out under the default quarter-share policy while the
+    running sum remains bounded by ``total``. Once the pool is exhausted, the
+    grant is zero.
 
     Kept pure: all running-total bookkeeping (add on spawn, reclaim on terminal)
     lives in the application-layer scheduler.
     """
-    remaining = total - allocated
-    return max(10_000, remaining)
+    remaining = max(0, total - allocated)
+    return min(lead_reserve(total), remaining)
 
 
 @dataclass(frozen=True)
@@ -67,12 +68,17 @@ class ReviewVerdict:
 
     @classmethod
     def parse(cls, review_text: str) -> "ReviewVerdict":
-        # Structured verdict (ref: claude-code review plugin) — the line
-        # must equal "VERDICT: PASS" verbatim to avoid false positives
-        # from words like "password" containing "PASS".
-        passed = any(
-            line.strip().upper() == "VERDICT: PASS"
-            for line in review_text.splitlines()
+        # The review prompt requires the response to END with one exact verdict
+        # line. Looking at earlier lines lets quoted instructions or a superseded
+        # draft verdict override the reviewer's final judgement.
+        lines = [line.strip() for line in review_text.splitlines() if line.strip()]
+        passed = bool(
+            lines
+            and re.fullmatch(
+                r"VERDICT: PASS[.!。！]?",
+                lines[-1],
+                flags=re.IGNORECASE,
+            )
         )
         return cls(passed=passed, raw_text=review_text)
 

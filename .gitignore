@@ -18,7 +18,11 @@ swe_workdir/
 eval_work/
 .understand-anything/
 tmp/
+/output/
 opencollab-glm52-*.json
+mydocs/
+container.id
+container.name
 
 # Local GLM / SWE-bench evaluation run artifacts
 docs/monitoring/

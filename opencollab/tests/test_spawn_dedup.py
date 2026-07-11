@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from opencollab.adapters.tools.spawn import SpawnAgentTool
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.event_bus import EventBus
@@ -56,11 +57,15 @@ class ChildFactory:
 
 
 def _scheduler(child: BlockingChild) -> Scheduler:
-    return Scheduler(
+    scheduler = Scheduler(
         session_factory=ChildFactory(child),
         worktree_pool=WorktreePool(".", use_worktrees=False),
         event_sink=EventBus(None),
     )
+    lead = BlockingChild("lead", "", asyncio.Event())
+    lead.state.set_phase(SessionPhase.DONE)
+    scheduler.register_lead(lead)
+    return scheduler
 
 
 def test_inflight_spawn_tracks_then_clears():
@@ -121,5 +126,37 @@ def test_duplicate_spawn_tool_call_is_refused_while_in_flight():
 
         gate.set()
         await scheduler._tasks[aid]
+
+    run(scenario())
+
+
+def test_model_controlled_unsafe_role_is_rejected_before_spawn_side_effects():
+    async def scenario():
+        gate = asyncio.Event()
+        child = BlockingChild("coder", "RESULT", gate)
+        scheduler = _scheduler(child)
+        tool = SpawnAgentTool(scheduler)
+        runtime = ToolRuntime(
+            environment=None,
+            safety_policy=None,
+            permission_policy=None,
+            aid=0,
+            tool_call_id="call-unsafe",
+        )
+
+        result = await tool.execute_with_runtime(
+            {"role": "../../../escaped", "task": "write outside"},
+            runtime,
+        )
+
+        assert isinstance(result, str)
+        assert "invalid role identity" in result
+        assert scheduler._tasks == {}
+        assert set(scheduler._sessions) == {0}
+
+        with pytest.raises(ValueError, match="role"):
+            await scheduler.spawn(0, "../../../escaped", "write outside")
+        assert scheduler._tasks == {}
+        assert set(scheduler._sessions) == {0}
 
     run(scenario())

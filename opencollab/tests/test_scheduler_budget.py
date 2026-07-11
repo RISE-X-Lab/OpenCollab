@@ -7,8 +7,8 @@ oversubscribe it 2-3x):
 1. Reserve-at-allocation — each spawned child is granted budget from the
    *unallocated remainder* (``_max_budget_tokens - _allocated_tokens``), and the
    grant is booked synchronously before any await. The sum of grants therefore
-   never exceeds the global pool (above the 10_000 floor). A terminal child's
-   reservation is reclaimed so a later spawn can reuse the headroom.
+   never exceeds the global pool. A terminal child's reservation is reclaimed
+   so a later spawn can reuse the headroom.
 2. Aggregate runtime ceiling — a session's precheck stops the session once the
    *team aggregate* spend reaches the global cap, regardless of per-session caps.
 """
@@ -17,9 +17,10 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
-from opencollab.domain.scheduler import lead_reserve
+from opencollab.domain.scheduler import SessionControlBlock, lead_reserve
 from opencollab.domain.session import SessionPhase, SessionState
 
 
@@ -97,6 +98,30 @@ class _RaisingFactory(RecordingFactory):
         raise RuntimeError("session build failed")
 
 
+class _FailingEventPublisher:
+    async def emit(self, event):
+        raise RuntimeError("event sink failed")
+
+
+class _BlockingAcquirePool:
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def acquire(self, role):
+        self.started.set()
+        await self.release.wait()
+
+    async def cleanup(self):
+        return None
+
+
+def _register_budget_lead(sched: Scheduler, total: int) -> None:
+    lead = BlockingChild("lead", total, asyncio.Event())
+    lead.state.set_phase(SessionPhase.DONE)
+    sched.register_lead(lead)
+
+
 def _scheduler(factory: RecordingFactory, *, max_budget_tokens: int) -> Scheduler:
     sched = Scheduler(
         session_factory=factory,
@@ -104,15 +129,13 @@ def _scheduler(factory: RecordingFactory, *, max_budget_tokens: int) -> Schedule
         event_sink=EventBus(None),
         max_budget_tokens=max_budget_tokens,
     )
-    # Seed the Lead reservation the way register_lead would (no real lead session
-    # needed for these budget-arithmetic tests).
-    sched._seed_lead_reservation()
+    _register_budget_lead(sched, max_budget_tokens)
     return sched
 
 
 def test_concurrent_grants_never_exceed_global_pool():
     """N children spawned against a global cap: the sum of granted caps plus the
-    Lead reserve never exceeds the global pool (above the 10_000 floor)."""
+    Lead reserve never exceeds the global pool."""
 
     async def scenario():
         total = 400_000
@@ -120,26 +143,19 @@ def test_concurrent_grants_never_exceed_global_pool():
         factory = RecordingFactory(gate)
         sched = _scheduler(factory, max_budget_tokens=total)
 
-        # Spawn 3 children in the same batch (no await between reservations from
-        # the model's perspective; each spawn books its grant synchronously).
-        for i in range(3):
-            await sched.spawn(0, "coder", f"task-{i}", tool_call_id=f"c-{i}")
+        # Three children receive bounded quarter-shares. The fourth is rejected.
+        await sched.spawn(0, "coder", "task-0", tool_call_id="c-0")
+        await sched.spawn(0, "coder", "task-1", tool_call_id="c-1")
+        await sched.spawn(0, "coder", "task-2", tool_call_id="c-2")
+        with pytest.raises(RuntimeError, match="fully allocated"):
+            await sched.spawn(0, "coder", "task-3", tool_call_id="c-3")
 
         grants = factory.grants
-        assert len(grants) == 3
-        # First grant = pool - lead_reserve; the rest come from the shrinking
-        # remainder. Once the pool is allocated, further grants hit the 10_000
-        # floor — but the *running allocation* never lets a non-floor grant push
-        # the sum past the pool.
-        assert grants[0] == total - lead_reserve(total)  # 300_000
+        assert grants == [100_000, 100_000, 100_000]
         # The allocation tracker reflects every booked grant.
         assert sched.allocated_tokens == lead_reserve(total) + sum(grants)
-        # Non-floor grants never oversubscribe: the first child alone fits within
-        # the pool, and no second non-floor grant was issued.
-        non_floor = [g for g in grants if g > 10_000]
-        assert lead_reserve(total) + sum(non_floor) <= total
-        # All later grants are the floor (pool already fully allocated).
-        assert grants[1:] == [10_000, 10_000]
+        assert sched.allocated_tokens <= total
+        assert sched.inflight_spawn("coder", "task-3") is None
 
         gate.set()
         await asyncio.gather(*sched._tasks.values())
@@ -158,18 +174,18 @@ def test_finished_child_reservation_is_reclaimed():
         sched = _scheduler(factory, max_budget_tokens=total)
 
         aid0 = await sched.spawn(0, "coder", "first", tool_call_id="c-0")
-        assert factory.grants[0] == 300_000
-        assert sched.allocated_tokens == lead_reserve(total) + 300_000  # 400_000
+        assert factory.grants[0] == 100_000
+        assert sched.allocated_tokens == lead_reserve(total) + 100_000
 
-        # Finish the first child — its 300_000 reservation must be reclaimed.
+        # Finish the first child — its 100_000 reservation must be reclaimed.
         gate.set()
         await sched._tasks[aid0]
         assert sched.allocated_tokens == lead_reserve(total)  # back to 100_000
 
-        # A fresh spawn now gets the full reclaimed headroom again, not the floor.
+        # A fresh spawn gets the reclaimed fair share again.
         gate.clear()
         await sched.spawn(0, "coder", "second", tool_call_id="c-1")
-        assert factory.grants[1] == 300_000
+        assert factory.grants[1] == 100_000
 
         gate.set()
         await asyncio.gather(*[t for t in sched._tasks.values()])
@@ -193,7 +209,7 @@ def test_failed_worktree_acquire_releases_reservations():
             event_sink=EventBus(None),
             max_budget_tokens=total,
         )
-        sched._seed_lead_reservation()
+        _register_budget_lead(sched, total)
 
         before = sched.allocated_tokens
         assert before == lead_reserve(total)
@@ -242,17 +258,77 @@ def test_failed_session_build_releases_reservations_then_respawn_succeeds():
         assert sched.inflight_spawn("coder", "retry-me") is None
 
         # Swap in a working factory: a re-spawn of the SAME (role, task) is NOT
-        # refused and is granted from the full reclaimed headroom, not the floor.
+        # refused and is granted from the reclaimed fair-share headroom.
         good = RecordingFactory(gate)
         sched._session_factory = good
         sched._worktree_pool = _NoopWorktreePool()
 
         aid = await sched.spawn(0, "coder", "retry-me", tool_call_id="c-1")
-        assert good.grants[0] == total - lead_reserve(total)  # 300_000, not floor
+        assert good.grants[0] == lead_reserve(total)  # 100_000 fair share
         assert sched.inflight_spawn("coder", "retry-me") == aid
 
         gate.set()
         await asyncio.gather(*sched._tasks.values())
+
+    run(scenario())
+
+
+def test_spawn_event_failure_rolls_back_all_child_state():
+    async def scenario():
+        total = 400_000
+        gate = asyncio.Event()
+        factory = RecordingFactory(gate)
+        sched = Scheduler(
+            session_factory=factory,
+            worktree_pool=_NoopWorktreePool(),
+            event_sink=_FailingEventPublisher(),
+            max_budget_tokens=total,
+        )
+        lead = BlockingChild("lead", total, gate)
+        lead.state.set_phase(SessionPhase.DONE)
+        sched.register_lead(lead)
+
+        with pytest.raises(RuntimeError, match="event sink failed"):
+            await sched.spawn(0, "coder", "ghost", tool_call_id="child-call")
+
+        assert set(sched.table.entries) == {0}
+        assert set(sched._sessions) == {0}
+        assert sched._spawn_origin == {}
+        assert sched._tasks == {}
+        assert sched.inflight_spawn("coder", "ghost") is None
+        assert sched.allocated_tokens == lead_reserve(total)
+
+    run(scenario())
+
+
+def test_cancelled_spawn_rolls_back_reservations_before_driver_exists():
+    async def scenario():
+        total = 400_000
+        gate = asyncio.Event()
+        pool = _BlockingAcquirePool()
+        factory = RecordingFactory(gate)
+        sched = Scheduler(
+            session_factory=factory,
+            worktree_pool=pool,
+            event_sink=EventBus(None),
+            max_budget_tokens=total,
+        )
+        _register_budget_lead(sched, total)
+
+        task = asyncio.create_task(
+            sched.spawn(0, "coder", "cancelled", tool_call_id="cancelled-call")
+        )
+        await pool.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert set(sched.table.entries) == {0}
+        assert set(sched._sessions) == {0}
+        assert sched._spawn_origin == {}
+        assert sched._tasks == {}
+        assert sched.inflight_spawn("coder", "cancelled") is None
+        assert sched.allocated_tokens == lead_reserve(total)
 
     run(scenario())
 
@@ -326,5 +402,146 @@ def test_budget_exhausted_reflects_aggregate_spend():
 
         gate.set()
         await asyncio.gather(*sched._tasks.values())
+
+    run(scenario())
+
+
+def test_consumed_child_tokens_are_not_reclaimed_as_fresh_headroom():
+    async def scenario():
+        total = 400_000
+        gate = asyncio.Event()
+        factory = RecordingFactory(gate)
+        sched = _scheduler(factory, max_budget_tokens=total)
+
+        aid = await sched.spawn(0, "coder", "spend")
+        grant = factory.grants[0]
+        factory.children[aid].state.add_used_tokens(grant)
+        gate.set()
+        await sched._tasks[aid]
+
+        # The lease is gone, while its consumed tokens stay committed.
+        assert aid not in sched._child_reservation
+        assert sched.allocated_tokens == lead_reserve(total) + grant
+
+        gate.clear()
+        await sched.spawn(0, "coder", "next-1")
+        await sched.spawn(0, "coder", "next-2")
+        with pytest.raises(RuntimeError, match="fully allocated"):
+            await sched.spawn(0, "coder", "no-double-spend")
+        gate.set()
+        await asyncio.gather(*sched._tasks.values(), return_exceptions=True)
+
+    run(scenario())
+
+
+def test_lead_yields_unused_turn_lease_before_parallel_children():
+    async def scenario():
+        total = 400_000
+        gate = asyncio.Event()
+        factory = RecordingFactory(gate)
+        sched = Scheduler(
+            session_factory=factory,
+            worktree_pool=_NoopWorktreePool(),
+            event_sink=EventBus(None),
+            max_budget_tokens=total,
+        )
+        lead = BlockingChild("lead", total, gate)
+        lead.state.set_phase(SessionPhase.DONE)
+        sched.register_lead(lead)
+
+        assert sched._reserve_turn_budget(0) == total
+        lead.state.add_used_tokens(100_000)
+        sched._tasks[0] = asyncio.current_task()
+        await sched.spawn(0, "coder", "a")
+        await sched.spawn(0, "coder", "b")
+        await sched.spawn(0, "coder", "c")
+        with pytest.raises(RuntimeError, match="fully allocated"):
+            await sched.spawn(0, "coder", "d")
+        sched._tasks.pop(0)
+
+        assert sched.allocated_tokens == total
+        gate.set()
+        await asyncio.gather(*sched._tasks.values(), return_exceptions=True)
+
+    run(scenario())
+
+
+def test_message_revival_reacquires_child_budget_before_starting_turn():
+    async def scenario():
+        total = 400_000
+        gate = asyncio.Event()
+        factory = RecordingFactory(gate)
+        sched = Scheduler(
+            session_factory=factory,
+            worktree_pool=_NoopWorktreePool(),
+            event_sink=EventBus(None),
+            max_budget_tokens=total,
+        )
+        lead = BlockingChild("lead", total, gate)
+        lead.state.set_phase(SessionPhase.DONE)
+        sched.register_lead(lead)
+
+        aid = await sched.spawn(0, "coder", "first")
+        gate.set()
+        await sched._tasks[aid]
+        gate.clear()
+
+        await sched.send_message(0, aid, "again", "continue")
+        assert aid in sched._child_reservation
+        assert not sched._tasks[aid].done()
+
+        await sched.spawn(0, "coder", "second")
+        await sched.spawn(0, "coder", "third")
+        with pytest.raises(RuntimeError, match="fully allocated"):
+            await sched.spawn(0, "coder", "fourth")
+
+        assert sched.allocated_tokens == total
+        gate.set()
+        await asyncio.gather(*sched._tasks.values(), return_exceptions=True)
+
+    run(scenario())
+
+
+def test_cancelled_agent_retries_other_messages_waiting_for_budget():
+    async def scenario():
+        total = 400_000
+        gate = asyncio.Event()
+        factory = RecordingFactory(gate)
+        sched = _scheduler(factory, max_budget_tokens=total)
+
+        running = [
+            await sched.spawn(0, "coder", f"occupy-{index}")
+            for index in range(3)
+        ]
+        assert sched.allocated_tokens == total
+
+        target = BlockingChild("reviewer", 0, gate)
+        target.state.aid = 99
+        target.state.set_phase(SessionPhase.DONE)
+        sched.table.add(
+            SessionControlBlock(
+                aid=99,
+                parent_aid=0,
+                agent=target.agent,
+                state=target.state,
+            )
+        )
+        sched._sessions[99] = target
+
+        await sched.send_message(0, 99, "review", "resume when budget frees")
+        assert 99 not in sched._tasks
+        assert sched._message_inbox[99]
+
+        await asyncio.sleep(0)
+        sched._tasks[running[0]].cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await sched._tasks[running[0]]
+
+        assert 99 in sched._tasks
+        assert 99 in sched._child_reservation
+        assert sched._message_inbox[99] == []
+
+        gate.set()
+        await asyncio.gather(*sched._tasks.values(), return_exceptions=True)
 
     run(scenario())

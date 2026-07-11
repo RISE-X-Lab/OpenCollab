@@ -93,14 +93,14 @@ That directory is ignored by git.
 Generate predictions by running the OpenCollab team inside each official
 `sweb.eval` container. `run_team_batch.sh` is the batch driver;
 `start_team_run.sh` runs one instance. Grading is done separately on the
-**scoring side** (`/home/xuzhenhua/swebench-eval/`, see its `README.md`).
+**scoring side** (`/path/to/swebench-eval/`, see its `README.md`).
 
 ### Full run
 
 ```bash
 scripts/run_team_batch.sh \
   --dataset SWE-bench/SWE-bench_Lite --split test \
-  --output /home/xuzhenhua/swebench-eval/predictions-team.jsonl \
+  --output /path/to/swebench-eval/predictions-team.jsonl \
   --timeout 1500
 ```
 
@@ -116,7 +116,7 @@ line. To run one:
 ```bash
 scripts/run_team_batch.sh \
   --dataset SWE-bench/SWE-bench_Lite --split test \
-  --output /home/xuzhenhua/swebench-eval/predictions-team-nohints.jsonl \
+  --output /path/to/swebench-eval/predictions-team-nohints.jsonl \
   --instance-ids "$(awk 'NF && $1!~/^#/{print $1}' evals/subset_hints_ablation.txt | paste -sd,)" \
   --timeout 1500 \
   -- --no-hints
@@ -133,7 +133,7 @@ scripts/run_team_batch.sh \
 ### Grading the subset
 
 ```bash
-cd /home/xuzhenhua/swebench-eval
+cd /path/to/swebench-eval
 .venv/bin/python grade_team.py predictions-team-nohints.jsonl oc-team-nohints
 ```
 
@@ -168,8 +168,8 @@ The 30 ids were sampled evenly across repos from the baseline's `unresolved_ids`
 To build a new subset from a report's id lists:
 
 ```bash
-cd /home/xuzhenhua/swebench-eval
-python3 - <<'PY' > /home/xuzhenhua/git/OpenCollab/evals/subset_new.txt
+cd /path/to/swebench-eval
+python3 - <<'PY' > /path/to/OpenCollab/evals/subset_new.txt
 import json, collections
 r = json.load(open("opencollab-team.oc-team.json"))
 ids = sorted(r["unresolved_ids"])           # or resolved_ids / empty_patch_ids

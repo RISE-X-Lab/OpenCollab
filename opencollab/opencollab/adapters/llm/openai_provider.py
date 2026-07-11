@@ -253,9 +253,10 @@ def _usage_int(source: Any, key: str) -> int:
     if value in (None, ""):
         return 0
     try:
-        return int(value)
-    except (TypeError, ValueError):
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
         return 0
+    return max(0, parsed)
 
 
 def _usage_to_dict(value: Any) -> dict[str, Any]:
