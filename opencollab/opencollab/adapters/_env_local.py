@@ -12,6 +12,10 @@ from opencollab.adapters._env_base import Environment, ExecResult
 from opencollab.adapters._env_config import (
     LOCAL_FILE_READ_LIMIT_BYTES,
     LOCAL_FILE_WRITE_LIMIT_BYTES,
+    PROCESS_IO_JOIN_TIMEOUT_SECONDS,
+    PROCESS_KILL_REAP_TIMEOUT_SECONDS,
+    PROCESS_SPAWN_HANDOFF_TIMEOUT_SECONDS,
+    PROCESS_TERM_GRACE_SECONDS,
 )
 from opencollab.adapters._env_file_io import (
     _positive_file_size_limit,
@@ -25,14 +29,130 @@ from opencollab.adapters._env_file_io import (
     _TemporaryFileReplacedError,
 )
 from opencollab.adapters._env_process import (
+    _await_owned_operation,
     _OwnedProcessNotQuiesced,
     _OwnedProcessTimeout,
     _run_thread_owned_process,
+    _ThreadProcessOwner,
 )
 from opencollab.adapters.retirement_registry import (
     registered_retirement_paths,
 )
 from opencollab.application.exception_notes import add_exception_note
+
+
+class _ActiveProcessOperations:
+    """Revoke and observe every command owned by one local environment."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._operations: dict[object, _ThreadProcessOwner | None] = {}
+        self._lingering_owners: set[_ThreadProcessOwner] = set()
+        self._revoked_owners: set[_ThreadProcessOwner] = set()
+        self._revoked = False
+
+    def begin(self) -> object:
+        with self._lock:
+            if self._revoked:
+                raise RuntimeError("process operations have been revoked")
+            self._lingering_owners = {
+                owner for owner in self._lingering_owners if not owner.finished.is_set()
+            }
+            token = object()
+            self._operations[token] = None
+            return token
+
+    def attach(self, token: object, owner: _ThreadProcessOwner) -> None:
+        with self._lock:
+            if token not in self._operations:
+                raise RuntimeError("process operation ownership is unavailable")
+            if self._operations[token] is not None:
+                raise RuntimeError("process operation already has an owner")
+            self._operations[token] = owner
+            revoked = self._revoked
+            if revoked:
+                self._revoked_owners.add(owner)
+        if revoked:
+            owner.cancel()
+
+    def finish(self, token: object) -> None:
+        with self._lock:
+            owner = self._operations.pop(token, None)
+            if owner is not None and not owner.finished.is_set():
+                self._lingering_owners.add(owner)
+            if self._revoked and owner is not None:
+                self._revoked_owners.add(owner)
+
+    async def abort(self) -> None:
+        with self._lock:
+            self._revoked = True
+            owners = {
+                owner for owner in self._operations.values() if owner is not None
+            }
+            owners.update(self._lingering_owners)
+            self._revoked_owners.update(owners)
+        for owner in owners:
+            owner.cancel()
+
+        wait_bound = (
+            _positive_finite_timeout(
+                PROCESS_SPAWN_HANDOFF_TIMEOUT_SECONDS,
+                name="PROCESS_SPAWN_HANDOFF_TIMEOUT_SECONDS",
+            )
+            + _positive_finite_timeout(
+                PROCESS_TERM_GRACE_SECONDS,
+                name="PROCESS_TERM_GRACE_SECONDS",
+            )
+            + _positive_finite_timeout(
+                PROCESS_KILL_REAP_TIMEOUT_SECONDS,
+                name="PROCESS_KILL_REAP_TIMEOUT_SECONDS",
+            )
+            + PROCESS_IO_JOIN_TIMEOUT_SECONDS * 5
+            + 1.0
+        )
+
+        async def wait_for_every_operation() -> bool:
+            deadline = asyncio.get_running_loop().time() + wait_bound
+            while True:
+                with self._lock:
+                    current_owners = {
+                        owner
+                        for owner in self._operations.values()
+                        if owner is not None
+                    }
+                    current_owners.update(self._lingering_owners)
+                    self._revoked_owners.update(current_owners)
+                    operations_pending = bool(self._operations)
+                for current_owner in current_owners:
+                    current_owner.cancel()
+                if not operations_pending and all(
+                    owner.finished.is_set() for owner in current_owners
+                ):
+                    return True
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return False
+                await asyncio.sleep(min(0.01, remaining))
+
+        completed = await _await_owned_operation(
+            wait_for_every_operation(),
+            propagate_cancellation=True,
+        )
+        if not completed:
+            raise _OwnedProcessNotQuiesced(
+                "environment commands did not finish within the abort bound",
+                cleanup_quiesced=False,
+            )
+        with self._lock:
+            revoked_owners = tuple(self._revoked_owners)
+        if any(
+            not owner.finished.is_set() or not owner.result.cleanup_quiesced
+            for owner in revoked_owners
+        ):
+            raise _OwnedProcessNotQuiesced(
+                "environment command cleanup did not quiesce",
+                cleanup_quiesced=False,
+            )
 
 
 class LocalEnvironment(Environment):
@@ -67,6 +187,7 @@ class LocalEnvironment(Environment):
         self._workspace_lock = threading.Lock()
         self._temp_file_identities: dict[str, _TemporaryFileOwnership] = {}
         self._temp_identity_lock = threading.Lock()
+        self._process_operations = _ActiveProcessOperations()
 
     def _verify_workspace_identity_locked(self) -> None:
         if self._workspace_fd < 0:
@@ -185,46 +306,54 @@ class LocalEnvironment(Environment):
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         timeout_seconds = _positive_finite_timeout(timeout, name="timeout")
         self._ensure_active()
-        workspace_fd = self._acquire_workspace_handle()
+        operation_token = self._process_operations.begin()
         try:
+            workspace_fd = self._acquire_workspace_handle()
             try:
-                result = await _run_thread_owned_process(
-                    cmd,
-                    shell=True,
-                    cwd=None,
-                    cwd_fd=workspace_fd,
-                    timeout=timeout_seconds,
-                    timeout_name="timeout",
-                )
-                outcome = ExecResult(
-                    returncode=result.returncode or 0,
-                    stdout=result.stdout.decode("utf-8", errors="replace"),
-                    stderr=result.stderr.decode("utf-8", errors="replace"),
-                    stdout_truncated=result.stdout_dropped_bytes > 0,
-                    stderr_truncated=result.stderr_dropped_bytes > 0,
-                    stdout_dropped_bytes=result.stdout_dropped_bytes,
-                    stderr_dropped_bytes=result.stderr_dropped_bytes,
-                )
-            except _OwnedProcessTimeout as exc:
-                if not exc.cleanup_quiesced:
+                try:
+                    result = await _run_thread_owned_process(
+                        cmd,
+                        shell=True,
+                        cwd=None,
+                        cwd_fd=workspace_fd,
+                        timeout=timeout_seconds,
+                        timeout_name="timeout",
+                        owner_started=lambda owner: self._process_operations.attach(
+                            operation_token,
+                            owner,
+                        ),
+                    )
+                    outcome = ExecResult(
+                        returncode=result.returncode or 0,
+                        stdout=result.stdout.decode("utf-8", errors="replace"),
+                        stderr=result.stderr.decode("utf-8", errors="replace"),
+                        stdout_truncated=result.stdout_dropped_bytes > 0,
+                        stderr_truncated=result.stderr_dropped_bytes > 0,
+                        stdout_dropped_bytes=result.stdout_dropped_bytes,
+                        stderr_dropped_bytes=result.stderr_dropped_bytes,
+                    )
+                except _OwnedProcessTimeout as exc:
+                    if not exc.cleanup_quiesced:
+                        self._aborted = True
+                    outcome = ExecResult(
+                        returncode=-1,
+                        stdout="",
+                        stderr=f"Command timed out after {timeout_seconds:g}s",
+                    )
+                except _OwnedProcessNotQuiesced:
                     self._aborted = True
-                outcome = ExecResult(
-                    returncode=-1,
-                    stdout="",
-                    stderr=f"Command timed out after {timeout_seconds:g}s",
-                )
-            except _OwnedProcessNotQuiesced:
-                self._aborted = True
+                    raise
+                except asyncio.CancelledError as exc:
+                    if getattr(exc, "cleanup_quiesced", True) is False:
+                        self._aborted = True
+                    raise
+            except BaseException as original:
+                self._finish_workspace_operation(workspace_fd, original)
                 raise
-            except asyncio.CancelledError as exc:
-                if getattr(exc, "cleanup_quiesced", True) is False:
-                    self._aborted = True
-                raise
-        except BaseException as original:
-            self._finish_workspace_operation(workspace_fd, original)
-            raise
-        self._finish_workspace_operation(workspace_fd)
-        return outcome
+            self._finish_workspace_operation(workspace_fd)
+            return outcome
+        finally:
+            self._process_operations.finish(operation_token)
 
     async def read_file(self, path: str) -> str:
         self._ensure_active()
@@ -361,6 +490,7 @@ class LocalEnvironment(Environment):
                     self._temp_file_identities.pop(full, None)
 
     async def cleanup(self) -> None:
+        await self._process_operations.abort()
         await _run_owned_blocking_io(self._sync_release_owned_resources)
 
     async def abort(self) -> None:

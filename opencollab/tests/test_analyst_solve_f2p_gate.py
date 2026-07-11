@@ -59,7 +59,12 @@ class ScriptedCtx:
         self.agent_calls.append(
             {"prompt": prompt, "label": label, "schema": schema, **kw}
         )
-        return self._replies.pop(0) if self._replies else None
+        reply = self._replies.pop(0) if self._replies else None
+        if isinstance(reply, dict) and tools:
+            for tool in tools:
+                if getattr(tool, "name", "") == "run_tests":
+                    tool._verified_targets.update(reply.get("tests_run") or ())
+        return reply
 
     async def parallel(self, thunks):
         return [await t() for t in thunks]
@@ -115,6 +120,15 @@ async def _run(ctx, args):
 
 def _coder_prompts(ctx) -> list[str]:
     return [c["prompt"] for c in ctx.agent_calls if (c["label"] or "").startswith("coder:")]
+
+
+def test_f2p_gate_rejects_negative_failed_count_and_missing_tool_evidence():
+    verdict = _pass(tests_run=F2P, failed_count=-1)
+    assert _f2p_gate()(verdict, F2P) is not None
+
+    verdict["failed_count"] = 0
+    assert _f2p_gate()(verdict, F2P, executed_tests=set()) is not None
+    assert _f2p_gate()(verdict, F2P, executed_tests=set(F2P)) is None
 
 
 # (a) tester verdict PASS but failed_count=1 -> _run_phase overrides + seeds findings.

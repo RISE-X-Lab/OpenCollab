@@ -135,6 +135,7 @@ class RunTestsTool(Tool):
         self.allow_runner_override = allow_runner_override
         self.allow_extra_args = allow_extra_args
         self.require_process_isolation = require_process_isolation
+        self._verified_targets: set[str] = set()
         # target -> consecutive RED count, for the escalation nudge. The tool
         # instance is shared across a task's workflow sessions (built once in
         # the eval toolset), so this survives across run_tests calls.
@@ -202,6 +203,11 @@ class RunTestsTool(Tool):
             runner=runner,
             target=target,
         )
+        if target:
+            if green:
+                self._verified_targets.add(target)
+            else:
+                self._verified_targets.discard(target)
         streak = self._record(target, green)
         return _format_report(
             cmd,
@@ -241,14 +247,79 @@ class RunTestsTool(Tool):
         self._consecutive_fail[target] = n
         return n
 
+    @property
+    def verified_targets(self) -> frozenset[str]:
+        """Exact requested targets whose latest parser-backed verdict was GREEN."""
+        return frozenset(self._verified_targets)
+
+
+def verification_run_tests_tool() -> RunTestsTool:
+    """Build the model-facing verifier with command overrides disabled."""
+    return RunTestsTool(allow_runner_override=False, allow_extra_args=False)
+
+
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
+_PYTHON_EXECUTABLE_RE = re.compile(r"(?:python(?:\d+(?:\.\d+)*)?|pypy\d*)")
+_PYTHON_FLAG_OPTIONS = frozenset({"-B", "-E", "-I", "-O", "-OO", "-P", "-q", "-s", "-S", "-u", "-v"})
+
+
+def _python_invokes_pytest(parts: list[str]) -> bool:
+    executable = parts[0].rsplit("/", 1)[-1]
+    if _PYTHON_EXECUTABLE_RE.fullmatch(executable) is None:
+        return False
+    index = 1
+    while index < len(parts):
+        part = parts[index]
+        if part == "-m":
+            return index + 1 < len(parts) and parts[index + 1] == "pytest"
+        if part in {"-W", "-X", "--check-hash-based-pycs"}:
+            index += 2
+            continue
+        if part.startswith(("-W", "-X")) and len(part) > 2:
+            index += 1
+            continue
+        if part in _PYTHON_FLAG_OPTIONS:
+            index += 1
+            continue
+        return False
+    return False
+
+
+def _parts_invoke_pytest(parts: list[str], *, depth: int = 0) -> bool:
+    """Recognize supported direct wrappers without accepting shell interpreters."""
+    if not parts or depth > 3:
+        return False
+    executable = parts[0].rsplit("/", 1)[-1]
+    if executable == "pytest":
+        return True
+    if _python_invokes_pytest(parts):
+        return True
+    if executable == "env":
+        index = 1
+        while index < len(parts) and _ENV_ASSIGNMENT_RE.fullmatch(parts[index]):
+            index += 1
+        if index < len(parts) and parts[index] == "--":
+            index += 1
+        return _parts_invoke_pytest(parts[index:], depth=depth + 1)
+    if executable in {"uv", "poetry", "pipenv"} and len(parts) >= 3 and parts[1] == "run":
+        index = 3 if parts[2] == "--" else 2
+        return _parts_invoke_pytest(parts[index:], depth=depth + 1)
+    return (
+        executable in {"coverage", "coverage3"}
+        and len(parts) >= 4
+        and parts[1:4] == ["run", "-m", "pytest"]
+    )
+
 
 def _is_pytest_runner(runner: str) -> bool:
-    """Whether ``runner`` invokes pytest (so pytest-only flags are safe)."""
+    """Whether ``runner`` directly invokes pytest (so pytest flags are safe)."""
+    if any(token in runner for token in ("\n", "\r", ";", "&", "|", "<", ">", "`", "$(")):
+        return False
     try:
         parts = shlex.split(runner)
     except ValueError:
         return False
-    return any(part == "pytest" or part.endswith("/pytest") for part in parts)
+    return _parts_invoke_pytest(parts)
 
 
 def _is_go_runner(runner: str) -> bool:
@@ -383,14 +454,20 @@ def _pytest_no_tests(returncode: int, output: str) -> bool:
     return returncode == 5 and "no tests ran" in output.lower()
 
 
-def _summary_line(output: str) -> str | None:
-    """The last complete pytest result summary, with or without ``====``."""
-    summary = None
+def _summary_lines(output: str) -> list[str]:
+    """Return every complete pytest result summary in emission order."""
+    summaries = []
     for line in output.splitlines():
         candidate = line.strip().strip("= ").strip()
         if _PYTEST_SUMMARY_RE.fullmatch(candidate) or _PYTEST_NO_TESTS_RE.fullmatch(candidate):
-            summary = candidate
-    return summary
+            summaries.append(candidate)
+    return summaries
+
+
+def _summary_line(output: str) -> str | None:
+    """The last complete pytest result summary, with or without ``====``."""
+    summaries = _summary_lines(output)
+    return summaries[-1] if summaries else None
 
 
 def _parse_counts(summary: str | None) -> tuple[dict[str, int], int]:
@@ -515,7 +592,13 @@ def _is_green(
     target: str = "",
 ) -> bool:
     """Require positive evidence that at least one requested test executed."""
-    summary = _summary_line(output)
+    summaries = _summary_lines(output)
+    if _is_pytest_runner(runner) and len(summaries) != 1:
+        # One tool invocation represents one pytest session. Multiple result
+        # summaries are ambiguous and let an appended passing summary hide an
+        # earlier failure; no summary proves no pytest session completed.
+        return False
+    summary = summaries[0] if summaries else None
     counts, _ = _parse_counts(summary)
     if counts.get("failed", 0) or counts.get("error", 0):
         return False

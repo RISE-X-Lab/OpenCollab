@@ -1085,18 +1085,30 @@ def test_cleanup_is_bounded_when_worktree_release_ignores_cancellation():
             self.release_gate = asyncio.Event()
             self.finished = asyncio.Event()
             self.cancellations = 0
+            self.release_calls = 0
+            self.active_releases = 0
+            self.max_active_releases = 0
 
         async def acquire(self, role):
             return None
 
         async def release(self):
+            self.release_calls += 1
+            self.active_releases += 1
+            self.max_active_releases = max(
+                self.max_active_releases,
+                self.active_releases,
+            )
             self.started.set()
-            while not self.release_gate.is_set():
-                try:
-                    await self.release_gate.wait()
-                except asyncio.CancelledError:
-                    self.cancellations += 1
-            self.finished.set()
+            try:
+                while not self.release_gate.is_set():
+                    try:
+                        await self.release_gate.wait()
+                    except asyncio.CancelledError:
+                        self.cancellations += 1
+                self.finished.set()
+            finally:
+                self.active_releases -= 1
 
     lead = ScriptedSession("lead", [])
     scheduler, _ = build_scheduler(lead, [])
@@ -1114,8 +1126,20 @@ def test_cleanup_is_bounded_when_worktree_release_ignores_cancellation():
             )
         assert pool.started.is_set()
         assert pool.cancellations >= 1
+        assert pool.release_calls == 1
+        with pytest.raises(
+            RuntimeError,
+            match="technical scheduler cleanup failed: worktree pool release failed or timed out",
+        ):
+            await scheduler.cleanup(cleanup_timeout=0.01)
+        assert pool.release_calls == 1
+        assert pool.active_releases == 1
+        assert pool.max_active_releases == 1
         pool.release_gate.set()
         await asyncio.wait_for(pool.finished.wait(), timeout=0.5)
+        await scheduler.cleanup(cleanup_timeout=0.01)
+        assert pool.release_calls == 1
+        assert pool.active_releases == 0
 
     run(scenario())
 
@@ -1145,21 +1169,67 @@ def test_cleanup_surfaces_synchronous_worktree_release_failure():
     run(scenario())
 
 
+def test_cleanup_retries_worktree_release_after_transient_failure():
+    class FailOnceReleasePool:
+        def __init__(self):
+            self.release_calls = 0
+
+        async def acquire(self, role):
+            return None
+
+        async def release(self):
+            self.release_calls += 1
+            if self.release_calls == 1:
+                raise OSError("transient release failure")
+
+    lead = ScriptedSession("lead", [])
+    scheduler, _ = build_scheduler(lead, [])
+    pool = FailOnceReleasePool()
+    scheduler._worktree_pool = pool
+
+    async def scenario():
+        with pytest.raises(
+            RuntimeError,
+            match="technical scheduler cleanup failed: worktree pool release failed or timed out",
+        ):
+            await scheduler.cleanup(cleanup_timeout=0.01)
+        assert scheduler._cleanup_task is None
+
+        await scheduler.cleanup(cleanup_timeout=0.01)
+        assert pool.release_calls == 2
+        assert scheduler._cleanup_task is not None
+        assert scheduler._cleanup_task.done()
+
+    run(scenario())
+
+
 def test_cleanup_surfaces_environment_abort_timeout_and_late_task_stays_terminal():
     class StubbornAbortEnv:
         def __init__(self):
             self.abort_started = asyncio.Event()
             self.abort_release = asyncio.Event()
             self.abort_finished = asyncio.Event()
+            self.abort_calls = 0
+            self.active_aborts = 0
+            self.max_active_aborts = 0
 
         async def abort(self):
+            self.abort_calls += 1
+            self.active_aborts += 1
+            self.max_active_aborts = max(
+                self.max_active_aborts,
+                self.active_aborts,
+            )
             self.abort_started.set()
-            while not self.abort_release.is_set():
-                try:
-                    await self.abort_release.wait()
-                except asyncio.CancelledError:
-                    continue
-            self.abort_finished.set()
+            try:
+                while not self.abort_release.is_set():
+                    try:
+                        await self.abort_release.wait()
+                    except asyncio.CancelledError:
+                        continue
+                self.abort_finished.set()
+            finally:
+                self.active_aborts -= 1
 
     class StubbornSession:
         def __init__(self, env):
@@ -1186,13 +1256,13 @@ def test_cleanup_surfaces_environment_abort_timeout_and_late_task_stays_terminal
 
     class RecordingPool:
         def __init__(self):
-            self.release_called = False
+            self.release_calls = 0
 
         async def acquire(self, _role):
             return env
 
         async def release(self):
-            self.release_called = True
+            self.release_calls += 1
 
     pool = RecordingPool()
     scheduler._worktree_pool = pool
@@ -1207,13 +1277,25 @@ def test_cleanup_surfaces_environment_abort_timeout_and_late_task_stays_terminal
         assert "session environment abort failed or timed out" in str(caught.value)
         assert env.abort_started.is_set()
         assert env._aborted is True
-        assert pool.release_called is False
+        assert pool.release_calls == 0
         assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+
+        with pytest.raises(RuntimeError) as retry_caught:
+            await scheduler.cleanup(cleanup_timeout=0.01)
+        assert "execution tasks did not quiesce" in str(retry_caught.value)
+        assert pool.release_calls == 0
+        assert env.abort_calls == 1
+        assert env.active_aborts == 1
+        assert env.max_active_aborts == 1
 
         child.release.set()
         env.abort_release.set()
         await asyncio.wait_for(driver, timeout=0.5)
         await asyncio.wait_for(env.abort_finished.wait(), timeout=0.5)
+        await scheduler.cleanup(cleanup_timeout=0.01)
+        assert pool.release_calls == 1
+        assert env.abort_calls == 1
+        assert env.active_aborts == 0
         assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
         assert scheduler.table.get(aid).result.startswith("Error: scheduler cleanup")
 

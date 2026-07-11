@@ -113,7 +113,7 @@ def _relative_path(parent_fd: int, name: str) -> str:
         getpath = getattr(fcntl, "F_GETPATH", None)
         if getpath is None:
             raise OSError("descriptor path lookup is unavailable")
-        raw = fcntl.fcntl(parent_fd, getpath, b"\0" * 4096)
+        raw = fcntl.fcntl(parent_fd, getpath, b"\0" * 1024)
         parent = raw.split(b"\0", 1)[0].decode()
     root = os.path.realpath(workspace)
     candidate = os.path.realpath(os.path.join(parent, name))
@@ -143,6 +143,51 @@ def _append_record(path: str, record: _RetirementRecord) -> None:
             os.close(fd)
 
 
+def _records_from_raw(raw: bytes) -> list[_RetirementRecord]:
+    if raw and not raw.endswith(b"\n"):
+        raise OSError("internal retirement log has a partial record")
+    lines = raw.splitlines()
+    if len(lines) > MAX_RETIREMENT_LOG_RECORDS:
+        raise OSError("internal retirement log has too many records")
+    records: list[_RetirementRecord] = []
+    for line in lines:
+        try:
+            payload = json.loads(line, object_pairs_hook=_unique_object)
+            records.append(_RetirementRecord.from_payload(payload))
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise OSError("internal retirement log is malformed") from exc
+    return records
+
+
+def _read_locked_records(fd: int) -> list[_RetirementRecord]:
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_RETIREMENT_LOG_BYTES:
+        raise OSError("internal retirement log is invalid")
+    os.lseek(fd, 0, os.SEEK_SET)
+    return _records_from_raw(os.read(fd, MAX_RETIREMENT_LOG_BYTES + 1))
+
+
+def _write_locked_records(fd: int, records: list[_RetirementRecord]) -> None:
+    if len(records) > MAX_RETIREMENT_LOG_RECORDS:
+        raise OSError("internal retirement log has too many records")
+    payload = b"".join(
+        json.dumps(asdict(record), sort_keys=True, separators=(",", ":")).encode()
+        + b"\n"
+        for record in records
+    )
+    if len(payload) > MAX_RETIREMENT_LOG_BYTES:
+        raise OSError("internal retirement log exceeds its bound")
+    os.lseek(fd, 0, os.SEEK_SET)
+    view = memoryview(payload)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("internal retirement log rewrite made no progress")
+        view = view[written:]
+    os.ftruncate(fd, len(payload))
+    os.fsync(fd)
+
+
 def register_verified_retirement(parent_fd: int, retired_name: str) -> None:
     """Record one verified internal tombstone before patch extraction."""
     log = os.environ.get(INTERNAL_RETIREMENT_LOG_ENV, "")
@@ -159,27 +204,12 @@ def _load_records(path: str | os.PathLike[str]) -> list[_RetirementRecord]:
     fd = os.open(path, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0))
     try:
         fcntl.flock(fd, fcntl.LOCK_SH)
-        info = os.fstat(fd)
-        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_RETIREMENT_LOG_BYTES:
-            raise OSError("internal retirement log is invalid")
-        raw = os.read(fd, MAX_RETIREMENT_LOG_BYTES + 1)
+        records = _read_locked_records(fd)
     finally:
         try:
             fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
-    if raw and not raw.endswith(b"\n"):
-        raise OSError("internal retirement log has a partial record")
-    lines = raw.splitlines()
-    if len(lines) > MAX_RETIREMENT_LOG_RECORDS:
-        raise OSError("internal retirement log has too many records")
-    records: list[_RetirementRecord] = []
-    for line in lines:
-        try:
-            payload = json.loads(line, object_pairs_hook=_unique_object)
-            records.append(_RetirementRecord.from_payload(payload))
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
-            raise OSError("internal retirement log is malformed") from exc
     return records
 
 
@@ -190,6 +220,71 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
             raise ValueError("duplicate retirement log field")
         result[key] = value
     return result
+
+
+def verified_retirement_identities(
+    parent_fd: int,
+) -> tuple[tuple[str, tuple[int, ...]], ...]:
+    """Return the latest registered identity for each tombstone in one parent."""
+    parent = os.fstat(parent_fd)
+    if not stat.S_ISDIR(parent.st_mode):
+        raise OSError("retirement parent descriptor is not a directory")
+    with _lock:
+        records = list(_records)
+    log = os.environ.get(INTERNAL_RETIREMENT_LOG_ENV, "")
+    if log:
+        records.extend(_load_records(log))
+    expected_parent = (parent.st_dev, parent.st_ino)
+    identities: dict[str, tuple[int, ...]] = {}
+    for record in records:
+        if (record.parent_dev, record.parent_ino) == expected_parent:
+            identities[record.name] = record.identity()
+    return tuple(identities.items())
+
+
+def forget_verified_retirements(parent_fd: int, names: tuple[str, ...]) -> None:
+    """Forget tombstones removed after descriptor and registry verification."""
+    if not names:
+        return
+    for name in names:
+        _validate_name(name)
+    parent = os.fstat(parent_fd)
+    if not stat.S_ISDIR(parent.st_mode):
+        raise OSError("retirement parent descriptor is not a directory")
+    expected_parent = (parent.st_dev, parent.st_ino)
+    removed = set(names)
+
+    log = os.environ.get(INTERNAL_RETIREMENT_LOG_ENV, "")
+    if log:
+        flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(log, flags)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            records = _read_locked_records(fd)
+            retained = [
+                record
+                for record in records
+                if not (
+                    (record.parent_dev, record.parent_ino) == expected_parent
+                    and record.name in removed
+                )
+            ]
+            _write_locked_records(fd, retained)
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+    with _lock:
+        _records[:] = [
+            record
+            for record in _records
+            if not (
+                (record.parent_dev, record.parent_ino) == expected_parent
+                and record.name in removed
+            )
+        ]
 
 
 def registered_retirement_paths(
@@ -279,6 +374,8 @@ __all__ = [
     "MAX_RETIREMENT_LOG_BYTES",
     "MAX_RETIREMENT_LOG_RECORDS",
     "RETIRED_FILE_PREFIX",
+    "forget_verified_retirements",
     "register_verified_retirement",
     "registered_retirement_paths",
+    "verified_retirement_identities",
 ]

@@ -41,7 +41,7 @@ from typing import Any
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
-from opencollab.adapters.tools.run_tests import RunTestsTool
+from opencollab.adapters.tools.run_tests import verification_run_tests_tool
 from opencollab.application.fact_sheet import (
     build_fact_sheet,
     estimate_target_complexity,
@@ -198,6 +198,7 @@ VERDICT_SCHEMA: dict[str, Any] = {
         },
         "failed_count": {
             "type": "integer",
+            "minimum": 0,
             "description": "How many of the tests you ran failed or errored (0 for a clean PASS). "
             "Read it straight off run_tests' Counts line; do not estimate.",
         },
@@ -499,24 +500,36 @@ def _target_tests_block(args: dict[str, Any]) -> str:
     return TARGET_TESTS_BLOCK.format(ids=listed)
 
 
-def _f2p_gate(verdict: Any, fail_to_pass: list[str]) -> str | None:
+def _verified_test_targets(tools: list[Any]) -> set[str]:
+    """Collect parser-backed GREEN targets from this tester call's tool instance."""
+    run_tests = next((tool for tool in tools if getattr(tool, "name", "") == "run_tests"), None)
+    return set(getattr(run_tests, "verified_targets", ()))
+
+
+def _f2p_gate(
+    verdict: Any,
+    fail_to_pass: list[str],
+    *,
+    executed_tests: set[str] | None = None,
+) -> str | None:
     """Hard-gate a tester PASS on the real FAIL_TO_PASS node-ids (D2).
 
     Returns ``None`` when the PASS may stand, or a findings string when it must
     be overridden to not-passed. The gate fires whenever ``fail_to_pass`` is
     non-empty, regardless of whether a test patch was supplied. Defense in
-    depth: even a PASS verdict must carry machine-checkable proof —
-    ``failed_count == 0`` AND every required node-id present in ``tests_run`` —
-    or it does not count.
+    depth: even a PASS verdict must carry ``failed_count == 0``, every required
+    node-id in ``tests_run``, and (when supplied by the workflow) parser-backed
+    GREEN evidence from this tester call's run_tests instance.
     """
     if not fail_to_pass:
         return None  # no benchmark target ids were declared
     if not isinstance(verdict, dict):
         return None  # not a PASS to override; the caller handles dead/FAIL verdicts
     failed = verdict.get("failed_count")
-    if isinstance(failed, int) and failed > 0:
+    if type(failed) is not int or failed != 0:
         return (
-            f"Tester reported {failed} failed/errored test(s). The named FAIL_TO_PASS "
+            f"Tester reported {failed!r} failed/errored test(s), which is invalid. "
+            "The named FAIL_TO_PASS "
             "tests must run green with ZERO failures. Re-run the exact target node-ids "
             "with run_tests and fix the remaining failures."
         )
@@ -530,6 +543,15 @@ def _f2p_gate(verdict: Any, fail_to_pass: list[str]) -> str | None:
             f"verification: {listed}. Run them with run_tests using the EXACT node-ids "
             "and ensure they pass with zero failures before reporting PASS."
         )
+    if executed_tests is not None:
+        unproved = [nid for nid in fail_to_pass if nid not in executed_tests]
+        if unproved:
+            listed = ", ".join(unproved)
+            return (
+                "This tester call contains no parser-backed GREEN run_tests execution for these "
+                f"required node-ids: {listed}. Run each exact target with run_tests; a "
+                "tests_run self-report cannot replace executable evidence."
+            )
     return None
 
 
@@ -651,12 +673,25 @@ def _coder_tools(enforcement_strength: str = ENFORCEMENT_OFF) -> list[Any]:
     habitual edit path plus apply_patch + run_tests + read/grep.
     """
     if enforcement_strength == ENFORCEMENT_OFF:
-        return [BashTool(), FileReadTool(), FileWriteTool(), ApplyPatchTool(), RunTestsTool(), GrepTool()]
-    return [FileReadTool(), GrepTool(), FileWriteTool(allow_create=False), ApplyPatchTool(), RunTestsTool()]
+        return [
+            BashTool(),
+            FileReadTool(),
+            FileWriteTool(),
+            ApplyPatchTool(),
+            verification_run_tests_tool(),
+            GrepTool(),
+        ]
+    return [
+        FileReadTool(),
+        GrepTool(),
+        FileWriteTool(allow_create=False),
+        ApplyPatchTool(),
+        verification_run_tests_tool(),
+    ]
 
 
 def _tester_tools() -> list[Any]:
-    return [BashTool(), FileReadTool(), RunTestsTool(), GrepTool()]
+    return [BashTool(), FileReadTool(), verification_run_tests_tool(), GrepTool()]
 
 
 def _static_tester_tools() -> list[Any]:
@@ -1001,6 +1036,7 @@ async def _run_phase(
             coder_summary = "(coder produced empty output; verify the working tree yourself)"
         else:
             coder_summary = summary
+        tester_tools = _tester_tools_for(static_verify)
         verdict = await ctx.agent(
             _tester_prompt(static_verify).format(
                 rules=SHARED_RULES,
@@ -1013,9 +1049,10 @@ async def _run_phase(
             ),
             schema=VERDICT_SCHEMA,
             label=f"tester:p{idx}r{round_no}",
-            tools=_tester_tools_for(static_verify),
+            tools=tester_tools,
             budget=TESTER_BUDGET,
         )
+        executed_tests = _verified_test_targets(tester_tools)
         # Diff guard: a tester PASS must NOT stand if the working tree is
         # verifiably unchanged this round — no edit means nothing to pass. Seed
         # the next round so the coder is told it MUST write; on the final round
@@ -1041,12 +1078,17 @@ async def _run_phase(
             continue
         # F2P gate (the real lever): a tester PASS must NOT stand unless the run
         # carries proof the named FAIL_TO_PASS tests actually went green —
-        # failed_count == 0 AND every required node-id present in tests_run. Only
+        # failed_count == 0, every required node-id present in tests_run, and
+        # matching GREEN evidence from this call's run_tests instance. Only
         # active when ids were injected (f2p non-empty); empty -> bypass,
         # preserving today's behavior. Mirrors the tree-unchanged override: seed
         # the next round's findings and continue, or fail on the final round.
         if passed:
-            gate_findings = _f2p_gate(verdict, f2p)
+            gate_findings = _f2p_gate(
+                verdict,
+                f2p,
+                executed_tests=executed_tests,
+            )
             if gate_findings is not None:
                 await ctx.log(
                     f"phase {idx} round {round_no}: tester PASS overridden — "
@@ -1284,6 +1326,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     # Phase 5 — one whole-goal verification, with a single repair round if affordable.
     await ctx.phase("verify")
     final_verdict: dict[str, Any] | None = None
+    final_executed_tests: set[str] | None = None
     repaired = False
     # STEP 2B (Phase 2): skip the whole-goal final tester when every phase already
     # passed its own adversarial tester on the current tree and no forced write has
@@ -1302,6 +1345,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     # wrap-up and FORCED_WRITE_BUDGET caps the forced write, so a verify slice
     # always survives — hence the light ``reserve=0`` gate (any budget + time).
     if _budget_ok(ctx, 0) and not skip_final_verify:
+        final_tester_tools = _tester_tools_for(static_verify)
         final_verdict = await ctx.agent(
             _tester_prompt(static_verify).format(
                 rules=SHARED_RULES,
@@ -1314,9 +1358,10 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
             ),
             schema=VERDICT_SCHEMA,
             label="tester:final",
-            tools=_tester_tools_for(static_verify),
+            tools=final_tester_tools,
             budget=TESTER_BUDGET,
         )
+        final_executed_tests = _verified_test_targets(final_tester_tools)
         if (
             isinstance(final_verdict, dict)
             and final_verdict.get("verdict") == "FAIL"
@@ -1342,6 +1387,7 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                 tools=_coder_tools(enforcement_strength),
                 budget=REPAIR_BUDGET,
             )
+            final_tester_tools = _tester_tools_for(static_verify)
             final_verdict = await ctx.agent(
                 _tester_prompt(static_verify).format(
                     rules=SHARED_RULES,
@@ -1354,19 +1400,25 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
                 ),
                 schema=VERDICT_SCHEMA,
                 label="tester:final2",
-                tools=_tester_tools_for(static_verify),
+                tools=final_tester_tools,
                 budget=TESTER_BUDGET,
             )
+            final_executed_tests = _verified_test_targets(final_tester_tools)
 
     passed_phases = sum(1 for r in phase_reports if r["status"] == "passed")
     # "verified" requires not just a PASS label but the named FAIL_TO_PASS tests
     # green: when ids were injected, the final verdict must also clear the f2p
-    # gate (failed_count == 0 AND every required node-id in tests_run). With no
-    # declared ids this collapses to the bare verdict == PASS check.
+    # gate, including the current tester tool's GREEN evidence. With no declared
+    # ids this collapses to the bare verdict == PASS check.
     verified = (
         isinstance(final_verdict, dict)
         and final_verdict.get("verdict") == "PASS"
-        and _f2p_gate(final_verdict, fail_to_pass) is None
+        and _f2p_gate(
+            final_verdict,
+            fail_to_pass,
+            executed_tests=final_executed_tests,
+        )
+        is None
     )
     self_reported_done = verified or (not forced and passed_phases == len(phases) and phases)
 

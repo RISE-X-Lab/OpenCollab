@@ -19,6 +19,24 @@ from opencollab.domain.pending import PendingRowError, RowStatus
 logger = logging.getLogger(__name__)
 
 
+class _RetryableSchedulerCleanupError(RuntimeError):
+    """A bounded cleanup reached a fully tracked, retry-safe failure state."""
+
+
+def _unique_task_owners(
+    *groups: Any,
+) -> list[tuple[int, asyncio.Task[Any]]]:
+    owners: list[tuple[int, asyncio.Task[Any]]] = []
+    seen: set[asyncio.Task[Any]] = set()
+    for group in groups:
+        for aid, task in group:
+            if task in seen:
+                continue
+            seen.add(task)
+            owners.append((aid, task))
+    return owners
+
+
 class SchedulerCleanupMixin:
     async def cleanup(
         self,
@@ -47,15 +65,16 @@ class SchedulerCleanupMixin:
                     forced_timeout=forced_timeout,
                 )
             )
+        cleanup_task = self._cleanup_task
 
         cancellation: asyncio.CancelledError | None = None
         cleanup_failure: BaseException | None = None
         while True:
             try:
-                await asyncio.shield(self._cleanup_task)
+                await asyncio.shield(cleanup_task)
                 break
             except asyncio.CancelledError as exc:
-                if self._cleanup_task.cancelled():
+                if cleanup_task.cancelled():
                     raise
                 if cancellation is None:
                     cancellation = exc
@@ -66,6 +85,11 @@ class SchedulerCleanupMixin:
             except BaseException as exc:
                 cleanup_failure = exc
                 break
+        if (
+            isinstance(cleanup_failure, _RetryableSchedulerCleanupError)
+            and self._cleanup_task is cleanup_task
+        ):
+            self._cleanup_task = None
         if cancellation is not None:
             if cleanup_failure is not None:
                 add_exception_note(
@@ -93,23 +117,26 @@ class SchedulerCleanupMixin:
             **self._startup_origin,
             **self._spawn_origin,
         }
-        execution_tasks = [
-            *self._tasks.items(),
-            *self._startup_tasks.items(),
-        ]
+        execution_tasks = _unique_task_owners(
+            self._cleanup_execution_tasks,
+            self._tasks.items(),
+            self._startup_tasks.items(),
+        )
         delivery_records = list(self._message_delivery_records.values())
         if self._lead_turn_record is not None:
             self._lead_turn_record["cleanup_terminal"] = True
             delivery_records.append(self._lead_turn_record)
-        delivery_tasks = [
-            *self._message_delivery_tasks.items(),
-            *((0, task) for task in self._active_run_tasks),
-        ]
+        delivery_tasks = _unique_task_owners(
+            self._cleanup_delivery_tasks,
+            self._message_delivery_tasks.items(),
+            ((0, task) for task in self._active_run_tasks),
+        )
         for record in delivery_records:
             add_task = record.get("add_task")
             if isinstance(add_task, asyncio.Task):
                 delivery_tasks.append((int(record["aid"]), add_task))
-        tracked_tasks = [*execution_tasks, *delivery_tasks]
+        delivery_tasks = _unique_task_owners(delivery_tasks)
+        tracked_tasks = _unique_task_owners(execution_tasks, delivery_tasks)
         for task in {task for _, task in tracked_tasks}:
             if not task.done():
                 task.cancel()
@@ -128,7 +155,7 @@ class SchedulerCleanupMixin:
         environment_abort_succeeded = True
         if pending:
             pending_aids = {aid for aid, task in execution_tasks if task in pending}
-            if pending_aids:
+            if pending_aids or self._cleanup_environment_abort_tasks:
                 environment_abort_succeeded = await self._abort_session_environments(
                     pending_aids,
                     timeout=forced_timeout,
@@ -153,6 +180,11 @@ class SchedulerCleanupMixin:
                 for error in termination.errors:
                     logger.error("forced scheduler task termination failed: %s", error)
             pending = still_pending
+        if not pending and self._cleanup_environment_abort_tasks:
+            environment_abort_succeeded = await self._abort_session_environments(
+                set(),
+                timeout=forced_timeout,
+            )
         if execution_required_forced_stop:
             cleanup_failures.append("execution tasks did not quiesce")
         if not environment_abort_succeeded:
@@ -207,6 +239,15 @@ class SchedulerCleanupMixin:
             if record.get("cleanup_terminal", False):
                 self._finalize_cleanup_failure(aid)
         self._active_run_tasks.clear()
+        execution_task_set = {task for _, task in execution_tasks}
+        self._cleanup_execution_tasks = {
+            (aid, task) for aid, task in execution_tasks if not task.done()
+        }
+        self._cleanup_delivery_tasks = {
+            (aid, task)
+            for aid, task in delivery_tasks
+            if task not in execution_task_set and not task.done()
+        }
         # Teardown is terminal for this scheduler instance. Release even a
         # seeded-but-never-run Lead lease and defensively clear any reservation /
         # dedup entry whose owner disappeared before it entered a tracked task.
@@ -276,10 +317,13 @@ class SchedulerCleanupMixin:
                     "worktree pool release skipped because execution ownership was not revoked and quiesced"
                 )
         if cleanup_failures:
-            failure = RuntimeError("technical scheduler cleanup failed: " + "; ".join(cleanup_failures))
+            failure = _RetryableSchedulerCleanupError(
+                "technical scheduler cleanup failed: " + "; ".join(cleanup_failures)
+            )
             if persistence_errors:
                 raise failure from persistence_errors[0]
             raise failure
+        self._cleanup_environment_abort_tasks.clear()
 
     @staticmethod
     async def _wait_for_cleanup_tasks(tasks: set[asyncio.Task[Any]], *, timeout: float) -> set[asyncio.Task[Any]]:
@@ -464,6 +508,10 @@ class SchedulerCleanupMixin:
         seen: set[int] = set()
         abort_tasks: set[asyncio.Task[Any]] = set()
         succeeded = True
+        candidates: list[tuple[int, Any]] = [
+            (-1, env)
+            for env, _task in self._cleanup_environment_abort_tasks.values()
+        ]
         for aid in aids:
             session = self._sessions.get(aid)
             envs = [self._startup_envs.get(aid)]
@@ -472,40 +520,68 @@ class SchedulerCleanupMixin:
                 tool_execution = getattr(session, "tool_execution", None)
                 envs.append(getattr(tool_execution, "environment", None))
             for env in envs:
-                if env is None or id(env) in seen:
+                if env is not None:
+                    candidates.append((aid, env))
+        for aid, env in candidates:
+            env_key = id(env)
+            if env_key in seen:
+                continue
+            seen.add(env_key)
+            existing = self._cleanup_environment_abort_tasks.get(env_key)
+            if existing is not None and existing[0] is env:
+                existing_task = existing[1]
+                if not existing_task.done():
+                    abort_tasks.add(existing_task)
                     continue
-                seen.add(id(env))
+                if not existing_task.cancelled():
+                    try:
+                        existing_error = existing_task.exception()
+                    except asyncio.CancelledError:
+                        existing_error = None
+                    if existing_error is None:
+                        continue
+                    logger.error(
+                        "session environment abort task failed: %s",
+                        existing_error,
+                    )
+                self._cleanup_environment_abort_tasks.pop(env_key, None)
+            try:
+                env._aborted = True
+            except BaseException as exc:
+                succeeded = False
+                logger.error(
+                    "session environment synchronous revoke failed for aid %s: %s",
+                    aid,
+                    exc,
+                )
+            abort = getattr(env, "abort", None)
+            if not callable(abort):
+                continue
+            try:
+                result = abort()
+            except BaseException as exc:
+                succeeded = False
+                logger.error("session environment abort failed for aid %s: %s", aid, exc)
+                continue
+            if inspect.isawaitable(result):
                 try:
-                    env._aborted = True
+                    abort_task = asyncio.ensure_future(result)
                 except BaseException as exc:
                     succeeded = False
                     logger.error(
-                        "session environment synchronous revoke failed for aid %s: %s",
+                        "session environment abort scheduling failed for aid %s: %s",
                         aid,
                         exc,
                     )
-                abort = getattr(env, "abort", None)
-                if not callable(abort):
-                    continue
-                try:
-                    result = abort()
-                except BaseException as exc:
-                    succeeded = False
-                    logger.error("session environment abort failed for aid %s: %s", aid, exc)
-                    continue
-                if inspect.isawaitable(result):
-                    try:
-                        abort_tasks.add(asyncio.ensure_future(result))
-                    except BaseException as exc:
-                        succeeded = False
-                        logger.error(
-                            "session environment abort scheduling failed for aid %s: %s",
-                            aid,
-                            exc,
-                        )
-                        close = getattr(result, "close", None)
-                        if callable(close):
-                            close()
+                    close = getattr(result, "close", None)
+                    if callable(close):
+                        close()
+                else:
+                    self._cleanup_environment_abort_tasks[env_key] = (
+                        env,
+                        abort_task,
+                    )
+                    abort_tasks.add(abort_task)
 
         pending = await self._wait_for_cleanup_tasks(abort_tasks, timeout=timeout)
         if pending:
@@ -534,20 +610,27 @@ class SchedulerCleanupMixin:
                 "%s session environment abort task(s) remained active after cleanup timeout",
                 len(pending),
             )
-        for task in abort_tasks:
+        for env_key, (_env, task) in tuple(
+            self._cleanup_environment_abort_tasks.items()
+        ):
+            if task not in abort_tasks:
+                continue
             if not task.done():
                 task.add_done_callback(self._consume_background_task)
                 continue
             if task.cancelled():
                 succeeded = False
+                self._cleanup_environment_abort_tasks.pop(env_key, None)
                 continue
             try:
                 error = task.exception()
             except asyncio.CancelledError:
                 succeeded = False
+                self._cleanup_environment_abort_tasks.pop(env_key, None)
             else:
                 if error is not None:
                     succeeded = False
+                    self._cleanup_environment_abort_tasks.pop(env_key, None)
                     logger.error("session environment abort task failed: %s", error)
         return succeeded and not pending
 
@@ -557,21 +640,35 @@ class SchedulerCleanupMixin:
         cleanup_timeout: float,
         forced_timeout: float,
     ) -> bool:
-        try:
-            result = self._worktree_pool.release()
-        except BaseException as exc:
-            logger.error("worktree pool release failed: %s", exc)
-            return False
-        if not inspect.isawaitable(result):
-            return True
-        try:
-            task = asyncio.ensure_future(result)
-        except BaseException as exc:
-            logger.error("worktree pool release scheduling failed: %s", exc)
-            close = getattr(result, "close", None)
-            if callable(close):
-                close()
-            return False
+        task = self._cleanup_worktree_release_task
+        if task is not None and task.done():
+            self._cleanup_worktree_release_task = None
+            if not task.cancelled():
+                try:
+                    prior_error = task.exception()
+                except asyncio.CancelledError:
+                    prior_error = None
+                if prior_error is None:
+                    return True
+                logger.error("worktree pool release failed: %s", prior_error)
+            task = None
+        if task is None:
+            try:
+                result = self._worktree_pool.release()
+            except BaseException as exc:
+                logger.error("worktree pool release failed: %s", exc)
+                return False
+            if not inspect.isawaitable(result):
+                return True
+            try:
+                task = asyncio.ensure_future(result)
+            except BaseException as exc:
+                logger.error("worktree pool release scheduling failed: %s", exc)
+                close = getattr(result, "close", None)
+                if callable(close):
+                    close()
+                return False
+            self._cleanup_worktree_release_task = task
         pending = await self._wait_for_cleanup_tasks(
             {task},
             timeout=cleanup_timeout,
@@ -598,12 +695,20 @@ class SchedulerCleanupMixin:
             logger.error("worktree pool release remained active after cleanup timeout")
             return False
         if task.cancelled():
+            if self._cleanup_worktree_release_task is task:
+                self._cleanup_worktree_release_task = None
             return False
         try:
             error = task.exception()
         except asyncio.CancelledError:
+            if self._cleanup_worktree_release_task is task:
+                self._cleanup_worktree_release_task = None
             return False
         if error is not None:
             logger.error("worktree pool release failed: %s", error)
+            if self._cleanup_worktree_release_task is task:
+                self._cleanup_worktree_release_task = None
             return False
+        if succeeded and self._cleanup_worktree_release_task is task:
+            self._cleanup_worktree_release_task = None
         return succeeded

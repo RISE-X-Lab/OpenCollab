@@ -68,6 +68,31 @@ def test_per_instance_queue_accepts_sidecar_for_exact_candidate(tmp_path):
     assert queue == []
 
 
+@pytest.mark.parametrize("mutation", ["rewrite", "touch"])
+def test_per_instance_report_rejects_preexisting_no_sha_report_after_mutation(
+    tmp_path,
+    mutation,
+):
+    runner = importlib.import_module("scripts.run_swebench_eval_per_instance")
+    report = tmp_path / "report.json"
+    payload = json.dumps({"task-1": {"resolved": True}})
+    report.write_text(payload, encoding="utf-8")
+    identity = {
+        "instance_id": "task-1",
+        "record_id": "current-record",
+        "patch_sha256": "b" * 64,
+    }
+    attempt = runner.write_identity(runner.identity_path(report), identity)
+
+    if mutation == "rewrite":
+        report.write_text(payload, encoding="utf-8")
+    else:
+        changed_ns = max(time.time_ns(), attempt["started_at_ns"] + 1)
+        os.utime(report, ns=(changed_ns, changed_ns))
+
+    assert runner.report_is_done(report, "task-1", identity) is False
+
+
 def test_per_instance_queue_retries_exact_candidate_after_technical_report(tmp_path):
     runner = importlib.import_module("scripts.run_swebench_eval_per_instance")
     dataset_path = tmp_path / "dataset.json"
