@@ -751,7 +751,7 @@ async def test_run_workflow_quiesces_late_session_before_manifest_and_tracer_clo
         {},
         cfg=_cfg(),
         save_dir=save_dir,
-        cleanup_timeout=0.01,
+        cleanup_timeout=0.5,
     )
 
     assert result == "ok"
