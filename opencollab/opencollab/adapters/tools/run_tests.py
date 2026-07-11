@@ -27,12 +27,35 @@ Ref:
 
 from __future__ import annotations
 
-import json
 import re
 import shlex
 from typing import Any
 
 from opencollab.adapters.tools._output import truncate
+from opencollab.adapters.tools._run_tests_go import (
+    GO_PATH_PREFIX as GO_PATH_PREFIX,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    InvalidGoTargetError as _InvalidGoTargetError,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    go_has_pass_proof as _go_has_pass_proof,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    go_runner_command as _go_runner_command,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    go_target_specs as _go_target_specs,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    has_multiple_go_selector_tokens as _has_multiple_go_selector_tokens,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    is_go_runner as _is_go_runner,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    translate_go_target_args as _translate_go_target_args,
+)
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -40,7 +63,6 @@ from opencollab.application.tool_execution import ToolRuntime
 MAX_TRACEBACK_CHARS = 6_000
 DEFAULT_RUNNER = "python -m pytest"
 DEFAULT_TIMEOUT = 300.0
-GO_PATH_PREFIX = "PATH=/usr/local/go/bin:/usr/lib/go/bin:/opt/go/bin:$PATH"
 # After this many consecutive failing runs of the SAME target, nudge the model
 # to change approach instead of re-running the identical failing assertion.
 ESCALATE_AFTER = 3
@@ -174,28 +196,36 @@ class RunTestsTool(Tool):
             return "Error: extra_args is disabled for this run_tests tool."
 
         runner = pinned_runner or DEFAULT_RUNNER
-        result, cmd, runner = await self._run(
-            env, runner, target, extra_args, timeout, safety_policy,
-            runtime.confirm_fn(),
-        )
-        combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
+        try:
+            # The public API accepts one exact selector. Reject an ambiguous
+            # selector list before even the initial auto-detection probe; once
+            # collapsed, no later proof parser can recover the original intent.
+            _validate_go_target_before_execution(runner, pinned_runner, target)
 
-        # Auto-fallback: if the caller did NOT pin a runner and pytest is absent
-        # or unsuitable for a Go target, probe once and re-run on the native path.
-        if pinned_runner is None:
-            native = await _native_fallback_candidate(
-                env,
-                result.returncode,
-                combined,
+            result, cmd, runner = await self._run(
+                env, runner, target, extra_args, timeout, safety_policy,
+                runtime.confirm_fn(),
             )
-            if native:
-                result, cmd, runner = await self._run(
-                    env, native, target, extra_args, timeout, safety_policy,
-                    runtime.confirm_fn(),
+            combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
+
+            # Auto-fallback: if the caller did NOT pin a runner and pytest is absent
+            # or unsuitable for a Go target, probe once and re-run on the native path.
+            if pinned_runner is None:
+                native = await _native_fallback_candidate(
+                    env,
+                    result.returncode,
+                    combined,
                 )
-                combined = result.stdout + (
-                    "\n" + result.stderr if result.stderr else ""
-                )
+                if native:
+                    result, cmd, runner = await self._run(
+                        env, native, target, extra_args, timeout, safety_policy,
+                        runtime.confirm_fn(),
+                    )
+                    combined = result.stdout + (
+                        "\n" + result.stderr if result.stderr else ""
+                    )
+        except _InvalidGoTargetError as exc:
+            return self._invalid_go_target_report(target, exc)
 
         green = _is_green(
             result.returncode,
@@ -246,6 +276,30 @@ class RunTestsTool(Tool):
         n = self._consecutive_fail.get(target, 0) + 1
         self._consecutive_fail[target] = n
         return n
+
+    def _invalid_go_target_report(
+        self,
+        target: str,
+        error: _InvalidGoTargetError,
+    ) -> str:
+        """Fail closed without retaining evidence from an earlier run."""
+        if target:
+            self._verified_targets.discard(target)
+        streak = self._record(target, False)
+        parts = [
+            "Command: not executed",
+            "Exit code: not applicable",
+            f"Error: invalid Go target: {error}",
+            "Summary: the requested tests cannot be proved by one Go test command.",
+            "Verdict: RED",
+        ]
+        if streak >= ESCALATE_AFTER:
+            parts.append(
+                f"Escalation: target {target or '(suite)'} has failed "
+                f"{streak} runs in a row — split the exact targets into "
+                "separate run_tests calls."
+            )
+        return "\n".join(parts)
 
     @property
     def verified_targets(self) -> frozenset[str]:
@@ -322,18 +376,16 @@ def _is_pytest_runner(runner: str) -> bool:
     return _parts_invoke_pytest(parts)
 
 
-def _is_go_runner(runner: str) -> bool:
-    """Whether ``runner`` invokes ``go test``."""
-    try:
-        parts = shlex.split(runner)
-    except ValueError:
-        return False
-    return len(parts) >= 2 and (parts[0] == "go" or parts[0].endswith("/go")) and parts[1] == "test"
-
-
-def _go_runner_command(runner: str) -> str:
-    """Return a Go runner command with common Go install paths visible."""
-    return f"{GO_PATH_PREFIX} {runner}" if runner.strip().startswith("go ") else runner
+def _validate_go_target_before_execution(
+    runner: str,
+    pinned_runner: str | None,
+    target: str,
+) -> None:
+    """Reject unprovable Go target lists before safety checks or execution."""
+    if _is_go_runner(runner) or (
+        pinned_runner is None and _has_multiple_go_selector_tokens(target)
+    ):
+        _go_target_specs(target)
 
 
 def _translate_native_target_args(target: str) -> list[str]:
@@ -353,47 +405,6 @@ def _translate_native_target_args(target: str) -> list[str]:
     if leaf:
         args.append(shlex.quote(leaf))
     return args
-
-
-def _normalize_go_package(package: str) -> str:
-    package = package.strip()
-    if not package:
-        package = "./..."
-    if package.endswith(".go"):
-        package = package.rsplit("/", 1)[0] if "/" in package else "."
-    if package not in {".", "./..."} and not package.startswith(("./", "../", "/")):
-        package = "./" + package.strip("/")
-    return package
-
-
-def _translate_go_single_target(target: str) -> list[str]:
-    package, sep, node = target.partition("::")
-    package = _normalize_go_package(package)
-
-    args = [shlex.quote(package)]
-    if sep and node.strip():
-        test_name = node.split("::")[-1].strip()
-        if test_name:
-            args.extend(["-run", shlex.quote(test_name)])
-    return args
-
-
-def _translate_go_target_args(target: str) -> list[str]:
-    """Map pytest-like targets to safe ``go test`` package and ``-run`` args."""
-    if not target:
-        return ["./..."]
-    if "::" not in target:
-        try:
-            targets = shlex.split(target)
-        except ValueError:
-            targets = []
-        if len(targets) > 1 and all(not item.startswith("-") for item in targets):
-            args: list[str] = []
-            for item in targets:
-                args.extend(_translate_go_single_target(item))
-            return args
-
-    return _translate_go_single_target(target)
 
 
 def _build_command(runner: str, target: str, extra_args: str) -> str:
@@ -514,74 +525,6 @@ def _target_has_pass_proof(target: str, passed_lines: list[str]) -> bool:
         ):
             return True
     return False
-
-
-def _go_target_specs(target: str) -> list[tuple[str, str | None]]:
-    """Return requested Go packages and optional test selectors.
-
-    A target without ``::`` is always a package (or package pattern), matching
-    the public tool contract. Tests must use ``package::TestName``.
-    """
-    if not target:
-        return [("./...", None)]
-    if "::" in target:
-        raw_targets = [target]
-    else:
-        try:
-            raw_targets = shlex.split(target)
-        except ValueError:
-            raw_targets = [target]
-    specs: list[tuple[str, str | None]] = []
-    for raw_target in raw_targets:
-        package, sep, node = raw_target.partition("::")
-        test_name = node.split("::")[-1].strip() if sep else ""
-        specs.append((_normalize_go_package(package), test_name or None))
-    return specs
-
-
-def _go_package_matches(requested: str, reported: str) -> bool:
-    """Match a CLI package path to ``go test -json``'s import path."""
-    requested = requested.rstrip("/")
-    reported = reported.rstrip("/")
-    if requested in {".", "./..."}:
-        return True
-    if requested.endswith("/..."):
-        prefix = requested[:-4].removeprefix("./").strip("/")
-        return not prefix or reported == prefix or f"/{prefix}/" in f"/{reported}/"
-    relative = requested.removeprefix("./").strip("/")
-    if not relative or requested.startswith(("../", "/")):
-        return reported == requested
-    return reported == relative or reported.endswith("/" + relative)
-
-
-def _go_has_pass_proof(target: str, output: str) -> bool:
-    passed_events: list[tuple[str, str]] = []
-    for line in output.splitlines():
-        try:
-            event = json.loads(line)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if not isinstance(event, dict) or event.get("Action") != "pass":
-            continue
-        package = event.get("Package")
-        test_name = event.get("Test")
-        if isinstance(package, str) and package and isinstance(test_name, str) and test_name:
-            passed_events.append((package, test_name))
-
-    for requested_package, requested_test in _go_target_specs(target):
-        matched = False
-        for package, test_name in passed_events:
-            if not _go_package_matches(requested_package, package):
-                continue
-            if requested_test and not (
-                test_name == requested_test or test_name.startswith(requested_test + "/")
-            ):
-                continue
-            matched = True
-            break
-        if not matched:
-            return False
-    return bool(passed_events)
 
 
 def _is_green(
