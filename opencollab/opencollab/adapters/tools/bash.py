@@ -57,8 +57,14 @@ class BashTool(Tool):
         "required": ["command"],
     }
 
-    def __init__(self, max_output_chars: int = MAX_OUTPUT_CHARS):
+    def __init__(
+        self,
+        max_output_chars: int = MAX_OUTPUT_CHARS,
+        *,
+        require_process_isolation: bool = False,
+    ):
         self.max_output_chars = max_output_chars
+        self.require_process_isolation = require_process_isolation
 
     async def execute_with_runtime(
         self,
@@ -72,6 +78,13 @@ class BashTool(Tool):
 
         if not env:
             return "Error: no execution environment available."
+        if self.require_process_isolation and not getattr(
+            env, "process_isolated", False
+        ):
+            return (
+                "Error: bash is disabled because this execution environment "
+                "does not provide an OS process sandbox."
+            )
 
         # Safety checks
         if safety_policy:

@@ -1,0 +1,464 @@
+\documentclass[11pt,a4paper,fontset=fandol]{ctexart}
+\usepackage[margin=2.15cm]{geometry}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{fancyhdr}
+\usepackage{lastpage}
+
+\hypersetup{colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!55!black}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.45em}
+\setlength{\headheight}{14pt}
+\setlength{\emergencystretch}{3em}
+\renewcommand{\arraystretch}{1.22}
+\Urlmuskip=0mu plus 1mu
+\sloppy
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{OpenCollab Harness 修复报告}
+\rhead{2026-07-10}
+\cfoot{第 \thepage\ 页，共 \pageref{LastPage} 页}
+
+\definecolor{critical}{HTML}{9C1C1C}
+\definecolor{high}{HTML}{B35A00}
+\definecolor{medium}{HTML}{6B5B00}
+\definecolor{passgreen}{HTML}{16733B}
+\newcommand{\PZero}{\textcolor{critical}{\textbf{P0}}}
+\newcommand{\POne}{\textcolor{high}{\textbf{P1}}}
+\newcommand{\PTwo}{\textcolor{medium}{\textbf{P2}}}
+\newcommand{\Pass}{\textcolor{passgreen}{\textbf{通过}}}
+\newcommand{\Pending}{\textcolor{medium}{\textbf{待填}}}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\title{\textbf{OpenCollab Harness 可靠性、评测完整性与隔离修复}\\
+\large 多 Agent 修复与独立 Reviewer 审查结果}
+\author{拱垲}
+\date{2026-07-10}
+
+\begin{document}
+\maketitle
+
+\begin{center}
+\begin{tabular}{rl}
+修复分支： & \code{fix/harness-integrity-combined-review} \\
+合并目标： & \code{YihongDong/OpenCollab:main} \\
+审查依据： & 完整工作区差异、针对性回归测试与全仓门禁 \\
+发布规则： & 提交 TeX 源文件，生成的 PDF 排除在 Git 之外 \\
+\end{tabular}
+\end{center}
+
+\section{结论摘要}
+
+这次修复让 harness 对执行主体、文件与容器身份、候选结果、取消传播以及持久化写入建立了可核验的所有权记录。高风险路径曾允许候选在目标测试没有执行时得到 \code{PASS}，允许无头 Agent 越过分配的仓库读取主机文件，允许新候选复用旧的官方评测结果，也允许清理函数返回后仍有任务或后台写入继续修改状态。对应路径现已改为证据不足即返回技术失败，并为每类行为增加回归测试。
+
+修复覆盖 scheduler、session 持久化、workflow、评测器、Docker 与本地执行环境、SWE-bench 生成和官方评测脚本、监控脚本、工具派发、结构化证据以及结果发布。本轮新增修复还处理了 Python 3.10 兼容性、同刻双重取消、跨订阅持久化顺序、后台 manifest 写入追踪、目录与 inode 身份固定、fail-closed retirement、共享原子 CAS 与 failure-atomic recovery、evaluator 安全写复用、结构化测试通过证明、direct-eval 映射与旧报告复用、checkpoint 依赖追踪、ToolExecution owner、team runner 子进程生命周期、公开导入兼容、Linux 进程组启动竞态、POSIX 能力声明、macOS 受信根别名以及可选依赖延迟导入。重新组合并完成结构整改的版本已通过 \code{2684 passed, 5 skipped} 的完整测试；全仓 Ruff、bytecode compile、文件卫生与 diff check 均通过。
+
+终审提出的两项后续强化已延期：第一项是 retirement sidecar 的 HMAC 认证、隔离 Git 元数据和冻结工作区快照，第二项是利用 Linux subreaper 捕获调用 \code{setsid()} 后脱离原进程组的后代。对应实验实现保存在分支 \code{wip/harness-integrity-followups-20260711} 的提交 \code{78702ee}，未进入本次稳定版本，也未计入下文已修复结论。
+
+\section{修复范围与结果}
+
+\small
+\begin{longtable}{>{\raggedright\arraybackslash}p{1.0cm}>{\raggedright\arraybackslash}p{4.1cm}>{\raggedright\arraybackslash}p{9.0cm}}
+\toprule
+风险 & 范围 & 修复结果 \\
+\midrule
+\endfirsthead
+\toprule
+风险 & 范围 & 修复结果 \\
+\midrule
+\endhead
+\PZero & 评测真实性 & 只有解析器支持的输出或适配器生成的精确执行计划能够证明声明的测试确实执行并通过时，结果才能成为 \code{GREEN} 或 \code{resolved}。零收集、帮助模式、仅收集、空操作 runner、旧报告和无法配对的候选均返回 \code{RED}。 \\
+\PZero & 执行隔离 & 无头 Bash 与测试执行要求操作系统级隔离。评测 Docker 环境校验所有者身份并默认断网；Local 和 Worktree 拒绝不可信命令；Grep 路径经过工作区边界检查。 \\
+\PZero & 候选身份 & prediction、metric、attempt、claim、pending record 与官方报告共享 record ID 和完整 patch 摘要。发现逻辑在宣布完成前校验稳定文件、候选配对及终态证据。 \\
+\PZero & 取消与清理 & 环境先同步撤销，再执行有时间上限的异步清理。外部取消、订阅者自取消和 Python 3.10 的取消元数据差异分别处理；仍可写状态的后台任务和线程 future 持续纳入所有权追踪。 \\
+\POne & Scheduler 正确性 & 子任务运行前登记 deferred row；修复唤醒竞态、spawn 回滚、消息恢复、清理分类、发送者与父任务校验、预算租约、可变全局注入和 verdict 解析。 \\
+\POne & 文件系统完整性 & 读、写、append、claim、owner record、report、checkpoint、manifest 和 worktree 使用稳定目录描述符、no-follow 打开、inode 对照、大小上限与 target CAS。需要破坏性处理的文件进入有配额的 fail-closed tombstone；提交失败时恢复旧 target 并保留全部 inode。 \\
+\POne & 平台边界 & package metadata 声明 POSIX 与 MacOS；非 POSIX 主机在调用安全文件能力时返回显式缺失原语。macOS 仅规范化经验证的系统根别名，子路径仍逐组件拒绝 symlink。 \\
+\POne & 进程与容器所有权 & Docker 引用经过格式与 owner 校验；容器绑定完整 64 位十六进制 ID；Linux 子进程在进程组准备完成后才发布 PID；进程枚举异常和非法 CID 均按技术失败处理。当前主机清理边界仍是已登记的 PGID/SID，调用 \code{setsid()} 后脱离该边界的后代属于已知风险。 \\
+\POne & Workflow 证据 & 工具批次先做零副作用预检；证据存储有上限；verified finding 必须包含 anchor；内部 commit 与 synthesis 调用有时间上限；数值和 schema 校验拒绝歧义输入。 \\
+\POne & 监控与发布 & 监控器区分新旧输出、拒绝畸形状态并保留进程身份。官方报告缺少 resolved/unresolved 终态时禁止发布完成结果；pending 候选在发布失败时保留以便安全重放。 \\
+\PTwo & 仓库维护 & 工具输出、结果记录和临时名称有明确上限；可选 Docker/SWE-bench 依赖延迟到真正执行时导入；新增 Python 模块受 800 行门禁约束。 \\
+\bottomrule
+\end{longtable}
+\normalsize
+
+\section{Bug 具体情况}
+
+本章紧跟“修复范围与结果”，逐项记录可复现动作、原错误、实际危害、修复方式和回归测试。H-01 至 H-36 为此前审查波次发现的问题，H-37 起为本轮相对 HEAD 新增修复。
+
+\subsection{H-01：无头命令工具可越过工作区边界（P0）}
+
+\textbf{触发动作：}评测 Agent 向 \code{grep} 传入 worktree 之外的绝对路径，或通过 Bash 执行 \code{cat /outside/ground\_truth}、\code{find /}、Python 文件读取；\code{run\_tests} 也可借 caller 自定义 runner 或额外参数执行同类操作。\textbf{错误结果：}Grep、Bash 和 RunTests 只依赖引用与破坏性命令正则，能够访问 harness 账户可见的任意主机路径。\textbf{危害：}隐藏答案、凭据和其他任务产物会泄漏，外部文件也可能被修改，benchmark 结果随之失真。\textbf{修复与回归测试：}Grep 统一调用 \code{check\_path}；无头 Bash 与 RunTests 要求 \code{require\_process\_isolation}；Local/Worktree 拒绝该能力，Docker 以 \code{--network none} 提供隔离。回归测试创建真实的工作区外 secret，确认三类工具均无法读取或改写。
+
+\subsection{H-02：零测试命令可伪造 GREEN（P0）}
+
+\textbf{触发动作：}模型选择 \code{true}、\code{echo ok}、\code{pytest --collect-only} 或 \code{pytest --help}，命令均以 0 退出且没有执行测试。\textbf{错误结果：}旧 verdict 把“返回码为 0 且未解析到失败数”解释为 \code{GREEN}。\textbf{危害：}损坏的 patch 可在 \code{FAIL\_TO\_PASS} 未执行时计为 resolved，污染评测统计。\textbf{修复与回归测试：}pytest 要求正的 passed 数且精确目标必须出现匹配的 \code{PASSED} node ID；Go 要求 JSON 中存在目标测试的 pass event；其余原生 runner 在缺少解析适配器时保持 \code{RED}。回归覆盖空操作、collect-only、help、缺失目标和真实通过目标。
+
+\subsection{H-03：注入测试会混入模型提交 patch（P0）}
+
+\textbf{触发动作：}test patch 只应用了一部分、生成 \code{.orig}/\code{.rej}，或取消发生在回滚与最终 diff 提取之间。\textbf{错误结果：}harness 自有测试、reject 文件或部分应用内容被识别成模型改动。\textbf{危害：}官方评测可能接受“修改测试后通过”的候选，失败回滚还会让仓库处于未知状态。\textbf{修复与回归测试：}Git 与 patch 两条路径都先预检完整 patch、快照所有触达路径，并以有界 owner 执行应用和回滚；只有索引、工作区和辅助文件均恢复后候选才具备提交资格。回归覆盖部分应用、吞取消回滚、辅助文件和延迟写入。
+
+\subsection{H-04：新候选会复用旧官方报告（P0）}
+
+\textbf{触发动作：}新的 prediction 重用已有 \code{report.json} 的实例目录，或两个候选的摘要短前缀相同。\textbf{错误结果：}发现逻辑把旧终态配给新 patch。\textbf{危害：}坏 patch 可继承旧 resolved，正确 patch 也可能继承旧失败。\textbf{修复与回归测试：}候选使用 record ID 与完整 SHA-256；attempt sidecar 记录候选、开始时间、报告指纹和相对路径；配对要求身份完全一致且报告在 attempt 开始后变化。测试覆盖未变化旧报告、摘要不符、已变化报告和并行候选目录。
+
+\subsection{H-05：评测 claim 存在检查后执行与 ABA 竞态（P0）}
+
+\textbf{触发动作：}两个自动评测 driver 同时观察到任务空闲，或旧 claimant 在新 owner 替换 claim 后恢复执行。\textbf{错误结果：}两个 driver 都启动 Docker，旧 owner 还能 heartbeat、finalize 或删除新 claim。\textbf{危害：}资源重复消耗，旧 attempt 可能覆盖权威结果。\textbf{修复与回归测试：}claim 采用排他创建、随机 nonce、进程启动身份、稳定有界读取、CAS heartbeat/finalization 和所有权删除；Popen 启动失败写入明确技术失败 attempt。多进程测试证明单 owner 获得 claim，旧 owner 无法修改后继状态。
+
+\subsection{H-06：Docker 清理可能删除他人容器（P0）}
+
+\textbf{触发动作：}Docker 出现重名、attach 引用有歧义、setup 超时后容器才出现，或旧 marker 指向新建的同名容器。\textbf{错误结果：}清理逻辑信任名称或短 ID 后直接 \code{rm -f}。\textbf{危害：}并发用户的容器会被误删，本任务容器反而可能泄漏。\textbf{修复与回归测试：}start 模式使用随机名称与 owner-token label，再绑定完整 ID；attach 模式一次性绑定完整 ID 并校验名称与运行状态；删除要求名称、label 和完整 ID 同时匹配并验证消失。测试覆盖外来重名、rename、截断 ID、setup 超时和 marker 替换。
+
+\subsection{H-07：本地进程组可逃逸清理（P0）}
+
+\textbf{触发动作：}命令 double-fork 或调用 \code{setsid}，主进程退出后留下脱离原进程组的后代。\textbf{错误结果：}当前稳定版本按已登记的 PGID/SID 终止并回收进程；新会话中的后代可能离开该集合，因此不能据此证明全部后代已经停止。\textbf{危害：}结果返回后仍可能有逃逸进程改写仓库、持续输出或占用资源，补丁提取期间的文件状态也可能继续变化。\textbf{当前处理与回归测试：}主机执行具有输出上限、进程启动身份、PGID/SID 静默检查和 unquiesced 结果，不可信无头命令只在 Docker 执行；测试覆盖忽略 TERM 的同组 child、安静同组后代、leader 提前退出和有界关停。捕获 \code{setsid()} 逃逸后代所需的 subreaper 监督器已经延期，实验实现保存在 \code{wip/harness-integrity-followups-20260711}@\code{78702ee}，本次报告将该情形保留为已知风险。
+
+\subsection{H-08：Worktree 分支所有权获取缺少原子性（P1）}
+
+\textbf{触发动作：}其他进程在 harness 检查分支与 \code{git worktree add} 之间创建同名分支，或注册阶段收到取消。\textbf{错误结果：}清理可能删除从未拥有的分支，或遗留半注册 worktree 与预算预留。\textbf{危害：}并发用户分支被破坏，后续任务持续受脏状态影响。\textbf{修复与回归测试：}setup 用 \code{git update-ref <ref> <base> 000...} 原子 claim 分支；回滚以 CAS 删除并记录注册状态。测试在原竞态窗口插入外部建分支，确认清理保留外部分支。
+
+\subsection{H-09：主机文件操作会跟随 symlink 或接受路径替换（P0/P1）}
+
+\textbf{触发动作：}攻击者在校验与 open 之间把父目录、目标文件、owner record、PID 文件、报告、dataset 或 prediction 换成 symlink/FIFO。\textbf{错误结果：}harness 读取或改写工作区外文件、在 FIFO 上阻塞、删除后继 owner 状态，或一次解析混用两个版本。\textbf{危害：}数据泄漏、外部破坏、永久等待和结果身份错配。\textbf{修复与回归测试：}safe-file helper 用稳定 dirfd 与 \code{O\_NOFOLLOW} 打开各级目录，比较 open 前后身份、限制类型和字节数，并仅删除当前 owner 创建的 inode。测试在各阶段交换父目录和最终组件，确认外部文件保持原样。
+
+\subsection{H-10：合法长文件名导致原子替换失败，结果记录可无限增长（P1/P2）}
+
+\textbf{触发动作：}目标 basename 已达到 255 字节，或单条 patch/trajectory 异常巨大。\textbf{错误结果：}临时名附加原 basename 后超过 \code{NAME\_MAX}；结果写入也没有单条与总量上限。\textbf{危害：}合法路径无法保存，恶意或异常结果可耗尽磁盘。\textbf{修复与回归测试：}临时组件改用固定短前缀加 UUID；结果设置行级与文件级字节上限，失败时保留旧文件并只清理自有 inode。测试写入 255 字节目标并触发记录上限，确认旧输出完整。
+
+\subsection{H-11：事件日志会阻塞 loop 退出并跨文件写入（P1）}
+
+\textbf{触发动作：}append I/O 阻塞、其他进程长期持锁，或 JSONL 路径在两条记录间被替换、截断、同大小改写。\textbf{错误结果：}\code{asyncio.to\_thread} 占用默认 executor，shutdown 可无限等待；sink 也会把同一 run 的事件写入两个 inode。\textbf{危害：}任务超时失效，审计轨迹出现断裂或混写。\textbf{修复与回归测试：}每个 sink 使用串行 daemon I/O worker 与有界等待；超时形成 sticky error；每次 append 前后校验 inode、size、mtime 和 ctime。测试覆盖真实持锁、阻塞 worker、替换、截断、同大小改写、FIFO 和并发大事件。
+
+\subsection{H-12：延迟子任务的完成通知可能丢失（P0）}
+
+\textbf{触发动作：}child 在工具派发与 parent row 登记之间完成，或最后一行填充时 parent driver 正返回 \code{AWAITING}。\textbf{错误结果：}完成结果没有 row 可写，或没有 driver 唤醒 parent。\textbf{危害：}全部工作已完成而 session 永久挂起。\textbf{修复与回归测试：}child 运行前先建立 parent row；唤醒持 parent lock，保留已填行，并在尾部窗口安装一次性 task-done callback。事件控制测试精确覆盖两种 interleaving 并验证只创建一个替代 driver。
+
+\subsection{H-13：Spawn 失败泄漏 ghost session 与资源预留（P1）}
+
+\textbf{触发动作：}aid、budget 或 inflight key 已预留后，环境获取、session 构建、事件发布或 driver 创建失败。\textbf{错误结果：}表中留下无 driver child，预算与去重状态不释放，parent row 没有失败结果，worktree 也可能泄漏。\textbf{危害：}后续任务容量持续下降并永久等待 ghost child。\textbf{修复与回归测试：}spawn 启动改为 owned transaction，异常时逆序释放 SCB、session、origin、task、lock、inbox、branch env、budget lease、review-parent lease 和 inflight key，再向 parent row 写入明确失败。测试在每个阶段注入异常并确认最终只剩 lead。
+
+\subsection{H-14：allow-all topology 下未知身份可修改 scheduler（P1）}
+
+\textbf{触发动作：}不存在的 parent aid 发起 spawn，或不存在的 sender 向真实 target 发消息。\textbf{错误结果：}role fallback 允许操作继续，伪造 ancestry 或 sender 并消耗真实资源。\textbf{危害：}调度状态与审计身份失真，资源可被无主调用占用。\textbf{修复与回归测试：}spawn 要求 parent 同时存在于 session table 和 live session map；消息发送先校验 source，再访问 target 和 inbox。测试确认未知身份不会触发分配，也不会改变队列。
+
+\subsection{H-15：消息恢复与清理会改写持久终态（P1）}
+
+\textbf{触发动作：}进程从含 pending teammate message 的快照恢复，或 cleanup 在 target child 已 DONE 后取消阻塞的 message-add owner。\textbf{错误结果：}恢复消息永远留在 scheduler inbox 之外，delivery owner 又被误当成 execution owner，把 DONE 改成 CANCELLED。\textbf{危害：}消息丢失且已完成结果被破坏。\textbf{修复与回归测试：}恢复时重建带 timestamp 与 sender metadata 的 inbox；delivery 回滚恢复精确 message snapshot 与 queue lease；只有 execution/startup owner 可以改变 child 状态。测试覆盖 child result、teammate、external turn 顺序和 DONE 保持。
+
+\subsection{H-16：并发 token budget 会超额分配（P0/P1）}
+
+\textbf{触发动作：}多个 child 或 workflow call 在任何一个记录消耗前同时读取同一 remaining budget。\textbf{错误结果：}grant 总和超过全局上限，首个 child 可能挤占全部预算，structured retry 还能获取第二份额度。\textbf{危害：}成本与 token 上限失效，并发公平性消失。\textbf{修复与回归测试：}scheduler 按 owner 原子预留公平份额；workflow lease 同时扣除 active reservation 与已用 token；纠错调用复用原 lease。并行测试证明 grant 总和不超过 team cap，retry 只能使用 lease 剩余量。
+
+\subsection{H-17：吞取消任务会让 teardown 永久等待（P0/P1）}
+
+\textbf{触发动作：}tool、provider、environment abort、checkpoint、message add 或 cleanup coroutine 反复吞掉 \code{CancelledError}，或在 \code{finally} 内同步阻塞。\textbf{错误结果：}\code{wait\_for} 和 \code{asyncio.run} 都持续等待；scheduler 还可能对未结束 task 调用 \code{task.exception()} 并触发 \code{InvalidStateError}。\textbf{危害：}wall time 失效，结果返回后仍有晚到写入，event loop 无法退出。\textbf{修复与回归测试：}先同步 revoke 具体环境，再执行两阶段有界取消；仍活动的已撤销任务移交 daemon owner 并以容量上限约束；只有 terminal task 才读取 exception。测试覆盖吞取消、顽固 abort、同步阻塞 finalizer、晚到写入、重复 caller 取消和容量升级。
+
+\subsection{H-18：Workflow commit 与 synthesis 调用没有时间上限（P1）}
+
+\textbf{触发动作：}draft 或 dead-scout synthesis session 卡在首条消息派发或 generation。\textbf{错误结果：}外层 workflow 没有 per-call timeout，salvage 阶段占满剩余评测时间。\textbf{危害：}patch 无法提取，资源清理延迟。\textbf{修复与回归测试：}内部 commit 在消息派发与 run loop 之间共享一个 deadline，取 workflow 剩余 wall 与内部上限的较小值；超时进入统一 owned cleanup。测试让 draft session 持续等待并验证有界返回。
+
+\subsection{H-19：Session snapshot 不完整且替换不安全（P1）}
+
+\textbf{触发动作：}save 中途崩溃、恢复 \code{AWAITING} session，或 snapshot 含 unresolved row 与 queued message。\textbf{错误结果：}partial JSON 替换旧快照，token/step、终态、row、timestamp 和 message 被丢失或 registration 覆盖。\textbf{危害：}恢复后的调度状态与崩溃前不一致，可能重复执行或永远等待。\textbf{修复与回归测试：}session 与 manifest 使用精确 UTF-8 上限、同目录 durable replace、稳定 parent 和 replace 后身份检查；版本化 snapshot 恢复计数、phase、terminal reason、row 与 message。测试注入 write、fsync、replace、父路径交换、目标交换和 restore 失败。
+
+\subsection{H-20：Autosave 与事件订阅者脱离 owner 生命周期（P1）}
+
+\textbf{触发动作：}快速事件触发多个 save，save 抛出 \code{KeyboardInterrupt}/\code{SystemExit}，订阅者返回普通 awaitable，或最终 snapshot 期间取消。\textbf{错误结果：}并发 worker 争写同一状态，BaseException 逃逸，合法 awaitable 被丢弃，最终快照落后于 session phase。\textbf{危害：}磁盘状态与内存终态分叉，恢复时读取过期结果。\textbf{修复与回归测试：}每个 autosave subscriber 只保留一个 daemon-backed worker，使用 generation fence、sticky error 和 final enqueue/wait；EventBus 接受任意 awaitable；最终 manifest 保持 owned。测试覆盖 burst、异常、取消和最终 phase 持久化。
+
+\subsection{H-21：Checkpoint 证明会保留旧 patch 或晚到 artifact（P1）}
+
+\textbf{触发动作：}后续 checkpoint 得到空 diff、proof command 超时，或 auxiliary task 在 stop/abort 后继续。\textbf{错误结果：}上一次非空 patch 留存并被当作当前结果，晚到证明与 restore/读取竞态。\textbf{危害：}提交内容与当前仓库状态不一致，恢复完整性无法证明。\textbf{修复与回归测试：}空 checkpoint 持久删除旧 patch；路径绑定原 run-directory inode；proof 和 metadata 使用 safe files；auxiliary owner 走有界清理与 shutdown isolation；eligibility 强制要求 restore evidence。测试覆盖空覆盖非空、父目录替换、晚到 proof 和 abort。
+
+\subsection{H-22：畸形工具批次会产生部分副作用（P1）}
+
+\textbf{触发动作：}batch 首项是有效写入，后项才出现 duplicate ID、坏 envelope、未知 tool、无效 JSON 或 schema 错误。\textbf{错误结果：}前面的 call 已执行，随后 batch 才整体报错。\textbf{危害：}重试造成重复写入，duplicate ID 让结果关联歧义。\textbf{修复与回归测试：}多调用 batch 设置数量上限，并在任何执行前完整检查 envelope、唯一非空 ID、JSON object 参数、tool 存在性与 schema；任一失败都以零副作用拒绝。测试把 schema 错误放在有效副作用调用之后并确认 tool 从未启动。
+
+\subsection{H-23：证据记录无限增长，abstention 可绕过引用要求（P1/P2）}
+
+\textbf{触发动作：}scout 长时间累积 tool result，或同时提交 \code{insufficient\_evidence=true}、\code{verified=true} 和空 anchor。\textbf{错误结果：}ledger 随 step 无限增长，abstention flag 跳过 verified-anchor 校验。\textbf{危害：}内存持续增加，缺乏来源的结论会被标记为已验证。\textbf{修复与回归测试：}每批调用和 session ledger 均设上限并保留最新 evidence card；任何 verified finding 都要求非空 anchor。测试越过 ledger cap 并覆盖 mixed abstention bypass。
+
+\subsection{H-24：Schema 与数值校验接受非有限值和歧义类型（P1/P2）}
+
+\textbf{触发动作：}配置传入 \code{nan}、\code{inf}、integer 位置的 bool、未知 schema type、零/负输出上限或异常大 cap。\textbf{错误结果：}未知 schema fail-open，非有限 timeout/price 产生永久等待或无意义 metric，\code{text[-0:]} 还会返回完整文本。\textbf{危害：}资源上限和校验承诺失效。\textbf{修复与回归测试：}stdlib validator 校验 schema node、拒绝未知 type 并仅接受有限 JSON number；tool limit 使用严格 integer allowlist 与上限；截断标记计入 cap。参数化测试覆盖全部非法类别及单字符合法 cap。
+
+\subsection{H-25：强制 review 次数缺少边界（P1）}
+
+\textbf{触发动作：}\code{max\_iterations} 传入 0、负数、bool、string 或很大的 integer。\textbf{错误结果：}0 会跳过必需 review，大值则越过三轮上限。\textbf{危害：}质量门禁被绕过或预算被耗尽。\textbf{修复与回归测试：}共享 application validator 只允许 1 至 3；adapter 在调用 scheduler 前拒绝，application loop 对程序化调用再次检查。参数化测试确认非法值不会启动 reviewer。
+
+\subsection{H-26：Fact sheet 发现过程会泄漏参考答案（P0）}
+
+\textbf{触发动作：}stub 目录的祖先是外部源码 symlink，已入队目录在枚举后换成 symlink，或答案文件名只在大小写/Unicode 规范化上不同。\textbf{错误结果：}词法 containment 与大小写敏感过滤让 ground-truth 文件进入 planning fact sheet。\textbf{危害：}Agent 读取隐藏实现后完成任务，评测结果无效。\textbf{修复与回归测试：}遍历过程持有 dirfd、使用相对 no-follow open、校验目录/文件身份且不重新打开已 yield 路径；答案名经过 NFC 与 casefold。测试覆盖静态祖先 link、queued directory 替换和大小写/Unicode 变体。
+
+\subsection{H-27：主机写锁会阻塞 event loop 并污染 patch（P1）}
+
+\textbf{触发动作：}一个 FileWrite 在 await 期间持同步 \code{FileLock}，第二个写入同一路径的 coroutine 在 event-loop 线程轮询锁。\textbf{错误结果：}第二次 acquire 同步等待十秒，使第一个 coroutine 无法恢复；持久的 \code{<target>.lock} 还出现在 Git status。\textbf{危害：}形成确定性自阻塞，harness artifact 混入模型 patch。\textbf{修复与回归测试：}锁位于 owner-only 临时 harness 目录并以 SHA-256 路径键命名；非阻塞跨进程尝试配合异步 sleep 与 deadline；仓库内不创建 lock component。并发写测试在 wall 内完成，真实 Git status 不含 lock 文件。
+
+\subsection{H-28：Monitor 与 runner 从弱证据宣布完成（P0/P1）}
+
+\textbf{触发动作：}嵌套 report 过期、prediction/dataset 读取中变化、PID 被复用、leader 退出但 child 存活，或 report 存在却没有终态 outcome。\textbf{错误结果：}monitor 发布虚假完成、把输出配给错误 attempt 或遗留长时进程；batch script 还依赖易破坏的 delimiter parsing。\textbf{危害：}评测状态与真实执行分离。\textbf{修复与回归测试：}脚本采用稳定有界读取、dirfd、精确 process-start identity、claim record、严格 terminal schema、bounded Popen ownership 与 descendant guard。测试覆盖 report 替换、嵌套发现、旧 PID、后代进程、畸形 JSON 和 replay。
+
+\subsection{H-29：单 Agent 与团队发布会丢失或重复持久结果（P0/P1）}
+
+\textbf{触发动作：}进程在 prediction 与 metric 两次写入间崩溃，append 在 container cleanup 后失败，两个进程 replay 同一 pending record，或输出路径换成 symlink。\textbf{错误结果：}prediction/metric 分叉、成功 patch 消失、重复行出现，或工作区外文件被改写。\textbf{危害：}候选记录无法审计，容器 owner 可能过早清除。\textbf{修复与回归测试：}发布前 stage 一份带 record ID、完整 digest、目标路径和完整性字段的候选及 owner record；replay 补齐缺失侧，两个目录 durable 后才删 pending；输出锁采用有界 CAS。双进程恢复测试证明 exactly-once publication。
+
+\subsection{H-30：缺失测试注入会删除强制验证目标（P0）}
+
+\textbf{触发动作：}任务声明 \code{FAIL\_TO\_PASS} node ID，但 test patch 缺失、为空或没有 injected path。\textbf{错误结果：}evaluator 因 \code{injected\_paths} 为空而删除 \code{fail\_to\_pass}，最终 gate 看不到必测目标。\textbf{危害：}workflow 可凭无关测试或文字证据返回 done，形成目标测试从未执行的 false green。\textbf{修复与回归测试：}evaluator 始终保留声明目标，仅在真实路径存在时附加 \code{injected\_test\_paths}；gate 要求 \code{failed\_count == 0} 且 \code{tests\_run} 包含精确 ID。测试提供目标而省略 test patch，确认完整列表仍传给 workflow 且未执行时保持 RED。
+
+\subsection{H-31：独立 generation 与官方评测容器仍有网络（P1）}
+
+\textbf{触发动作：}单 Agent prediction generator 或 ProLite evaluator 启动 Docker 时没有指定 network mode。\textbf{错误结果：}容器自动接入默认 bridge。\textbf{危害：}不可信仓库代码可访问外部服务、泄漏任务数据，结果还会依赖主机网络。\textbf{修复与回归测试：}两处 Docker command builder 均加入 \code{--network none}；测试捕获真实 argument vector 并在容器启动前断言隔离参数存在。
+
+\subsection{H-32：ProLite runner 内置私有设施与漂移的远端实现（P1）}
+
+\textbf{触发动作：}贡献者未覆盖默认值直接运行 \path{swe_v1_prolite_runner.py}。\textbf{错误结果：}脚本选择私有 SSH host、NFS root、image registry、model、proxy env 与固定端口，并通过 base64/\code{exec} 启动两千余行内嵌远端逻辑。\textbf{危害：}外部 clone 连接错误机器、泄漏拓扑或依赖作者残留状态；内嵌实现绕过 import、lint 与测试。\textbf{修复与回归测试：}基础设施参数来自显式 CLI/env 且缺失时在 I/O 前失败；远端实现拆成可导入 harness module，以 \code{python3 -m opencollab.harness.swe\_v1\_remote\_runner} 启动。测试覆盖每项缺失配置、裸/完整 image name 与 SSH module 入口。
+
+\subsection{H-33：精确测试目标被扩大，任意 fallback command 可伪造 green（P0）}
+
+\textbf{触发动作：}Python 任务声明 81 个 node ID 超过旧 80 参数折叠阈值，或不支持的 Ruby 任务给出 \code{test\_cmd: echo ok}。\textbf{错误结果：}planner 把 81 个精确 node 换成一个 test file，并接受任意非空 fallback。\textbf{危害：}声明目标可被跳过，退出码 0 被当成 resolved 证据。\textbf{修复与回归测试：}适配器保留全部目标并拆成多个精确 pytest batch；每批保存 command、exit status 和 log，scoring 按 immutable plan 与 eval-spec digest 校验；无适配器任务在启动 Docker 前返回技术 RED。测试覆盖 80+1 拆批、缺失/修改 evidence、旧 summary 和 Ruby \code{echo ok}。
+
+\subsection{H-34：运行时同步遗漏新拆分的 generation 模块（P1）}
+
+\textbf{触发动作：}ProLite launcher 按旧 file list 向空远端同步，而 \path{gen_prediction.py} 已拆出多个 helper。\textbf{错误结果：}干净远端在 generation 前抛 \code{ModuleNotFoundError}，有旧副本的开发机却可能通过。\textbf{危害：}部署结果依赖未声明残留文件。\textbf{修复与回归测试：}同步清单加入全部直接和传递 generation helper，包括 bounded-capture executable module。测试构建真实 archive，在空目录解压并从该目录导入两个 generation 入口。
+
+\subsection{H-35：远端清理信任无界 marker 并可能删除外来容器（P0）}
+
+\textbf{触发动作：}timeout cleanup 遇到 symlink、FIFO、超大 JSON marker、截断 container ID 或伪造 marker。\textbf{错误结果：}旧 inline cleanup 使用 \code{read\_text} 并在证明 runner/container owner 前执行 \code{docker rm -f}。\textbf{危害：}清理永久阻塞、跟随外部链接或删除其他任务容器；内嵌代码还绕过 Ruff 与单测。\textbf{修复与回归测试：}清理改为可导入 remote harness module，以 no-follow 有界 regular-file open 读取 marker，校验 schema、完整 64-hex ID、runner identity 与 owner label，按已验证 ID 删除并证明消失。测试确认缺失所有权证据时返回技术失败且不删除。
+
+\subsection{H-36：Image workdir 预检有网络且会遗留无主容器（P1）}
+
+\textbf{触发动作：}ProLite dry run 的 image workdir probe 在 Docker 已创建容器后挂起。\textbf{错误结果：}旧 \code{docker run --rm} 使用默认网络，没有随机 name、cidfile、owner label 或 timeout 后清理证明。\textbf{危害：}probe 可继续联网并在 client 超时后存活，后续 run 无法可靠识别。\textbf{修复与回归测试：}preflight 使用 \code{--network none}、随机名称、cidfile 与 owner/schema label；finally 仅删除 label 匹配的完整 ID 并验证消失，owner 不符时返回技术失败。测试覆盖 timeout cleanup 与 foreign-owner refusal。
+
+\subsection{H-37：Python 3.10 缺少 exception note API，取消元数据跨 Task 行为不同（P1）}
+
+\textbf{触发动作：}在 Python 3.10 的清理失败路径调用 \code{BaseException.add\_note}，或测试假定 \code{Task.cancel(message)} 的 message 一定保留在跨 Task 传播后的 \code{CancelledError.args}。\textbf{错误结果：}3.10 没有 \code{add\_note}，二次清理异常会掩盖主异常；取消 message 也可能在 Task 边界丢失，使兼容性测试误判生产逻辑。\textbf{危害：}支持的 Python 版本无法完成清理与错误报告，CI matrix 在真实语义差异处持续失败。\textbf{修复与回归测试：}新增共享 \code{add\_exception\_note}，3.11+ 调用标准 API，3.10 安全维护 \code{\_\_notes\_\_}；取消断言按 runtime 能力校验，同时保留直接 await 场景中的原始异常身份。Python 3.10 针对性回归实际完成 \code{387 passed}。
+
+\subsection{H-38：EventBus 混淆外部取消与 subscriber 自取消（P1）}
+
+\textbf{触发动作：}caller 在等待 subscriber 时取消 \code{EventBus.emit}，或 subscriber 自身抛出 \code{CancelledError}。\textbf{错误结果：}旧代码依赖 \code{Task.cancelling()} 判断来源，该 API 在 Python 3.10 不可用，且 owner 与 caller 的取消状态容易混在一起；外部取消可能被吞，subscriber 自取消也可能错误终止整次 emit。\textbf{危害：}上层 timeout 失效，事件派发被单个订阅者中断，跨版本行为不同。\textbf{修复与回归测试：}subscriber awaitable 先封装为独立 owner task；\code{asyncio.wait(\{owner\})} 把等待者收到的外部取消与 \code{owner.result()} 抛出的 subscriber 自取消分开处理。外部取消会取消 owner、保留仍未结束的 owner 身份并重新抛出，subscriber 自取消则隔离为单个 sink 失败。回归分别验证外部取消传播、自取消隔离、后续订阅者继续接收事件以及顽固 subscriber 的晚到任务仍出现在 \code{pending\_tasks}。
+
+\subsection{H-39：Manifest 的 daemon write 脱离异步 owner 追踪（P1）}
+
+\textbf{触发动作：}autosave owner 在阻塞的 manifest 写入线程返回前被取消或达到 cleanup timeout。\textbf{错误结果：}异步 task 已结束，但底层 \code{concurrent.futures.Future} 仍能写磁盘；旧清理只查看 task 集合并报告没有 pending owner。若前台 cleanup timeout 同时被当作后台最终期限，CI 调度延迟还会让 tracer 在 manifest 完成前关闭。\textbf{危害：}workflow/evaluator 返回后 manifest 仍被改写，最终 phase、trace 与恢复状态存在竞态。\textbf{修复与回归测试：}\code{AutoSaveSubscriber} 暴露 \code{pending\_write\_futures}；workflow 与 evaluator 把每个 daemon write 包装成可追踪 task，登记到全局 owner 集合并在结束时消费结果。前台保持短超时并及时返回技术失败，后台资源 owner 共享一个固定 2 秒绝对期限，按剩余时间等待 manifest、隔离迟到任务并清理 environment；环境仍未静止时保留 tracer 并记录技术失败。慢写回归把前台 cleanup wait 压到极短，重复验证未完成 future 被报告、保留且资源关闭顺序稳定；阻塞环境回归确认不会提前关闭 tracer。
+
+\subsection{H-40：Local 临时文件与 durable append 缺少持续 inode 固定（P1）}
+
+\textbf{触发动作：}临时文件创建后、清理前路径被替换；或 prediction JSONL 在获得锁、写入、fsync directory 之间被 rename，再在原路径创建外来文件。\textbf{错误结果：}只保存数值形式的 \code{(dev, ino)} 且提前关闭 fd 时，inode 可复用；append 还可能成功写入已脱离路径的旧 inode，却把新路径当作已发布。\textbf{危害：}清理误删外来文件，prediction 与 metric 指向不同实体，发布成功状态失真。\textbf{修复与回归测试：}Local temp 从创建到 fail-closed retirement 始终持有 fd，以 lock、dirfd、\code{fstat} 与 no-follow \code{stat} 联合验证 inode；durable append 在持锁后与 fsync directory 后两次确认路径仍指向打开文件。替换回归确认外来内容保留并抛出 \code{output path changed}；清理回归确认 tombstone 保留且无按名 unlink。
+
+\subsection{H-41：Worktree 清理只信任路径字符串，未固定目录身份（P0/P1）}
+
+\textbf{触发动作：}worktree 创建后，攻击者 rename 原目录并在同一路径放入 symlink 或新的外来目录，再触发 abort/cleanup。\textbf{错误结果：}\code{git worktree remove} 或 \code{shutil.rmtree} 按旧字符串删除替代物。\textbf{危害：}外部目录被递归删除，原 worktree 又成为泄漏资源。\textbf{修复与回归测试：}创建时以 \code{O\_DIRECTORY|O\_NOFOLLOW} 打开并持有目录 fd；清理前以 \code{fstat}/\code{lstat} 比较 dev/ino，仅对 owned 或 absent 状态执行 Git/remove，replaced/unverified 状态保留外来路径并报告失败。回归交换目录与 symlink，确认外来目录不受影响。
+
+\subsection{H-42：\code{eval\_done} 可在没有终态证据时成立（P0）}
+
+\textbf{触发动作：}summary 写入 \code{status: done}，同时省略 resolved/unresolved 字段，或四个 count/list 字段全部为空。\textbf{错误结果：}旧 discovery 把缺失字段当作 0 resolved、0 unresolved，并继续把任务视为已评测。\textbf{危害：}没有任何实例 outcome 的空报告会让调度停止补评，结果统计静默缺失。\textbf{修复与回归测试：}summary 必须提供 resolved/unresolved count、ID list 或单实例 bool 证据；\code{done} 且总 outcome 为 0 直接抛技术错误。测试覆盖字段全缺、done-zero 和合法 resolved/unresolved payload。
+
+\subsection{H-43：发布路径交换后 pending candidate 可能被错误清除（P0/P1）}
+
+\textbf{触发动作：}pending replay 已向 prediction append，随后 output path 被替换或 metric 写入失败。\textbf{错误结果：}若 append 仅按打开 fd 成功判断，流程可能继续删除 pending record，而可见路径中没有该 candidate。\textbf{危害：}候选永久丢失，下一次启动无法恢复 prediction/metric 对。\textbf{修复与回归测试：}append 前后强制调用 \code{\_require\_path\_matches\_open\_file}；任何身份变化中止 publication，pending 与 owner state 保留。回归在 directory fsync 后替换 prediction，确认外来文件未覆盖、metric 未写、pending 仍存在。
+
+\subsection{H-44：Pytest quiet 输出、目录目标和参数化 node proof 解析错误（P0）}
+
+\textbf{触发动作：}使用 \code{pytest -qq}，传入测试目录，或参数化 node ID 的显示值包含空格。\textbf{错误结果：}旧 summary 解析只识别常见 verbose 结尾；目录目标无法与子文件 \code{PASSED} 行匹配；\code{split(maxsplit=1)} 会截断含空格 node ID。真实执行通过也会被判 RED，或 proof 匹配到不完整标识。\textbf{危害：}合法候选出现 false negative，目标证明语义不稳定。\textbf{修复与回归测试：}增加 pytest quiet summary/no-tests 正则；保留 \code{PASSED} 后完整 node ID；目录 target 允许匹配其子路径，参数化 target 允许匹配 bracket suffix。测试用真实 quiet 输出、目录与含空格参数化 ID 验证通过，并保留零测试拒绝。
+
+\subsection{H-45：Go package 目标可被其他 package 的 pass event 冒充（P0）}
+
+\textbf{触发动作：}用户请求 \code{./pkg/a} 或 \code{./pkg/a::TestX}，\code{go test -json} 中只有 \code{pkg/b} 的测试通过。\textbf{错误结果：}旧适配器只寻找任意带 \code{Test} 的 pass event，package-level target 没有绑定到 event 的 \code{Package} 字段。\textbf{危害：}声明 package 未测试也可得到 GREEN。\textbf{修复与回归测试：}明确解析 package 与可选 test selector，规范化 \code{.}、\code{./...} 和相对 package，逐个要求匹配 \code{Package} 与 \code{Test}；只有全部请求都有 test-level pass proof 才通过。回归覆盖 package mismatch、pattern、package-level 和具体 test/subtest。
+
+\subsection{H-46：Scheduler 通过可变模块全局注入自身类型（P1）}
+
+\textbf{触发动作：}导入 \path{application/scheduler.py} 时执行 \code{\_scheduler\_cleanup.Scheduler = Scheduler}，测试或其他模块再 monkeypatch/reload 其中一侧。\textbf{错误结果：}cleanup module 的行为依赖导入顺序与进程级可变全局，类型引用可泄漏到其他测试或并发上下文。\textbf{危害：}同一调用在不同收集顺序下得到不同结果，模块拆分形成隐藏耦合。\textbf{修复与回归测试：}删除运行时全局赋值，cleanup 通过实例状态和稳定接口工作；scheduler awaiting、cleanup 与 team event 测试在独立导入和完整组合中验证一致行为。
+
+\subsection{H-47：Reviewer 的规范 PASS 句带句号会被误判失败（P2）}
+
+\textbf{触发动作：}reviewer 最后一行输出 \code{VERDICT: PASS.}、\code{VERDICT: PASS!}、中文句号或感叹号。\textbf{错误结果：}旧实现要求全大写后与无标点字符串完全相等，规范自然语言结尾被拒绝。\textbf{危害：}已通过的独立审查无法推进 workflow，产生无意义重试和预算消耗。\textbf{修复与回归测试：}仅对最后一个非空行使用 anchored regex，允许大小写变化及一个尾随 \code{. ! 。 ！}，仍拒绝额外文字、引用指令和早先 verdict。参数化测试覆盖可接受标点与应拒绝尾巴。
+
+\subsection{H-48：Linux \code{setsid} 子进程在进程组就绪前发布 PID（P0/P1）}
+
+\textbf{触发动作：}Linux wrapper 启动 \code{setsid bash ... \&} 后立刻写 pidfile，取消或 teardown 恰在 child 完成 session/process-group 建立前到达。\textbf{错误结果：}对 \code{-pid} 的 group signal 可能命中不存在的组，实际 command 又可能在 owner 记录持久化前开始执行。\textbf{危害：}命令逃过取消并在结果返回后继续修改仓库。\textbf{修复与回归测试：}parent/child 通过 \code{USR2}/\code{USR1} 双向握手：child 建组后报告 ready 并等待 release，parent 验证 group 可寻址、持久写入 pidfile 后才放行；ready 超时或 child 早退时强制回收并返回技术失败。Linux 专项测试覆盖即时取消、早退和正常启动顺序。
+
+\subsection{H-49：容器进程枚举异常与非法 CID 被当作安全状态（P0/P1）}
+
+\textbf{触发动作：}\code{pgrep} 以 2 或更高状态退出，或 \code{docker run} 返回非 64-hex 文本而容器已经创建。\textbf{错误结果：}guard 把任何非 0 状态当作空成员集合；shell 的 CID 校验失败路径又可能跳过已有 owner marker 的 cleanup。\textbf{危害：}存活进程或容器被宣称已清理，资源继续执行且失去可追踪 owner。\textbf{修复与回归测试：}\code{pgrep} 仅允许 0 表示有结果、1 表示无结果，其余抛 \code{GuardError}；CID 先在当前函数作用域校验，失败时设置 force-destroy 并执行所有权清理，清理无法证明时返回 125。测试注入 \code{pgrep=2} 与非法 CID，确认 fail-closed 和清理调用。
+
+\subsection{H-50：Smoke helper 在导入阶段强制加载可选依赖（P2）}
+
+\textbf{触发动作：}只导入 timeout/smoke helper 以读取参数或运行轻量测试，而环境未安装 Docker SDK 或 \code{swebench.harness}。\textbf{错误结果：}模块顶层 import 立即抛 \code{ModuleNotFoundError}，与这些依赖无关的 helper 和测试也无法使用。\textbf{危害：}最小开发环境、脚本静态检查和分层测试被可选运行时依赖阻断。\textbf{修复与回归测试：}Docker SDK 在 \code{main}/\code{from\_env} 真正调用时加载；\code{make\_test\_spec} 在 smoke run 需要时加载 SWE-bench harness。subprocess 回归主动拦截对应 import，确认两个模块仍可独立导入。
+
+\subsection{H-51：caller 与 subscriber 同刻取消时，EventBus 会丢失外部取消（P1）}
+
+\textbf{触发动作：}subscriber owner 与等待它的 \code{EventBus.emit} 在同一个 event-loop tick 收到 \code{cancel()}；另一个场景中，subscriber 收到取消后继续等待并在稍后写文件。\textbf{错误结果：}如果代码先检查 owner 的 cancelled 结果，caller 的取消会被归类成 subscriber 自取消并被吞；如果 emit 直接放弃 owner，顽固 subscriber 会从清理集合消失。\textbf{危害：}调用方设定的超时失效，后续 subscriber 还可能在 caller 已退出时继续执行；晚到写入脱离 scheduler、workflow 与 evaluator 的资源清理。\textbf{修复与回归测试：}emit 通过 \code{asyncio.wait(\{owner\})} 等待；等待动作自身抛出的 \code{CancelledError} 始终代表 caller 取消并向外传播，owner 的自取消只在 \code{owner.result()} 阶段隔离。仍未结束的 owner 留在 \code{pending\_tasks}，直到真实终态。回归测试在同一 tick 同时取消 caller 与 subscriber，断言 caller 收到取消且后续 sink 没有运行；另一个测试让 subscriber 吞取消后延迟写入，确认清理方仍能取得并等待该 owner。
+
+\subsection{H-52：两个 AutoSaveSubscriber 可让旧快照覆盖新快照（P1）}
+
+\textbf{触发动作：}旧 session 的 autosave 线程已经开始写同一份 \code{session.json}，owner 因清理 deadline 被取消；恢复流程创建新的 \code{AutoSaveSubscriber} 并提交新快照，随后旧线程才解除阻塞。\textbf{错误结果：}每个 subscriber 只串行化自己的任务，两个实例之间没有共同顺序；新快照可能先提交，迟到的旧线程再把文件覆盖成旧状态。跨两个 \code{asyncio.run} 的 event loop 会扩大该窗口。\textbf{危害：}恢复后的消息、phase、token 与终态被旧 run 回滚，磁盘状态看似写入成功却落后于内存。\textbf{修复与回归测试：}autosave 接收规范化后的 \code{serialization\_key}，以进程级资源 tail 串行化所有指向同一持久路径的 daemon future；owner 超时后，真实 write future 仍作为顺序 fence，后继订阅者必须等它结束。回归分别覆盖同一 loop 的两个 subscriber 与前后两个 loop：旧写入阻塞并取消 owner，新写入在旧 worker 退出前无法开始，最终文件固定为新快照。
+
+\subsection{H-53：LocalEnvironment 会在工作区路径或临时文件被替换后操作外来 inode（P0/P1）}
+
+\textbf{触发动作：}创建 \code{LocalEnvironment} 后把 workspace rename 到别处，再在原路径创建外来目录并调用 \code{exec\_cmd} 或 \code{write\_file}；另一个场景在临时文件创建或清理期间取消 coroutine、删除原文件并用外来文件占回同名路径。\textbf{错误结果：}基于路径字符串的 cwd 与清理会在替代目录执行命令、写入外来文件，或把取消后刚创建的临时文件漏出；仅保存 \code{(dev, ino)} 且关闭 fd 还会受到 inode 复用影响。\textbf{危害：}harness 能修改未分配给任务的目录，外来临时文件可能被误删，取消路径留下可继续影响结果的 artifact。\textbf{修复与回归测试：}初始化时以 \code{O\_DIRECTORY|O\_NOFOLLOW} 固定 workspace fd，每次操作用重复 fd 作为 cwd/root，并在操作后复核路径身份；临时创建转入 owned blocking worker，在取消传播前登记所有权，文件 fd 持有到 fail-closed retirement 完成或返回可重试失败。回归先替换 workspace，确认 exec/write 均报 \code{workspace identity changed} 且外来目录为空；再在创建中取消并替换临时路径，确认 owned 文件被 retirement、foreign inode 字节保留、cleanup/abort 幂等关闭全部 fd，retirement 失败时仍保留可重试状态。
+
+\subsection{H-54：Worktree 清理可在源仓库路径替换后修改另一座 Git 仓库（P0/P1）}
+
+\textbf{触发动作：}worktree 建立后把 source repository rename，再在原路径初始化另一座仓库，并放入同名 branch；随后触发正常 cleanup 或超时后的 late compensation。\textbf{错误结果：}以 \code{cwd=source\_path} 重启 Git 命令会进入替代仓库，删除替代仓库的 branch/worktree 引用；fallback 递归删除与 branch delete 之间还存在目录占位和 ref ABA 竞态。\textbf{危害：}并发用户的 Git 状态与文件会被破坏，真正属于当前 run 的 worktree 和 branch 又可能泄漏。\textbf{修复与回归测试：}新增 \code{\_PinnedGitRepository}，从 setup 到 cleanup 持有 source directory fd，所有 Git 命令通过 \code{cwd\_fd} 绑定原仓库；owned worktree 先在 parent dirfd 下原子 rename 到随机 quarantine，再按固定目录 fd 删除；branch 只按记录的 commit OID 做 compare-and-delete，worktree remove/prune 未证明完成时保留 branch 与重试状态。真实 Git 回归把原路径替换为另一座仓库，确认 cleanup 和 late compensation 只处理被 rename 的 owned repository；另有测试在 quarantine 最终删除前创建外来目录、交换 quarantine entry、替换 branch ref，均验证外来数据与 ref 保留。
+
+\subsection{H-55：身份校验后按名删除仍会伤及竞态窗口中的后继文件（P0/P1）}
+
+\textbf{触发动作：}checkpoint/test patch 临时文件写入失败后，同名路径被容器内进程换成 symlink 或另一 inode；主机侧也可在 cleanup 校验 identity 通过后、\code{unlink} 真正执行前，把隔离名称换成 victim。\textbf{错误结果：}\code{stat -> unlink} 与 \code{stat -> rm} 之间仍存在检查后使用竞态，对原 inode 的正确证明无法约束随后同名 entry 的身份。\textbf{危害：}并发任务的文件可被误删；遇到身份异常时恢复原名还会覆盖已经合法出现的 successor。\textbf{修复与回归测试：}清理改用 fail-closed retirement：owner 持有文件 fd，在 parent dirfd 锁下使用 Linux \code{renameat2(RENAME\_NOREPLACE)} 或 macOS \code{renameatx\_np(RENAME\_EXCL)} 把 entry 原子移入随机 \code{.opencollab-retired-*} 名称。目标 tombstone 已存在时重试新名称，任何外来 entry 都不会被覆盖；rename 后再次比较 tombstone 与持有 fd 的 device/inode、类型和链接状态。进入 tombstone 后，库代码不再按名调用 \code{unlink}/\code{rm}。身份异常时保留可审计对象并返回技术失败。主机每目录限制 256 个 tombstone 和 1\,GiB 实际字节，配额检查与 rename 共享目录锁；容器脚本也在目录锁下执行 no-clobber retirement，并在容器销毁时整体回收。回归覆盖目标名碰撞、owned/foreign entry 交换、无按名 unlink、文件数与字节配额边界，确认外来 inode 不被删除或覆盖。
+
+\subsection{H-56：原子写可被调包，提交失败后又无法恢复旧目标（P0/P1）}
+
+\textbf{触发动作：}\code{safe\_files}、\code{gen\_prediction}、\code{swe\_v1\_remote\_core}、\code{swe\_auto\_eval\_safe\_state}、\code{swe\_team\_batch\_io} 或 \code{swe\_v1\_prolite\_report} 创建临时文件后，攻击者把临时 entry 换成 symlink；另一个时序在 caller 读取旧 target identity 后、正式提交前安装 successor；第三个时序在新 target 可见后让 parent-directory \code{fsync} 失败。\textbf{错误结果：}只相信临时名字会把替代 entry 提交为权威状态；普通 replace 会覆盖并发 owner 刚写入的 successor；提交后失败又会让磁盘状态与 API 结果分离。\textbf{危害：}prediction、claim、attempt、远端 state、team summary、ProLite report 与 session snapshot 可能覆盖错误对象，候选身份和评测终态随之失配。\textbf{修复与回归测试：}各入口统一调用共享原子写 helper。候选从创建起就位于受配额约束的 reserved retirement namespace，写入期间具有明确字节上限；目录达到文件数或 1\,GiB 字节配额时，在创建新候选或移动旧 target 前失败。helper 在 parent dirfd 锁下固定候选 fd 和旧 target fd，验证 target CAS 后把已有目标 no-clobber retirement 为 backup，再使用原生 no-clobber rename 提交候选。最终窗口出现 successor 时，rename 返回冲突并保留 successor。提交、identity 校验、目录 fsync 或 parent binding 复核失败时，只有已证明属于本事务的候选会进入 tombstone；旧目标依据始终持有的 backup fd 复制到排他创建的新 target，避免信任可被替换的 backup 名称。恢复期间若 target 已有并发 successor，则保留 successor与 backup tombstone并返回技术失败。回归覆盖候选/target 调包、source rename 窗口、successor 抢占、backup 名称替换、提交后 fsync 失败、配额耗尽和超限 writer，确认失败分支不覆盖外来 inode，成功分支的 target 精确对应候选内容。当前跨调用 CAS 令牌为 \code{(dev, ino)}，能够识别不同 inode 的 successor；旧 inode 若在调用前释放并被文件系统立即复用为同一数值身份，识别该 ABA 需要持续持有旧目标 fd 或升级身份令牌。
+
+\subsection{H-57：Go、pytest 与 JavaScript 适配器缺少逐目标正执行证据（P0）}
+
+\textbf{触发动作：}Go 只得到 package-level \code{Action: pass} 或命中 test cache；pytest 工作区放置 \code{pytest.py} 影子模块、在配置中启用 collect-only，或由真实 \code{conftest.py} 清空 \code{session.items}、把 exit status 改成 0 并打印伪造 \code{PASSED target}；Jest/Mocha 选择了文件但内部零测试。\textbf{错误结果：}退出码、终端摘要和普通 \code{PASSED} 行都能被仓库代码伪造，声明的 \code{FAIL\_TO\_PASS} 目标可能没有完成 setup/call/teardown。Go cache 还会让当前 patch 没有真正触发测试进程。\textbf{危害：}坏 patch 获得 \code{resolved: true}，静默 false positive 直接污染评测分数。\textbf{修复与回归测试：}评测输入以 \code{/eval\_input:ro} 挂载受控 \code{opencollab\_pytest\_proof} plugin，并用随机 nonce 命名独占 proof JSONL。plugin 顺序记录唯一 \code{session\_start}、完整 \code{collection\_finish.nodeids}、每个 node 的 setup/call/teardown \code{runtest\_logreport} 与最终 \code{session\_finish.exitstatus}；所有目标必须被收集且三个 phase 全部 passed，proof、普通日志、计划命令和 artifact identity 同时匹配才算 GREEN。Go 逐目标执行 \code{go test -count=1 -json <exact-package> -run '\^Test\$'} 并要求对应 test-level pass event；file-only Go、Jest/Mocha 继续返回技术 RED。真实 subprocess 回归让 \code{conftest.py} 清空 collection、伪造 PASSED 与成功 exit，证明仍为 RED；另有测试覆盖失败 phase、缺失 node、伪造摘要、影子模块、collect-only、Go package-only pass 与合法结构化 proof。
+
+\subsection{H-58：旧 summary 与无 SHA 官方报告可借身份字段或 mtime 被复用（P0）}
+
+\textbf{触发动作：}留下一个含相同 \code{record\_id}、\code{patch\_sha256} 和 \code{resolved: true} 的旧 \code{summary.json}，但没有逐 batch 测试 evidence；另一个场景在 attempt 开始前已有无 SHA 的 \code{report.json}，开始后只重写相同 payload 或修改 mtime。\textbf{错误结果：}身份字段匹配会掩盖测试未执行；“mtime 晚于 attempt”也会把旧相对路径错误配给新候选。未知格式的顶层 \code{\{status: done, resolved: true\}} 还可能被 discovery 当作权威报告。\textbf{危害：}新 patch 继承旧 resolved，调度器停止官方补评，报告与候选之间失去可审计关系。\textbf{修复与回归测试：}direct eval summary 只复用 schema \code{opencollab.prolite\_direct\_eval.v2}，同时要求布尔 resolved、零 technical reason、Docker/process/container 清理成功、eval spec digest 匹配、命令与日志 artifact 安全、计划与逐目标 proof 完整；identity-only summary 必须重跑。official attempt 记录启动前所有候选报告相对路径与 fingerprint；无 SHA 报告只有在路径此前不存在且 mtime 不早于 attempt 时才能临时绑定，已存在路径即使重写或 touch 也保持 unbound。discovery 只接受已知 direct-eval schema 或官方实例映射。回归覆盖旧 summary、test-only patch、未知顶层 done、预存在报告重写与合法新报告。
+
+\subsection{H-59：pending replay 会把完整畸形 JSONL 行当作崩溃尾巴截断（P0/P1）}
+
+\textbf{触发动作：}prediction JSONL 已包含以换行结束的畸形记录 \code{\{"instance\_id":\textbackslash n}，同时存在等待发布的 pending candidate；另一个场景只有最后一行因进程崩溃而未写完且缺少换行。\textbf{错误结果：}宽松 tail repair 无法区分“完整但损坏的 committed record”和“未完成的最后尾巴”，可能截掉已持久化的损坏证据、继续 append 新候选并删除 pending。\textbf{危害：}历史输出被静默改写，损坏来源消失，prediction 与 metric 的 exactly-once 恢复承诺失效。\textbf{修复与回归测试：}扫描器对每个完整行执行 UTF-8、JSON object、大小与身份校验；任何完整行或中间行畸形都使 replay 技术失败并保留原 JSONL、metric 与 pending。只有最后一段未终止且 JSON 无法解析时，才在最后一个换行位置 \code{ftruncate} 并 \code{fsync}，随后重放候选。回归分别写入完整畸形行和未终止 crash tail：前者字节不变且 pending 保留，后者被截至安全边界并得到一对可由生产 reader 读取的 prediction/metric。
+
+\subsection{H-60：checkpoint 与 teardown owner 未全部进入资源依赖集合（P0/P1）}
+
+\textbf{触发动作：}周期 checkpoint capture 吞掉取消并继续使用环境，\code{checkpoint.stop} 自身超过 finalization timeout；同时 evaluator caller 在 teardown owner 自取消的同一个 tick 取消整个评测。\textbf{错误结果：}只等待 workflow task 会把 checkpoint/stop task 漏出；环境、tracer 与注入测试资源可能提前 cleanup，teardown 的内部取消也可能覆盖 caller 取消。\textbf{危害：}晚到 checkpoint 在已清理环境上读写，提取的 patch 与终态 evidence 变化；caller timeout 失去语义，资源释放顺序无法证明。\textbf{修复与回归测试：}\code{WorktreeCheckpoint.pending\_tasks} 暴露周期 capture 与被移交的 abort owner；bounded stop 返回仍活动的 stop task。evaluator 把 workflow、session、manifest、checkpoint 与 stop owner 合并为 live resource dependencies；有依赖时先同步标记并执行 environment abort，再延迟 env/tracer cleanup 到所有 owner 结束。\code{await\_teardown} 使用 \code{asyncio.wait} 区分 caller 取消和 worker 自取消，caller 的首次取消保留到完整 teardown 之后重新抛出。回归让 checkpoint 和 workflow 反复吞取消，确认结果 technical RED、环境先 revoke、submission disabled、owner 结束后才清理；同刻双重取消测试确认环境仍完成 cleanup 且 caller 收到原取消。
+
+\subsection{H-61：模块拆分会破坏旧导入，并触发新增 Python 文件 800 行门禁（P1/P2）}
+
+\textbf{触发动作：}下游代码继续从 \path{application/tool\_execution.py} 导入 \code{abandon\_on\_timeout}，从旧 SWE eval/checkpoint facade 导入 \code{row\_patch\_sha} 或 \code{ENV\_RECOVERY\_PATCH\_PREFIX}，或从 \path{harness/evaluator.py} 导入 \code{EvalTask}/\code{EvalResult}；与此同时，新增 evaluator、smoke runner 或大测试文件超过 800 行。\textbf{错误结果：}机械拆分让稳定名字消失并抛 \code{ImportError}；超行文件使 CI file-hygiene gate 失败，也把独立职责重新堆回一个入口。\textbf{危害：}已有调用方升级即中断，修复无法进入主分支，后续相同逻辑继续复制。\textbf{修复与回归测试：}旧 facade 显式 re-export 原对象；ProLite launcher 保留原公开函数与常量，内部转发至拆分模块；\code{EvalTask}/\code{EvalResult} 移入 \path{evaluator\_models.py} 后从 evaluator 重新导出；smoke 的 optional spec 移入 \path{scripts/swebench\_smoke\_spec.py}，ProLite evidence 测试拆出 adapter 文件。当前结构扫描中，新增 Python 文件最大为 \path{adapters/\_env\_worktree.py} 的 792 行；此前超限的三个测试模块按职责拆分后分别为 779、769、768 行。\path{harness/evaluator.py}、\path{run\_swebench\_smoke\_batch.py} 与 \path{adapters/\_env\_worktree.py} 分别为 615、797、792 行；既有 \path{harness/swe\_checkpoint.py} 为 833 行，未计入新增模块门禁。\path{test\_public\_import\_compatibility.py} 验证旧名字与新实现是同一对象，并编译远端 runner 入口；文件行数检查覆盖全部新增 Python 文件。
+
+\subsection{H-62：嵌套 direct-eval 映射可绕过执行证明校验（P0）}
+
+\textbf{触发动作：}把 direct-eval summary 包在官方报告常见的实例映射形状中，例如 \code{\{"task-1": \{schema: v2, status: done, resolved: true\}\}}，同时省略 \code{tests\_status}、计划和逐 batch proof。\textbf{错误结果：}旧 discovery 对顶层单任务 summary 执行严格 proof 校验，却把嵌套 value 当作普通官方实例结果；同一份无证明 direct-eval 只需多包一层字典就能成为 done。\textbf{危害：}\code{FAIL\_TO\_PASS} 从未执行的候选可进入 resolved 统计，自动补评也会停止。\textbf{修复与回归测试：}映射分支先读取每个 value 的 schema；只要 schema 以 \code{opencollab.prolite\_direct\_eval.} 开头，就必须走与顶层相同的 \code{\_direct\_eval\_done\_has\_execution\_proof}，检查 cleanup、计划、命令、artifact 与 target proof。已知 direct-eval 技术失败仍可作为失败记录读取，官方无 direct-eval schema 的实例映射继续按官方格式处理。回归把 identity 与 resolved 字段齐全、execution proof 缺失的 v2 summary 嵌入实例映射，确认 discovery 返回空；另一个测试证明嵌套 v1 technical failure 仍进入 failed count。
+
+\subsection{H-63：Session 清理集合遗漏 ToolExecution 的晚到任务（P0/P1）}
+
+\textbf{触发动作：}tool 达到 timeout 或 caller 取消后吞掉 \code{CancelledError}，继续在异步 owner 中尝试写环境；\code{ToolExecutionUseCase} 已追踪该 owner，但 scheduler/workflow 只读取 \code{Session.pending\_cleanup\_tasks}。\textbf{错误结果：}Session 过去只合并 EventBus 与 SessionRun 的 pending task，ToolExecution owner 对上层不可见；环境与 manifest 可能在 tool 真正停止前清理或发布。\textbf{危害：}评测返回后仍有 tool 写入 patch、状态或外部资源，submission eligibility 与最终 diff 失去稳定性。\textbf{修复与回归测试：}\code{ToolExecutionUseCase.pending\_cleanup\_tasks} 暴露仍在 unwind 的 owner；\code{Session.pending\_cleanup\_tasks} 合并 EventBus、SessionRun 与 ToolExecution 三类任务并去重。tool 在有界取消失败时先 revoke environment，再把仍活动任务交给 shutdown isolation，caller 取消保持原异常语义。构造测试直接登记一个 ToolExecution owner，确认 Session 可见；行为测试让 tool 吞取消后尝试晚写，确认环境先变为 aborted、写入被拒绝、owner 终态后集合为空，并覆盖重复 caller cancel 与 timeout/caller 同刻发生。
+
+\subsection{H-64：Local 写入与删除没有区分旧 inode、successor 与未知路径（P0/P1）}
+
+\textbf{触发动作：}Local 写入即将替换 target 时，其他进程把旧 target rename 到工作区外；另一个场景在 temp fsync 后把 target 换成 successor，或直接调用 \code{remove\_file("victim.txt")} 删除普通文件。\textbf{错误结果：}非原子的 truncate/write 会修改已经外移的旧 inode；缺少 target CAS 会覆盖 successor；通用删除接口会把从未登记为临时文件的 victim 当作清理对象。\textbf{危害：}工作区外数据被修改，并发 owner 的新结果丢失，清理调用可删除任意普通文件。\textbf{修复与回归测试：}Local write 在 parent dirfd 下排他创建 owned temp，完整写入、保留已有 target mode、fsync 并复核临时 fd，随后调用 H-56 的 \code{commit\_owned\_temporary}。已有 target 通过 \code{expected\_target\_identity} 做 CAS，缺失 target 通过 \code{require\_target\_absent} 进入 no-clobber create；临时 entry 调包、并发 successor 或提交后目录 fsync 失败均按 failure-atomic 语义处理。\code{remove\_file} 只接受 \code{write\_temp\_file} 登记且仍持有 live fd 的对象，清理使用 H-55 的 fail-closed retirement。真实 LocalEnvironment 回归在 replace 钩子中把 temp 换成 victim symlink，确认 victim 不变、原 target 恢复且 detached candidate 保留；参数化测试在 target 存在与缺失时安装 successor，均拒绝覆盖；另外覆盖 no-clobber 最终窗口、目录 fsync 失败恢复、mode 保留、未知 victim 拒绝与无按名 unlink 的 owned retirement。
+
+\subsection{H-65：start\_team\_run 的 Python heredoc 复制实现形成漂移与测试盲区（P1/P2）}
+
+\textbf{触发动作：}team runner 需要修改 instance 安全读取、owner marker、pending publication、路径 digest 或容器 identity 时，只更新 18 段内嵌 Python heredoc 中的一处；shell 入口在一次审查中增长到 1816 行。\textbf{错误结果：}相同的 JSON、文件所有权和输入校验分散在临时代码块中，每次运行重新解析，Ruff、模块 import、共享单测和复用 helper 无法覆盖全部副本；某个调用仍可能沿用旧的 symlink、大小上限或 CAS 行为。\textbf{危害：}同一候选在 prepare、cleanup 与 publish 阶段使用不同身份规则，旧副本可覆盖 successor、读取被替换 instance，或清掉后继 owner marker；维护时增加大量重复 diff。\textbf{修复与回归测试：}18 段 Python heredoc 全部移除，稳定职责进入 \path{scripts/swe\_team\_run\_io.py} 与 \path{scripts/swe\_team\_owner.py}；shell 只保留参数、Docker 生命周期和明确的 helper 调用，从审查中间版本 1816 行降到 699 行，两个 Python 模块分别为 751 与 356 行。helper 复用 safe-file CAS、bounded read、identity marker 与 pending publication 实现，可由 Ruff 和 pytest 直接检查。回归覆盖 instance 在读取中替换、task file 写入中替换、非法 image/CID、owner successor、pending 恢复、timeout 与真实目录准备，并用源码断言确认 Python heredoc 数量从 18 降为 0。
+
+\subsection{H-66：Team batch 子进程在中断或 parent 正常退出后仍可存活（P0/P1）}
+
+\textbf{触发动作：}\code{run\_team\_batch.sh} 启动单题 runner 并把输出接到日志；用户按 Ctrl-C 时 child 忽略 TERM，或 child parent 返回 0 前另起一个仍处于已登记 PGID/SID 的 descendant。\textbf{错误结果：}普通 pipe/tee 只回收直接 shell，异常路径没有稳定 process-group owner；正常 return code 也会被当作全部进程结束，同组 descendant 继续写 prediction 或占用 Docker。日志路径若在 child 启动前后被替换，还会把输出写入 foreign inode。\textbf{危害：}batch 已显示停止或成功，后台任务仍修改结果、消耗资源并干扰下一实例；日志与 return code 不能证明对应同一 child 生命周期。\textbf{修复与回归测试：}\path{swe\_team\_batch\_io.py} 的 \code{run\_with\_log} 在 \code{start\_new\_session=True} 下启动 child，把 stdout/stderr 直接写入持有 fd 的原子临时日志。BaseException 路径对登记的 PGID/SID 执行有界 TERM/KILL cleanup 并把失败写入异常 note；正常 \code{wait()} 后也检查该进程组/会话的静止状态，发现同组遗留 descendant 就清理并拒绝静默成功。日志 parent/target identity 在启动前后通过共享 CAS helper 验证。真实 POSIX 回归触发 KeyboardInterrupt 并让同组 child 忽略 TERM，确认 PID 消失且临时日志清空；另一个测试让 parent 0 退出并留下同组顽固 descendant，确认 descendant 被回收、日志内容与 parent 输出一致；替换日志 successor 的测试确认 child 启动前即拒绝且 successor 保留。调用 \code{setsid()} 后离开登记集合的 descendant 仍属于 H-07 的延期风险。
+
+\subsection{H-67：Evaluator 结果持久化复制了一套较弱的原子写实现（P0/P1）}
+
+\textbf{触发动作：}\code{save\_results} 在独立临时目录写完 JSONL 后，另一个 owner 在它检查 target 与 \code{os.replace} 之间提交 successor；也可在 replace 后的目录 fsync 或路径复核阶段注入失败。\textbf{错误结果：}该函数的自有实现与 \code{safe\_files} 各自维护 temp identity、parent identity、replace 与异常清理，却缺少统一的 target CAS 与提交失败恢复语义；successor 可被覆盖，提交后失败也可留下新结果。\textbf{危害：}评测返回失败时磁盘结果反而可能已更新，或较新的并发结果被覆盖；消费者无法把 JSONL 与对应 run 稳定配对。两套安全写逻辑同时演化，也会在下次修复时再次漂移。\textbf{修复与回归测试：}\code{save\_results} 现在只负责流式序列化、单条与总字节上限，文件提交统一调用 \code{write\_regular\_file\_atomic}。它传入预先固定的 parent identity、existing target identity 或 \code{require\_target\_absent}，直接继承 H-55/H-56 的 retirement、CAS 与 failure-atomic recovery。回归使用真实 JSONL reader 验证成功输出，并分别在 parent 替换、temp 交换、target successor、大小超限、临时文件 retirement 失败和目录 fsync 失败中确认旧文件与主异常均保留。复用后 \path{harness/evaluator.py} 从审查中间版的 767 行降到 615 行。
+
+\subsection{H-68：包元数据声称跨平台，macOS 又会拒绝系统临时目录（P1）}
+
+\textbf{触发动作：}在 Windows 上仅导入 \code{safe\_files} 或所有者清理模块，而 package metadata 仍声称 \code{Operating System :: OS Independent}；在 macOS 上把 \code{tempfile}/pytest 产生的 \path{/var/folders/...} 或 \path{/tmp/...} 传给原子写入。\textbf{错误结果：}Windows 在导入阶段因缺少 \code{fcntl} 直接失败，调用方无法获得可诊断的能力错误；macOS 的 \path{/var}、\path{/tmp}、\path{/etc} 是指向 \path{/private/...} 的系统根别名，逐组件 no-follow 遍历会把这些受信根别名当成攻击者 symlink，使合法临时文件无法读写。\textbf{危害：}安装元数据与真实能力冲突，Windows 用户在运行前无法判断支持边界；macOS 上的 session snapshot、report、checkpoint 和测试临时产物会在正常路径上报错。\textbf{修复与回归测试：}\path{adapters/\_posix\_file\_support.py} 建立显式平台边界：\code{fcntl} 延迟检查，每次安全文件操作在使用前验证 POSIX host、\code{flock}、\code{O\_NOFOLLOW}、\code{dir\_fd} 和 fd-listdir 能力，缺失时抛出 \code{UnsupportedSafeFilePlatformError} 并列出具体能力。\path{pyproject.toml} 的分类改为 POSIX 与 MacOS。macOS 只对经校验为 root 所有、指向预期 \path{/private} 目录且跟随后 inode 一致的三个系统根别名做规范化；后续任意子路径继续按组件 no-follow 遍历，不使用全路径 \code{realpath}。回归模拟缺少 \code{fcntl}、非 POSIX host、缺少 hard-link dirfd 和 fd-listdir，确认错误清晰；macOS 真实回归通过 \path{/var}/\path{/tmp} 别名写入文件，同时在别名之后放置攻击者 symlink，确认外部 victim 保持空白。
+
+\subsection{H-69：LocalEnvironment 内部 tombstone 混入模型 patch（P0/P1）}
+
+\textbf{触发动作：}LocalEnvironment 的原子写或失败恢复在 Git 工作区留下 \code{.opencollab-retired-*} tombstone，随后 checkpoint、evaluator 或 team runner 执行 \code{git add -A} 与差异提取。\textbf{错误结果：}若把 tombstone 当成普通未跟踪文件，Harness 内部内容会混入 patch；若只按名称前缀忽略，任务主动创建的同前缀文件也会消失。\textbf{危害：}内部 artifact 可制造错误的非空 patch，前缀级忽略又可制造空 patch，submission eligibility 与官方评测身份因此失真。\textbf{已完成修复与回归测试：}稳定版本使用 strict JSONL registry，只排除当前环境登记且在提取时仍精确匹配 parent/name、device/inode、regular-file 类型、size、mtime、ctime 与 nlink 的 tombstone；登记记录损坏、重复、截断，目录身份变化，或 reserved prefix 下出现任何未登记、被修改、换 inode、增 hardlink 的对象时，补丁提取 fail closed。临时 Git index 只 reset 这些逐项复核通过的登记路径，其余 reserved-prefix 变化触发技术失败。回归覆盖合法 tombstone 排除、未登记前缀、内容修改、inode 替换、hardlink、损坏 JSONL 与目录身份变化。
+
+\textbf{延期风险：}当前 JSONL sidecar 没有 HMAC，能够读写工作区并推算真实 stat 的同权限任务仍可能伪造登记；补丁提取仍可能受到仓库私有 Git 配置影响，登记扫描与暂存之间也存在竞态。这三项强化与隔离 Git、冻结快照的实验实现保存在 \code{wip/harness-integrity-followups-20260711}@\code{78702ee}，未进入稳定版本。出现这类对抗行为时，当前结果仍可能被错误压缩为空 patch，因此本报告不把该边界列为已修复。
+
+\subsection{H-70：分拆 PR 的文件卫生检查无法识别跨 PR 累积超限（P2）}
+
+\textbf{触发动作：}PR \#16 新增两份分别为 769 行和 779 行的测试模块，随后 PR \#17 在既有文件上继续增加回归测试，使其增长到 861 行和 850 行。\textbf{错误结果：}PR \#16 创建文件时没有超过 800 行；PR \#17 的 added-files 检查只审查相对自身基线的新文件，因此不会重新检查这两份已经存在的模块。两个 PR 的文件卫生检查均可通过，但把两批改动重新放入同一 PR 后，最终文件相对共同基线属于超过上限的新增模块。\textbf{危害：}分拆提交掩盖累积规模增长，维护者无法从单次 CI 结果判断最终模块是否符合仓库结构约束；重新组合或移植修复时会直接失败，测试职责也会继续集中。\textbf{修复与回归测试：}\path{test\_local\_env\_processes.py} 按进程执行与资源清理职责拆为 560 行和 320 行，\path{test\_safe\_file\_ownership.py} 按所有权验证与 retirement/reclamation 拆为 626 行和 235 行。拆分前后测试函数通过 AST 等价检查，测试名称集合无缺失、无重复；两组测试分别通过 38 项与 31 项回归。
+
+\section{严格 Code Review 记录}
+
+独立 Reviewer 分别审查评测证明、调度与取消、文件系统身份、容器所有权、持久化和脚本入口，并构造完成先于登记、取消发生在回滚中、目录与目标替换、PID/container identity 复用、旧报告、重复 claim、零测试命令、阻塞 finalizer 及部分发布等对抗性时序。每项 finding 都记录 severity、具体触发动作、错误后果、危害与必须增加的回归测试。
+
+本轮 Reviewer 新发现并推动 H-37 至 H-69 的修复，其中 H-51 至 H-60 来自同刻取消、迟到写入、路径替换、旧证据复用与清理依赖的对抗性复查，H-61 至 H-69 来自公开导入、文件规模、映射证据、team runner 生命周期、原子写恢复、平台边界与内部 tombstone 泄漏复查。H-69 完成的是 strict JSONL 与 exact metadata 登记边界；sidecar 认证、隔离 Git、冻结快照和 \code{setsid()} 逃逸监督经过终审后延期，并在独立 WIP 分支保存。稳定版本已经通过三套 Python 完整测试、全仓 Ruff、bytecode compile、shell syntax 与 diff check。
+
+\section{模块化、复用与技术债处理}
+
+审查发现，正确性逻辑曾集中在少数超大入口文件中。此前改造已把可执行行为拆到同层可导入模块，在原路径保留兼容导出，并把 process、safe-file、claim、remote runner 等重复实现汇入共享 helper。当前修复继续复用 \code{add\_exception\_note}、目录 fd 身份校验、append path identity 与后台 owner tracking，避免为每个入口复制同一套兼容和清理代码。
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{5.0cm}>{\raggedleft\arraybackslash}p{1.7cm}>{\raggedleft\arraybackslash}p{1.7cm}>{\raggedright\arraybackslash}p{5.2cm}}
+\toprule
+入口模块 & 改造前行数 & 拆分后行数 & 抽取职责 \\
+\midrule
+\endfirsthead
+\toprule
+入口模块 & 改造前行数 & 拆分后行数 & 抽取职责 \\
+\midrule
+\endhead
+\path{adapters/env.py} & 2971 & 142 & Local、worktree、Docker、process、file I/O、lifecycle 与 config。 \\
+\path{application/scheduler.py} & 1356 & 227 & run loop、cleanup、persistence、team view、review 与 budget state。 \\
+\path{bootstrap/workflow_runtime.py} & 1156 & 149 & discovery、session construction、execution、cleanup、state 与 manifest writing。 \\
+\path{harness/evaluator.py} & 2353 & 615 & task preparation、session、resource、patch extraction 与 task execution；结果写入复用 shared safe writer。 \\
+\path{harness/evaluator\_task.py} & 794 & 74 & execution 335 行、finalization 442 行、resources 363 行与 setup 149 行；入口及各阶段模块均无 C901 告警。 \\
+\path{harness/swe_checkpoint.py} & 1026 & 833 & stable checkpoint I/O、owned operation 与 failed-restore recovery。 \\
+\path{application/tool_execution.py} & 957 & 609 & timeout、cancellation、deferred call 与 observability runtime。 \\
+\path{swebench/gen_prediction.py} & 2034 & 378 & Docker ownership、config、agent execution、safe output 与 pending publication。 \\
+\path{run_swebench_eval_per_instance.py} & 1993 & 754 & owned process 与 safe record/claim/queue。 \\
+\path{swe_auto_eval_driver.py} & 1283 & 390 & claim runner、safe state、report 与 shared process identity。 \\
+\path{swe_v1_prolite_runner.py} & 3664 & 165 & importable remote harness 与 local config/process/controller/report。 \\
+\path{swebench_loop_monitor.py} & 905 & 781 & shared message 与 repetition analysis。 \\
+\path{run_swebench_smoke_batch.py} & 1083 & 797 & shared process lifecycle、optional spec 与 bounded smoke-batch I/O。 \\
+\path{adapters/\_env\_worktree.py} & 793 & 312 & directory ownership 187 行与 lifecycle 441 行；保留公开实现类，四个原复杂函数均降到 C901 阈值内。 \\
+\path{adapters/\_env\_file\_io.py} & --- & 477 & Local 读写、owned temp、failure-atomic commit 与 retirement。 \\
+\path{adapters/safe\_files.py} & 780 & 134 & support 99 行、read/append 333 行与 atomic 573 行；公开门面保留动态替换兼容，目标复杂度从 15/16/27/11 降到 3/5/2/6。 \\
+\path{start\_team\_run.sh} & 1816 & 699 & shell orchestration；18 个 Python heredoc 全部移入可导入 helper。 \\
+\path{swe\_team\_run\_io.py} & --- & 751 & task/path validation、pending publication、safe input/output 与 diff capture。 \\
+\path{swe\_team\_owner.py} & --- & 356 & owner lock、marker identity、CID binding 与 CAS cleanup。 \\
+\path{swe\_team\_batch\_io.py} & --- & 538 & batch artifact、summary、log CAS 与已登记 PGID/SID 的 child lifecycle。 \\
+\path{adapters/\_owned\_file\_cleanup.py} & --- & 573 & fail-closed retirement、parent lock、tombstone identity、fsync 失败元数据与目录配额。 \\
+\path{adapters/\_atomic\_file\_commit.py} & --- & 414 & 事务配额预留、target backup retirement、failure-atomic commit 与失败恢复。 \\
+\path{adapters/\_posix\_file\_support.py} & --- & 121 & POSIX 能力检查与受信 macOS 根别名规范化。 \\
+\bottomrule
+\end{longtable}
+
+合并复审把两份跨 PR 累积超限的测试模块按职责拆分，并把测试替身对 \code{RunTestsTool.\_verified\_targets} 的直接修改替换为只暴露公开证据属性的显式 verifier。独立 Reviewer 随后检查新模块的循环依赖、MRO 方法遮蔽、公开门面动态绑定和重复实现；发现并修复 \code{env.py} 未向 worktree helper 转发诊断注入，以及 \code{safe\_files} 组合 API 静态绑定内部依赖的两个兼容回归。三个中心模块的 13 项 C901 告警已经消除，AST 与近似块扫描没有发现可直接合并的重复实现。
+
+当前工作区结构扫描覆盖全部新增 Python 文件。全部新增 Python 文件均未超过 800 行，全部新增文件均未超过 500\,KB；新增门面只负责兼容转发，atomic、read/append、directory ownership、lifecycle、evaluator execution、finalization 与 resource release 各保留一份实现。
+
+\section{验证证据}
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{5.1cm}>{\raggedright\arraybackslash}p{8.8cm}}
+\toprule
+门禁 & 当前记录 \\
+\midrule
+Python 3.10 针对性回归 & \Pass；\code{387 passed}，覆盖取消、环境清理、EventBus、manifest、文件身份、评测 discovery、发布、RunTests、scheduler 与脚本 smoke。 \\
+终审新增定向回归（Python 3.10） & \Pass；\code{313 passed, 3 skipped}，覆盖 Docker retirement、共享 atomic CAS、session store、prediction output、结构化 pytest/Go proof、direct-eval discovery、Session ToolExecution owner、Local 文件所有权、team batch 与 team runner。 \\
+平台边界定向回归 & \Pass；Python 3.10 与 3.12 各 \code{30 passed}，同时通过 Ruff、diff check 与架构边界测试；独立 Reviewer 批准该修复。 \\
+原子写、Local 与持久化最终定向矩阵 & \Pass；Python 3.10 与 3.12 各 \code{114 passed}，额外 stale/smoke/start-team 三组关键回归各 \code{3 passed}；全仓 Ruff、\code{git diff --check} 与 \code{bash -n} 同时通过。 \\
+Python 3.10 完整 pytest（发现 H-69 的初跑） & \textcolor{critical}{\textbf{失败}}；\code{2612 passed, 3 skipped, 1 failed}，唯一失败显示 LocalEnvironment create-only tombstone 混入 \code{result.patch}。 \\
+Python 3.10 完整 pytest（稳定回退版本） & \Pass；\code{2642 passed, 5 skipped}。 \\
+Python 3.11 完整 pytest（稳定回退版本） & \Pass；\code{2642 passed, 5 skipped}。 \\
+Python 3.12 完整 pytest（稳定回退版本） & \Pass；\code{2642 passed, 5 skipped, 18 warnings}。 \\
+Python 3.12 完整 pytest（组合审查版本） & \Pass；\code{2684 passed, 5 skipped, 18 warnings}，耗时 \code{145.64s}。 \\
+全仓 Ruff & \Pass；从仓库根目录执行 \code{uv run --project opencollab ruff check .}，退出码为 0。 \\
+Python bytecode compile & \Pass；package、scripts、SWE-bench 与 workflows 编译检查退出码为 0。 \\
+Shell syntax & \Pass；仓库 shell script 的 \code{bash -n} 检查退出码为 0。 \\
+Patch whitespace & \Pass；\code{git diff --check} 退出码为 0。 \\
+TeX 编译 & \Pass；XeLaTeX 成功生成 26 页 PDF，编译退出码为 0；产物位于本地临时构建目录，未进入 Git。 \\
+\bottomrule
+\end{longtable}
+
+\section{兼容性与运行影响}
+
+没有 Docker image 的无头 run 仍可通过专用 filesystem tool 读写文件；Bash 与 RunTests 会返回隔离错误。需要命令执行的 benchmark 应提供隔离 Docker 环境。评测容器默认断网；需要依赖的任务应在 image 中预装。仅导入 smoke helper 时不再要求 Docker SDK 或 SWE-bench harness 已安装，真正执行对应功能时仍会加载并使用这些依赖。
+
+描述符安全文件操作的支持平台是 POSIX 与 macOS。非 POSIX 主机可导入 package，首次调用对应文件能力时会获得列明缺失原语的 \code{UnsupportedSafeFilePlatformError}。macOS 系统根别名在进入逐组件 no-follow 遍历前经严格验证，因此 \path{/var/folders} 类临时目录可正常使用，后续子路径的 symlink 仍会被拒绝。
+
+fail-closed retirement 会保留 \code{.opencollab-retired-*} tombstone，使清理决策可追溯且不误删竞态窗口中的 inode。临时 worktree 或容器中的 tombstone 随上层运行目录或容器销毁；持久目录由明确所有者检查后处理。主机目录达到 256 项或 1\,GiB 实际字节配额时，新的需要破坏性处理的操作返回技术失败；容器目录达到 256 项时同样拒绝。长期使用的结果目录应在停止并发 writer 后由目录 owner 定期清点 tombstone，核对 run 归属并完成必要归档后再删除或轮换整个输出目录。harness 不运行后台按名清扫器，无法完成所有权校验时保持技术失败。
+
+当前补丁提取对登记 tombstone 执行 strict JSONL 与 exact inode/metadata 校验。sidecar HMAC、隔离 Git 配置、冻结快照以及消除扫描竞态仍在延期范围；主机进程清理同样只证明已登记 PGID/SID 的静止状态，无法覆盖调用 \code{setsid()} 后脱离原会话的进程。这些 WIP 代码保存在分支 \code{wip/harness-integrity-followups-20260711} 的提交 \code{78702ee}。
+
+缺少完整候选身份的旧 prediction/report artifact 无法为新 attempt 提供证明，重新评测会创建所需 sidecar。原生 runner 缺少 parser-backed output 或精确 adapter plan 时，即使进程以 0 退出也返回 RED。Python 3.10 会保留清理 exception note，但 Task 取消 message 的跨边界呈现遵循该 runtime 的实际语义。
+
+生成的 PDF 存放于本地输出目录并排除在 commit 之外，TeX 源文件作为可审查 artifact 提交。代码标识、命令、文件路径和风险编号保留英文原名，以便与 diff、测试和 CI 日志直接对应。
+
+\section{Git 与 Pull Request 状态}
+
+已合并的 PR \#16 与 PR \#17 通过 PR \#18 的反向提交恢复到二者之前的代码树。当前分支从恢复后的 upstream \code{main} 创建，并把两批修复重新组织为一个可整体审查的变更集。commit subject 与 PR title 使用有效的 Conventional Commit 格式并以中文描述修复；推送目标为贡献者 fork，PR 指向 \code{YihongDong/OpenCollab:main}。新 PR 正文记录根因、用户与评测影响、兼容性变化、复杂度整改以及全部已执行的验证数据。CI 与独立 Reviewer 审查完成后，该 PR 保持开放，等待维护者决定合并时间。
+
+\end{document}
