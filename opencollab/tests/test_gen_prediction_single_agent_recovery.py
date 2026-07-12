@@ -18,6 +18,23 @@ if str(_SWEBENCH_DIR) not in sys.path:
 gp = pytest.importorskip("gen_prediction")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_solver_snapshot(monkeypatch):
+    evidence = gp.SolverGitSnapshot(
+        anonymous_head="a" * 40,
+        base_tree="b" * 40,
+        commit_count=1,
+        remote_count=0,
+        extra_git_metadata=0,
+        removed_git_metadata=0,
+    )
+    monkeypatch.setattr(
+        gp,
+        "prepare_solver_git_snapshot",
+        lambda container_id, expected_base_commit: evidence,
+    )
+
+
 def _stage_pending_output(tmp_path, *, record_id="record-1"):
     gp.write_container_marker(tmp_path, "cid", "name")
     patch = "diff --git a/src/a.py b/src/a.py\n+fixed\n"
@@ -135,6 +152,7 @@ def test_single_main_cleanup_failure_stages_candidate_before_publish(
         json.dumps(
             {
                 "instance_id": "task-1",
+                "base_commit": "c" * 40,
                 "repo": "acme/repo",
                 "problem_statement": "fix it",
                 "FAIL_TO_PASS": "[]",
@@ -205,6 +223,7 @@ def test_single_main_output_symlink_race_cleans_active_container(
         json.dumps(
             {
                 "instance_id": "task-1",
+                "base_commit": "c" * 40,
                 "repo": "acme/repo",
                 "problem_statement": "fix it",
                 "FAIL_TO_PASS": "[]",

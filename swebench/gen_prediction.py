@@ -62,6 +62,7 @@ import gen_prediction_constants
 import gen_prediction_docker
 import gen_prediction_pending
 import gen_prediction_safe_output
+import gen_prediction_snapshot
 from gen_prediction_agent import (
     _quiesce_agent_tasks,
     bounded_container_output_command,
@@ -174,6 +175,11 @@ from gen_prediction_safe_output import (
     output_paths_collide,
     runner_returncode_for_metrics,
 )
+from gen_prediction_snapshot import (
+    SolverGitSnapshot,
+    anonymous_solver_task_id,
+    prepare_solver_git_snapshot,
+)
 from opencollab.adapters.env import DockerEnvironment  # noqa: E402
 from opencollab.adapters.tools.bash import BashTool  # noqa: E402
 from opencollab.adapters.tools.fs import (  # noqa: E402
@@ -259,8 +265,13 @@ def main() -> None:
     pending_required = False
     generation_error: BaseException | None = None
     try:
+        snapshot = prepare_solver_git_snapshot(
+            cid,
+            str(instance.get("base_commit") or ""),
+        )
         task = build_task(instance)
         metrics = run_with_bounded_shutdown(run_agent(task, cid, cfg, args.max_steps, args.budget, args.timeout))
+        metrics["solver_git_snapshot"] = snapshot.as_dict()
         if metrics.get("submission_eligible") is True:
             patch = extract_patch(cid)
             patch_extraction_succeeded = True
@@ -356,6 +367,7 @@ _COMPATIBILITY_MODULES = (
     gen_prediction_docker,
     gen_prediction_agent,
     gen_prediction_pending,
+    gen_prediction_snapshot,
 )
 
 

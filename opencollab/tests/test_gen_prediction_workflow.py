@@ -30,6 +30,7 @@ gpw = pytest.importorskip("gen_prediction_workflow")
 
 FIXTURE = {
     "instance_id": "acme__widget-42",
+    "base_commit": "a" * 40,
     "repo": "acme/widget",
     "problem_statement": "Widget explodes on empty input.",
     "hints_text": "look at parse()",
@@ -40,6 +41,27 @@ FIXTURE = {
         "@@ -1 +1,2 @@\n x=1\n+assert widget('') == ''\n"
     ),
 }
+
+
+@pytest.fixture(autouse=True)
+def _isolated_solver_snapshot(monkeypatch):
+    evidence = SimpleNamespace(
+        as_dict=lambda: {
+            "enabled": True,
+            "anonymous_head": "b" * 40,
+            "base_tree": "c" * 40,
+            "commit_count": 1,
+            "remote_count": 0,
+            "extra_git_metadata": 0,
+            "removed_git_metadata": 0,
+        }
+    )
+    monkeypatch.setattr(
+        gpw.gp,
+        "prepare_solver_git_snapshot",
+        lambda container_id, expected_base_commit: evidence,
+    )
+    monkeypatch.setattr(gpw.gp, "anonymous_solver_task_id", lambda: "solver-opaque-test-id")
 
 
 def test_fail_to_pass_ids_parses_json_string():
@@ -686,6 +708,9 @@ def test_generate_forwards_checkpoint_options(monkeypatch, tmp_path):
 
     assert patch.strip()
     assert metrics["checkpoint_result"] is None
+    assert metrics["solver_git_snapshot"]["commit_count"] == 1
+    assert captured["task"].task_id == "solver-opaque-test-id"
+    assert FIXTURE["instance_id"] not in captured["task"].task_id
     assert captured["kwargs"]["checkpoint_interval_seconds"] == 300
     assert captured["kwargs"]["resume_from_checkpoint"] is True
 

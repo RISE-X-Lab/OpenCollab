@@ -498,6 +498,10 @@ async def generate(
     pending_required = False
     generation_error: BaseException | None = None
     try:
+        snapshot = gp.prepare_solver_git_snapshot(
+            cid,
+            str(instance.get("base_commit") or ""),
+        )
         # Attach mode: run_eval_task's internal env.cleanup() no-ops on attached
         # containers, so the container survives for baseline-style extraction.
         env = DockerEnvironment(
@@ -516,7 +520,7 @@ async def generate(
         )
         include_hidden_tests = not blind_validation
         task = EvalTask(
-            task_id=iid,
+            task_id=gp.anonymous_solver_task_id(),
             description=build_task(instance, include_fail_to_pass=include_hidden_tests),
             timeout=args.timeout,
             max_tokens=args.budget,
@@ -570,6 +574,7 @@ async def generate(
             patch = ""
             removed_validation_artifacts = []
         metrics = _result_metrics(result)
+        metrics["solver_git_snapshot"] = snapshot.as_dict()
         metrics["patch_produced"] = bool(patch.strip())
         metrics["submitted_patch_chars"] = len(patch)
         if not metrics.get("workflow_status"):
