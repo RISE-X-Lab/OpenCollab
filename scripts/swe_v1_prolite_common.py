@@ -48,6 +48,8 @@ SYNC_FILES = [
     "swebench/gen_prediction_docker.py",
     "swebench/gen_prediction_pending.py",
     "swebench/gen_prediction_safe_output.py",
+    "swebench/gen_prediction_snapshot.py",
+    "swebench/gen_prediction_snapshot_container.py",
     "swebench/gen_prediction_workflow.py",
     "workflows/validation_council_solve.py",
 ]
