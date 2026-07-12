@@ -11,6 +11,9 @@ from dataclasses import dataclass, field
 from opencollab.domain.tools import ToolSpec
 
 
+DEFAULT_MAX_TOKENS_PER_STEP = 8_192
+
+
 @dataclass
 class Agent:
     """A stateless agent definition. Reusable across multiple Sessions.
@@ -42,7 +45,7 @@ class Agent:
     provider: str = "openai"
     api_key: str | None = None
     base_url: str | None = None
-    max_tokens_per_step: int = 8192
+    max_tokens_per_step: int = DEFAULT_MAX_TOKENS_PER_STEP
     temperature: float = 0.0
     top_p: float | None = None
     thinking: bool = False

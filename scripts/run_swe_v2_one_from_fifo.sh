@@ -5,6 +5,11 @@ IID="$1"
 IMAGE="$2"
 TOKEN_FIFO="$3"
 RUN="${4:-}"
+LLM_MODEL="${5:-}"
+LLM_TEMPERATURE="${6:-}"
+LLM_TOP_P="${7:-}"
+LLM_MAX_OUTPUT_TOKENS="${8:-}"
+LLM_CONTEXT_WINDOW="${9:-}"
 
 BASE="${OPENCOLLAB_REMOTE_ROOT:-/nfsEDS/dongyh/data/kaka/docker/opencollab}"
 REPO="${OPENCOLLAB_REMOTE_REPO:-/nfsEDS/dongyh/data/kaka/repo/OpenCollab}"
@@ -39,6 +44,7 @@ SWE_GENERATOR="${OPENCOLLAB_SWE_GENERATOR:-workflow}"
 MODEL_NAME="${OPENCOLLAB_SWE_MODEL_NAME:-opencollab-glm52-v1}"
 SWE_BUDGET="${OPENCOLLAB_SWE_BUDGET:-16000000}"
 SWE_MAX_STEPS="${OPENCOLLAB_SWE_MAX_STEPS:-60}"
+OPENHANDS_EMPTY_PATCH_REJECTIONS="${OPENCOLLAB_OPENHANDS_EMPTY_PATCH_REJECTIONS:-2}"
 SWE_TIMEOUT="${OPENCOLLAB_SWE_TIMEOUT:-14400}"
 SWE_DATASET="${OPENCOLLAB_SWE_DATASET:-swe-batch-pro-lite}"
 CHECKPOINT_INTERVAL="${OPENCOLLAB_SWE_CHECKPOINT_INTERVAL_SECONDS:-300}"
@@ -87,6 +93,20 @@ checkpoint_args=()
 if [[ "$CHECKPOINT_INTERVAL" != "0" ]]; then
   checkpoint_args+=(--checkpoint-interval-seconds "$CHECKPOINT_INTERVAL")
 fi
+
+llm_args=()
+if [[ -n "$LLM_MODEL" ]]; then
+  llm_args+=(--model "$LLM_MODEL")
+fi
+if [[ -n "$LLM_TEMPERATURE" ]]; then
+  llm_args+=(--temperature "$LLM_TEMPERATURE")
+fi
+if [[ -n "$LLM_TOP_P" ]]; then
+  llm_args+=(--top-p "$LLM_TOP_P")
+fi
+if [[ -n "$LLM_MAX_OUTPUT_TOKENS" ]]; then
+  llm_args+=(--max-output-tokens "$LLM_MAX_OUTPUT_TOKENS")
+fi
 if [[ "${OPENCOLLAB_SWE_RESUME:-false}" == "true" ]]; then
   checkpoint_args+=(--resume)
 fi
@@ -100,7 +120,44 @@ if [[ "$SWE_GENERATOR" == "single-agent" ]]; then
     --model-name "$MODEL_NAME" \
     --budget "$SWE_BUDGET" \
     --max-steps "$SWE_MAX_STEPS" \
+    "${llm_args[@]}" \
     --timeout "$SWE_TIMEOUT" 2>&1 | tee -a "$RUN/generation_logs/$IID.log"
+elif [[ "$SWE_GENERATOR" == "openhands" ]]; then
+  if [[ -z "$LLM_MODEL" ]]; then
+    echo "OpenHands requires an explicit --llm-model" >&2
+    exit 2
+  fi
+  export LLM_API_KEY="$ANTHROPIC_API_KEY"
+  export LLM_BASE_URL="$ANTHROPIC_BASE_URL"
+  export LLM_MODEL
+  openhands_args=()
+  if [[ -n "$LLM_MODEL" ]]; then
+    openhands_args+=(--llm-model "$LLM_MODEL")
+  fi
+  if [[ -n "$LLM_CONTEXT_WINDOW" ]]; then
+    openhands_args+=(--context-window "$LLM_CONTEXT_WINDOW")
+  fi
+  if [[ -n "$LLM_TEMPERATURE" ]]; then
+    openhands_args+=(--temperature "$LLM_TEMPERATURE")
+  fi
+  if [[ -n "$LLM_TOP_P" ]]; then
+    openhands_args+=(--top-p "$LLM_TOP_P")
+  fi
+  if [[ -n "$LLM_MAX_OUTPUT_TOKENS" ]]; then
+    openhands_args+=(--max-output-tokens "$LLM_MAX_OUTPUT_TOKENS")
+  fi
+  python3 -u swebench/gen_prediction_openhands.py \
+    --instance-file "$INSTANCE_FILE" \
+    --output "$RUN/predictions.jsonl" \
+    --metrics "$RUN/metrics.jsonl" \
+    --image "$IMAGE" \
+    --model-name "$MODEL_NAME" \
+    --budget "$SWE_BUDGET" \
+    --max-steps "$SWE_MAX_STEPS" \
+    --empty-patch-rejections "$OPENHANDS_EMPTY_PATCH_REJECTIONS" \
+    --timeout "$SWE_TIMEOUT" \
+    --command "${OPENCOLLAB_OPENHANDS_COMMAND:-}" \
+    "${openhands_args[@]}" 2>&1 | tee -a "$RUN/generation_logs/$IID.log"
 else
   python3 -u swebench/gen_prediction_workflow.py \
     --workflow "$WORKFLOW" \
@@ -112,5 +169,6 @@ else
     --budget "$SWE_BUDGET" \
     --max-steps "$SWE_MAX_STEPS" \
     --timeout "$SWE_TIMEOUT" \
+    "${llm_args[@]}" \
     "${checkpoint_args[@]}" 2>&1 | tee -a "$RUN/generation_logs/$IID.log"
 fi

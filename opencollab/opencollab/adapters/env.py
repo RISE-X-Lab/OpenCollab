@@ -380,3 +380,24 @@ class DockerEnvironment(Environment):
                     stderr.decode(errors="replace").strip(),
                 )
             self._container_id = None
+
+
+class DockerWorkspaceEnvironment(DockerEnvironment):
+    """Attach tools to an already running task container workspace."""
+
+    def __init__(
+        self,
+        *,
+        container_id: str,
+        repo_root: str,
+        command_prefix: Callable[[str], str] | str | None = None,
+        timeout_returncode: int = -1,
+    ) -> None:
+        super().__init__(
+            image="",
+            workspace=repo_root,
+            container_id=container_id,
+            exec_workdir=repo_root,
+            command_prefix=command_prefix,
+            timeout_returncode=timeout_returncode,
+        )

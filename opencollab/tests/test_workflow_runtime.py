@@ -82,6 +82,21 @@ async def test_built_context_agent_runs_session_with_resolved_llm(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_built_context_injects_sampling_and_output_limits(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    ctx = workflow_runtime.build_workflow_context(
+        cfg=_cfg(temperature=1.0, top_p=1.0, max_output_tokens=32_768)
+    )
+
+    await ctx.agent("solve")
+
+    agent = calls[0]["agent"]
+    assert agent.temperature == 1.0
+    assert agent.top_p == 1.0
+    assert agent.max_tokens_per_step == 32_768
+
+
+@pytest.mark.asyncio
 async def test_built_context_threads_caller_tools(monkeypatch):
     calls = _patch_build_session(monkeypatch)
     ctx = workflow_runtime.build_workflow_context(cfg=_cfg())

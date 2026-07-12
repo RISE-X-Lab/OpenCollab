@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from opencollab.adapters.env import DockerEnvironment, Environment, LocalEnvironment
+from opencollab.adapters.llm.types import DEFAULT_MAX_OUTPUT_TOKENS
 from opencollab.adapters.repo_map import build_repo_map_via_env
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
@@ -164,6 +165,7 @@ class _EvalSessionFactory:
         default_toolset: Sequence[Tool],
         temperature: float = DEFAULT_TEMPERATURE,
         top_p: float | None = DEFAULT_TOP_P,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
         thinking: bool = DEFAULT_THINKING,
         thinking_params: dict | None = None,
         save_dir: str | None = None,
@@ -179,6 +181,7 @@ class _EvalSessionFactory:
         self._default_toolset = list(default_toolset)
         self._temperature = temperature
         self._top_p = top_p
+        self._max_output_tokens = max_output_tokens
         self._thinking = thinking
         self._thinking_params = (
             thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
@@ -225,6 +228,7 @@ class _EvalSessionFactory:
             base_url=self._base_url,
             temperature=self._temperature,
             top_p=self._top_p,
+            max_tokens_per_step=self._max_output_tokens,
             thinking=use_thinking,
             thinking_params=self._thinking_params,
             tool_choice=tool_choice,
@@ -252,6 +256,7 @@ def _build_eval_session_factory(
     default_toolset: Sequence[Tool],
     temperature: float = DEFAULT_TEMPERATURE,
     top_p: float | None = DEFAULT_TOP_P,
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     thinking: bool = DEFAULT_THINKING,
     thinking_params: dict | None = None,
     save_dir: str | None = None,
@@ -269,6 +274,7 @@ def _build_eval_session_factory(
         default_toolset=default_toolset,
         temperature=temperature,
         top_p=top_p,
+        max_output_tokens=max_output_tokens,
         thinking=thinking,
         thinking_params=thinking_params,
         save_dir=save_dir,
@@ -289,6 +295,7 @@ async def _run_single_session(
     max_steps: int,
     temperature: float = DEFAULT_TEMPERATURE,
     top_p: float | None = DEFAULT_TOP_P,
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     thinking: bool = DEFAULT_THINKING,
     thinking_params: dict | None = None,
 ) -> Session:
@@ -303,6 +310,7 @@ async def _run_single_session(
         base_url=base_url,
         temperature=temperature,
         top_p=top_p,
+        max_tokens_per_step=max_output_tokens,
         thinking=thinking,
         thinking_params=thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS),
     )
@@ -334,6 +342,7 @@ async def _run_workflow_mode(
     injected_paths: Sequence[str] | None = None,
     temperature: float = DEFAULT_TEMPERATURE,
     top_p: float | None = DEFAULT_TOP_P,
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     thinking: bool = DEFAULT_THINKING,
     thinking_params: dict | None = None,
     save_dir: str | None = None,
@@ -361,6 +370,7 @@ async def _run_workflow_mode(
         default_toolset=tools,
         temperature=temperature,
         top_p=top_p,
+        max_output_tokens=max_output_tokens,
         thinking=thinking,
         thinking_params=thinking_params,
         save_dir=save_dir,
@@ -476,6 +486,7 @@ async def run_eval_task(
     workflow: WorkflowFn | None = None,
     temperature: float = DEFAULT_TEMPERATURE,
     top_p: float | None = DEFAULT_TOP_P,
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
     thinking: bool = DEFAULT_THINKING,
     thinking_params: dict | None = None,
     checkpoint_interval_seconds: float | None = None,
@@ -563,6 +574,7 @@ async def run_eval_task(
                 max_steps=max_steps,
                 temperature=temperature,
                 top_p=top_p,
+                max_output_tokens=max_output_tokens,
                 thinking=thinking,
                 thinking_params=thinking_params,
             )
@@ -582,6 +594,7 @@ async def run_eval_task(
                 injected_paths=injected_paths,
                 temperature=temperature,
                 top_p=top_p,
+                max_output_tokens=max_output_tokens,
                 thinking=thinking,
                 thinking_params=thinking_params,
                 save_dir=run_dir,

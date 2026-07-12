@@ -21,6 +21,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.llm.types import DEFAULT_MAX_OUTPUT_TOKENS
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.trace import Tracer
 from opencollab.adapters.working_tree import EnvWorkingTreeProbe
@@ -34,6 +35,7 @@ from opencollab.bootstrap.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_THINKING,
     DEFAULT_THINKING_PARAMS,
+    DEFAULT_TOP_P,
 )
 from opencollab.bootstrap.session_factory import (
     ORCHESTRATION_FILENAME,
@@ -79,9 +81,12 @@ class WorkflowSessionFactory:
         event_sink: EventPublisherPort | None = None,
         llm_timeout: float = 600.0,
         temperature: float = DEFAULT_TEMPERATURE,
+        top_p: float | None = DEFAULT_TOP_P,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
         thinking: bool = DEFAULT_THINKING,
         thinking_params: dict | None = None,
         save_dir: str | None = None,
+        env: Any | None = None,
     ) -> None:
         self._model = model
         self._provider = provider
@@ -92,6 +97,8 @@ class WorkflowSessionFactory:
         self._event_sink = event_sink
         self._llm_timeout = llm_timeout
         self._temperature = temperature
+        self._top_p = top_p
+        self._max_output_tokens = max_output_tokens
         self._thinking = thinking
         self._thinking_params = (
             thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
@@ -104,6 +111,7 @@ class WorkflowSessionFactory:
         # behaviour).
         self._save_dir = save_dir
         self._session_seq = 0
+        self._env = env
 
     def _next_save_path(self, label: str | None) -> str | None:
         """Per-session transcript path: ``<save_dir>/<seq>_<role>.json``.
@@ -142,11 +150,13 @@ class WorkflowSessionFactory:
             api_key=self._api_key,
             base_url=self._base_url,
             temperature=self._temperature,
+            top_p=self._top_p,
+            max_tokens_per_step=self._max_output_tokens,
             thinking=use_thinking,
             thinking_params=self._thinking_params,
             tool_choice=tool_choice,
         )
-        env = LocalEnvironment(self._workspace) if self._workspace else LocalEnvironment()
+        env = self._env or (LocalEnvironment(self._workspace) if self._workspace else LocalEnvironment())
         return build_session(
             agent=agent,
             env=env,
@@ -167,6 +177,7 @@ def build_workflow_context(
     budget: int | None = None,
     max_concurrency: int = 4,
     save_dir: str | None = None,
+    env: Any | None = None,
 ) -> WorkflowContext:
     """Build a :class:`WorkflowContext` wired to the concrete session factory.
 
@@ -189,14 +200,17 @@ def build_workflow_context(
         event_sink=event_sink,
         llm_timeout=float(cfg.get("llm_timeout", 600.0)),
         temperature=float(cfg.get("temperature", DEFAULT_TEMPERATURE)),
+        top_p=cfg.get("top_p", DEFAULT_TOP_P),
+        max_output_tokens=int(cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)),
         thinking=bool(cfg.get("thinking", DEFAULT_THINKING)),
         thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
         save_dir=save_dir,
+        env=env,
     )
     budget_total = budget if budget is not None else cfg.get("budget")
     # Working-tree probe over the same workspace the sessions edit, so the
     # workflow can verify a real edit landed before declaring success.
-    probe_env = LocalEnvironment(workspace) if workspace else LocalEnvironment()
+    probe_env = env or (LocalEnvironment(workspace) if workspace else LocalEnvironment())
     return WorkflowContext(
         factory,
         event_sink=event_sink,
@@ -227,6 +241,7 @@ async def run_workflow(
     max_concurrency: int = 4,
     save_dir: str | None = None,
     trace: bool = True,
+    env: Any | None = None,
 ) -> Any:
     """Build a context, run the workflow function with ``args``, return its result.
 
@@ -274,6 +289,7 @@ async def run_workflow(
         budget=budget,
         max_concurrency=max_concurrency,
         save_dir=save_dir,
+        env=env,
     )
     try:
         try:

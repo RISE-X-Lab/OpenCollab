@@ -287,6 +287,20 @@ def test_anthropic_top_p_omitted_when_none():
     assert "top_p" not in kwargs
 
 
+def test_max_output_tokens_reaches_both_provider_payloads():
+    messages = [{"role": "user", "content": "hi"}]
+
+    openai_kwargs = build_openai_kwargs(
+        "glm-5.2", messages, None, 1.0, max_output_tokens=32768
+    )
+    anthropic_kwargs = build_anthropic_kwargs(
+        "glm-5.2", messages, None, 1.0, max_output_tokens=32768
+    )
+
+    assert openai_kwargs["max_tokens"] == 32768
+    assert anthropic_kwargs["max_tokens"] == 32768
+
+
 def test_anthropic_tool_choice_required_maps_to_any():
     """Anthropic wants a dict form; 'required' -> {'type': 'any'}, None omits it."""
     tools = [{"function": {"name": "f", "parameters": {}}}]

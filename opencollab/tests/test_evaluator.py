@@ -241,6 +241,34 @@ def test_run_eval_task_top_p_unset_omits_it_from_provider_call(monkeypatch, tmp_
     assert "top_p" not in CapturingLLMClient.last_kwargs
 
 
+def test_run_eval_task_forwards_max_output_tokens_to_agent_and_provider(monkeypatch, tmp_path):
+    CapturingLLMClient.last_kwargs = {}
+    monkeypatch.setattr(container, "LLMClient", CapturingLLMClient)
+    captured = {}
+
+    real_build_session = evaluator.build_session
+
+    def spy_build_session(*, agent, max_steps, **kwargs):
+        captured["max_tokens_per_step"] = agent.max_tokens_per_step
+        return real_build_session(agent=agent, max_steps=max_steps, **kwargs)
+
+    monkeypatch.setattr(evaluator, "build_session", spy_build_session)
+
+    async def env_factory(task):
+        return FakeEnv()
+
+    run(run_eval_task(
+        EvalTask(task_id="max-output", description="task"),
+        output_dir=str(tmp_path),
+        tools_factory=list,
+        env_factory=env_factory,
+        max_output_tokens=32_768,
+    ))
+
+    assert captured["max_tokens_per_step"] == 32_768
+    assert CapturingLLMClient.last_kwargs.get("max_output_tokens") == 32_768
+
+
 def test_default_tools_match_curated_team_surface():
     # The headless eval agent must exercise the same curated toolset as team
     # roles — in particular run_tests/git_diff/apply_patch, which the bash

@@ -28,6 +28,7 @@ def _build_request_kwargs(
     thinking_params: dict | None = None,
     tool_choice: str | None = None,
     top_p: float | None = None,
+    max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "model": model,
@@ -38,6 +39,8 @@ def _build_request_kwargs(
     # omitted so the request is byte-for-byte identical to today's behavior.
     if top_p is not None:
         kwargs["top_p"] = top_p
+    if max_output_tokens is not None:
+        kwargs["max_tokens"] = int(max_output_tokens)
     if tools:
         kwargs["tools"] = tools
         # Default "auto"; a caller may force "required" (forced-write step).
@@ -308,10 +311,19 @@ async def complete_openai(
     thinking_params: dict | None = None,
     tool_choice: str | None = None,
     top_p: float | None = None,
+    max_output_tokens: int | None = None,
 ) -> LLMResponse:
     """Single-shot completion against an OpenAI-compatible endpoint."""
     kwargs = _build_request_kwargs(
-        model, messages, tools, temperature, thinking, thinking_params, tool_choice, top_p
+        model,
+        messages,
+        tools,
+        temperature,
+        thinking,
+        thinking_params,
+        tool_choice,
+        top_p,
+        max_output_tokens,
     )
     resp = await with_retry(
         lambda: client.chat.completions.create(**kwargs),

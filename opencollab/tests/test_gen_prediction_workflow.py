@@ -465,6 +465,64 @@ def test_generate_marks_non_error_patch_as_done(monkeypatch):
     assert metrics["workflow_status"] == "done"
 
 
+def test_blind_workflow_missing_allowlist_rejects_all_patch_paths(monkeypatch):
+    captured = {}
+
+    async def fake_run_eval_task(task, **kwargs):
+        return EvalResult(
+            task_id=task.task_id,
+            patch="diff --git a/pkg/a.py b/pkg/a.py\n+fixed\n",
+            patch_produced=True,
+            tokens_used=1,
+            steps=1,
+            duration=1.0,
+            workflow_result={"status": "error"},
+        )
+
+    def fake_extract(*args, **kwargs):
+        captured.update(kwargs)
+        return "", ["pkg/a.py"]
+
+    monkeypatch.setattr(gpw, "run_eval_task", fake_run_eval_task)
+    monkeypatch.setattr(gpw.gp, "start_container", lambda image, name: "cid")
+    monkeypatch.setattr(gpw.gp, "remove_container_and_clear_marker", lambda run_dir, cid: True)
+    monkeypatch.setattr(gpw, "extract_patch_guarded", fake_extract)
+    args = SimpleNamespace(
+        timeout=10,
+        budget=1000,
+        max_steps=3,
+        keep_container=False,
+        blind_validation=True,
+        checkpoint_interval_seconds=0,
+        resume=False,
+        output="predictions.jsonl",
+    )
+    cfg = {
+        "model": "m",
+        "provider": "openai",
+        "api_key": "k",
+        "base_url": "http://local",
+        "temperature": 0.0,
+        "thinking": False,
+    }
+
+    patch, metrics = asyncio.run(
+        gpw.generate(
+            FIXTURE,
+            "image",
+            cfg,
+            args,
+            gpw.generate_review_fix,
+            "validation-council-solve",
+        )
+    )
+
+    assert captured["guard_validation_artifacts"] is True
+    assert captured["allowed_paths"] == set()
+    assert patch == ""
+    assert metrics["workflow_allowlist_missing"] is True
+
+
 def test_container_marker_survives_failed_remove(monkeypatch, tmp_path):
     gpw.gp.write_container_marker(tmp_path, "cid123", "name123")
     monkeypatch.setattr(gpw.gp, "remove_container", lambda cid: False)
@@ -484,6 +542,7 @@ def test_output_records_share_record_id_and_patch_sha():
         model_name="model",
         patch=patch,
         metrics={"workflow_status": "done"},
+        workflow_name="team-pro",
         record_id="record-1",
     )
 
@@ -492,3 +551,5 @@ def test_output_records_share_record_id_and_patch_sha():
     assert prediction["patch_sha256"] == gpw._patch_sha256(patch)
     assert metrics["patch_sha256"] == prediction["patch_sha256"]
     assert metrics["instance_id"] == prediction["instance_id"]
+    assert prediction["workflow"] == "team-pro"
+    assert metrics["workflow"] == "team-pro"

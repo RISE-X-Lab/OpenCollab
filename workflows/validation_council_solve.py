@@ -416,6 +416,10 @@ Run relevant public tests and accepted validation probes where practical.
 Once you can name the concrete source change, stop reading and call file_write
 or apply_patch in that turn. Do not announce an edit and then call file_read or
 grep.
+This is a SWE-bench patch candidate: a clean working tree is a failed attempt.
+If the issue appears already fixed, still identify the source delta required by
+the task and leave a minimal tracked source diff. Do not submit "no change
+needed" as the fix.
 Your final message should name changed source files, explain the root cause,
 and summarize verification.
 
@@ -453,6 +457,10 @@ tools, say so in findings. Verdict PASS only when the source change is present,
 minimal, and satisfies the approved validation. Run `git diff --name-only`; put
 legitimate source paths in allowed_patch_paths and all tests, temporary probes,
 caches, logs, notes, and generated artifacts in disallowed_patch_paths.
+If `git diff --name-only` is empty, Verdict must be FAIL. Do not PASS a clean
+working tree on the theory that the checkout already contains the fix.
+Do not require repository test files to be edited for a PASS; in this harness,
+tests are validation artifacts unless the task is explicitly test-only.
 
 {rules}
 
@@ -532,6 +540,11 @@ Place all tests, temporary probes, caches, logs, notes, and generated artifacts
 in disallowed_patch_paths, and fail if any disallowed path remains in the diff.
 Verdict PASS only when the issue is fixed by source changes and the validation
 evidence is clean.
+If `git diff --name-only` is empty, Verdict must be FAIL. Never accept "already
+fixed in this checkout" as a PASS for a SWE-bench submission.
+Do not fail a source patch solely because repository test files were not edited;
+tests are validation artifacts in this harness unless the task is explicitly
+test-only.
 
 {rules}
 
@@ -616,6 +629,13 @@ def _is_blocked(verdict: Any) -> bool:
     return isinstance(verdict, dict) and verdict.get("verdict") == "BLOCKED"
 
 
+async def _source_diff_present(ctx: Any, exclude_paths: list[str]) -> bool | None:
+    source_changed = getattr(ctx, "source_changed", None)
+    if source_changed is None:
+        return None
+    return await source_changed(exclude_paths)
+
+
 def _feedback(*reports: Any) -> str:
     parts: list[str] = []
     for report in reports:
@@ -677,6 +697,7 @@ async def _run_attempt(
     baseline_triage: dict[str, Any],
     attempt: int,
     feedback: str,
+    injected_test_paths: list[str],
 ) -> dict[str, Any]:
     feedback_block = FEEDBACK_BLOCK.format(feedback=feedback) if feedback else ""
     coder_report = await ctx.agent(
@@ -819,6 +840,18 @@ async def _run_attempt(
             "disallowed_patch_paths": [],
         },
     )
+    source_changed = await _source_diff_present(ctx, injected_test_paths)
+    if source_changed is False:
+        final_verdict = {
+            **final_verdict,
+            "verdict": "FAIL",
+            "findings": (
+                "Executable diff guard failed: git status reports no tracked "
+                "source changes after excluding injected validation files. "
+                + str(final_verdict.get("findings") or "")
+            ),
+            "allowed_patch_paths": [],
+        }
 
     return {
         "attempt": attempt,
@@ -841,6 +874,7 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
     goal = str(args.get("goal") or args.get("description") or "").strip()
     if not goal:
         return {"status": "error", "error": 'missing "goal" or "description"'}
+    injected_test_paths = [str(path) for path in args.get("injected_test_paths") or [] if str(path)]
 
     await ctx.phase("localize")
     localization = await ctx.agent(
@@ -963,6 +997,7 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
             baseline_triage=baseline_triage,
             attempt=attempt,
             feedback=feedback,
+            injected_test_paths=injected_test_paths,
         )
         attempts.append(report)
         if _is_pass(report["final_verdict"]):

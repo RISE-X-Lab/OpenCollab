@@ -1406,3 +1406,16 @@ async def analyst_solve(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
     if skip_final_verify:
         result["final_verify_skipped"] = True
     return result
+
+
+@workflow(
+    name="team-pro",
+    description="TeamPro dynamic analyst-led reconnaissance and phased coder/tester workflow.",
+    phases=["scope", "recon", "plan", "implement", "verify"],
+)
+async def team_pro(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """Stable evaluation-layer name for the tuned analyst-solve workflow."""
+    return await analyst_solve(ctx, args)
+
+
+__all__ = ["analyst_solve", "team_pro"]

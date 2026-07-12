@@ -23,6 +23,7 @@ from opencollab.application.ports import (
 )
 from opencollab.application.shaping import forced_shape
 from opencollab.application.tool_execution import ToolExecutionUseCase
+from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
 from opencollab.domain.tools import ToolProcessingResult
@@ -1304,6 +1305,11 @@ class SessionRunUseCase:
         top_p = getattr(self.agent, "top_p", None)
         if top_p is not None:
             extra["top_p"] = top_p
+        max_output_tokens = getattr(
+            self.agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP
+        )
+        if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
+            extra["max_output_tokens"] = max_output_tokens
         if not getattr(self.agent, "thinking", False):
             return await self._invoke_llm(
                 messages=messages,

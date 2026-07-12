@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import subprocess
@@ -42,6 +43,10 @@ if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
 from opencollab.adapters.env import DockerEnvironment  # noqa: E402
+from opencollab.adapters.llm.types import (  # noqa: E402
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    model_context_window,
+)
 from opencollab.adapters.tools.bash import BashTool  # noqa: E402
 from opencollab.adapters.tools.fs import (  # noqa: E402
     FileReadTool,
@@ -100,7 +105,7 @@ def _check_docker(res: subprocess.CompletedProcess, action: str) -> None:
 
 
 def start_container(image: str, name: str) -> str:
-    res = _docker("run", "-d", "--name", name, "--entrypoint", "", image,
+    res = _docker("run", "-d", "--network", "none", "--name", name, "--entrypoint", "", image,
                   "tail", "-f", "/dev/null")
     if res.returncode != 0:
         raise RuntimeError(f"docker run failed: {res.stderr.strip()}")
@@ -224,6 +229,11 @@ async def run_agent(task: str, cid: str, cfg: dict, max_steps: int, budget: int,
         provider=cfg["provider"],
         api_key=cfg["api_key"],
         base_url=cfg["base_url"],
+        temperature=cfg["temperature"],
+        top_p=cfg.get("top_p"),
+        max_tokens_per_step=cfg.get(
+            "max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS
+        ),
         thinking=cfg.get("thinking", False),
         thinking_params=cfg.get("thinking_params") or {},
     )
@@ -268,10 +278,14 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="Generate one SWE-bench prediction with OpenCollab")
     ap.add_argument("--instance-file", required=True, help="JSON file with one instance")
     ap.add_argument("--output", required=True, help="Predictions JSONL to append to")
+    ap.add_argument("--metrics", default=None, help="Metrics JSONL to append to")
     ap.add_argument("--image", default=None, help="Override container image")
     ap.add_argument("--arch", default="x86_64")
     ap.add_argument("--model", default=None)
     ap.add_argument("--provider", default=None)
+    ap.add_argument("--temperature", type=float)
+    ap.add_argument("--top-p", type=float)
+    ap.add_argument("--max-output-tokens", type=int)
     ap.add_argument("--model-name", default=None, help="model_name_or_path in predictions")
     ap.add_argument("--max-steps", type=int, default=40)
     ap.add_argument("--budget", type=int, default=1_000_000)
@@ -288,6 +302,18 @@ def main() -> None:
         cfg["model"] = args.model
     if args.provider:
         cfg["provider"] = args.provider
+    if args.temperature is not None:
+        if not 0.0 <= args.temperature <= 2.0:
+            ap.error("--temperature must be between 0 and 2")
+        cfg["temperature"] = args.temperature
+    if args.top_p is not None:
+        if not 0.0 <= args.top_p <= 1.0:
+            ap.error("--top-p must be between 0 and 1")
+        cfg["top_p"] = args.top_p
+    if args.max_output_tokens is not None:
+        if args.max_output_tokens <= 0:
+            ap.error("--max-output-tokens must be positive")
+        cfg["max_output_tokens"] = args.max_output_tokens
     model_name = args.model_name or f"opencollab-{cfg['model']}"
 
     print(f"Instance: {iid}")
@@ -311,13 +337,41 @@ def main() -> None:
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    record_id = uuid.uuid4().hex
+    patch_sha256 = hashlib.sha256(patch.encode("utf-8")).hexdigest()
     record = {
         "instance_id": iid,
+        "record_id": record_id,
+        "patch_sha256": patch_sha256,
         "model_name_or_path": model_name,
+        "workflow": "single-agent",
         "model_patch": patch,
     }
     with out_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
+
+    metrics_path = Path(args.metrics or f"{args.output}.metrics.jsonl")
+    metric_record = {
+        "instance_id": iid,
+        "record_id": record_id,
+        "patch_sha256": patch_sha256,
+        "model_name_or_path": model_name,
+        "workflow": "single-agent",
+        "workflow_status": "done" if patch.strip() else "empty_patch_after_done",
+        "patch_produced": bool(patch.strip()),
+        "llm_model": cfg["model"],
+        "llm_provider": cfg["provider"],
+        "context_window": model_context_window(cfg["model"]),
+        "temperature": cfg["temperature"],
+        "top_p": cfg.get("top_p"),
+        "max_output_tokens": cfg.get(
+            "max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS
+        ),
+        "budget": args.budget,
+        "max_steps": args.max_steps,
+    }
+    with metrics_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(metric_record) + "\n")
 
     if patch.strip():
         print(f"\nPatch ({len(patch)} chars) written to {out_path}")

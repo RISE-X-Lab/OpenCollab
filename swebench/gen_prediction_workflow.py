@@ -51,6 +51,10 @@ if str(_PKG_ROOT) not in sys.path:
 import gen_prediction as gp  # noqa: E402 — shared container plumbing
 
 from opencollab.adapters.env import DockerEnvironment  # noqa: E402
+from opencollab.adapters.llm.types import (  # noqa: E402
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    model_context_window,
+)
 from opencollab.bootstrap.config import get_config  # noqa: E402
 from opencollab.bootstrap.workflow_runtime import discover_workflows  # noqa: E402
 from opencollab.harness.evaluator import EvalTask, run_eval_task  # noqa: E402
@@ -243,12 +247,38 @@ def _result_metrics(result) -> dict:
     }
 
 
+def _workflow_status(workflow_result: object) -> str:
+    if not isinstance(workflow_result, dict):
+        return ""
+    return str(workflow_result.get("status") or "")
+
+
+def _coder_report_claims_source_changes(workflow_result: object) -> bool:
+    if not isinstance(workflow_result, dict):
+        return False
+    attempts = workflow_result.get("attempts")
+    if not isinstance(attempts, list):
+        return False
+    for attempt in attempts:
+        if not isinstance(attempt, dict):
+            continue
+        report = str(attempt.get("coder_report") or "").lower()
+        if not report:
+            continue
+        if "changed source files" in report and "changed source files:** none" not in report and "changed source files: none" not in report:
+            return True
+        if "source change" in report and "no source change" not in report:
+            return True
+    return False
+
+
 def build_output_records(
     *,
     instance_id: str,
     model_name: str,
     patch: str,
     metrics: dict,
+    workflow_name: str | None = None,
     record_id: str | None = None,
 ) -> tuple[dict, dict]:
     record_id = record_id or uuid.uuid4().hex
@@ -260,6 +290,8 @@ def build_output_records(
         "model_name_or_path": model_name,
         "model_patch": patch,
     }
+    if workflow_name:
+        prediction["workflow"] = workflow_name
     metric_record = {
         **metrics,
         "instance_id": instance_id,
@@ -267,6 +299,8 @@ def build_output_records(
         "patch_sha256": patch_sha256,
         "model_name_or_path": model_name,
     }
+    if workflow_name:
+        metric_record["workflow"] = workflow_name
     return prediction, metric_record
 
 
@@ -382,6 +416,7 @@ async def generate(
     run_dir = Path(args.output).parent
     gp.write_container_marker(run_dir, cid, name)
     print(f"Container: {cid}")
+    workflow_allowlist_missing = False
     try:
         # Attach mode: run_eval_task's internal env.cleanup() no-ops on attached
         # containers, so the container survives for baseline-style extraction.
@@ -423,6 +458,7 @@ async def generate(
             workflow=workflow_fn,
             temperature=cfg["temperature"],
             top_p=cfg.get("top_p"),
+            max_output_tokens=cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS),
             thinking=cfg.get("thinking", False),
             thinking_params=cfg.get("thinking_params") or None,
             checkpoint_interval_seconds=(
@@ -459,6 +495,7 @@ async def generate(
     metrics = _result_metrics(result)
     metrics["patch_produced"] = bool(patch.strip())
     metrics["submitted_patch_chars"] = len(patch)
+    workflow_status = _workflow_status(getattr(result, "workflow_result", None))
     if not metrics.get("workflow_status"):
         if result.error and patch.strip():
             metrics["workflow_status"] = "done_with_timeout_patch"
@@ -466,6 +503,12 @@ async def generate(
             metrics["workflow_status"] = "error"
         elif patch.strip():
             metrics["workflow_status"] = "done"
+        elif workflow_status == "done":
+            metrics["workflow_status"] = "empty_patch_after_done"
+        elif workflow_status:
+            metrics["workflow_status"] = workflow_status
+    if not patch.strip() and _coder_report_claims_source_changes(getattr(result, "workflow_result", None)):
+        metrics["empty_patch_diagnostic"] = "coder_reported_source_changes_but_extracted_patch_empty"
     if workflow_allowlist_missing:
         metrics["workflow_allowlist_missing"] = True
     if removed_validation_artifacts:
@@ -485,6 +528,9 @@ def main() -> None:
     ap.add_argument("--arch", default="x86_64")
     ap.add_argument("--model", default=None)
     ap.add_argument("--provider", default=None)
+    ap.add_argument("--temperature", type=float)
+    ap.add_argument("--top-p", type=float)
+    ap.add_argument("--max-output-tokens", type=int)
     ap.add_argument("--model-name", default=None, help="model_name_or_path in predictions")
     ap.add_argument("--workflow", default=None,
                     help="CLI workflow name from workflows/ (e.g. analyst-solve); "
@@ -538,6 +584,18 @@ def main() -> None:
         cfg["model"] = args.model
     if args.provider:
         cfg["provider"] = args.provider
+    if args.temperature is not None:
+        if not 0.0 <= args.temperature <= 2.0:
+            ap.error("--temperature must be between 0 and 2")
+        cfg["temperature"] = args.temperature
+    if args.top_p is not None:
+        if not 0.0 <= args.top_p <= 1.0:
+            ap.error("--top-p must be between 0 and 1")
+        cfg["top_p"] = args.top_p
+    if args.max_output_tokens is not None:
+        if args.max_output_tokens <= 0:
+            ap.error("--max-output-tokens must be positive")
+        cfg["max_output_tokens"] = args.max_output_tokens
     model_name = args.model_name or f"opencollab-{wf_label}-{cfg['model']}"
 
     print(f"Instance: {iid}")
@@ -554,6 +612,20 @@ def main() -> None:
     )
 
     patch, metrics = asyncio.run(generate(instance, image, cfg, args, workflow_fn, wf_label))
+    metrics.update(
+        {
+            "llm_model": cfg["model"],
+            "llm_provider": cfg["provider"],
+            "context_window": model_context_window(cfg["model"]),
+            "temperature": cfg["temperature"],
+            "top_p": cfg.get("top_p"),
+            "max_output_tokens": cfg.get(
+                "max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS
+            ),
+            "budget": args.budget,
+            "max_steps": args.max_steps,
+        }
+    )
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -562,6 +634,7 @@ def main() -> None:
         model_name=model_name,
         patch=patch,
         metrics=metrics,
+        workflow_name=wf_label,
     )
     with out_path.open("a", encoding="utf-8") as f:
         f.write(json.dumps(record) + "\n")
