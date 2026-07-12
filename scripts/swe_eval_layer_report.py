@@ -6,15 +6,24 @@ import json
 import re
 import sys
 import time
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT / "opencollab") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "opencollab"))
 
-from opencollab.harness.token_cost import WORKFLOW_RE
+from opencollab.harness.token_cost import WORKFLOW_RE  # noqa: E402
+
+try:
+    from scripts import _swe_eval_layer_integrity as _integrity  # noqa: E402
+    from scripts import _swe_report_io as _report_io  # noqa: E402
+except ModuleNotFoundError as exc:  # Direct execution adds ``scripts`` to sys.path.
+    if exc.name != "scripts":
+        raise
+    import _swe_eval_layer_integrity as _integrity  # type: ignore[no-redef]
+    import _swe_report_io as _report_io  # type: ignore[no-redef]
 
 
 def _now() -> str:
@@ -22,11 +31,7 @@ def _now() -> str:
 
 
 def _load_json(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return value if isinstance(value, dict) else {}
+    return _report_io.load_json(path)
 
 
 def _iter_rows(report: dict[str, Any]) -> list[dict[str, Any]]:
@@ -45,11 +50,6 @@ def _patch_sha(row: dict[str, Any]) -> str:
     summary = evaluation.get("summary") if isinstance(evaluation.get("summary"), dict) else {}
     generation_sha = str(generation.get("patch_sha256") or "")
     evaluation_sha = str(summary.get("patch_sha256") or "")
-    if generation_sha and evaluation_sha and generation_sha != evaluation_sha:
-        raise ValueError(
-            "candidate identity mismatch within one task record: "
-            f"{generation_sha} != {evaluation_sha}"
-        )
     return generation_sha or evaluation_sha
 
 
@@ -58,10 +58,7 @@ def _task_key(row: dict[str, Any]) -> str:
 
 
 def _task_index(row: dict[str, Any]) -> int | None:
-    try:
-        return int(row.get("index"))
-    except (TypeError, ValueError):
-        return None
+    return _integrity.strict_index(row.get("index"))
 
 
 def _eval_state(row: dict[str, Any]) -> dict[str, Any]:
@@ -69,20 +66,39 @@ def _eval_state(row: dict[str, Any]) -> dict[str, Any]:
     summary = evaluation.get("summary") if isinstance(evaluation.get("summary"), dict) else {}
     status = str(evaluation.get("status") or "")
     resolved = summary.get("resolved")
-    eval_success = status == "eval_done" and resolved in {True, False}
+    integrity = _integrity.attempt_integrity(row, _task_key(row))
+    eval_success = status == "eval_done" and isinstance(resolved, bool) and not integrity.reasons
+    technical_reasons = [
+        str(reason) for reason in summary.get("technical_reasons") or [] if str(reason)
+    ]
+    technical_reasons.extend(
+        reason for reason in integrity.reasons if reason not in technical_reasons
+    )
+    allowed_statuses = {"eval_done", "skipped_empty_patch", "would_eval"}
+    if status not in allowed_statuses:
+        status_reason = (
+            "missing_eval_status" if not status else f"unexpected_eval_status:{status}"
+        )
+        if status_reason not in technical_reasons:
+            technical_reasons.append(status_reason)
+    technical_failed = bool(integrity.reasons or status not in allowed_statuses)
     return {
-        "eval_status": status,
+        "eval_status": "technical_identity_failure" if integrity.reasons else status,
         "eval_success": eval_success,
-        "eval_pending": status == "would_eval",
+        "eval_pending": status == "would_eval" and not integrity.reasons,
         "resolved": resolved if eval_success else None,
-        "technical_failed": status == "technical_eval_failed",
+        "technical_failed": technical_failed,
         "report_path": evaluation.get("report_path") or summary.get("report_path"),
-        "technical_reasons": summary.get("technical_reasons") or [],
+        "technical_reasons": technical_reasons,
+        "identity_reasons": list(integrity.reasons),
+        "record_id": integrity.record_id,
+        "direct_execution_proven": integrity.direct_execution_proven,
     }
 
 
 def _generation_state(row: dict[str, Any]) -> dict[str, Any]:
     generation = row.get("generation") if isinstance(row.get("generation"), dict) else {}
+    integrity = _integrity.attempt_integrity(row, _task_key(row))
     return {
         "generation_status": generation.get("status"),
         "patch_len": generation.get("patch_len"),
@@ -96,16 +112,21 @@ def _generation_state(row: dict[str, Any]) -> dict[str, Any]:
         "temperature": generation.get("temperature"),
         "top_p": generation.get("top_p"),
         "max_output_tokens": generation.get("max_output_tokens"),
-        "patch_sha256": _patch_sha(row),
+        "patch_sha256": integrity.patch_sha256 or _patch_sha(row),
+        "record_id": integrity.record_id,
+        "direct_execution_proven": integrity.direct_execution_proven,
         "generation_log": generation.get("log"),
     }
 
 
 def _is_declared_empty_patch(attempt: dict[str, Any]) -> bool:
-    return (
-        attempt.get("generation_status") == "empty_patch"
-        and attempt.get("patch_len") == 0
-        and attempt.get("eval_status") == "skipped_empty_patch"
+    return _integrity.declared_empty_patch(attempt.get("row") or {})
+
+
+def _is_pending_dry_run(attempt: dict[str, Any]) -> bool:
+    return bool(
+        attempt.get("generation_status") == "would_generate"
+        and attempt.get("eval_status") == "would_eval"
     )
 
 
@@ -118,11 +139,9 @@ def _read_workflow_records_from_log(path: str | None) -> list[dict[str, Any]]:
     if not path:
         return []
     local = Path(path)
-    if not local.exists():
-        return []
     try:
-        text = local.read_text(encoding="utf-8", errors="replace")
-    except OSError:
+        text = _report_io.read_text(local, max_bytes=_report_io.MAX_LOG_BYTES)
+    except (OSError, UnicodeDecodeError, ValueError):
         return []
     return [
         {
@@ -307,7 +326,10 @@ def _assign_costs(rows: list[dict[str, Any]], token_cost: dict[str, Any]) -> dic
             fingerprint = (record.get("tokens"), record.get("steps"), record.get("duration_s"))
             seen_fingerprints = seen_record_fingerprints_by_task.setdefault(task, set())
             path_token_values = seen_path_token_values_by_task.setdefault(task, set())
-            if not record.get("path") and (fingerprint in seen_fingerprints or record.get("tokens") in path_token_values):
+            if not record.get("path") and (
+                fingerprint in seen_fingerprints
+                or record.get("tokens") in path_token_values
+            ):
                 continue
             record_key = _record_key(record, row)
             if record_key in seen_records_by_task.setdefault(task, set()):
@@ -405,7 +427,9 @@ def _compact_attempt(attempt: dict[str, Any]) -> dict[str, Any]:
         "resolved": attempt.get("resolved"),
         "technical_failed": attempt.get("technical_failed"),
         "technical_reasons": attempt.get("technical_reasons"),
+        "record_id": attempt.get("record_id"),
         "patch_sha256": attempt.get("patch_sha256"),
+        "direct_execution_proven": attempt.get("direct_execution_proven"),
         "report_path": attempt.get("report_path"),
         "eval_attempt_count": _eval_attempt_count(attempt.get("row") or {}),
     }
@@ -415,6 +439,7 @@ def build_report(
     report_paths: list[Path],
     *,
     token_cost_path: Path | None = None,
+    expected_indices: tuple[int, ...] | list[int] | None = None,
     max_rounds: int = 2,
     max_eval_attempts: int = 2,
     allow_over_budget_evidence: bool = False,
@@ -424,19 +449,51 @@ def build_report(
     observed_attempts: list[dict[str, Any]] = []
     rounds_by_task: dict[str, int] = {}
     used_reports: list[str] = []
-    for source_order, path in enumerate(report_paths, start=1):
-        report = _load_json(path)
+    task_issues: dict[str, list[str]] = {}
+    issues_by_index: dict[int, list[str]] = {}
+    global_census_issues: list[str] = []
+    inferred_indices: list[int] = []
+    seen_rows: set[tuple[str, int | None, str]] = set()
+    ordered_report_paths = sorted(report_paths, key=lambda path: str(path))
+    for source_order, path in enumerate(ordered_report_paths, start=1):
+        report, load_error = _report_io.load_json_with_error(path)
+        if load_error:
+            global_census_issues.append(f"{load_error}:{path}")
+            continue
+        report_indices, report_issues, report_global_issues = _integrity.report_census(report)
+        for index in report_indices:
+            if index not in inferred_indices:
+                inferred_indices.append(index)
+        for index, reasons in report_issues.items():
+            for reason in reasons:
+                _integrity.append_issue(issues_by_index, index, reason)
+        for reason in report_global_issues:
+            if reason not in global_census_issues:
+                global_census_issues.append(reason)
         for row in _iter_rows(report):
             task = _task_key(row)
             if not task:
+                index = _task_index(row)
+                if index is None:
+                    if "missing_task_identity" not in global_census_issues:
+                        global_census_issues.append("missing_task_identity")
+                else:
+                    _integrity.append_issue(issues_by_index, index, "missing_task_identity")
                 continue
+            index = _task_index(row)
+            row_key = (str(path), index, task)
+            if row_key in seen_rows:
+                _integrity.append_issue(task_issues, task, "duplicate_task_row")
+                if index is not None:
+                    _integrity.append_issue(issues_by_index, index, "duplicate_task_row")
+            seen_rows.add(row_key)
             round_number = rounds_by_task.get(task, 0) + 1
             rounds_by_task[task] = round_number
             observed = {
                 "round": round_number,
                 "source_order": source_order,
                 "source_report": str(path),
-                "index": _task_index(row),
+                "index": index,
                 "task": task,
                 "row": row,
                 **_generation_state(row),
@@ -451,34 +508,63 @@ def build_report(
             attempts.append(observed)
     token_cost = _load_json(token_cost_path) if token_cost_path else {}
     patch_sha_by_task: dict[str, str] = {}
-    sources_by_task: dict[str, set[str]] = {}
-    missing_sha_by_task: dict[str, bool] = {}
     eval_attempts_by_task: dict[str, int] = {}
+    indices_by_task: dict[str, set[int]] = defaultdict(set)
+    tasks_by_index: dict[int, set[str]] = defaultdict(set)
     for attempt in observed_attempts:
         task = attempt["task"]
-        sources_by_task.setdefault(task, set()).add(str(attempt["source_report"]))
+        index = attempt.get("index")
+        if isinstance(index, int):
+            indices_by_task[task].add(index)
+            tasks_by_index[index].add(task)
+        for reason in attempt.get("identity_reasons") or []:
+            _integrity.append_issue(task_issues, task, str(reason))
         patch_sha = str(attempt.get("patch_sha256") or "")
-        if patch_sha:
+        if _is_declared_empty_patch(attempt) or _is_pending_dry_run(attempt):
+            pass
+        elif patch_sha:
             previous = patch_sha_by_task.get(task)
             if previous and previous != patch_sha:
-                raise ValueError(
-                    f"candidate identity mismatch for {task}: {previous} != {patch_sha}"
-                )
+                _integrity.append_issue(task_issues, task, "candidate_identity_mismatch")
             patch_sha_by_task[task] = patch_sha
-        elif not _is_declared_empty_patch(attempt):
-            missing_sha_by_task[task] = True
+        else:
+            _integrity.append_issue(task_issues, task, "missing_candidate_identity")
         eval_attempts_by_task[task] = (
             eval_attempts_by_task.get(task, 0) + _eval_attempt_count(attempt["row"])
         )
-    identity_unverified = sorted(
-        task
-        for task, missing_sha in missing_sha_by_task.items()
-        if missing_sha and len(sources_by_task.get(task, set())) > 1
-    )
-    if identity_unverified:
-        raise ValueError(
-            "candidate identity unverified across reports: " + ", ".join(identity_unverified)
-        )
+    for task, indices in indices_by_task.items():
+        if len(indices) > 1:
+            _integrity.append_issue(task_issues, task, "task_index_mapping_conflict")
+            for index in indices:
+                _integrity.append_issue(issues_by_index, index, "task_index_mapping_conflict")
+    for index, mapped_tasks in tasks_by_index.items():
+        if len(mapped_tasks) > 1:
+            _integrity.append_issue(issues_by_index, index, "index_task_mapping_conflict")
+            for task in mapped_tasks:
+                _integrity.append_issue(task_issues, task, "index_task_mapping_conflict")
+
+    expected_values = expected_indices if expected_indices is not None else inferred_indices
+    expected_list: list[int] = []
+    for value in expected_values:
+        index = _integrity.strict_index(value)
+        if index is None:
+            if "invalid_expected_index_census" not in global_census_issues:
+                global_census_issues.append("invalid_expected_index_census")
+            continue
+        if index in expected_list:
+            _integrity.append_issue(issues_by_index, index, "duplicate_expected_index")
+            continue
+        expected_list.append(index)
+    expected = tuple(expected_list)
+    verdicts: dict[tuple[str, str], set[bool]] = defaultdict(set)
+    for attempt in observed_attempts:
+        if attempt.get("eval_success") and attempt.get("patch_sha256"):
+            verdicts[(attempt["task"], attempt["patch_sha256"])].add(
+                bool(attempt["resolved"])
+            )
+    for (task, _patch_sha256), values in verdicts.items():
+        if values == {False, True}:
+            _integrity.append_issue(task_issues, task, "conflicting_eval_verdicts")
     exhausted = {
         task: count
         for task, count in eval_attempts_by_task.items()
@@ -515,11 +601,21 @@ def build_report(
         if not task:
             continue
         previous = final_by_task.get(task)
-        if previous is None or _row_score(attempt["row"], attempt["round"]) >= _row_score(previous["row"], previous["round"]):
+        if previous is None or _row_score(
+            attempt["row"], attempt["round"]
+        ) >= _row_score(previous["row"], previous["round"]):
             final_by_task[task] = attempt
 
     tasks = []
-    for task, final in sorted(final_by_task.items(), key=lambda item: (item[1]["index"] is None, item[1]["index"] or 0, item[0])):
+    ordered_tasks = sorted(
+        final_by_task.items(),
+        key=lambda item: (
+            item[1]["index"] is None,
+            item[1]["index"] or 0,
+            item[0],
+        ),
+    )
+    for task, final in ordered_tasks:
         cost = cost_by_task.get(task, {})
         cost_usd = cost.get("cost_usd")
         task_record = {
@@ -527,7 +623,15 @@ def build_report(
             for key, value in final.items()
             if key not in {"row"}
         }
-        task_attempts = [attempt for attempt in accepted_attempts if attempt["task"] == task]
+        task_attempts = sorted(
+            (attempt for attempt in accepted_attempts if attempt["task"] == task),
+            key=lambda attempt: (
+                str(attempt.get("source_report") or ""),
+                int(attempt.get("round") or 0),
+                str(attempt.get("eval_status") or ""),
+                str(attempt.get("resolved")),
+            ),
+        )
         task_record["attempt_count"] = len(task_attempts)
         task_record["eval_attempt_count"] = sum(_eval_attempt_count(attempt["row"]) for attempt in task_attempts)
         task_record["attempts"] = [_compact_attempt(attempt) for attempt in task_attempts]
@@ -544,13 +648,29 @@ def build_report(
             task_record["technical_failed"] = True
             task_record["technical_reasons"] = ["eval_attempt_budget_exceeded"]
             task_record["over_budget_evidence"] = [
-                _compact_attempt(attempt) for attempt in over_budget_evidence[task]
+                _compact_attempt(attempt)
+                for attempt in sorted(
+                    over_budget_evidence[task],
+                    key=lambda item: (
+                        str(item.get("source_report") or ""),
+                        int(item.get("round") or 0),
+                    ),
+                )
             ]
+        if task_issues.get(task):
+            task_record = _integrity.mark_technical(task_record, task_issues[task])
         task_record["token_cost"] = cost
         if usd_cny is not None and cost_usd is not None:
             task_record["token_cost"]["usd_cny"] = usd_cny
             task_record["token_cost"]["cost_cny"] = round(float(cost_usd) * usd_cny, 6)
         tasks.append(task_record)
+
+    tasks = _integrity.apply_expected_census(
+        tasks,
+        expected,
+        issues_by_index,
+        global_census_issues,
+    )
 
     counts = {
         "tasks": len(tasks),
@@ -583,8 +703,10 @@ def build_report(
         "max_rounds": max_rounds,
         "max_eval_attempts": max_eval_attempts,
         "allow_over_budget_evidence": allow_over_budget_evidence,
-        "source_reports": [str(path) for path in report_paths],
-        "used_source_reports": used_reports,
+        "source_reports": [str(path) for path in ordered_report_paths],
+        "used_source_reports": sorted(used_reports),
+        "expected_indices": list(expected),
+        "census_errors": global_census_issues,
         "token_cost_summary": str(token_cost_path) if token_cost_path else None,
         "counts": counts,
         "tasks": tasks,
@@ -619,7 +741,11 @@ def to_markdown(report: dict[str, Any]) -> str:
     for task in report.get("tasks") or []:
         token_cost = task.get("token_cost") if isinstance(task.get("token_cost"), dict) else {}
         lines.append(
-            "| {idx} | `{task}` | {attempts} | {eval_attempts} | `{eval_status}` | `{resolved}` | {tokens} | {cost_usd} | {cost_cny} | `{report}` |".format(
+            (
+                "| {idx} | `{task}` | {attempts} | {eval_attempts} | "
+                "`{eval_status}` | `{resolved}` | {tokens} | {cost_usd} | "
+                "{cost_cny} | `{report}` |"
+            ).format(
                 idx=task.get("index"),
                 task=task.get("task"),
                 attempts=task.get("attempt_count"),
@@ -638,6 +764,7 @@ def to_markdown(report: dict[str, Any]) -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Merge up to two SWE eval rounds into a final fact report.")
     parser.add_argument("--report-json", action="append", required=True)
+    parser.add_argument("--expected-index", action="append", type=int, default=[])
     parser.add_argument("--token-cost-json", type=Path)
     parser.add_argument("--max-rounds", type=int, default=2)
     parser.add_argument("--max-eval-attempts", type=int, default=2)
@@ -650,15 +777,14 @@ def main() -> int:
     report = build_report(
         [Path(path) for path in args.report_json],
         token_cost_path=args.token_cost_json,
+        expected_indices=args.expected_index or None,
         max_rounds=args.max_rounds,
         max_eval_attempts=args.max_eval_attempts,
         allow_over_budget_evidence=args.allow_over_budget_evidence,
         usd_cny=args.usd_cny,
     )
-    args.json_output.parent.mkdir(parents=True, exist_ok=True)
-    args.markdown_output.parent.mkdir(parents=True, exist_ok=True)
-    args.json_output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    args.markdown_output.write_text(to_markdown(report), encoding="utf-8")
+    _report_io.write_json(args.json_output, report)
+    _report_io.write_text(args.markdown_output, to_markdown(report))
     print(json.dumps(report, ensure_ascii=False, indent=2))
     return 0
 

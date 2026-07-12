@@ -2,9 +2,7 @@ from http import HTTPStatus
 from pathlib import Path
 
 import requests
-
 from opencollab.bootstrap.config import build_config
-
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 TEST_MODEL_NAME = "kimi-k2.6"

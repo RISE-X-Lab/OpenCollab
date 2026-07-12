@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
-from opencollab.application.async_timeout import abandon_on_timeout
+from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.extension_valve import (
     EXTENSION_DENIED_NUDGE,
@@ -31,6 +32,10 @@ from opencollab.domain.tools import ToolProcessingResult
 logger = logging.getLogger(__name__)
 
 DEFAULT_DEFERRABLE_TOOLS = frozenset({"spawn_agent"})
+
+
+class GenerationTimeoutError(asyncio.TimeoutError):
+    """A single provider generation exceeded its per-call ceiling."""
 
 
 class _ContextOverflowStop(Exception):
@@ -256,7 +261,25 @@ class SessionRunUseCase:
         # generation cooperatively; this wraps the call in ``asyncio.wait_for`` so
         # one ~595s generation cannot consume the whole run wall (P7). ``None``
         # disables it, preserving prior behavior for callers that don't wire it.
-        self._per_call_timeout = per_call_timeout
+        if per_call_timeout is None:
+            self._per_call_timeout = None
+        else:
+            if isinstance(per_call_timeout, bool):
+                raise ValueError("per_call_timeout must be a finite positive number or None")
+            try:
+                normalized_per_call_timeout = float(per_call_timeout)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                    "per_call_timeout must be a finite positive number or None"
+                ) from exc
+            if (
+                not math.isfinite(normalized_per_call_timeout)
+                or normalized_per_call_timeout <= 0
+            ):
+                raise ValueError(
+                    "per_call_timeout must be a finite positive number or None"
+                )
+            self._per_call_timeout = normalized_per_call_timeout
         self._pending: PendingStep | None = None
         # Guards the once-per-session retry on an empty-stop turn (see
         # ``handle_pending_response``).
@@ -308,6 +331,25 @@ class SessionRunUseCase:
         self._wind_down_retried = False
         self._pending_tool_allowlist: frozenset[str] | None = None
         self._pending_tool_gate_label: str | None = None
+        # Message index where the current user turn began. It survives a
+        # deferred suspend/resume so the returned answer is scoped to this turn.
+        self._turn_start_message_index: int | None = None
+        self._provider_tasks: set[asyncio.Task[Any]] = set()
+
+    @property
+    def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
+        return tuple(task for task in self._provider_tasks if not task.done())
+
+    def _track_provider_task(self, task: asyncio.Task[Any]) -> None:
+        self._provider_tasks.add(task)
+        task.add_done_callback(self._provider_task_done)
+
+    def _provider_task_done(self, task: asyncio.Task[Any]) -> None:
+        self._provider_tasks.discard(task)
+        try:
+            task.result()
+        except BaseException:
+            pass
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
@@ -316,6 +358,14 @@ class SessionRunUseCase:
         unexpected exception the session is marked failed and the exception
         re-raised; cancellation flushes the tracer before propagating.
         """
+        entry_phase = self.state.phase
+        if entry_phase in {SessionPhase.AWAITING_EVENTS, SessionPhase.DONE}:
+            if self._turn_start_message_index is None:
+                # Restored sessions do not yet persist this runtime-only cursor.
+                self._turn_start_message_index = 0
+        else:
+            self._turn_start_message_index = len(self.state.messages)
+
         try:
             # A session suspended on deferred work resumes from its pending
             # table; a completed turn (DONE) short-circuits to its last answer;
@@ -340,7 +390,8 @@ class SessionRunUseCase:
             self.state.fail(reason=f"{type(exc).__name__}: {exc}")
             raise
 
-        for msg in reversed(self.state.messages):
+        turn_start = self._turn_start_message_index or 0
+        for msg in reversed(self.state.messages[turn_start:]):
             content = msg.get("content")
             if msg["role"] == "assistant" and content and content != _EMPTY_STOP_PLACEHOLDER:
                 return content
@@ -412,6 +463,35 @@ class SessionRunUseCase:
         ``request_extension`` capture tool, injected only at the offer turn. Leaving
         it ``None`` keeps the valve off (the wind-down force-commits as in STEP 0/3).
         """
+        if enforcement_strength not in {ENFORCEMENT_OFF, ENFORCEMENT_ON}:
+            raise ValueError(
+                f"enforcement_strength must be {ENFORCEMENT_OFF!r} or {ENFORCEMENT_ON!r}"
+            )
+        effective_reserve = (
+            self._commit_reserve if commit_reserve is None else commit_reserve
+        )
+        if (
+            isinstance(effective_reserve, bool)
+            or not isinstance(effective_reserve, int)
+            or effective_reserve <= 0
+        ):
+            raise ValueError("commit_reserve must be a positive integer")
+        if (
+            enforcement_strength == ENFORCEMENT_ON
+            and effective_reserve > self.max_budget_tokens
+        ):
+            raise ValueError("commit_reserve cannot exceed max_budget_tokens")
+        effective_extensions = (
+            self._max_extensions if max_extensions is None else max_extensions
+        )
+        if (
+            isinstance(effective_extensions, bool)
+            or not isinstance(effective_extensions, int)
+            or effective_extensions < 0
+            or effective_extensions > 3
+        ):
+            raise ValueError("max_extensions must be an integer in 0..3")
+
         self._enforcement_strength = enforcement_strength
         if commit_reserve is not None:
             self._commit_reserve = commit_reserve
@@ -906,7 +986,7 @@ class SessionRunUseCase:
         # original order, satisfying the LLM rule that every tool_call_id is
         # answered before the next model call.
         table = self.state.pending_events
-        order = {tc["id"]: i for i, tc in enumerate(tool_calls)}
+        order = {tc["id"]: i for i, tc in enumerate(original_tool_calls)}
 
         if immediate:
             proc = await self.tool_execution.process(immediate)
@@ -944,27 +1024,28 @@ class SessionRunUseCase:
 
         for tc in deferred:
             tid = tc["id"]
+            # Register the row before the spawn tool can start its child. A very
+            # fast child may finish while execute_deferred is still emitting its
+            # tool_end event; its completion must already have a row to fill.
+            table.add(
+                PendingRow(
+                    tool_call_id=tid,
+                    kind=RowKind.CHILD_AGENT,
+                    order=order[tid],
+                    status=RowStatus.PENDING,
+                )
+            )
             ref, error = await self.tool_execution.execute_deferred(tc)
             if ref is not None:
-                table.add(
-                    PendingRow(
-                        tool_call_id=tid,
-                        kind=RowKind.CHILD_AGENT,
-                        order=order[tid],
-                        ref=ref,
-                        status=RowStatus.PENDING,
-                    )
-                )
+                # Preserve a completion that may already have arrived while
+                # attaching the child reference for persistence/diagnostics.
+                table.rows[tid] = replace(table.rows[tid], ref=ref)
             else:
-                table.add(
-                    PendingRow(
-                        tool_call_id=tid,
-                        kind=RowKind.CHILD_AGENT,
-                        order=order[tid],
-                        status=RowStatus.FAILED,
-                        result=error,
-                        error=error,
-                    )
+                table.fill(
+                    tid,
+                    status=RowStatus.FAILED,
+                    result=error or "Deferred tool failed without an error message.",
+                    error=error,
                 )
 
         self._pending_tool_allowlist = None
@@ -1339,7 +1420,16 @@ class SessionRunUseCase:
         """
         if self._per_call_timeout is None:
             return await self.llm.complete(**kwargs)
-        return await abandon_on_timeout(self.llm.complete(**kwargs), self._per_call_timeout)
+        try:
+            return await abandon_on_timeout(
+                self.llm.complete(**kwargs),
+                self._per_call_timeout,
+                task_tracker=self._track_provider_task,
+            )
+        except CallerTimeoutError as exc:
+            raise GenerationTimeoutError(
+                f"LLM generation exceeded the {self._per_call_timeout}s per-call timeout"
+            ) from exc
 
     async def _stop_on_context_overflow(self) -> None:
         """Graceful terminal stop when a prompt overflows the model window even
@@ -1414,7 +1504,7 @@ class SessionRunUseCase:
                 "content": response.content,
                 "tool_calls": tool_calls_log,
             }
-            if all(hasattr(usage, name) for name in ("input_tokens", "output_tokens", "total_tokens", "estimated")):
+            if usage is not None:
                 output_tokens = getattr(usage, "output_tokens", max(total_tokens - input_tokens, 0))
                 cache_read_tokens = getattr(usage, "cache_read_tokens", 0)
                 cache_creation_tokens = getattr(usage, "cache_creation_tokens", 0)

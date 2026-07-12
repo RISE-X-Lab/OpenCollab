@@ -18,7 +18,9 @@ swe_workdir/
 eval_work/
 .understand-anything/
 tmp/
+/output/
 opencollab-glm52-*.json
+mydocs/
 opencollab/mydocs/
 
 # Local GLM / SWE-bench evaluation run artifacts
@@ -41,3 +43,14 @@ workflow_logs/
 *.out
 *.synctex.gz
 *.xdv
+
+# Local team-config variants (per-user runtime, like configs/team.yaml above)
+configs/team.dev.yaml
+configs/team.local.yaml
+
+# Container markers written by tests/runtime — never commit
+container.id
+container.name
+
+# Compiled report artifacts — commit the .tex/.md sources, not the build output
+docs/**/*.pdf

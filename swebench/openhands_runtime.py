@@ -11,6 +11,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
+from swebench.container_quiescence import (
+    guarded_terminal_invocation as _guarded_terminal_invocation,
+)
+from swebench.container_quiescence import (
+    stop_guarded_terminal_session as _stop_guarded_terminal_session,
+)
+
 
 @dataclass(frozen=True)
 class RuntimeSettings:
@@ -129,9 +136,9 @@ def _isolated_agent_tools(agent: Any, terminal_name: str) -> list[Any]:
 
 def _install_isolated_terminal(container_id: str) -> None:
     """Bind every model-visible shell command to one pre-created container."""
+    from openhands.sdk.tool import ToolExecutor
     from openhands.tools.terminal import impl as terminal_impl
     from openhands.tools.terminal.definition import TerminalObservation
-    from openhands.sdk.tool import ToolExecutor
 
     class ContainerTerminalExecutor(ToolExecutor):
         is_pooled = False
@@ -165,19 +172,11 @@ def _install_isolated_terminal(container_id: str) -> None:
                     exit_code=0,
                 )
             timeout = float(action.timeout or 30.0)
+            invocation = _guarded_terminal_invocation(container_id, command)
             try:
                 result = subprocess.run(
-                    [
-                        "docker",
-                        "exec",
-                        container_id,
-                        "bash",
-                        "-lc",
-                        'cd -- "$1" && eval "$2"',
-                        "opencollab-shell",
-                        "/testbed",
-                        command,
-                    ],
+                    invocation.argv,
+                    input=invocation.source,
                     capture_output=True,
                     text=True,
                     timeout=timeout,
@@ -196,11 +195,24 @@ def _install_isolated_terminal(container_id: str) -> None:
                 output = exc.stdout or ""
                 if isinstance(output, bytes):
                     output = output.decode("utf-8", errors="replace")
+                try:
+                    cleanup = _stop_guarded_terminal_session(container_id, invocation)
+                except (OSError, subprocess.TimeoutExpired) as cleanup_error:
+                    cleanup_returncode = 125
+                    cleanup_detail = f"{type(cleanup_error).__name__}: {cleanup_error}"
+                else:
+                    cleanup_returncode = cleanup.returncode
+                    cleanup_detail = cleanup.stderr.strip()
+                if cleanup_returncode != 0:
+                    output += (
+                        "\nContainer command cleanup could not be proven"
+                        f" (exit {cleanup_returncode}): {cleanup_detail}"
+                    )
                 return TerminalObservation.from_text(
                     text=output + f"\nCommand timed out after {timeout:g}s.",
                     is_error=True,
                     command=command,
-                    exit_code=-1,
+                    exit_code=-1 if cleanup_returncode == 0 else 125,
                 )
 
         def close(self) -> None:

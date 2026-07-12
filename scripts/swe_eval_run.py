@@ -17,25 +17,14 @@ import time
 import urllib.parse
 from pathlib import Path
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT / "opencollab") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "opencollab"))
 
-from opencollab.adapters.llm.types import model_context_window
-from opencollab.harness.solver_backend import DEFAULT_WORKFLOW_SOLVERS, workflow_solver_spec
-
-
-LOCKED_SOLVER_OPTIONS = (
-    "--budget",
-    "--context-window",
-    "--llm-model",
-    "--max-output-tokens",
-    "--max-task-starts",
-    "--model-name",
-    "--temperature",
-    "--top-p",
-    "--workflow-env",
+from opencollab.adapters.llm.types import model_context_window  # noqa: E402
+from opencollab.harness.solver_backend import (  # noqa: E402
+    DEFAULT_WORKFLOW_SOLVERS,
+    workflow_solver_spec,
 )
 
 
@@ -70,6 +59,31 @@ def _option_value(arguments: list[str], option: str, default: str) -> str:
         if argument == option and index + 1 < len(arguments):
             return arguments[index + 1]
     return default
+
+
+def _required_runtime_options(
+    *,
+    solver_name: str,
+    requirements: tuple[tuple[str, str], ...],
+    arguments: list[str],
+) -> tuple[list[str], dict[str, str]]:
+    delegated: list[str] = []
+    values: dict[str, str] = {}
+    for option, environment_key in requirements:
+        cli_value = _option_value(arguments, option, "").strip()
+        if cli_value:
+            values[option] = cli_value
+            continue
+        if _has_option(arguments, option):
+            raise SystemExit(f"{solver_name} requires a non-empty {option}")
+        environment_value = os.environ.get(environment_key, "").strip()
+        if not environment_value:
+            raise SystemExit(
+                f"{solver_name} requires {option} or {environment_key}"
+            )
+        delegated += [option, environment_value]
+        values[option] = environment_value
+    return delegated, values
 
 
 def _without_launch_options(arguments: list[str]) -> list[str]:
@@ -165,7 +179,13 @@ def _remote_proxy_healthy(*, ssh_command: str, host: str, base_url: str) -> bool
 
 
 def _ensure_proxy_agent(*, output_dir: Path, remaining: list[str]) -> dict:
-    host = _option_value(remaining, "--host", "jinan-aws")
+    host = _option_value(
+        remaining,
+        "--host",
+        os.environ.get("OPENCOLLAB_SWE_HOST", ""),
+    ).strip()
+    if not host:
+        raise RuntimeError("persistent proxy requires --host or OPENCOLLAB_SWE_HOST")
     ssh_command = _option_value(remaining, "--ssh-command", "/usr/bin/ssh")
     local_url = _option_value(remaining, "--local-proxy-base-url", "http://127.0.0.1:8878")
     remote_url = _option_value(remaining, "--remote-proxy-base-url", "http://127.0.0.1:18788")
@@ -239,7 +259,19 @@ def _launch_detached(args: argparse.Namespace, raw_arguments: list[str], remaini
     target = f"gui/{os.getuid()}/{label}"
     existing = _launchctl("print", target)
     if existing.returncode == 0 and "state = running" in existing.stdout:
-        print(json.dumps({"status": "already_running", "run_id": run_id, "label": label, "output_dir": str(output_dir), "proxy": proxy}, ensure_ascii=False, indent=2))
+        print(
+            json.dumps(
+                {
+                    "status": "already_running",
+                    "run_id": run_id,
+                    "label": label,
+                    "output_dir": str(output_dir),
+                    "proxy": proxy,
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         return 0
     if existing.returncode == 0:
         _launchctl("bootout", target, check=True)
@@ -286,12 +318,6 @@ def _run_parallel_runner(args: argparse.Namespace, remaining: list[str]) -> int:
         )
     if _has_option(remaining, "--workflow"):
         raise SystemExit("--workflow is selected by --solver and cannot be overridden")
-    if spec.config_overrides and spec.name == "TeamPro":
-        overridden = [option for option in LOCKED_SOLVER_OPTIONS if _has_option(remaining, option)]
-        if overridden:
-            raise SystemExit(
-                f"{args.solver} owns these runtime settings: {', '.join(overridden)}"
-            )
     runner = _load_module(REPO_ROOT / "scripts" / "swe_g11_parallel_runner.py", "swe_g11_parallel_runner")
     delegated = [str(REPO_ROOT / "scripts" / "swe_g11_parallel_runner.py")]
     if args.indices:
@@ -303,12 +329,15 @@ def _run_parallel_runner(args: argparse.Namespace, remaining: list[str]) -> int:
         delegated += ["--max-task-starts", str(spec.max_attempts)]
     if spec.default_budget_tokens is not None and not _has_option(remaining, "--budget"):
         delegated += ["--budget", str(spec.default_budget_tokens)]
-    if spec.default_model_name and not _has_option(remaining, "--model-name"):
-        delegated += ["--model-name", spec.default_model_name]
-    model = spec.config_overrides.get("model")
-    if model:
-        delegated += ["--llm-model", str(model)]
-        context_window = model_context_window(str(model))
+    required_arguments, runtime_values = _required_runtime_options(
+        solver_name=spec.name,
+        requirements=spec.required_runtime_options,
+        arguments=remaining,
+    )
+    delegated += required_arguments
+    model = runtime_values.get("--llm-model", "")
+    if model and not _has_option(remaining, "--context-window"):
+        context_window = model_context_window(model)
         if context_window is not None:
             delegated += ["--context-window", str(context_window)]
     for key, option in (
@@ -317,7 +346,7 @@ def _run_parallel_runner(args: argparse.Namespace, remaining: list[str]) -> int:
         ("max_output_tokens", "--max-output-tokens"),
     ):
         value = spec.config_overrides.get(key)
-        if value is not None:
+        if value is not None and not _has_option(remaining, option):
             delegated += [option, str(value)]
     for key, value in spec.args.items():
         option = "--" + key.replace("_", "-")

@@ -8,8 +8,13 @@ from typing import Any
 
 import pytest
 
-
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "swe_eval_run.py"
+MODEL_ARGUMENTS = [
+    "--model-name",
+    "public-evaluation-model",
+    "--llm-model",
+    "provider/model",
+]
 
 
 def _load_entry_module() -> Any:
@@ -45,6 +50,7 @@ def test_base_team_entry_delegates_to_parallel_runner(monkeypatch: Any) -> None:
             "2",
             "--run-id",
             "base_team_smoke",
+            *MODEL_ARGUMENTS,
             "--dry-run",
         ]
     )
@@ -80,6 +86,7 @@ def test_team_pro_entry_uses_dynamic_workflow_defaults(monkeypatch: Any) -> None
             "TeamPro",
             "--workers",
             "2",
+            *MODEL_ARGUMENTS,
             "--dry-run",
         ]
     )
@@ -89,27 +96,51 @@ def test_team_pro_entry_uses_dynamic_workflow_defaults(monkeypatch: Any) -> None
     assert argv[argv.index("--workflow") + 1] == "team-pro"
     assert argv[argv.index("--budget") + 1] == "4000000"
     assert argv[argv.index("--max-task-starts") + 1] == "3"
-    assert argv[argv.index("--model-name") + 1] == "opencollab-glm52-teampro-prolite"
-    assert argv[argv.index("--llm-model") + 1] == "glm-5.2"
-    assert argv[argv.index("--context-window") + 1] == "400000"
+    assert argv[argv.index("--model-name") + 1] == "public-evaluation-model"
+    assert argv[argv.index("--llm-model") + 1] == "provider/model"
     assert argv[argv.index("--temperature") + 1] == "1.0"
     assert argv[argv.index("--top-p") + 1] == "1.0"
     assert argv[argv.index("--max-output-tokens") + 1] == "32768"
     assert "--workflow-env" not in argv
 
 
-def test_team_pro_entry_rejects_runtime_overrides(monkeypatch: Any) -> None:
+def test_team_pro_entry_accepts_explicit_runtime_settings(monkeypatch: Any) -> None:
     module = _load_entry_module()
+    captured: dict[str, Any] = {}
 
-    for override in (
-        ["--budget=2000000"],
-        ["--max-task-starts", "2"],
-        ["--model-name", "custom-teampro"],
-        ["--temperature", "0"],
-        ["--workflow-env", "OPENCOLLAB_TOP_P=0"],
-    ):
-        with pytest.raises(SystemExit, match="owns these runtime settings"):
-            module.main(["--indices", "7", "--solver", "TeamPro", *override, "--dry-run"])
+    class FakeRunner:
+        @staticmethod
+        def main() -> int:
+            captured["argv"] = list(sys.argv)
+            return 0
+
+    monkeypatch.setattr(module, "_load_module", lambda path, name: FakeRunner)
+    assert module.main(
+        [
+            "--indices",
+            "7",
+            "--solver",
+            "TeamPro",
+            "--budget=2000000",
+            "--max-task-starts",
+            "2",
+            "--model-name",
+            "custom-teampro",
+            "--llm-model",
+            "provider/custom",
+            "--temperature",
+            "0",
+            "--workflow-env",
+            "OPENCOLLAB_TOP_P=0",
+            "--dry-run",
+        ]
+    ) == 0
+
+    argv = captured["argv"]
+    assert argv.count("--temperature") == 1
+    assert argv[argv.index("--temperature") + 1] == "0"
+    assert argv[argv.index("--model-name") + 1] == "custom-teampro"
+    assert argv[argv.index("--llm-model") + 1] == "provider/custom"
 
 
 def test_team_pro_entry_rejects_workflow_override(monkeypatch: Any) -> None:
@@ -170,6 +201,7 @@ def test_openhands_entry_delegates_external_workflow(monkeypatch: Any) -> None:
             "1",
             "--openhands-command",
             "openhands --help",
+            *MODEL_ARGUMENTS,
             "--dry-run",
         ]
     )
@@ -180,7 +212,7 @@ def test_openhands_entry_delegates_external_workflow(monkeypatch: Any) -> None:
     assert argv[argv.index("--openhands-command") + 1] == "openhands --help"
     assert argv[argv.index("--max-task-starts") + 1] == "2"
     assert argv[argv.index("--budget") + 1] == "16000000"
-    assert argv[argv.index("--llm-model") + 1] == "anthropic/glm-5.2"
+    assert argv[argv.index("--llm-model") + 1] == "provider/model"
 
 
 def test_openhands_entry_has_one_command_defaults(monkeypatch: Any) -> None:
@@ -194,13 +226,56 @@ def test_openhands_entry_has_one_command_defaults(monkeypatch: Any) -> None:
             return 0
 
     monkeypatch.setattr(module, "_load_module", lambda path, name: FakeRunner)
-    assert module.main(["--indices", "51-100", "--solver", "openhands", "--workers", "5", "--dry-run"]) == 0
+    assert module.main(
+        [
+            "--indices",
+            "51-100",
+            "--solver",
+            "openhands",
+            "--workers",
+            "5",
+            *MODEL_ARGUMENTS,
+            "--dry-run",
+        ]
+    ) == 0
     argv = captured["argv"]
     assert argv[argv.index("--openhands-command") + 1].endswith("--file {prompt_file}")
     assert argv[argv.index("--max-empty-patch-retries") + 1] == "1"
     assert argv[argv.index("--max-eval-attempts") + 1] == "2"
     assert argv[argv.index("--openhands-empty-patch-rejections") + 1] == "2"
     assert argv[argv.index("--max-steps") + 1] == "120"
+
+
+def test_solver_entry_fails_fast_without_model_configuration(monkeypatch: Any) -> None:
+    module = _load_entry_module()
+    monkeypatch.delenv("OPENCOLLAB_SWE_MODEL_NAME", raising=False)
+    monkeypatch.delenv("OPENCOLLAB_SWE_LLM_MODEL", raising=False)
+
+    with pytest.raises(
+        SystemExit,
+        match="requires --model-name or OPENCOLLAB_SWE_MODEL_NAME",
+    ):
+        module.main(["--indices", "1", "--solver", "g11", "--dry-run"])
+
+
+def test_solver_entry_reads_model_configuration_from_environment(monkeypatch: Any) -> None:
+    module = _load_entry_module()
+    captured: dict[str, Any] = {}
+
+    class FakeRunner:
+        @staticmethod
+        def main() -> int:
+            captured["argv"] = list(sys.argv)
+            return 0
+
+    monkeypatch.setenv("OPENCOLLAB_SWE_MODEL_NAME", "environment-run")
+    monkeypatch.setenv("OPENCOLLAB_SWE_LLM_MODEL", "provider/environment-model")
+    monkeypatch.setattr(module, "_load_module", lambda path, name: FakeRunner)
+
+    assert module.main(["--indices", "1", "--solver", "g11", "--dry-run"]) == 0
+    argv = captured["argv"]
+    assert argv[argv.index("--model-name") + 1] == "environment-run"
+    assert argv[argv.index("--llm-model") + 1] == "provider/environment-model"
 
 
 def test_detached_plist_uses_direct_python_without_wrapper() -> None:
@@ -231,6 +306,17 @@ def test_detach_options_are_not_forwarded_to_child() -> None:
             "--no-persistent-proxy",
         ]
     ) == ["--indices", "51-100"]
+
+
+def test_persistent_proxy_fails_fast_without_remote_host(
+    monkeypatch: Any,
+    tmp_path: Path,
+) -> None:
+    module = _load_entry_module()
+    monkeypatch.delenv("OPENCOLLAB_SWE_HOST", raising=False)
+
+    with pytest.raises(RuntimeError, match="--host or OPENCOLLAB_SWE_HOST"):
+        module._ensure_proxy_agent(output_dir=tmp_path, remaining=[])
 
 
 def test_detach_starts_direct_launch_agent_once(monkeypatch: Any, tmp_path: Path) -> None:

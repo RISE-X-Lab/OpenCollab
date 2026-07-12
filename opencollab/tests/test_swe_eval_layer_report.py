@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import subprocess
 from pathlib import Path
+
+from generation_proof_test_support import trusted_summary_proof_fields
 
 
 def _load_module():
@@ -20,30 +23,120 @@ def _write_json(path: Path, value: dict) -> Path:
     return path
 
 
+def _sha(task: str) -> str:
+    return hashlib.sha256(task.encode()).hexdigest()
+
+
+def _direct_summary(task: str, resolved: bool) -> dict:
+    f2p_status = 0 if resolved else 1
+    evidence = {
+        "status": f2p_status,
+        "command_matches_plan": True,
+        "log_artifact_safe": True,
+        "target_proof_matches_plan": True,
+        "artifact_safe": True,
+    }
+    return {
+        "schema": "opencollab.prolite_direct_eval.v2",
+        "status": "done",
+        "task": task,
+        "resolved": resolved,
+        "record_id": f"record-{task}",
+        "patch_sha256": _sha(task),
+        "eval_spec_sha256": "e" * 64,
+        "technical_reasons": [],
+        "output_artifact_errors": [],
+        "docker_exit": 0,
+        "cleanup_quiesced": True,
+        "container_cleanup": {"ok": True},
+        "tests_status": {
+            "base_commit_status": 0,
+            "service_bootstrap_status": 0,
+            "before_repo_status": 0,
+            "post_before_base_status": 0,
+            "model_patch_status": 0,
+            "test_patch_status": 0,
+            "fail_to_pass_status": f2p_status,
+            "pass_to_pass_status": 0,
+            "fail_to_pass_plan": {"commands": ["pytest target"], "coverage_verified": True},
+            "pass_to_pass_plan": {"commands": [], "coverage_verified": True},
+            "fail_to_pass_evidence": [evidence],
+            "pass_to_pass_evidence": [],
+        },
+        "report_path": f"/reports/{task}.json",
+    }
+
+
+def _assert_technical(report: dict, reason: str) -> None:
+    assert report["counts"]["technical_failed_final"] == 1
+    assert report["counts"]["resolved"] == 0
+    assert report["counts"]["unresolved"] == 0
+    task = report["tasks"][0]
+    assert task["resolved"] is None
+    assert reason in task["technical_reasons"]
+
+
 def _row(index: int, task: str, log: str, tokens: int, eval_status: str, resolved=None) -> dict:
+    summary = _direct_summary(task, bool(resolved))
+    if eval_status != "eval_done":
+        summary.update(
+            status="technical_eval_failed",
+            resolved=False,
+            technical_reasons=["fail_to_pass_infra"],
+        )
     return {
         "index": index,
         "task": task,
         "generation": {
             "status": "generation_done",
+            "task": task,
             "log": log,
             "tokens_used": tokens,
             "steps": 3,
             "duration_s": 20,
             "record_id": f"record-{task}",
-            "patch_sha256": f"sha-{task}",
+            "patch_sha256": _sha(task),
+            **trusted_summary_proof_fields(_sha(task)),
         },
         "eval": {
             "status": eval_status,
+            "task": task,
+            "executed": eval_status not in {"would_eval", "skipped_empty_patch"},
             "attempt_count": 1,
-            "summary": {
-                "resolved": resolved,
-                "patch_sha256": f"sha-{task}",
-                "technical_reasons": ["fail_to_pass_infra"] if eval_status == "technical_eval_failed" else [],
-                "report_path": f"/reports/{task}.json",
-            },
+            "summary": summary,
         },
     }
+
+
+def _as_verified_empty(row: dict) -> dict:
+    row["generation"].update(
+        status="empty_patch",
+        patch_len=0,
+        patch_sha256=hashlib.sha256(b"").hexdigest(),
+        workflow_status="empty_patch_after_done",
+        submission_integrity="empty_patch_proven",
+        submission_eligible=False,
+        execution_quiesced=True,
+        patch_extraction_succeeded=True,
+        injected_path_cleanup_proven=True,
+        harness_artifact_exclusion_proven=True,
+        checkpoint_restore_integrity_proven=True,
+        task_stage_integrity_proven=True,
+        test_patch_isolation_failed=False,
+        worktree_integrity_proven=True,
+        patch_produced=False,
+        **trusted_summary_proof_fields(
+            hashlib.sha256(b"").hexdigest(),
+            patch_bytes=0,
+        ),
+    )
+    row["eval"].update(
+        status="skipped_empty_patch",
+        executed=False,
+        attempt_count=0,
+        summary={},
+    )
+    return row
 
 
 def test_eval_layer_report_merges_two_rounds_and_deduplicates_generation_cost(tmp_path):
@@ -127,11 +220,30 @@ def test_eval_layer_report_counts_empty_patch_without_technical_failure(tmp_path
         "task": "instance_task-empty",
         "generation": {
             "status": "empty_patch",
+            "task": "instance_task-empty",
             "workflow_status": "empty_patch_after_done",
             "patch_len": 0,
+            "record_id": "record-instance_task-empty",
+            "patch_sha256": hashlib.sha256(b"").hexdigest(),
+            "submission_integrity": "empty_patch_proven",
+            "submission_eligible": False,
+            "execution_quiesced": True,
+            "patch_extraction_succeeded": True,
+            "injected_path_cleanup_proven": True,
+            "harness_artifact_exclusion_proven": True,
+            "checkpoint_restore_integrity_proven": True,
+            "task_stage_integrity_proven": True,
+            "test_patch_isolation_failed": False,
+            "worktree_integrity_proven": True,
+            "patch_produced": False,
+            **trusted_summary_proof_fields(
+                hashlib.sha256(b"").hexdigest(),
+                patch_bytes=0,
+            ),
         },
         "eval": {
             "status": "skipped_empty_patch",
+            "task": "instance_task-empty",
             "attempt_count": 0,
         },
     }
@@ -171,8 +283,9 @@ def test_eval_layer_report_rejects_mismatched_patch_sha_for_the_same_task(tmp_pa
     first = _row(1, "task-a", "/run/task-a.outer.log", 100, "technical_eval_failed")
     second = _row(1, "task-a", "/run/task-a.outer.log", 100, "eval_done", False)
     second["generation"]["record_id"] = "record-task-a-repair"
-    second["generation"]["patch_sha256"] = "sha-task-a-repair"
-    second["eval"]["summary"]["patch_sha256"] = "sha-task-a-repair"
+    second["generation"]["patch_sha256"] = _sha("task-a-repair")
+    second["eval"]["summary"]["patch_sha256"] = _sha("task-a-repair")
+    second["eval"]["summary"]["record_id"] = "record-task-a-repair"
     round1 = _write_json(tmp_path / "round1.json", {"rows": [first]})
     round2 = _write_json(tmp_path / "round2.json", {"rows": [second]})
     token_cost = _write_json(
@@ -198,26 +311,20 @@ def test_eval_layer_report_rejects_mismatched_patch_sha_for_the_same_task(tmp_pa
         },
     )
 
-    try:
-        module.build_report([round1, round2], token_cost_path=token_cost, max_rounds=2)
-    except ValueError as exc:
-        assert "candidate identity mismatch" in str(exc)
-    else:
-        raise AssertionError("mismatched patch SHA must not be merged")
+    report = module.build_report([round1, round2], token_cost_path=token_cost, max_rounds=2)
+
+    _assert_technical(report, "candidate_identity_mismatch")
 
 
 def test_eval_layer_report_rejects_a_row_with_conflicting_candidate_identity(tmp_path):
     module = _load_module()
     row = _row(1, "task-a", "/run/task-a.outer.log", 100, "eval_done", True)
-    row["eval"]["summary"]["patch_sha256"] = "sha-task-a-eval"
+    row["eval"]["summary"]["patch_sha256"] = _sha("task-a-eval")
     report_path = _write_json(tmp_path / "round.json", {"rows": [row]})
 
-    try:
-        module.build_report([report_path])
-    except ValueError as exc:
-        assert "candidate identity mismatch within one task record" in str(exc)
-    else:
-        raise AssertionError("conflicting generation and evaluation SHA must fail")
+    report = module.build_report([report_path])
+
+    _assert_technical(report, "eval_patch_sha256_mismatch")
 
 
 def test_eval_layer_report_rejects_cross_run_third_eval_attempt(tmp_path):
@@ -272,21 +379,16 @@ def test_eval_layer_report_rejects_missing_candidate_identity_across_reports(tmp
     first_path = _write_json(tmp_path / "first.json", {"rows": [first]})
     second_path = _write_json(tmp_path / "second.json", {"rows": [second]})
 
-    try:
-        module.build_report([first_path, second_path], max_rounds=2)
-    except ValueError as exc:
-        assert "candidate identity unverified across reports" in str(exc)
-    else:
-        raise AssertionError("a missing SHA must block a cross-report merge")
+    report = module.build_report([first_path, second_path], max_rounds=2)
+
+    _assert_technical(report, "invalid_generation_patch_sha256")
 
 
 def test_eval_layer_report_allows_verified_empty_patch_before_rerun(tmp_path):
     module = _load_module()
-    first = _row(1, "task-a", "/run/task-a.outer.log", 0, "skipped_empty_patch")
-    first["generation"]["status"] = "empty_patch"
-    first["generation"]["patch_len"] = 0
-    first["generation"].pop("patch_sha256")
-    first["eval"]["summary"].pop("patch_sha256")
+    first = _as_verified_empty(
+        _row(1, "task-a", "/run/task-a.outer.log", 0, "skipped_empty_patch")
+    )
     second = _row(1, "task-a", "/run/task-a-rerun.outer.log", 100, "eval_done", True)
     first_path = _write_json(tmp_path / "first.json", {"rows": [first]})
     second_path = _write_json(tmp_path / "second.json", {"rows": [second]})
@@ -295,7 +397,7 @@ def test_eval_layer_report_allows_verified_empty_patch_before_rerun(tmp_path):
 
     assert report["counts"]["tasks"] == 1
     assert report["counts"]["resolved"] == 1
-    assert report["tasks"][0]["patch_sha256"] == "sha-task-a"
+    assert report["tasks"][0]["patch_sha256"] == _sha("task-a")
 
 
 def test_eval_layer_report_rejects_incomplete_empty_patch_declarations(tmp_path):
@@ -306,39 +408,32 @@ def test_eval_layer_report_rejects_incomplete_empty_patch_declarations(tmp_path)
         ("eval_status", lambda row: row["eval"].update(status="technical_eval_failed")),
     )
     for name, mutate in mutations:
-        first = _row(1, "task-a", "/run/task-a.outer.log", 0, "skipped_empty_patch")
-        first["generation"].update(status="empty_patch", patch_len=0)
-        first["generation"].pop("patch_sha256")
-        first["eval"]["summary"].pop("patch_sha256")
+        first = _as_verified_empty(
+            _row(1, "task-a", "/run/task-a.outer.log", 0, "skipped_empty_patch")
+        )
         mutate(first)
         second = _row(1, "task-a", "/run/task-a-rerun.outer.log", 100, "eval_done", True)
         first_path = _write_json(tmp_path / f"first-{name}.json", {"rows": [first]})
         second_path = _write_json(tmp_path / f"second-{name}.json", {"rows": [second]})
 
-        try:
-            module.build_report([first_path, second_path], max_rounds=2)
-        except ValueError as exc:
-            assert "candidate identity unverified across reports" in str(exc)
-        else:
-            raise AssertionError(f"incomplete empty patch declaration must fail: {name}")
+        report = module.build_report([first_path, second_path], max_rounds=2)
+
+        assert report["counts"]["technical_failed_final"] == 1, name
 
 
 def test_eval_layer_report_rejects_empty_patch_declaration_with_conflicting_sha(tmp_path):
     module = _load_module()
-    first = _row(1, "task-a", "/run/task-a.outer.log", 0, "skipped_empty_patch")
-    first["generation"].update(status="empty_patch", patch_len=0)
-    first["generation"]["patch_sha256"] = "sha-empty-claim"
-    first["eval"]["summary"]["patch_sha256"] = "sha-empty-claim"
+    first = _as_verified_empty(
+        _row(1, "task-a", "/run/task-a.outer.log", 0, "skipped_empty_patch")
+    )
+    first["generation"]["patch_sha256"] = _sha("empty-claim")
     second = _row(1, "task-a", "/run/task-a-rerun.outer.log", 100, "eval_done", True)
     first_path = _write_json(tmp_path / "first.json", {"rows": [first]})
     second_path = _write_json(tmp_path / "second.json", {"rows": [second]})
 
-    try:
-        module.build_report([first_path, second_path], max_rounds=2)
-    except ValueError as exc:
-        assert "candidate identity mismatch" in str(exc)
-    else:
-        raise AssertionError("an empty patch declaration with a SHA must retain identity checks")
+    report = module.build_report([first_path, second_path], max_rounds=2)
+
+    _assert_technical(report, "empty_patch_sha256_invalid")
 
 
 def test_eval_layer_report_does_not_count_dry_run_as_an_official_eval(tmp_path):

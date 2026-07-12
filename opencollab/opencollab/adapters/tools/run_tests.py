@@ -32,6 +32,30 @@ import shlex
 from typing import Any
 
 from opencollab.adapters.tools._output import truncate
+from opencollab.adapters.tools._run_tests_go import (
+    GO_PATH_PREFIX as GO_PATH_PREFIX,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    InvalidGoTargetError as _InvalidGoTargetError,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    go_has_pass_proof as _go_has_pass_proof,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    go_runner_command as _go_runner_command,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    go_target_specs as _go_target_specs,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    has_multiple_go_selector_tokens as _has_multiple_go_selector_tokens,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    is_go_runner as _is_go_runner,
+)
+from opencollab.adapters.tools._run_tests_go import (
+    translate_go_target_args as _translate_go_target_args,
+)
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -39,7 +63,6 @@ from opencollab.application.tool_execution import ToolRuntime
 MAX_TRACEBACK_CHARS = 6_000
 DEFAULT_RUNNER = "python -m pytest"
 DEFAULT_TIMEOUT = 300.0
-GO_PATH_PREFIX = "PATH=/usr/local/go/bin:/usr/lib/go/bin:/opt/go/bin:$PATH"
 # After this many consecutive failing runs of the SAME target, nudge the model
 # to change approach instead of re-running the identical failing assertion.
 ESCALATE_AFTER = 3
@@ -58,6 +81,15 @@ _NATIVE_PROBES: tuple[tuple[str, str], ...] = (
 # "===== 1 failed, 2 passed, 1 skipped in 0.12s =====".
 _COUNT_RE = re.compile(
     r"(\d+)\s+(passed|failed|errors?|skipped|xfailed|xpassed|deselected|warnings?)"
+)
+_PYTEST_SUMMARY_RE = re.compile(
+    r"(?:\d+\s+(?:passed|failed|errors?|skipped|xfailed|xpassed|deselected|warnings?)"
+    r"(?:,\s*)?)+\s+in\s+\d+(?:\.\d+)?s(?:\s+\([^)]+\))?",
+    re.IGNORECASE,
+)
+_PYTEST_NO_TESTS_RE = re.compile(
+    r"no tests ran in \d+(?:\.\d+)?s(?:\s+\([^)]+\))?",
+    re.IGNORECASE,
 )
 
 
@@ -119,10 +151,13 @@ class RunTestsTool(Tool):
         *,
         allow_runner_override: bool = True,
         allow_extra_args: bool = True,
+        require_process_isolation: bool = False,
     ):
         self.max_traceback_chars = max_traceback_chars
         self.allow_runner_override = allow_runner_override
         self.allow_extra_args = allow_extra_args
+        self.require_process_isolation = require_process_isolation
+        self._verified_targets: set[str] = set()
         # target -> consecutive RED count, for the escalation nudge. The tool
         # instance is shared across a task's workflow sessions (built once in
         # the eval toolset), so this survives across run_tests calls.
@@ -142,6 +177,13 @@ class RunTestsTool(Tool):
 
         if not env:
             return "Error: no execution environment available."
+        if self.require_process_isolation and not getattr(
+            env, "process_isolated", False
+        ):
+            return (
+                "Error: run_tests is disabled because this execution environment "
+                "does not provide an OS process sandbox."
+            )
         if pinned_runner and not self.allow_runner_override:
             return (
                 "Error: runner override is disabled for this run_tests tool. "
@@ -154,30 +196,48 @@ class RunTestsTool(Tool):
             return "Error: extra_args is disabled for this run_tests tool."
 
         runner = pinned_runner or DEFAULT_RUNNER
-        result, cmd, runner = await self._run(
-            env, runner, target, extra_args, timeout, safety_policy,
-            runtime.confirm_fn(),
-        )
-        combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
+        try:
+            # The public API accepts one exact selector. Reject an ambiguous
+            # selector list before even the initial auto-detection probe; once
+            # collapsed, no later proof parser can recover the original intent.
+            _validate_go_target_before_execution(runner, pinned_runner, target)
 
-        # Auto-fallback: if the caller did NOT pin a runner and pytest is absent
-        # or unsuitable for a Go target, probe once and re-run on the native path.
-        if pinned_runner is None:
-            native = await _native_fallback_candidate(
-                env,
-                result.returncode,
-                combined,
+            result, cmd, runner = await self._run(
+                env, runner, target, extra_args, timeout, safety_policy,
+                runtime.confirm_fn(),
             )
-            if native:
-                result, cmd, runner = await self._run(
-                    env, native, target, extra_args, timeout, safety_policy,
-                    runtime.confirm_fn(),
-                )
-                combined = result.stdout + (
-                    "\n" + result.stderr if result.stderr else ""
-                )
+            combined = result.stdout + ("\n" + result.stderr if result.stderr else "")
 
-        green = _is_green(result.returncode, combined)
+            # Auto-fallback: if the caller did NOT pin a runner and pytest is absent
+            # or unsuitable for a Go target, probe once and re-run on the native path.
+            if pinned_runner is None:
+                native = await _native_fallback_candidate(
+                    env,
+                    result.returncode,
+                    combined,
+                )
+                if native:
+                    result, cmd, runner = await self._run(
+                        env, native, target, extra_args, timeout, safety_policy,
+                        runtime.confirm_fn(),
+                    )
+                    combined = result.stdout + (
+                        "\n" + result.stderr if result.stderr else ""
+                    )
+        except _InvalidGoTargetError as exc:
+            return self._invalid_go_target_report(target, exc)
+
+        green = _is_green(
+            result.returncode,
+            combined,
+            runner=runner,
+            target=target,
+        )
+        if target:
+            if green:
+                self._verified_targets.add(target)
+            else:
+                self._verified_targets.discard(target)
         streak = self._record(target, green)
         return _format_report(
             cmd,
@@ -217,28 +277,115 @@ class RunTestsTool(Tool):
         self._consecutive_fail[target] = n
         return n
 
+    def _invalid_go_target_report(
+        self,
+        target: str,
+        error: _InvalidGoTargetError,
+    ) -> str:
+        """Fail closed without retaining evidence from an earlier run."""
+        if target:
+            self._verified_targets.discard(target)
+        streak = self._record(target, False)
+        parts = [
+            "Command: not executed",
+            "Exit code: not applicable",
+            f"Error: invalid Go target: {error}",
+            "Summary: the requested tests cannot be proved by one Go test command.",
+            "Verdict: RED",
+        ]
+        if streak >= ESCALATE_AFTER:
+            parts.append(
+                f"Escalation: target {target or '(suite)'} has failed "
+                f"{streak} runs in a row — split the exact targets into "
+                "separate run_tests calls."
+            )
+        return "\n".join(parts)
+
+    @property
+    def verified_targets(self) -> frozenset[str]:
+        """Exact requested targets whose latest parser-backed verdict was GREEN."""
+        return frozenset(self._verified_targets)
+
+
+def verification_run_tests_tool() -> RunTestsTool:
+    """Build the model-facing verifier with command overrides disabled."""
+    return RunTestsTool(allow_runner_override=False, allow_extra_args=False)
+
+
+_ENV_ASSIGNMENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=.*", re.DOTALL)
+_PYTHON_EXECUTABLE_RE = re.compile(r"(?:python(?:\d+(?:\.\d+)*)?|pypy\d*)")
+_PYTHON_FLAG_OPTIONS = frozenset({"-B", "-E", "-I", "-O", "-OO", "-P", "-q", "-s", "-S", "-u", "-v"})
+
+
+def _python_invokes_pytest(parts: list[str]) -> bool:
+    executable = parts[0].rsplit("/", 1)[-1]
+    if _PYTHON_EXECUTABLE_RE.fullmatch(executable) is None:
+        return False
+    index = 1
+    while index < len(parts):
+        part = parts[index]
+        if part == "-m":
+            return index + 1 < len(parts) and parts[index + 1] == "pytest"
+        if part in {"-W", "-X", "--check-hash-based-pycs"}:
+            index += 2
+            continue
+        if part.startswith(("-W", "-X")) and len(part) > 2:
+            index += 1
+            continue
+        if part in _PYTHON_FLAG_OPTIONS:
+            index += 1
+            continue
+        return False
+    return False
+
+
+def _parts_invoke_pytest(parts: list[str], *, depth: int = 0) -> bool:
+    """Recognize supported direct wrappers without accepting shell interpreters."""
+    if not parts or depth > 3:
+        return False
+    executable = parts[0].rsplit("/", 1)[-1]
+    if executable == "pytest":
+        return True
+    if _python_invokes_pytest(parts):
+        return True
+    if executable == "env":
+        index = 1
+        while index < len(parts) and _ENV_ASSIGNMENT_RE.fullmatch(parts[index]):
+            index += 1
+        if index < len(parts) and parts[index] == "--":
+            index += 1
+        return _parts_invoke_pytest(parts[index:], depth=depth + 1)
+    if executable in {"uv", "poetry", "pipenv"} and len(parts) >= 3 and parts[1] == "run":
+        index = 3 if parts[2] == "--" else 2
+        return _parts_invoke_pytest(parts[index:], depth=depth + 1)
+    return (
+        executable in {"coverage", "coverage3"}
+        and len(parts) >= 4
+        and parts[1:4] == ["run", "-m", "pytest"]
+    )
+
 
 def _is_pytest_runner(runner: str) -> bool:
-    """Whether ``runner`` invokes pytest (so pytest-only flags are safe)."""
+    """Whether ``runner`` directly invokes pytest (so pytest flags are safe)."""
+    if any(token in runner for token in ("\n", "\r", ";", "&", "|", "<", ">", "`", "$(")):
+        return False
     try:
         parts = shlex.split(runner)
     except ValueError:
         return False
-    return any(part == "pytest" or part.endswith("/pytest") for part in parts)
+    return _parts_invoke_pytest(parts)
 
 
-def _is_go_runner(runner: str) -> bool:
-    """Whether ``runner`` invokes ``go test``."""
-    try:
-        parts = shlex.split(runner)
-    except ValueError:
-        return False
-    return len(parts) >= 2 and parts[0] == "go" and parts[1] == "test"
-
-
-def _go_runner_command(runner: str) -> str:
-    """Return a Go runner command with common Go install paths visible."""
-    return f"{GO_PATH_PREFIX} {runner}" if runner.strip().startswith("go ") else runner
+def _validate_go_target_before_execution(
+    runner: str,
+    pinned_runner: str | None,
+    target: str,
+) -> None:
+    """Reject unprovable Go target lists before safety checks or execution."""
+    if _is_go_runner(runner) or (
+        pinned_runner is None and _has_multiple_go_selector_tokens(target)
+    ):
+        _go_target_specs(target)
 
 
 def _translate_native_target_args(target: str) -> list[str]:
@@ -260,42 +407,6 @@ def _translate_native_target_args(target: str) -> list[str]:
     return args
 
 
-def _translate_go_single_target(target: str) -> list[str]:
-    package, sep, node = target.partition("::")
-    package = package.strip()
-    if not package:
-        package = "./..."
-    if package.endswith(".go"):
-        package = package.rsplit("/", 1)[0] if "/" in package else "."
-    if package not in {".", "./..."} and not package.startswith(("./", "../", "/")):
-        package = "./" + package.strip("/")
-
-    args = [shlex.quote(package)]
-    if sep and node.strip():
-        test_name = node.split("::")[-1].strip()
-        if test_name:
-            args.extend(["-run", shlex.quote(test_name)])
-    return args
-
-
-def _translate_go_target_args(target: str) -> list[str]:
-    """Map pytest-like targets to safe ``go test`` package and ``-run`` args."""
-    if not target:
-        return ["./..."]
-    if "::" not in target:
-        try:
-            targets = shlex.split(target)
-        except ValueError:
-            targets = []
-        if len(targets) > 1 and all(not item.startswith("-") for item in targets):
-            args: list[str] = []
-            for item in targets:
-                args.extend(_translate_go_single_target(item))
-            return args
-
-    return _translate_go_single_target(target)
-
-
 def _build_command(runner: str, target: str, extra_args: str) -> str:
     # --tb=short keeps tracebacks compact; -rfE forces a failed/error summary
     # block even under -q so we can list failing node-ids reliably. -rA adds a
@@ -308,7 +419,7 @@ def _build_command(runner: str, target: str, extra_args: str) -> str:
         if target:
             parts.append(shlex.quote(target))
     elif _is_go_runner(runner):
-        parts = [_go_runner_command(runner)]
+        parts = [_go_runner_command(runner), "-json"]
         parts.extend(_translate_go_target_args(target))
     else:
         parts = [runner]
@@ -354,20 +465,20 @@ def _pytest_no_tests(returncode: int, output: str) -> bool:
     return returncode == 5 and "no tests ran" in output.lower()
 
 
-def _summary_line(output: str) -> str | None:
-    """The last pytest summary line (``==== ... in 0.1s ====``), if any."""
-    summary = None
+def _summary_lines(output: str) -> list[str]:
+    """Return every complete pytest result summary in emission order."""
+    summaries = []
     for line in output.splitlines():
-        s = line.strip()
-        if s.startswith("=") and s.endswith("=") and (
-            " passed" in s
-            or " failed" in s
-            or " error" in s
-            or " skipped" in s
-            or "no tests ran" in s
-        ):
-            summary = s.strip("= ").strip()
-    return summary
+        candidate = line.strip().strip("= ").strip()
+        if _PYTEST_SUMMARY_RE.fullmatch(candidate) or _PYTEST_NO_TESTS_RE.fullmatch(candidate):
+            summaries.append(candidate)
+    return summaries
+
+
+def _summary_line(output: str) -> str | None:
+    """The last complete pytest result summary, with or without ``====``."""
+    summaries = _summary_lines(output)
+    return summaries[-1] if summaries else None
 
 
 def _parse_counts(summary: str | None) -> tuple[dict[str, int], int]:
@@ -392,18 +503,60 @@ def _parse_counts(summary: str | None) -> tuple[dict[str, int], int]:
     return counts, warnings
 
 
-def _is_green(returncode: int, output: str) -> bool:
-    """Runner-agnostic pass decision: exit-code 0 AND no failed/error counts.
+def _target_has_pass_proof(target: str, passed_lines: list[str]) -> bool:
+    """Whether pytest's per-test summary proves the requested target ran."""
+    if not target:
+        return True
+    normalized = target.removeprefix("./")
+    target_path, has_selector, _selector = normalized.partition("::")
+    target_path = target_path.rstrip("/")
+    for line in passed_lines:
+        node_id = line.removeprefix("PASSED ").strip()
+        candidate = node_id.removeprefix("./")
+        if candidate == normalized or candidate.startswith(normalized + "::"):
+            return True
+        if has_selector and candidate.startswith(normalized + "["):
+            return True
+        candidate_path = candidate.partition("::")[0]
+        if not has_selector and (
+            target_path in {"", "."}
+            or candidate_path == target_path
+            or candidate_path.startswith(target_path + "/")
+        ):
+            return True
+    return False
 
-    Works even with no pytest summary line — a native runner that exits 0 is
-    GREEN. If a pytest-shaped summary IS present, a nonzero failed/error count
-    forces RED regardless of exit code (defends against runners that mis-report).
-    """
-    summary = _summary_line(output)
+
+def _is_green(
+    returncode: int,
+    output: str,
+    *,
+    runner: str = DEFAULT_RUNNER,
+    target: str = "",
+) -> bool:
+    """Require positive evidence that at least one requested test executed."""
+    summaries = _summary_lines(output)
+    if _is_pytest_runner(runner) and len(summaries) != 1:
+        # One tool invocation represents one pytest session. Multiple result
+        # summaries are ambiguous and let an appended passing summary hide an
+        # earlier failure; no summary proves no pytest session completed.
+        return False
+    summary = summaries[0] if summaries else None
     counts, _ = _parse_counts(summary)
     if counts.get("failed", 0) or counts.get("error", 0):
         return False
-    return returncode == 0
+    if returncode != 0:
+        return False
+    if _is_pytest_runner(runner):
+        if counts.get("passed", 0) <= 0:
+            return False
+        return _target_has_pass_proof(target, _passed_tests(output))
+    if _is_go_runner(runner):
+        return _go_has_pass_proof(target, output)
+    # Native runners need an explicit, parser-backed proof adapter before their
+    # output can authorize a GREEN verdict. A bare exit code is forgeable via
+    # no-op commands and zero-test modes.
+    return False
 
 
 def _missing_substring_hint(output: str) -> str | None:
@@ -495,8 +648,8 @@ def _format_report(
     else:
         verdict_word = "GREEN" if green else "RED"
         parts.append(
-            f"Summary: no pytest summary line; decided from exit code "
-            f"{returncode} -> {verdict_word}"
+            "Summary: no parser-backed executed-test proof; "
+            f"exit code {returncode} -> {verdict_word}"
         )
 
     if failed:

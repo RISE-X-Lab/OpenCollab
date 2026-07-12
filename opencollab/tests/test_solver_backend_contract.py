@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
+import pytest
 from opencollab.adapters.env import ExecResult
 from opencollab.bootstrap.workflow_runtime import _load_specs_from_file
 from opencollab.harness.eval_adapter import (
@@ -14,25 +16,35 @@ from opencollab.harness.eval_adapter import (
 from opencollab.harness.solver_backend import (
     SolverBackend,
     SolverBudget,
+    SolverContractError,
+    SolverTaskView,
+    solve_with_public_task,
+    solver_task_view,
     workflow_solver_spec,
 )
 from opencollab.harness.workflow_backend import WorkflowBackend
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class FakeSolver:
     name = "fake"
 
+    def __init__(self) -> None:
+        self.seen_task_id = ""
+
     def solve(
         self,
-        task: TaskSpec,
+        task: SolverTaskView,
         workspace: PreparedWorkspace,
         run_dir: Path,
         budget: SolverBudget,
     ) -> PatchCandidate:
+        self.seen_task_id = task.task_id
         assert workspace.repo_root == "/app"
         assert budget.max_attempts == 1
         return PatchCandidate(
-            task_id=task.instance_id,
+            task_id=task.task_id,
             solver_name=self.name,
             patch="diff --git a/file b/file\n+value\n",
         )
@@ -43,12 +55,34 @@ class EmptySolver:
 
     def solve(
         self,
-        task: TaskSpec,
+        task: SolverTaskView,
         workspace: PreparedWorkspace,
         run_dir: Path,
         budget: SolverBudget,
     ) -> PatchCandidate:
-        return PatchCandidate(task_id=task.instance_id, solver_name=self.name, patch="")
+        return PatchCandidate(task_id=task.task_id, solver_name=self.name, patch="")
+
+
+class CandidateOverrideSolver:
+    name = "candidate-override"
+
+    def __init__(self, **overrides: Any) -> None:
+        self._overrides = overrides
+
+    def solve(
+        self,
+        task: SolverTaskView,
+        workspace: PreparedWorkspace,
+        run_dir: Path,
+        budget: SolverBudget,
+    ) -> PatchCandidate:
+        values: dict[str, Any] = {
+            "task_id": task.task_id,
+            "solver_name": self.name,
+            "patch": "",
+        }
+        values.update(self._overrides)
+        return PatchCandidate(**values)
 
 
 def _task() -> TaskSpec:
@@ -70,8 +104,44 @@ def test_solver_backend_protocol_accepts_patch_and_empty_solver(tmp_path: Path) 
 
     assert isinstance(patch_solver, SolverBackend)
     assert isinstance(empty_solver, SolverBackend)
-    assert not patch_solver.solve(_task(), workspace, tmp_path, budget).is_empty
-    assert empty_solver.solve(_task(), workspace, tmp_path, budget).is_empty
+    patch = solve_with_public_task(patch_solver, _task(), workspace, tmp_path, budget)
+    empty = solve_with_public_task(empty_solver, _task(), workspace, tmp_path, budget)
+
+    assert patch_solver.seen_task_id.startswith("solver-")
+    assert patch_solver.seen_task_id != "task-1"
+    assert patch.task_id == "task-1"
+    assert empty.task_id == "task-1"
+    assert not patch.is_empty
+    assert empty.is_empty
+
+
+@pytest.mark.parametrize(
+    ("overrides", "error"),
+    [
+        ({"task_id": "solver-another-task"}, "task_id"),
+        ({"solver_name": "another-solver"}, "solver_name"),
+        ({"patch": None}, "patch"),
+        ({"metadata": []}, "metadata"),
+        ({"token_count": -1}, "token_count"),
+        ({"cost_usd": float("nan")}, "cost_usd"),
+    ],
+)
+def test_solver_bridge_rejects_unattributable_candidates(
+    overrides: dict[str, Any],
+    error: str,
+    tmp_path: Path,
+) -> None:
+    backend = CandidateOverrideSolver(**overrides)
+    workspace = PreparedWorkspace(container_id="cid", repo_root="/app", workdir="/app")
+
+    with pytest.raises(SolverContractError, match=error):
+        solve_with_public_task(
+            backend,
+            _task(),
+            workspace,
+            tmp_path,
+            SolverBudget(),
+        )
 
 
 def test_default_solver_specs_include_g11_base_team_and_team_pro() -> None:
@@ -82,9 +152,11 @@ def test_default_solver_specs_include_g11_base_team_and_team_pro() -> None:
     assert team_pro.workflow_name == "team-pro"
     assert team_pro.max_attempts == 3
     assert team_pro.default_budget_tokens == 4_000_000
-    assert team_pro.default_model_name == "opencollab-glm52-teampro-prolite"
+    assert team_pro.required_runtime_options == (
+        ("--model-name", "OPENCOLLAB_SWE_MODEL_NAME"),
+        ("--llm-model", "OPENCOLLAB_SWE_LLM_MODEL"),
+    )
     assert team_pro.config_overrides == {
-        "model": "glm-5.2",
         "temperature": 1.0,
         "top_p": 1.0,
         "max_output_tokens": 32_768,
@@ -92,18 +164,134 @@ def test_default_solver_specs_include_g11_base_team_and_team_pro() -> None:
     assert workflow_solver_spec("openhands").workflow_name == "openhands-external"
 
 
+def test_solver_task_view_excludes_answers_and_hidden_tests() -> None:
+    task = TaskSpec(
+        instance_id="owner__repo-target-commit",
+        dataset="swe-batch-pro-lite",
+        repo="owner/repo",
+        problem_statement="Fix the public bug report.",
+        base_commit="target-commit",
+        fail_to_pass=("tests/test_secret.py::test_fix",),
+        pass_to_pass=("tests/test_regression.py",),
+        selected_test_files=("tests/test_secret.py",),
+        test_patch="secret test patch",
+        reference_patch="gold answer",
+        metadata={
+            "FAIL_TO_PASS": ["tests/test_secret.py::test_fix"],
+            "test_patch": "secret test patch",
+            "patch": "gold answer",
+            "solver_public_hints": ["The public API should remain compatible."],
+            "solver_public_metadata": {"language": "Python"},
+        },
+    )
+
+    view = solver_task_view(task)
+
+    assert view.task_id.startswith("solver-")
+    assert task.instance_id not in view.task_id
+    assert view.repo == "owner/repo"
+    assert view.problem_statement == "Fix the public bug report."
+    assert view.hints == ("The public API should remain compatible.",)
+    assert dict(view.metadata) == {"language": "Python"}
+    serialized = repr(view)
+    for hidden in (
+        "gold answer",
+        "secret test patch",
+        "tests/test_secret.py",
+        "target-commit",
+        "FAIL_TO_PASS",
+        "PASS_TO_PASS",
+    ):
+        assert hidden not in serialized
+
+
+def test_solver_task_view_rejects_hidden_fields_marked_as_public() -> None:
+    task = TaskSpec(
+        instance_id="task-1",
+        dataset="swe-batch-pro-lite",
+        repo="owner/repo",
+        problem_statement="Fix it.",
+        metadata={"solver_public_metadata": {"reference_patch": "answer"}},
+    )
+
+    with pytest.raises(ValueError, match="hidden field"):
+        solver_task_view(task)
+
+
+def test_solver_task_view_rejects_non_json_public_metadata() -> None:
+    task = TaskSpec(
+        instance_id="task-1",
+        dataset="swe-batch-pro-lite",
+        repo="owner/repo",
+        problem_statement="Fix it.",
+        metadata={"solver_public_metadata": {"unsafe": object()}},
+    )
+
+    with pytest.raises(ValueError, match="JSON-like"):
+        solver_task_view(task)
+
+
+def test_solver_task_view_ignores_public_id_override() -> None:
+    task = TaskSpec(
+        instance_id="owner__repo-target-commit",
+        dataset="swe-batch-pro-lite",
+        repo="owner/repo",
+        problem_statement="Fix it.",
+        metadata={"solver_public_task_id": "owner__repo-target-commit"},
+    )
+
+    view = solver_task_view(task)
+
+    assert re.fullmatch(r"solver-[0-9a-f]{32}", view.task_id)
+    assert view.task_id != task.instance_id
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"solver_public_hints": ["Apply secret reference patch here."]},
+        {"solver_public_metadata": {"nested": {"value": "secret test patch"}}},
+        {
+            "innocent_name": "private evaluation oracle",
+            "solver_public_metadata": {"description": "private evaluation oracle"},
+        },
+    ],
+)
+def test_solver_task_view_rejects_hidden_values_in_public_containers(
+    metadata: dict[str, Any],
+) -> None:
+    task = TaskSpec(
+        instance_id="task-1",
+        dataset="swe-batch-pro-lite",
+        repo="owner/repo",
+        problem_statement="Fix it.",
+        test_patch="secret test patch",
+        reference_patch="secret reference patch",
+        metadata=metadata,
+    )
+
+    with pytest.raises(ValueError, match="hidden task information"):
+        solver_task_view(task)
+
+
+def test_solver_budget_has_no_solver_visible_metadata_channel() -> None:
+    with pytest.raises(TypeError, match="metadata"):
+        SolverBudget(metadata={"reference_patch": "answer"})  # type: ignore[call-arg]
+
+
 def test_prepared_workspace_converts_to_docker_workspace_environment() -> None:
-    workspace = PreparedWorkspace(container_id="abc123", repo_root="/app", workdir="/app")
+    container_id = "a" * 64
+    workspace = PreparedWorkspace(container_id=container_id, repo_root="/app", workdir="/app")
 
     env = docker_environment_for_workspace(workspace)
 
     assert env.workspace == "/app"
-    assert getattr(env, "_container_id") == "abc123"
+    assert getattr(env, "_container_id") == container_id
     assert getattr(env, "_exec_workdir") == "/app"
 
 
 def test_base_team_workflow_registers_without_reexporting_other_workflows() -> None:
-    specs = _load_specs_from_file("workflows/base_team.py")
+    specs = _load_specs_from_file(str(REPO_ROOT / "workflows" / "base_team.py"))
     names = {spec.name for spec in specs}
 
     assert names == {"base-team"}
@@ -112,7 +300,9 @@ def test_base_team_workflow_registers_without_reexporting_other_workflows() -> N
 
 
 def test_team_pro_workflow_alias_preserves_dynamic_workflow_phases() -> None:
-    specs = _load_specs_from_file("workflows/analyst_solve.py")
+    specs = _load_specs_from_file(
+        str(REPO_ROOT / "workflows" / "analyst_solve.py")
+    )
     by_name = {spec.name: spec for spec in specs}
 
     assert {"analyst-solve", "team-pro"} <= set(by_name)
@@ -161,7 +351,8 @@ def test_workflow_backend_returns_patch_candidate(monkeypatch: Any, tmp_path: Pa
         cfg={"model": "m", "provider": "p"},
         workflows_dir=tmp_path,
     )
-    candidate = backend.solve(
+    candidate = solve_with_public_task(
+        backend,
         _task(),
         PreparedWorkspace(container_id="cid", repo_root="/app", workdir="/app"),
         tmp_path / "run",
@@ -175,6 +366,9 @@ def test_workflow_backend_returns_patch_candidate(monkeypatch: Any, tmp_path: Pa
     assert calls["kwargs"]["budget"] == 100
     assert calls["diff_cmd"] == "git --no-pager diff --binary"
     assert candidate.solver_name == "baseTeam"
+    assert calls["args"]["instance_id"].startswith("solver-")
+    assert calls["args"]["instance_id"] != "task-1"
+    assert candidate.task_id == "task-1"
     assert candidate.token_count == 17
     assert not candidate.is_empty
 
@@ -217,14 +411,15 @@ def test_workflow_backend_applies_team_pro_config_overrides(monkeypatch: Any, tm
         },
         workflows_dir=tmp_path,
     )
-    backend.solve(
+    solve_with_public_task(
+        backend,
         _task(),
         PreparedWorkspace(container_id="cid", repo_root="/app", workdir="/app"),
         tmp_path / "run",
         SolverBudget(),
     )
 
-    assert calls["cfg"]["model"] == "glm-5.2"
+    assert calls["cfg"]["model"] == "file-model"
     assert calls["cfg"]["temperature"] == 1.0
     assert calls["cfg"]["top_p"] == 1.0
     assert calls["cfg"]["max_output_tokens"] == 32_768
@@ -268,7 +463,8 @@ def test_workflow_backend_uses_integer_default_budget(monkeypatch: Any, tmp_path
         cfg={"model": "m", "provider": "p"},
         workflows_dir=tmp_path,
     )
-    backend.solve(
+    solve_with_public_task(
+        backend,
         _task(),
         PreparedWorkspace(container_id="cid", repo_root="/app", workdir="/app"),
         tmp_path / "run",

@@ -32,7 +32,7 @@ def test_token_cost_summary_uses_api_usage_as_billable_source(tmp_path):
                 "schema": "opencollab.api_usage.v1",
                 "pid": 11,
                 "status": "success",
-                "model": "glm-5.2",
+                "model": "provider/model-a",
                 "usage": {
                     "input_tokens": 1000,
                     "uncached_input_tokens": 200,
@@ -46,7 +46,7 @@ def test_token_cost_summary_uses_api_usage_as_billable_source(tmp_path):
                 "schema": "opencollab.api_usage.v1",
                 "pid": 22,
                 "status": "success",
-                "model": "glm-5.2",
+                "model": "provider/model-a",
                 "usage": {
                     "input_tokens": 2000,
                     "uncached_input_tokens": 1500,
@@ -104,7 +104,7 @@ def test_api_usage_without_cost_is_not_reported_as_zero_dollars(tmp_path):
             {
                 "schema": "opencollab.api_usage.v1",
                 "status": "success",
-                "model": "glm-5.2",
+                "model": "provider/model-a",
                 "usage": {
                     "input_tokens": 100,
                     "output_tokens": 20,
@@ -121,6 +121,36 @@ def test_api_usage_without_cost_is_not_reported_as_zero_dollars(tmp_path):
     assert summary["billable"]["cost_usd"] is None
     assert summary["billable"]["partial_cost_usd"] == 0.0
     assert "cost_cny" not in summary["billable"]
+
+
+def test_token_cost_default_includes_all_models_and_filter_is_explicit(tmp_path):
+    run_dir = tmp_path / "run"
+    _write_jsonl(
+        run_dir / ".opencollab/logs/api_usage.jsonl",
+        [
+            {
+                "schema": "opencollab.api_usage.v1",
+                "status": "success",
+                "model": "provider/model-a",
+                "usage": {"total_tokens": 10, "cost_usd": 0.01},
+            },
+            {
+                "schema": "opencollab.api_usage.v1",
+                "status": "success",
+                "model": "provider/model-b",
+                "usage": {"total_tokens": 20, "cost_usd": 0.02},
+            },
+        ],
+    )
+
+    unfiltered = build_summary([run_dir])
+    filtered = build_summary([run_dir], model_filter="model-a")
+
+    assert unfiltered["model_filter"] is None
+    assert unfiltered["api_usage"]["calls"] == 2
+    assert unfiltered["api_usage"]["total_tokens"] == 30
+    assert filtered["api_usage"]["calls"] == 1
+    assert filtered["api_usage"]["total_tokens"] == 10
 
 
 def test_collect_workflow_usage_deduplicates_overlapping_roots(tmp_path):
@@ -175,7 +205,7 @@ def test_remote_summary_timeout_error_includes_context(monkeypatch):
         ssh_command="ssh",
         remote_host="host",
         run_dir=["/remote/run"],
-        model="glm-5.2",
+        model="provider/model-a",
         usd_cny=None,
         timeout=5,
     )

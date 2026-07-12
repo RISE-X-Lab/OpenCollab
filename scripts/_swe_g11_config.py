@@ -4,18 +4,35 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
+import os
 import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+try:
+    from scripts import _swe_eval_layer_integrity as _eval_integrity
+except ModuleNotFoundError as exc:  # Direct execution adds ``scripts`` rather than the repo root.
+    if exc.name != "scripts":
+        raise
+    import _swe_eval_layer_integrity as _eval_integrity  # type: ignore[no-redef]
+
+from opencollab.harness.swe_eval_records import (  # noqa: E402
+    SUBMISSION_INTEGRITY_PROVEN,
+    metric_submission_integrity,
+)
+from opencollab.harness.swe_generation_proof import (  # noqa: E402
+    current_generation_summary_proof_valid,
+    solver_git_snapshot_valid,
+)
 
 REPO = Path(__file__).resolve().parents[1]
-DEFAULT_REMOTE_ROOT = "/nfsEDS/dongyh/data/kaka/docker/opencollab"
-DEFAULT_EVAL_WORK_ROOT = DEFAULT_REMOTE_ROOT + "/eval_work"
-DEFAULT_MODEL_NAME = "opencollab-glm52-g11-16m-prolite"
+DEFAULT_REMOTE_ROOT = os.environ.get("OPENCOLLAB_SWE_REMOTE_ROOT", "").strip()
+DEFAULT_EVAL_WORK_ROOT = os.environ.get("OPENCOLLAB_SWE_EVAL_WORK_ROOT", "").strip()
+if not DEFAULT_EVAL_WORK_ROOT and DEFAULT_REMOTE_ROOT:
+    DEFAULT_EVAL_WORK_ROOT = DEFAULT_REMOTE_ROOT.rstrip("/") + "/eval_work"
+DEFAULT_MODEL_NAME = os.environ.get("OPENCOLLAB_SWE_MODEL_NAME", "").strip()
 ALLOWED_WORKFLOW_ENV_KEYS = frozenset(
     {
         "OPENCOLLAB_MAX_OUTPUT_TOKENS",
@@ -152,12 +169,46 @@ def default_run_id(indices: tuple[int, ...]) -> str:
 def resolve_config(args: argparse.Namespace) -> ParallelConfig:
     indices = parse_indices(args)
     run_id = _safe_slug(args.run_id or default_run_id(indices))
-    remote_base = args.remote_base or f"{args.remote_eval_work_root.rstrip('/')}/{run_id}"
+    remote_eval_work_root = str(args.remote_eval_work_root or "").strip()
+    remote_base = str(args.remote_base or "").strip()
+    if not remote_base:
+        if not remote_eval_work_root:
+            raise ValueError(
+                "pass --remote-base or configure --remote-eval-work-root or "
+                "OPENCOLLAB_SWE_EVAL_WORK_ROOT"
+            )
+        remote_base = f"{remote_eval_work_root.rstrip('/')}/{run_id}"
     remote_runtime_repo = args.remote_runtime_repo or f"{remote_base}/_runtime/repo"
     output_dir = args.output_dir or (REPO / "docs" / "monitoring" / run_id)
     session_prefix = args.session_prefix or run_id
     max_workers = max(1, args.max_workers)
     min_workers = min(max_workers, max(1, args.min_workers))
+    host = str(args.host or "").strip()
+    remote_root = str(args.remote_root or "").strip()
+    model_name = str(args.model_name or "").strip()
+    llm_model = str(getattr(args, "llm_model", "") or "").strip()
+    workflow = str(args.workflow or "").strip()
+    openhands_command = str(getattr(args, "openhands_command", "") or "").strip()
+    proxy_env_file = getattr(args, "proxy_env_file", None)
+    remote_proxy_base_url = str(args.remote_proxy_base_url or "").strip()
+    local_proxy_base_url = str(args.local_proxy_base_url or "").strip()
+    required = {
+        "--host or OPENCOLLAB_SWE_HOST": host,
+        "--remote-root or OPENCOLLAB_SWE_REMOTE_ROOT": remote_root,
+        "--model-name or OPENCOLLAB_SWE_MODEL_NAME": model_name,
+        "--llm-model or OPENCOLLAB_SWE_LLM_MODEL": llm_model,
+        "--proxy-env-file or OPENCOLLAB_PROXY_ENV_FILE": proxy_env_file,
+        "--remote-proxy-base-url or OPENCOLLAB_REMOTE_PROXY_BASE_URL": remote_proxy_base_url,
+        "--local-proxy-base-url or OPENCOLLAB_LOCAL_PROXY_BASE_URL": local_proxy_base_url,
+    }
+    missing = [label for label, value in required.items() if not value]
+    if missing:
+        raise ValueError("missing required runtime configuration: " + ", ".join(missing))
+    if workflow == "openhands-external" and not openhands_command:
+        raise ValueError(
+            "openhands-external requires --openhands-command or a solver entrypoint "
+            "that supplies one"
+        )
     return ParallelConfig(
         indices=indices,
         max_workers=max_workers,
@@ -168,28 +219,28 @@ def resolve_config(args: argparse.Namespace) -> ParallelConfig:
         output_dir=Path(output_dir),
         remote_base=remote_base,
         remote_runtime_repo=remote_runtime_repo,
-        model_name=args.model_name,
-        llm_model=getattr(args, "llm_model", ""),
+        model_name=model_name,
+        llm_model=llm_model,
         context_window=getattr(args, "context_window", None),
         temperature=getattr(args, "temperature", None),
         top_p=getattr(args, "top_p", None),
         max_output_tokens=getattr(args, "max_output_tokens", None),
         session_prefix=session_prefix,
-        host=args.host,
+        host=host,
         ssh_command=args.ssh_command,
-        remote_root=args.remote_root,
-        workflow=args.workflow,
+        remote_root=remote_root,
+        workflow=workflow,
         workflow_env=normalize_workflow_env(getattr(args, "workflow_env", ())),
-        openhands_command=getattr(args, "openhands_command", ""),
+        openhands_command=openhands_command,
         openhands_empty_patch_rejections=max(
             0, getattr(args, "openhands_empty_patch_rejections", 2)
         ),
         max_empty_patch_retries=min(
             1, max(0, getattr(args, "max_empty_patch_retries", 1))
         ),
-        remote_proxy_base_url=args.remote_proxy_base_url,
-        local_proxy_base_url=args.local_proxy_base_url,
-        proxy_env_file=args.proxy_env_file,
+        remote_proxy_base_url=remote_proxy_base_url,
+        local_proxy_base_url=local_proxy_base_url,
+        proxy_env_file=Path(proxy_env_file),
         budget=args.budget,
         max_steps=args.max_steps,
         swe_timeout=args.swe_timeout,
@@ -212,29 +263,26 @@ def resolve_config(args: argparse.Namespace) -> ParallelConfig:
 
 
 def _snapshot_evidence_valid(value: Any) -> bool:
-    if not isinstance(value, dict):
-        return False
-    object_id = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
-    return bool(
-        value.get("enabled") is True
-        and object_id.fullmatch(str(value.get("anonymous_head") or ""))
-        and object_id.fullmatch(str(value.get("base_tree") or ""))
-        and value.get("commit_count") == 1
-        and value.get("remote_count") == 0
-        and value.get("extra_git_metadata") == 0
-        and isinstance(value.get("removed_git_metadata"), int)
-    )
+    return solver_git_snapshot_valid(value)
 
 
-def report_is_reusable(
-    summary: dict[str, Any], config: ParallelConfig, expected_index: int
-) -> bool:
-    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
-    rows = summary.get("rows") if isinstance(summary.get("rows"), list) else []
-    tasks = int(counts.get("tasks") or 0)
-    if tasks != 1 or len(rows) != tasks:
-        return False
-    expected_identity = {
+SINGLE_TASK_COUNT_FIELDS = (
+    "tasks",
+    "generation_done",
+    "empty_patch",
+    "eval_done",
+    "eval_attempts",
+    "eval_retry_tasks",
+    "resolved",
+    "unresolved",
+    "technical_failed",
+)
+
+
+def _expected_summary_identity(
+    config: ParallelConfig, expected_index: int
+) -> dict[str, Any]:
+    expected = {
         "workflow": config.workflow,
         "model_name": config.model_name,
         "llm_model": config.llm_model,
@@ -253,86 +301,170 @@ def report_is_reusable(
         "base_run_dir": f"{config.remote_base}/task_{expected_index}",
     }
     if config.workflow == "openhands-external":
-        expected_identity["openhands_empty_patch_rejections"] = getattr(
+        expected["openhands_empty_patch_rejections"] = getattr(
             config, "openhands_empty_patch_rejections", 2
         )
-        expected_identity["openhands_command_sha256"] = _openhands_command_sha256(
+        expected["openhands_command_sha256"] = _openhands_command_sha256(
             getattr(config, "openhands_command", "")
         )
-    if any(summary.get(key) != value for key, value in expected_identity.items()):
-        return False
+    return expected
+
+
+def _summary_runtime_identity_reasons(
+    summary: dict[str, Any], config: ParallelConfig, expected_index: int
+) -> list[str]:
+    reasons = [
+        f"summary_identity_mismatch:{key}"
+        for key, expected in _expected_summary_identity(config, expected_index).items()
+        if summary.get(key) != expected
+    ]
     expected_workflow_env = {
         key: value
         for item in config.workflow_env
         for key, _, value in [item.partition("=")]
     }
     if summary.get("workflow_env") != expected_workflow_env:
-        return False
-    if summary.get("status") != "done" or tasks <= 0:
-        return False
-    if int(counts.get("technical_failed") or 0) != 0:
-        return False
-    completed_generation = int(counts.get("generation_done") or 0) + int(
-        counts.get("empty_patch") or 0
-    )
-    completed_eval_or_empty = int(counts.get("eval_done") or 0) + int(
-        counts.get("empty_patch") or 0
-    )
-    if completed_generation != tasks:
-        return False
-    if completed_eval_or_empty != tasks:
-        return False
-    for row in rows:
-        try:
-            row_index = int(row.get("index"))
-        except (TypeError, ValueError):
-            return False
-        if row_index != expected_index or not str(row.get("task") or "").strip():
-            return False
-        generation = row.get("generation") if isinstance(row.get("generation"), dict) else {}
-        evaluation = row.get("eval") if isinstance(row.get("eval"), dict) else {}
-        if generation.get("status") not in {"generation_done", "empty_patch"}:
-            return False
-        if config.workflow == "openhands-external" and not _snapshot_evidence_valid(
-            generation.get("solver_git_snapshot")
+        reasons.append("summary_identity_mismatch:workflow_env")
+    return reasons
+
+
+def _strict_success_row_reasons(
+    row: Any, config: ParallelConfig, expected_index: int
+) -> list[str]:
+    if not isinstance(row, dict):
+        return ["invalid_task_row"]
+    if _eval_integrity.strict_index(row.get("index")) != expected_index:
+        return ["task_row_index_mismatch"]
+    task = str(row.get("task") or "").strip()
+    if not task:
+        return ["missing_task_identity"]
+    generation = row.get("generation") if isinstance(row.get("generation"), dict) else {}
+    evaluation = row.get("eval") if isinstance(row.get("eval"), dict) else {}
+    generation_status = generation.get("status")
+    expected_eval = "skipped_empty_patch" if generation_status == "empty_patch" else "eval_done"
+    reasons = list(_eval_integrity.attempt_integrity(row, task).reasons)
+    if generation_status not in {"generation_done", "empty_patch"}:
+        reasons.append("unexpected_terminal_generation_status")
+    if evaluation.get("status") != expected_eval:
+        reasons.append("unexpected_terminal_eval_status")
+    if not current_generation_summary_proof_valid(generation):
+        reasons.append("missing_trusted_generation_proof")
+    if generation_status == "generation_done":
+        if metric_submission_integrity(generation) != SUBMISSION_INTEGRITY_PROVEN:
+            reasons.append("submission_integrity_unproven")
+        if not _eval_integrity.attempt_integrity(row, task).direct_execution_proven:
+            reasons.append("missing_direct_execution_proof")
+    elif generation_status == "empty_patch" and not _eval_integrity.declared_empty_patch(row):
+        reasons.append("empty_patch_integrity_unproven")
+    return list(dict.fromkeys(reasons))
+
+
+def single_task_summary_validation_reasons(
+    summary: dict[str, Any], config: ParallelConfig, expected_index: int
+) -> tuple[str, ...]:
+    """Validate fresh and reusable single-task summaries against one contract."""
+    reasons: list[str] = []
+    if summary.get("schema") != "opencollab.swe_g11_prolite_runner.v1":
+        reasons.append("invalid_summary_schema")
+    counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    normalized: dict[str, int] = {}
+    for count_name in SINGLE_TASK_COUNT_FIELDS:
+        value = counts.get(count_name)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            reasons.append(f"invalid_count:{count_name}")
+        else:
+            normalized[count_name] = value
+    if len(normalized) != len(SINGLE_TASK_COUNT_FIELDS):
+        return tuple(reasons)
+
+    rows = summary.get("rows") if isinstance(summary.get("rows"), list) else []
+    status = str(summary.get("status") or "")
+    if status in {"preflight_failed", "invalid_config"}:
+        if (
+            normalized["tasks"] != 0
+            or rows
+            or normalized["technical_failed"] != 1
+            or any(normalized[count_name] for count_name in SINGLE_TASK_COUNT_FIELDS[1:-1])
         ):
-            return False
-        expected_eval = (
-            "skipped_empty_patch"
-            if generation.get("status") == "empty_patch"
-            else "eval_done"
-        )
-        if evaluation.get("status") != expected_eval:
-            return False
-    return True
+            reasons.append("preflight_summary_count_conflict")
+        return tuple(reasons)
+
+    if status not in {"done", "done_with_technical_failures"}:
+        reasons.append("nonterminal_runner_status")
+        return tuple(reasons)
+    reasons.extend(_summary_runtime_identity_reasons(summary, config, expected_index))
+    if normalized["tasks"] != 1 or len(rows) != 1:
+        reasons.append("terminal_summary_census_conflict")
+        return tuple(dict.fromkeys(reasons))
+
+    if status == "done":
+        if (
+            normalized["technical_failed"] != 0
+            or normalized["generation_done"] + normalized["empty_patch"] != 1
+            or normalized["eval_done"] + normalized["empty_patch"] != 1
+            or normalized["resolved"] + normalized["unresolved"]
+            != normalized["eval_done"]
+        ):
+            reasons.append("done_summary_count_conflict")
+        reasons.extend(_strict_success_row_reasons(rows[0], config, expected_index))
+        return tuple(dict.fromkeys(reasons))
+
+    row = rows[0] if isinstance(rows[0], dict) else {}
+    generation = row.get("generation") if isinstance(row.get("generation"), dict) else {}
+    evaluation = row.get("eval") if isinstance(row.get("eval"), dict) else {}
+    evaluation_summary = (
+        evaluation.get("summary") if isinstance(evaluation.get("summary"), dict) else {}
+    )
+    task = str(row.get("task") or "").strip()
+    if (
+        normalized["technical_failed"] != 1
+        or normalized["resolved"] != 0
+        or normalized["unresolved"] != 0
+        or normalized["empty_patch"] != 0
+        or normalized["eval_done"] != 0
+        or normalized["generation_done"]
+        != int(generation.get("status") == "generation_done")
+    ):
+        reasons.append("technical_summary_count_conflict")
+    if _eval_integrity.strict_index(row.get("index")) != expected_index:
+        reasons.append("task_row_index_mismatch")
+    if not task:
+        reasons.append("missing_task_identity")
+    else:
+        if str(generation.get("task") or "") != task:
+            reasons.append("generation_task_mismatch")
+        if str(evaluation.get("task") or "") != task:
+            reasons.append("evaluation_task_mismatch")
+        if evaluation.get("status") == "eval_done":
+            reasons.append("technical_eval_status_conflict")
+        if evaluation_summary.get("resolved") is True:
+            reasons.append("technical_resolved_conflict")
+        if generation.get("status") == "generation_done":
+            identity = _eval_integrity.attempt_integrity(row, task)
+            reasons.extend(identity.reasons)
+            if metric_submission_integrity(generation) != SUBMISSION_INTEGRITY_PROVEN:
+                reasons.append("submission_integrity_unproven")
+            if not current_generation_summary_proof_valid(generation):
+                reasons.append("missing_trusted_generation_proof")
+        elif not str(generation.get("status") or ""):
+            reasons.append("missing_generation_status")
+    return tuple(dict.fromkeys(reasons))
+
+
+def report_is_reusable(
+    summary: dict[str, Any], config: ParallelConfig, expected_index: int
+) -> bool:
+    return bool(
+        summary.get("status") == "done"
+        and not single_task_summary_validation_reasons(summary, config, expected_index)
+    )
 
 
 def normalize_legacy_empty_patch_summary(
     summary: dict[str, Any],
 ) -> tuple[dict[str, Any], bool]:
-    rows = summary.get("rows") if isinstance(summary.get("rows"), list) else []
-    if len(rows) != 1:
-        return summary, False
-    generation = (
-        rows[0].get("generation")
-        if isinstance(rows[0].get("generation"), dict)
-        else {}
-    )
-    evaluation = rows[0].get("eval") if isinstance(rows[0].get("eval"), dict) else {}
-    if not (
-        generation.get("workflow_status") == "empty_patch_after_done"
-        and int(generation.get("patch_len") or 0) == 0
-        and evaluation.get("status") == "skipped_no_generation_patch"
-    ):
-        return summary, False
-    normalized = json.loads(json.dumps(summary))
-    normalized["status"] = "done"
-    normalized["rows"][0]["generation"]["status"] = "empty_patch"
-    normalized["rows"][0]["eval"]["status"] = "skipped_empty_patch"
-    counts = normalized.setdefault("counts", {})
-    counts["empty_patch"] = 1
-    counts["technical_failed"] = 0
-    return normalized, True
+    """Compatibility shim that leaves unverifiable legacy evidence unchanged."""
+    return summary, False
 
 
 RESOURCE_RUNNER_STATUSES = {

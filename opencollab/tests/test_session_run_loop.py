@@ -4,10 +4,13 @@ import asyncio
 import copy
 from types import SimpleNamespace
 
+import pytest
 from opencollab.application.event_bus import EventBus
 from opencollab.application.session_run import (
     READS_NUDGE_HARD,
     READS_NUDGE_SOFT,
+    GenerationTimeoutError,
+    PendingStep,
     SessionRunUseCase,
 )
 from opencollab.domain.pending import RowKind, RowStatus
@@ -113,6 +116,21 @@ class FakeToolExecutionDeferred:
         return self.deferred_outcomes.get(tc["id"], (None, "no outcome"))
 
 
+class CompletingBeforeReturnToolExecution(FakeToolExecutionDeferred):
+    """Simulate a child that finishes before ``execute_deferred`` returns."""
+
+    def __init__(self, state: SessionState):
+        super().__init__(deferred_outcomes={"s1": (7, None)})
+        self.state = state
+
+    async def execute_deferred(self, tc):
+        self.deferred_calls.append(copy.deepcopy(tc))
+        row = self.state.pending_events.rows[tc["id"]]
+        assert row.status is RowStatus.PENDING
+        self.state.pending_events.fill(tc["id"], result="fast child result")
+        return self.deferred_outcomes[tc["id"]]
+
+
 class FakeTracer:
     def __init__(self):
         self.steps = []
@@ -161,6 +179,15 @@ def build_runner(
         tracer=tracer,
         **kwargs,
     )
+
+
+@pytest.mark.parametrize(
+    "per_call_timeout",
+    [0, -1, float("nan"), float("inf"), True, "bad"],
+)
+def test_runner_rejects_unbounded_per_call_timeout(per_call_timeout):
+    with pytest.raises(ValueError, match="finite positive"):
+        build_runner(per_call_timeout=per_call_timeout)
 
 
 def test_run_loop_budget_exceeded_emits_error_and_sets_phase():
@@ -241,6 +268,26 @@ def test_run_loop_step_limit_exceeded_emits_error_and_sets_phase():
         "content": "[Step limit reached: 3 steps. Session stopped.]",
     }
     assert events == [("error", {"reason": "step_limit_exceeded", "aid": -1})]
+
+
+def test_new_turn_precheck_failure_does_not_return_previous_answer():
+    state = SessionState(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "previous answer"},
+            {"role": "user", "content": "second question"},
+        ],
+        step_count=3,
+    )
+    llm = FakeLLM()
+    runner = build_runner(state=state, llm=llm, max_steps=3)
+
+    result = run(runner.run_loop())
+
+    assert result == ""
+    assert llm.calls == []
+    assert state.phase is SessionPhase.STEP_LIMIT_EXCEEDED
 
 
 def test_run_loop_cancel_event_appends_interrupt_and_sets_phase():
@@ -1110,6 +1157,33 @@ def test_deferred_spawn_suspends_then_resumes_after_fill():
     assert {"role": "tool", "tool_call_id": "s1", "content": "child result"} in second_call_msgs
 
 
+def test_deferred_row_exists_before_fast_child_can_complete():
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    llm = FakeLLM(
+        [
+            llm_response(
+                content="spawning",
+                tool_calls=[tool_call(call_id="s1", name="spawn_agent", arguments="{}")],
+                finish_reason="tool_calls",
+            ),
+            llm_response(content="done after fast child", total_tokens=4),
+        ]
+    )
+    te = CompletingBeforeReturnToolExecution(state)
+    runner = build_runner(state=state, llm=llm, tool_execution=te)
+
+    result = run(asyncio.wait_for(runner.run_loop(), timeout=0.5))
+
+    assert result == "done after fast child"
+    assert state.phase is SessionPhase.DONE
+    assert state.pending_events.is_empty()
+    assert {
+        "role": "tool",
+        "tool_call_id": "s1",
+        "content": "fast child result",
+    } in llm.calls[1]["messages"]
+
+
 def test_mixed_batch_buffers_immediate_and_resumes_in_order():
     state = SessionState(messages=[{"role": "system", "content": "sys"}])
     batch = [
@@ -1147,6 +1221,34 @@ def test_mixed_batch_buffers_immediate_and_resumes_in_order():
         {"role": "tool", "tool_call_id": "b1", "content": "bash ok"},
         {"role": "tool", "tool_call_id": "s1", "content": "child done"},
     ]
+
+
+def test_deferred_batch_with_blocked_tool_uses_original_order():
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    state.phase = SessionPhase.EXECUTING_TOOLS
+    blocked_read = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
+    deferred_spawn = tool_call(call_id="s1", name="spawn_agent", arguments="{}")
+    te = FakeToolExecutionDeferred(deferred_outcomes={"s1": (9, None)})
+    runner = build_runner(state=state, tool_execution=te)
+    runner._pending = PendingStep(
+        response=llm_response(
+            content="mixed",
+            tool_calls=[blocked_read, deferred_spawn],
+            finish_reason="tool_calls",
+        ),
+        latency=0.0,
+    )
+    runner._pending_tool_allowlist = frozenset({"spawn_agent"})
+    runner._pending_tool_gate_label = "test gate"
+
+    run(runner.execute_pending_tools())
+
+    assert state.phase is SessionPhase.AWAITING_EVENTS
+    assert state.pending_events.rows["r1"].order == 0
+    assert state.pending_events.rows["s1"].order == 1
+    assert "not allowed during the test gate" in state.pending_events.rows["r1"].result
+    assert te.process_calls == []
+    assert te.deferred_calls == [deferred_spawn]
 
 
 def test_mixed_batch_folds_in_reads_counter_for_immediate_reads():
@@ -1377,7 +1479,7 @@ class SlowLLM:
     """A provider whose ``complete`` awaits ``delay`` seconds before answering.
 
     Stands in for a death-slow thinking generation; with a small
-    ``per_call_timeout`` the run loop must surface ``asyncio.TimeoutError``.
+    ``per_call_timeout`` the run loop must surface ``GenerationTimeoutError``.
     """
 
     def __init__(self, response, delay):
@@ -1416,8 +1518,8 @@ def test_per_call_timeout_raises_on_slow_generation():
     runner = build_runner(state=state, llm=llm, per_call_timeout=0.01)
 
     # The single generation exceeds the 0.01s ceiling -> the run loop marks the
-    # session failed and re-raises the TimeoutError.
-    with pytest.raises(asyncio.TimeoutError):
+    # session failed and re-raises the generation-specific timeout.
+    with pytest.raises(GenerationTimeoutError):
         run(runner.run_loop())
 
     assert state.phase is SessionPhase.ERROR
@@ -1433,17 +1535,40 @@ def test_per_call_timeout_returns_before_cancel_cleanup_finishes():
         raised = False
         try:
             await asyncio.wait_for(runner.run_loop(), timeout=0.5)
-        except asyncio.TimeoutError:
+        except GenerationTimeoutError:
             raised = True
 
         assert raised is True
         assert state.phase is SessionPhase.ERROR
-        assert "TimeoutError" in (state.terminal_reason or "")
+        assert "GenerationTimeoutError" in (state.terminal_reason or "")
+        assert len(runner.pending_cleanup_tasks) == 1
         llm.release_cancel.set()
-        await asyncio.sleep(0)
+        while runner.pending_cleanup_tasks:
+            await asyncio.sleep(0)
         assert llm.cancel_seen.is_set()
 
     run(scenario())
+
+
+def test_provider_timeout_is_not_relabelled_as_generation_ceiling():
+    import pytest
+
+    class ProviderTimeoutLLM:
+        async def complete(self, messages, tools=None, temperature=0.0):
+            raise asyncio.TimeoutError("provider transport timeout")
+
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    runner = build_runner(
+        state=state,
+        llm=ProviderTimeoutLLM(),
+        per_call_timeout=10.0,
+    )
+
+    with pytest.raises(asyncio.TimeoutError) as captured:
+        run(runner.run_loop())
+
+    assert not isinstance(captured.value, GenerationTimeoutError)
+    assert "provider transport timeout" in str(captured.value)
 
 
 def test_per_call_timeout_none_does_not_bound_the_call():

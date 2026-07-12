@@ -8,57 +8,79 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+
+from gen_prediction_snapshot_config import (
+    SnapshotSetupError,
+)
+from gen_prediction_snapshot_config import (
+    audit_default_solver_git_config as _audit_default_solver_git_config,
+)
+from gen_prediction_snapshot_config import (
+    clean_git_env as _clean_git_env,
+)
+from gen_prediction_snapshot_config import (
+    replace_untrusted_repository_config as _replace_untrusted_repository_config,
+)
+from gen_prediction_snapshot_config import (
+    sanitize_default_git_configs as _sanitize_default_git_configs,
+)
 
 _OBJECT_ID_RE = re.compile(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}")
 _LOOSE_OBJECT_DIR_RE = re.compile(r"[0-9a-fA-F]{2}")
 _LOOSE_OBJECT_FILE_RE = re.compile(r"[0-9a-fA-F]{38}|[0-9a-fA-F]{62}")
 _PACK_OBJECT_FILE_RE = re.compile(r"pack-[0-9a-fA-F]{40,64}\.(?:pack|idx)")
-_DANGEROUS_GIT_ENV = (
-    "GIT_COMMON_DIR",
-    "GIT_CONFIG_COUNT",
-    "GIT_CONFIG_GLOBAL",
-    "GIT_CONFIG_NOSYSTEM",
-    "GIT_CONFIG_PARAMETERS",
-    "GIT_CONFIG_SYSTEM",
-    "GIT_DIR",
-    "GIT_GRAFT_FILE",
-    "GIT_INDEX_FILE",
-    "GIT_NAMESPACE",
-    "GIT_WORK_TREE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_QUARANTINE_PATH",
-    "GIT_REPLACE_REF_BASE",
-    "GIT_SHALLOW_FILE",
-)
-_DANGEROUS_GIT_ENV_PREFIXES = ("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")
 _MAX_AUDIT_ENTRIES = 1_000_000
 _MAX_GIT_OUTPUT_BYTES = 4 * 1024 * 1024
+_TRUSTED_BASE_REF = "refs/opencollab-snapshot/base"
 
 
-class SnapshotSetupError(RuntimeError):
-    """Raised when a trusted snapshot cannot be constructed or proven isolated."""
+def _discover_standard_repository(workspace: Path) -> tuple[Path, Path]:
+    workspace = workspace.resolve(strict=True)
+    if not workspace.is_dir():
+        raise SnapshotSetupError("solver workspace is not a directory")
+    candidate = workspace
+    while True:
+        marker = candidate / ".git"
+        if os.path.lexists(marker):
+            if marker.is_symlink() or not marker.is_dir():
+                raise SnapshotSetupError("external Git directories are not supported for solver snapshots")
+            git_dir = marker.resolve(strict=True)
+            if git_dir != marker:
+                raise SnapshotSetupError("external Git directories are not supported for solver snapshots")
+            return candidate, git_dir
+        parent = candidate.parent
+        if parent == candidate:
+            raise SnapshotSetupError("solver workspace is not inside a Git repository")
+        candidate = parent
 
 
-def _clean_git_env() -> dict[str, str]:
-    unsafe = sorted(
-        name
-        for name, value in os.environ.items()
-        if value
-        and (
-            name in _DANGEROUS_GIT_ENV
-            or name.startswith(_DANGEROUS_GIT_ENV_PREFIXES)
-        )
-    )
-    if unsafe:
-        raise SnapshotSetupError("unsafe Git environment: " + ", ".join(unsafe))
-    env = os.environ.copy()
-    for name in tuple(env):
-        if name in _DANGEROUS_GIT_ENV or name.startswith(_DANGEROUS_GIT_ENV_PREFIXES):
-            env.pop(name, None)
-    env["GIT_NO_REPLACE_OBJECTS"] = "1"
-    return env
+def _worktree_inventory(repo_root: Path) -> set[str]:
+    entries: set[str] = set()
+    visited = 0
+    for current, directories, files in os.walk(repo_root, followlinks=False):
+        current_path = Path(current)
+        if current_path == repo_root:
+            directories[:] = [name for name in directories if name != ".git"]
+            files[:] = [name for name in files if name != ".git"]
+        visited += len(directories) + len(files)
+        if visited > _MAX_AUDIT_ENTRIES:
+            raise SnapshotSetupError("worktree sidecar audit exceeded its entry bound")
+        for name in (*directories, *files):
+            entries.add(os.fsdecode((current_path / name).relative_to(repo_root)))
+    return entries
+
+
+def _allowed_tracked_entries(paths: list[str]) -> set[str]:
+    allowed: set[str] = set()
+    for value in paths:
+        relative = Path(value)
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+            raise SnapshotSetupError("tracked Git index path escaped the repository")
+        for depth in range(1, len(relative.parts) + 1):
+            allowed.add(os.fsdecode(Path(*relative.parts[:depth])))
+    return allowed
 
 
 def _run_git(
@@ -94,9 +116,14 @@ def _git_init_args(object_format: str) -> tuple[str, ...]:
     return ("init", "-q", f"--object-format={object_format}")
 
 
-def _tracked_index(repo: Path, *, env: dict[str, str]) -> tuple[bytes, list[tuple[str, str, str]]]:
+def _tracked_index(
+    repo: Path,
+    *,
+    env: dict[str, str],
+) -> tuple[bytes, list[str], list[tuple[str, str, str]]]:
     records = _run_git(repo, "ls-files", "--stage", "-z", env=env).stdout.split(b"\0")
     regular_paths: list[bytes] = []
+    tracked_paths: list[str] = []
     gitlinks: list[tuple[str, str, str]] = []
     for record in records:
         if not record:
@@ -114,10 +141,11 @@ def _tracked_index(repo: Path, *, env: dict[str, str]) -> tuple[bytes, list[tupl
             gitlinks.append((mode, object_id.lower(), os.fsdecode(raw_path)))
         else:
             regular_paths.append(raw_path)
+        tracked_paths.append(os.fsdecode(raw_path))
     pathspec = b"\0".join(regular_paths)
     if pathspec:
         pathspec += b"\0"
-    return pathspec, gitlinks
+    return pathspec, tracked_paths, gitlinks
 
 
 def _is_within(path: Path, root: Path) -> bool:
@@ -313,89 +341,123 @@ def create_solver_snapshot(
     expected_base_commit = str(expected_base_commit or "").strip().lower()
     if _OBJECT_ID_RE.fullmatch(expected_base_commit) is None:
         raise SnapshotSetupError("expected base commit must be a full hexadecimal object id")
-    env = _clean_git_env()
-    workspace = workspace.resolve(strict=True)
-    repo_root = Path(_git_text(workspace, "rev-parse", "--show-toplevel", env=env)).resolve(strict=True)
-    git_dir = Path(_git_text(repo_root, "rev-parse", "--absolute-git-dir", env=env)).resolve(strict=True)
-    if git_dir != repo_root / ".git":
-        raise SnapshotSetupError("external Git directories are not supported for solver snapshots")
+    object_format = "sha1" if len(expected_base_commit) == 40 else "sha256"
+    repo_root, git_dir = _discover_standard_repository(workspace)
+    _sanitize_default_git_configs(repo_root, git_dir, filesystem_root)
 
-    _run_git(repo_root, "reset", "--hard", expected_base_commit, env=env)
-    _run_git(repo_root, "clean", "-ffd", env=env)
-    if _git_text(repo_root, "rev-parse", "HEAD", env=env).lower() != expected_base_commit:
-        raise SnapshotSetupError("repository did not reach the expected base commit")
-    base_tree = _git_text(repo_root, "rev-parse", "HEAD^{tree}", env=env).lower()
-    object_format = _git_text(repo_root, "rev-parse", "--show-object-format", env=env)
-    if object_format not in {"sha1", "sha256"}:
-        raise SnapshotSetupError("repository uses an unsupported Git object format")
-    tracked_paths, gitlinks = _tracked_index(repo_root, env=env)
-    removed_git_metadata = _remove_gitlink_worktrees(repo_root, gitlinks)
-
-    shutil.rmtree(git_dir)
-    _run_git(repo_root, *_git_init_args(object_format), env=env)
-    _run_git(repo_root, "config", "user.name", "OpenCollab Solver Snapshot", env=env)
-    _run_git(repo_root, "config", "user.email", "solver-snapshot@invalid", env=env)
-    _run_git(repo_root, "config", "core.autocrlf", "false", env=env)
-    _run_git(repo_root, "config", "diff.ignoreSubmodules", "all", env=env)
-    exclude = repo_root / ".git" / "info" / "exclude"
-    exclude.write_text("/.opencollab/\n", encoding="utf-8")
-    if tracked_paths:
+    with tempfile.TemporaryDirectory(prefix="opencollab-snapshot-") as temporary:
+        trusted_root = Path(temporary)
+        env = _clean_git_env(trusted_root)
+        _replace_untrusted_repository_config(git_dir, object_format)
         _run_git(
             repo_root,
-            "add",
-            "-f",
-            "--pathspec-from-file=-",
-            "--pathspec-file-nul",
+            "update-ref",
+            "--stdin",
             env=env,
-            input_bytes=tracked_paths,
+            input_bytes=f"update {_TRUSTED_BASE_REF} {expected_base_commit}\n".encode("ascii"),
         )
-    for mode, object_id, path in gitlinks:
+        if _git_text(repo_root, "rev-parse", f"{_TRUSTED_BASE_REF}^{{commit}}", env=env).lower() != (
+            expected_base_commit
+        ):
+            raise SnapshotSetupError("repository did not expose the expected base commit")
+        _run_git(repo_root, "reset", "--hard", _TRUSTED_BASE_REF, env=env)
+        _run_git(repo_root, "clean", "-ffdx", "-e", ".git/", env=env)
+        if _git_text(repo_root, "rev-parse", "HEAD", env=env).lower() != expected_base_commit:
+            raise SnapshotSetupError("repository did not reach the expected base commit")
+        base_tree = _git_text(repo_root, "rev-parse", "HEAD^{tree}", env=env).lower()
+        tracked_paths, tracked_entry_names, gitlinks = _tracked_index(repo_root, env=env)
+        removed_git_metadata = _remove_gitlink_worktrees(repo_root, gitlinks)
+
+        shutil.rmtree(git_dir)
+        _run_git(repo_root, *_git_init_args(object_format), env=env)
+        _run_git(repo_root, "config", "core.autocrlf", "false", env=env)
+        _run_git(repo_root, "config", "core.attributesFile", os.devnull, env=env)
+        _run_git(repo_root, "config", "core.fsmonitor", "false", env=env)
+        _run_git(repo_root, "config", "core.hooksPath", os.devnull, env=env)
+        _run_git(repo_root, "config", "diff.ignoreSubmodules", "all", env=env)
+        exclude = repo_root / ".git" / "info" / "exclude"
+        exclude.parent.mkdir(mode=0o755, exist_ok=True)
+        exclude.write_text("/.opencollab/\n", encoding="utf-8")
+        if tracked_paths:
+            _run_git(
+                repo_root,
+                "add",
+                "-f",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+                env=env,
+                input_bytes=tracked_paths,
+            )
+        for mode, object_id, path in gitlinks:
+            _run_git(
+                repo_root,
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                f"{mode},{object_id},{path}",
+                env=env,
+            )
+        snapshot_tree = _git_text(repo_root, "write-tree", env=env).lower()
+        if snapshot_tree != base_tree:
+            raise SnapshotSetupError("snapshot tree differs from the expected base tree")
+
+        commit_env = env.copy()
+        commit_env.update(
+            {
+                "GIT_AUTHOR_NAME": "OpenCollab Solver Snapshot",
+                "GIT_AUTHOR_EMAIL": "solver-snapshot@invalid",
+                "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+00:00",
+                "GIT_COMMITTER_NAME": "OpenCollab Solver Snapshot",
+                "GIT_COMMITTER_EMAIL": "solver-snapshot@invalid",
+                "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+00:00",
+            }
+        )
+        anonymous_head = _run_git(
+            repo_root,
+            "commit-tree",
+            snapshot_tree,
+            env=commit_env,
+            input_bytes=b"solver snapshot\n",
+        ).stdout.decode("ascii", errors="strict").strip().lower()
+        if _OBJECT_ID_RE.fullmatch(anonymous_head) is None:
+            raise SnapshotSetupError("snapshot commit creation returned an invalid object id")
         _run_git(
             repo_root,
-            "update-index",
-            "--add",
-            "--cacheinfo",
-            f"{mode},{object_id},{path}",
+            "update-ref",
+            "HEAD",
+            anonymous_head,
             env=env,
         )
-    snapshot_tree = _git_text(repo_root, "write-tree", env=env).lower()
-    if snapshot_tree != base_tree:
-        raise SnapshotSetupError("snapshot tree differs from the expected base tree")
-
-    commit_env = env.copy()
-    commit_env.update(
-        {
-            "GIT_AUTHOR_NAME": "OpenCollab Solver Snapshot",
-            "GIT_AUTHOR_EMAIL": "solver-snapshot@invalid",
-            "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+00:00",
-            "GIT_COMMITTER_NAME": "OpenCollab Solver Snapshot",
-            "GIT_COMMITTER_EMAIL": "solver-snapshot@invalid",
-            "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+00:00",
-        }
-    )
-    _run_git(repo_root, "commit", "-q", "--no-gpg-sign", "-m", "solver snapshot", env=commit_env)
-
-    anonymous_head = _git_text(repo_root, "rev-parse", "HEAD", env=env).lower()
-    commit_count = int(_git_text(repo_root, "rev-list", "--all", "--count", env=env))
-    parent_fields = _git_text(repo_root, "rev-list", "--parents", "-1", "HEAD", env=env).split()
-    remotes = [line for line in _git_text(repo_root, "remote", env=env).splitlines() if line]
-    if commit_count != 1 or len(parent_fields) != 1:
-        raise SnapshotSetupError("snapshot repository is not a single root commit")
-    if remotes:
-        raise SnapshotSetupError("snapshot repository retained a remote")
-    forbidden_metadata = (
-        repo_root / ".git" / "objects" / "info" / "alternates",
-        repo_root / ".git" / "info" / "grafts",
-        repo_root / ".git" / "refs" / "replace",
-    )
-    if any(path.exists() for path in forbidden_metadata):
-        raise SnapshotSetupError("snapshot repository retained external object metadata")
-    fsck = _run_git(repo_root, "fsck", "--full", "--unreachable", "--no-reflogs", env=env)
-    if fsck.stdout.strip() or fsck.stderr.strip():
-        raise SnapshotSetupError("snapshot repository contains unreachable objects")
-    if _git_text(repo_root, "status", "--porcelain", "--untracked-files=no", env=env):
-        raise SnapshotSetupError("snapshot repository has tracked baseline changes")
-    removed_git_metadata += _sanitize_external_git_metadata(repo_root, filesystem_root)
+        if _git_text(repo_root, "rev-parse", "HEAD", env=env).lower() != anonymous_head:
+            raise SnapshotSetupError("snapshot repository did not retain its anonymous HEAD")
+        commit_count = int(_git_text(repo_root, "rev-list", "--all", "--count", env=env))
+        parent_fields = _git_text(repo_root, "rev-list", "--parents", "-1", "HEAD", env=env).split()
+        remotes = [line for line in _git_text(repo_root, "remote", env=env).splitlines() if line]
+        if commit_count != 1 or len(parent_fields) != 1:
+            raise SnapshotSetupError("snapshot repository is not a single root commit")
+        if remotes:
+            raise SnapshotSetupError("snapshot repository retained a remote")
+        forbidden_metadata = (
+            repo_root / ".git" / "objects" / "info" / "alternates",
+            repo_root / ".git" / "info" / "grafts",
+            repo_root / ".git" / "refs" / "replace",
+        )
+        if any(path.exists() for path in forbidden_metadata):
+            raise SnapshotSetupError("snapshot repository retained external object metadata")
+        hooks = repo_root / ".git" / "hooks"
+        if hooks.exists() and any(hooks.iterdir()):
+            raise SnapshotSetupError("snapshot repository retained executable hook material")
+        fsck = _run_git(repo_root, "fsck", "--full", "--unreachable", "--no-reflogs", env=env)
+        if fsck.stdout.strip() or fsck.stderr.strip():
+            raise SnapshotSetupError("snapshot repository contains unreachable objects")
+        if _git_text(repo_root, "status", "--porcelain", "--untracked-files=no", env=env):
+            raise SnapshotSetupError("snapshot repository has tracked baseline changes")
+        allowed_entries = _allowed_tracked_entries(tracked_entry_names)
+        unexpected_entries = _worktree_inventory(repo_root) - allowed_entries
+        if unexpected_entries:
+            raise SnapshotSetupError("snapshot transformation created an unexpected ordinary sidecar")
+        removed_git_metadata += _sanitize_external_git_metadata(repo_root, filesystem_root)
+        _audit_default_solver_git_config(repo_root, filesystem_root, object_format)
 
     return {
         "enabled": True,
@@ -410,11 +472,14 @@ def create_solver_snapshot(
 
 def main(argv: list[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 2:
-        print("usage: gen_prediction_snapshot_container.py WORKSPACE BASE_COMMIT", file=sys.stderr)
+    if len(args) != 1:
+        print("usage: gen_prediction_snapshot_container.py WORKSPACE", file=sys.stderr)
         return 2
     try:
-        evidence = create_solver_snapshot(Path(args[0]), args[1])
+        encoded_base = sys.stdin.buffer.read(129)
+        if len(encoded_base) > 128:
+            raise SnapshotSetupError("expected base commit input exceeded its size bound")
+        evidence = create_solver_snapshot(Path(args[0]), encoded_base.decode("ascii", errors="strict"))
     except (OSError, SnapshotSetupError, UnicodeError, ValueError) as exc:
         print(f"solver Git snapshot failed: {exc}", file=sys.stderr)
         return 1

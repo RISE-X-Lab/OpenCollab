@@ -15,9 +15,8 @@ from typing import Any
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
-from opencollab.adapters.tools.run_tests import RunTestsTool
+from opencollab.adapters.tools.run_tests import verification_run_tests_tool
 from opencollab.application.workflow_registry import workflow
-
 
 MAX_PRE_TESTS = 5
 MAX_POST_TESTS = 4
@@ -788,11 +787,18 @@ def _read_tools() -> list[Any]:
 
 
 def _coder_tools() -> list[Any]:
-    return [BashTool(), FileReadTool(), FileWriteTool(), ApplyPatchTool(), RunTestsTool(), GrepTool()]
+    return [
+        BashTool(),
+        FileReadTool(),
+        FileWriteTool(),
+        ApplyPatchTool(),
+        verification_run_tests_tool(),
+        GrepTool(),
+    ]
 
 
 def _tester_tools() -> list[Any]:
-    return [BashTool(), FileReadTool(), RunTestsTool(), GrepTool()]
+    return [BashTool(), FileReadTool(), verification_run_tests_tool(), GrepTool()]
 
 
 def _dump(value: Any) -> str:
@@ -1063,39 +1069,45 @@ async def _run_attempt(
     )
 
     await ctx.phase(f"diff-risk:r{attempt}")
-    branch_risk_task = lambda: ctx.agent(
-        DIFF_RISK_BRANCH_PROMPT.format(
-            rules=SHARED_RULES,
-            goal=goal,
-            tribunal=_dump(tribunal),
-            patch_verdict=_dump(etv_report),
-        ),
-        schema=DIFF_RISK_SCHEMA,
-        label=f"branch-boundary-attack:r{attempt}",
-        tools=_tester_tools(),
-    )
-    regression_risk_task = lambda: ctx.agent(
-        DIFF_RISK_REGRESSION_PROMPT.format(
-            rules=SHARED_RULES,
-            goal=goal,
-            tribunal=_dump(tribunal),
-            patch_verdict=_dump(etv_report),
-        ),
-        schema=DIFF_RISK_SCHEMA,
-        label=f"regression-scan:r{attempt}",
-        tools=_tester_tools(),
-    )
-    observable_risk_task = lambda: ctx.agent(
-        DIFF_RISK_OBSERVABLE_PROMPT.format(
-            rules=SHARED_RULES,
-            goal=goal,
-            inventory=_dump(inventory),
-            patch_verdict=_dump(etv_report),
-        ),
-        schema=DIFF_RISK_SCHEMA,
-        label=f"observable-diff-review:r{attempt}",
-        tools=_tester_tools(),
-    )
+    def branch_risk_task():
+        return ctx.agent(
+            DIFF_RISK_BRANCH_PROMPT.format(
+                rules=SHARED_RULES,
+                goal=goal,
+                tribunal=_dump(tribunal),
+                patch_verdict=_dump(etv_report),
+            ),
+            schema=DIFF_RISK_SCHEMA,
+            label=f"branch-boundary-attack:r{attempt}",
+            tools=_tester_tools(),
+        )
+
+    def regression_risk_task():
+        return ctx.agent(
+            DIFF_RISK_REGRESSION_PROMPT.format(
+                rules=SHARED_RULES,
+                goal=goal,
+                tribunal=_dump(tribunal),
+                patch_verdict=_dump(etv_report),
+            ),
+            schema=DIFF_RISK_SCHEMA,
+            label=f"regression-scan:r{attempt}",
+            tools=_tester_tools(),
+        )
+
+    def observable_risk_task():
+        return ctx.agent(
+            DIFF_RISK_OBSERVABLE_PROMPT.format(
+                rules=SHARED_RULES,
+                goal=goal,
+                inventory=_dump(inventory),
+                patch_verdict=_dump(etv_report),
+            ),
+            schema=DIFF_RISK_SCHEMA,
+            label=f"observable-diff-review:r{attempt}",
+            tools=_tester_tools(),
+        )
+
     branch_risk, regression_risk, observable_risk = await ctx.parallel([
         branch_risk_task,
         regression_risk_task,

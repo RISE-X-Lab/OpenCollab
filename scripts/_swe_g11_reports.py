@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 import time
@@ -24,23 +23,32 @@ except ModuleNotFoundError:  # Direct execution adds ``scripts`` rather than the
         range_label,
     )
 
+try:
+    from scripts import _swe_report_io as _report_io
+except ModuleNotFoundError as exc:  # Direct execution adds ``scripts`` rather than the repo root.
+    if exc.name != "scripts":
+        raise
+    import _swe_report_io as _report_io  # type: ignore[no-redef]
+
 
 def write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    _report_io.write_json(path, value)
+
+
+def write_text(path: Path, value: str) -> None:
+    _report_io.write_text(path, value)
+
+
+def ensure_directory(path: Path) -> None:
+    _report_io.ensure_directory(path)
+
+
+def configure_retirement_registry(path: Path) -> str:
+    return _report_io.configure_retirement_registry(path)
 
 
 def load_json(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-    except json.JSONDecodeError:
-        return {}
-    return value if isinstance(value, dict) else {}
+    return _report_io.load_json(path)
 
 
 def _compact_token_summary(
@@ -100,11 +108,11 @@ def build_token_summary(config: ParallelConfig) -> dict[str, Any]:
     if config.usd_cny is not None:
         cmd.extend(["--usd-cny", str(config.usd_cny)])
     proc = subprocess.run(cmd, cwd=REPO, text=True, capture_output=True)
-    (config.output_dir / "parallel_token_cost_summary.stdout.log").write_text(
-        proc.stdout, encoding="utf-8", errors="replace"
+    _report_io.write_text(
+        config.output_dir / "parallel_token_cost_summary.stdout.log", proc.stdout
     )
-    (config.output_dir / "parallel_token_cost_summary.stderr.log").write_text(
-        proc.stderr, encoding="utf-8", errors="replace"
+    _report_io.write_text(
+        config.output_dir / "parallel_token_cost_summary.stderr.log", proc.stderr
     )
     if proc.returncode != 0:
         return {
@@ -115,6 +123,112 @@ def build_token_summary(config: ParallelConfig) -> dict[str, Any]:
             "stderr_tail": proc.stderr[-2000:],
         }
     return _compact_token_summary(load_json(json_path), config)
+
+
+FACT_COUNT_FIELDS = (
+    "tasks",
+    "eval_attempts",
+    "eval_retry_tasks",
+    "eval_success",
+    "empty_patch",
+    "eval_pending",
+    "resolved",
+    "unresolved",
+    "technical_failed_final",
+)
+
+
+def _strict_index(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _task_eval_attempt_count(task: Any, reasons: list[str]) -> int:
+    if not isinstance(task, dict):
+        reasons.append("invalid_fact_task_row")
+        return 0
+    value = task.get("eval_attempt_count")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        reasons.append("invalid_fact_task_eval_attempt_count")
+        return 0
+    return value
+
+
+def _validate_fact_report(
+    report: dict[str, Any], config: ParallelConfig
+) -> tuple[str, dict[str, int], list[str]]:
+    reasons: list[str] = []
+    if report.get("schema") != "opencollab.swe_eval_layer_final_report.v1":
+        reasons.append("invalid_fact_report_schema")
+    expected_indices = report.get("expected_indices")
+    if expected_indices != list(config.indices):
+        reasons.append("fact_report_expected_census_mismatch")
+    counts = report.get("counts") if isinstance(report.get("counts"), dict) else {}
+    normalized: dict[str, int] = {}
+    for field in FACT_COUNT_FIELDS:
+        value = counts.get(field)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            reasons.append(f"invalid_fact_count:{field}")
+        else:
+            normalized[field] = value
+    tasks = report.get("tasks") if isinstance(report.get("tasks"), list) else []
+    if len(normalized) != len(FACT_COUNT_FIELDS):
+        return "invalid_fact_report", normalized, reasons
+    if normalized["tasks"] != len(config.indices) or len(tasks) != len(config.indices):
+        reasons.append("fact_report_task_census_mismatch")
+
+    indices = [_strict_index(task.get("index")) for task in tasks if isinstance(task, dict)]
+    if len(indices) != len(tasks) or indices != list(config.indices):
+        reasons.append("fact_report_task_index_mismatch")
+    task_eval_attempts = [
+        _task_eval_attempt_count(task, reasons) for task in tasks
+    ]
+    derived = {
+        "eval_attempts": sum(task_eval_attempts),
+        "eval_retry_tasks": sum(
+            1 for count in task_eval_attempts if count > 1
+        ),
+        "eval_success": sum(
+            1 for task in tasks if isinstance(task, dict) and task.get("eval_success") is True
+        ),
+        "empty_patch": sum(
+            1
+            for task in tasks
+            if isinstance(task, dict) and task.get("generation_status") == "empty_patch"
+        ),
+        "eval_pending": sum(
+            1 for task in tasks if isinstance(task, dict) and task.get("eval_pending") is True
+        ),
+        "resolved": sum(
+            1 for task in tasks if isinstance(task, dict) and task.get("resolved") is True
+        ),
+        "unresolved": sum(
+            1 for task in tasks if isinstance(task, dict) and task.get("resolved") is False
+        ),
+        "technical_failed_final": sum(
+            1 for task in tasks if isinstance(task, dict) and task.get("technical_failed") is True
+        ),
+    }
+    for field, value in derived.items():
+        if normalized[field] != value:
+            reasons.append(f"fact_report_count_row_mismatch:{field}")
+    if normalized["eval_pending"] != 0:
+        reasons.append("fact_report_has_pending_tasks")
+    if normalized["resolved"] + normalized["unresolved"] != normalized["eval_success"]:
+        reasons.append("fact_report_verdict_count_conflict")
+    if normalized["technical_failed_final"] == 0 and (
+        normalized["eval_success"] + normalized["empty_patch"] != normalized["tasks"]
+    ):
+        reasons.append("fact_report_clean_completion_conflict")
+    if reasons:
+        return "invalid_fact_report", normalized, list(dict.fromkeys(reasons))
+    status = (
+        "done"
+        if normalized["technical_failed_final"] == 0
+        else "done_with_technical_failures"
+    )
+    return status, normalized, []
 
 
 def build_eval_fact_report(config: ParallelConfig) -> dict[str, Any]:
@@ -133,15 +247,13 @@ def build_eval_fact_report(config: ParallelConfig) -> dict[str, Any]:
         "--report-json",
         str(config.output_dir / "parallel_summary.json"),
     ]
+    for index in config.indices:
+        cmd.extend(["--expected-index", str(index)])
     if config.usd_cny is not None:
         cmd.extend(["--usd-cny", str(config.usd_cny)])
     proc = subprocess.run(cmd, cwd=REPO, text=True, capture_output=True)
-    (config.output_dir / "final_eval_layer_report.stdout.log").write_text(
-        proc.stdout, encoding="utf-8", errors="replace"
-    )
-    (config.output_dir / "final_eval_layer_report.stderr.log").write_text(
-        proc.stderr, encoding="utf-8", errors="replace"
-    )
+    _report_io.write_text(config.output_dir / "final_eval_layer_report.stdout.log", proc.stdout)
+    _report_io.write_text(config.output_dir / "final_eval_layer_report.stderr.log", proc.stderr)
     if proc.returncode != 0:
         return {
             "status": "error",
@@ -151,11 +263,16 @@ def build_eval_fact_report(config: ParallelConfig) -> dict[str, Any]:
             "stderr_tail": proc.stderr[-2000:],
         }
     report = load_json(output_json)
+    if not report:
+        status, counts, reasons = "missing_report", {}, ["missing_fact_report"]
+    else:
+        status, counts, reasons = _validate_fact_report(report, config)
     return {
-        "status": "done" if report else "missing_report",
+        "status": status,
         "summary_json": str(output_json),
         "summary_markdown": str(output_md),
-        "counts": report.get("counts") if isinstance(report, dict) else {},
+        "counts": counts,
+        "validation_reasons": reasons,
     }
 
 
@@ -186,9 +303,65 @@ def aggregate(
             int(item.get("technical_failed") or 0) for item in ordered
         ),
     }
+    fact_validation_reasons: list[str] = []
+    fact_status = ""
+    if fact_report:
+        fact_status = str(fact_report.get("status") or "")
+        fact_counts = (
+            fact_report.get("counts")
+            if isinstance(fact_report.get("counts"), dict)
+            else {}
+        )
+        if fact_status not in {"done", "done_with_technical_failures"}:
+            fact_validation_reasons.extend(
+                str(reason)
+                for reason in fact_report.get("validation_reasons") or []
+            )
+            fact_validation_reasons.append(f"fact_report_status:{fact_status or 'missing'}")
+        else:
+            comparisons = {
+                "tasks": "tasks",
+                "eval_attempts": "eval_attempts",
+                "eval_retry_tasks": "eval_retry_tasks",
+                "empty_patch": "empty_patch",
+                "eval_done": "eval_success",
+                "resolved": "resolved",
+                "unresolved": "unresolved",
+                "technical_failed": "technical_failed_final",
+            }
+            for parallel_field, fact_field in comparisons.items():
+                if counts[parallel_field] != fact_counts.get(fact_field):
+                    fact_validation_reasons.append(
+                        f"parallel_fact_count_mismatch:{parallel_field}"
+                    )
+            if not fact_validation_reasons:
+                counts.update(
+                    tasks=fact_counts["tasks"],
+                    eval_attempts=fact_counts["eval_attempts"],
+                    eval_retry_tasks=fact_counts["eval_retry_tasks"],
+                    empty_patch=fact_counts["empty_patch"],
+                    eval_done=fact_counts["eval_success"],
+                    resolved=fact_counts["resolved"],
+                    unresolved=fact_counts["unresolved"],
+                    technical_failed=fact_counts["technical_failed_final"],
+                )
+    if fact_validation_reasons:
+        counts["resolved"] = 0
+        counts["unresolved"] = 0
+        counts["technical_failed"] = max(1, counts["technical_failed"])
+    result_indices = [
+        item.get("index")
+        for item in ordered
+        if isinstance(item.get("index"), int) and not isinstance(item.get("index"), bool)
+    ]
+    census_complete = bool(
+        len(result_indices) == len(config.indices)
+        and len(set(result_indices)) == len(result_indices)
+        and set(result_indices) == set(config.indices)
+    )
     status = (
         "done"
-        if len(ordered) == len(config.indices)
+        if census_complete
         and all(item.get("completed") for item in ordered)
         else "running"
     )
@@ -198,6 +371,8 @@ def aggregate(
         item.get("returncode") not in (0, 1) for item in ordered
     ):
         status = "done_with_runner_failures"
+    if status == "done" and fact_status == "done_with_technical_failures":
+        status = "done_with_technical_failures"
     summary = {
         "schema": "opencollab.swe_parallel_runner.v2",
         "status": status,
@@ -232,6 +407,10 @@ def aggregate(
         summary["token_cost"] = token_cost
     if fact_report:
         summary["fact_report"] = fact_report
+    if fact_validation_reasons:
+        summary["fact_report_validation_reasons"] = list(
+            dict.fromkeys(fact_validation_reasons)
+        )
     if scheduler:
         summary["scheduler"] = scheduler
     if remote_health:
@@ -381,10 +560,7 @@ def write_markdown(config: ParallelConfig, summary: dict[str, Any]) -> None:
                 report=item.get("json_report"),
             )
         )
-    (config.output_dir / "parallel_summary.md").write_text(
-        "\n".join(lines) + "\n",
-        encoding="utf-8",
-    )
+    _report_io.write_text(config.output_dir / "parallel_summary.md", "\n".join(lines) + "\n")
 
 
 def save_progress(

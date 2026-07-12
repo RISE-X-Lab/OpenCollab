@@ -30,7 +30,7 @@ from opencollab.bootstrap.config import (
 )
 from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
 from opencollab.bootstrap.tool_registry import COORDINATION_TOOL_NAMES, build_tools_for_role
-from opencollab.domain.agent import Agent, DEFAULT_MAX_TOKENS_PER_STEP
+from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP, Agent
 from opencollab.domain.context import (
     ContextLayer,
     ContextPlan,
