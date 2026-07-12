@@ -12,24 +12,78 @@ Ref:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
-from typing import Any, ContextManager
+import hashlib
+import os
+import stat
+import tempfile
+from collections.abc import AsyncIterator
+from typing import Any
 
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 
+HOST_WRITE_LOCK_TIMEOUT_SECONDS = 10.0
+HOST_WRITE_LOCK_POLL_SECONDS = 0.02
 
-def host_write_lock(path: str, env: Any) -> ContextManager[Any]:
-    """Host ``FileLock`` for ``path`` when I/O hits the host filesystem, else a no-op.
 
-    A real lock is returned for the host-fallback path (``env is None``) and for
-    environments that write to the host filesystem (``local_filesystem`` true).
-    Environments that execute elsewhere (e.g. a container) get a no-op context.
-    """
-    if env is None or getattr(env, "local_filesystem", False):
-        return FileLock(f"{path}.lock", timeout=10)
-    return contextlib.nullcontext()
+def _host_lock_root() -> str:
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    root = os.path.join(tempfile.gettempdir(), f"opencollab-write-locks-{uid}")
+    try:
+        os.mkdir(root, 0o700)
+    except FileExistsError:
+        pass
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(root, flags)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISDIR(info.st_mode):
+            raise PermissionError("host write-lock root is not a directory")
+        if hasattr(os, "getuid") and info.st_uid != os.getuid():
+            raise PermissionError("host write-lock root has a foreign owner")
+        if info.st_mode & 0o077:
+            os.fchmod(fd, 0o700)
+    finally:
+        os.close(fd)
+    return root
+
+
+def _host_lock_path(path: str, env: Any) -> str:
+    workspace = getattr(env, "workspace", "") if env is not None else ""
+    identity = os.path.abspath(os.path.join(workspace, path)) if workspace else os.path.abspath(path)
+    digest = hashlib.sha256(identity.encode("utf-8", errors="surrogatepass")).hexdigest()
+    return os.path.join(_host_lock_root(), f"{digest}.lock")
+
+
+@contextlib.asynccontextmanager
+async def host_write_lock(path: str, env: Any) -> AsyncIterator[Any]:
+    """Acquire a cross-process host lock without blocking the asyncio loop."""
+    if env is not None and not getattr(env, "local_filesystem", False):
+        yield None
+        return
+
+    lock = FileLock(_host_lock_path(path, env), timeout=0)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + HOST_WRITE_LOCK_TIMEOUT_SECONDS
+    acquired = False
+    try:
+        while True:
+            try:
+                lock.acquire(timeout=0)
+                acquired = True
+                break
+            except Timeout:
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    raise TimeoutError(f"timed out acquiring write lock for {path}")
+                await asyncio.sleep(min(HOST_WRITE_LOCK_POLL_SECONDS, remaining))
+        yield lock
+    finally:
+        if acquired:
+            lock.release()
 
 
 class Tool:
@@ -45,6 +99,7 @@ class Tool:
     description: str = ""
     parameters: dict[str, Any] = {"type": "object", "properties": {}}
     default_timeout: float | None = None
+    disable_outer_timeout: bool = False
 
     def to_openai_schema(self) -> dict[str, Any]:
         """Convert to OpenAI function calling format."""

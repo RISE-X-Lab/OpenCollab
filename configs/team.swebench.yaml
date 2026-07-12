@@ -1,9 +1,8 @@
 # OpenCollab team for solving SWE-bench instances.
 #
-# Driven by scripts/start_team_run.sh, which runs this team inside the official
-# sweb.eval container (repo at /testbed, deps installed) and captures `git diff`
-# as the model patch. All agents share the SAME container working tree, so
-# every edit lands in /testbed and is picked up by the diff.
+# Retained as a team definition for workflow composition. Current SWE-bench
+# generation is driven by swebench/gen_prediction_workflow.py; the historical
+# scripts/start_team_run.sh entrypoint is an integrity gate that exits 125.
 #
 # Shared rules for every role:
 #   - Fix the ROOT CAUSE in the source; make the SMALLEST correct change.

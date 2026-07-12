@@ -10,7 +10,8 @@ For one SWE-bench instance it:
 1. starts the official `sweb.eval` image as a container (repo baked at
    `/testbed`, deps installed in the `testbed` conda env),
 2. runs a single OpenCollab agent inside it (edits + can run tests),
-3. captures `git diff` as the model patch,
+3. copies a bounded workspace archive after container quiescence and extracts
+   the patch with trusted host Git against a pre-Solver anonymous baseline,
 4. appends one `{instance_id, model_name_or_path, model_patch}` line to a
    predictions JSONL.
 
@@ -18,13 +19,14 @@ Run with the OpenCollab venv (it must import `opencollab`):
 
 ```bash
 opencollab/.venv/bin/python swebench/gen_prediction.py \
-    --instance-file /home/xuzhenhua/swebench-eval/instance_sympy-20590.json \
-    --output /home/xuzhenhua/swebench-eval/predictions-opencollab.jsonl
+    --instance-file /path/to/swebench-eval/instance_sympy-20590.json \
+    --output /path/to/swebench-eval/predictions-opencollab.jsonl
 ```
 
-## Team-mode batch runs
+## Workflow and batch runs
 
-For team-mode prediction runs across many instances, use
-`scripts/run_team_batch.sh` (batch driver) and `scripts/start_team_run.sh`
-(single instance). See `scripts/README.md` for the full eval workflow,
-including subset runs and grading.
+Use `gen_prediction_workflow.py` for one blind workflow task and
+`scripts/swe_v1_prolite_runner.py` for current remote batches. The historical
+`run_team_batch.sh` and `start_team_run.sh` entrypoints now return technical
+status 125 before starting a solver because their mount model cannot provide
+the current isolation and trusted-extraction evidence.

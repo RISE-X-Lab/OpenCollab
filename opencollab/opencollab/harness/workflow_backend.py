@@ -10,10 +10,13 @@ from opencollab.bootstrap.workflow_runtime import discover_workflows, run_workfl
 from opencollab.harness.eval_adapter import (
     PatchCandidate,
     PreparedWorkspace,
-    TaskSpec,
     docker_environment_for_workspace,
 )
-from opencollab.harness.solver_backend import SolverBudget, WorkflowSolverSpec
+from opencollab.harness.solver_backend import (
+    SolverBudget,
+    SolverTaskView,
+    WorkflowSolverSpec,
+)
 
 
 class WorkflowBackend:
@@ -35,7 +38,7 @@ class WorkflowBackend:
 
     def solve(
         self,
-        task: TaskSpec,
+        task: SolverTaskView,
         workspace: PreparedWorkspace,
         run_dir: Path,
         budget: SolverBudget,
@@ -44,7 +47,7 @@ class WorkflowBackend:
 
     async def _solve_async(
         self,
-        task: TaskSpec,
+        task: SolverTaskView,
         workspace: PreparedWorkspace,
         run_dir: Path,
         budget: SolverBudget,
@@ -56,8 +59,10 @@ class WorkflowBackend:
         args = {
             "description": task.problem_statement,
             "goal": task.problem_statement,
-            "instance_id": task.instance_id,
+            "instance_id": task.task_id,
             "repo": task.repo,
+            "hints": list(task.hints),
+            "public_metadata": dict(task.metadata),
             **self.spec.args,
         }
         result = await run_workflow(
@@ -73,7 +78,7 @@ class WorkflowBackend:
         diff = await _tracked_diff(env)
         token_count = _result_tokens(result)
         return PatchCandidate(
-            task_id=task.instance_id,
+            task_id=task.task_id,
             solver_name=self.name,
             patch=diff,
             log_path=str(run_dir),

@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import json
+import os
 import shlex
 import subprocess
 import sys
@@ -47,6 +48,9 @@ normalize_workflow_env = _config.normalize_workflow_env
 default_run_id = _config.default_run_id
 resolve_config = _config.resolve_config
 report_is_reusable = _config.report_is_reusable
+single_task_summary_validation_reasons = (
+    _config.single_task_summary_validation_reasons
+)
 normalize_legacy_empty_patch_summary = _config.normalize_legacy_empty_patch_summary
 unique_strings = _config.unique_strings
 text_resource_reasons = _config.text_resource_reasons
@@ -55,6 +59,9 @@ update_scheduler_state = _config.update_scheduler_state
 scheduler_snapshot = _config.scheduler_snapshot
 
 write_json = _reports.write_json
+write_text = _reports.write_text
+ensure_directory = _reports.ensure_directory
+configure_retirement_registry = _reports.configure_retirement_registry
 load_json = _reports.load_json
 _compact_token_summary = _reports._compact_token_summary
 build_token_summary = _reports.build_token_summary
@@ -165,29 +172,57 @@ def task_result_from_summary(
     *,
     reused: bool,
     elapsed: float,
+    process_returncode: int | None = None,
 ) -> dict[str, Any]:
     paths = task_paths(config, index)
     counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    rows = summary.get("rows") if isinstance(summary.get("rows"), list) else []
+    status = str(summary.get("status") or "")
+    reasons = list(
+        single_task_summary_validation_reasons(summary, config, index)
+    )
+    expected_returncodes = {
+        "done": 0,
+        "done_with_technical_failures": 1,
+        "preflight_failed": 2,
+        "invalid_config": 2,
+    }
+    expected_returncode = expected_returncodes.get(status)
+    if expected_returncode is None:
+        reasons.append("nonterminal_runner_status")
+    actual_returncode = expected_returncode if process_returncode is None else process_returncode
+    if isinstance(actual_returncode, bool) or not isinstance(actual_returncode, int):
+        reasons.append("invalid_runner_returncode")
+    elif expected_returncode is not None and actual_returncode != expected_returncode:
+        reasons.append("returncode_status_conflict")
+    accepted_counts = {
+        field: counts.get(field, 0)
+        for field in _config.SINGLE_TASK_COUNT_FIELDS
+    }
+    if reasons:
+        accepted_counts = dict.fromkeys(_config.SINGLE_TASK_COUNT_FIELDS, 0)
+        accepted_counts["technical_failed"] = 1
     return {
         "index": index,
-        "returncode": 0 if summary.get("status") == "done" else 1,
+        "returncode": actual_returncode if actual_returncode is not None else 1,
         "elapsed_seconds": round(elapsed, 1),
         "json_report": str(paths["json_report"]),
         "markdown_report": str(paths["markdown_report"]),
         "stdout_log": str(paths["stdout_log"]),
         "stderr_log": str(paths["stderr_log"]),
-        "runner_status": summary.get("status"),
-        "tasks": counts.get("tasks", 0),
-        "generation_done": counts.get("generation_done", 0),
-        "empty_patch": counts.get("empty_patch", 0),
-        "eval_done": counts.get("eval_done", 0),
-        "eval_attempts": counts.get("eval_attempts", 0),
-        "eval_retry_tasks": counts.get("eval_retry_tasks", 0),
-        "resolved": counts.get("resolved", 0),
-        "unresolved": counts.get("unresolved", 0),
-        "technical_failed": counts.get("technical_failed", 0),
-        "rows": summary.get("rows") if isinstance(summary.get("rows"), list) else [],
-        "completed": bool(summary),
+        "runner_status": status,
+        "tasks": accepted_counts["tasks"],
+        "generation_done": accepted_counts["generation_done"],
+        "empty_patch": accepted_counts["empty_patch"],
+        "eval_done": accepted_counts["eval_done"],
+        "eval_attempts": accepted_counts["eval_attempts"],
+        "eval_retry_tasks": accepted_counts["eval_retry_tasks"],
+        "resolved": accepted_counts["resolved"],
+        "unresolved": accepted_counts["unresolved"],
+        "technical_failed": accepted_counts["technical_failed"],
+        "rows": rows,
+        "completed": not reasons,
+        "summary_validation_reasons": reasons,
         "reused_existing_report": reused,
     }
 
@@ -197,12 +232,6 @@ def run_one(config: ParallelConfig, index: int) -> dict[str, Any]:
     paths = task_paths(config, index)
     if paths["json_report"].exists():
         summary = load_json(paths["json_report"])
-        summary, normalized = normalize_legacy_empty_patch_summary(summary)
-        if normalized:
-            paths["json_report"].write_text(
-                json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
         if report_is_reusable(summary, config, index):
             return task_result_from_summary(
                 config,
@@ -212,7 +241,7 @@ def run_one(config: ParallelConfig, index: int) -> dict[str, Any]:
                 elapsed=0.0,
             )
 
-    paths["stdout_log"].parent.mkdir(parents=True, exist_ok=True)
+    ensure_directory(paths["stdout_log"].parent)
     proc: subprocess.CompletedProcess[str] | None = None
     for attempt in range(1, config.runner_attempts + 1):
         proc = subprocess.run(
@@ -221,16 +250,8 @@ def run_one(config: ParallelConfig, index: int) -> dict[str, Any]:
             text=True,
             capture_output=True,
         )
-        paths["stdout_log"].write_text(
-            proc.stdout,
-            encoding="utf-8",
-            errors="replace",
-        )
-        paths["stderr_log"].write_text(
-            proc.stderr,
-            encoding="utf-8",
-            errors="replace",
-        )
+        write_text(paths["stdout_log"], proc.stdout)
+        write_text(paths["stderr_log"], proc.stderr)
         summary = load_json(paths["json_report"])
         if summary:
             result = task_result_from_summary(
@@ -239,8 +260,8 @@ def run_one(config: ParallelConfig, index: int) -> dict[str, Any]:
                 summary,
                 reused=False,
                 elapsed=time.time() - started,
+                process_returncode=proc.returncode,
             )
-            result["returncode"] = proc.returncode
             result["attempts"] = attempt
             if (
                 str(summary.get("status") or "") not in RETRYABLE_TASK_REPORT_STATUSES
@@ -330,16 +351,8 @@ def prepare_runtime(config: ParallelConfig) -> None:
     if config.no_ensure_remote_proxy:
         command.append("--no-ensure-remote-proxy")
     proc = subprocess.run(command, cwd=REPO, text=True, capture_output=True)
-    (config.output_dir / "shared_runtime_preflight.stdout.log").write_text(
-        proc.stdout,
-        encoding="utf-8",
-        errors="replace",
-    )
-    (config.output_dir / "shared_runtime_preflight.stderr.log").write_text(
-        proc.stderr,
-        encoding="utf-8",
-        errors="replace",
-    )
+    write_text(config.output_dir / "shared_runtime_preflight.stdout.log", proc.stdout)
+    write_text(config.output_dir / "shared_runtime_preflight.stderr.log", proc.stderr)
     summary = load_json(preflight_json)
     if proc.returncode != 0 or summary.get("status") != "dry_run":
         raise RuntimeError(
@@ -387,8 +400,8 @@ def run_remote_health_checks(config: ParallelConfig) -> dict[str, Any]:
         capture_output=True,
         timeout=120,
     )
-    stdout_path.write_text(proc.stdout, encoding="utf-8", errors="replace")
-    stderr_path.write_text(proc.stderr, encoding="utf-8", errors="replace")
+    write_text(stdout_path, proc.stdout)
+    write_text(stderr_path, proc.stderr)
     result = {
         "status": "ok" if proc.returncode == 0 else "failed",
         "returncode": proc.returncode,
@@ -402,7 +415,8 @@ def run_remote_health_checks(config: ParallelConfig) -> dict[str, Any]:
 
 
 def run_parallel(config: ParallelConfig) -> dict[str, Any]:
-    config.output_dir.mkdir(parents=True, exist_ok=True)
+    ensure_directory(config.output_dir)
+    configure_retirement_registry(config.output_dir)
     prepare_runtime(config)
     remote_health = run_remote_health_checks(config)
     per_task_config = config
@@ -514,13 +528,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--remote-eval-work-root", default=DEFAULT_EVAL_WORK_ROOT)
     parser.add_argument("--remote-runtime-repo", default="")
     parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME)
-    parser.add_argument("--llm-model", default="")
+    parser.add_argument("--llm-model", default=os.environ.get("OPENCOLLAB_SWE_LLM_MODEL", ""))
     parser.add_argument("--context-window", type=int)
     parser.add_argument("--temperature", type=float)
     parser.add_argument("--top-p", type=float)
     parser.add_argument("--max-output-tokens", type=int)
     parser.add_argument("--session-prefix", default="")
-    parser.add_argument("--host", default="jinan-aws")
+    parser.add_argument("--host", default=os.environ.get("OPENCOLLAB_SWE_HOST", ""))
     parser.add_argument("--ssh-command", default="ssh")
     parser.add_argument("--remote-root", default=DEFAULT_REMOTE_ROOT)
     parser.add_argument("--workflow", default="validation-council-solve")
@@ -528,12 +542,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openhands-command", default="")
     parser.add_argument("--openhands-empty-patch-rejections", type=int, default=2)
     parser.add_argument("--max-empty-patch-retries", type=int, default=1)
-    parser.add_argument("--remote-proxy-base-url", default="http://127.0.0.1:18788")
-    parser.add_argument("--local-proxy-base-url", default="http://127.0.0.1:8878")
+    parser.add_argument(
+        "--remote-proxy-base-url",
+        default=os.environ.get("OPENCOLLAB_REMOTE_PROXY_BASE_URL", ""),
+    )
+    parser.add_argument(
+        "--local-proxy-base-url",
+        default=os.environ.get("OPENCOLLAB_LOCAL_PROXY_BASE_URL", ""),
+    )
     parser.add_argument(
         "--proxy-env-file",
         type=Path,
-        default=Path.home() / ".claude" / "glm52.env",
+        default=(
+            Path(os.environ["OPENCOLLAB_PROXY_ENV_FILE"])
+            if os.environ.get("OPENCOLLAB_PROXY_ENV_FILE")
+            else None
+        ),
     )
     parser.add_argument("--budget", type=int, default=16_000_000)
     parser.add_argument("--max-steps", type=int, default=60)
@@ -541,7 +565,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task-wall-timeout", type=int, default=15_300)
     parser.add_argument("--eval-timeout", type=int, default=7_200)
     parser.add_argument("--llm-timeout", type=int, default=900)
-    parser.add_argument("--checkpoint-interval", type=int, default=300)
+    parser.add_argument("--checkpoint-interval", type=int, default=0)
     parser.add_argument("--max-task-starts", type=int, default=3)
     parser.add_argument("--max-eval-attempts", type=int, default=2)
     parser.add_argument("--total-timeout", type=int, default=240_000)

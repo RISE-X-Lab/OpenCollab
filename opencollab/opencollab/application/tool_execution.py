@@ -2,12 +2,27 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect as inspect
 import json
+import logging
+import math
 import os
-import time
+import time as time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from opencollab.application.async_timeout import (
+    CallerTimeoutError,
+)
+from opencollab.application.async_timeout import (
+    abandon_on_timeout as abandon_on_timeout,
+)
+from opencollab.application.async_timeout import (
+    force_task_terminal as force_task_terminal,
+)
+from opencollab.application.async_timeout import (
+    task_is_isolated as task_is_isolated,
+)
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
     AskUserPort,
@@ -17,19 +32,61 @@ from opencollab.application.ports import (
     SafetyPolicyPort,
     TracePort,
 )
+from opencollab.application.schema_validate import validate
+from opencollab.application.tool_execution_runtime import ToolExecutionRuntimeMixin
 from opencollab.domain.session import SessionState
 from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, LoopDetection, ToolProcessingResult
 
+logger = logging.getLogger(__name__)
+
+
+class _ToolExecutionTimeoutError(CallerTimeoutError):
+    """Raised only by this use case's own per-tool deadline."""
+
+
+def _positive_env_float(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return value if math.isfinite(value) and value > 0 else default
+
 # Loop detection (ref: opencode doom_loop detection — 3 identical calls)
 MAX_SIMILAR_CALLS = 3
+MAX_TOOL_CALLS_PER_BATCH = 32
 
 # A single tool call must not be able to hold a session forever. Individual
 # tools still pass their own command timeout to the environment; this outer
 # guard catches hangs before that layer is reached, including approval hooks,
 # adapter bugs, or stuck subprocess creation.
-DEFAULT_TOOL_EXECUTION_TIMEOUT = float(os.environ.get("OPENCOLLAB_TOOL_EXECUTION_TIMEOUT", "180"))
-MAX_TOOL_EXECUTION_TIMEOUT = float(os.environ.get("OPENCOLLAB_TOOL_EXECUTION_MAX_TIMEOUT", "900"))
+DEFAULT_TOOL_EXECUTION_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_EXECUTION_TIMEOUT", 180.0
+)
+MAX_TOOL_EXECUTION_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_EXECUTION_MAX_TIMEOUT", 900.0
+)
 TOOL_EXECUTION_TIMEOUT_GRACE = 10.0
+DEFAULT_TOOL_CANCELLATION_CLEANUP_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_CANCELLATION_CLEANUP_TIMEOUT", 1.0
+)
+DEFAULT_TOOL_CANCELLATION_FORCE_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_CANCELLATION_FORCE_TIMEOUT", 0.5
+)
+DEFAULT_TOOL_ENVIRONMENT_ABORT_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_ENVIRONMENT_ABORT_TIMEOUT", 1.0
+)
+
+
+def _require_positive_finite_timeout(value: Any, *, name: str) -> float:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a finite positive number")
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be a finite positive number") from exc
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise ValueError(f"{name} must be a finite positive number")
+    return timeout
 
 # Read-only, range-parameterized tools whose loop key is the FILE PATH alone, not
 # the full args. A model thrashing on one file re-reads it with SHIFTING line
@@ -211,7 +268,7 @@ class CallbackPermissionPolicy:
         return await self._confirm_fn(prompt)
 
 
-class ToolExecutionUseCase:
+class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
     def __init__(
         self,
         *,
@@ -224,6 +281,9 @@ class ToolExecutionUseCase:
         permission_policy: PermissionPort | None = None,
         ask_policy: AskUserPort | None = None,
         safety_policy: SafetyPolicyPort | None = None,
+        cancellation_cleanup_timeout: float = DEFAULT_TOOL_CANCELLATION_CLEANUP_TIMEOUT,
+        cancellation_force_timeout: float = DEFAULT_TOOL_CANCELLATION_FORCE_TIMEOUT,
+        environment_abort_timeout: float = DEFAULT_TOOL_ENVIRONMENT_ABORT_TIMEOUT,
     ):
         self.agent = agent
         self.environment = environment
@@ -234,6 +294,26 @@ class ToolExecutionUseCase:
         self.permission_policy = permission_policy
         self.ask_policy = ask_policy
         self.safety_policy = safety_policy
+        self._cancellation_cleanup_timeout = _require_positive_finite_timeout(
+            cancellation_cleanup_timeout,
+            name="cancellation_cleanup_timeout",
+        )
+        self._cancellation_force_timeout = _require_positive_finite_timeout(
+            cancellation_force_timeout,
+            name="cancellation_force_timeout",
+        )
+        self._environment_abort_timeout = _require_positive_finite_timeout(
+            environment_abort_timeout,
+            name="environment_abort_timeout",
+        )
+        self._pending_cleanup_tasks: set[asyncio.Task[Any]] = set()
+
+    @property
+    def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
+        """Tasks still unwinding after a timed-out or cancelled tool call."""
+        return tuple(
+            task for task in self._pending_cleanup_tasks if not task.done()
+        )
 
     async def process(self, tool_calls: list[dict]) -> ToolProcessingResult:
         """Execute a batch of tool calls and collect their result messages.
@@ -246,6 +326,36 @@ class ToolExecutionUseCase:
         state here; the caller applies the returned ``ToolProcessingResult``.
         """
         result = ToolProcessingResult()
+        preflight_errors = (
+            self._preflight_tool_batch(tool_calls)
+            if len(tool_calls) > 1
+            else [""] * len(tool_calls)
+        )
+        if any(preflight_errors):
+            summary = "; ".join(
+                f"call {index}: {error}"
+                for index, error in enumerate(preflight_errors)
+                if error
+            )[:2_000]
+            for index, tc in enumerate(tool_calls):
+                tool_id = (
+                    tc.get("id")
+                    if isinstance(tc, dict) and isinstance(tc.get("id"), str)
+                    else f"invalid-tool-call-{index}"
+                )
+                result.messages_to_append.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_id,
+                        "content": (
+                            preflight_errors[index]
+                            if len(tool_calls) == 1
+                            else "Error: entire tool-call batch rejected before execution: "
+                            + summary
+                        ),
+                    }
+                )
+            return result
         recent_call_hashes = list(self.state.recent_call_hashes)
 
         for tc in tool_calls:
@@ -256,15 +366,29 @@ class ToolExecutionUseCase:
             try:
                 args = self.parse_tool_args(func)
             except json.JSONDecodeError:
+                raw_args = str(func.get("arguments", ""))
                 self._trace_short_circuit(
                     "tool_error",
                     tool_name,
-                    {"error": "invalid_json_args", "args": func.get("arguments", "")[:200]},
+                    {"error": "invalid_json_args", "args": raw_args[:200]},
                 )
                 result.messages_to_append.append({
                     "role": "tool",
                     "tool_call_id": tool_id,
-                    "content": f"Error: invalid JSON arguments: {func['arguments'][:200]}",
+                    "content": f"Error: invalid JSON arguments: {raw_args[:200]}",
+                })
+                continue
+            except ValueError:
+                raw_args = str(func.get("arguments", ""))
+                self._trace_short_circuit(
+                    "tool_error",
+                    tool_name,
+                    {"error": "non_object_args", "args": raw_args[:200]},
+                )
+                result.messages_to_append.append({
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": f"Error: tool arguments must be a JSON object: {raw_args[:200]}",
                 })
                 continue
 
@@ -297,7 +421,10 @@ class ToolExecutionUseCase:
                 )
                 result.messages_to_append.append({"role": "tool", "tool_call_id": tool_id, "content": warning})
                 result.loop_detections.append(LoopDetection(tool=tool_name, count=recent_same))
-                await self.event_publisher.emit(self.event_factory.loop_detected(tool_name, recent_same))
+                await self._emit_observation(
+                    lambda: self.event_factory.loop_detected(tool_name, recent_same),
+                    label="loop_detected",
+                )
                 continue
 
             tool = self.find_tool(tool_name)
@@ -312,7 +439,10 @@ class ToolExecutionUseCase:
                 })
                 continue
 
-            await self.event_publisher.emit(self.event_factory.tool_start(tool_name, args))
+            await self._emit_observation(
+                lambda: self.event_factory.tool_start(tool_name, args),
+                label="tool_start",
+            )
 
             tool_output, tool_latency = await self.execute_tool(tool, args, tool_id=tool_id)
             # The full result is persisted; a per-tool-result budget shaper caps
@@ -361,7 +491,7 @@ class ToolExecutionUseCase:
             )
 
             if self.tracer:
-                self.tracer.log_step(
+                self._trace_observation(
                     step_type="tool_exec",
                     payload=self.trace_payload(tool_name, args, tool_output),
                     tokens=0,
@@ -369,13 +499,89 @@ class ToolExecutionUseCase:
                 )
 
             result.messages_to_append.append(self.tool_result_message(tool_id, tool_output))
-            await self.event_publisher.emit(self.event_factory.tool_end(tool_name, tool_latency))
+            await self._emit_observation(
+                lambda: self.event_factory.tool_end(tool_name, tool_latency),
+                label="tool_end",
+            )
 
         return result
 
+    def _preflight_tool_batch(self, tool_calls: object) -> list[str]:
+        if not isinstance(tool_calls, list):
+            raise ValueError("tool_calls must be a list")
+        if len(tool_calls) > MAX_TOOL_CALLS_PER_BATCH:
+            return [
+                f"batch has {len(tool_calls)} calls; maximum is {MAX_TOOL_CALLS_PER_BATCH}"
+            ] * len(tool_calls)
+        errors = [""] * len(tool_calls)
+        seen_ids: set[str] = set()
+        duplicate_ids: set[str] = set()
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            tool_id = tc.get("id")
+            if isinstance(tool_id, str) and tool_id:
+                if tool_id in seen_ids:
+                    duplicate_ids.add(tool_id)
+                seen_ids.add(tool_id)
+        for index, tc in enumerate(tool_calls):
+            if not isinstance(tc, dict):
+                errors[index] = "call envelope must be an object"
+                continue
+            tool_id = tc.get("id")
+            if not isinstance(tool_id, str) or not tool_id:
+                errors[index] = "id must be non-empty text"
+                continue
+            if tool_id in duplicate_ids:
+                errors[index] = f"duplicate tool_call id {tool_id!r}"
+                continue
+            func = tc.get("function")
+            if not isinstance(func, dict):
+                errors[index] = "function must be an object"
+                continue
+            tool_name = func.get("name")
+            if not isinstance(tool_name, str) or not tool_name:
+                errors[index] = "function.name must be non-empty text"
+                continue
+            try:
+                args = self.parse_tool_args(func)
+            except json.JSONDecodeError:
+                raw_args = str(func.get("arguments", ""))
+                errors[index] = f"Error: invalid JSON arguments: {raw_args[:200]}"
+                continue
+            except ValueError:
+                raw_args = str(func.get("arguments", ""))
+                errors[index] = (
+                    "Error: tool arguments must be a JSON object: "
+                    f"{raw_args[:200]}"
+                )
+                continue
+            tool = self.find_tool(tool_name)
+            if tool is None:
+                errors[index] = (
+                    f"Error: unknown tool '{tool_name}'. Available: "
+                    f"{[t.name for t in self.agent.tools]}"
+                )
+                continue
+            schema = getattr(tool, "parameters", None)
+            if isinstance(schema, dict):
+                schema_errors = validate(args, schema)
+                if schema_errors:
+                    errors[index] = "schema validation failed: " + "; ".join(
+                        schema_errors
+                    )[:1_000]
+        return errors
+
     def parse_tool_args(self, func: dict) -> dict:
-        args_str = func["arguments"]
-        return json.loads(args_str) if args_str else {}
+        args_str = func.get("arguments", "")
+        if isinstance(args_str, dict):
+            return dict(args_str)
+        if not isinstance(args_str, str):
+            raise ValueError("tool arguments must be a JSON object")
+        args = json.loads(args_str) if args_str else {}
+        if not isinstance(args, dict):
+            raise ValueError("tool arguments must be a JSON object")
+        return args
 
     def tool_call_hash(self, tool_name: str, args: dict) -> str:
         # Path-normalized read tools key on the file path alone so re-reads of one
@@ -401,144 +607,3 @@ class ToolExecutionUseCase:
 
     def find_tool(self, tool_name: str):
         return self.agent.find_tool(tool_name)
-
-    async def execute_tool(
-        self,
-        tool,
-        args: dict,
-        *,
-        tool_id: str | None = None,
-    ) -> tuple[str, float]:
-        """Run one tool, mapping any exception to an error string.
-
-        Returns ``(output, latency_seconds)`` — never raises, so one failing
-        tool cannot abort the rest of the batch.
-        """
-        start = time.monotonic()
-        runtime = self.tool_runtime(tool_call_id=tool_id)
-        timeout = self.tool_execution_timeout(tool, args)
-        try:
-            result = await asyncio.wait_for(
-                tool.execute_with_runtime(args, runtime),
-                timeout=timeout,
-            )
-        except asyncio.TimeoutError:
-            tool_name = getattr(tool, "name", type(tool).__name__)
-            result = (
-                f"Tool execution timed out after {timeout:.1f}s "
-                f"while running '{tool_name}'."
-            )
-        except PermissionError as e:
-            result = f"Permission denied: {e}"
-        except Exception as e:
-            result = f"Tool execution error: {type(e).__name__}: {e}"
-
-        return result, time.monotonic() - start
-
-    def tool_execution_timeout(self, tool: Any, args: dict) -> float:
-        requested = self._numeric_timeout((args or {}).get("timeout"))
-        base = requested if requested is not None else self._tool_default_timeout(tool)
-        return min(base + TOOL_EXECUTION_TIMEOUT_GRACE, MAX_TOOL_EXECUTION_TIMEOUT)
-
-    def _tool_default_timeout(self, tool: Any) -> float:
-        configured = self._numeric_timeout(getattr(tool, "default_timeout", None))
-        if configured is not None:
-            return configured
-        return DEFAULT_TOOL_EXECUTION_TIMEOUT
-
-    def _numeric_timeout(self, value: Any) -> float | None:
-        if value is None:
-            return None
-        try:
-            timeout = float(value)
-        except (TypeError, ValueError):
-            return None
-        if timeout <= 0:
-            return None
-        return timeout
-
-    def tool_runtime(self, tool_call_id: str | None = None) -> ToolRuntime:
-        return ToolRuntime(
-            environment=self.environment,
-            safety_policy=self.safety_policy,
-            permission_policy=self.permission_policy,
-            ask_policy=self.ask_policy,
-            aid=self.state.aid,
-            tool_call_id=tool_call_id,
-        )
-
-    async def execute_deferred(self, tc: dict) -> tuple[int | None, str | None]:
-        """Drive a single deferrable tool (e.g. ``spawn_agent``).
-
-        Returns ``(ref, None)`` when the tool deferred work and handed back a
-        :class:`DeferredCall` (its ``ref`` — a child aid — is awaited), or
-        ``(None, error_text)`` when it resolved synchronously (bad args,
-        unknown tool, permission/topology rejection, or a plain string return)
-        and its row should fill at once. The per-call ``tool_call_id`` is
-        threaded into the runtime so the scheduler can route the eventual
-        completion back to the right pending row.
-
-        Deferred tools bypass ``process`` (and thus loop-detection hashing) by
-        design — a spawn is never a doom-loop the way a repeated read is.
-        """
-        func = tc["function"]
-        tool_name = func["name"]
-        try:
-            args = self.parse_tool_args(func)
-        except json.JSONDecodeError:
-            return None, f"Error: invalid JSON arguments: {func['arguments'][:200]}"
-
-        tool = self.find_tool(tool_name)
-        if not tool:
-            return None, f"Error: unknown tool '{tool_name}'."
-
-        await self.event_publisher.emit(self.event_factory.tool_start(tool_name, args))
-        runtime = self.tool_runtime(tool_call_id=tc["id"])
-        try:
-            outcome = await tool.execute_with_runtime(args, runtime)
-        except PermissionError as e:
-            return None, f"Permission denied: {e}"
-        except Exception as e:
-            return None, f"Tool execution error: {type(e).__name__}: {e}"
-        await self.event_publisher.emit(self.event_factory.tool_end(tool_name, 0.0))
-
-        if isinstance(outcome, DeferredCall):
-            return outcome.ref, None
-        return None, str(outcome)
-
-    def _trace_short_circuit(self, step_type: str, tool_name: str, detail: dict[str, Any]) -> None:
-        """Record a tracer step for a pre-execution short-circuit.
-
-        The three branches that answer a tool call without ever executing it
-        (malformed JSON args, unknown tool, loop-detection block) previously left
-        no trajectory trace, so a run could short-circuit silently. This logs a
-        distinct ``step_type`` ("tool_error"/"loop_blocked") with the attempted
-        tool and a small args snapshot. Observability only — no behavior change;
-        a no-op when no tracer is wired.
-        """
-        if not self.tracer:
-            return
-        payload: dict[str, Any] = {"tool": tool_name}
-        payload.update(detail)
-        # Cap any args snapshot so a trace record can't balloon.
-        if isinstance(payload.get("args"), dict):
-            snapshot = json.dumps(payload["args"], default=str)[:500]
-            payload["args"] = snapshot
-        self.tracer.log_step(step_type=step_type, payload=payload)
-
-    def trace_payload(self, tool_name: str, args: dict, tool_output: str) -> dict[str, Any]:
-        # Cap result in trace to 4k to keep trajectory files manageable.
-        trace_result = (
-            tool_output
-            if len(tool_output) <= 4096
-            else tool_output[:2048] + "\n...[truncated]...\n" + tool_output[-2048:]
-        )
-        return {
-            "tool": tool_name,
-            "args": args,
-            "result_len": len(tool_output),
-            "result": trace_result,
-        }
-
-    def tool_result_message(self, tool_id: str, result: str) -> dict[str, str]:
-        return {"role": "tool", "tool_call_id": tool_id, "content": result}

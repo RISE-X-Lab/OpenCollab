@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from opencollab.application.event_bus import EventBus
 from opencollab.bootstrap.container import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.team_config import BASE_TOOL_NAMES, RoleConfig, TeamConfig

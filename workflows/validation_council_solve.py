@@ -19,7 +19,7 @@ from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.tools.git_diff import GitDiffTool
-from opencollab.adapters.tools.run_tests import RunTestsTool
+from opencollab.adapters.tools.run_tests import verification_run_tests_tool
 from opencollab.application.workflow_registry import workflow
 
 MAX_APPROVED_PRE_TESTS = 5
@@ -584,20 +584,34 @@ def _read_tools() -> list[Any]:
 
 
 def _coder_tools() -> list[Any]:
-    return [BashTool(), FileReadTool(), FileWriteTool(), ApplyPatchTool(), RunTestsTool(), GrepTool()]
+    return [
+        BashTool(),
+        FileReadTool(),
+        FileWriteTool(),
+        ApplyPatchTool(),
+        verification_run_tests_tool(),
+        GrepTool(),
+    ]
 
 
 def _tester_tools() -> list[Any]:
+    # Gate roles (patch-validator, post-triage, final-verifier) need an executable
+    # probe so a PASS is backed by a real run, not prose alone. Blindness holds
+    # because the hidden FAIL_TO_PASS tests are absent from the container, not
+    # because bash is. No file_write/apply_patch: these roles verify, not author.
     return [
+        BashTool(),
         FileReadTool(),
-        RunTestsTool(allow_runner_override=False, allow_extra_args=False),
+        verification_run_tests_tool(),
         GrepTool(),
         GitDiffTool(),
     ]
 
 
 def _risk_tools() -> list[Any]:
-    return []
+    # The diff-risk auditor must at least read the diff and the sources it judges;
+    # an empty toolset let it "audit" blind. Read-only — no execution or authoring.
+    return [FileReadTool(), GrepTool(), GitDiffTool()]
 
 
 def _dump(value: Any) -> str:
@@ -874,7 +888,11 @@ async def validation_council_solve(ctx: Any, args: dict[str, Any]) -> dict[str, 
     goal = str(args.get("goal") or args.get("description") or "").strip()
     if not goal:
         return {"status": "error", "error": 'missing "goal" or "description"'}
-    injected_test_paths = [str(path) for path in args.get("injected_test_paths") or [] if str(path)]
+    injected_test_paths = [
+        str(path)
+        for path in args.get("injected_test_paths") or []
+        if str(path)
+    ]
 
     await ctx.phase("localize")
     localization = await ctx.agent(

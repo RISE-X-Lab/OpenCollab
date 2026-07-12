@@ -3,18 +3,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
-
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT / "opencollab") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "opencollab"))
 
-from opencollab.harness import token_cost
+from opencollab.harness import token_cost  # noqa: E402
 
 
 def _write_outputs(summary: dict[str, Any], json_output: Path | None, markdown_output: Path | None) -> None:
@@ -38,7 +38,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-dir", action="append", required=True)
-    parser.add_argument("--model", default="glm-5.2")
+    parser.add_argument("--model")
     parser.add_argument("--usd-cny", type=float)
     args = parser.parse_args()
     value = build_summary([Path(path) for path in args.run_dir], model_filter=args.model, usd_cny=args.usd_cny)
@@ -80,7 +80,8 @@ def _build_remote(args: argparse.Namespace) -> dict[str, Any]:
     ]
     for run_dir in args.run_dir:
         command.extend(["--run-dir", run_dir])
-    command.extend(["--model", args.model])
+    if args.model:
+        command.extend(["--model", args.model])
     if args.usd_cny is not None:
         command.extend(["--usd-cny", str(args.usd_cny)])
     try:
@@ -109,7 +110,11 @@ def _build_remote(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Summarize SWE-bench generation token usage and cost.")
     parser.add_argument("--run-dir", action="append", required=True)
-    parser.add_argument("--model", default="glm-5.2")
+    parser.add_argument(
+        "--model",
+        default=os.environ.get("OPENCOLLAB_TOKEN_COST_MODEL"),
+        help="Optional model filter (or OPENCOLLAB_TOKEN_COST_MODEL).",
+    )
     parser.add_argument("--usd-cny", type=float)
     parser.add_argument("--remote-host", default="")
     parser.add_argument("--ssh-command", default="ssh")

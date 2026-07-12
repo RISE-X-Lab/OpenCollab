@@ -21,6 +21,7 @@ import copy
 import json
 from types import SimpleNamespace
 
+import pytest
 from opencollab.application.event_bus import EventBus
 from opencollab.application.session_run import (
     ENFORCEMENT_OFF,
@@ -145,6 +146,33 @@ def build_runner(*, state, agent, llm, event_bus=None, tool_execution=None, **kw
 
 def _agent_with_submit():
     return Agent(name="scout", system_prompt="s", tools=[_ReadStub(), SubmitFindingsTool()])
+
+
+def test_configure_enforcement_validates_runtime_knobs():
+    runner = build_runner(
+        state=SessionState(messages=[]),
+        agent=_agent_with_submit(),
+        llm=FakeLLM(),
+        max_budget_tokens=100,
+        commit_reserve=20,
+    )
+
+    with pytest.raises(ValueError, match="enforcement_strength"):
+        runner.configure_enforcement(enforcement_strength="invalid")
+    with pytest.raises(ValueError, match="positive integer"):
+        runner.configure_enforcement(
+            enforcement_strength=ENFORCEMENT_ON, commit_reserve=True
+        )
+    with pytest.raises(ValueError, match="cannot exceed"):
+        runner.configure_enforcement(
+            enforcement_strength=ENFORCEMENT_ON, commit_reserve=101
+        )
+    with pytest.raises(ValueError, match="0..3"):
+        runner.configure_enforcement(
+            enforcement_strength=ENFORCEMENT_ON,
+            commit_reserve=20,
+            max_extensions=4,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -447,6 +475,27 @@ def test_submit_findings_accepts_insufficient_evidence_abstention():
     out = _exec(tool, _captured(insufficient=True, findings=[]))
     assert tool.captured is not None  # abstaining is a valid, non-penalized outcome
     assert "accepted" in out.lower()
+
+
+def test_submit_findings_abstention_cannot_bypass_verified_anchor():
+    tool = SubmitFindingsTool()
+    bad = _captured(
+        insufficient=True,
+        findings=[
+            {
+                "aspect": "a",
+                "claim": "unsupported",
+                "evidence_anchor": "",
+                "verified": True,
+                "confidence": "low",
+            }
+        ],
+    )
+
+    out = _exec(tool, bad)
+
+    assert tool.captured is None
+    assert "evidence_anchor" in out
 
 
 def test_submit_findings_schema_round_trips_through_validator():

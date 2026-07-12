@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import sys
-import threading
-import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from generation_proof_test_support import trusted_patch_proof_fields
+from opencollab.harness import swe_v1_remote_records as remote_records
 
 
 def _load_module():
@@ -50,7 +51,7 @@ def _args(**overrides):
         "max_empty_patch_retries": 1,
         "remote_proxy_base_url": "http://127.0.0.1:18788",
         "local_proxy_base_url": "http://127.0.0.1:8878",
-        "proxy_env_file": Path("/tmp/glm52.env"),
+        "proxy_env_file": Path("/tmp/proxy.env"),
         "budget": 16,
         "max_steps": 60,
         "swe_timeout": 14400,
@@ -75,6 +76,136 @@ def _args(**overrides):
     return SimpleNamespace(**values)
 
 
+def _direct_eval_summary(task: str, patch_sha: str, record_id: str) -> dict:
+    evidence = {
+        "status": 0,
+        "command_matches_plan": True,
+        "log_artifact_safe": True,
+        "target_proof_matches_plan": True,
+        "artifact_safe": True,
+    }
+    return {
+        "schema": "opencollab.prolite_direct_eval.v2",
+        "status": "done",
+        "task": task,
+        "resolved": True,
+        "patch_sha256": patch_sha,
+        "record_id": record_id,
+        "eval_spec_sha256": "e" * 64,
+        "technical_reasons": [],
+        "output_artifact_errors": [],
+        "docker_exit": 0,
+        "cleanup_quiesced": True,
+        "container_cleanup": {"ok": True},
+        "tests_status": {
+            "base_commit_status": 0,
+            "service_bootstrap_status": 0,
+            "before_repo_status": 0,
+            "post_before_base_status": 0,
+            "model_patch_status": 0,
+            "test_patch_status": 0,
+            "fail_to_pass_status": 0,
+            "pass_to_pass_status": 0,
+            "fail_to_pass_plan": {"commands": ["pytest target"], "coverage_verified": True},
+            "pass_to_pass_plan": {"commands": [], "coverage_verified": True},
+            "fail_to_pass_evidence": [evidence],
+            "pass_to_pass_evidence": [],
+        },
+    }
+
+
+def _production_row(index: int, task: str, *, openhands: bool = False) -> dict:
+    patch = "diff --git a/a.py b/a.py\n+fixed = True\n"
+    patch_sha = hashlib.sha256(patch.encode()).hexdigest()
+    record_id = f"record-{task}"
+    metric = {
+        "instance_id": task,
+        "record_id": record_id,
+        "patch_sha256": patch_sha,
+        "workflow_status": "done",
+        "runner_returncode": 0,
+        "submission_eligible": True,
+        "execution_quiesced": True,
+        "patch_extraction_succeeded": True,
+        "injected_path_cleanup_proven": True,
+        "harness_artifact_exclusion_proven": True,
+        "checkpoint_restore_integrity_proven": True,
+        "task_stage_integrity_proven": True,
+        "test_patch_isolation_failed": False,
+        "worktree_integrity_proven": True,
+        "patch_produced": True,
+        **trusted_patch_proof_fields(patch),
+    }
+    prediction = {
+        "instance_id": task,
+        "record_id": record_id,
+        "patch_sha256": patch_sha,
+        "model_patch": patch,
+        "workflow_metric": metric,
+    }
+    generation = remote_records.generation_done_result(
+        task, prediction, metric, "record_id"
+    )
+    return {
+        "index": index,
+        "task": task,
+        "generation": generation,
+        "eval": {
+            "status": "eval_done",
+            "task": task,
+            "executed": False,
+            "summary": _direct_eval_summary(task, patch_sha, record_id),
+        },
+    }
+
+
+def _terminal_counts(*, technical: int = 0) -> dict:
+    return {
+        "tasks": 0 if technical else 1,
+        "generation_done": 0 if technical else 1,
+        "empty_patch": 0,
+        "eval_done": 0 if technical else 1,
+        "eval_attempts": 0 if technical else 1,
+        "eval_retry_tasks": 0,
+        "resolved": 0 if technical else 1,
+        "unresolved": 0,
+        "technical_failed": technical,
+    }
+
+
+def _reusable_summary(config, index: int, *, openhands: bool = False) -> dict:
+    row = _production_row(index, f"task-{index}", openhands=openhands)
+    summary = {
+        "schema": "opencollab.swe_g11_prolite_runner.v1",
+        "status": "done",
+        "workflow": config.workflow,
+        "model_name": config.model_name,
+        "llm_model": config.llm_model,
+        "context_window": config.context_window,
+        "temperature": config.temperature,
+        "top_p": config.top_p,
+        "max_output_tokens": config.max_output_tokens,
+        "budget": config.budget,
+        "max_steps": config.max_steps,
+        "max_task_starts": config.max_task_starts,
+        "max_empty_patch_retries": config.max_empty_patch_retries,
+        "max_eval_attempts": config.max_eval_attempts,
+        "workflow_env": {},
+        "eval_only": False,
+        "solver_attribution": "current_run",
+        "remote_runtime_repo": config.remote_runtime_repo,
+        "base_run_dir": f"{config.remote_base}/task_{index}",
+        "counts": _terminal_counts(),
+        "rows": [row],
+    }
+    if openhands:
+        summary["openhands_empty_patch_rejections"] = config.openhands_empty_patch_rejections
+        summary["openhands_command_sha256"] = hashlib.sha256(
+            config.openhands_command.encode()
+        ).hexdigest()
+    return summary
+
+
 def test_parallel_config_uses_requested_range_and_worker_count():
     module = _load_module()
 
@@ -96,10 +227,33 @@ def test_parallel_config_uses_requested_range_and_worker_count():
     assert config.context_window == 400_000
 
 
-def test_parser_defaults_to_g11_three_task_starts():
+def test_parser_defaults_to_g11_three_task_starts_with_explicit_runtime_config():
     module = _load_module()
 
-    args = module.build_parser().parse_args(["--start-index", "51", "--end-index", "75"])
+    args = module.build_parser().parse_args(
+        [
+            "--start-index",
+            "51",
+            "--end-index",
+            "75",
+            "--remote-eval-work-root",
+            "/remote/eval",
+            "--remote-root",
+            "/remote/root",
+            "--model-name",
+            "model",
+            "--llm-model",
+            "llm",
+            "--host",
+            "host",
+            "--proxy-env-file",
+            "/tmp/proxy.env",
+            "--remote-proxy-base-url",
+            "http://remote-proxy.invalid",
+            "--local-proxy-base-url",
+            "http://local-proxy.invalid",
+        ]
+    )
     config = module.resolve_config(args)
 
     assert config.indices == tuple(range(51, 76))
@@ -261,55 +415,10 @@ def test_openhands_completed_report_reuse_requires_same_command():
             remote_base="/remote/openhands",
         )
     )
-    summary = {
-        "status": "done",
-        "workflow": "openhands-external",
-        "model_name": config.model_name,
-        "llm_model": config.llm_model,
-        "context_window": config.context_window,
-        "temperature": config.temperature,
-        "top_p": config.top_p,
-        "max_output_tokens": config.max_output_tokens,
-        "budget": config.budget,
-        "max_steps": config.max_steps,
-        "openhands_empty_patch_rejections": config.openhands_empty_patch_rejections,
-        "max_task_starts": config.max_task_starts,
-        "max_empty_patch_retries": config.max_empty_patch_retries,
-        "max_eval_attempts": config.max_eval_attempts,
-        "workflow_env": {},
-        "eval_only": False,
-        "solver_attribution": "current_run",
-        "remote_runtime_repo": config.remote_runtime_repo,
-        "base_run_dir": "/remote/openhands/task_1",
-        "openhands_command_sha256": module._openhands_command_sha256(command),
-        "counts": {
-            "tasks": 1,
-            "generation_done": 1,
-            "eval_done": 1,
-            "technical_failed": 0,
-        },
-        "rows": [
-            {
-                "index": 1,
-                "task": "task-1",
-                "generation": {
-                    "status": "generation_done",
-                    "solver_git_snapshot": {
-                        "enabled": True,
-                        "anonymous_head": "a" * 40,
-                        "base_tree": "b" * 40,
-                        "commit_count": 1,
-                        "remote_count": 0,
-                        "extra_git_metadata": 0,
-                        "removed_git_metadata": 0,
-                    },
-                },
-                "eval": {"status": "eval_done"},
-            }
-        ],
-    }
+    summary = _reusable_summary(config, 1, openhands=True)
 
     assert module.report_is_reusable(summary, config, 1) is True
+    assert summary["rows"][0]["eval"]["executed"] is False
     without_snapshot = json.loads(json.dumps(summary))
     del without_snapshot["rows"][0]["generation"]["solver_git_snapshot"]
     assert module.report_is_reusable(without_snapshot, config, 1) is False
@@ -323,16 +432,19 @@ def test_openhands_completed_report_reuse_requires_same_command():
         )
     )
     assert module.report_is_reusable(summary, changed, 1) is False
-    missing = module.resolve_config(
-        _args(
-            start_index=1,
-            end_index=1,
-            workflow="openhands-external",
-            openhands_command="",
-            remote_base="/remote/openhands",
+    weak_summary = json.loads(json.dumps(summary))
+    weak_summary["rows"][0]["eval"]["summary"].pop("tests_status")
+    assert module.report_is_reusable(weak_summary, config, 1) is False
+    with pytest.raises(ValueError, match="openhands-external requires"):
+        module.resolve_config(
+            _args(
+                start_index=1,
+                end_index=1,
+                workflow="openhands-external",
+                openhands_command="",
+                remote_base="/remote/openhands",
+            )
         )
-    )
-    assert module.report_is_reusable(summary, missing, 1) is False
 
 
 def test_aggregate_uses_configured_indices_for_done_status():
@@ -402,25 +514,17 @@ def test_run_one_retries_transient_preflight_report(tmp_path):
         calls += 1
         if calls == 1:
             payload = {
+                "schema": "opencollab.swe_g11_prolite_runner.v1",
                 "status": "preflight_failed",
-                "counts": {"tasks": 0, "technical_failed": 1},
+                "counts": _terminal_counts(technical=1),
                 "rows": [],
             }
+            returncode = 2
         else:
-            payload = {
-                "status": "done",
-                "counts": {
-                    "tasks": 1,
-                    "generation_done": 1,
-                    "eval_done": 1,
-                    "resolved": 1,
-                    "unresolved": 0,
-                    "technical_failed": 0,
-                },
-                "rows": [{"index": 51}],
-            }
+            payload = _reusable_summary(config, 51)
+            returncode = 0
         report_path.write_text(json.dumps(payload), encoding="utf-8")
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return SimpleNamespace(returncode=returncode, stdout="", stderr="")
 
     old_run = module.subprocess.run
     try:
@@ -457,14 +561,15 @@ def test_run_one_returns_last_preflight_failure_after_runner_attempts(tmp_path):
         report_path.write_text(
             json.dumps(
                 {
+                    "schema": "opencollab.swe_g11_prolite_runner.v1",
                     "status": "preflight_failed",
-                    "counts": {"tasks": 0, "technical_failed": 1},
+                    "counts": _terminal_counts(technical=1),
                     "rows": [],
                 }
             ),
             encoding="utf-8",
         )
-        return SimpleNamespace(returncode=1, stdout="", stderr="")
+        return SimpleNamespace(returncode=2, stdout="", stderr="")
 
     old_run = module.subprocess.run
     try:
@@ -493,42 +598,7 @@ def test_run_one_reuses_completed_report_without_subprocess(tmp_path):
     report_path = module.task_paths(config, 51)["json_report"]
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(
-        json.dumps(
-            {
-                "status": "done",
-                "workflow": config.workflow,
-                "model_name": config.model_name,
-                "llm_model": config.llm_model,
-                "context_window": config.context_window,
-                "temperature": config.temperature,
-                "top_p": config.top_p,
-                "max_output_tokens": config.max_output_tokens,
-                "budget": config.budget,
-                "max_steps": config.max_steps,
-                "max_task_starts": config.max_task_starts,
-                "max_empty_patch_retries": config.max_empty_patch_retries,
-                "max_eval_attempts": config.max_eval_attempts,
-                "workflow_env": {},
-                "eval_only": False,
-                "solver_attribution": "current_run",
-                "remote_runtime_repo": config.remote_runtime_repo,
-                "base_run_dir": f"{config.remote_base}/task_51",
-                "counts": {
-                    "tasks": 1,
-                    "generation_done": 1,
-                    "eval_done": 1,
-                    "technical_failed": 0,
-                },
-                "rows": [
-                    {
-                        "index": 51,
-                        "task": "task-51",
-                        "generation": {"status": "generation_done"},
-                        "eval": {"status": "eval_done"},
-                    }
-                ],
-            }
-        ),
+        json.dumps(_reusable_summary(config, 51)),
         encoding="utf-8",
     )
 
@@ -591,7 +661,7 @@ def test_scheduler_ignores_semantic_eval_failures():
                     "summary": {
                         "resolved": False,
                         "technical_reasons": [],
-                        "command_log": "/nfsEDS/dongyh/data/kaka/docker/opencollab/eval_work/task/command.log",
+                        "command_log": "/srv/opencollab/eval_work/task/command.log",
                         "tests_status": {
                             "f2p_log_tail": "assertion failed: ssh timeout banner should stay visible",
                             "p2p_log_tail": "expected docker label text in rendered output",
@@ -681,88 +751,3 @@ def test_run_parallel_stops_before_generation_when_health_check_fails(tmp_path):
         module.run_one = old_run_one
 
     assert called["run_one"] == 0
-
-
-def test_run_parallel_submits_only_the_current_worker_window(tmp_path):
-    module = _load_module()
-    config = module.resolve_config(
-        _args(
-            start_index=51,
-            end_index=55,
-            max_workers=3,
-            output_dir=tmp_path,
-            no_sync_runtime=True,
-            no_ensure_remote_proxy=True,
-            skip_preflight=True,
-            skip_health_checks=True,
-            retry_delay_seconds=0,
-        )
-    )
-    started: list[int] = []
-    active = 0
-    max_active = 0
-    lock = threading.Lock()
-    first_window_started = threading.Event()
-    release = threading.Event()
-
-    def fake_run_one(cfg, index):
-        nonlocal active, max_active
-        with lock:
-            started.append(index)
-            active += 1
-            max_active = max(max_active, active)
-            if len(started) == 3:
-                first_window_started.set()
-        release.wait(timeout=5)
-        with lock:
-            active -= 1
-        return {
-            "index": index,
-            "returncode": 0,
-            "runner_status": "done",
-            "tasks": 1,
-            "generation_done": 1,
-            "eval_done": 1,
-            "completed": True,
-        }
-
-    final: dict[str, object] = {}
-    errors: list[BaseException] = []
-    old_prepare = module.prepare_runtime
-    old_health = module.run_remote_health_checks
-    old_run_one = module.run_one
-    old_token = module.build_token_summary
-    old_fact = module.build_eval_fact_report
-    try:
-        module.prepare_runtime = lambda cfg: None
-        module.run_remote_health_checks = lambda cfg: {"status": "skipped"}
-        module.run_one = fake_run_one
-        module.build_token_summary = lambda cfg: {"status": "done"}
-        module.build_eval_fact_report = lambda cfg: {"status": "done", "counts": {}}
-
-        def target():
-            try:
-                final.update(module.run_parallel(config))
-            except BaseException as exc:
-                errors.append(exc)
-
-        thread = threading.Thread(target=target)
-        thread.start()
-        assert first_window_started.wait(timeout=2)
-        time.sleep(0.05)
-        with lock:
-            assert started == [51, 52, 53]
-            assert max_active == 3
-        release.set()
-        thread.join(timeout=5)
-    finally:
-        release.set()
-        module.prepare_runtime = old_prepare
-        module.run_remote_health_checks = old_health
-        module.run_one = old_run_one
-        module.build_token_summary = old_token
-        module.build_eval_fact_report = old_fact
-
-    assert not errors
-    assert final["status"] == "done"
-    assert sorted(started) == [51, 52, 53, 54, 55]

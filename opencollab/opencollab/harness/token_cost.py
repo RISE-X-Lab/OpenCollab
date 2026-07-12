@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-
 WORKFLOW_RE = re.compile(
     r"workflow: tokens=(\d+) steps=(\d+) duration=(\d+)s error=([^\n]+)"
 )
@@ -247,7 +246,7 @@ def collect_workflow_usage(paths: Iterable[Path]) -> dict[str, Any]:
 def build_summary(
     run_dirs: Iterable[Path],
     *,
-    model_filter: str | None = "glm-5.2",
+    model_filter: str | None = None,
     usd_cny: float | None = None,
 ) -> dict[str, Any]:
     roots = [Path(path) for path in run_dirs]

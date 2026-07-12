@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-import pytest
+import os
 
+import pytest
+from opencollab.bootstrap import config as config_mod
 from opencollab.bootstrap.config import (
     accepted_api_key_envs,
     api_key_env_precedence,
@@ -59,6 +61,14 @@ def test_llm_timeout_defaults_to_long_running_provider_window(monkeypatch):
 def test_llm_timeout_reads_env(monkeypatch):
     monkeypatch.setenv("OPENCOLLAB_LLM_TIMEOUT", "120.5")
     assert build_config().llm_timeout == 120.5
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "nan", "inf", "-inf"])
+def test_llm_timeout_rejects_nonpositive_or_nonfinite_env(monkeypatch, raw):
+    monkeypatch.setenv("OPENCOLLAB_LLM_TIMEOUT", raw)
+
+    with pytest.raises(Exception):
+        build_config()
 
 
 def test_temperature_defaults_to_two_tenths(monkeypatch):
@@ -258,6 +268,24 @@ def test_missing_api_key_treats_whitespace_only_key_as_missing(monkeypatch):
     assert missing_api_key("openai", "   ") is True
     monkeypatch.setenv("OPENAI_API_KEY", "   ")
     assert missing_api_key("openai", None) is True
+
+
+@pytest.mark.parametrize("kind", ["fifo", "symlink", "oversized"])
+def test_config_file_rejects_unsafe_or_oversized_input(tmp_path, monkeypatch, kind):
+    config = tmp_path / "config.env"
+    if kind == "fifo":
+        os.mkfifo(config)
+    elif kind == "symlink":
+        real = tmp_path / "real.env"
+        real.write_text("OPENCOLLAB_MODEL=secret\n", encoding="utf-8")
+        config.symlink_to(real)
+    else:
+        config.write_text("x" * 65, encoding="utf-8")
+        monkeypatch.setattr(config_mod, "MAX_DOTENV_BYTES", 64)
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(config))
+
+    with pytest.raises(ValueError, match="config env|read target exceeds"):
+        build_config()
 
 
 def test_missing_api_key_honors_dashscope_endpoint(monkeypatch):
