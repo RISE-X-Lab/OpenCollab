@@ -92,6 +92,8 @@ def task_command(config: ParallelConfig, index: int) -> list[str]:
         config.ssh_command,
         "--remote-root",
         config.remote_root,
+        "--image-repository",
+        config.image_repository,
         "--run-id",
         f"{config.run_id}_task{index}",
         "--session-prefix",
@@ -301,6 +303,8 @@ def prepare_runtime(config: ParallelConfig) -> None:
         config.ssh_command,
         "--remote-root",
         config.remote_root,
+        "--image-repository",
+        config.image_repository,
         "--run-id",
         f"{config.run_id}_preflight",
         "--session-prefix",
@@ -537,6 +541,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default=os.environ.get("OPENCOLLAB_SWE_HOST", ""))
     parser.add_argument("--ssh-command", default="ssh")
     parser.add_argument("--remote-root", default=DEFAULT_REMOTE_ROOT)
+    parser.add_argument(
+        "--image-repository",
+        default=_config.DEFAULT_IMAGE_REPOSITORY,
+    )
     parser.add_argument("--workflow", default="validation-council-solve")
     parser.add_argument("--workflow-env", action="append", default=[])
     parser.add_argument("--openhands-command", default="")

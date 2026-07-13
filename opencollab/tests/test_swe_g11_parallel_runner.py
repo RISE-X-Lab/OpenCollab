@@ -45,6 +45,7 @@ def _args(**overrides):
         "host": "host",
         "ssh_command": "ssh",
         "remote_root": "/remote/root",
+        "image_repository": "registry.example/swe-images",
         "workflow": "validation-council-solve",
         "workflow_env": [],
         "openhands_command": "",
@@ -225,6 +226,7 @@ def test_parallel_config_uses_requested_range_and_worker_count():
     assert config.workflow_env == ()
     assert config.llm_model == "glm-5.2"
     assert config.context_window == 400_000
+    assert config.image_repository == "registry.example/swe-images"
 
 
 def test_parser_defaults_to_g11_three_task_starts_with_explicit_runtime_config():
@@ -240,6 +242,8 @@ def test_parser_defaults_to_g11_three_task_starts_with_explicit_runtime_config()
             "/remote/eval",
             "--remote-root",
             "/remote/root",
+            "--image-repository",
+            "registry.example/swe-images",
             "--model-name",
             "model",
             "--llm-model",
@@ -311,6 +315,7 @@ def test_task_command_forwards_typed_llm_settings():
     assert command[command.index("--temperature") + 1] == "1.0"
     assert command[command.index("--top-p") + 1] == "1.0"
     assert command[command.index("--max-output-tokens") + 1] == "32768"
+    assert command[command.index("--image-repository") + 1] == "registry.example/swe-images"
 
 
 def test_workflow_env_rejects_secret_or_arbitrary_keys():
@@ -356,6 +361,7 @@ def test_preflight_forwards_budget_and_step_limit(tmp_path):
     command = captured["command"]
     assert command[command.index("--budget") + 1] == "4000000"
     assert command[command.index("--max-steps") + 1] == "60"
+    assert command[command.index("--image-repository") + 1] == "registry.example/swe-images"
     assert "OPENCOLLAB_MAX_OUTPUT_TOKENS=32768" in command
 
 

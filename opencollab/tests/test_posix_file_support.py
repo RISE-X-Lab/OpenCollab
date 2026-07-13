@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+import errno
 import importlib.util
 import os
 import sys
@@ -134,6 +135,32 @@ def test_atomic_rename_reports_missing_native_exchange_symbol(monkeypatch):
             first_dir_fd=-1,
             second_dir_fd=-1,
         )
+
+
+def test_atomic_create_uses_hard_link_when_nfs_rejects_rename_noreplace(
+    monkeypatch,
+    tmp_path,
+):
+    target = tmp_path / "value.json"
+    real_rename_noreplace = atomic_rename.rename_noreplace
+
+    def reject_target_create(source, destination, **kwargs):
+        if destination == target.name:
+            raise OSError(errno.EINVAL, "simulated NFS renameat2 rejection", destination)
+        return real_rename_noreplace(source, destination, **kwargs)
+
+    monkeypatch.setattr(atomic_rename, "rename_noreplace", reject_target_create)
+
+    safe_files.write_regular_bytes_atomic(target, b"payload")
+
+    assert target.read_bytes() == b"payload"
+    aliases = [
+        path
+        for path in tmp_path.iterdir()
+        if path.name.startswith(owned_cleanup.RETIRED_FILE_PREFIX)
+    ]
+    assert len(aliases) == 1
+    assert aliases[0].stat().st_ino == target.stat().st_ino
 
 
 def test_capability_check_requires_callable_flock(monkeypatch):
