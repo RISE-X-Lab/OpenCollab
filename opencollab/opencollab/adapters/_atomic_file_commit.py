@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 from collections.abc import Callable
@@ -17,6 +18,15 @@ from opencollab.adapters._owned_file_cleanup import (
     retirement_lock,
 )
 from opencollab.application.exception_notes import add_exception_note
+
+_UNSUPPORTED_RENAME_NOREPLACE_ERRNOS = frozenset(
+    {
+        errno.EINVAL,
+        errno.ENOSYS,
+        getattr(errno, "ENOTSUP", errno.EINVAL),
+        getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+    }
+)
 
 
 def _close_pinned_fd(fd: int) -> OSError | None:
@@ -201,6 +211,33 @@ def _entry_identity(
     return entry.st_dev, entry.st_ino
 
 
+def _commit_create_noreplace(
+    parent_fd: int,
+    temporary_name: str,
+    target_name: str,
+) -> bool:
+    """Commit a create and report whether the owned temporary remains linked."""
+    try:
+        _atomic_rename.rename_noreplace(
+            temporary_name,
+            target_name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+        )
+    except OSError as error:
+        if error.errno not in _UNSUPPORTED_RENAME_NOREPLACE_ERRNOS:
+            raise
+        os.link(
+            temporary_name,
+            target_name,
+            src_dir_fd=parent_fd,
+            dst_dir_fd=parent_fd,
+            follow_symlinks=False,
+        )
+        return True
+    return False
+
+
 def _record_recovery_candidate(
     parent_fd: int,
     name: str,
@@ -350,6 +387,7 @@ def commit_owned_temporary(
     backup_identity: tuple[int, int] | None = None
     commit_attempted = False
     commit_invoked = False
+    candidate_alias_retained = False
     primary_error: BaseException | None = None
     effective_create = create_only or require_target_absent
     if not temporary_name.startswith(RETIRED_FILE_PREFIX):
@@ -434,11 +472,10 @@ def commit_owned_temporary(
                     raise OSError(f"atomic target backup disappeared after exchange: {path_label}")
             else:
                 commit_invoked = True
-                _atomic_rename.rename_noreplace(
+                candidate_alias_retained = _commit_create_noreplace(
+                    parent_fd,
                     temporary_name,
                     target_name,
-                    src_dir_fd=parent_fd,
-                    dst_dir_fd=parent_fd,
                 )
             commit_attempted = True
             committed = os.stat(
@@ -452,6 +489,15 @@ def commit_owned_temporary(
             ):
                 operation = "create" if backup_identity is None else "replace"
                 raise OSError(f"atomic target changed during {operation}: {path_label}")
+            if candidate_alias_retained:
+                refresh_verified_retirement_record(
+                    parent_fd,
+                    temporary_name,
+                    temporary_fd,
+                    temporary_identity,
+                    path_label=f"hard-link commit candidate for {path_label}",
+                    lock_held=True,
+                )
             os.fsync(parent_fd)
             if post_commit_check is not None:
                 post_commit_check()

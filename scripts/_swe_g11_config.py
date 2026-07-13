@@ -33,6 +33,9 @@ DEFAULT_EVAL_WORK_ROOT = os.environ.get("OPENCOLLAB_SWE_EVAL_WORK_ROOT", "").str
 if not DEFAULT_EVAL_WORK_ROOT and DEFAULT_REMOTE_ROOT:
     DEFAULT_EVAL_WORK_ROOT = DEFAULT_REMOTE_ROOT.rstrip("/") + "/eval_work"
 DEFAULT_MODEL_NAME = os.environ.get("OPENCOLLAB_SWE_MODEL_NAME", "").strip()
+DEFAULT_IMAGE_REPOSITORY = os.environ.get(
+    "OPENCOLLAB_SWE_IMAGE_REPOSITORY", ""
+).strip()
 ALLOWED_WORKFLOW_ENV_KEYS = frozenset(
     {
         "OPENCOLLAB_MAX_OUTPUT_TOKENS",
@@ -65,6 +68,7 @@ class ParallelConfig:
     host: str
     ssh_command: str
     remote_root: str
+    image_repository: str
     workflow: str
     workflow_env: tuple[str, ...]
     openhands_command: str
@@ -185,6 +189,7 @@ def resolve_config(args: argparse.Namespace) -> ParallelConfig:
     min_workers = min(max_workers, max(1, args.min_workers))
     host = str(args.host or "").strip()
     remote_root = str(args.remote_root or "").strip()
+    image_repository = str(args.image_repository or "").strip()
     model_name = str(args.model_name or "").strip()
     llm_model = str(getattr(args, "llm_model", "") or "").strip()
     workflow = str(args.workflow or "").strip()
@@ -195,6 +200,7 @@ def resolve_config(args: argparse.Namespace) -> ParallelConfig:
     required = {
         "--host or OPENCOLLAB_SWE_HOST": host,
         "--remote-root or OPENCOLLAB_SWE_REMOTE_ROOT": remote_root,
+        "--image-repository or OPENCOLLAB_SWE_IMAGE_REPOSITORY": image_repository,
         "--model-name or OPENCOLLAB_SWE_MODEL_NAME": model_name,
         "--llm-model or OPENCOLLAB_SWE_LLM_MODEL": llm_model,
         "--proxy-env-file or OPENCOLLAB_PROXY_ENV_FILE": proxy_env_file,
@@ -229,6 +235,7 @@ def resolve_config(args: argparse.Namespace) -> ParallelConfig:
         host=host,
         ssh_command=args.ssh_command,
         remote_root=remote_root,
+        image_repository=image_repository,
         workflow=workflow,
         workflow_env=normalize_workflow_env(getattr(args, "workflow_env", ())),
         openhands_command=openhands_command,
