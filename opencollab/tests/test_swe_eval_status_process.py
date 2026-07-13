@@ -19,6 +19,15 @@ from swe_eval_status_support import (
 )
 
 
+def test_per_instance_decodes_wait_status_without_python39_helper(monkeypatch):
+    importlib.import_module("scripts.run_swebench_eval_per_instance")
+    process = sys.modules["scripts.swebench_eval_process"]
+    monkeypatch.setattr(process.os, "waitstatus_to_exitcode", None)
+
+    assert process._decode_wait_status(7 << 8) == 7
+    assert process._decode_wait_status(signal.SIGTERM) == -signal.SIGTERM
+
+
 @pytest.mark.skipif(os.name != "posix", reason="recoverable helper uses POSIX fork")
 def test_per_instance_permanently_blocked_popen_helper_is_reaped(
     monkeypatch,
