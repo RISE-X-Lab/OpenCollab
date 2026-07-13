@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TESTS = _REPO_ROOT / "opencollab" / "tests"
+_PACKAGE = _REPO_ROOT / "opencollab" / "opencollab"
 
 _EVAL_TEST_PREFIXES = (
     "test_analyst_solve",
@@ -40,6 +42,17 @@ _ACTIVE_EVAL_COMMAND = re.compile(
 _EVAL_FORWARDING_INSTRUCTION = re.compile(r"(?i)\bpass\s+`?eval\b")
 
 
+def _imports(path: Path) -> tuple[str, ...]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imports: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.append(node.module)
+    return tuple(imports)
+
+
 def test_evaluation_implementation_is_owned_by_companion_package() -> None:
     for directory in (
         _REPO_ROOT / "opencollab" / "opencollab" / "harness",
@@ -64,6 +77,18 @@ def test_evaluation_tests_are_owned_by_companion_package() -> None:
         if path != Path(__file__)
         and path.name.startswith((*_EVAL_TEST_PREFIXES, *_EVAL_SUPPORT_PREFIXES))
     )
+    assert offenders == []
+
+
+def test_framework_and_tests_do_not_import_companion_implementations() -> None:
+    forbidden = ("opencollab_eval", "swebench")
+    offenders = [
+        f"{path.relative_to(_REPO_ROOT)}: {module}"
+        for root in (_PACKAGE, _TESTS)
+        for path in sorted(root.rglob("*.py"))
+        for module in _imports(path)
+        if module in forbidden or module.startswith(tuple(f"{name}." for name in forbidden))
+    ]
     assert offenders == []
 
 
