@@ -11,7 +11,16 @@ def main() -> int:
     spec = importlib.util.spec_from_file_location("swe_v1_prolite_runner", legacy_runner)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
-    spec.loader.exec_module(module)
+    previous = sys.modules.get(spec.name)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        if previous is None:
+            sys.modules.pop(spec.name, None)
+        else:
+            sys.modules[spec.name] = previous
+        raise
     sys.argv[0] = str(Path(__file__))
     return int(module.main())
 
