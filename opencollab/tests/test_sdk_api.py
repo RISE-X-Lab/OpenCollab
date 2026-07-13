@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+from dataclasses import fields
 from pathlib import Path
 
 import opencollab.sdk as sdk
@@ -15,24 +17,109 @@ from opencollab.adapters.tools.run_tests import RunTestsTool
 def test_public_sdk_exports_versioned_authoring_and_runtime_surface() -> None:
     assert sdk.SDK_API_VERSION == 1
     expected = {
-        "OpenCollabRuntime",
-        "ExecutionEnvironment",
+        "SDK_API_VERSION",
+        "ApplyPatchTool",
+        "BashTool",
         "ExecResult",
+        "ExecutionEnvironment",
+        "FileReadTool",
+        "FileWriteTool",
+        "GitDiffTool",
+        "GrepTool",
+        "InvalidSDKRequestError",
+        "OpenCollabRuntime",
+        "OpenCollabSDKError",
+        "Registry",
+        "RunTestsTool",
+        "ExecutionEnvironment",
         "RunBudget",
         "RuntimeConfig",
+        "Tool",
         "WorkflowContext",
+        "WorkflowFn",
+        "WorkflowManifestError",
         "WorkflowRunRequest",
         "WorkflowRunResult",
+        "WorkflowRunTimeoutError",
         "WorkflowSpec",
         "attach_workspace",
-        "discover_workflows",
         "coding_toolset",
+        "discover_workflows",
         "model_context_window",
         "verification_run_tests_tool",
         "workflow",
     }
-    assert expected <= set(sdk.__all__)
+    assert set(sdk.__all__) == expected
     assert sdk.model_context_window("gpt-4o") == 128_000
+
+
+def test_public_sdk_function_signatures_and_value_fields_are_stable() -> None:
+    signatures = {
+        "OpenCollabRuntime.run_workflow": "(self, request: 'WorkflowRunRequest') -> 'WorkflowRunResult'",
+        "RuntimeConfig.from_mapping": "(config: 'Mapping[str, Any]') -> 'RuntimeConfig'",
+        "attach_workspace": (
+            "(*, container_id: 'str', repo_root: 'str', command_prefix: "
+            "'Callable[[str], str] | str | None' = None, timeout_returncode: 'int' = -1) -> 'Environment'"
+        ),
+        "coding_toolset": (
+            "(*, require_process_isolation: 'bool' = False, allow_test_command_overrides: 'bool' = True, "
+            "allow_file_creation: 'bool' = True) -> 'tuple[Tool, ...]'"
+        ),
+        "discover_workflows": "(directory: 'str') -> 'Registry'",
+        "model_context_window": "(model: 'str | None') -> 'int | None'",
+        "verification_run_tests_tool": "() -> 'RunTestsTool'",
+        "workflow": (
+            "(*, name: 'str', description: 'str', phases: 'Sequence[str] | None' = None) -> "
+            "'Callable[[WorkflowFn], WorkflowFn]'"
+        ),
+    }
+    actual_signatures = {
+        "OpenCollabRuntime.run_workflow": str(inspect.signature(sdk.OpenCollabRuntime.run_workflow)),
+        "RuntimeConfig.from_mapping": str(inspect.signature(sdk.RuntimeConfig.from_mapping)),
+        **{
+            name: str(inspect.signature(getattr(sdk, name)))
+            for name in signatures
+            if "." not in name
+        },
+    }
+    assert actual_signatures == signatures
+    assert tuple(field.name for field in fields(sdk.RunBudget)) == (
+        "max_tokens",
+        "timeout_seconds",
+        "max_concurrency",
+        "cleanup_timeout_seconds",
+    )
+    assert tuple(field.name for field in fields(sdk.RuntimeConfig)) == (
+        "model",
+        "provider",
+        "api_key",
+        "base_url",
+        "llm_timeout_seconds",
+        "temperature",
+        "top_p",
+        "max_output_tokens",
+        "thinking",
+        "thinking_params",
+    )
+    assert tuple(field.name for field in fields(sdk.WorkflowRunRequest)) == (
+        "workflow",
+        "config",
+        "inputs",
+        "budget",
+        "environment",
+        "workspace",
+        "artifact_dir",
+        "trace",
+    )
+    assert tuple(field.name for field in fields(sdk.WorkflowRunResult)) == (
+        "output",
+        "workflow_name",
+        "tokens_spent",
+        "session_count",
+        "artifact_dir",
+        "manifest_path",
+        "sdk_api_version",
+    )
 
 
 def test_runtime_config_is_validated_and_does_not_repr_secret() -> None:
