@@ -18,6 +18,22 @@ from swe_v1_prolite_runner_test_support import (
 )
 
 
+def test_g11_compatibility_entry_loads_legacy_runner_in_a_real_process():
+    script = Path(__file__).resolve().parents[2] / "scripts" / "swe_g11_prolite_runner.py"
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        text=True,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "usage: swe_g11_prolite_runner.py" in result.stdout
+    assert "--remote-runtime-repo" in result.stdout
+
+
 def test_remote_read_jsonl_fails_when_rows_exceed_bounded_capacity(
     tmp_path,
     monkeypatch,
