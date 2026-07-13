@@ -15,7 +15,7 @@ __pycache__/
 .DS_Store
 .understand-anything/
 tmp/
-/output/
+output/
 mydocs/
 opencollab/mydocs/
 
