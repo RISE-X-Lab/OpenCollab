@@ -153,6 +153,45 @@ def test_snapshot_removes_target_history_and_preserves_base_tree(tmp_path):
     assert not (repo / ".cache").exists()
 
 
+def test_snapshot_preserves_base_blob_that_tracked_attributes_would_normalize(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / ".gitattributes").write_text("*.txt text\n", encoding="utf-8")
+    legacy = repo / "legacy.txt"
+    legacy.write_bytes(b"first\r\nsecond\r\n")
+    _git(repo, "add", ".gitattributes")
+    blob = subprocess.run(
+        ["git", "-C", str(repo), "hash-object", "-w", "--no-filters", "legacy.txt"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    _git(repo, "update-index", "--add", "--cacheinfo", f"100644,{blob},legacy.txt")
+    _git(
+        repo,
+        "-c",
+        "user.name=Snapshot Test",
+        "-c",
+        "user.email=snapshot@example.invalid",
+        "commit",
+        "-m",
+        "base with legacy CRLF blob",
+    )
+    base = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    base_tree = _git(repo, "rev-parse", "HEAD^{tree}").stdout.strip()
+
+    evidence = snapshot_container.create_solver_snapshot(
+        repo,
+        base,
+        filesystem_root=tmp_path,
+    )
+
+    assert evidence["base_tree"] == base_tree
+    assert legacy.read_bytes() == b"first\r\nsecond\r\n"
+    assert _git(repo, "status", "--porcelain").stdout == ""
+
+
 def test_snapshot_keeps_patch_extraction_relative_to_anonymous_head(tmp_path):
     repo, base, _base_tree, _target = _repository_with_hidden_target(tmp_path)
     snapshot_container.create_solver_snapshot(repo, base, filesystem_root=tmp_path)
