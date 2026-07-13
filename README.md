@@ -66,9 +66,8 @@ real API keys.**
 | The architecture & design principles (start here) | [`CLAUDE.md`](CLAUDE.md) |
 | Install, CLI, and how it works in depth | [`opencollab/README.md`](opencollab/README.md) |
 | Configuration (model, team, sampling) | [`configs/README.md`](configs/README.md) |
-| Deterministic workflows | [`workflows/README.md`](workflows/README.md) |
+| SDK integrations | [`opencollab/opencollab/sdk/`](opencollab/opencollab/sdk/) |
 | Skills (on-demand instruction sets) | [`skills/README.md`](skills/README.md) |
-| SWE-bench eval | [`scripts/README.md`](scripts/README.md) · [`swebench/README.md`](swebench/README.md) |
 | Design docs & reviews | [`docs/`](docs/) | -->
 
 Contributing: see [`CLAUDE.md`](CLAUDE.md). Conventional commits; `refactor:`

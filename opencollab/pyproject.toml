@@ -36,7 +36,6 @@ dependencies = [
 
 [project.optional-dependencies]
 docker = ["docker>=7.0"]
-swebench = ["datasets>=2.0", "tqdm>=4.0", "docker>=7.0", "swebench"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.5"]
 
 [project.scripts]
@@ -48,7 +47,7 @@ Repository = "https://github.com/YihongDong/OpenCollab"
 Issues = "https://github.com/YihongDong/OpenCollab/issues"
 
 # Ruff configuration lives in the repo-root ruff.toml, so a single config governs
-# the whole tree (this package + scripts/ + swebench/ + workflows/).
+# the whole repository tree.
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
