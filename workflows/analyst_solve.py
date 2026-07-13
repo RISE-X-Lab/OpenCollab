@@ -39,20 +39,22 @@ from __future__ import annotations
 from typing import Any
 
 from opencollab.sdk import (
-    ENFORCEMENT_OFF,
     ApplyPatchTool,
     BashTool,
     FileReadTool,
     FileWriteTool,
     GrepTool,
+    verification_run_tests_tool,
+    workflow,
+)
+from opencollab.sdk.experimental import (
+    ENFORCEMENT_OFF,
     build_fact_sheet,
     estimate_target_complexity,
     format_fact_sheet_hint,
     format_findings_report,
     recon_pool_is_ample,
     size_recon,
-    verification_run_tests_tool,
-    workflow,
 )
 
 # Rounds a single phase gets before the run moves on (best-effort, no stop).

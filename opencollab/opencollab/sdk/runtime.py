@@ -4,16 +4,22 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import secrets
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
-from opencollab.adapters.safe_files import ensure_directory_no_symlinks, read_regular_text
+from opencollab.adapters.safe_files import (
+    create_regular_bytes_atomic,
+    ensure_directory_no_symlinks,
+    read_regular_text,
+)
 from opencollab.application.workflow_registry import WorkflowSpec
 from opencollab.bootstrap.session_factory import WORKFLOW_MANIFEST_FILENAME
 from opencollab.bootstrap.workflow_runtime import run_workflow as _run_hardened_workflow
 
-from .errors import WorkflowManifestError, WorkflowRunTimeoutError
+from .errors import InvalidSDKRequestError, WorkflowManifestError, WorkflowRunTimeoutError
 from .models import WorkflowRunRequest, WorkflowRunResult
 
 
@@ -26,7 +32,12 @@ class OpenCollabRuntime:
     """Execute workflows through the existing hardened lifecycle boundary."""
 
     async def run_workflow(self, request: WorkflowRunRequest) -> WorkflowRunResult:
-        """Run a workflow and return only after owned runtime activity is quiescent."""
+        """Run a workflow and return after owned runtime activity is quiescent.
+
+        A non-null artifact directory is reserved for exactly one invocation.
+        Retries must use a fresh attempt directory so evidence from separate
+        executions cannot be combined.
+        """
         if not isinstance(request, WorkflowRunRequest):
             raise TypeError("request must be a WorkflowRunRequest")
 
@@ -34,8 +45,9 @@ class OpenCollabRuntime:
         if workspace is None and request.environment is not None:
             workspace = getattr(request.environment, "workspace", None)
         artifact_dir = request.artifact_dir
+        artifact_claim: bytes | None = None
         if artifact_dir is not None:
-            ensure_directory_no_symlinks(artifact_dir)
+            artifact_claim = _claim_artifact_dir(artifact_dir)
 
         operation = _run_hardened_workflow(
             request.workflow,
@@ -69,6 +81,7 @@ class OpenCollabRuntime:
         tokens_spent = None
         session_count = None
         if artifact_dir is not None:
+            _verify_artifact_claim(artifact_dir, artifact_claim)
             manifest_path = artifact_dir / WORKFLOW_MANIFEST_FILENAME
             manifest = _read_manifest(manifest_path)
             tokens_spent = _non_negative_manifest_integer(manifest, "tokens_spent", manifest_path)
@@ -82,6 +95,38 @@ class OpenCollabRuntime:
             artifact_dir=artifact_dir,
             manifest_path=manifest_path,
         )
+
+
+_SDK_ARTIFACT_CLAIM_FILENAME = ".opencollab-sdk-run"
+
+
+def _claim_artifact_dir(artifact_dir: Path) -> bytes:
+    ensure_directory_no_symlinks(artifact_dir)
+    manifest_path = artifact_dir / WORKFLOW_MANIFEST_FILENAME
+    if os.path.lexists(manifest_path):
+        raise InvalidSDKRequestError("artifact_dir already contains workflow evidence")
+    claim = secrets.token_hex(32).encode("ascii")
+    try:
+        create_regular_bytes_atomic(
+            artifact_dir / _SDK_ARTIFACT_CLAIM_FILENAME,
+            claim,
+            max_bytes=len(claim),
+        )
+    except FileExistsError as exc:
+        raise InvalidSDKRequestError("artifact_dir is already claimed by an SDK run") from exc
+    return claim
+
+
+def _verify_artifact_claim(artifact_dir: Path, expected: bytes | None) -> None:
+    if expected is None:
+        raise WorkflowManifestError("SDK artifact claim is missing")
+    claim_path = artifact_dir / _SDK_ARTIFACT_CLAIM_FILENAME
+    try:
+        actual = read_regular_text(claim_path, max_bytes=len(expected)).encode("ascii")
+    except (OSError, UnicodeError) as exc:
+        raise WorkflowManifestError(f"cannot verify SDK artifact claim: {claim_path}") from exc
+    if not secrets.compare_digest(actual, expected):
+        raise WorkflowManifestError(f"SDK artifact claim changed during workflow execution: {claim_path}")
 
 
 async def _preserve_inner_timeout(operation: Any) -> Any:

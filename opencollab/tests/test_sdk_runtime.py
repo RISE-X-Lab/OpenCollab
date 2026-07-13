@@ -94,6 +94,35 @@ async def test_runtime_rejects_invalid_hardened_manifest(monkeypatch, tmp_path: 
         await OpenCollabRuntime().run_workflow(_request(tmp_path))
 
 
+async def test_runtime_rejects_reused_artifact_directory(tmp_path: Path) -> None:
+    request = _request(tmp_path)
+    await OpenCollabRuntime().run_workflow(request)
+
+    with pytest.raises(sdk_runtime.InvalidSDKRequestError, match="workflow evidence|claimed"):
+        await OpenCollabRuntime().run_workflow(request)
+
+
+async def test_runtime_atomically_rejects_concurrent_artifact_directory_use(monkeypatch, tmp_path: Path) -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocked_hardened(*args, **kwargs):
+        started.set()
+        await release.wait()
+        manifest = {"tokens_spent": 0, "sessions": 0}
+        (Path(kwargs["save_dir"]) / "workflow.json").write_text(json.dumps(manifest), encoding="utf-8")
+        return "done"
+
+    monkeypatch.setattr(sdk_runtime, "_run_hardened_workflow", blocked_hardened)
+    request = _request(tmp_path)
+    first = asyncio.create_task(OpenCollabRuntime().run_workflow(request))
+    await started.wait()
+    with pytest.raises(sdk_runtime.InvalidSDKRequestError, match="claimed"):
+        await OpenCollabRuntime().run_workflow(request)
+    release.set()
+    assert (await first).output == "done"
+
+
 async def test_runtime_distinguishes_inner_timeout_from_sdk_deadline(monkeypatch, tmp_path: Path) -> None:
     inner = asyncio.TimeoutError("provider timeout")
 
