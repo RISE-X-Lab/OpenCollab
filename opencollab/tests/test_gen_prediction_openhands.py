@@ -430,6 +430,25 @@ def test_openhands_runtime_settings_update_agent_and_condenser() -> None:
     assert configured.condenser.llm.max_output_tokens == 32768
 
 
+def test_openhands_runtime_imports_through_swebench_namespace() -> None:
+    script = (
+        "import sys, types\n"
+        "package = types.ModuleType('swebench')\n"
+        "package.__path__ = [sys.argv[1]]\n"
+        "sys.modules['swebench'] = package\n"
+        "import swebench.openhands_runtime\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", script, str(_SWEBENCH_DIR)],
+        cwd=_REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+
+
 def test_openhands_isolated_tools_keep_only_sdk_terminal_name() -> None:
     agent = SimpleNamespace(
         tools=[
