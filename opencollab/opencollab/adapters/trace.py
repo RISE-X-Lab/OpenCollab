@@ -17,7 +17,6 @@ from typing import Any
 from opencollab.adapters.safe_files import (
     ensure_directory_no_symlinks,
     open_regular_text_append,
-    regular_handle_matches_path,
     write_locked_text,
 )
 
@@ -64,12 +63,6 @@ class Tracer:
         self._path = os.path.join(output_dir, trace_filename)
         ensure_directory_no_symlinks(output_dir)
         self._file = open_regular_text_append(self._path)
-        opened = os.fstat(self._file.fileno())
-        self._last_file_state = (
-            opened.st_size,
-            opened.st_mtime_ns,
-            opened.st_ctime_ns,
-        )
         self._step_counter = 0
         self._write_error: str | None = None
         self._dropped_steps = 0
@@ -95,26 +88,9 @@ class Tracer:
             self._dropped_steps += 1
             return
         try:
-            if not regular_handle_matches_path(self._file, self._path):
-                raise OSError(f"trace target changed before writing: {self._path}")
-            current = os.fstat(self._file.fileno())
-            if (
-                current.st_size,
-                current.st_mtime_ns,
-                current.st_ctime_ns,
-            ) != self._last_file_state:
-                raise OSError(f"trace target changed between records: {self._path}")
             write_locked_text(
                 self._file,
                 json.dumps(record, ensure_ascii=False) + "\n",
-            )
-            if not regular_handle_matches_path(self._file, self._path):
-                raise OSError(f"trace target changed while writing: {self._path}")
-            written = os.fstat(self._file.fileno())
-            self._last_file_state = (
-                written.st_size,
-                written.st_mtime_ns,
-                written.st_ctime_ns,
             )
         except Exception as exc:
             self._write_error = f"{type(exc).__name__}: {exc}"

@@ -33,10 +33,6 @@ class EnvironmentPort(Protocol):
     async def remove_file(self, path: str) -> None:
         ...
 
-    async def registered_retirement_paths(self) -> tuple[str, ...]:
-        """Return exact unchanged framework tombstones under the workspace."""
-        ...
-
     async def abort(self) -> None:
         """Revoke future side effects and stop owned environment resources."""
         ...

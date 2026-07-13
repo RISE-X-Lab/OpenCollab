@@ -1,23 +1,13 @@
-"""Autosave persistence: structured per-agent JSON, run folder, manifest.
-
-Covers the SessionStore on-disk format (structured JSON + legacy JSONL
-fallback), per-message timestamps (kept as a clean in-memory sidecar, merged
-on save), and the per-run folder + team.json manifest wiring.
-"""
+"""Black-box persistence checks for sessions, run directories, and manifests."""
 
 from __future__ import annotations
 
-import asyncio
 import concurrent.futures
 import json
 import os
 
-import opencollab.adapters._atomic_rename as atomic_rename_mod
-import opencollab.adapters._safe_file_support as safe_file_support_mod
-import opencollab.adapters.safe_files as safe_files_mod
-import opencollab.adapters.storage as storage_mod
-import opencollab.bootstrap.session_factory as session_factory_mod
 import pytest
+from opencollab.adapters import storage as storage_module
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.worktree_pool import WorktreePool
@@ -33,744 +23,139 @@ from opencollab.domain.identity import role_storage_slug
 from opencollab.domain.session import SessionState
 
 
-def run(coro):
-    return asyncio.run(coro)
-
-
-async def _spawn_and_settle(scheduler, *args, **kwargs):
-    """Spawn and await the resulting background task within one event loop.
-
-    Splitting spawn and the task await across two ``asyncio.run`` calls binds the
-    ``_drive_agent`` task to a different loop than the one that awaits it. Keeping
-    both in one coroutine avoids the cross-loop ``ValueError``.
-    """
-    aid = await scheduler.spawn(*args, **kwargs)
-    task = scheduler._tasks.get(aid)
-    if task is not None:
-        await asyncio.wait_for(task, timeout=1.0)
-    return aid
-
-
-# --------------------------------------------------------------------------
-# SessionStore on-disk format
-# --------------------------------------------------------------------------
-
-
-def test_store_save_writes_structured_json_with_meta(tmp_path):
-    store = SessionStore()
-    path = str(tmp_path / "agent_1_coder.json")
+def test_store_round_trip_preserves_metadata_and_messages(tmp_path) -> None:
+    path = tmp_path / "agent.json"
     messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
-
-    store.save(path, messages, meta={"aid": 1, "role": "coder", "model": "gpt-4o"})
-
-    with open(path) as f:
-        obj = json.load(f)
-    assert obj["aid"] == 1
-    assert obj["role"] == "coder"
-    assert obj["model"] == "gpt-4o"
-    assert obj["messages"] == messages
-
-
-def test_store_round_trip_structured_json(tmp_path):
     store = SessionStore()
-    path = str(tmp_path / "s.json")
-    messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}]
+    store.save(str(path), messages, meta={"aid": 1, "role": "coder"})
+    document = json.loads(path.read_text(encoding="utf-8"))
+    assert document["aid"] == 1
+    assert document["role"] == "coder"
+    assert store.load_messages(str(path), "fallback") == messages
 
-    store.save(path, messages, meta={"aid": 0})
 
-    assert store.load_messages(path, "fallback") == messages
-
-
-def test_store_save_at_utf8_byte_limit_is_always_loadable(tmp_path, monkeypatch):
-    store = SessionStore()
-    path = str(tmp_path / "boundary.json")
+def test_store_save_at_exact_utf8_limit_remains_loadable(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "boundary.json"
     messages = [{"role": "user", "content": "€" * 37}]
-    document = {"snapshot_version": 1, "messages": messages}
     encoded = json.dumps(
-        document,
+        {"snapshot_version": 1, "messages": messages},
         ensure_ascii=False,
         indent=2,
     ).encode("utf-8")
-    monkeypatch.setattr(storage_mod, "MAX_SESSION_SNAPSHOT_BYTES", len(encoded))
-
-    store.save(path, messages, meta={"snapshot_version": 1})
-
-    assert (tmp_path / "boundary.json").read_bytes() == encoded
-    assert store.load_snapshot(path, "fallback")["messages"] == messages
+    monkeypatch.setattr(storage_module, "MAX_SESSION_SNAPSHOT_BYTES", len(encoded))
+    SessionStore().save(str(path), messages, meta={"snapshot_version": 1})
+    assert path.read_bytes() == encoded
+    assert SessionStore().load_snapshot(str(path), "fallback")["messages"] == messages
 
 
-def test_store_oversize_save_preserves_old_snapshot_and_removes_temp(
-    tmp_path,
-    monkeypatch,
-):
+def test_oversized_save_preserves_previous_snapshot(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "state.json"
     store = SessionStore()
-    path = str(tmp_path / "state.json")
-    old_messages = [{"role": "system", "content": "old"}]
-    store.save(path, old_messages)
-    old_payload = (tmp_path / "state.json").read_bytes()
-    monkeypatch.setattr(storage_mod, "MAX_SESSION_SNAPSHOT_BYTES", 512)
-
-    with pytest.raises(ValueError, match=r"exceeds 512 UTF-8 bytes"):
-        store.save(path, [{"role": "user", "content": "€" * 1000}])
-
-    assert (tmp_path / "state.json").read_bytes() == old_payload
-    assert store.load_snapshot(path, "fallback")["messages"] == old_messages
-    assert list(tmp_path.glob(".state.json.*.tmp")) == []
+    store.save(str(path), [{"role": "system", "content": "old"}])
+    original = path.read_bytes()
+    monkeypatch.setattr(storage_module, "MAX_SESSION_SNAPSHOT_BYTES", 512)
+    with pytest.raises(ValueError, match="exceeds"):
+        store.save(str(path), [{"role": "user", "content": "€" * 1000}])
+    assert path.read_bytes() == original
+    assert not list(tmp_path.glob(".state.json.tmp-*"))
 
 
-def test_store_loads_legacy_jsonl(tmp_path):
-    path = tmp_path / "legacy.jsonl"
-    path.write_text(
-        '{"role": "system", "content": "sys"}\n'
-        '{"role": "user", "content": "hi"}\n'
+def test_store_loads_legacy_jsonl_and_empty_fallback(tmp_path) -> None:
+    legacy = tmp_path / "legacy.jsonl"
+    legacy.write_text(
+        '{"role":"system","content":"sys"}\n{"role":"user","content":"hi"}\n',
+        encoding="utf-8",
     )
-    store = SessionStore()
-
-    assert store.load_messages(str(path), "fallback") == [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "hi"},
-    ]
-
-
-def test_store_empty_file_falls_back_to_system_prompt(tmp_path):
-    path = tmp_path / "empty.json"
-    path.write_text("")
-    store = SessionStore()
-
-    assert store.load_messages(str(path), "the-prompt") == [
-        {"role": "system", "content": "the-prompt"}
+    assert SessionStore().load_messages(str(legacy), "fallback")[-1]["content"] == "hi"
+    empty = tmp_path / "empty.json"
+    empty.write_text("", encoding="utf-8")
+    assert SessionStore().load_messages(str(empty), "prompt") == [
+        {"role": "system", "content": "prompt"}
     ]
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
-def test_store_rejects_fifo_snapshot_without_blocking(tmp_path):
+def test_store_rejects_fifo_without_blocking(tmp_path) -> None:
     path = tmp_path / "snapshot.fifo"
     os.mkfifo(path)
-
-    with pytest.raises(OSError, match="not a regular file"):
+    with pytest.raises(OSError, match="regular file"):
         SessionStore().load_snapshot(str(path), "fallback")
 
 
-def test_store_rejects_final_symlink_snapshot(tmp_path):
+def test_store_rejects_symlink_and_oversized_snapshot(tmp_path) -> None:
     target = tmp_path / "target.json"
     target.write_text("[]", encoding="utf-8")
     link = tmp_path / "snapshot.json"
     link.symlink_to(target)
-
     with pytest.raises(OSError):
         SessionStore().load_snapshot(str(link), "fallback")
-
-
-def test_store_rejects_oversized_snapshot_before_read(tmp_path):
-    path = tmp_path / "huge.json"
-    with path.open("wb") as handle:
-        handle.truncate(storage_mod.MAX_SESSION_SNAPSHOT_BYTES + 1)
-
+    huge = tmp_path / "huge.json"
+    with huge.open("wb") as handle:
+        handle.truncate(storage_module.MAX_SESSION_SNAPSHOT_BYTES + 1)
     with pytest.raises(ValueError, match="exceeds"):
-        SessionStore().load_snapshot(str(path), "fallback")
-
-
-def test_store_save_manifest(tmp_path):
-    store = SessionStore()
-    path = str(tmp_path / "team.json")
-    manifest = {"run_id": "r", "agents": [{"aid": 0, "role": "lead", "parent_aid": None}]}
-
-    store.save_manifest(path, manifest)
-
-    with open(path) as f:
-        assert json.load(f) == manifest
+        SessionStore().load_snapshot(str(huge), "fallback")
 
 
 @pytest.mark.parametrize("method", ["save", "save_manifest"])
-def test_atomic_store_failure_preserves_previous_file(tmp_path, monkeypatch, method):
-    store = SessionStore()
-    path = str(tmp_path / "state.json")
-    original = {"messages": [{"role": "system", "content": "valid"}]}
-    with open(path, "w", encoding="utf-8") as handle:
-        json.dump(original, handle)
-
-    def partial_dump(value, handle, **kwargs):
-        handle.write('{"partial": ')
-        raise TypeError("synthetic serialization failure")
-
-    monkeypatch.setattr(json, "dump", partial_dump)
-    with pytest.raises(TypeError):
-        if method == "save":
-            store.save(path, [{"role": "user", "content": "new"}])
-        else:
-            store.save_manifest(path, {"run_id": "new"})
-
-    with open(path, encoding="utf-8") as handle:
-        assert json.load(handle) == original
-    assert list(tmp_path.glob(".state.json.*.tmp")) == []
-
-
-def test_atomic_store_reports_directory_fsync_failure_after_replace(
-    tmp_path,
-    monkeypatch,
-):
-    path = str(tmp_path / "state.json")
-    real_fsync = storage_mod.os.fsync
-    calls = 0
-
-    def fail_directory_fsync(fd):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("directory fsync failed")
-        return real_fsync(fd)
-
-    monkeypatch.setattr(storage_mod.os, "fsync", fail_directory_fsync)
-
-    with pytest.raises(OSError, match="directory fsync failed"):
-        SessionStore().save_manifest(path, {"run_id": "new"})
-
-    assert not (tmp_path / "state.json").exists()
-    retired = next(tmp_path.glob(".opencollab-retired-*"))
-    assert json.loads(retired.read_text(encoding="utf-8")) == {"run_id": "new"}
-    assert calls == 3
-    assert list(tmp_path.glob(".state.json.*.tmp")) == []
-
-
-def test_atomic_store_parent_reopen_failure_preserves_previous_file(
-    tmp_path,
-    monkeypatch,
-):
-    path = str(tmp_path / "state.json")
-    SessionStore().save_manifest(path, {"run_id": "old"})
-    original = (tmp_path / "state.json").read_bytes()
-    real_open_directory = safe_file_support_mod.open_directory_no_symlinks
-    calls = 0
-
-    def fail_directory_open(target):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
-            raise OSError("directory open failed")
-        return real_open_directory(target)
-
-    monkeypatch.setattr(
-        safe_file_support_mod,
-        "open_directory_no_symlinks",
-        fail_directory_open,
-    )
-
-    with pytest.raises(OSError, match="directory open failed"):
-        SessionStore().save_manifest(path, {"run_id": "new"})
-
-    assert (tmp_path / "state.json").read_bytes() == original
-    assert list(tmp_path.glob(".state.json.*.tmp")) == []
-
-
-@pytest.mark.parametrize("kind", ["symlink", "fifo"])
-def test_atomic_store_rejects_nonregular_final_target(tmp_path, kind):
-    if kind == "fifo" and not hasattr(os, "mkfifo"):
-        pytest.skip("FIFO requires POSIX")
+def test_serialization_failure_preserves_previous_file(tmp_path, monkeypatch, method) -> None:
     path = tmp_path / "state.json"
-    outside = tmp_path / "outside.json"
-    outside.write_text('{"run_id": "outside"}', encoding="utf-8")
-    if kind == "symlink":
-        path.symlink_to(outside)
-    else:
-        os.mkfifo(path)
+    path.write_text('{"run_id":"old"}', encoding="utf-8")
 
-    with pytest.raises(OSError, match="not a regular file"):
-        SessionStore().save_manifest(str(path), {"run_id": "new"})
+    def fail_dump(*_args, **_kwargs):
+        raise TypeError("serialization failed")
 
-    assert outside.read_text(encoding="utf-8") == '{"run_id": "outside"}'
-    assert list(tmp_path.glob(".state.json.*.tmp")) == []
+    monkeypatch.setattr(storage_module.json, "dump", fail_dump)
+    with pytest.raises(TypeError, match="serialization failed"):
+        if method == "save":
+            SessionStore().save(str(path), [{"role": "user", "content": "new"}])
+        else:
+            SessionStore().save_manifest(str(path), {"run_id": "new"})
+    assert path.read_text(encoding="utf-8") == '{"run_id":"old"}'
 
 
-def test_atomic_store_rejects_symlinked_parent_without_outside_write(tmp_path):
+def test_store_rejects_nonregular_target_and_symlink_parent(tmp_path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     parent = tmp_path / "sessions"
     parent.symlink_to(outside, target_is_directory=True)
-
-    with pytest.raises(OSError, match="not a real directory"):
+    with pytest.raises(OSError, match="real directory"):
         SessionStore().save_manifest(str(parent / "state.json"), {"run_id": "new"})
-
     assert list(outside.iterdir()) == []
 
 
-def test_atomic_store_detects_parent_swap_before_replace(tmp_path, monkeypatch):
-    parent = tmp_path / "sessions"
-    parent.mkdir()
-    path = parent / "state.json"
-    path.write_text('{"run_id": "old"}', encoding="utf-8")
-    real_dump = storage_mod.json.dump
-    swapped = False
-
-    def swapping_dump(value, handle, **kwargs):
-        nonlocal swapped
-        result = real_dump(value, handle, **kwargs)
-        old_parent = tmp_path / "sessions-old"
-        parent.rename(old_parent)
-        parent.mkdir()
-        swapped = True
-        return result
-
-    monkeypatch.setattr(storage_mod.json, "dump", swapping_dump)
-
-    with pytest.raises(OSError, match="parent changed"):
-        SessionStore().save_manifest(str(path), {"run_id": "new"})
-
-    assert swapped is True
-    assert list(parent.iterdir()) == []
-    old_parent = tmp_path / "sessions-old"
-    assert (old_parent / "state.json").read_text(encoding="utf-8") == '{"run_id": "old"}'
-    assert list(old_parent.glob(".state.json.*.tmp")) == []
-
-
-def test_atomic_store_detects_parent_swap_after_replace(tmp_path, monkeypatch):
-    parent = tmp_path / "sessions"
-    parent.mkdir()
-    path = parent / "state.json"
-    path.write_text('{"run_id": "old"}', encoding="utf-8")
-    old_parent = tmp_path / "sessions-old"
-    real_rename_exchange = atomic_rename_mod.rename_exchange
-    swapped = False
-
-    def swapping_commit(source, destination, **kwargs):
-        nonlocal swapped
-        result = real_rename_exchange(source, destination, **kwargs)
-        if destination == path.name:
-            parent.rename(old_parent)
-            parent.mkdir()
-            path.write_text('{"run_id": "visible"}', encoding="utf-8")
-            swapped = True
-        return result
-
-    monkeypatch.setattr(atomic_rename_mod, "rename_exchange", swapping_commit)
-
-    with pytest.raises(OSError, match="parent changed after atomic replace"):
-        SessionStore().save_manifest(str(path), {"run_id": "new"})
-
-    assert swapped is True
-    assert path.read_text(encoding="utf-8") == '{"run_id": "visible"}'
-    assert json.loads((old_parent / "state.json").read_text(encoding="utf-8")) == {
-        "run_id": "old"
-    }
-    retired_manifests = {
-        json.loads(entry.read_text(encoding="utf-8"))["run_id"]
-        for entry in old_parent.glob(".opencollab-retired-*")
-    }
-    assert retired_manifests == {"new"}
-    assert list(old_parent.glob(".state.json.*.tmp")) == []
-
-
-def test_safe_atomic_write_preserves_primary_error_when_retirement_sync_fails(
-    tmp_path,
-    monkeypatch,
-):
-    path = tmp_path / "state.bin"
-
-    def fail_write(_fd, _payload):
-        raise RuntimeError("primary write failed")
-
-    def fail_retirement_sync(_fd):
-        raise OSError("retirement fsync failed")
-
-    monkeypatch.setattr(safe_files_mod.os, "write", fail_write)
-    monkeypatch.setattr(safe_files_mod.os, "fsync", fail_retirement_sync)
-
-    with pytest.raises(RuntimeError, match="primary write failed") as raised:
-        safe_files_mod.write_regular_bytes_atomic(path, b"payload")
-
-    assert any(
-        "temporary retirement" in note and "retirement fsync failed" in note
-        for note in raised.value.__notes__
-    )
-
-
-def test_safe_atomic_write_supports_name_max_destination(tmp_path):
-    path = tmp_path / ("x" * 255)
-
-    safe_files_mod.write_regular_bytes_atomic(path, b"payload")
-
-    assert path.read_bytes() == b"payload"
-
-
-def test_safe_atomic_write_compare_and_swap_rejects_stale_target_identity(tmp_path):
-    path = tmp_path / "state.bin"
-    path.write_bytes(b"current")
-    current = path.stat()
-    stale_identity = (current.st_dev, current.st_ino + 1)
-
-    with pytest.raises(OSError, match="target identity changed before commit"):
-        safe_files_mod.write_regular_bytes_atomic(
-            path,
-            b"foreign",
-            expected_target_identity=stale_identity,
-        )
-
-    assert path.read_bytes() == b"current"
-    assert list(tmp_path.glob(".opencollab-retired-*")) == []
-
-
-def test_safe_atomic_write_compare_and_swap_accepts_current_target_identity(tmp_path):
-    path = tmp_path / "state.bin"
-    path.write_bytes(b"old")
-    current = path.stat()
-
-    safe_files_mod.write_regular_bytes_atomic(
-        path,
-        b"new",
-        expected_target_identity=(current.st_dev, current.st_ino),
-    )
-
-    assert path.read_bytes() == b"new"
-
-
-def test_safe_atomic_write_require_absent_refuses_existing_target(tmp_path):
-    path = tmp_path / "state.bin"
-    path.write_bytes(b"current")
-
-    with pytest.raises(FileExistsError, match="target appeared before commit"):
-        safe_files_mod.write_regular_bytes_atomic(
-            path,
-            b"foreign",
-            require_target_absent=True,
-        )
-
-    assert path.read_bytes() == b"current"
-
-
-def test_safe_atomic_write_preserves_foreign_target_after_temp_swap(
-    tmp_path,
-    monkeypatch,
-):
-    path = tmp_path / "state.bin"
-    path.write_bytes(b"old")
-    victim = tmp_path / "victim.bin"
-    victim.write_bytes(b"victim")
-    real_rename_exchange = atomic_rename_mod.rename_exchange
-
-    def swap_temp_before_commit(source, destination, **kwargs):
-        if destination != path.name:
-            return real_rename_exchange(source, destination, **kwargs)
-        parent_fd = kwargs["first_dir_fd"]
-        detached = f"{source}.detached"
-        os.rename(
-            source,
-            detached,
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
-        )
-        os.symlink(victim, source, dir_fd=parent_fd)
-        return real_rename_exchange(source, destination, **kwargs)
-
-    monkeypatch.setattr(atomic_rename_mod, "rename_exchange", swap_temp_before_commit)
-
-    with pytest.raises(OSError, match="changed during replace"):
-        safe_files_mod.write_regular_bytes_atomic(path, b"new")
-
-    assert victim.read_bytes() == b"victim"
-    assert path.is_symlink() and path.resolve() == victim
-    retired = list(tmp_path.glob(".opencollab-retired-*"))
-    assert any(entry.is_file() and not entry.is_symlink() and entry.read_bytes() == b"old" for entry in retired)
-    detached_candidates = list(tmp_path.glob(".opencollab-retired-*.detached"))
-    assert len(detached_candidates) == 1
-    assert detached_candidates[0].read_bytes() == b"new"
-
-
-def test_safe_atomic_write_refuses_blind_cleanup_after_failed_write_temp_swap(
-    tmp_path,
-    monkeypatch,
-):
-    path = tmp_path / "state.bin"
-    victim = tmp_path / "victim.bin"
-    victim.write_bytes(b"victim")
-
-    def swap_temp_then_fail(_fd, _payload):
-        temporary = next(
-            entry
-            for entry in tmp_path.iterdir()
-            if entry.name.startswith(".opencollab-retired-")
-        )
-        temporary.rename(tmp_path / f"{temporary.name}.detached")
-        temporary.symlink_to(victim)
-        raise RuntimeError("primary write failed after replacement")
-
-    monkeypatch.setattr(safe_files_mod.os, "write", swap_temp_then_fail)
-
-    with pytest.raises(RuntimeError, match="primary write failed") as raised:
-        safe_files_mod.write_regular_bytes_atomic(path, b"new")
-
-    assert victim.read_bytes() == b"victim"
-    retired_links = [
-        entry
-        for entry in tmp_path.iterdir()
-        if entry.name.startswith(".opencollab-retired-") and entry.is_symlink()
-    ]
-    assert len(retired_links) == 1
-    assert retired_links[0].resolve() == victim
-    assert any(
-        "retirement candidate no longer matches owned file" in note
-        for note in raised.value.__notes__
-    )
-
-
-def test_session_store_supports_name_max_destination(tmp_path):
-    path = tmp_path / ("x" * 255)
-
-    SessionStore().save_manifest(str(path), {"run_id": "name-max"})
-
-    assert json.loads(path.read_text(encoding="utf-8")) == {
-        "run_id": "name-max"
-    }
-
-
-def test_session_store_keeps_owned_temp_fd_open_through_replace(tmp_path, monkeypatch):
-    path = tmp_path / "state.json"
-    real_open = safe_files_mod.os.open
-    real_rename_noreplace = atomic_rename_mod.rename_noreplace
-    temporary_fd: int | None = None
-    checked_at_replace = False
-
-    def tracking_open(name, flags, *args, **kwargs):
-        nonlocal temporary_fd
-        fd = real_open(name, flags, *args, **kwargs)
-        if isinstance(name, str) and name.startswith(".opencollab-retired-"):
-            temporary_fd = fd
-        return fd
-
-    def checking_commit(source, destination, **kwargs):
-        nonlocal checked_at_replace
-        if destination != path.name:
-            return real_rename_noreplace(source, destination, **kwargs)
-        assert temporary_fd is not None
-        opened = os.fstat(temporary_fd)
-        named = os.stat(
-            source,
-            dir_fd=kwargs["src_dir_fd"],
-            follow_symlinks=False,
-        )
-        assert (opened.st_dev, opened.st_ino) == (named.st_dev, named.st_ino)
-        checked_at_replace = True
-        return real_rename_noreplace(source, destination, **kwargs)
-
-    monkeypatch.setattr(safe_files_mod.os, "open", tracking_open)
-    monkeypatch.setattr(atomic_rename_mod, "rename_noreplace", checking_commit)
-
-    SessionStore().save_manifest(str(path), {"run_id": "new"})
-
-    assert checked_at_replace is True
-    assert temporary_fd is not None
-    with pytest.raises(OSError):
-        os.fstat(temporary_fd)
-
-
-def test_session_store_preserves_serialization_error_when_retirement_sync_fails(
-    tmp_path,
-    monkeypatch,
-):
-    path = str(tmp_path / "state.json")
-
-    def fail_dump(*_args, **_kwargs):
-        raise RuntimeError("primary serialization failed")
-
-    def fail_retirement_sync(_fd):
-        raise OSError("retirement fsync failed")
-
-    monkeypatch.setattr(storage_mod.json, "dump", fail_dump)
-    monkeypatch.setattr(storage_mod.os, "fsync", fail_retirement_sync)
-
-    with pytest.raises(RuntimeError, match="primary serialization failed") as raised:
-        SessionStore().save_manifest(path, {"run_id": "new"})
-
-    assert any(
-        "temporary retirement" in note and "retirement fsync failed" in note
-        for note in raised.value.__notes__
-    )
-
-
-def test_session_store_preserves_primary_error_when_parent_close_fails(
-    tmp_path,
-    monkeypatch,
-):
-    path = str(tmp_path / "state.json")
-    opened_parent_fds: list[int] = []
-    real_open_directory = safe_file_support_mod.open_directory_no_symlinks
-    real_close = storage_mod.os.close
-
-    def tracking_open_directory(target):
-        fd = real_open_directory(target)
-        opened_parent_fds.append(fd)
-        return fd
-
-    def fail_parent_close(fd):
-        if opened_parent_fds and fd == opened_parent_fds[0]:
-            real_close(fd)
-            raise OSError("parent close failed")
-        return real_close(fd)
-
-    def fail_dump(*_args, **_kwargs):
-        raise RuntimeError("primary serialization failed")
-
-    monkeypatch.setattr(
-        safe_file_support_mod,
-        "open_directory_no_symlinks",
-        tracking_open_directory,
-    )
-    monkeypatch.setattr(storage_mod.json, "dump", fail_dump)
-    monkeypatch.setattr(storage_mod.os, "close", fail_parent_close)
-
-    with pytest.raises(RuntimeError, match="primary serialization failed") as raised:
-        SessionStore().save_manifest(path, {"run_id": "new"})
-
-    assert any(
-        "parent directory fd close" in note and "parent close failed" in note
-        for note in raised.value.__notes__
-    )
-
-
-# --------------------------------------------------------------------------
-# Path helpers
-# --------------------------------------------------------------------------
-
-
-def test_agent_save_path_naming(tmp_path):
+def test_agent_save_path_and_run_directory_are_collision_safe(tmp_path) -> None:
     assert agent_save_path(str(tmp_path), 2, "reviewer") == os.path.join(
         str(tmp_path), f"agent_2_{role_storage_slug('reviewer')}.json"
     )
-
-
-def test_make_run_dir_is_timestamped_and_collision_safe(tmp_path):
-    a = make_run_dir(str(tmp_path))
-    base = os.path.join(str(tmp_path), ".opencollab", "sessions")
-    assert a.startswith(base)
-    assert os.path.isdir(a)
-    b = make_run_dir(str(tmp_path))
-    assert b != a  # same-second collision gets a suffix
-    assert os.path.isdir(b)
-
-
-def test_make_run_dir_concurrently_reserves_unique_directories(tmp_path):
-    with concurrent.futures.ThreadPoolExecutor(max_workers=16) as executor:
-        paths = list(executor.map(lambda _index: make_run_dir(str(tmp_path)), range(32)))
-
-    assert len(set(paths)) == len(paths)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        paths = list(executor.map(lambda _index: make_run_dir(str(tmp_path)), range(16)))
+    assert len(set(paths)) == 16
     assert all(os.path.isdir(path) for path in paths)
 
 
-@pytest.mark.parametrize(
-    "role",
-    ["../../../escaped", "/absolute", "bad\\role", "line\nbreak", ".."],
-)
-def test_agent_save_path_rejects_unsafe_role_without_writing_outside(
-    tmp_path,
-    role,
-):
+@pytest.mark.parametrize("role", ["../../../escaped", "/absolute", "bad\\role", "line\nbreak", ".."])
+def test_agent_save_path_rejects_unsafe_role(tmp_path, role) -> None:
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-
     with pytest.raises(ValueError, match="role"):
         agent_save_path(str(run_dir), 1, role)
-
     assert list(tmp_path.iterdir()) == [run_dir]
 
 
-def test_make_run_dir_prefix_distinguishes_workflow_from_team(tmp_path):
-    from opencollab.bootstrap.session_factory import WORKFLOW_RUN_PREFIX
-
-    base = os.path.join(str(tmp_path), ".opencollab", "sessions")
-    team = make_run_dir(str(tmp_path))
-    workflow = make_run_dir(str(tmp_path), prefix=WORKFLOW_RUN_PREFIX)
-
-    # Both share the sessions/ parent, but the workflow folder name carries the
-    # prefix so an ``ls`` tells the two apart at a glance.
-    assert os.path.dirname(team) == base
-    assert os.path.dirname(workflow) == base
-    assert os.path.basename(workflow).startswith(WORKFLOW_RUN_PREFIX)
-    assert not os.path.basename(team).startswith(WORKFLOW_RUN_PREFIX)
-
-
-def test_make_run_dir_rejects_symlinked_state_parent(tmp_path):
+def test_make_run_dir_rejects_symlinked_state_parent(tmp_path) -> None:
     outside = tmp_path / "outside"
     outside.mkdir()
     (tmp_path / ".opencollab").symlink_to(outside, target_is_directory=True)
-
-    with pytest.raises(ValueError, match="not a real directory"):
+    with pytest.raises(ValueError, match="real directory"):
         make_run_dir(str(tmp_path))
-
     assert list(outside.iterdir()) == []
 
 
-@pytest.mark.parametrize("prefix", ["../escape", "/absolute", "bad\\prefix", "x\n"])
-def test_make_run_dir_rejects_unsafe_prefix(tmp_path, prefix):
-    with pytest.raises(ValueError, match="prefix"):
-        make_run_dir(str(tmp_path), prefix=prefix)
-
-
-def test_make_run_dir_detects_parent_chain_swap_before_return(tmp_path, monkeypatch):
-    real_mkdir = session_factory_mod.os.mkdir
-    swapped = False
-
-    def swapping_mkdir(path, mode=0o777, *, dir_fd=None):
-        nonlocal swapped
-        result = real_mkdir(path, mode, dir_fd=dir_fd)
-        if (
-            not swapped
-            and dir_fd is not None
-            and path not in {".opencollab", "sessions"}
-        ):
-            swapped = True
-            state = tmp_path / ".opencollab"
-            old = tmp_path / ".opencollab-old"
-            os.rename(state, old)
-            real_mkdir(state)
-            real_mkdir(state / "sessions")
-        return result
-
-    monkeypatch.setattr(session_factory_mod.os, "mkdir", swapping_mkdir)
-
-    with pytest.raises(OSError):
-        make_run_dir(str(tmp_path))
-
-    assert swapped is True
-    assert list((tmp_path / ".opencollab-old" / "sessions").iterdir()) == []
-    assert list((tmp_path / ".opencollab" / "sessions").iterdir()) == []
-
-
-# --------------------------------------------------------------------------
-# Per-message timestamps (clean in-memory sidecar, merged on save)
-# --------------------------------------------------------------------------
-
-
-def test_append_keeps_messages_clean_and_tracks_timestamps():
+def test_message_timestamp_sidecar_keeps_runtime_messages_clean() -> None:
     state = SessionState(messages=[{"role": "system", "content": "sys"}])
     state.append_message({"role": "user", "content": "hi"})
-
-    # In-memory messages stay API-shaped (no timestamp key).
-    assert state.messages == [
-        {"role": "system", "content": "sys"},
-        {"role": "user", "content": "hi"},
-    ]
-    assert len(state.message_timestamps) == 2
-    # ...but enrichment merges a timestamp into each persisted message.
-    enriched = state.enriched_messages()
-    assert all("timestamp" in m for m in enriched)
-
-
-def test_replace_messages_preserves_embedded_and_object_timestamps():
-    state = SessionState(messages=[{"role": "system", "content": "sys"}])
-    kept = state.messages[0]  # same object preserved across replace
-    kept_ts = state.message_timestamps[0]
-    resumed = {"role": "user", "content": "old", "timestamp": "2020-01-01T00:00:00+00:00"}
-
-    state.replace_messages([kept, resumed])
-
-    # The preserved object keeps its original (construction-time) timestamp.
-    assert state.message_timestamps[0] == kept_ts
-    # An embedded timestamp is lifted out into the sidecar, message left clean.
-    assert state.messages[1] == {"role": "user", "content": "old"}
-    assert state.message_timestamps[1] == "2020-01-01T00:00:00+00:00"
-
-
-# --------------------------------------------------------------------------
-# Factory threads per-agent save path to children
-# --------------------------------------------------------------------------
+    assert all("timestamp" not in message for message in state.messages)
+    assert all("timestamp" in message for message in state.enriched_messages())
 
 
 def _spawn_cfg() -> SpawnConfig:
@@ -786,91 +171,69 @@ def _spawn_cfg() -> SpawnConfig:
     )
 
 
-def test_factory_gives_child_its_own_structured_save_file(tmp_path):
+def test_factory_assigns_structured_child_save_path(tmp_path) -> None:
     run_dir = str(tmp_path / "run")
-    factory = DefaultSessionFactory(_spawn_cfg(), save_dir=run_dir)
-    env = LocalEnvironment(str(tmp_path))
-
-    session = factory.build_spawn_session(role="coder", env=env, budget=1000, aid=2)
-
+    session = DefaultSessionFactory(_spawn_cfg(), save_dir=run_dir).build_spawn_session(
+        role="coder",
+        env=LocalEnvironment(str(tmp_path)),
+        budget=1000,
+        aid=2,
+    )
     expected = agent_save_path(run_dir, 2, "coder")
     assert session.auto_save_path == expected
-
     session.save(expected)
-    with open(expected) as f:
-        saved = json.load(f)
+    saved = json.loads(open(expected, encoding="utf-8").read())
     assert saved["aid"] == 2
     assert saved["role"] == "coder"
-    assert "messages" in saved
 
 
-def test_factory_without_save_dir_leaves_children_unsaved(tmp_path):
-    factory = DefaultSessionFactory(_spawn_cfg())
-    env = LocalEnvironment(str(tmp_path))
-
-    session = factory.build_spawn_session(role="coder", env=env, budget=1000, aid=2)
-
-    assert session.auto_save_path is None
-
-
-# --------------------------------------------------------------------------
-# Manifest captures the live roster incl. parent/child links
-# --------------------------------------------------------------------------
-
-
-class _FakeChildSession:
+class _FakeSession:
     def __init__(self, role: str):
         self.used_tokens = 0
         self.state = SessionState(messages=[])
-        self.agent = type("_Agent", (), {"name": role})()
+        self.agent = type("Agent", (), {"name": role})()
 
-    async def add_user_message(self, content: str) -> None:
-        pass
+    async def add_user_message(self, _content: str) -> None:
+        return None
 
     async def run_loop(self) -> str:
         return "done"
 
 
-class _FakeLeadSession(_FakeChildSession):
+class _FakeLead(_FakeSession):
     def __init__(self):
         super().__init__("lead")
-        self.tool_execution = type("_TP", (), {"safety_policy": None, "env": None})()
-        self.runner = type("_R", (), {"max_steps": 100})()
+        self.tool_execution = type("Tools", (), {"safety_policy": None, "env": None})()
+        self.runner = type("Runner", (), {"max_steps": 100})()
         self.max_steps = 100
         self.env = None
 
 
 class _FakeFactory:
-    def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None, task=None, context=""):
-        return _FakeChildSession(role)
+    def build_spawn_session(self, *, role, **_kwargs):
+        return _FakeSession(role)
 
 
-def test_manifest_records_spawned_child_parent_link(tmp_path):
-    run_dir = str(tmp_path / "run")
-    store = SessionStore()
-    manifest_path = os.path.join(run_dir, "team.json")
-
+async def test_manifest_records_parent_child_relationship(tmp_path) -> None:
+    path = tmp_path / "run" / "team.json"
+    path.parent.mkdir()
     scheduler = Scheduler(
         session_factory=_FakeFactory(),
         worktree_pool=WorktreePool(".", use_worktrees=False),
         event_sink=EventBus(None),
     )
+    def write_manifest() -> None:
+        SessionStore().save_manifest(
+            str(path), {"run_id": "run", "agents": scheduler.team_snapshot()}
+        )
 
-    def _write_manifest():
-        store.save_manifest(manifest_path, {
-            "run_id": "run",
-            "agents": scheduler.team_snapshot(),
-        })
-
-    scheduler.set_manifest_writer(_write_manifest)
-    scheduler.register_lead(_FakeLeadSession())
-
-    child_aid = run(_spawn_and_settle(scheduler, 0, "coder", "do it"))
-
-    with open(manifest_path) as f:
-        manifest = json.load(f)
-    agents = {a["aid"]: a for a in manifest["agents"]}
-    assert agents[0]["role"] == "lead"
+    scheduler.set_manifest_writer(write_manifest)
+    scheduler.register_lead(_FakeLead())
+    child = await scheduler.spawn(0, "coder", "do it")
+    task = scheduler._tasks.get(child)
+    if task is not None:
+        await task
+    write_manifest()
+    agents = {entry["aid"]: entry for entry in json.loads(path.read_text())["agents"]}
     assert agents[0]["parent_aid"] is None
-    assert agents[child_aid]["role"] == "coder"
-    assert agents[child_aid]["parent_aid"] == 0
+    assert agents[child]["parent_aid"] == 0

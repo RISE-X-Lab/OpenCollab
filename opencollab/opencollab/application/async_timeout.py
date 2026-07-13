@@ -21,6 +21,35 @@ _ASYNC_RUNTIME_UNHEALTHY = False
 _ISOLATED_TASKS: weakref.WeakSet[asyncio.Future[object]] = weakref.WeakSet()
 
 
+async def await_owned_operation(
+    awaitable: Awaitable[T],
+    *,
+    propagate_cancellation: bool = False,
+) -> T:
+    """Keep a bounded owner alive through repeated caller cancellation."""
+    owner = asyncio.ensure_future(awaitable)
+    cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(owner)
+            break
+        except asyncio.CancelledError as exc:
+            if owner.done() and owner.cancelled():
+                raise
+            if cancellation is None:
+                cancellation = exc
+        except BaseException as exc:
+            if cancellation is not None and propagate_cancellation:
+                cancellation.add_note(
+                    f"owned operation also failed: {type(exc).__name__}: {exc}"
+                )
+                raise cancellation
+            raise
+    if cancellation is not None and propagate_cancellation:
+        raise cancellation
+    return result
+
+
 class CallerTimeoutError(asyncio.TimeoutError):
     """Raised only when this helper's caller-supplied deadline expires.
 

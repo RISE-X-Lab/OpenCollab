@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import posixpath
 import shlex
 from collections.abc import Sequence
 
@@ -11,29 +10,13 @@ def guarded_staged_diff_command(
     *,
     base_revision: str = "HEAD",
     exclude_paths: Sequence[str] = (),
-    registered_retirement_paths: Sequence[str] = (),
 ) -> str:
     """Stage through a temporary index and reject unknown reserved paths."""
     if not isinstance(base_revision, str) or not base_revision.strip() or "\0" in base_revision:
         raise ValueError("patch base revision is invalid")
 
-    retirements: list[str] = []
-    for value in registered_retirement_paths:
-        path = str(value)
-        normalized = posixpath.normpath(path)
-        if (
-            not path
-            or "\0" in path
-            or path.startswith("/")
-            or normalized in {".", ".."}
-            or normalized.startswith("../")
-            or not posixpath.basename(normalized).startswith(".opencollab-retired-")
-        ):
-            raise ValueError("registered retirement path is outside the reserved namespace")
-        retirements.append(normalized)
-
     resets = ""
-    for path in (*exclude_paths, *retirements):
+    for path in exclude_paths:
         if str(path).strip():
             resets += (
                 'GIT_INDEX_FILE="$idx" git --literal-pathspecs reset -q '

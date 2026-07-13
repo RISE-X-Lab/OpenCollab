@@ -52,12 +52,12 @@ def discover_workflows(directory: str) -> Registry:
 
     for filename in sorted(filenames):
         path = os.path.join(directory, filename)
-        for spec in _load_specs_from_file(path):
+        for spec in load_workflow_specs(path):
             registry.register(spec)
     return registry
 
 
-def _load_specs_from_file(path: str) -> list[WorkflowSpec]:
+def load_workflow_specs(path: str) -> list[WorkflowSpec]:
     """Import a single python file and collect its workflow specs."""
     module_name = f"_opencollab_workflow_{uuid.uuid4().hex}"
     source = read_regular_text(path, max_bytes=MAX_WORKFLOW_SOURCE_BYTES)
@@ -77,3 +77,8 @@ def _load_specs_from_file(path: str) -> list[WorkflowSpec]:
             seen.add(id(wf_spec))
             found.append(wf_spec)
     return found
+
+
+_load_specs_from_file = load_workflow_specs
+
+__all__ = ["discover_workflows", "load_workflow_specs"]

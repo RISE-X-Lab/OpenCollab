@@ -9,15 +9,13 @@ from opencollab.adapters.env import (
     WorktreeEnvironment,
 )
 
-from .environment import CommandResult, ExecResult, ExecutionEnvironment, attach_workspace
+from .environment import ExecResult, ExecutionEnvironment
 
 __all__ = [
     "PROCESS_OUTPUT_CAPTURE_BYTES",
-    "CommandResult",
     "DockerEnvironment",
     "ExecResult",
     "ExecutionEnvironment",
     "LocalEnvironment",
     "WorktreeEnvironment",
-    "attach_workspace",
 ]

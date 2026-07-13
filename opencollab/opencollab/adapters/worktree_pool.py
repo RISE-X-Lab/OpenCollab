@@ -14,12 +14,16 @@ from opencollab.adapters.env import (
     Environment,
     LocalEnvironment,
     WorktreeEnvironment,
-    _await_owned_operation,
 )
+from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.domain.identity import role_storage_slug, validate_role_identity
 
 logger = logging.getLogger(__name__)
+
+
+async def _finish_cleanup(operation):
+    return await await_owned_operation(operation, propagate_cancellation=True)
 
 
 class WorktreePool:
@@ -46,7 +50,7 @@ class WorktreePool:
             await env.setup()
         except BaseException as original:
             try:
-                await _await_owned_operation(env.cleanup())
+                await _finish_cleanup(env.cleanup())
             except BaseException as cleanup_exc:
                 self._envs.append(env)
                 logger.warning("partial worktree cleanup failed", exc_info=True)
@@ -65,17 +69,14 @@ class WorktreePool:
         One failing teardown must not abort the others, so each is isolated;
         the failure is logged rather than swallowed so it is diagnosable.
         """
-        await _await_owned_operation(
-            self._release_owned(),
-            propagate_cancellation=True,
-        )
+        await _finish_cleanup(self._release_owned())
 
     async def _release_owned(self) -> None:
         failures: list[tuple[WorktreeEnvironment, BaseException]] = []
         remaining: list[WorktreeEnvironment] = []
         for env in list(self._envs):
             try:
-                await _await_owned_operation(env.cleanup())
+                await _finish_cleanup(env.cleanup())
             except BaseException as exc:
                 failures.append((env, exc))
                 remaining.append(env)
@@ -92,10 +93,7 @@ class WorktreePool:
         """Release one failed spawn's environment without touching siblings."""
         if not isinstance(env, WorktreeEnvironment):
             return
-        await _await_owned_operation(
-            self._release_env_owned(env),
-            propagate_cancellation=True,
-        )
+        await _finish_cleanup(self._release_env_owned(env))
 
     async def _release_env_owned(self, env: WorktreeEnvironment) -> None:
         try:
@@ -103,7 +101,7 @@ class WorktreePool:
         except ValueError:
             return
         try:
-            await _await_owned_operation(env.cleanup())
+            await _finish_cleanup(env.cleanup())
         except BaseException:
             self._envs.append(env)
             logger.warning("worktree cleanup failed for %s", env.workspace, exc_info=True)
