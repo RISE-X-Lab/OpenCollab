@@ -139,7 +139,14 @@ class OwnedEvaluatorProcess:
                 self._close_status()
                 if self._returncode is not None:
                     return self._returncode
-                return os.waitstatus_to_exitcode(status)
+                decoder = getattr(os, "waitstatus_to_exitcode", None)
+                if callable(decoder):
+                    return decoder(status)
+                if os.WIFEXITED(status):
+                    return os.WEXITSTATUS(status)
+                if os.WIFSIGNALED(status):
+                    return -os.WTERMSIG(status)
+                raise RuntimeError("evaluator helper returned an unsupported wait status")
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise subprocess.TimeoutExpired("evaluator-helper", 0)

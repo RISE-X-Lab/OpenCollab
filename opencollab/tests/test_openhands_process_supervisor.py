@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import signal
 import subprocess
 import sys
 import textwrap
@@ -18,6 +19,13 @@ if str(_SWEBENCH_DIR) not in sys.path:
     sys.path.insert(0, str(_SWEBENCH_DIR))
 
 import openhands_process_supervisor as supervisor  # noqa: E402
+
+
+def test_supervisor_decodes_wait_status_without_python39_helper(monkeypatch):
+    monkeypatch.setattr(supervisor.os, "waitstatus_to_exitcode", None)
+
+    assert supervisor._decode_wait_status(7 << 8) == 7
+    assert supervisor._decode_wait_status(signal.SIGTERM) == -signal.SIGTERM
 
 
 def test_container_final_empty_verification_rejects_late_churn(

@@ -23,6 +23,17 @@ class SupervisorError(RuntimeError):
     """Raised when descendant ownership or cleanup cannot be proven."""
 
 
+def _decode_wait_status(status: int) -> int:
+    decoder = getattr(os, "waitstatus_to_exitcode", None)
+    if callable(decoder):
+        return decoder(status)
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return -os.WTERMSIG(status)
+    raise SupervisorError("child returned an unsupported wait status")
+
+
 def enable_subreaper() -> None:
     if not sys.platform.startswith("linux") or not os.path.isdir("/proc"):
         raise SupervisorError("Linux /proc is required for descendant supervision")
@@ -331,7 +342,7 @@ def run(command: Sequence[str], *, timeout_seconds: float | None = None) -> int:
         return 124
     if interrupted:
         return 128 + interrupted
-    return os.waitstatus_to_exitcode(status)
+    return _decode_wait_status(status)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
