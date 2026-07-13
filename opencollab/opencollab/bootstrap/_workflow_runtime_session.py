@@ -27,7 +27,7 @@ class WorkflowSessionFactory:
     (carrying the resolved LLM config) and a self-wiring ``Session``. ``tools``
     from the caller become the agent's toolset; ``isolation`` is accepted for
     forward-compatibility (a future worktree-backed environment) but currently
-    runs in a local environment like the headless evaluator.
+    runs in a local environment.
     """
 
     def __init__(
@@ -45,6 +45,7 @@ class WorkflowSessionFactory:
         thinking: bool = DEFAULT_THINKING,
         thinking_params: dict | None = None,
         save_dir: str | None = None,
+        env: Any | None = None,
     ) -> None:
         self._model = model
         self._provider = provider
@@ -64,6 +65,7 @@ class WorkflowSessionFactory:
         # chat/team sessions use. ``None`` keeps sessions ephemeral (the prior
         # behaviour).
         self._save_dir = save_dir
+        self._env = env
         self._session_seq = 0
 
     def _next_save_path(self, label: str | None) -> str | None:
@@ -107,7 +109,7 @@ class WorkflowSessionFactory:
             thinking_params=self._thinking_params,
             tool_choice=tool_choice,
         )
-        env = LocalEnvironment(self._workspace) if self._workspace else LocalEnvironment()
+        env = self._env or (LocalEnvironment(self._workspace) if self._workspace else LocalEnvironment())
         return build_session(
             agent=agent,
             env=env,
@@ -128,6 +130,10 @@ def build_workflow_context(
     budget: int | None = None,
     max_concurrency: int = 4,
     save_dir: str | None = None,
+    env: Any | None = None,
+    source_root: str | None = None,
+    deadline_monotonic: float | None = None,
+    deadline_margin_seconds: float = 120.0,
 ) -> WorkflowContext:
     """Build a :class:`WorkflowContext` wired to the concrete session factory.
 
@@ -153,11 +159,12 @@ def build_workflow_context(
         thinking=bool(cfg.get("thinking", DEFAULT_THINKING)),
         thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
         save_dir=save_dir,
+        env=env,
     )
     budget_total = budget if budget is not None else cfg.get("budget")
     # Working-tree probe over the same workspace the sessions edit, so the
     # workflow can verify a real edit landed before declaring success.
-    probe_env = LocalEnvironment(workspace) if workspace else LocalEnvironment()
+    probe_env = env or (LocalEnvironment(workspace) if workspace else LocalEnvironment())
     return WorkflowContext(
         factory,
         event_sink=event_sink,
@@ -165,7 +172,9 @@ def build_workflow_context(
         max_concurrency=max_concurrency,
         budget_total=budget_total,
         tree_probe=EnvWorkingTreeProbe(probe_env),
-        workspace_root=workspace,
+        workspace_root=source_root if source_root is not None else workspace,
+        deadline_monotonic=deadline_monotonic,
+        deadline_margin_seconds=deadline_margin_seconds,
     )
 
 

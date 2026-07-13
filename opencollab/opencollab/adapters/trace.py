@@ -3,9 +3,7 @@
 Pure Unix-style: append-write to a JSONL file. No databases, no heavy tracing
 frameworks. Scientists can analyze trajectories with simple Python scripts.
 
-Ref:
-- Design doc: Tracer class with log_step()
-- Harness Engineering: fine-grained trajectory tracking for debugging agent failures
+Ref: tracer design with fine-grained steps for debugging agent failures.
 """
 
 from __future__ import annotations
@@ -47,7 +45,7 @@ class Tracer:
         self._output_dir = output_dir
         # ``filename`` decouples the on-disk name from ``run_id``: the workflow
         # run folder writes ``orchestration.jsonl`` while each record still
-        # carries the meaningful ``run_id`` (e.g. the SWE-bench task id). When
+        # carries the meaningful ``run_id`` (e.g. an external task id). When
         # omitted the name falls back to ``<run_id>.jsonl`` (the prior behaviour).
         trace_filename = filename or f"{run_id}.jsonl"
         if (

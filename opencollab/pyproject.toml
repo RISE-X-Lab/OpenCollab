@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "opencollab"
-version = "0.2.1"
+version = "0.3.0"
 description = "Minimal multi-agent software development framework — first principles, context isolation, tool-based delegation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Yihong Dong", email = "dongyh@stu.pku.edu.cn" }]
-keywords = ["llm", "agent", "multi-agent", "coding-agent", "swe-bench", "software-engineering"]
+keywords = ["llm", "agent", "multi-agent", "coding-agent", "software-engineering"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -30,12 +30,10 @@ dependencies = [
     "prompt-toolkit>=3.0",
     "filelock>=3.15",
     "pydantic>=2.0",
-    "requests>=2.34.1",
     "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
-docker = ["docker>=7.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.5"]
 
 [project.scripts]
@@ -53,4 +51,4 @@ Issues = "https://github.com/YihongDong/OpenCollab/issues"
 asyncio_mode = "auto"
 pythonpath = [".", ".."]
 testpaths = ["tests"]
-norecursedirs = ["eval_work", ".git", ".venv", "__pycache__"]
+norecursedirs = [".git", ".venv", "__pycache__"]

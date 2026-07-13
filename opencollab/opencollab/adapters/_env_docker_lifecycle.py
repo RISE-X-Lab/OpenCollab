@@ -33,21 +33,21 @@ logger = logging.getLogger(__name__)
 
 
 class DockerLifecycleMixin:
-    """Docker container sandbox — for eval / SWE-bench.
+    """Docker container sandbox for isolated agent execution.
 
     Two modes:
     - Start mode (default): ``setup()`` starts a fresh container, optionally
-      mounting a local directory. Used by ``harness/evaluator.py``.
+      mounting a local directory.
     - Attach mode: pass ``container_id`` to target an ALREADY-RUNNING container
-      (e.g. an official ``sweb.eval`` image started outside this process). No
-      ``setup()`` call is needed and ``cleanup()`` leaves the container alone.
+      started outside this process. No ``setup()`` call is needed and
+      ``cleanup()`` leaves the container alone.
 
     ``exec_workdir`` sets the ``docker exec -w`` working directory. ``command_prefix``
     wraps each command before execution (e.g. activating a conda env). When a prefix
     is supplied, commands run through a login shell (``bash -lc``) so the activation
     sticks. ``timeout_returncode`` is the ``returncode`` reported on timeout.
 
-    Ref: design doc Environment abstraction + Harness Engineering.
+    Ref: environment abstraction design.
     """
 
     process_isolated = True

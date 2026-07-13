@@ -45,6 +45,10 @@ async def run_workflow(
     save_dir: str | None = None,
     trace: bool = True,
     cleanup_timeout: float = DEFAULT_WORKFLOW_CLEANUP_TIMEOUT_SECONDS,
+    env: Any | None = None,
+    source_root: str | None = None,
+    deadline_monotonic: float | None = None,
+    deadline_margin_seconds: float = 120.0,
 ) -> Any:
     """Build a context, run the workflow function with ``args``, return its result.
 
@@ -99,6 +103,10 @@ async def run_workflow(
             budget=budget,
             max_concurrency=max_concurrency,
             save_dir=save_dir,
+            env=env,
+            source_root=source_root,
+            deadline_monotonic=deadline_monotonic,
+            deadline_margin_seconds=deadline_margin_seconds,
         )
     except BaseException as exc:
         if owns_tracer:

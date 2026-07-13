@@ -1,21 +1,12 @@
-"""Dependency gates for the public SDK and evaluation integrations."""
+"""Dependency and surface gates for the public SDK."""
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
 
-from opencollab.sdk import eval_compat, experimental
-
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_ROOT = _REPO_ROOT / "opencollab" / "opencollab"
-_EVALUATION_STRATEGY_NAMES = {
-    "build_fact_sheet",
-    "estimate_target_complexity",
-    "format_fact_sheet_hint",
-    "recon_pool_is_ample",
-    "size_recon",
-}
 
 
 def _imports(path: Path) -> tuple[str, ...]:
@@ -43,6 +34,20 @@ def test_sdk_does_not_depend_on_evaluation_implementations() -> None:
     assert offenders == []
 
 
-def test_sdk_compatibility_surfaces_exclude_evaluation_strategy() -> None:
-    assert _EVALUATION_STRATEGY_NAMES.isdisjoint(experimental.__all__)
-    assert _EVALUATION_STRATEGY_NAMES.isdisjoint(eval_compat.__all__)
+def test_retired_sdk_compatibility_modules_are_absent() -> None:
+    sdk_root = _PACKAGE_ROOT / "sdk"
+    assert not (sdk_root / "eval_compat.py").exists()
+    assert not (sdk_root / "experimental.py").exists()
+
+
+def test_sdk_capability_modules_export_only_public_names() -> None:
+    import opencollab.sdk as sdk
+
+    sdk_root = _PACKAGE_ROOT / "sdk"
+    for path in sorted(sdk_root.glob("*.py")):
+        if path.name == "__init__.py":
+            module = sdk
+        else:
+            module = __import__(f"opencollab.sdk.{path.stem}", fromlist=["__all__"])
+        exports = getattr(module, "__all__", ())
+        assert all(not name.startswith("_") for name in exports), path.name

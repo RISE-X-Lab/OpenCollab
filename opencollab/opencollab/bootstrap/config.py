@@ -41,23 +41,23 @@ MAX_DOTENV_BYTES = 1024 * 1024
 
 # Authoritative LLM sampling-temperature default. Every runtime path resolves
 # its effective temperature from here (env/.env override → per-role override),
-# so this is the single source of truth referenced by SpawnConfig, the workflow
-# runtime, and the headless evaluator.
+# so this is the single source of truth referenced by SpawnConfig, workflow
+# execution, and SDK consumers.
 DEFAULT_TEMPERATURE = 0.2
 
 # Authoritative top_p (nucleus-sampling) default. ``None`` means "do not send a
 # top_p" so every existing request stays byte-for-byte unchanged — only an
 # explicit OPENCOLLAB_TOP_P (or per-call override) adds the knob. Mirrors the
-# temperature flow: resolved once here, threaded through the LLM client / both
-# providers / the headless evaluator.
+# temperature flow: resolved once here, then threaded through the LLM client,
+# providers, and SDK consumers.
 DEFAULT_TOP_P: float | None = None
 
 # Provider "thinking"/reasoning passthrough. OFF by default so every existing
 # runtime path is byte-for-byte unchanged. When enabled, ``DEFAULT_THINKING_PARAMS``
 # is the request payload sent to the OpenAI-compatible API as ``extra_body`` (for
 # DashScope compatible mode this is ``{"enable_thinking": true}``). Mirrors the
-# temperature flow: resolved once here, threaded through SpawnConfig / workflow
-# runtime / evaluator and overridable per role.
+# temperature flow: resolved once here, threaded through SpawnConfig, workflow
+# execution, and SDK consumers, and overridable per role.
 DEFAULT_THINKING = False
 DEFAULT_THINKING_PARAMS: dict[str, Any] = {"enable_thinking": True}
 

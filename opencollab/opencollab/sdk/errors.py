@@ -19,9 +19,24 @@ class WorkflowRunTimeoutError(OpenCollabSDKError, TimeoutError):
     """Raised after a timed-out workflow has completed hardened cancellation."""
 
 
+class WorkflowRunLifecycleError(OpenCollabSDKError):
+    """Raised when workflow-owned activity cannot reach a terminal state."""
+
+
+class AgentRunTimeoutError(OpenCollabSDKError, TimeoutError):
+    """Raised after a timed-out agent has been revoked and boundedly stopped."""
+
+
+class AgentRunLifecycleError(OpenCollabSDKError):
+    """Raised when agent-owned cleanup or persistence cannot be completed."""
+
+
 __all__ = [
+    "AgentRunLifecycleError",
+    "AgentRunTimeoutError",
     "InvalidSDKRequestError",
     "OpenCollabSDKError",
     "WorkflowManifestError",
+    "WorkflowRunLifecycleError",
     "WorkflowRunTimeoutError",
 ]

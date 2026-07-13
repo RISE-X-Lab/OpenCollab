@@ -27,6 +27,15 @@ class Environment:
     process_isolated: bool = False
     _aborted: bool = False
 
+    @property
+    def revoked(self) -> bool:
+        """Whether future side effects have been synchronously revoked."""
+        return bool(self._aborted)
+
+    def revoke(self) -> None:
+        """Synchronously and idempotently reject future side effects."""
+        self._aborted = True
+
     def _ensure_active(self) -> None:
         if self._aborted:
             raise RuntimeError("Execution environment has been aborted.")
@@ -78,4 +87,7 @@ class Environment:
         attempt interrupted by cancellation before it considers the resource
         released.
         """
-        self._aborted = True
+        self.revoke()
+
+
+__all__ = ["Environment", "ExecResult"]

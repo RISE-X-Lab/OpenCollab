@@ -139,11 +139,7 @@ class WorkflowSessionFactory:
         self._top_p = top_p
         self._max_output_tokens = max_output_tokens
         self._thinking = thinking
-        self._thinking_params = (
-            thinking_params
-            if thinking_params is not None
-            else dict(DEFAULT_THINKING_PARAMS)
-        )
+        self._thinking_params = thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
         self._save_dir = save_dir
         self._session_seq = 0
         self._env = env
@@ -182,11 +178,7 @@ class WorkflowSessionFactory:
             thinking_params=self._thinking_params,
             tool_choice=tool_choice,
         )
-        environment = self._env or (
-            LocalEnvironment(self._workspace)
-            if self._workspace
-            else LocalEnvironment()
-        )
+        environment = self._env or (LocalEnvironment(self._workspace) if self._workspace else LocalEnvironment())
         return build_session(
             agent=agent,
             env=environment,
@@ -208,6 +200,9 @@ def build_workflow_context(
     max_concurrency: int = 4,
     save_dir: str | None = None,
     env: Any | None = None,
+    source_root: str | None = None,
+    deadline_monotonic: float | None = None,
+    deadline_margin_seconds: float = 120.0,
 ) -> WorkflowContext:
     """Build a workflow context without dropping provider or environment config."""
     environment = env if env is not None else _WORKFLOW_ENV_OVERRIDE.get()
@@ -222,19 +217,14 @@ def build_workflow_context(
         llm_timeout=float(cfg.get("llm_timeout", 600.0)),
         temperature=float(cfg.get("temperature", DEFAULT_TEMPERATURE)),
         top_p=cfg.get("top_p", DEFAULT_TOP_P),
-        max_output_tokens=int(
-            cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)
-        ),
+        max_output_tokens=int(cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)),
         thinking=bool(cfg.get("thinking", DEFAULT_THINKING)),
-        thinking_params=cfg.get("thinking_params")
-        or dict(DEFAULT_THINKING_PARAMS),
+        thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
         save_dir=save_dir,
         env=environment,
     )
     budget_total = budget if budget is not None else cfg.get("budget")
-    probe_environment = environment or (
-        LocalEnvironment(workspace) if workspace else LocalEnvironment()
-    )
+    probe_environment = environment or (LocalEnvironment(workspace) if workspace else LocalEnvironment())
     return WorkflowContext(
         factory,
         event_sink=event_sink,
@@ -242,7 +232,9 @@ def build_workflow_context(
         max_concurrency=max_concurrency,
         budget_total=budget_total,
         tree_probe=EnvWorkingTreeProbe(probe_environment),
-        workspace_root=workspace,
+        workspace_root=source_root if source_root is not None else workspace,
+        deadline_monotonic=deadline_monotonic,
+        deadline_margin_seconds=deadline_margin_seconds,
     )
 
 
@@ -260,6 +252,9 @@ async def run_workflow(
     trace: bool = True,
     env: Any | None = None,
     cleanup_timeout: float = DEFAULT_WORKFLOW_CLEANUP_TIMEOUT_SECONDS,
+    source_root: str | None = None,
+    deadline_monotonic: float | None = None,
+    deadline_margin_seconds: float = 120.0,
 ) -> Any:
     """Run through the hardened lifecycle while carrying an injected environment."""
     token = _WORKFLOW_ENV_OVERRIDE.set(env)
@@ -276,6 +271,10 @@ async def run_workflow(
             save_dir=save_dir,
             trace=trace,
             cleanup_timeout=cleanup_timeout,
+            env=env,
+            source_root=source_root,
+            deadline_monotonic=deadline_monotonic,
+            deadline_margin_seconds=deadline_margin_seconds,
         )
     finally:
         _WORKFLOW_ENV_OVERRIDE.reset(token)
