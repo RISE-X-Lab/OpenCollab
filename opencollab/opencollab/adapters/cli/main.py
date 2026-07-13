@@ -3,10 +3,9 @@
 Two surfaces:
 - the default (no subcommand): one unified interactive agent. Agent 0 is the
   first session and can spawn child agents via the Scheduler.
-- ``eval``: headless batch evaluation for benchmarks (SWE-bench, etc.).
 
 Split by concern: ``toolbar`` (prompt bottom-toolbar), ``config_resolve``
-(CLI args + .env merge, API-key checks), ``eval`` (headless eval command).
+(CLI args + .env merge and API-key checks).
 This module keeps the Typer app, the chat REPL, and ``main()``.
 
 Ref:
@@ -33,7 +32,6 @@ from opencollab.adapters.cli.config_resolve import (
     print_missing_key_hint,
     resolve_config,
 )
-from opencollab.adapters.cli.eval import eval_cmd
 from opencollab.adapters.cli.toolbar import format_team_toolbar
 from opencollab.adapters.cli.workflow import app as workflow_app
 from opencollab.adapters.safe_files import read_regular_text
@@ -55,7 +53,6 @@ _PROMPT_STYLE = Style.from_dict({
 _PROMPT = HTML('<style fg="ansicyan"><b>❯</b></style><style fg="ansibrightblack"> </style>')
 MAX_CLI_PROMPT_FILE_BYTES = 4 * 1024 * 1024
 
-app.command(name="eval")(eval_cmd)
 app.add_typer(workflow_app, name="workflow")
 
 

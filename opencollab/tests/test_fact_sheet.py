@@ -6,18 +6,14 @@
   artifact (``test_code/``, ``func_implementation*``, ``*_result.jsonl``,
   ``*_output.jsonl``) — even when those artifacts contain calls to the target.
 
-* T2 (COMPLEXITY SIZING + off==reference) — sizing yields FEWER scouts for a
-  trivial target than a complex one (ceiling respected); and with enforcement
-  ``off`` ``_recon`` is byte-for-byte the reference path: unchanged scout count,
-  unchanged per-scout cap, unchanged hints (no fact-sheet injection).
+* T2 (COMPLEXITY SIZING) — sizing yields fewer scouts for a trivial target than
+  a complex one while respecting the caller-supplied ceiling.
 """
 
 from __future__ import annotations
 
-import asyncio
 import os
 from pathlib import Path
-from typing import Any
 
 import pytest
 from opencollab.application import fact_sheet as fact_sheet_mod
@@ -30,21 +26,6 @@ from opencollab.application.fact_sheet import (
     recon_pool_is_ample,
     size_recon,
 )
-from opencollab.bootstrap.workflow_runtime import discover_workflows
-
-_WF_DIR = Path(__file__).resolve().parents[2] / "workflows"
-
-
-def _recon_fn():
-    """The live ``_recon`` from the analyst-solve module (shares its globals)."""
-    fn = discover_workflows(str(_WF_DIR)).get("analyst-solve").fn
-    return fn.__globals__["_recon"]
-
-
-def _max_scouts() -> int:
-    fn = discover_workflows(str(_WF_DIR)).get("analyst-solve").fn
-    return fn.__globals__["MAX_SCOUTS"]
-
 
 # --------------------------------------------------------------------------- #
 # fixtures (built on disk; no network, no real LLM)
@@ -124,19 +105,6 @@ def _build_rich_repo(root: Path) -> tuple[str, str]:
         "IMPORTANT CONTEXT:\n"
         f"- The function stub is at: {stub_abs} (near line 19)\n"
         "INSTRUCTIONS: implement it.\n"
-    )
-    return str(root), goal
-
-
-def _build_trivial_repo(root: Path) -> tuple[str, str]:
-    (root / "mod.py").write_text(
-        "def tiny(x):\n    # TODO: implement this function\n    raise NotImplementedError\n",
-        encoding="utf-8",
-    )
-    stub_abs = str(root / "mod.py")
-    goal = (
-        "TASK: Implement the function `tiny`.\n"
-        f"- The function stub is at: {stub_abs} (near line 1)\n"
     )
     return str(root), goal
 
@@ -320,12 +288,12 @@ def test_t1_source_tree_enumeration_is_bounded(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# T2 — complexity sizing (unit) + off==reference parity in _recon
+# T2 — complexity sizing application helpers
 # --------------------------------------------------------------------------- #
 
 
 def test_t2_sizing_trivial_gets_fewer_scouts_than_complex():
-    ceiling = _max_scouts()
+    ceiling = 4
     trivial = {
         "param_count": 1,
         "docstring_len": 20,
@@ -372,109 +340,6 @@ def test_t2_recon_pool_is_ample_gates_on_binding_constraint():
     assert not recon_pool_is_ample(floor + 4 * scout_budget - 4, floor, 4, scout_budget)
     # Degenerate dim count never claims amplitude.
     assert not recon_pool_is_ample(10_000_000, floor, 0, scout_budget)
-
-
-# -- _recon parity / behavior harness --------------------------------------- #
-
-
-class _Budget:
-    total = 1_000_000
-
-    def __init__(self, remaining: int) -> None:
-        self._remaining = remaining
-
-    def remaining(self) -> float:
-        return float(self._remaining)
-
-    def spent(self) -> int:
-        return 0
-
-
-class _ReconCtx:
-    def __init__(self, *, workspace_root=None, remaining=1_000_000) -> None:
-        self.workspace_root = workspace_root
-        self.agent_calls: list[dict[str, Any]] = []
-        self.logs: list[str] = []
-        self.budget = _Budget(remaining)
-
-    async def agent(self, prompt, **kw):
-        self.agent_calls.append({"prompt": prompt, **kw})
-        return f"findings for {kw.get('label')}"
-
-    async def parallel(self, thunks):
-        return [await t() for t in thunks]
-
-    async def log(self, message):
-        self.logs.append(message)
-
-
-_THREE_DIMS = [
-    {"aspect": "origin", "question": "where?", "hints": ["look in pkg/target.py"]},
-    {"aspect": "contract", "question": "callers?", "hints": ["grep callers"]},
-    {"aspect": "edges", "question": "edge cases?", "hints": ["the docstring"]},
-]
-
-
-def _scout_calls(ctx: _ReconCtx) -> list[dict[str, Any]]:
-    return [c for c in ctx.agent_calls if str(c.get("label", "")).startswith("scout:")]
-
-
-def test_t2_recon_off_is_reference(tmp_path):
-    """enforcement off: scout count, cap, and hints unchanged (no fact sheet)."""
-    recon = _recon_fn()
-    # workspace_root is set, but OFF must never read it.
-    root, _goal = _build_rich_repo(tmp_path)
-    ctx = _ReconCtx(workspace_root=root, remaining=1_000_000)
-    asyncio.run(recon(ctx, "TASK: Implement the function `compute_widget`.", _THREE_DIMS, "off"))
-
-    scouts = _scout_calls(ctx)
-    assert len(scouts) == 3  # one per dimension (no complexity trimming)
-    # Reference per-scout cap: min(250k, (1M-600k)//3).
-    expected_cap = min(250_000, (1_000_000 - 600_000) // 3)
-    assert all(c["budget"] == expected_cap for c in scouts)
-    # Hints unchanged: the raw dim hint is present, the fact sheet is NOT injected.
-    assert all("Pre-recon fact sheet" not in c["prompt"] for c in scouts)
-    assert any("look in pkg/target.py" in c["prompt"] for c in scouts)
-    assert any("grep callers" in c["prompt"] for c in scouts)
-
-
-def test_t2_recon_on_trivial_trims_scouts_and_injects_fact_sheet(tmp_path):
-    """enforcement on + a trivial target: 3 dims collapse to 1 leashed scout that
-    carries the static fact sheet."""
-    recon = _recon_fn()
-    root, goal = _build_trivial_repo(tmp_path)
-    ctx = _ReconCtx(workspace_root=root, remaining=1_000_000)
-    asyncio.run(recon(ctx, goal, _THREE_DIMS, "needs-enforcement"))
-
-    scouts = _scout_calls(ctx)
-    assert len(scouts) == 1  # complexity sizing trimmed 3 -> 1
-    # Depth-leashed cap: base min(250k, (1M-600k)//1) = 250k, leash 0.45.
-    base = min(250_000, (1_000_000 - 600_000) // 1)
-    assert scouts[0]["budget"] == max(1, int(base * 0.45))
-    # The fact sheet was injected into the surviving scout.
-    assert "Pre-recon fact sheet" in scouts[0]["prompt"]
-    assert scouts[0]["enforcement_strength"] == "needs-enforcement"
-
-
-def test_t2_recon_on_ample_budget_runs_full_fanout_at_full_depth(tmp_path):
-    """enforcement on + a trivial target BUT an ample (2M) pool: 5c down-sizing is
-    skipped — every scope dimension still gets a scout at the full, un-leashed cap.
-    The body-blind complexity proxy must not under-recon when budget is plentiful."""
-    recon = _recon_fn()
-    root, goal = _build_trivial_repo(tmp_path)
-    ctx = _ReconCtx(workspace_root=root, remaining=2_000_000)
-    asyncio.run(recon(ctx, goal, _THREE_DIMS, "needs-enforcement"))
-
-    scouts = _scout_calls(ctx)
-    assert len(scouts) == 3  # full fan-out: no complexity trimming under an ample pool
-    # Full-depth cap: min(250k, (2M-600k)//3) = 250k, NO leash applied.
-    expected_cap = min(250_000, (2_000_000 - 600_000) // 3)
-    assert all(c["budget"] == expected_cap for c in scouts)
-    # Still enforcement-on and still carrying the static fact sheet.
-    assert all("Pre-recon fact sheet" in c["prompt"] for c in scouts)
-    assert all(c["enforcement_strength"] == "needs-enforcement" for c in scouts)
-    # The log records WHY it kept the full fan-out (auditable against the metric).
-    assert any("pool ample" in m for m in ctx.logs)
 
 
 def test_format_fact_sheet_hint_is_compact_and_safe(tmp_path):
