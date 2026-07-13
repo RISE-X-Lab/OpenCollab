@@ -83,10 +83,7 @@ class LocalEnvironment(Environment):
 
     async def read_file(self, path: str) -> str:
         self._ensure_active()
-        payload = read_regular_bytes(
-            self._full_path(path),
-            max_bytes=LOCAL_FILE_READ_LIMIT_BYTES,
-        )
+        payload = read_regular_bytes(self._full_path(path), max_bytes=LOCAL_FILE_READ_LIMIT_BYTES)
         return payload.decode("utf-8", errors="replace")
 
     async def write_file(self, path: str, content: str) -> None:

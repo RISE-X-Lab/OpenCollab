@@ -76,9 +76,7 @@ def test_go_runner_multi_target_forgery_cannot_produce_green():
 
 def test_run_tests_rejects_go_multi_selector_before_any_command():
     target = "./pkg1::TestA ./pkg2::TestB"
-    env = FakeEnv(
-        stdout='{"Action":"pass","Package":"module/pkg1","Test":"TestB"}',
-    )
+    env = FakeEnv(stdout='{"Action":"pass","Package":"module/pkg1","Test":"TestB"}')
     safety_policy = SpySafetyPolicy()
     runtime = ToolRuntime(
         environment=env,

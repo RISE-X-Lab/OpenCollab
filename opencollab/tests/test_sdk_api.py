@@ -185,11 +185,7 @@ def test_runtime_config_is_validated_and_does_not_repr_secret() -> None:
     assert mapped.max_output_tokens == 4096
 
     with pytest.raises(sdk.InvalidSDKRequestError, match="failure_mode"):
-        sdk.AgentRunRequest(
-            prompt="task",
-            config=config,
-            failure_mode="ignore",
-        )
+        sdk.AgentRunRequest(prompt="task", config=config, failure_mode="ignore")
 
 
 def test_attach_workspace_builds_non_owning_container_environment() -> None:

@@ -29,11 +29,7 @@ def _require_limit(max_bytes: int) -> int:
     return max_bytes
 
 
-def _check_directory_components(
-    path: str | os.PathLike[str],
-    *,
-    create: bool,
-) -> None:
+def _check_directory_components(path: str | os.PathLike[str], *, create: bool) -> None:
     target = _absolute(path)
     current = Path(target.anchor or os.sep)
     for component in target.parts[1:]:
@@ -276,9 +272,7 @@ def create_regular_bytes_atomic(
     )
 
 
-def unlink_regular_file_durable(
-    path: str | os.PathLike[str],
-) -> bool:
+def unlink_regular_file_durable(path: str | os.PathLike[str]) -> bool:
     target = _absolute(path)
     current = _current_regular(target, context="owned file")
     if current is None:

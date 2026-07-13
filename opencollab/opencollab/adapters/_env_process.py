@@ -133,9 +133,7 @@ class ProcessRegistry:
                     terminate_process(process),
                     propagate_cancellation=True,
                 ):
-                    raise ProcessCleanupError(
-                        "revoked subprocess spawn did not quiesce"
-                    )
+                    raise ProcessCleanupError("revoked subprocess spawn did not quiesce")
                 raise RuntimeError("process registry has been revoked")
             return process
         finally:
