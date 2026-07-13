@@ -49,6 +49,14 @@ def _term_ignoring_child(
     return f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
 
 
+def test_container_guard_decodes_wait_status_without_python39_helper(monkeypatch):
+    guard = _load_guard_module()
+    monkeypatch.setattr(guard.os, "waitstatus_to_exitcode", None)
+
+    assert guard._decode_wait_status(7 << 8) == 7
+    assert guard._decode_wait_status(signal.SIGTERM) == -signal.SIGTERM
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process groups")
 def test_container_guard_stop_kills_term_ignoring_descendant(tmp_path):
     pidfile = tmp_path / "run.pid"

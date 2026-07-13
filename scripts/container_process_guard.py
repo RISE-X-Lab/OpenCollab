@@ -28,6 +28,17 @@ class GuardError(RuntimeError):
     pass
 
 
+def _decode_wait_status(status: int) -> int:
+    decoder = getattr(os, "waitstatus_to_exitcode", None)
+    if callable(decoder):
+        return decoder(status)
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return -os.WTERMSIG(status)
+    raise GuardError("child returned an unsupported wait status")
+
+
 def _absolute(path: Path) -> Path:
     return Path(os.path.abspath(os.fspath(path)))
 
@@ -714,7 +725,7 @@ def run(pidfile: Path, cancelfile: Path, command: list[str]) -> int:
     if interrupted:
         return 128 + interrupted
     assert status is not None
-    return os.waitstatus_to_exitcode(status)
+    return _decode_wait_status(status)
 
 
 def main(argv: list[str]) -> int:
