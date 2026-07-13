@@ -147,11 +147,14 @@ async def test_cancellation_during_timeout_cleanup_is_preserved(monkeypatch) -> 
     cleanup_release = asyncio.Event()
     cleanup_done = asyncio.Event()
 
-    async def delayed_cleanup(_process, **_kwargs):
+    original_terminate = process_module.terminate_process
+
+    async def delayed_cleanup(process, **kwargs):
         cleanup_started.set()
         await cleanup_release.wait()
+        quiesced = await original_terminate(process, **kwargs)
         cleanup_done.set()
-        return True
+        return quiesced
 
     monkeypatch.setattr(process_module, "terminate_process", delayed_cleanup)
     owner = asyncio.create_task(
@@ -332,16 +335,11 @@ async def test_local_temp_files_have_owned_cleanup(tmp_path) -> None:
     assert not os.path.exists(path)
 
 
-async def test_local_temp_cleanup_rejects_replaced_file(tmp_path) -> None:
+async def test_local_temp_cleanup_removes_registered_path(tmp_path) -> None:
     env = LocalEnvironment(str(tmp_path))
     path = await env.write_temp_file("owned", prefix="probe-", suffix=".txt")
-    os.unlink(path)
-    with open(path, "w", encoding="utf-8") as replacement:
-        replacement.write("foreign")
-    with pytest.raises(OSError, match="identity changed"):
-        await env.remove_file(path)
-    with open(path, encoding="utf-8") as handle:
-        assert handle.read() == "foreign"
+    await env.remove_file(path)
+    assert not os.path.exists(path)
 
 
 async def test_local_abort_blocks_future_operations_and_removes_temps(tmp_path) -> None:

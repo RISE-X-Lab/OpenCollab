@@ -231,6 +231,10 @@ async def run_process(
                 pass
             finally:
                 process.stdin.close()
+                try:
+                    await process.stdin.wait_closed()
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
         await process.wait()
 
     try:

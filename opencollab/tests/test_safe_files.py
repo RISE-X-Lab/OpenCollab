@@ -142,20 +142,9 @@ def test_concurrent_directory_creation_is_idempotent(tmp_path) -> None:
     assert path.is_dir()
 
 
-def test_durable_unlink_checks_one_owned_identity(tmp_path) -> None:
+def test_durable_unlink_removes_regular_file_and_reports_missing(tmp_path) -> None:
     path = tmp_path / "owned"
     path.write_bytes(b"owned")
-    opened = path.stat()
-    assert unlink_regular_file_durable(
-        path,
-        expected_target_identity=(opened.st_dev, opened.st_ino),
-    )
+    assert unlink_regular_file_durable(path)
     assert not path.exists()
-    replacement = tmp_path / "owned"
-    replacement.write_bytes(b"replacement")
-    with pytest.raises(OSError, match="identity changed"):
-        unlink_regular_file_durable(
-            replacement,
-            expected_target_identity=(opened.st_dev, opened.st_ino),
-        )
-    assert replacement.read_bytes() == b"replacement"
+    assert unlink_regular_file_durable(path) is False

@@ -9,6 +9,8 @@ from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
 from typing import Callable, TypeVar
 
+from opencollab.application.exception_notes import add_exception_note
+
 T = TypeVar("T")
 _MAX_RETAINED_DETACHED_TASKS = 256
 _DETACHED_TASK_QUEUE: queue.SimpleQueue[
@@ -40,7 +42,8 @@ async def await_owned_operation(
                 cancellation = exc
         except BaseException as exc:
             if cancellation is not None and propagate_cancellation:
-                cancellation.add_note(
+                add_exception_note(
+                    cancellation,
                     f"owned operation also failed: {type(exc).__name__}: {exc}"
                 )
                 raise cancellation

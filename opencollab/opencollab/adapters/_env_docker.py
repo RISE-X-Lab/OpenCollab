@@ -17,6 +17,7 @@ from opencollab.adapters._env_process import (
     run_process,
 )
 from opencollab.application.async_timeout import await_owned_operation
+from opencollab.application.exception_notes import add_exception_note
 
 DOCKER_OWNER_LABEL = "opencollab.owner"
 DOCKER_SETUP_TIMEOUT_SECONDS = 120.0
@@ -199,7 +200,8 @@ class DockerEnvironment(Environment):
                 cleanup_error = ProcessCleanupError(
                     "Docker setup failed and owned container removal was not proven"
                 )
-                cleanup_error.add_note(
+                add_exception_note(
+                    cleanup_error,
                     f"Original setup failure: {type(exc).__name__}: {exc}"
                 )
                 raise cleanup_error from exc
@@ -215,7 +217,8 @@ class DockerEnvironment(Environment):
                 raise
             except BaseException as cleanup_error:
                 failure = RuntimeError("Failed to start container")
-                failure.add_note(
+                add_exception_note(
+                    failure,
                     "Docker setup cleanup failed: "
                     f"{type(cleanup_error).__name__}: {cleanup_error}"
                 )
@@ -352,7 +355,7 @@ class DockerEnvironment(Environment):
             )
         except asyncio.CancelledError as exc:
             if not await await_owned_operation(self._recover_inner(token)):
-                exc.add_note("cancelled container command did not quiesce")
+                add_exception_note(exc, "cancelled container command did not quiesce")
             raise
         return ExecResult(
             result.returncode,

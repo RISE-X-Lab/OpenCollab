@@ -16,10 +16,6 @@ _LOCK_TIMEOUT_SECONDS = 10.0
 _READ_CHUNK_BYTES = 1024 * 1024
 
 
-class OwnedFileMismatchError(OSError):
-    """An owned file was replaced before cleanup."""
-
-
 def _absolute(path: str | os.PathLike[str]) -> Path:
     value = os.fspath(path)
     if not value or "\0" in value:
@@ -282,25 +278,17 @@ def create_regular_bytes_atomic(
 
 def unlink_regular_file_durable(
     path: str | os.PathLike[str],
-    *,
-    expected_target_identity: tuple[int, int] | None = None,
 ) -> bool:
     target = _absolute(path)
     current = _current_regular(target, context="owned file")
     if current is None:
         return False
-    if expected_target_identity is not None and (
-        current.st_dev,
-        current.st_ino,
-    ) != expected_target_identity:
-        raise OwnedFileMismatchError(f"owned file identity changed: {target}")
     os.unlink(target)
     _fsync_directory(target.parent)
     return True
 
 
 __all__ = [
-    "OwnedFileMismatchError",
     "append_regular_text",
     "create_regular_bytes_atomic",
     "ensure_directory_no_symlinks",

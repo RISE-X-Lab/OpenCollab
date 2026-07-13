@@ -31,6 +31,7 @@ from opencollab.application.async_timeout import (
     isolate_tasks_from_shutdown,
 )
 from opencollab.application.autosave import AutoSaveSubscriber
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import EventPublisherPort, TracePort
 from opencollab.application.workflow import WorkflowBudgetExceeded, WorkflowContext
 from opencollab.application.workflow_registry import Registry, WorkflowSpec
@@ -388,7 +389,7 @@ async def run_workflow(
                     "timed-out workflow reported a cleanup or persistence failure"
                 )
                 for note in notes:
-                    failure.add_note(note)
+                    add_exception_note(failure, note)
                 raise failure from inner
         except BaseException as inner:
             raise WorkflowLifecycleError(
@@ -402,9 +403,10 @@ async def run_workflow(
                 owner.result()
             except asyncio.CancelledError as inner:
                 for note in getattr(inner, "__notes__", ()):
-                    cancellation.add_note(note)
+                    add_exception_note(cancellation, note)
             except BaseException as inner:
-                cancellation.add_note(
+                add_exception_note(
+                    cancellation,
                     "workflow owner also failed during cancellation: "
                     f"{type(inner).__name__}: {inner}"
                 )
