@@ -71,17 +71,16 @@ class RuntimeConfig:
         if self.base_url is not None:
             _non_empty_text(self.base_url, field_name="base_url")
         _positive_number(self.llm_timeout_seconds, field_name="llm_timeout_seconds")
-        if isinstance(self.temperature, bool) or not isinstance(self.temperature, (int, float)):
-            raise InvalidSDKRequestError("temperature must be a finite number from 0 to 2")
-        temperature = float(self.temperature)
-        if not math.isfinite(temperature) or not 0 <= temperature <= 2:
-            raise InvalidSDKRequestError("temperature must be a finite number from 0 to 2")
-        if self.top_p is not None:
-            if isinstance(self.top_p, bool) or not isinstance(self.top_p, (int, float)):
-                raise InvalidSDKRequestError("top_p must be None or a finite number from 0 to 1")
-            top_p = float(self.top_p)
-            if not math.isfinite(top_p) or not 0 <= top_p <= 1:
-                raise InvalidSDKRequestError("top_p must be None or a finite number from 0 to 1")
+        for value, field_name, maximum, optional in (
+            (self.temperature, "temperature", 2, False),
+            (self.top_p, "top_p", 1, True),
+        ):
+            if value is None and optional:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
+                raise InvalidSDKRequestError(f"{field_name} must be a finite number from 0 to {maximum}")
+            if not 0 <= float(value) <= maximum:
+                raise InvalidSDKRequestError(f"{field_name} must be a finite number from 0 to {maximum}")
         _positive_integer(self.max_output_tokens, field_name="max_output_tokens")
         if not isinstance(self.thinking, bool):
             raise InvalidSDKRequestError("thinking must be a boolean")

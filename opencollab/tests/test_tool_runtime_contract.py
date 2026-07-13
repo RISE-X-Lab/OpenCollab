@@ -4,7 +4,6 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import opencollab.adapters.env as env_module
 import pytest
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
@@ -220,10 +219,10 @@ def test_file_read_preserves_file_not_found(tmp_path):
 
 
 def test_file_read_preserves_permission_error_string(monkeypatch, tmp_path):
-    def raise_permission_error(*args, **kwargs):
+    async def raise_permission_error(*args, **kwargs):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(env_module, "_sync_read_regular_file", raise_permission_error)
+    monkeypatch.setattr(LocalEnvironment, "read_file", raise_permission_error)
     env = LocalEnvironment(str(tmp_path))
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 

@@ -14,7 +14,6 @@ from typing import Any, Callable
 from opencollab.adapters.safe_files import (
     append_regular_text,
     ensure_directory_no_symlinks,
-    regular_path_identity,
 )
 from opencollab.application.ports import EventPublisherPort
 
@@ -24,25 +23,8 @@ EVENT_IO_TIMEOUT_SECONDS = 1.0
 def _append_event_record(
     path: str,
     line: str,
-    previous_identity: tuple[int, int, int, int, int] | None,
-) -> tuple[int, int, int, int, int]:
-    if previous_identity is not None:
-        current_identity = regular_path_identity(path)
-        previous_device, previous_inode, previous_size, previous_mtime, previous_ctime = (
-            previous_identity
-        )
-        if current_identity[:2] != (previous_device, previous_inode):
-            raise OSError("event log path changed between records")
-        if current_identity[2] < previous_size:
-            raise OSError("event log was truncated between records")
-        if current_identity[2:] != (
-            previous_size,
-            previous_mtime,
-            previous_ctime,
-        ):
-            raise OSError("event log was modified between records")
+) -> None:
     append_regular_text(path, line)
-    return regular_path_identity(path)
 
 
 class _DaemonIoWorker:
@@ -129,7 +111,6 @@ class JsonlEventSink(EventPublisherPort):
         self._write_error: str | None = None
         self._initialization_error: str | None = None
         self._dropped_events = 0
-        self._last_file_identity: tuple[int, int, int, int, int] | None = None
         self._continuity_broken = False
         self._emit_lock = asyncio.Lock()
         self._io_worker = _DaemonIoWorker()
@@ -157,24 +138,15 @@ class JsonlEventSink(EventPublisherPort):
                     }
                 payload.setdefault("timestamp", time.time())
                 line = json.dumps(payload, ensure_ascii=False, default=str) + "\n"
-                self._last_file_identity = await self._io_worker.call(
+                await self._io_worker.call(
                     _append_event_record,
                     self._path,
                     line,
-                    self._last_file_identity,
                 )
             except Exception as exc:
                 if self._write_error is None:
                     self._write_error = f"{type(exc).__name__}: {exc}"
-                if isinstance(exc, asyncio.TimeoutError) or any(
-                    marker in str(exc)
-                    for marker in (
-                        "changed while writing",
-                        "changed between records",
-                        "truncated between records",
-                        "modified between records",
-                    )
-                ):
+                if isinstance(exc, asyncio.TimeoutError):
                     self._continuity_broken = True
                 self._dropped_events += 1
             return

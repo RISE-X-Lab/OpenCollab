@@ -9,12 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import shlex
-import subprocess
 import sys
 import threading
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -238,197 +235,61 @@ def test_runner_caller_cancellation_kills_descendant_process_group(tmp_path):
     assert not finished.exists()
 
 
-def test_runner_cancellation_at_spawn_boundary_owns_descendant(
-    tmp_path,
-    monkeypatch,
-):
-    started = tmp_path / "started"
-    finished = tmp_path / "finished"
-    spec = HookSpec(
-        event="Stop",
-        action_type="command",
-        command=_delayed_sentinel_command(started, finished),
-        timeout=5.0,
-    )
-    real_spawn = hooks_adapter.subprocess.Popen
-    created = threading.Event()
-    release = threading.Event()
+def test_runner_delegates_to_shared_process_supervisor(monkeypatch):
+    calls = []
 
-    def delayed_spawn(*args, **kwargs):
-        proc = real_spawn(*args, **kwargs)
-        for _ in range(100):
-            if started.exists():
-                break
-            threading.Event().wait(0.01)
-        assert started.exists()
-        created.set()
-        release.wait()
-        return proc
+    async def fake_run_process(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
-    monkeypatch.setattr(hooks_adapter.subprocess, "Popen", delayed_spawn)
-
-    async def _run() -> None:
-        task = asyncio.create_task(
-            ShellHookRunner((spec,)).fire("Stop", {"hook_event_name": "Stop"})
-        )
-        assert await asyncio.to_thread(created.wait, 1.0)
-        task.cancel()
-        await asyncio.sleep(0)
-        release.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        await asyncio.sleep(0.7)
-
-    asyncio.run(_run())
-    assert started.exists()
-    assert not finished.exists()
-
-
-def test_runner_cancellation_does_not_wait_for_stuck_spawn(monkeypatch):
-    started = threading.Event()
-    release = threading.Event()
-
-    def stuck_spawn(*_args, **_kwargs):
-        started.set()
-        release.wait()
-        raise OSError("late spawn failure")
-
-    monkeypatch.setattr(hooks_adapter.subprocess, "Popen", stuck_spawn)
-
-    async def _run() -> None:
-        task = asyncio.create_task(
-            ShellHookRunner((_spec(event="Stop"),)).fire(
-                "Stop",
-                {"hook_event_name": "Stop"},
-            )
-        )
-        assert await asyncio.to_thread(started.wait, 1.0)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=0.2)
-        release.set()
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-
-    asyncio.run(_run())
-
-
-def test_runner_spawn_timeout_returns_while_late_spawn_is_owned(monkeypatch):
-    started = threading.Event()
-    release = threading.Event()
-
-    def stuck_spawn(*_args, **_kwargs):
-        started.set()
-        release.wait()
-        raise OSError("late spawn failure")
-
-    monkeypatch.setattr(hooks_adapter.subprocess, "Popen", stuck_spawn)
-
-    async def _run() -> None:
-        spec = HookSpec(
-            event="Stop",
-            action_type="command",
-            command="true",
-            timeout=0.05,
-        )
-        outcome = await asyncio.wait_for(
-            ShellHookRunner((spec,)).fire("Stop", {"hook_event_name": "Stop"}),
-            timeout=0.2,
-        )
-        assert outcome.allow is True
-        assert started.is_set()
-        release.set()
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-
-    asyncio.run(_run())
-
-
-def test_late_spawn_worker_cleans_after_event_loop_closes(tmp_path, monkeypatch):
-    started = tmp_path / "started"
-    finished = tmp_path / "finished"
-    release = threading.Event()
-    real_spawn = hooks_adapter.subprocess.Popen
-
-    def delayed_return(*args, **kwargs):
-        proc = real_spawn(*args, **kwargs)
-        for _ in range(100):
-            if started.exists():
-                break
-            threading.Event().wait(0.01)
-        assert started.exists()
-        release.wait()
-        return proc
-
-    monkeypatch.setattr(hooks_adapter.subprocess, "Popen", delayed_return)
-    spec = HookSpec(
-        event="Stop",
-        action_type="command",
-        command=_delayed_sentinel_command(started, finished),
-        timeout=0.05,
-    )
+    monkeypatch.setattr(hooks_adapter, "run_process", fake_run_process)
+    runner = ShellHookRunner((_spec(event="Stop", command="echo ready"),))
 
     outcome = asyncio.run(
-        ShellHookRunner((spec,)).fire("Stop", {"hook_event_name": "Stop"})
+        runner.fire(
+            "Stop",
+            {"hook_event_name": "Stop", "tool": "bash", "aid": 9},
+        )
+    )
+
+    assert outcome.allow is True
+    assert calls[0][0] == "echo ready"
+    assert calls[0][1]["shell"] is True
+    assert calls[0][1]["timeout"] == 30.0
+    assert json.loads(calls[0][1]["input_bytes"]) == {
+        "hook_event_name": "Stop",
+        "tool": "bash",
+        "aid": 9,
+    }
+    assert calls[0][1]["env"]["OPENCOLLAB_HOOK_EVENT"] == "Stop"
+    assert calls[0][1]["env"]["OPENCOLLAB_TOOL"] == "bash"
+    assert calls[0][1]["env"]["OPENCOLLAB_AID"] == "9"
+
+
+def test_runner_swallows_shared_supervisor_timeout(monkeypatch):
+    async def fake_run_process(*_args, **_kwargs):
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(hooks_adapter, "run_process", fake_run_process)
+    outcome = asyncio.run(
+        ShellHookRunner((_spec(event="Stop"),)).fire(
+            "Stop",
+            {"hook_event_name": "Stop"},
+        )
     )
     assert outcome.allow is True
-    release.set()
-    threading.Event().wait(0.8)
-    assert not finished.exists()
 
 
-def test_cancel_then_interpreter_exit_waits_for_non_daemon_cleanup(tmp_path):
-    started = tmp_path / "started"
-    finished = tmp_path / "finished"
-    child_code = (
-        "import pathlib,signal,time; "
-        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-        f"pathlib.Path({str(started)!r}).touch(); "
-        "time.sleep(0.6); "
-        f"pathlib.Path({str(finished)!r}).touch()"
-    )
-    command = (
-        f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)} & wait"
-    )
-    script = f"""
-import asyncio
-from pathlib import Path
-from opencollab.adapters.hooks import ShellHookRunner
-from opencollab.domain.hooks import HookSpec
+def test_runner_reports_shared_supervisor_cleanup_failure(monkeypatch):
+    async def fake_run_process(*_args, **_kwargs):
+        raise hooks_adapter.ProcessCleanupError("descendant remained alive")
 
-started = Path({str(started)!r})
+    monkeypatch.setattr(hooks_adapter, "run_process", fake_run_process)
+    runner = ShellHookRunner((_spec(event="Stop"),))
 
-async def main():
-    spec = HookSpec(event="Stop", action_type="command", command={command!r}, timeout=5.0)
-    task = asyncio.create_task(
-        ShellHookRunner((spec,)).fire("Stop", {{"hook_event_name": "Stop"}})
-    )
-    for _ in range(100):
-        if started.exists():
-            break
-        await asyncio.sleep(0.01)
-    assert started.exists()
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
-
-asyncio.run(main())
-"""
-    env = os.environ.copy()
-    env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
-
-    completed = subprocess.run(
-        [sys.executable, "-c", script],
-        env=env,
-        check=False,
-        timeout=5,
-    )
-
-    assert completed.returncode == 0
-    threading.Event().wait(0.8)
-    assert not finished.exists()
+    with pytest.raises(hooks_adapter.ProcessCleanupError, match="remained alive"):
+        asyncio.run(runner.fire("Stop", {"hook_event_name": "Stop"}))
+    assert runner.cleanup_quiesced is False
 
 
 def test_runner_serializes_payload_before_starting_command(tmp_path):
@@ -468,72 +329,6 @@ def test_runner_rechecks_mutated_invalid_timeout_before_spawn(tmp_path):
 
     assert outcome.allow is True
     assert not sentinel.exists()
-
-
-def test_runner_cleans_up_after_communicate_transport_error(monkeypatch):
-    class FakeProcess:
-        pid = 912345
-        returncode = None
-        reaped = False
-
-        def communicate(self, _input, timeout):
-            raise OSError("transport failed")
-
-        def wait(self, timeout):
-            self.returncode = 1
-            self.reaped = True
-            return 1
-
-    proc = FakeProcess()
-
-    def fake_spawn(*_args, **_kwargs):
-        return proc
-
-    monkeypatch.setattr(hooks_adapter.subprocess, "Popen", fake_spawn)
-    monkeypatch.setattr(hooks_adapter.os, "killpg", lambda *_args: None)
-
-    outcome = asyncio.run(
-        ShellHookRunner((_spec(event="Stop"),)).fire(
-            "Stop",
-            {"hook_event_name": "Stop"},
-        )
-    )
-
-    assert outcome.allow is True
-    assert proc.reaped is True
-
-
-def test_hook_cleanup_permission_error_does_not_escape(monkeypatch):
-    class FakeProcess:
-        pid = 923456
-        returncode = None
-
-        def wait(self, timeout):
-            self.returncode = 1
-            return 1
-
-    def deny_signal(*_args):
-        raise PermissionError("denied")
-
-    monkeypatch.setattr(hooks_adapter.os, "killpg", deny_signal)
-
-    assert hooks_adapter._terminate_process_tree(FakeProcess()) is False
-
-
-def test_windows_group_configuration_and_taskkill_tree(monkeypatch):
-    commands = []
-
-    def fake_run(*args, **kwargs):
-        commands.append((args, kwargs))
-        return SimpleNamespace(returncode=0)
-
-    monkeypatch.setattr(hooks_adapter.os, "name", "nt")
-    monkeypatch.setattr(hooks_adapter.subprocess, "run", fake_run)
-
-    kwargs = hooks_adapter._subprocess_group_kwargs()
-    assert kwargs["creationflags"] != 0
-    assert hooks_adapter._taskkill_windows_tree(934567) is True
-    assert commands[0][0][0][:5] == ["taskkill", "/PID", "934567", "/T", "/F"]
 
 
 def test_runner_reserved_action_type_raises_when_matched():

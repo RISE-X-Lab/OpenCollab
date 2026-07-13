@@ -276,11 +276,9 @@ def test_stable_capability_modules_have_only_public_exports() -> None:
         agents,
         config,
         environments,
-        files,
         lifecycle,
         persistence,
         repository,
-        retirement,
         tracing,
         usage,
         workflows,
@@ -290,11 +288,9 @@ def test_stable_capability_modules_have_only_public_exports() -> None:
         agents,
         config,
         environments,
-        files,
         lifecycle,
         persistence,
         repository,
-        retirement,
         tracing,
         usage,
         workflows,
@@ -305,5 +301,3 @@ def test_stable_capability_modules_have_only_public_exports() -> None:
     assert workflows.load_workflow_specs
     assert repository.build_patch_command
     assert lifecycle.await_owned_operation
-    assert files.open_directory_no_symlinks
-    assert files.directory_handle_matches_path

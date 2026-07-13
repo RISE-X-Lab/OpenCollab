@@ -31,13 +31,11 @@ def build_patch_command(
     *,
     base_revision: str = "HEAD",
     exclude_paths: Sequence[str] = (),
-    registered_retirement_paths: Sequence[str] = (),
 ) -> str:
     """Build a fail-closed command that extracts the staged candidate patch."""
     return guarded_staged_diff_command(
         base_revision=base_revision,
         exclude_paths=exclude_paths,
-        registered_retirement_paths=registered_retirement_paths,
     )
 
 

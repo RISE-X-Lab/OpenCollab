@@ -13,13 +13,14 @@ from __future__ import annotations
 import copy
 import os
 import re
-import stat
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.repo_map import build_repo_map
+from opencollab.adapters.safe_files import ensure_directory_no_symlinks
 from opencollab.adapters.trace import Tracer
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.ports import (
@@ -130,135 +131,29 @@ def make_run_dir(workspace: str, *, prefix: str = "") -> str:
         or len(prefix.encode("utf-8", errors="surrogatepass")) > 32
     ):
         raise ValueError("run directory prefix must be one short safe component")
-    workspace_root = os.path.realpath(workspace)
-    directory_flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
     try:
-        workspace_fd = os.open(workspace_root, directory_flags)
+        workspace_root = Path(workspace).resolve(strict=True)
     except OSError as exc:
         raise ValueError(f"workspace is not a real directory: {workspace}") from exc
-    opencollab_fd = -1
-    sessions_fd = -1
-    base = os.path.join(workspace_root, ".opencollab", "sessions")
+    if not workspace_root.is_dir():
+        raise ValueError(f"workspace is not a real directory: {workspace}")
+    base = workspace_root / ".opencollab" / "sessions"
     try:
-        opencollab_fd = _open_or_create_child_directory(
-            workspace_fd,
-            ".opencollab",
-        )
-        sessions_fd = _open_or_create_child_directory(
-            opencollab_fd,
-            "sessions",
-        )
-        stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-        for attempt in range(1_000):
-            suffix = "" if attempt == 0 else f"-{uuid.uuid4().hex[:8]}"
-            name = f"{prefix}{stamp}{suffix}"
-            try:
-                os.mkdir(name, 0o700, dir_fd=sessions_fd)
-            except FileExistsError:
-                continue
-            run_fd = -1
-            verify_opencollab_fd = -1
-            verify_sessions_fd = -1
-            verify_run_fd = -1
-            try:
-                run_fd = _open_existing_child_directory(sessions_fd, name)
-                verify_opencollab_fd = _open_existing_child_directory(
-                    workspace_fd,
-                    ".opencollab",
-                )
-                verify_sessions_fd = _open_existing_child_directory(
-                    verify_opencollab_fd,
-                    "sessions",
-                )
-                verify_run_fd = _open_existing_child_directory(
-                    verify_sessions_fd,
-                    name,
-                )
-                pairs = (
-                    (opencollab_fd, verify_opencollab_fd),
-                    (sessions_fd, verify_sessions_fd),
-                    (run_fd, verify_run_fd),
-                )
-                if any(
-                    (os.fstat(original).st_dev, os.fstat(original).st_ino)
-                    != (os.fstat(verified).st_dev, os.fstat(verified).st_ino)
-                    for original, verified in pairs
-                ):
-                    raise OSError("run directory parent chain changed during reservation")
-                return os.path.join(base, name)
-            except BaseException:
-                try:
-                    os.rmdir(name, dir_fd=sessions_fd)
-                except OSError:
-                    pass
-                raise
-            finally:
-                for fd in (
-                    verify_run_fd,
-                    verify_sessions_fd,
-                    verify_opencollab_fd,
-                    run_fd,
-                ):
-                    if fd >= 0:
-                        os.close(fd)
-    finally:
-        if sessions_fd >= 0:
-            os.close(sessions_fd)
-        if opencollab_fd >= 0:
-            os.close(opencollab_fd)
-        os.close(workspace_fd)
+        ensure_directory_no_symlinks(base)
+    except OSError as exc:
+        raise ValueError(
+            f"workspace state parent is not a real directory: {workspace}"
+        ) from exc
+    stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    for attempt in range(1_000):
+        suffix = "" if attempt == 0 else f"-{uuid.uuid4().hex[:8]}"
+        run_dir = base / f"{prefix}{stamp}{suffix}"
+        try:
+            run_dir.mkdir(mode=0o700)
+        except FileExistsError:
+            continue
+        return str(run_dir)
     raise OSError("could not reserve a unique run directory")
-
-
-def _open_or_create_child_directory(parent_fd: int, name: str) -> int:
-    try:
-        os.mkdir(name, 0o700, dir_fd=parent_fd)
-    except FileExistsError:
-        pass
-    before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    if not stat.S_ISDIR(before.st_mode):
-        raise ValueError(f"run directory parent is not a real directory: {name}")
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    fd = os.open(name, flags, dir_fd=parent_fd)
-    opened = os.fstat(fd)
-    if (
-        not stat.S_ISDIR(opened.st_mode)
-        or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-    ):
-        os.close(fd)
-        raise OSError(f"run directory parent changed while opening: {name}")
-    return fd
-
-
-def _open_existing_child_directory(parent_fd: int, name: str) -> int:
-    before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
-    if not stat.S_ISDIR(before.st_mode):
-        raise ValueError(f"run directory component is not a real directory: {name}")
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    fd = os.open(name, flags, dir_fd=parent_fd)
-    opened = os.fstat(fd)
-    if (
-        not stat.S_ISDIR(opened.st_mode)
-        or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
-    ):
-        os.close(fd)
-        raise OSError(f"run directory component changed while opening: {name}")
-    return fd
 
 
 def build_session(
