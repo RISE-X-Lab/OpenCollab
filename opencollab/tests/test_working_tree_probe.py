@@ -1,9 +1,9 @@
-"""EnvWorkingTreeProbe.changed_excluding — source-scoped working-tree probe (Bug A).
+"""EnvWorkingTreeProbe.changed_excluding — source-scoped working-tree probe.
 
-The SWE-bench harness ``git apply``s the FAIL_TO_PASS test_patch WITHOUT
-committing, so ``git status --porcelain`` is non-empty the whole run and
-``changed()`` is always True. ``changed_excluding(injected_paths)`` drops the
-injected files from the status so the probe answers "did the AGENT edit source?".
+An SDK consumer may apply support files without committing them, so
+``git status --porcelain`` remains non-empty for the whole run and ``changed()``
+is always true. ``changed_excluding(injected_paths)`` drops those files so the
+probe answers whether the agent edited source.
 
 The unit tests use a fake env that records the exact ``exec_cmd`` it was issued;
 the (skip-if-no-git) integration tests run real git to prove an untracked
@@ -73,7 +73,7 @@ def test_changed_excluding_quotes_each_exclude_token_separately():
 
 
 def test_changed_excluding_empty_falls_back_to_plain_status():
-    # Empty excludes -> identical command/answer to changed() (CLI / non-SWE-bench).
+    # Empty excludes -> identical command/answer to changed() for ordinary runs.
     env = RecordingEnv(stdout=" M x.py\n", workspace="/ws")
     probe = EnvWorkingTreeProbe(env, workspace="/ws")
 

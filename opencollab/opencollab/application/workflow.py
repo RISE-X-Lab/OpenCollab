@@ -2,8 +2,8 @@
 
 A workflow is a plain async function ``async def fn(ctx, args) -> Any`` in which
 ordinary Python code (not an LLM lead) orchestrates one-shot agent sessions.
-This is a structured generalization of ``harness.evaluator.run_eval_task`` — it
-does not touch the Scheduler's pending-row / wake machinery.
+It composes reusable session primitives without touching the Scheduler's
+pending-row / wake machinery.
 
 The context exposes a handful of primitives:
 
@@ -67,7 +67,7 @@ DEFAULT_MAX_CONCURRENCY = 4
 # Once ``time.monotonic()`` is within this margin of the deadline, ``time_low()``
 # returns True so a wall-clock-aware workflow bails to a forced final write while
 # it can still land a patch — the decisive fix for runs that locate the edit but
-# die on the 1800s wall before any write (django-11564).
+# reach the hard wall before the final write completes.
 DEFAULT_DEADLINE_MARGIN_SECONDS = 120.0
 DEFAULT_INTERNAL_COMMIT_TIMEOUT_SECONDS = 120.0
 
@@ -360,9 +360,8 @@ class WorkflowContext:
 
         A wall-clock-aware workflow checks this alongside its token-budget floor
         and, when True, abandons further loops to spend its head-room on one
-        forced final write — the fix for runs that die on the wall after locating
-        the edit but before writing it (P7 / django-11564). Always False when no
-        deadline is wired, preserving today's behavior.
+        forced final write. This preserves time to persist work discovered near
+        the deadline. Always false when no deadline is wired.
         """
         return self.seconds_left() <= self._deadline_margin_seconds
 

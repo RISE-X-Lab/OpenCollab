@@ -22,7 +22,7 @@ the runner prints no pytest-shaped summary line.
 
 Ref:
 - bash.py: same env + safety-policy handling, same head/tail truncation idea.
-- SWE-bench: verification is the gap — a green/red signal per run beats prose.
+- Patch verification: a green/red signal from the requested tests beats prose.
 """
 
 from __future__ import annotations

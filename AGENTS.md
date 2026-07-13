@@ -66,17 +66,16 @@ concrete type in `bootstrap/`. When splitting a module, keep its public names re
   import it through the owning package's public interface.
 - **Keep modules focused** (< 800 lines) — split by feature/domain, not by type.
 
-## Eval integrity (load-bearing — read this)
+## Executable evidence integrity
 
-OpenCollab is an evaluation framework. A wrong `resolved: true` / `PASS` is worse than a
-crash: it silently corrupts results and hides a broken fix.
+OpenCollab tools and workflows must distinguish command completion from verified
+behavior. A successful process exit is evidence only for the command that actually
+ran.
 
-- **Never report a task resolved / a test PASS unless the target `FAIL_TO_PASS` tests
-  actually executed and passed.** No test collected ≠ pass.
-- If a test command cannot be derived or is empty, treat it as a **technical failure
-  (RED)** — never fall back to a no-op passing command (e.g. `true`).
-- A verifier / gate role must retain some way to run an executable probe before it may
-  issue a `PASS`; a verdict on prose alone is not acceptable.
+- Never report a test as passed unless the requested test targets executed and passed.
+- Empty commands, zero collected tests, help output, and collection-only runs are
+  unverified outcomes.
+- A verifier role must retain an executable probe before it may issue a passing verdict.
 
 ## See also
 

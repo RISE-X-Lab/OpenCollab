@@ -8,14 +8,17 @@ from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
-from opencollab.adapters._env_base import Environment
 from opencollab.application.workflow_registry import WorkflowFn, WorkflowSpec
 
+from .environment import ExecutionEnvironment
 from .errors import InvalidSDKRequestError
 
-SDK_API_VERSION = 1
+if TYPE_CHECKING:
+    from opencollab.application.ports import LLMPort
+
+SDK_API_VERSION = 2
 
 
 def _non_empty_text(value: object, *, field_name: str) -> str:
@@ -128,23 +131,49 @@ class RunBudget:
     timeout_seconds: float | None = None
     max_concurrency: int = 4
     cleanup_timeout_seconds: float = 2.0
+    deadline_margin_seconds: float = 120.0
 
     def __post_init__(self) -> None:
         _positive_integer(self.max_tokens, field_name="max_tokens", optional=True)
         _positive_number(self.timeout_seconds, field_name="timeout_seconds", optional=True)
         _positive_integer(self.max_concurrency, field_name="max_concurrency")
         _positive_number(self.cleanup_timeout_seconds, field_name="cleanup_timeout_seconds")
+        _positive_number(self.deadline_margin_seconds, field_name="deadline_margin_seconds")
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunBudget:
+    """Token, step, wall-clock, and shutdown bounds for one agent run."""
+
+    max_tokens: int = 1_000_000
+    max_steps: int = 100
+    timeout_seconds: float | None = None
+    cleanup_timeout_seconds: float = 2.0
+
+    def __post_init__(self) -> None:
+        _positive_integer(self.max_tokens, field_name="max_tokens")
+        _positive_integer(self.max_steps, field_name="max_steps")
+        _positive_number(self.timeout_seconds, field_name="timeout_seconds", optional=True)
+        _positive_number(self.cleanup_timeout_seconds, field_name="cleanup_timeout_seconds")
 
 
 @dataclass(frozen=True, slots=True)
 class WorkflowRunRequest:
-    """All inputs required to run one OpenCollab workflow."""
+    """All inputs required to run one OpenCollab workflow.
+
+    A supplied environment remains caller-owned after successful completion.
+    The runtime revokes it when execution times out or is cancelled.
+    """
 
     workflow: WorkflowSpec | WorkflowFn
     config: RuntimeConfig
     inputs: Mapping[str, Any] = field(default_factory=dict)
     budget: RunBudget = field(default_factory=RunBudget)
-    environment: Environment | None = None
+    environment: ExecutionEnvironment | None = None
+    environment_workdir: str | None = None
+    source_root: str | None = None
+    # Compatibility alias used by SDK v1. When the two explicit paths are
+    # absent, ``workspace`` supplies both values.
     workspace: str | None = None
     artifact_dir: Path | None = None
     trace: bool = True
@@ -161,10 +190,12 @@ class WorkflowRunRequest:
         object.__setattr__(self, "inputs", deepcopy(dict(self.inputs)))
         if not isinstance(self.budget, RunBudget):
             raise InvalidSDKRequestError("budget must be a RunBudget")
-        if self.environment is not None and not isinstance(self.environment, Environment):
+        if self.environment is not None and not isinstance(self.environment, ExecutionEnvironment):
             raise InvalidSDKRequestError("environment must implement the OpenCollab Environment contract")
-        if self.workspace is not None:
-            _non_empty_text(self.workspace, field_name="workspace")
+        for field_name in ("environment_workdir", "source_root", "workspace"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _non_empty_text(value, field_name=field_name)
         if self.artifact_dir is not None:
             artifact_dir = os.fspath(self.artifact_dir)
             if not artifact_dir or "\x00" in artifact_dir:
@@ -187,7 +218,90 @@ class WorkflowRunResult:
     sdk_api_version: int = SDK_API_VERSION
 
 
+@dataclass(frozen=True, slots=True)
+class AgentRunRequest:
+    """Validated inputs for one stable single-agent execution.
+
+    A supplied environment remains caller-owned after successful completion.
+    The runtime revokes it when execution times out or is cancelled.
+    ``failure_mode='return'`` converts quiescent timeouts and execution errors
+    into evidence-bearing results. Lifecycle and evidence failures still raise.
+    """
+
+    prompt: str
+    config: RuntimeConfig
+    budget: AgentRunBudget = field(default_factory=AgentRunBudget)
+    name: str = "sdk-agent"
+    system_prompt: str = (
+        "You are an autonomous software-engineering agent. Complete the user task, "
+        "use the available tools when needed, and report the verified result."
+    )
+    tools: tuple[Any, ...] = ()
+    environment: ExecutionEnvironment | None = None
+    environment_workdir: str | None = None
+    source_root: str | None = None
+    workspace: str | None = None
+    artifact_dir: Path | None = None
+    trace: bool = True
+    failure_mode: Literal["raise", "return"] = "raise"
+    llm: LLMPort | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        _non_empty_text(self.prompt, field_name="prompt")
+        _non_empty_text(self.name, field_name="name")
+        _non_empty_text(self.system_prompt, field_name="system_prompt")
+        if not isinstance(self.config, RuntimeConfig):
+            raise InvalidSDKRequestError("config must be a RuntimeConfig")
+        if not isinstance(self.budget, AgentRunBudget):
+            raise InvalidSDKRequestError("budget must be an AgentRunBudget")
+        if not isinstance(self.tools, (list, tuple)):
+            raise InvalidSDKRequestError("tools must be a sequence")
+        object.__setattr__(self, "tools", tuple(self.tools))
+        if self.environment is not None and not isinstance(self.environment, ExecutionEnvironment):
+            raise InvalidSDKRequestError("environment must implement the OpenCollab Environment contract")
+        for field_name in ("environment_workdir", "source_root", "workspace"):
+            value = getattr(self, field_name)
+            if value is not None:
+                _non_empty_text(value, field_name=field_name)
+        if self.artifact_dir is not None:
+            artifact_dir = os.fspath(self.artifact_dir)
+            if not artifact_dir or "\x00" in artifact_dir:
+                raise InvalidSDKRequestError("artifact_dir must be a valid filesystem path")
+            object.__setattr__(self, "artifact_dir", Path(artifact_dir))
+        if not isinstance(self.trace, bool):
+            raise InvalidSDKRequestError("trace must be a boolean")
+        if not isinstance(self.failure_mode, str) or self.failure_mode not in {
+            "raise",
+            "return",
+        }:
+            raise InvalidSDKRequestError("failure_mode must be 'raise' or 'return'")
+        if self.llm is not None and not callable(getattr(self.llm, "complete", None)):
+            raise InvalidSDKRequestError("llm must implement the OpenCollab LLM contract")
+
+
+@dataclass(frozen=True, slots=True)
+class AgentRunResult:
+    """Stable outcome returned after agent-owned work and evidence are quiescent."""
+
+    output: str | None
+    outcome: Literal["completed", "timed_out", "failed"]
+    phase: str
+    terminal_reason: str | None
+    error_type: str | None
+    error_message: str | None
+    tokens_spent: int
+    step_count: int
+    artifact_dir: Path | None
+    transcript_path: Path | None
+    trace_path: Path | None
+    cleanup_quiesced: bool
+    sdk_api_version: int = SDK_API_VERSION
+
+
 __all__ = [
+    "AgentRunBudget",
+    "AgentRunRequest",
+    "AgentRunResult",
     "RunBudget",
     "RuntimeConfig",
     "SDK_API_VERSION",

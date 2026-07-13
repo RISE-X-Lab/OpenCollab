@@ -6,7 +6,8 @@ from pathlib import Path
 
 import opencollab.sdk as sdk
 import pytest
-from opencollab.adapters.env import DockerWorkspaceEnvironment
+from opencollab.adapters.env import DockerWorkspaceEnvironment, Environment
+from opencollab.adapters.env import ExecResult as AdapterExecResult
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
 from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
@@ -15,11 +16,17 @@ from opencollab.adapters.tools.run_tests import RunTestsTool
 
 
 def test_public_sdk_exports_versioned_authoring_and_runtime_surface() -> None:
-    assert sdk.SDK_API_VERSION == 1
+    assert sdk.SDK_API_VERSION == 2
     expected = {
         "SDK_API_VERSION",
+        "AgentRunBudget",
+        "AgentRunLifecycleError",
+        "AgentRunRequest",
+        "AgentRunResult",
+        "AgentRunTimeoutError",
         "ApplyPatchTool",
         "BashTool",
+        "CommandResult",
         "ExecResult",
         "ExecutionEnvironment",
         "FileReadTool",
@@ -38,6 +45,7 @@ def test_public_sdk_exports_versioned_authoring_and_runtime_surface() -> None:
         "WorkflowContext",
         "WorkflowFn",
         "WorkflowManifestError",
+        "WorkflowRunLifecycleError",
         "WorkflowRunRequest",
         "WorkflowRunResult",
         "WorkflowRunTimeoutError",
@@ -55,11 +63,13 @@ def test_public_sdk_exports_versioned_authoring_and_runtime_surface() -> None:
 
 def test_public_sdk_function_signatures_and_value_fields_are_stable() -> None:
     signatures = {
+        "OpenCollabRuntime.run_agent": "(self, request: 'AgentRunRequest') -> 'AgentRunResult'",
         "OpenCollabRuntime.run_workflow": "(self, request: 'WorkflowRunRequest') -> 'WorkflowRunResult'",
         "RuntimeConfig.from_mapping": "(config: 'Mapping[str, Any]') -> 'RuntimeConfig'",
         "attach_workspace": (
             "(*, container_id: 'str', repo_root: 'str', command_prefix: "
-            "'Callable[[str], str] | str | None' = None, timeout_returncode: 'int' = -1) -> 'Environment'"
+            "'Callable[[str], str] | str | None' = None, timeout_returncode: 'int' = -1) -> "
+            "'ExecutionEnvironment'"
         ),
         "coding_toolset": (
             "(*, require_process_isolation: 'bool' = False, allow_test_command_overrides: 'bool' = True, "
@@ -74,13 +84,10 @@ def test_public_sdk_function_signatures_and_value_fields_are_stable() -> None:
         ),
     }
     actual_signatures = {
+        "OpenCollabRuntime.run_agent": str(inspect.signature(sdk.OpenCollabRuntime.run_agent)),
         "OpenCollabRuntime.run_workflow": str(inspect.signature(sdk.OpenCollabRuntime.run_workflow)),
         "RuntimeConfig.from_mapping": str(inspect.signature(sdk.RuntimeConfig.from_mapping)),
-        **{
-            name: str(inspect.signature(getattr(sdk, name)))
-            for name in signatures
-            if "." not in name
-        },
+        **{name: str(inspect.signature(getattr(sdk, name))) for name in signatures if "." not in name},
     }
     assert actual_signatures == signatures
     assert tuple(field.name for field in fields(sdk.RunBudget)) == (
@@ -88,6 +95,7 @@ def test_public_sdk_function_signatures_and_value_fields_are_stable() -> None:
         "timeout_seconds",
         "max_concurrency",
         "cleanup_timeout_seconds",
+        "deadline_margin_seconds",
     )
     assert tuple(field.name for field in fields(sdk.RuntimeConfig)) == (
         "model",
@@ -107,6 +115,8 @@ def test_public_sdk_function_signatures_and_value_fields_are_stable() -> None:
         "inputs",
         "budget",
         "environment",
+        "environment_workdir",
+        "source_root",
         "workspace",
         "artifact_dir",
         "trace",
@@ -118,6 +128,43 @@ def test_public_sdk_function_signatures_and_value_fields_are_stable() -> None:
         "session_count",
         "artifact_dir",
         "manifest_path",
+        "sdk_api_version",
+    )
+    assert tuple(field.name for field in fields(sdk.AgentRunBudget)) == (
+        "max_tokens",
+        "max_steps",
+        "timeout_seconds",
+        "cleanup_timeout_seconds",
+    )
+    assert tuple(field.name for field in fields(sdk.AgentRunRequest)) == (
+        "prompt",
+        "config",
+        "budget",
+        "name",
+        "system_prompt",
+        "tools",
+        "environment",
+        "environment_workdir",
+        "source_root",
+        "workspace",
+        "artifact_dir",
+        "trace",
+        "failure_mode",
+        "llm",
+    )
+    assert tuple(field.name for field in fields(sdk.AgentRunResult)) == (
+        "output",
+        "outcome",
+        "phase",
+        "terminal_reason",
+        "error_type",
+        "error_message",
+        "tokens_spent",
+        "step_count",
+        "artifact_dir",
+        "transcript_path",
+        "trace_path",
+        "cleanup_quiesced",
         "sdk_api_version",
     )
 
@@ -134,10 +181,15 @@ def test_runtime_config_is_validated_and_does_not_repr_secret() -> None:
     with pytest.raises(sdk.InvalidSDKRequestError, match="timeout_seconds"):
         sdk.RunBudget(timeout_seconds=float("inf"))
 
-    mapped = sdk.RuntimeConfig.from_mapping(
-        {"model": "model", "provider": "provider", "max_output_tokens": 4096}
-    )
+    mapped = sdk.RuntimeConfig.from_mapping({"model": "model", "provider": "provider", "max_output_tokens": 4096})
     assert mapped.max_output_tokens == 4096
+
+    with pytest.raises(sdk.InvalidSDKRequestError, match="failure_mode"):
+        sdk.AgentRunRequest(
+            prompt="task",
+            config=config,
+            failure_mode="ignore",
+        )
 
 
 def test_attach_workspace_builds_non_owning_container_environment() -> None:
@@ -192,3 +244,66 @@ def test_workflow_request_normalizes_artifact_path() -> None:
             config=sdk.RuntimeConfig(model="model", provider="provider"),
             inputs={1: "invalid"},
         )
+
+
+def test_command_result_protocol_accepts_sdk_and_adapter_values() -> None:
+    sdk_result = sdk.ExecResult(returncode=0, stdout="ok", stderr="")
+    adapter_result = AdapterExecResult(returncode=0, stdout="ok", stderr="")
+
+    assert isinstance(sdk_result, sdk.CommandResult)
+    assert isinstance(adapter_result, sdk.CommandResult)
+
+
+def test_environment_protocol_rejects_incomplete_nominal_subclasses() -> None:
+    class IncompleteEnvironment(sdk.ExecutionEnvironment):
+        pass
+
+    with pytest.raises(TypeError, match="abstract"):
+        IncompleteEnvironment()
+
+
+def test_adapter_environment_revocation_is_synchronous_and_idempotent() -> None:
+    environment = Environment()
+
+    environment.revoke()
+    environment.revoke()
+
+    assert environment.revoked
+
+
+def test_stable_capability_modules_have_only_public_exports() -> None:
+    from opencollab.sdk import (
+        agents,
+        config,
+        environments,
+        files,
+        lifecycle,
+        persistence,
+        repository,
+        retirement,
+        tracing,
+        usage,
+        workflows,
+    )
+
+    modules = (
+        agents,
+        config,
+        environments,
+        files,
+        lifecycle,
+        persistence,
+        repository,
+        retirement,
+        tracing,
+        usage,
+        workflows,
+    )
+    assert all(name and not name.startswith("_") for module in modules for name in module.__all__)
+    assert "Environment" not in environments.__all__
+    assert not hasattr(environments, "Environment")
+    assert workflows.load_workflow_specs
+    assert repository.build_patch_command
+    assert lifecycle.await_owned_operation
+    assert files.open_directory_no_symlinks
+    assert files.directory_handle_matches_path

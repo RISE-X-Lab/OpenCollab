@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
-from opencollab.adapters.llm.types import model_context_window
-from opencollab.application.workflow import WorkflowContext
-from opencollab.application.workflow_registry import Registry, WorkflowFn, WorkflowSpec, workflow
-from opencollab.bootstrap.workflow_runtime import discover_workflows
-
-from .environment import ExecResult, ExecutionEnvironment, attach_workspace
+from .environment import CommandResult, ExecResult, ExecutionEnvironment, attach_workspace
 from .errors import (
+    AgentRunLifecycleError,
+    AgentRunTimeoutError,
     InvalidSDKRequestError,
     OpenCollabSDKError,
     WorkflowManifestError,
+    WorkflowRunLifecycleError,
     WorkflowRunTimeoutError,
 )
-from .models import SDK_API_VERSION, RunBudget, RuntimeConfig, WorkflowRunRequest, WorkflowRunResult
+from .models import (
+    SDK_API_VERSION,
+    AgentRunBudget,
+    AgentRunRequest,
+    AgentRunResult,
+    RunBudget,
+    RuntimeConfig,
+    WorkflowRunRequest,
+    WorkflowRunResult,
+)
 from .runtime import OpenCollabRuntime
 from .tools import (
     ApplyPatchTool,
@@ -28,11 +35,19 @@ from .tools import (
     coding_toolset,
     verification_run_tests_tool,
 )
+from .usage import model_context_window
+from .workflows import Registry, WorkflowContext, WorkflowFn, WorkflowSpec, discover_workflows, workflow
 
 __all__ = [
     "SDK_API_VERSION",
+    "AgentRunBudget",
+    "AgentRunLifecycleError",
+    "AgentRunRequest",
+    "AgentRunResult",
+    "AgentRunTimeoutError",
     "ApplyPatchTool",
     "BashTool",
+    "CommandResult",
     "ExecResult",
     "ExecutionEnvironment",
     "FileReadTool",
@@ -50,6 +65,7 @@ __all__ = [
     "WorkflowContext",
     "WorkflowFn",
     "WorkflowManifestError",
+    "WorkflowRunLifecycleError",
     "WorkflowRunRequest",
     "WorkflowRunResult",
     "WorkflowRunTimeoutError",

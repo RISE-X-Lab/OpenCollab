@@ -1,4 +1,4 @@
-"""Repository ownership guard for the separately packaged evaluation layer."""
+"""Repository ownership guards for the framework-only source tree."""
 
 from __future__ import annotations
 
@@ -9,6 +9,30 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _TESTS = _REPO_ROOT / "opencollab" / "tests"
 _PACKAGE = _REPO_ROOT / "opencollab" / "opencollab"
+_COMPILED_DOCUMENT_SUFFIXES = (
+    ".aux",
+    ".fdb_latexmk",
+    ".fls",
+    ".log",
+    ".out",
+    ".pdf",
+    ".synctex.gz",
+    ".xdv",
+)
+_EVALUATION_OWNED_PATHS = (
+    "configs/team.self.collab.yaml",
+    "docs/eval_modes",
+    "docs/experiments",
+    "docs/monitoring",
+    "docs/archive/2026-06-23-analyst-solve-deep-dive.md",
+    "docs/archive/2026-06-23-analyst-solve-problem-catalog.md",
+    "docs/swe_eval_harness_refactor.md",
+    "evals",
+    "eval_work",
+    "swe_workdir",
+    "swebench",
+    "workflows",
+)
 
 _EVAL_TEST_PREFIXES = (
     "test_analyst_solve",
@@ -70,12 +94,26 @@ def test_evaluation_implementation_is_owned_by_companion_package() -> None:
             assert visible_files == []
 
 
+def test_evaluation_assets_are_owned_outside_the_framework_repository() -> None:
+    offenders = [path for path in _EVALUATION_OWNED_PATHS if (_REPO_ROOT / path).exists()]
+    assert offenders == []
+
+
+def test_framework_docs_contain_no_compiled_artifacts() -> None:
+    docs = _REPO_ROOT / "docs"
+    offenders = sorted(
+        str(path.relative_to(_REPO_ROOT))
+        for path in docs.rglob("*")
+        if path.is_file() and path.name.endswith(_COMPILED_DOCUMENT_SUFFIXES)
+    )
+    assert offenders == []
+
+
 def test_evaluation_tests_are_owned_by_companion_package() -> None:
     offenders = sorted(
         path.name
         for path in _TESTS.glob("*.py")
-        if path != Path(__file__)
-        and path.name.startswith((*_EVAL_TEST_PREFIXES, *_EVAL_SUPPORT_PREFIXES))
+        if path != Path(__file__) and path.name.startswith((*_EVAL_TEST_PREFIXES, *_EVAL_SUPPORT_PREFIXES))
     )
     assert offenders == []
 
@@ -94,9 +132,7 @@ def test_framework_and_tests_do_not_import_companion_implementations() -> None:
 
 def test_framework_scripts_contain_no_evaluation_entrypoints() -> None:
     scripts = _REPO_ROOT / "scripts"
-    assert sorted(
-        path.name for path in scripts.iterdir() if path.is_file() and not path.name.startswith(".")
-    ) == [
+    assert sorted(path.name for path in scripts.iterdir() if path.is_file() and not path.name.startswith(".")) == [
         "README.md",
         "check_dashscope.py",
         "start_opencollab.sh",

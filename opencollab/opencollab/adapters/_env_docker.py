@@ -16,6 +16,6 @@ class DockerEnvironment(
     DockerTeardownMixin,
     Environment,
 ):
-    """Docker container sandbox for evaluation and SWE-bench execution."""
+    """Docker container sandbox for isolated agent execution."""
 
     process_isolated = True

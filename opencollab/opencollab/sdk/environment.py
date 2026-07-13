@@ -1,16 +1,112 @@
-"""Stable execution-environment factories for external integrations."""
+"""Stable execution-environment contracts and attachment factories."""
 
 from __future__ import annotations
 
 import posixpath
+from abc import abstractmethod
 from collections.abc import Callable
-
-from opencollab.adapters._env_base import Environment, ExecResult
-from opencollab.adapters.env import DockerWorkspaceEnvironment
+from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from .errors import InvalidSDKRequestError
 
-ExecutionEnvironment = Environment
+
+@runtime_checkable
+class CommandResult(Protocol):
+    """Structural result contract returned by environment commands."""
+
+    @property
+    @abstractmethod
+    def returncode(self) -> int: ...
+
+    @property
+    @abstractmethod
+    def stdout(self) -> str: ...
+
+    @property
+    @abstractmethod
+    def stderr(self) -> str: ...
+
+    @property
+    @abstractmethod
+    def stdout_truncated(self) -> bool: ...
+
+    @property
+    @abstractmethod
+    def stderr_truncated(self) -> bool: ...
+
+    @property
+    @abstractmethod
+    def stdout_dropped_bytes(self) -> int: ...
+
+    @property
+    @abstractmethod
+    def stderr_dropped_bytes(self) -> int: ...
+
+
+@dataclass(slots=True)
+class ExecResult:
+    """SDK-owned command result value for external environment adapters."""
+
+    returncode: int
+    stdout: str
+    stderr: str
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
+    stdout_dropped_bytes: int = 0
+    stderr_dropped_bytes: int = 0
+
+
+@runtime_checkable
+class ExecutionEnvironment(Protocol):
+    """Structural environment contract accepted by the public runtime.
+
+    External integrations may implement this protocol directly. They do not
+    need to inherit from an OpenCollab adapter class.
+    """
+
+    workspace: str
+    host_workspace: str | None
+    source_workspace: str | None
+    local_filesystem: bool
+    process_isolated: bool
+
+    @property
+    @abstractmethod
+    def revoked(self) -> bool: ...
+
+    @abstractmethod
+    def revoke(self) -> None: ...
+
+    @abstractmethod
+    async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> CommandResult: ...
+
+    @abstractmethod
+    async def read_file(self, path: str) -> str: ...
+
+    @abstractmethod
+    async def write_file(self, path: str, content: str) -> None: ...
+
+    @abstractmethod
+    async def write_temp_file(
+        self,
+        content: str,
+        *,
+        prefix: str,
+        suffix: str = ".tmp",
+    ) -> str: ...
+
+    @abstractmethod
+    async def remove_file(self, path: str) -> None: ...
+
+    @abstractmethod
+    async def registered_retirement_paths(self) -> tuple[str, ...]: ...
+
+    @abstractmethod
+    async def abort(self) -> None: ...
+
+    @abstractmethod
+    async def cleanup(self) -> None: ...
 
 
 def attach_workspace(
@@ -19,7 +115,7 @@ def attach_workspace(
     repo_root: str,
     command_prefix: Callable[[str], str] | str | None = None,
     timeout_returncode: int = -1,
-) -> Environment:
+) -> ExecutionEnvironment:
     """Attach OpenCollab to an existing container without owning its lifecycle.
 
     The caller remains responsible for creating, validating, and ultimately
@@ -40,6 +136,10 @@ def attach_workspace(
         raise InvalidSDKRequestError("repo_root must be a normalized container path")
     if not isinstance(timeout_returncode, int) or isinstance(timeout_returncode, bool):
         raise InvalidSDKRequestError("timeout_returncode must be an integer")
+    # Imported lazily so the protocol and command result remain usable without
+    # importing any concrete adapter implementation.
+    from opencollab.adapters.env import DockerWorkspaceEnvironment
+
     return DockerWorkspaceEnvironment(
         container_id=container_id,
         repo_root=repo_root,
@@ -48,4 +148,9 @@ def attach_workspace(
     )
 
 
-__all__ = ["ExecResult", "ExecutionEnvironment", "attach_workspace"]
+__all__ = [
+    "CommandResult",
+    "ExecResult",
+    "ExecutionEnvironment",
+    "attach_workspace",
+]
