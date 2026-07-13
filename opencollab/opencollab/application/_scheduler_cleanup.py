@@ -50,10 +50,7 @@ class SchedulerCleanupMixin:
             raise ValueError("cleanup_timeout must be a finite number greater than zero") from exc
         if isinstance(cleanup_timeout, bool) or not math.isfinite(phase_timeout) or phase_timeout <= 0:
             raise ValueError("cleanup_timeout must be a finite number greater than zero")
-        forced_timeout = min(
-            MAX_FORCED_CLEANUP_TIMEOUT,
-            max(0.1, phase_timeout),
-        )
+        forced_timeout = min(MAX_FORCED_CLEANUP_TIMEOUT, max(0.1, phase_timeout))
 
         # Validation precedes task creation so an invalid call is entirely
         # side-effect free. Concurrent cleanup callers share one teardown task;
@@ -459,10 +456,7 @@ class SchedulerCleanupMixin:
                 if not (termination.terminal or termination.isolated):
                     still_pending.add(task)
                 for error in termination.errors:
-                    logger.error(
-                        "forced message rollback termination failed: %s",
-                        error,
-                    )
+                    logger.error("forced message rollback termination failed: %s", error)
             pending = still_pending
         for task in pending:
             task.add_done_callback(self._consume_background_task)
@@ -540,10 +534,7 @@ class SchedulerCleanupMixin:
                         existing_error = None
                     if existing_error is None:
                         continue
-                    logger.error(
-                        "session environment abort task failed: %s",
-                        existing_error,
-                    )
+                    logger.error("session environment abort task failed: %s", existing_error)
                 self._cleanup_environment_abort_tasks.pop(env_key, None)
             try:
                 env._aborted = True
@@ -577,10 +568,7 @@ class SchedulerCleanupMixin:
                     if callable(close):
                         close()
                 else:
-                    self._cleanup_environment_abort_tasks[env_key] = (
-                        env,
-                        abort_task,
-                    )
+                    self._cleanup_environment_abort_tasks[env_key] = (env, abort_task)
                     abort_tasks.add(abort_task)
 
         pending = await self._wait_for_cleanup_tasks(abort_tasks, timeout=timeout)
@@ -600,19 +588,14 @@ class SchedulerCleanupMixin:
                 if not (termination.terminal or termination.isolated):
                     still_pending.add(task)
                 for error in termination.errors:
-                    logger.error(
-                        "forced session environment abort termination failed: %s",
-                        error,
-                    )
+                    logger.error("forced session environment abort termination failed: %s", error)
             pending = still_pending
         if pending:
             logger.error(
                 "%s session environment abort task(s) remained active after cleanup timeout",
                 len(pending),
             )
-        for env_key, (_env, task) in tuple(
-            self._cleanup_environment_abort_tasks.items()
-        ):
+        for env_key, (_env, task) in tuple(self._cleanup_environment_abort_tasks.items()):
             if task not in abort_tasks:
                 continue
             if not task.done():

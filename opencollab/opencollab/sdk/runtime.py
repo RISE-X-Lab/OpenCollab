@@ -106,9 +106,7 @@ class OpenCollabRuntime:
                     propagate_cancellation=True,
                 )
                 if not cleaned:
-                    raise WorkflowRunLifecycleError(
-                        "workflow-owned environment cleanup failed"
-                    )
+                    raise WorkflowRunLifecycleError("workflow-owned environment cleanup failed")
 
         manifest_path = None
         tokens_spent = None

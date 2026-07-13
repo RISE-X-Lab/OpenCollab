@@ -39,10 +39,7 @@ def _merge_failure(
     if primary is None:
         return secondary
     if secondary is not None:
-        _add_failure_note(
-            primary,
-            f"{note_prefix}: {type(secondary).__name__}: {secondary}",
-        )
+        _add_failure_note(primary, f"{note_prefix}: {type(secondary).__name__}: {secondary}")
     return primary
 
 
@@ -327,10 +324,7 @@ async def _persist_workflow_manifest_owned(
             tracer_dropped_steps=tracer_dropped_steps,
             manifest=manifest,
         ),
-        serialization_key=os.path.join(
-            save_dir,
-            WORKFLOW_MANIFEST_FILENAME,
-        ),
+        serialization_key=os.path.join(save_dir, WORKFLOW_MANIFEST_FILENAME),
     )
     owner = subscriber.enqueue()
     if owner is None:
