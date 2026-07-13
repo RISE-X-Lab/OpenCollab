@@ -21,11 +21,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT / "opencollab") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "opencollab"))
 
-from opencollab.adapters.llm.types import model_context_window  # noqa: E402
 from opencollab.harness.solver_backend import (  # noqa: E402
     DEFAULT_WORKFLOW_SOLVERS,
     workflow_solver_spec,
 )
+from opencollab.sdk import model_context_window  # noqa: E402
 
 
 def _load_module(path: Path, name: str):

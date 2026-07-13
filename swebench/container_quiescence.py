@@ -20,8 +20,8 @@ _SWEBENCH_DIR = REPO_ROOT / "swebench"
 if str(_SWEBENCH_DIR) not in sys.path:
     sys.path.insert(0, str(_SWEBENCH_DIR))
 
-from swebench.gen_prediction_config import _docker_timeout_from_env  # noqa: E402
-from swebench.openhands_process_supervisor import _proc_identity  # noqa: E402
+from gen_prediction_config import _docker_timeout_from_env  # noqa: E402
+from openhands_process_supervisor import _proc_identity  # noqa: E402
 
 CONTAINER_GUARD_ROOT = "/tmp/opencollab-openhands-processes"
 _CONTAINER_GUARD_SOURCE = REPO_ROOT / "scripts" / "container_process_guard.py"

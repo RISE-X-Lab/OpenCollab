@@ -26,6 +26,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
+import container_quiescence as container_guard  # noqa: E402
 import gen_prediction as gp  # noqa: E402
 from gen_prediction_patch import prepare_trusted_patch_baseline  # noqa: E402
 from gen_prediction_snapshot import (  # noqa: E402
@@ -39,8 +40,6 @@ from opencollab.harness.swe_generation_proof import (  # noqa: E402
     current_generation_proof_valid,
 )
 from opencollab.harness.swe_v1_remote_records import read_tail_text  # noqa: E402
-
-from swebench import container_quiescence as container_guard  # noqa: E402
 
 DEFAULT_PROMPT = """\
 # Issue to fix in `{repo}`

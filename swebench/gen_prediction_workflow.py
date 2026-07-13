@@ -44,6 +44,7 @@ if str(_PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(_PKG_ROOT))
 
 import gen_prediction as gp  # noqa: E402 — shared container plumbing
+from container_quiescence import require_container_quiescence  # noqa: E402
 from gen_prediction_workflow_inputs import (  # noqa: E402
     BLIND_BY_DEFAULT_WORKFLOWS as BLIND_BY_DEFAULT_WORKFLOWS,
 )
@@ -74,8 +75,6 @@ from opencollab.harness.swe_generation_proof import (  # noqa: E402
     current_generation_proof_valid,
 )
 from opencollab.harness.test_injection import _decode_git_c_path  # noqa: E402
-
-from swebench.container_quiescence import require_container_quiescence  # noqa: E402
 
 
 def validate_workflow_limits(

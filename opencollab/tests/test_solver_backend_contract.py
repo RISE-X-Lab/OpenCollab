@@ -23,8 +23,13 @@ from opencollab.harness.solver_backend import (
     workflow_solver_spec,
 )
 from opencollab.harness.workflow_backend import WorkflowBackend
+from opencollab.sdk import ExecutionEnvironment, WorkflowRunResult
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+async def fake_workflow(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    return args
 
 
 class FakeSolver:
@@ -61,6 +66,23 @@ class EmptySolver:
         budget: SolverBudget,
     ) -> PatchCandidate:
         return PatchCandidate(task_id=task.task_id, solver_name=self.name, patch="")
+
+
+class CapturingRuntime:
+    def __init__(self, calls: dict[str, Any], *, tokens_spent: int = 0) -> None:
+        self._calls = calls
+        self._tokens_spent = tokens_spent
+
+    async def run_workflow(self, request: Any) -> WorkflowRunResult:
+        self._calls["request"] = request
+        return WorkflowRunResult(
+            output={"status": "done"},
+            workflow_name="test-workflow",
+            tokens_spent=self._tokens_spent,
+            session_count=1,
+            artifact_dir=request.artifact_dir,
+            manifest_path=None,
+        )
 
 
 class CandidateOverrideSolver:
@@ -313,25 +335,15 @@ def test_workflow_backend_returns_patch_candidate(monkeypatch: Any, tmp_path: Pa
     calls: dict[str, Any] = {}
 
     class FakeRegistry:
-        def get(self, name: str) -> str:
+        def get(self, name: str) -> Any:
             calls["workflow_name"] = name
-            return "workflow-spec"
+            return fake_workflow
 
-    class FakeEnv:
+    class FakeEnv(ExecutionEnvironment):
         async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
             calls["diff_cmd"] = cmd
             calls["diff_timeout"] = timeout
             return ExecResult(0, "diff --git a/a b/a\n+value\n", "")
-
-    async def fake_run_workflow(
-        workflow_spec: Any,
-        args: dict[str, Any],
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        calls["workflow_spec"] = workflow_spec
-        calls["args"] = args
-        calls["kwargs"] = kwargs
-        return {"status": "done", "tokens_spent": 17}
 
     monkeypatch.setattr(
         "opencollab.harness.workflow_backend.discover_workflows",
@@ -341,15 +353,11 @@ def test_workflow_backend_returns_patch_candidate(monkeypatch: Any, tmp_path: Pa
         "opencollab.harness.workflow_backend.docker_environment_for_workspace",
         lambda _: FakeEnv(),
     )
-    monkeypatch.setattr(
-        "opencollab.harness.workflow_backend.run_workflow",
-        fake_run_workflow,
-    )
-
     backend = WorkflowBackend(
         spec=workflow_solver_spec("baseTeam"),
         cfg={"model": "m", "provider": "p"},
         workflows_dir=tmp_path,
+        runtime=CapturingRuntime(calls, tokens_spent=17),
     )
     candidate = solve_with_public_task(
         backend,
@@ -360,14 +368,15 @@ def test_workflow_backend_returns_patch_candidate(monkeypatch: Any, tmp_path: Pa
     )
 
     assert calls["workflow_name"] == "base-team"
-    assert calls["workflow_spec"] == "workflow-spec"
-    assert calls["args"]["description"] == "Fix it."
-    assert calls["kwargs"]["workspace"] == "/app"
-    assert calls["kwargs"]["budget"] == 100
+    request = calls["request"]
+    assert request.workflow is fake_workflow
+    assert request.inputs["description"] == "Fix it."
+    assert request.workspace == "/app"
+    assert request.budget.max_tokens == 100
     assert calls["diff_cmd"] == "git --no-pager diff --binary"
     assert candidate.solver_name == "baseTeam"
-    assert calls["args"]["instance_id"].startswith("solver-")
-    assert calls["args"]["instance_id"] != "task-1"
+    assert request.inputs["instance_id"].startswith("solver-")
+    assert request.inputs["instance_id"] != "task-1"
     assert candidate.task_id == "task-1"
     assert candidate.token_count == 17
     assert not candidate.is_empty
@@ -377,17 +386,12 @@ def test_workflow_backend_applies_team_pro_config_overrides(monkeypatch: Any, tm
     calls: dict[str, Any] = {}
 
     class FakeRegistry:
-        def get(self, name: str) -> str:
-            return "workflow-spec"
+        def get(self, name: str) -> Any:
+            return fake_workflow
 
-    class FakeEnv:
+    class FakeEnv(ExecutionEnvironment):
         async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
             return ExecResult(0, "", "")
-
-    async def fake_run_workflow(workflow_spec: Any, args: dict[str, Any], **kwargs: Any):
-        calls["cfg"] = kwargs["cfg"]
-        calls["budget"] = kwargs["budget"]
-        return {"status": "done", "tokens_spent": 0}
 
     monkeypatch.setattr(
         "opencollab.harness.workflow_backend.discover_workflows", lambda _: FakeRegistry()
@@ -396,10 +400,6 @@ def test_workflow_backend_applies_team_pro_config_overrides(monkeypatch: Any, tm
         "opencollab.harness.workflow_backend.docker_environment_for_workspace",
         lambda _: FakeEnv(),
     )
-    monkeypatch.setattr(
-        "opencollab.harness.workflow_backend.run_workflow", fake_run_workflow
-    )
-
     backend = WorkflowBackend(
         spec=workflow_solver_spec("TeamPro"),
         cfg={
@@ -410,6 +410,7 @@ def test_workflow_backend_applies_team_pro_config_overrides(monkeypatch: Any, tm
             "max_output_tokens": 8192,
         },
         workflows_dir=tmp_path,
+        runtime=CapturingRuntime(calls),
     )
     solve_with_public_task(
         backend,
@@ -419,31 +420,24 @@ def test_workflow_backend_applies_team_pro_config_overrides(monkeypatch: Any, tm
         SolverBudget(),
     )
 
-    assert calls["cfg"]["model"] == "file-model"
-    assert calls["cfg"]["temperature"] == 1.0
-    assert calls["cfg"]["top_p"] == 1.0
-    assert calls["cfg"]["max_output_tokens"] == 32_768
-    assert calls["budget"] == 4_000_000
+    request = calls["request"]
+    assert request.config.model == "file-model"
+    assert request.config.temperature == 1.0
+    assert request.config.top_p == 1.0
+    assert request.config.max_output_tokens == 32_768
+    assert request.budget.max_tokens == 4_000_000
 
 
 def test_workflow_backend_uses_integer_default_budget(monkeypatch: Any, tmp_path: Path) -> None:
     calls: dict[str, Any] = {}
 
     class FakeRegistry:
-        def get(self, name: str) -> str:
-            return "workflow-spec"
+        def get(self, name: str) -> Any:
+            return fake_workflow
 
-    class FakeEnv:
+    class FakeEnv(ExecutionEnvironment):
         async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
             return ExecResult(0, "", "")
-
-    async def fake_run_workflow(
-        workflow_spec: Any,
-        args: dict[str, Any],
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        calls["budget"] = kwargs["budget"]
-        return {"status": "done", "tokens_spent": 0}
 
     monkeypatch.setattr(
         "opencollab.harness.workflow_backend.discover_workflows",
@@ -453,15 +447,11 @@ def test_workflow_backend_uses_integer_default_budget(monkeypatch: Any, tmp_path
         "opencollab.harness.workflow_backend.docker_environment_for_workspace",
         lambda _: FakeEnv(),
     )
-    monkeypatch.setattr(
-        "opencollab.harness.workflow_backend.run_workflow",
-        fake_run_workflow,
-    )
-
     backend = WorkflowBackend(
         spec=workflow_solver_spec("baseTeam"),
         cfg={"model": "m", "provider": "p"},
         workflows_dir=tmp_path,
+        runtime=CapturingRuntime(calls),
     )
     solve_with_public_task(
         backend,
@@ -471,4 +461,4 @@ def test_workflow_backend_uses_integer_default_budget(monkeypatch: Any, tmp_path
         SolverBudget(),
     )
 
-    assert calls["budget"] == 1_000_000
+    assert calls["request"].budget.max_tokens == 1_000_000

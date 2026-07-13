@@ -14,6 +14,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from container_quiescence import require_container_quiescence
 from gen_prediction_config import _docker_timeout_from_env
 from gen_prediction_constants import DOCKER_WORKDIR
 from gen_prediction_snapshot import SolverGitSnapshot
@@ -25,8 +26,6 @@ from opencollab.harness.swe_generation_proof import (
     MAX_WORKSPACE_FILE_BYTES,
     TRUSTED_PATCH_EXTRACTION_SCHEMA,
 )
-
-from swebench.container_quiescence import require_container_quiescence
 
 
 @dataclass(frozen=True, slots=True)

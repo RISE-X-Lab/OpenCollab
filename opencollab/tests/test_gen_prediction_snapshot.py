@@ -670,6 +670,43 @@ def test_snapshot_git_config_audit_stops_at_its_output_bound(monkeypatch, tmp_pa
         snapshot_config._default_git_config_records(repo)
 
 
+def test_snapshot_git_config_audit_supports_git_without_show_scope(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_bounded(_repo, *args, env=None):
+        calls.append((args, env))
+        if "--show-scope" in args:
+            return subprocess.CompletedProcess(
+                ["git", "config"],
+                129,
+                b"",
+                b"error: unknown option `show-scope'\n",
+            )
+        return subprocess.CompletedProcess(
+            ["git", "config"],
+            0,
+            b"file:.git/config\0core.filemode\ntrue\0",
+            b"",
+        )
+
+    monkeypatch.setattr(snapshot_config, "_bounded_git_config", fake_bounded)
+
+    assert snapshot_config._default_git_config_records(tmp_path) == [
+        ("unknown", "file:.git/config", "core.filemode", "true")
+    ]
+    assert len(calls) == 2
+    assert "--show-scope" in calls[0][0]
+    assert "--show-scope" not in calls[1][0]
+
+
+def test_snapshot_config_helper_avoids_python39_string_helpers(tmp_path):
+    assert snapshot_config._origin_path("file:.git/config", tmp_path) == (
+        tmp_path / ".git/config"
+    ).absolute()
+    source = Path(snapshot_config.__file__).read_text(encoding="utf-8")
+    assert ".removeprefix(" not in source
+
+
 def test_snapshot_uses_legacy_compatible_git_init_for_sha1():
     assert snapshot_container._git_init_args("sha1") == ("init", "-q")
     assert snapshot_container._git_init_args("sha256") == (

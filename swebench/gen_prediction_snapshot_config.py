@@ -106,27 +106,44 @@ def _bounded_git_config(
 
 def _default_git_config_records(repo_root: Path) -> list[tuple[str, str, str, str]]:
     _assert_safe_inherited_git_env()
-    result = _bounded_git_config(
-        repo_root,
+    args = (
         "--includes",
         "--show-origin",
         "--show-scope",
         "--null",
         "--list",
     )
+    result = _bounded_git_config(
+        repo_root,
+        *args,
+    )
+    has_scope = True
+    if result.returncode == 129:
+        detail = result.stderr.decode("utf-8", errors="replace").lower()
+        if "unknown option" in detail and "show-scope" in detail:
+            has_scope = False
+            args = tuple(item for item in args if item != "--show-scope")
+            result = _bounded_git_config(repo_root, *args)
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()
         raise SnapshotSetupError(f"default Git config audit failed (exit {result.returncode}): {detail[:1000]}")
     fields = result.stdout.split(b"\0")
     if fields and fields[-1] == b"":
         fields.pop()
-    if len(fields) % 3:
+    record_width = 3 if has_scope else 2
+    if len(fields) % record_width:
         raise SnapshotSetupError("default Git config audit returned malformed records")
     records: list[tuple[str, str, str, str]] = []
-    for offset in range(0, len(fields), 3):
-        scope = fields[offset].decode("ascii", errors="strict").lower()
-        origin = os.fsdecode(fields[offset + 1])
-        raw_key, separator, raw_value = fields[offset + 2].partition(b"\n")
+    for offset in range(0, len(fields), record_width):
+        if has_scope:
+            scope = fields[offset].decode("ascii", errors="strict").lower()
+            origin = os.fsdecode(fields[offset + 1])
+            key_value = fields[offset + 2]
+        else:
+            scope = "unknown"
+            origin = os.fsdecode(fields[offset])
+            key_value = fields[offset + 1]
+        raw_key, separator, raw_value = key_value.partition(b"\n")
         if not raw_key:
             raise SnapshotSetupError("default Git config audit returned an empty key")
         key = raw_key.decode("utf-8", errors="strict").lower()
@@ -142,7 +159,7 @@ def _absolute_lexical(path: Path) -> Path:
 def _origin_path(origin: str, repo_root: Path) -> Path | None:
     if not origin.startswith("file:"):
         return None
-    path = Path(origin.removeprefix("file:"))
+    path = Path(origin[len("file:") :])
     if not path.is_absolute():
         path = repo_root / path
     return _absolute_lexical(path)
