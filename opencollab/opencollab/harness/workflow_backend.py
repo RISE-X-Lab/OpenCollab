@@ -6,7 +6,6 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from opencollab.bootstrap.workflow_runtime import discover_workflows, run_workflow
 from opencollab.harness.eval_adapter import (
     PatchCandidate,
     PreparedWorkspace,
@@ -14,8 +13,18 @@ from opencollab.harness.eval_adapter import (
 )
 from opencollab.harness.solver_backend import (
     SolverBudget,
+    SolverContractError,
     SolverTaskView,
     WorkflowSolverSpec,
+)
+from opencollab.sdk import (
+    OpenCollabRuntime,
+    RuntimeConfig,
+    WorkflowRunRequest,
+    discover_workflows,
+)
+from opencollab.sdk import (
+    RunBudget as SDKRunBudget,
 )
 
 
@@ -29,12 +38,14 @@ class WorkflowBackend:
         cfg: dict[str, Any],
         workflows_dir: Path | str = "workflows",
         max_concurrency: int = 4,
+        runtime: OpenCollabRuntime | None = None,
     ) -> None:
         self.spec = spec
         self.name = spec.name
         self._cfg = {**cfg, **spec.config_overrides}
         self._workflows_dir = Path(workflows_dir)
         self._max_concurrency = max(1, max_concurrency)
+        self._runtime = runtime or OpenCollabRuntime()
 
     def solve(
         self,
@@ -52,7 +63,6 @@ class WorkflowBackend:
         run_dir: Path,
         budget: SolverBudget,
     ) -> PatchCandidate:
-        run_dir.mkdir(parents=True, exist_ok=True)
         registry = discover_workflows(str(self._workflows_dir))
         workflow_spec = registry.get(self.spec.workflow_name)
         env = docker_environment_for_workspace(workspace)
@@ -65,25 +75,33 @@ class WorkflowBackend:
             "public_metadata": dict(task.metadata),
             **self.spec.args,
         }
-        result = await run_workflow(
-            workflow_spec,
-            args,
-            cfg=self._cfg,
-            workspace=workspace.repo_root,
-            budget=self._effective_budget(budget),
-            max_concurrency=self._max_concurrency,
-            save_dir=str(run_dir),
-            env=env,
+        result = await self._runtime.run_workflow(
+            WorkflowRunRequest(
+                workflow=workflow_spec,
+                inputs=args,
+                config=RuntimeConfig.from_mapping(self._cfg),
+                budget=SDKRunBudget(
+                    max_tokens=self._effective_budget(budget),
+                    timeout_seconds=budget.timeout_seconds,
+                    max_concurrency=self._max_concurrency,
+                ),
+                environment=env,
+                workspace=workspace.repo_root,
+                artifact_dir=run_dir,
+            )
         )
         diff = await _tracked_diff(env)
-        token_count = _result_tokens(result)
         return PatchCandidate(
             task_id=task.task_id,
             solver_name=self.name,
             patch=diff,
             log_path=str(run_dir),
-            token_count=token_count,
-            metadata={"workflow_result": result},
+            token_count=result.tokens_spent or 0,
+            metadata={
+                "sdk_api_version": result.sdk_api_version,
+                "workflow_name": result.workflow_name,
+                "workflow_output": result.output,
+            },
         )
 
     def _effective_budget(self, budget: SolverBudget) -> int:
@@ -105,18 +123,9 @@ class WorkflowBackend:
 
 async def _tracked_diff(env: Any) -> str:
     result = await env.exec_cmd("git --no-pager diff --binary", timeout=120)
-    if result.returncode != 0:
-        return ""
+    if result.returncode != 0 or result.stdout_truncated or result.stderr_truncated:
+        raise SolverContractError("workflow patch extraction command failed")
     return result.stdout
-
-
-def _result_tokens(result: Any) -> int:
-    if not isinstance(result, dict):
-        return 0
-    try:
-        return int(result.get("tokens_spent") or 0)
-    except (TypeError, ValueError):
-        return 0
 
 
 __all__ = ["WorkflowBackend"]

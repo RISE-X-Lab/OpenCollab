@@ -161,6 +161,7 @@ def generation_for_task_once(row, *, reuse_existing_empty_patch=True):
         {
             "OPENCOLLAB_SWE_GENERATOR": generator,
             "OPENCOLLAB_SWE_WORKFLOW": workflow,
+            "OPENCOLLAB_MODEL": model_name,
             "OPENCOLLAB_SWE_MODEL_NAME": model_name,
             "OPENCOLLAB_SWE_BUDGET": str(budget),
             "OPENCOLLAB_SWE_MAX_STEPS": str(max_steps),

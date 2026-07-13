@@ -304,6 +304,7 @@ def test_remote_runner_retries_empty_patch_once(tmp_path, second_mode):
         "record_id = f'empty-{count}'\n"
         "empty_sha = hashlib.sha256(b'').hexdigest()\n"
         "model = os.environ['OPENCOLLAB_SWE_MODEL_NAME']\n"
+        "assert os.environ['OPENCOLLAB_MODEL'] == model\n"
         "workflow = os.environ['OPENCOLLAB_SWE_WORKFLOW']\n"
         "command = os.environ['OPENCOLLAB_OPENHANDS_COMMAND']\n"
         "prediction = {'instance_id': task, 'model_name_or_path': model, "

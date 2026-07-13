@@ -64,6 +64,7 @@ import gen_prediction_patch
 import gen_prediction_pending
 import gen_prediction_safe_output
 import gen_prediction_snapshot
+from container_quiescence import require_container_quiescence
 from gen_prediction_agent import (
     _quiesce_agent_tasks,
     build_task,
@@ -210,8 +211,6 @@ from opencollab.harness.swe_eval_records import (  # noqa: E402
     open_regular_binary,
     read_bounded_json,
 )
-
-from swebench.container_quiescence import require_container_quiescence
 
 
 def main() -> None:

@@ -11,10 +11,10 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from swebench.container_quiescence import (
+from container_quiescence import (
     guarded_terminal_invocation as _guarded_terminal_invocation,
 )
-from swebench.container_quiescence import (
+from container_quiescence import (
     stop_guarded_terminal_session as _stop_guarded_terminal_session,
 )
 

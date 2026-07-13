@@ -13,11 +13,12 @@ from types import SimpleNamespace
 import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
+_SWEBENCH_DIR = _REPO_ROOT / "swebench"
+if str(_SWEBENCH_DIR) not in sys.path:
+    sys.path.insert(0, str(_SWEBENCH_DIR))
 
-from swebench import container_quiescence as guard  # noqa: E402
-from swebench import openhands_process_supervisor as supervisor  # noqa: E402
+import container_quiescence as guard  # noqa: E402
+import openhands_process_supervisor as supervisor  # noqa: E402
 
 
 def test_host_quiescer_rechecks_process_churn_until_twice_empty(
