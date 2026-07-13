@@ -378,6 +378,11 @@ def create_solver_snapshot(
         exclude = repo_root / ".git" / "info" / "exclude"
         exclude.parent.mkdir(mode=0o755, exist_ok=True)
         exclude.write_text("/.opencollab/\n", encoding="utf-8")
+        attributes = repo_root / ".git" / "info" / "attributes"
+        attributes.write_text(
+            "* -text -filter -ident -working-tree-encoding\n",
+            encoding="utf-8",
+        )
         if tracked_paths:
             _run_git(
                 repo_root,
