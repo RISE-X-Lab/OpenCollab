@@ -5,8 +5,17 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
+from opencollab.sdk import eval_compat, experimental
+
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PACKAGE_ROOT = _REPO_ROOT / "opencollab" / "opencollab"
+_EVALUATION_STRATEGY_NAMES = {
+    "build_fact_sheet",
+    "estimate_target_complexity",
+    "format_fact_sheet_hint",
+    "recon_pool_is_ample",
+    "size_recon",
+}
 
 
 def _imports(path: Path) -> tuple[str, ...]:
@@ -32,3 +41,8 @@ def test_sdk_does_not_depend_on_evaluation_implementations() -> None:
         or imported.startswith("swebench.")
     ]
     assert offenders == []
+
+
+def test_sdk_compatibility_surfaces_exclude_evaluation_strategy() -> None:
+    assert _EVALUATION_STRATEGY_NAMES.isdisjoint(experimental.__all__)
+    assert _EVALUATION_STRATEGY_NAMES.isdisjoint(eval_compat.__all__)

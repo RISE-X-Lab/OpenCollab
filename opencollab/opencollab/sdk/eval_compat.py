@@ -3,6 +3,9 @@
 This module keeps the repository dependency boundary explicit while legacy
 evaluation components are replaced with the smaller stable SDK abstractions.
 Its names are versioned independently from :mod:`opencollab.sdk`.
+
+Benchmark strategy and workflow-specific analysis helpers live in the
+companion evaluation package.
 """
 
 from __future__ import annotations
