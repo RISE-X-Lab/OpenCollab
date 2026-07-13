@@ -39,7 +39,7 @@ class LocalEnvironment(Environment):
         self.host_workspace = self.workspace
         self.source_workspace = self.workspace
         self._processes = ProcessRegistry()
-        self._temporary_files: dict[str, tuple[int, int]] = {}
+        self._temporary_files: set[str] = set()
 
     def _full_path(self, path: str) -> str:
         if not isinstance(path, str) or not path or "\0" in path:
@@ -121,35 +121,33 @@ class LocalEnvironment(Environment):
                 handle.write(payload)
                 handle.flush()
                 os.fsync(handle.fileno())
-                opened = os.fstat(handle.fileno())
         except BaseException:
             try:
                 os.unlink(path)
             except FileNotFoundError:
                 pass
             raise
-        self._temporary_files[path] = (opened.st_dev, opened.st_ino)
+        self._temporary_files.add(path)
         return path
 
     async def remove_file(self, path: str) -> None:
         target = self._full_path(path)
-        identity = self._temporary_files.get(target)
-        if identity is None:
+        if target not in self._temporary_files:
             raise OSError(f"refusing to remove unowned local temporary file: {path}")
-        unlink_regular_file_durable(target, expected_target_identity=identity)
-        self._temporary_files.pop(target, None)
+        unlink_regular_file_durable(target)
+        self._temporary_files.discard(target)
 
     async def cleanup(self) -> None:
         self.revoke()
         await self._processes.abort()
         failures: list[OSError] = []
-        for path, identity in tuple(self._temporary_files.items()):
+        for path in tuple(self._temporary_files):
             try:
-                unlink_regular_file_durable(path, expected_target_identity=identity)
+                unlink_regular_file_durable(path)
             except OSError as exc:
                 failures.append(exc)
             else:
-                self._temporary_files.pop(path, None)
+                self._temporary_files.discard(path)
         if failures:
             raise OSError("failed to remove one or more environment temporary files") from failures[0]
 

@@ -14,6 +14,7 @@ from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_process import run_process
 from opencollab.adapters.git_patch import guarded_staged_diff_command
 from opencollab.application.async_timeout import await_owned_operation
+from opencollab.application.exception_notes import add_exception_note
 
 WORKTREE_GIT_TIMEOUT_SECONDS = 30.0
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,180}$")
@@ -85,7 +86,8 @@ class WorktreeEnvironment(Environment):
                     raise
                 raise original
             except BaseException as cleanup_error:
-                original.add_note(
+                add_exception_note(
+                    original,
                     "worktree setup cleanup failed: "
                     f"{type(cleanup_error).__name__}: {cleanup_error}"
                 )
@@ -126,7 +128,8 @@ class WorktreeEnvironment(Environment):
             try:
                 await self._delete_owned_branch(self._base_commit)
             except BaseException as cleanup_error:
-                failure.add_note(
+                add_exception_note(
+                    failure,
                     "worktree branch cleanup failed: "
                     f"{type(cleanup_error).__name__}: {cleanup_error}"
                 )
@@ -134,7 +137,8 @@ class WorktreeEnvironment(Environment):
                 try:
                     shutil.rmtree(self._worktree_dir)
                 except BaseException as cleanup_error:
-                    failure.add_note(
+                    add_exception_note(
+                        failure,
                         "worktree directory cleanup failed: "
                         f"{type(cleanup_error).__name__}: {cleanup_error}"
                     )
