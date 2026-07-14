@@ -26,10 +26,11 @@ from opencollab.bootstrap.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_THINKING,
     DEFAULT_THINKING_PARAMS,
+    DEFAULT_TOP_P,
 )
 from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
 from opencollab.bootstrap.tool_registry import COORDINATION_TOOL_NAMES, build_tools_for_role
-from opencollab.domain.agent import Agent
+from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP, Agent
 from opencollab.domain.context import (
     ContextLayer,
     ContextPlan,
@@ -59,6 +60,8 @@ class SpawnConfig:
     # ``ContextBuilder.build_agent``). Defaulted so the field stays optional for
     # the many call sites that construct a ``SpawnConfig`` by keyword.
     temperature: float = DEFAULT_TEMPERATURE
+    top_p: float | None = DEFAULT_TOP_P
+    max_output_tokens: int = DEFAULT_MAX_TOKENS_PER_STEP
     # Global thinking passthrough; a role may override it (resolved in
     # ``ContextBuilder.build_agent``). Defaulted (OFF) so the field stays optional.
     thinking: bool = DEFAULT_THINKING
@@ -247,6 +250,8 @@ class ContextBuilder:
             api_key=cfg.api_key,
             base_url=cfg.base_url,
             temperature=temperature,
+            top_p=cfg.top_p,
+            max_tokens_per_step=cfg.max_output_tokens,
             thinking=thinking,
             thinking_params=thinking_params,
         )

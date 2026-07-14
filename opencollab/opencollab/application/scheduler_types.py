@@ -65,6 +65,7 @@ class QueuedTeammateMessage:
     summary: str
     content: str
     xml: str
+    sent_at: str = ""
 
 
 __all__ = [

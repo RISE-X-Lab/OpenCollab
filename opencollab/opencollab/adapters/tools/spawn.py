@@ -6,7 +6,9 @@ from typing import Any
 
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.ports import SchedulerPort
+from opencollab.application.self_collaboration import validate_review_iterations
 from opencollab.application.tool_execution import DeferredCall, ToolRuntime
+from opencollab.domain.identity import validate_role_identity
 
 
 class SpawnAgentTool(Tool):
@@ -53,7 +55,10 @@ class SpawnAgentTool(Tool):
         params: dict[str, Any],
         runtime: ToolRuntime,
     ) -> DeferredCall | str:
-        role = params["role"]
+        try:
+            role = validate_role_identity(params["role"])
+        except ValueError as exc:
+            return f"Not spawned: invalid role identity ({exc})."
         task = params["task"]
         context = params.get("context", "")
         parent_aid = runtime.aid
@@ -80,6 +85,11 @@ class SpawnWithReviewTool(Tool):
     """Tool for coding tasks requiring mandatory code review."""
 
     name = "spawn_with_review"
+    # One invocation may legitimately contain six sequential model turns
+    # (coder + reviewer across three iterations). Each child session already
+    # enforces its own provider/session deadline, so the ordinary single-tool
+    # wall would cancel a healthy review loop midway through a later iteration.
+    disable_outer_timeout = True
     description = (
         "Spawn a coding task with mandatory code review. A Coder implements the task, "
         "then a Reviewer checks the work. If the review fails, the Coder retries with "
@@ -115,6 +125,10 @@ class SpawnWithReviewTool(Tool):
         task = params["task"]
         context = params.get("context", "")
         max_iter = params.get("max_iterations", 3)
+        try:
+            max_iter = validate_review_iterations(max_iter)
+        except ValueError as exc:
+            return f"Not started: {exc}."
         parent_aid = runtime.aid
         return await self._scheduler.spawn_with_review(
             parent_aid, task, context, max_iter

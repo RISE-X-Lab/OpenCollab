@@ -1,57 +1,64 @@
-from http import HTTPStatus
-from pathlib import Path
+"""Run one provider completion using the normal OpenCollab configuration."""
 
-import requests
+from __future__ import annotations
+
+import argparse
+import asyncio
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any, Protocol
+
+from opencollab.adapters.llm import LLMClient
 from opencollab.bootstrap.config import build_config
 
 WORKSPACE = Path(__file__).resolve().parents[1]
-TEST_MODEL_NAME = "kimi-k2.6"
+DEFAULT_PROMPT = "Reply with one short sentence confirming provider connectivity."
 
 
-def request_qwen36_plus(prompt):
-    config = build_config(str(WORKSPACE))
-    api_key = config.api_key
-    if not api_key:
-        raise ValueError("Missing OPENCOLLAB_API_KEY or DASHSCOPE_API_KEY")
+class CompletionClient(Protocol):
+    async def complete(self, messages: list[dict[str, Any]], **kwargs: Any) -> Any: ...
 
-    base_url = config.base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    url = f"{base_url.rstrip('/')}/chat/completions"
 
-    if isinstance(prompt, list):
-        messages = [{"role": "system", "content": "You are a helpful assistant."}]
-        messages += [
-            {"role": turn.get("role", "user"), "content": turn.get("content", "")}
-            for turn in prompt
-        ]
-    else:
-        messages = [
-            {"role": "system", "content": "You are a helpful assistant."},
-            {"role": "user", "content": str(prompt)},
-        ]
+async def request_completion(
+    prompt: str,
+    *,
+    workspace: Path = WORKSPACE,
+    client_type: type[CompletionClient] = LLMClient,
+) -> str:
+    """Return one completion using the same configuration as the framework."""
+    config = build_config(str(workspace))
+    if not config.api_key:
+        raise ValueError("provider API key is missing from the OpenCollab configuration")
+    client = client_type(
+        model=config.model,
+        provider=config.provider,
+        api_key=config.api_key,
+        base_url=config.base_url,
+        request_timeout=config.llm_timeout,
+    )
+    response = await client.complete(
+        [
+            {"role": "system", "content": "You are a concise connectivity probe."},
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.0,
+        max_output_tokens=min(config.max_output_tokens, 256),
+    )
+    return str(response.content or "")
 
-    payload = {
-        "model": TEST_MODEL_NAME,
-        "messages": messages,
-    }
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("prompt", nargs="?", default=DEFAULT_PROMPT)
+    parser.add_argument("--workspace", type=Path, default=WORKSPACE)
+    return parser
 
-    resp = requests.post(url, headers=headers, json=payload, timeout=60)
-    if resp.status_code != HTTPStatus.OK:
-        raise RuntimeError(f"http status @ {resp.status_code}, body={resp.text}")
 
-    data = resp.json() if resp.content else {}
-    choices = data.get("choices", [])
-    if choices:
-        return choices[0].get("message", {}).get("content", "")
-    return ""
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    print(asyncio.run(request_completion(args.prompt, workspace=args.workspace)))
+    return 0
 
 
 if __name__ == "__main__":
-    text = request_qwen36_plus("请用一句话介绍你自己")
-    print(text)
-
-
+    raise SystemExit(main())

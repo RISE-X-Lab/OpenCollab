@@ -23,135 +23,36 @@ tool result is still un-ingested.
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
-from types import SimpleNamespace
 
-from opencollab.application.event_bus import EventBus
-from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.session_run import (
     DEFAULT_LOW_YIELD_M,
     DEFAULT_WATCHDOG_K,
     ENFORCEMENT_OFF,
     ENFORCEMENT_ON,
-    SessionRunUseCase,
 )
 from opencollab.application.submit_findings import (
     SUBMIT_TOOL_NAME,
     SubmitFindingsTool,
     commitment_terminus_payload,
 )
-from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase, SessionState
-from opencollab.domain.tools import ToolProcessingResult
-
-
-def run(coro):
-    return asyncio.run(coro)
-
-
-# --------------------------------------------------------------------------- #
-# Shared fakes (mirror test_session_wind_down.py).
-# --------------------------------------------------------------------------- #
-
-
-def llm_response(content=None, tool_calls=None, total_tokens=5, input_tokens=1, finish_reason="stop"):
-    return SimpleNamespace(
-        content=content,
-        tool_calls=tool_calls or [],
-        usage=SimpleNamespace(total_tokens=total_tokens, input_tokens=input_tokens),
-        finish_reason=finish_reason,
-        reasoning=None,
-    )
-
-
-def tool_call(call_id="call-1", name="submit_findings", arguments="{}"):
-    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
-
-
-class FakeLLM:
-    def __init__(self, responses=()):
-        self.responses = list(responses)
-        self.calls = []
-
-    async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
-        self.calls.append(
-            {
-                "messages": copy.deepcopy(messages),
-                "tools": copy.deepcopy(tools),
-                "tool_choice": kwargs.get("tool_choice"),
-            }
-        )
-        if not self.responses:
-            raise AssertionError("unexpected LLM call")
-        return self.responses.pop(0)
-
-
-class FakeToolExecution:
-    def __init__(self, result=None):
-        self.calls = []
-        self.result = result if result is not None else ToolProcessingResult()
-
-    async def process(self, tool_calls):
-        self.calls.append(copy.deepcopy(tool_calls))
-        return self.result
-
-
-class CapturingToolExecution:
-    """Runs tools for real against the agent's live toolset (like the dispatcher):
-    a ``submit_findings`` call invokes the real tool; any other name returns the
-    same "unknown tool" error the real dispatcher produces during wind-down."""
-
-    def __init__(self, agent):
-        self.agent = agent
-        self.calls = []
-
-    async def process(self, tool_calls):
-        self.calls.append(copy.deepcopy(tool_calls))
-        messages = []
-        for tc in tool_calls:
-            name = tc["function"]["name"]
-            tool = self.agent.find_tool(name)
-            if tool is None:
-                available = [t.name for t in self.agent.tools]
-                content = f"Error: unknown tool '{name}'. Available: {available}"
-            else:
-                params = json.loads(tc["function"].get("arguments") or "{}")
-                content = await tool.execute_with_runtime(params, None)
-            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": content})
-        return ToolProcessingResult(messages_to_append=messages)
-
-
-class _ReadStub:
-    name = "file_read"
-
-    def to_openai_schema(self):
-        return {"type": "function", "function": {"name": self.name, "parameters": {}}}
-
-
-def collect_events():
-    events = []
-
-    async def sink(event):
-        events.append((event.type, copy.deepcopy(event.data)))
-
-    return events, EventBus(sink)
-
-
-def build_runner(*, state, agent, llm, event_bus=None, tool_execution=None, **kwargs):
-    return SessionRunUseCase(
-        agent=agent,
-        state=state,
-        llm=llm,
-        event_publisher=event_bus if event_bus is not None else EventBus(None),
-        tool_execution=tool_execution if tool_execution is not None else FakeToolExecution(),
-        **kwargs,
-    )
-
-
-def _agent_with_submit():
-    return Agent(name="scout", system_prompt="s", tools=[_ReadStub(), SubmitFindingsTool()])
+from session_run_test_support import (
+    CapturingToolExecution,
+    FakeLLM,
+    build_runner,
+    llm_response,
+    run,
+    tool_call,
+)
+from session_run_test_support import (
+    ReadStub as _ReadStub,
+)
+from session_run_test_support import (
+    agent_with_submit as _agent_with_submit,
+)
+from tool_execution_test_support import build_sensor_use_case as _use_case
 
 
 def _captured():
@@ -398,22 +299,6 @@ def test_watchdog_forced_turn_ignored_escalates_and_latches_forced_unsatisfied()
 # --------------------------------------------------------------------------- #
 
 
-class FakeAgent:
-    def __init__(self, tools=None):
-        self.tools = tools or []
-
-    def find_tool(self, name):
-        for tool in self.tools:
-            if tool.name == name:
-                return tool
-        return None
-
-
-class FakeEventPublisher:
-    async def emit(self, event):  # pragma: no cover - trivial sink
-        pass
-
-
 class ScriptedTool:
     def __init__(self, name, outputs):
         self.name = name
@@ -421,29 +306,6 @@ class ScriptedTool:
 
     async def execute_with_runtime(self, args, runtime):
         return self._outputs.pop(0) if self._outputs else ""
-
-
-def _event_factory() -> SessionEventFactory:
-    factory = default_session_event_factory(aid=-1)
-    return SessionEventFactory(
-        step_start=factory.step_start,
-        step_end=factory.step_end,
-        text_delta=factory.text_delta,
-        error=factory.error,
-        loop_detected=lambda tool, count: SimpleNamespace(type="loop_detected", data={}),
-        tool_start=lambda tool, args: SimpleNamespace(type="tool_start", data={}),
-        tool_end=lambda tool, latency: SimpleNamespace(type="tool_end", data={}),
-    )
-
-
-def _use_case(state, tool):
-    return ToolExecutionUseCase(
-        agent=FakeAgent(tools=[tool]),
-        environment=None,
-        state=state,
-        event_publisher=FakeEventPublisher(),
-        event_factory=_event_factory(),
-    )
 
 
 def _run_one(state, tool, name, args):

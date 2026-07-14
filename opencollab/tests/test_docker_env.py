@@ -1,274 +1,328 @@
-"""DockerEnvironment exec/attach behavior, verified against a fake docker shim.
-
-No real docker or network: ``asyncio.create_subprocess_exec`` is replaced with a
-fake that records argv and returns canned output, so we can assert the exact
-``docker`` command lines for both the start-a-container path (harness) and the
-attach path (SWE-bench eval).
-"""
+"""Black-box ownership and command tests for DockerEnvironment."""
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 
-import opencollab.adapters.env as env_mod
-from opencollab.adapters.env import DockerEnvironment
+import pytest
+from opencollab.adapters import _env_docker as docker_module
+from opencollab.adapters._env_process import ProcessCleanupError, ProcessResult
+from opencollab.adapters.env import DockerEnvironment, LocalEnvironment
+
+CONTAINER_ID = "a" * 64
+OTHER_ID = "b" * 64
 
 
-def run(coro):
-    return asyncio.run(coro)
-
-
-class FakeProc:
-    def __init__(self, stdout=b"", stderr=b"", returncode=0, hang=False):
-        self._stdout = stdout
-        self._stderr = stderr
-        self.returncode = None if hang and returncode == 0 else returncode
-        self._hang = hang
-        self.killed = False
-        self.communicated_input = None
-
-    async def communicate(self, input=None):
-        self.communicated_input = input
-        if self._hang:
-            await asyncio.sleep(3600)
-        return self._stdout, self._stderr
-
-    def kill(self):
-        self.killed = True
-        self.returncode = -9
-
-    async def wait(self):
-        return self.returncode
+def _result(
+    returncode: int = 0,
+    stdout: bytes = b"",
+    stderr: bytes = b"",
+    *,
+    stdout_dropped: int = 0,
+    stderr_dropped: int = 0,
+) -> ProcessResult:
+    return ProcessResult(
+        returncode,
+        stdout,
+        stderr,
+        stdout_dropped_bytes=stdout_dropped,
+        stderr_dropped_bytes=stderr_dropped,
+    )
 
 
 class FakeDocker:
-    """Records every ``create_subprocess_exec`` argv and replays queued procs."""
+    def __init__(self, handler: Callable | None = None) -> None:
+        self.handler = handler
+        self.calls: list[tuple[tuple[str, ...], dict]] = []
 
-    def __init__(self, procs=None):
-        self.calls = []
-        self._procs = list(procs or [])
-
-    async def __call__(self, *argv, stdin=None, stdout=None, stderr=None):
-        self.calls.append(list(argv))
-        if self._procs:
-            return self._procs.pop(0)
-        return FakeProc()
-
-
-def patch_docker(monkeypatch, fake):
-    monkeypatch.setattr(env_mod.asyncio, "create_subprocess_exec", fake)
+    async def __call__(self, command, **kwargs):
+        command = tuple(command)
+        self.calls.append((command, kwargs))
+        if self.handler is None:
+            return _result()
+        value = self.handler(command, kwargs)
+        if isinstance(value, BaseException):
+            raise value
+        return value
 
 
-def test_start_mode_setup_runs_container(monkeypatch):
-    fake = FakeDocker([FakeProc(stdout=b"cid123\n")])
-    patch_docker(monkeypatch, fake)
-
-    env = DockerEnvironment(image="python:3.11-slim", workspace="/workspace")
-    cid = run(env.setup(mount_dir="/abs/repo"))
-
-    assert cid == "cid123"
-    assert fake.calls == [
-        [
-            "docker", "run", "-d", "--rm",
-            "-v", "/abs/repo:/workspace",
-            "-w", "/workspace", "python:3.11-slim", "sleep", "infinity",
-        ]
-    ]
+def _patch(monkeypatch, fake: FakeDocker) -> None:
+    monkeypatch.setattr(docker_module, "run_process", fake)
 
 
-def test_start_mode_exec_unchanged(monkeypatch):
-    fake = FakeDocker([FakeProc(stdout=b"out", stderr=b"err", returncode=0)])
-    patch_docker(monkeypatch, fake)
+async def test_owned_setup_is_network_isolated_and_cleanup_uses_full_id(monkeypatch) -> None:
+    def respond(command, _kwargs):
+        if command[1] == "run":
+            return _result(stdout=f"{CONTAINER_ID}\n".encode())
+        if command[1:4] == ("rm", "-f", "--"):
+            return _result()
+        raise AssertionError(command)
 
-    env = DockerEnvironment()
-    env._container_id = "cid123"
-    result = run(env.exec_cmd("echo hi"))
-
-    assert fake.calls == [
-        ["docker", "exec", "cid123", "bash", "-c", "echo hi"]
-    ]
-    assert (result.returncode, result.stdout, result.stderr) == (0, "out", "err")
-
-
-def test_exec_before_setup_raises(monkeypatch):
-    fake = FakeDocker()
-    patch_docker(monkeypatch, fake)
-
-    env = DockerEnvironment()
-    try:
-        run(env.exec_cmd("echo hi"))
-    except RuntimeError as e:
-        assert "Container not started" in str(e)
-    else:  # pragma: no cover - assertion path
-        raise AssertionError("expected RuntimeError")
-    assert fake.calls == []
+    fake = FakeDocker(respond)
+    _patch(monkeypatch, fake)
+    env = DockerEnvironment(image="python:3.11")
+    assert await env.setup() == CONTAINER_ID
+    run_command = fake.calls[0][0]
+    assert run_command[:2] == ("docker", "run")
+    assert run_command[run_command.index("--network") + 1] == "none"
+    assert "opencollab.owner=" in " ".join(run_command)
+    await env.cleanup()
+    assert fake.calls[-1][0] == ("docker", "rm", "-f", "--", CONTAINER_ID)
 
 
-def test_attach_mode_skips_setup(monkeypatch):
-    fake = FakeDocker([FakeProc(stdout=b"ok")])
-    patch_docker(monkeypatch, fake)
+async def test_start_failure_never_removes_foreign_name_collision(monkeypatch) -> None:
+    def respond(command, _kwargs):
+        if command[1] == "run":
+            return _result(returncode=125, stderr=b"name conflict")
+        if command[1] == "inspect":
+            return _result(stdout=f"{OTHER_ID}\tforeign-owner\n".encode())
+        raise AssertionError(command)
 
-    env = DockerEnvironment(container_id="running_cid")
-    result = run(env.exec_cmd("echo hi"))
-
-    assert result.stdout == "ok"
-    assert fake.calls == [
-        ["docker", "exec", "running_cid", "bash", "-c", "echo hi"]
-    ]
-
-
-def test_attach_mode_cleanup_leaves_container_alone(monkeypatch):
-    fake = FakeDocker()
-    patch_docker(monkeypatch, fake)
-
-    env = DockerEnvironment(container_id="running_cid")
-    run(env.cleanup())
-
-    assert fake.calls == []
-    assert env._container_id == "running_cid"
+    fake = FakeDocker(respond)
+    _patch(monkeypatch, fake)
+    with pytest.raises(RuntimeError, match="Failed to start"):
+        await DockerEnvironment().setup()
+    assert all(call[0][1] != "rm" for call in fake.calls)
 
 
-def test_start_mode_cleanup_kills_container(monkeypatch):
-    fake = FakeDocker([FakeProc()])
-    patch_docker(monkeypatch, fake)
+async def test_start_failure_reports_unproven_inspect_cleanup(monkeypatch) -> None:
+    def respond(command, _kwargs):
+        if command[1] == "run":
+            return asyncio.TimeoutError()
+        if command[1] == "inspect":
+            return _result(returncode=1, stderr=b"daemon unavailable")
+        raise AssertionError(command)
 
-    env = DockerEnvironment()
-    env._container_id = "cid123"
-    run(env.cleanup())
-
-    assert fake.calls == [["docker", "kill", "cid123"]]
-    assert env._container_id is None
-
-
-def test_exec_workdir_adds_w_flag(monkeypatch):
-    fake = FakeDocker([FakeProc(stdout=b"out")])
-    patch_docker(monkeypatch, fake)
-
-    env = DockerEnvironment(container_id="cid", exec_workdir="/testbed")
-    run(env.exec_cmd("pytest"))
-
-    assert fake.calls == [
-        ["docker", "exec", "-w", "/testbed", "cid", "bash", "-c", "pytest"]
-    ]
+    fake = FakeDocker(respond)
+    _patch(monkeypatch, fake)
+    with pytest.raises(ProcessCleanupError, match="removal was not proven"):
+        await DockerEnvironment().setup()
+    assert all(call[0][1] != "rm" for call in fake.calls)
 
 
-def test_string_command_prefix_uses_login_shell(monkeypatch):
-    fake = FakeDocker([FakeProc(stdout=b"out")])
-    patch_docker(monkeypatch, fake)
+async def test_attached_name_binds_once_and_executes_by_full_id(monkeypatch) -> None:
+    def respond(command, _kwargs):
+        if command[1] == "inspect":
+            return _result(stdout=f"{CONTAINER_ID}\t/swe-task\ttrue\n".encode())
+        if command[1] == "exec":
+            return _result(stdout=b"done")
+        raise AssertionError(command)
 
-    activate = "source /opt/miniconda3/bin/activate testbed 2>/dev/null || true"
-    env = DockerEnvironment(
-        container_id="cid", exec_workdir="/testbed", command_prefix=activate
+    fake = FakeDocker(respond)
+    _patch(monkeypatch, fake)
+    env = DockerEnvironment(container_id="swe-task", workspace="/repo")
+    assert await env.setup() == CONTAINER_ID
+    result = await env.exec_cmd("git status")
+    assert result.stdout == "done"
+    exec_command = fake.calls[-1][0]
+    assert CONTAINER_ID in exec_command
+    assert "swe-task" not in exec_command
+    await env.cleanup()
+    assert all(call[0][1] != "rm" for call in fake.calls)
+
+
+async def test_attached_binding_rejects_identity_mismatch(monkeypatch) -> None:
+    fake = FakeDocker(
+        lambda command, _kwargs: _result(stdout=f"{CONTAINER_ID}\t/other\ttrue\n".encode())
     )
-    run(env.exec_cmd("python -m pytest"))
-
-    assert fake.calls == [
-        [
-            "docker", "exec", "-w", "/testbed", "cid",
-            "bash", "-lc", f"{activate}\npython -m pytest",
-        ]
-    ]
+    _patch(monkeypatch, fake)
+    with pytest.raises(RuntimeError, match="ambiguous or changed"):
+        await DockerEnvironment(container_id="expected").setup()
 
 
-def test_callable_command_prefix_wraps_command(monkeypatch):
-    fake = FakeDocker([FakeProc(stdout=b"out")])
-    patch_docker(monkeypatch, fake)
-
-    env = DockerEnvironment(
-        container_id="cid", command_prefix=lambda c: f"set -e; {c}"
-    )
-    run(env.exec_cmd("ls"))
-
-    assert fake.calls == [
-        ["docker", "exec", "cid", "bash", "-lc", "set -e; ls"]
-    ]
+async def test_attached_reference_validation_rejects_options_and_short_ids() -> None:
+    for value in ("--privileged", "abc123", "bad/name"):
+        with pytest.raises(ValueError, match="unsafe or ambiguous"):
+            DockerEnvironment(container_id=value)
 
 
-def test_timeout_returns_default_negative_one(monkeypatch):
-    proc = FakeProc(hang=True)
-    fake = FakeDocker([proc])
-    patch_docker(monkeypatch, fake)
+async def test_exec_preserves_bounded_output_metadata(monkeypatch) -> None:
+    def respond(command, _kwargs):
+        if command[1] == "run":
+            return _result(stdout=f"{CONTAINER_ID}\n".encode())
+        if command[1] == "exec":
+            return _result(stdout=b"kept", stderr=b"error", stdout_dropped=12, stderr_dropped=3)
+        raise AssertionError(command)
 
-    env = DockerEnvironment(container_id="cid")
-    result = run(env.exec_cmd("sleep 999", timeout=0.01))
+    fake = FakeDocker(respond)
+    _patch(monkeypatch, fake)
+    env = DockerEnvironment()
+    await env.setup()
+    result = await env.exec_cmd("emit")
+    assert result.stdout == "kept"
+    assert result.stderr == "error"
+    assert result.stdout_truncated and result.stderr_truncated
+    assert result.stdout_dropped_bytes == 12
+    assert result.stderr_dropped_bytes == 3
 
+
+async def test_user_exit_125_does_not_destroy_owned_container(monkeypatch) -> None:
+    exec_attempts = 0
+
+    def respond(command, _kwargs):
+        nonlocal exec_attempts
+        if command[1] == "run":
+            return _result(stdout=f"{CONTAINER_ID}\n".encode())
+        if command[1] == "exec":
+            exec_attempts += 1
+            return _result(returncode=125 if exec_attempts == 1 else 0, stdout=b"usable")
+        raise AssertionError(command)
+
+    fake = FakeDocker(respond)
+    _patch(monkeypatch, fake)
+    env = DockerEnvironment()
+    await env.setup()
+    assert (await env.exec_cmd("exit 125")).returncode == 125
+    assert (await env.exec_cmd("printf usable")).stdout == "usable"
+    assert not env.revoked
+    assert all(call[0][1] != "rm" for call in fake.calls)
+
+
+async def test_timeout_runs_container_inner_cancel_before_return(monkeypatch) -> None:
+    exec_attempts = 0
+
+    def respond(command, _kwargs):
+        nonlocal exec_attempts
+        if command[1] == "run":
+            return _result(stdout=f"{CONTAINER_ID}\n".encode())
+        if command[1] == "exec":
+            exec_attempts += 1
+            if exec_attempts == 1:
+                return asyncio.TimeoutError()
+            return _result()
+        raise AssertionError(command)
+
+    fake = FakeDocker(respond)
+    _patch(monkeypatch, fake)
+    env = DockerEnvironment()
+    await env.setup()
+    result = await env.exec_cmd("sleep 20", timeout=0.01)
     assert result.returncode == -1
-    assert "timed out after 0.01s" in result.stderr
-    assert proc.killed
+    assert "timed out" in result.stderr
+    assert exec_attempts == 2
+    assert docker_module._EXEC_CANCEL in fake.calls[-1][0]
 
 
-def test_timeout_returncode_is_parameterized(monkeypatch):
-    proc = FakeProc(hang=True)
-    fake = FakeDocker([proc])
-    patch_docker(monkeypatch, fake)
+async def test_attached_timeout_revokes_when_inner_cancel_fails(monkeypatch) -> None:
+    exec_attempts = 0
 
-    env = DockerEnvironment(container_id="cid", timeout_returncode=124)
-    result = run(env.exec_cmd("sleep 999", timeout=0.01))
+    def respond(command, _kwargs):
+        nonlocal exec_attempts
+        if command[1] == "inspect":
+            return _result(stdout=f"{CONTAINER_ID}\t/swe-task\ttrue\n".encode())
+        if command[1] == "exec":
+            exec_attempts += 1
+            if exec_attempts == 1:
+                return asyncio.TimeoutError()
+            return _result(returncode=124)
+        raise AssertionError(command)
 
-    assert result.returncode == 124
-    assert proc.killed
-
-
-def test_cancelled_exec_kills_docker_exec_process(monkeypatch):
-    async def scenario():
-        proc = FakeProc(hang=True)
-        fake = FakeDocker([proc])
-        patch_docker(monkeypatch, fake)
-        env = DockerEnvironment(container_id="cid")
-
-        task = asyncio.create_task(env.exec_cmd("sleep 999", timeout=60))
-        for _ in range(5):
-            await asyncio.sleep(0)
-            if fake.calls:
-                break
-        assert fake.calls
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
-        return proc.killed
-
-    assert run(scenario())
+    fake = FakeDocker(respond)
+    _patch(monkeypatch, fake)
+    env = DockerEnvironment(container_id="swe-task")
+    await env.setup()
+    with pytest.raises(ProcessCleanupError, match="did not quiesce"):
+        await env.exec_cmd("sleep 20", timeout=0.01)
+    assert env.revoked
+    assert all(call[0][1] != "rm" for call in fake.calls)
 
 
-def test_read_file_reads_via_cat(monkeypatch):
-    fake = FakeDocker([FakeProc(stdout=b"file body", returncode=0)])
-    patch_docker(monkeypatch, fake)
+async def test_double_cancellation_cannot_interrupt_container_recovery(monkeypatch) -> None:
+    fake = FakeDocker(
+        lambda command, _kwargs: _result(stdout=f"{CONTAINER_ID}\n".encode())
+        if command[1] == "run"
+        else AssertionError(command)
+    )
+    _patch(monkeypatch, fake)
+    env = DockerEnvironment()
+    await env.setup()
+    command_started = asyncio.Event()
+    recovery_started = asyncio.Event()
+    recovery_release = asyncio.Event()
+    recovery_done = asyncio.Event()
 
-    env = DockerEnvironment(container_id="cid")
-    body = run(env.read_file("/testbed/a.py"))
+    async def blocked_command(*_args, **_kwargs):
+        command_started.set()
+        await asyncio.Event().wait()
 
-    assert body == "file body"
-    assert fake.calls == [
-        ["docker", "exec", "cid", "bash", "-c", "cat -- /testbed/a.py"]
-    ]
+    async def recover(_token):
+        recovery_started.set()
+        await recovery_release.wait()
+        recovery_done.set()
+        return True
+
+    monkeypatch.setattr(env, "_docker", blocked_command)
+    monkeypatch.setattr(env, "_recover_inner", recover)
+    owner = asyncio.create_task(env.exec_cmd("sleep 20"))
+    await command_started.wait()
+    owner.cancel()
+    await recovery_started.wait()
+    owner.cancel()
+    recovery_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    assert recovery_done.is_set()
 
 
-def test_write_file_streams_content_over_stdin(monkeypatch):
-    content = "x" * 200_000
-    write_proc = FakeProc(returncode=0)
-    fake = FakeDocker([write_proc, FakeProc(stdout=content.encode(), returncode=0)])
-    patch_docker(monkeypatch, fake)
+async def test_double_cancellation_finishes_container_and_backing_cleanup(monkeypatch) -> None:
+    backing_cleaned = asyncio.Event()
 
-    env = DockerEnvironment(container_id="cid", exec_workdir="/testbed")
-    run(env.write_file("big.txt", content))
+    class BackingEnvironment:
+        source_workspace = "/source"
 
-    assert fake.calls[0] == [
-        "docker",
-        "exec",
-        "-i",
-        "-w",
-        "/testbed",
-        "cid",
-        "bash",
-        "-c",
-        'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"',
-        "opencollab-write",
-        "big.txt",
-    ]
-    assert write_proc.communicated_input == content.encode()
-    assert content not in " ".join(fake.calls[0])
-    assert fake.calls[1] == [
-        "docker", "exec", "-w", "/testbed", "cid", "bash", "-c", "cat -- big.txt"
-    ]
+        async def cleanup(self):
+            backing_cleaned.set()
+
+    fake = FakeDocker(
+        lambda command, _kwargs: _result(stdout=f"{CONTAINER_ID}\n".encode())
+        if command[1] == "run"
+        else AssertionError(command)
+    )
+    _patch(monkeypatch, fake)
+    env = DockerEnvironment(backing_environment=BackingEnvironment())
+    await env.setup()
+    removal_started = asyncio.Event()
+    removal_release = asyncio.Event()
+    removal_done = asyncio.Event()
+
+    async def remove_container():
+        removal_started.set()
+        await removal_release.wait()
+        removal_done.set()
+        return True
+
+    monkeypatch.setattr(env, "_remove_container_if_owned", remove_container)
+    owner = asyncio.create_task(env.cleanup())
+    await removal_started.wait()
+    owner.cancel()
+    owner.cancel()
+    removal_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    assert removal_done.is_set()
+    assert backing_cleaned.is_set()
+
+
+async def test_verified_write_threads_stdin_and_digest(monkeypatch) -> None:
+    payload = b"hello"
+    digest = __import__("hashlib").sha256(payload).hexdigest()
+
+    def respond(command, kwargs):
+        if command[1] == "run":
+            return _result(stdout=f"{CONTAINER_ID}\n".encode())
+        if command[1] == "exec":
+            assert kwargs["input_bytes"] == payload
+            return _result(stdout=f"5\t{digest}\n".encode())
+        raise AssertionError(command)
+
+    fake = FakeDocker(respond)
+    _patch(monkeypatch, fake)
+    env = DockerEnvironment()
+    await env.setup()
+    await env.write_file("/workspace/result.txt", "hello")
+
+
+async def test_only_docker_declares_os_process_isolation(tmp_path) -> None:
+    assert DockerEnvironment().process_isolated
+    assert not LocalEnvironment(str(tmp_path)).process_isolated

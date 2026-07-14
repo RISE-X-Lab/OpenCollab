@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
+from opencollab.bootstrap import config as config_mod
 from opencollab.bootstrap.config import (
     accepted_api_key_envs,
     api_key_env_precedence,
@@ -25,6 +28,7 @@ def _isolate_config_env(monkeypatch, tmp_path):
     monkeypatch.delenv("OPENCOLLAB_LLM_TIMEOUT", raising=False)
     monkeypatch.delenv("OPENCOLLAB_TEMPERATURE", raising=False)
     monkeypatch.delenv("OPENCOLLAB_TOP_P", raising=False)
+    monkeypatch.delenv("OPENCOLLAB_MAX_OUTPUT_TOKENS", raising=False)
 
 
 def test_filter_messages_defaults_off(monkeypatch):
@@ -57,6 +61,14 @@ def test_llm_timeout_defaults_to_long_running_provider_window(monkeypatch):
 def test_llm_timeout_reads_env(monkeypatch):
     monkeypatch.setenv("OPENCOLLAB_LLM_TIMEOUT", "120.5")
     assert build_config().llm_timeout == 120.5
+
+
+@pytest.mark.parametrize("raw", ["0", "-1", "nan", "inf", "-inf"])
+def test_llm_timeout_rejects_nonpositive_or_nonfinite_env(monkeypatch, raw):
+    monkeypatch.setenv("OPENCOLLAB_LLM_TIMEOUT", raw)
+
+    with pytest.raises(Exception):
+        build_config()
 
 
 def test_temperature_defaults_to_two_tenths(monkeypatch):
@@ -120,6 +132,43 @@ def test_top_p_surfaces_in_get_config_dict(monkeypatch):
     assert get_config()["top_p"] is None
     monkeypatch.setenv("OPENCOLLAB_TOP_P", "0.85")
     assert get_config()["top_p"] == 0.85
+
+
+def test_max_output_tokens_defaults_and_reads_env(monkeypatch):
+    assert build_config().max_output_tokens == 8192
+    monkeypatch.setenv("OPENCOLLAB_MAX_OUTPUT_TOKENS", "32768")
+    assert build_config().max_output_tokens == 32768
+
+
+def test_provider_override_reselects_file_first_api_key(monkeypatch, tmp_path):
+    cfg_file = tmp_path / "provider.env"
+    cfg_file.write_text(
+        "OPENCOLLAB_PROVIDER=openai\n"
+        "OPENAI_API_KEY=file-openai\n"
+        "ANTHROPIC_API_KEY=file-anthropic\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(cfg_file))
+
+    cfg = build_config(overrides={"provider": "anthropic"})
+
+    assert cfg.provider == "anthropic"
+    assert cfg.api_key == "file-anthropic"
+
+
+def test_cli_resolved_config_keeps_max_output_tokens(monkeypatch, tmp_path):
+    from opencollab.adapters.cli.config_resolve import resolve_config
+
+    cfg_file = tmp_path / "runtime.env"
+    cfg_file.write_text(
+        "OPENCOLLAB_API_KEY=k\nOPENCOLLAB_MAX_OUTPUT_TOKENS=32768\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(cfg_file))
+
+    cfg = resolve_config(str(tmp_path), None, None, None, None, None)
+
+    assert cfg["max_output_tokens"] == 32_768
 
 
 def test_dashscope_api_key_is_supported_as_fallback(monkeypatch):
@@ -219,6 +268,24 @@ def test_missing_api_key_treats_whitespace_only_key_as_missing(monkeypatch):
     assert missing_api_key("openai", "   ") is True
     monkeypatch.setenv("OPENAI_API_KEY", "   ")
     assert missing_api_key("openai", None) is True
+
+
+@pytest.mark.parametrize("kind", ["fifo", "symlink", "oversized"])
+def test_config_file_rejects_unsafe_or_oversized_input(tmp_path, monkeypatch, kind):
+    config = tmp_path / "config.env"
+    if kind == "fifo":
+        os.mkfifo(config)
+    elif kind == "symlink":
+        real = tmp_path / "real.env"
+        real.write_text("OPENCOLLAB_MODEL=secret\n", encoding="utf-8")
+        config.symlink_to(real)
+    else:
+        config.write_text("x" * 65, encoding="utf-8")
+        monkeypatch.setattr(config_mod, "MAX_DOTENV_BYTES", 64)
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(config))
+
+    with pytest.raises(ValueError, match="config env|read target exceeds"):
+        build_config()
 
 
 def test_missing_api_key_honors_dashscope_endpoint(monkeypatch):

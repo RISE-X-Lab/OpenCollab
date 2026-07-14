@@ -8,6 +8,7 @@ from opencollab.bootstrap import (
     build_scheduler,
 )
 from opencollab.bootstrap.team_config import DEFAULT_LEAD_PROMPT, LEAD_TOOL_NAMES
+from opencollab.domain.identity import role_storage_slug
 
 
 def _cfg(**overrides):
@@ -104,7 +105,9 @@ def test_build_scheduler_writes_structured_lead_file_and_manifest(tmp_path):
     lead_path = scheduler.lead_session.auto_save_path
 
     # Lead transcript: structured JSON with metadata + per-message timestamps.
-    assert os.path.basename(lead_path) == "agent_0_lead.json"
+    assert os.path.basename(lead_path) == (
+        f"agent_0_{role_storage_slug('lead')}.json"
+    )
     with open(lead_path) as f:
         saved = json.load(f)
     assert saved["aid"] == 0

@@ -150,9 +150,9 @@ WORKFLOW_AGENT_PROMPT = (
 )
 ```
 
-The actual work is the `prompt` argument (e.g. `harness/workflows.py` does
-`_IMPLEMENT_PROMPT.format(description=…)`), which becomes the first **user**
-message. For `schema=` calls, `_run_structured_agent` appends
+The actual work is the `prompt` argument supplied by an SDK consumer workflow,
+which becomes the first **user** message. For `schema=` calls,
+`_run_structured_agent` appends
 `_STRUCTURED_INSTRUCTION`; if the first pass yields no structured result, a
 corrective pass adds `_STRUCTURED_RETRY` with `tool_choice` forced to the
 `structured_output` function.
@@ -383,7 +383,7 @@ the compaction marker exist only in the per-call reshaped copy.
 | `build_workflow_session()` | `bootstrap/workflow_runtime.py` | 124–158 |
 | `_STRUCTURED_INSTRUCTION` / `_STRUCTURED_RETRY` | `application/workflow.py` | 52–69 |
 | `_run_structured_agent` (seed + corrective pass) | `application/workflow.py` | 383–457 |
-| `_IMPLEMENT/_REVIEW/_APPLY_PROMPT` | `harness/workflows.py` | 27–44 |
+| Consumer workflow role prompts | external SDK consumer, such as OpenCollab-Eval | package-defined |
 | Shaping pipeline order | `application/shaping/pipeline.py` | 117–131 |
 | Trigger/target/keep-recent defaults | `application/shaping/pipeline.py` | 14–17 |
 | `EagerToolOutputClearShaper` + stub | `application/shaping/eager.py` | 47–200 |

@@ -41,16 +41,27 @@ def print_missing_key_hint(
 def resolve_config(workspace: str, model: str | None, provider: str | None,
                    api_key: str | None, base_url: str | None, budget: int | None) -> dict:
     """Merge CLI args with .env defaults. CLI args take precedence."""
-    from opencollab.bootstrap.config import get_config
-    cfg = get_config(workspace)
+    from opencollab.bootstrap.config import build_config
+
+    cfg = build_config(
+        workspace,
+        overrides={
+            "model": model,
+            "provider": provider,
+            "api_key": api_key,
+            "base_url": base_url,
+            "budget": budget,
+        },
+    ).model_dump()
     return {
-        "model": model or cfg["model"],
-        "provider": provider or cfg["provider"],
-        "api_key": api_key or cfg["api_key"],
-        "base_url": base_url or cfg["base_url"],
-        "budget": budget if budget is not None else _safe_int(cfg["budget"], 1_000_000),
+        "model": cfg["model"],
+        "provider": cfg["provider"],
+        "api_key": cfg["api_key"],
+        "base_url": cfg["base_url"],
+        "budget": _safe_int(cfg["budget"], 1_000_000),
         "temperature": cfg["temperature"],
         "top_p": cfg.get("top_p"),
+        "max_output_tokens": cfg["max_output_tokens"],
         "thinking": cfg["thinking"],
         "thinking_params": cfg["thinking_params"],
         "llm_timeout": cfg["llm_timeout"],

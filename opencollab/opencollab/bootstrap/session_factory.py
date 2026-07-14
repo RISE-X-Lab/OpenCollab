@@ -15,10 +15,12 @@ import os
 import re
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.repo_map import build_repo_map
+from opencollab.adapters.safe_files import ensure_directory_no_symlinks
 from opencollab.adapters.trace import Tracer
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.ports import (
@@ -38,6 +40,7 @@ from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
 from opencollab.bootstrap.team_config import TeamConfig, default_team_config
 from opencollab.domain.agent import Agent
+from opencollab.domain.identity import role_storage_slug, validate_role_identity
 
 
 def _team_budget_guard(scheduler: SchedulerPort | None) -> Callable[[], bool] | None:
@@ -53,7 +56,16 @@ def _team_budget_guard(scheduler: SchedulerPort | None) -> Callable[[], bool] | 
 
 def agent_save_path(save_dir: str, aid: int, role: str) -> str:
     """Per-agent transcript path within a run folder: ``agent_<aid>_<role>.json``."""
-    return os.path.join(save_dir, f"agent_{aid}_{role}.json")
+    if isinstance(aid, bool) or not isinstance(aid, int) or aid < 0:
+        raise ValueError("agent id must be a non-negative integer")
+    role_component = role_storage_slug(role)
+    base = os.path.abspath(save_dir)
+    path = os.path.abspath(
+        os.path.join(base, f"agent_{aid}_{role_component}.json")
+    )
+    if os.path.commonpath((base, path)) != base:
+        raise ValueError("agent transcript path escapes run directory")
+    return path
 
 
 # A workflow run folder groups one workflow's per-role conversation transcripts
@@ -107,16 +119,34 @@ def make_run_dir(workspace: str, *, prefix: str = "") -> str:
 
     The folder is named ``<prefix><timestamp>``; teams pass no prefix while
     workflow runs pass ``WORKFLOW_RUN_PREFIX`` so the two are distinguishable at
-    a glance even though they share this parent dir. A 4-char suffix is appended
-    if a same-second folder already exists, so two runs started within the same
-    second do not collide.
+    a glance even though they share this parent dir. A random suffix lets
+    concurrent callers reserve their directories without a retry loop.
     """
-    base = os.path.join(workspace, ".opencollab", "sessions")
+    if (
+        not isinstance(prefix, str)
+        or "/" in prefix
+        or "\\" in prefix
+        or any(ord(character) < 32 or ord(character) == 127 for character in prefix)
+        or len(prefix.encode("utf-8", errors="surrogatepass")) > 32
+    ):
+        raise ValueError("run directory prefix must be one short safe component")
+    try:
+        workspace_root = Path(workspace).resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(f"workspace is not a real directory: {workspace}") from exc
+    if not workspace_root.is_dir():
+        raise ValueError(f"workspace is not a real directory: {workspace}")
+    base = workspace_root / ".opencollab" / "sessions"
+    try:
+        ensure_directory_no_symlinks(base)
+    except OSError as exc:
+        raise ValueError(
+            f"workspace state parent is not a real directory: {workspace}"
+        ) from exc
     stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-    run_dir = os.path.join(base, f"{prefix}{stamp}")
-    if os.path.exists(run_dir):
-        run_dir = f"{run_dir}-{uuid.uuid4().hex[:4]}"
-    return run_dir
+    run_dir = base / f"{prefix}{stamp}-{uuid.uuid4().hex}"
+    run_dir.mkdir(mode=0o700)
+    return str(run_dir)
 
 
 def build_session(
@@ -161,6 +191,7 @@ def build_session(
         llm_timeout=llm_timeout,
         store=store,
         auto_save_callback=session._auto_save,
+        auto_save_prepare_callback=session._prepare_auto_save,
         aid=aid,
         seed_user_messages=seed_user_messages,
         shaper=shaper,
@@ -186,9 +217,9 @@ def load_session(
     agent: Agent,
     **kwargs: Any,
 ) -> Session:
-    """Build a session and replace its messages with the JSONL at ``path``."""
+    """Build a session and restore the snapshot at ``path``."""
     session = build_session(agent=agent, **kwargs)
-    session.messages = session.store.load_messages(path, agent.system_prompt)
+    session.restore(path)
     return session
 
 
@@ -242,6 +273,7 @@ def build_spawn_session(
     ``add_user_message`` is needed. Delegates to ``DefaultSessionFactory`` so the
     spawn-session assembly lives in one place.
     """
+    role = validate_role_identity(role)
     factory = DefaultSessionFactory(cfg, team_cfg=team_cfg)
     return factory.build_spawn_session(
         role=role,
@@ -305,6 +337,7 @@ class DefaultSessionFactory:
         task: str | None = None,
         context: str = "",
     ) -> Session:
+        role = validate_role_identity(role)
         cfg = self._cfg
         safety_policy = (
             cfg.safety_policy_factory(env)

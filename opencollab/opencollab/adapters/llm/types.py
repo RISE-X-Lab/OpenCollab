@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
+
 # ---------------------------------------------------------------------------
 # Response containers
 # ---------------------------------------------------------------------------
@@ -70,11 +72,12 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "o3": 200_000,
     "deepseek": 64_000,
     "qwen": 131_072,
+    "glm-5.2": 400_000,
     "gemini": 1_000_000,
 }
 
 # Conservative default output reservation when a model is recognised.
-DEFAULT_MAX_OUTPUT_TOKENS = 8_192
+DEFAULT_MAX_OUTPUT_TOKENS = DEFAULT_MAX_TOKENS_PER_STEP
 
 
 def model_context_window(model: str | None) -> int | None:

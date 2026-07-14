@@ -60,6 +60,8 @@ class RequestExtensionTool:
     """
 
     name = REQUEST_EXTENSION_TOOL_NAME
+    default_timeout: float | None = None
+    disable_outer_timeout = False
     description = (
         "Request ONE more exploration turn before committing your findings. Only "
         "use this when you have a SPECIFIC, falsifiable reason — name the exact "

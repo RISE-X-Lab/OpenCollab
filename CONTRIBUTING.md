@@ -16,7 +16,8 @@ adapters  →  application  →  domain
 - `opencollab/opencollab/application/` — use cases, scheduler, ports (`application/ports.py`). Imports `domain` + stdlib only.
 - `opencollab/opencollab/adapters/` — concrete implementations: `cli/`, `tui/`, `llm/`, `tools/`, environments, tracing, session store.
 - `opencollab/opencollab/bootstrap/` — composition root; the only layer that knows concrete types.
-- `swebench/`, `workflows/`, `scripts/` — headless evaluation, deterministic workflows, and tooling.
+- `opencollab/opencollab/sdk/` — the versioned boundary for external workflow and evaluation packages.
+- `scripts/` — framework launchers and provider diagnostics.
 
 ## Development setup
 
@@ -45,8 +46,8 @@ New behavior needs tests, and the suite must stay green.
 
 ### Enforced automatically in CI
 
-- **Lint** — `ruff check .` over the whole repo (package + `scripts/` + `swebench/`
-  + `workflows/` + tests); config lives in the repo-root `ruff.toml`.
+- **Lint** — `ruff check .` over the whole repository; config lives in the
+  repository-root `ruff.toml`.
 - **PR title** — must follow Conventional Commits; squash-merge uses it as the
   commit subject on `main`.
 - **File hygiene** — a newly added file over 500 KB, or a new `.py` module over

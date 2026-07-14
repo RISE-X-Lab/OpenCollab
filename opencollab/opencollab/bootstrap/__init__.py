@@ -1,5 +1,10 @@
 """Composition layer — CLI/eval wiring without touching core or domain internals."""
 
+from opencollab.bootstrap.agent_runtime import (
+    AgentRuntimeLifecycleError,
+    AgentRuntimeResult,
+    run_agent,
+)
 from opencollab.bootstrap.config import OpenCollabConfig, build_config, get_config
 from opencollab.bootstrap.container import (
     DefaultSessionFactory,
@@ -17,6 +22,8 @@ from opencollab.bootstrap.container import (
 )
 
 __all__ = [
+    "AgentRuntimeLifecycleError",
+    "AgentRuntimeResult",
     "DefaultSessionFactory",
     "OpenCollabConfig",
     "RuntimeContext",
@@ -31,5 +38,6 @@ __all__ = [
     "build_workspace_safety_policy",
     "get_config",
     "load_session",
+    "run_agent",
     "snapshot_session",
 ]

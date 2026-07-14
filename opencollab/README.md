@@ -5,6 +5,12 @@ CLI.
 
 ## Install
 
+OpenCollab supports Linux and macOS hosts. Its local file adapters require
+descriptor-relative operations, no-follow `stat`, `O_NOFOLLOW`, fd-based
+directory listing, callable `fcntl.flock`, and an atomic no-clobber rename:
+`renameat2(RENAME_NOREPLACE)` on Linux or `renameatx_np(RENAME_EXCL)` on macOS
+10.12 and newer. Missing primitives produce an explicit capability error.
+
 From the repository root with `uv`:
 
 ```bash
@@ -42,27 +48,19 @@ call the installed binary directly:
 
 ```bash
 opencollab/.venv/bin/opencollab --workspace .                       # interactive agent / team
-opencollab/.venv/bin/opencollab workflow run scout-solve --args '{"goal": "..."}'
-opencollab/.venv/bin/opencollab eval tasks.jsonl --output eval_results --concurrency 1
+opencollab/.venv/bin/opencollab workflow run NAME --args '{"goal": "..."}' --dir path/to/workflows
 ```
 
 Useful flags: `--trace` records a trajectory (every LLM call and tool exec);
 `--no-worktrees` disables per-child git-worktree isolation; `--yolo`
 auto-approves risky commands.
 
-## Headless Eval
+## External integrations
 
-The eval command reads JSONL tasks. Each line describes one task:
-
-```json
-{"task_id":"example","description":"Fix the bug described here.","repo_path":"/path/to/repo","timeout":600,"max_tokens":1000000}
-```
-
-The harness writes `results.jsonl` and trajectory logs under the output
-directory.
-
-Use the Docker-based SWE-bench runner in `swebench/` for benchmark
-container orchestration.
+Evaluation runners and benchmark-specific workflows live in the companion
+OpenCollab-Eval repository. Integrations depend on `opencollab.sdk`; OpenCollab
+can evolve its internal layers without forcing evaluation code to track private
+module paths.
 
 ## Architecture
 
@@ -77,7 +75,7 @@ OpenCollab follows a strict clean architecture: dependencies point inward only,
   `tools/`, environments, tracing, and the session store.
 - `opencollab/bootstrap/` — the composition root; the only layer that knows
   concrete types.
-- `opencollab/harness/` — the headless evaluation runner.
+- `opencollab/sdk/` — the versioned integration boundary for external packages.
 - `tests/` — characterization and regression tests, including the import-
   direction guards `test_domain_boundaries.py` and
   `test_application_boundaries.py`.
@@ -86,8 +84,8 @@ The dependency direction is enforced, not documented: an inward→outward import
 turns the boundary tests red. Every outward capability is a Protocol *port* in
 `application/ports.py`; only `bootstrap/` knows concrete types, so swapping an
 LLM, environment, or tool library is a new adapter plus one line of wiring. The
-`domain`/`application` core imports no LLM and does no I/O, so the suite
-(~866 tests) runs in seconds with zero network.
+`domain`/`application` core imports no LLM and does no I/O, so its suite runs
+without network access.
 
 ## How it works
 
@@ -113,7 +111,7 @@ The components you'd most likely swap, each behind a port:
 | **Context manager** | Context is an editable bundle of *sources* (identity / team / task / …), not one string. A deterministic shaping pipeline projects a bounded view at each model call — shed low-priority sources, clear stale tool output, snip old turns — while the persisted transcript stays lossless. |
 | **Tool manager** | A name-keyed registry (`name → factory`) with a stateless executor and loop detection. Adding a tool is subclassing `Tool` plus one factory line; the executor is tool-agnostic. |
 | **LLM provider** | A façade behind `LLMPort`, one module per provider, so each provider's quirks (e.g. recovering markup-leaked tool calls, estimating missing usage) stay isolated. The OpenAI-compatible path is the default; a native Anthropic path (`provider=anthropic`) also exists. |
-| **Workflow engine** | Drop a `@workflow`-tagged `*.py` in `../workflows/` and it's auto-discovered. `ctx.agent / parallel / pipeline` give Python-guaranteed control flow over one-shot agent sessions. |
+| **Workflow engine** | Point the CLI or SDK at a directory containing `@workflow`-tagged Python modules. `ctx.agent / parallel / pipeline` give Python-guaranteed control flow over one-shot agent sessions. |
 | **Skill store** | On-demand instruction sets the model loads by name through one generic `use_skill` tool (opt-in per role) — extend an agent's know-how without adding any tools. Drop a `SKILL.md` under `../skills/` and it's auto-catalogued. |
 
 ## Status

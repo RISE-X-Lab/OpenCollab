@@ -9,8 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shlex
+import sys
+import threading
+from types import SimpleNamespace
 
 import pytest
+from opencollab.adapters import hooks as hooks_adapter
 from opencollab.adapters.hooks import ShellHookRunner
 from opencollab.application.hooks import HookEventSubscriber
 from opencollab.bootstrap import build_runtime_context, build_scheduler
@@ -151,6 +156,181 @@ def test_runner_kills_on_timeout_without_raising():
     assert outcome.allow is True
 
 
+def _delayed_sentinel_command(started, finished) -> str:
+    code = (
+        "import pathlib,time; "
+        f"pathlib.Path({str(started)!r}).touch(); "
+        "time.sleep(0.6); "
+        f"pathlib.Path({str(finished)!r}).touch()"
+    )
+    child = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+    return f"{child} & wait"
+
+
+def test_runner_timeout_kills_descendant_process_group(tmp_path):
+    started = tmp_path / "started"
+    finished = tmp_path / "finished"
+    spec = HookSpec(
+        event="Stop",
+        action_type="command",
+        command=_delayed_sentinel_command(started, finished),
+        timeout=0.2,
+    )
+
+    asyncio.run(ShellHookRunner((spec,)).fire("Stop", {"hook_event_name": "Stop"}))
+
+    assert started.exists()
+    asyncio.run(asyncio.sleep(0.7))
+    assert not finished.exists()
+
+
+def test_runner_cleans_background_group_after_shell_leader_exits(tmp_path):
+    finished = tmp_path / "background-finished"
+    child_code = (
+        "import pathlib,signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "time.sleep(0.6); "
+        f"pathlib.Path({str(finished)!r}).touch()"
+    )
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(child_code)} &"
+    runner = ShellHookRunner(
+        (HookSpec(event="Stop", action_type="command", command=command),)
+    )
+
+    outcome = asyncio.run(
+        runner.fire("Stop", {"hook_event_name": "Stop"})
+    )
+
+    assert outcome.allow is True
+    assert runner.cleanup_quiesced is True
+    threading.Event().wait(0.7)
+    assert not finished.exists()
+
+
+def test_runner_caller_cancellation_kills_descendant_process_group(tmp_path):
+    started = tmp_path / "started"
+    finished = tmp_path / "finished"
+    spec = HookSpec(
+        event="Stop",
+        action_type="command",
+        command=_delayed_sentinel_command(started, finished),
+        timeout=5.0,
+    )
+
+    async def _run() -> None:
+        task = asyncio.create_task(
+            ShellHookRunner((spec,)).fire("Stop", {"hook_event_name": "Stop"})
+        )
+        for _ in range(100):
+            if started.exists():
+                break
+            await asyncio.sleep(0.01)
+        assert started.exists()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.7)
+
+    asyncio.run(_run())
+    assert not finished.exists()
+
+
+def test_runner_delegates_to_shared_process_supervisor(monkeypatch):
+    calls = []
+
+    async def fake_run_process(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(hooks_adapter, "run_process", fake_run_process)
+    runner = ShellHookRunner((_spec(event="Stop", command="echo ready"),))
+
+    outcome = asyncio.run(
+        runner.fire(
+            "Stop",
+            {"hook_event_name": "Stop", "tool": "bash", "aid": 9},
+        )
+    )
+
+    assert outcome.allow is True
+    assert calls[0][0] == "echo ready"
+    assert calls[0][1]["shell"] is True
+    assert calls[0][1]["timeout"] == 30.0
+    assert json.loads(calls[0][1]["input_bytes"]) == {
+        "hook_event_name": "Stop",
+        "tool": "bash",
+        "aid": 9,
+    }
+    assert calls[0][1]["env"]["OPENCOLLAB_HOOK_EVENT"] == "Stop"
+    assert calls[0][1]["env"]["OPENCOLLAB_TOOL"] == "bash"
+    assert calls[0][1]["env"]["OPENCOLLAB_AID"] == "9"
+
+
+def test_runner_swallows_shared_supervisor_timeout(monkeypatch):
+    async def fake_run_process(*_args, **_kwargs):
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(hooks_adapter, "run_process", fake_run_process)
+    outcome = asyncio.run(
+        ShellHookRunner((_spec(event="Stop"),)).fire(
+            "Stop",
+            {"hook_event_name": "Stop"},
+        )
+    )
+    assert outcome.allow is True
+
+
+def test_runner_reports_shared_supervisor_cleanup_failure(monkeypatch):
+    async def fake_run_process(*_args, **_kwargs):
+        raise hooks_adapter.ProcessCleanupError("descendant remained alive")
+
+    monkeypatch.setattr(hooks_adapter, "run_process", fake_run_process)
+    runner = ShellHookRunner((_spec(event="Stop"),))
+
+    with pytest.raises(hooks_adapter.ProcessCleanupError, match="remained alive"):
+        asyncio.run(runner.fire("Stop", {"hook_event_name": "Stop"}))
+    assert runner.cleanup_quiesced is False
+
+
+def test_runner_serializes_payload_before_starting_command(tmp_path):
+    sentinel = tmp_path / "started"
+    payload = {"hook_event_name": "Stop"}
+    payload["cycle"] = payload
+    spec = HookSpec(
+        event="Stop",
+        action_type="command",
+        command=f'touch "{sentinel}"',
+    )
+
+    outcome = asyncio.run(ShellHookRunner((spec,)).fire("Stop", payload))
+
+    assert outcome.allow is True
+    assert not sentinel.exists()
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), True])
+def test_hook_spec_rejects_unbounded_or_nonpositive_timeout(timeout):
+    with pytest.raises(ValueError, match="finite positive"):
+        HookSpec(event="Stop", action_type="command", command="true", timeout=timeout)
+
+
+def test_runner_rechecks_mutated_invalid_timeout_before_spawn(tmp_path):
+    sentinel = tmp_path / "started"
+    spec = HookSpec(
+        event="Stop",
+        action_type="command",
+        command=f'touch "{sentinel}"',
+    )
+    object.__setattr__(spec, "timeout", float("inf"))
+
+    outcome = asyncio.run(
+        ShellHookRunner((spec,)).fire("Stop", {"hook_event_name": "Stop"})
+    )
+
+    assert outcome.allow is True
+    assert not sentinel.exists()
+
+
 def test_runner_reserved_action_type_raises_when_matched():
     spec = HookSpec(event="Stop", action_type="agent", command="ignored")
     runner = ShellHookRunner((spec,))
@@ -213,6 +393,21 @@ def test_config_unknown_action_type_raises(tmp_path, monkeypatch):
     )
     _write_team(tmp_path, monkeypatch, bad)
     with pytest.raises(ValueError, match="Unknown hook action type"):
+        load_team_config(str(tmp_path))
+
+
+@pytest.mark.parametrize("timeout", [".inf", ".nan", "0", "-1"])
+def test_config_rejects_unbounded_or_nonpositive_hook_timeout(
+    tmp_path,
+    monkeypatch,
+    timeout,
+):
+    team = (
+        "roles:\n  lead:\n    tools: [bash]\n    prompt: x\n"
+        f"hooks:\n  Stop:\n    - command: echo\n      timeout: {timeout}\n"
+    )
+    _write_team(tmp_path, monkeypatch, team)
+    with pytest.raises(ValueError):
         load_team_config(str(tmp_path))
 
 

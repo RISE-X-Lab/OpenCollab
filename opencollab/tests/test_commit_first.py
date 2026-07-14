@@ -17,8 +17,6 @@ fact-sheet anchors.
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from typing import Any
 
 from opencollab.application.session_run import ENFORCEMENT_OFF, ENFORCEMENT_ON
 from opencollab.application.submit_findings import (
@@ -26,18 +24,10 @@ from opencollab.application.submit_findings import (
     harvest_findings,
 )
 from opencollab.application.workflow import WorkflowContext
-from opencollab.bootstrap.workflow_runtime import discover_workflows
-
-_WF_DIR = Path(__file__).resolve().parents[2] / "workflows"
 
 
 def run(coro):
     return asyncio.run(coro)
-
-
-def _recon_fn():
-    fn = discover_workflows(str(_WF_DIR)).get("analyst-solve").fn
-    return fn.__globals__["_recon"]
 
 
 # --------------------------------------------------------------------------- #
@@ -240,117 +230,3 @@ def test_off_path_ignores_harvest_fallback():
 
 
 # --------------------------------------------------------------------------- #
-# _recon-level: drafts are committed before scouts + plumbed as fallback; off-parity
-# --------------------------------------------------------------------------- #
-
-
-class _Budget:
-    total = 1_000_000
-
-    def remaining(self) -> float:
-        return 1_000_000.0
-
-    def spent(self) -> int:
-        return 0
-
-
-class _ReconCtx:
-    """_recon stand-in with a draft_findings that returns a fixed payload."""
-
-    def __init__(self, *, workspace_root=None, with_drafts=True):
-        self.workspace_root = workspace_root
-        self.agent_calls: list[dict[str, Any]] = []
-        self.draft_calls: list[dict[str, Any]] = []
-        self.logs: list[str] = []
-        self.budget = _Budget()
-        self._with_drafts = with_drafts
-        if with_drafts:
-            self.draft_findings = self._draft_findings  # only present when enabled
-
-    async def _draft_findings(self, prompt, *, label=None, budget=None):
-        self.draft_calls.append({"prompt": prompt, "label": label, "budget": budget})
-        return _cited(summary=f"draft for {label}")
-
-    async def agent(self, prompt, **kw):
-        self.agent_calls.append({"prompt": prompt, **kw})
-        return f"refined:{kw.get('label')}"
-
-    async def parallel(self, thunks):
-        return [await t() for t in thunks]
-
-    async def log(self, message):
-        self.logs.append(message)
-
-
-_DIMS = [
-    {"aspect": "origin", "question": "where?", "hints": ["pkg/t.py"]},
-    {"aspect": "contract", "question": "callers?", "hints": ["grep callers"]},
-]
-
-
-def _trivial_repo(tmp_path) -> tuple[str, str]:
-    (tmp_path / "mod.py").write_text(
-        'def tiny(a, b):\n    """Add a and b together for the widget subsystem."""\n'
-        "    # TODO: implement this function\n    raise NotImplementedError\n",
-        encoding="utf-8",
-    )
-    goal = (
-        "TASK: Implement the function `tiny`.\n"
-        f"- The function stub is at: {tmp_path / 'mod.py'} (near line 1)\n"
-    )
-    return str(tmp_path), goal
-
-
-def _scout_calls(ctx: _ReconCtx):
-    return [c for c in ctx.agent_calls if str(c.get("label", "")).startswith("scout:")]
-
-
-def test_recon_commit_first_seeds_drafts_and_plumbs_fallback(tmp_path):
-    recon = _recon_fn()
-    root, goal = _trivial_repo(tmp_path)
-    ctx = _ReconCtx(workspace_root=root, with_drafts=True)
-    run(recon(ctx, goal, _DIMS, ENFORCEMENT_ON))
-
-    scouts = _scout_calls(ctx)
-    # A draft was committed for each surviving scout BEFORE exploring.
-    assert len(ctx.draft_calls) == len(scouts)
-    assert all(c["label"].endswith(":draft") for c in ctx.draft_calls)
-    # Each scout prompt carries the committed draft + revise framing,
-    # and the rendered draft is plumbed as that scout's harvest fallback.
-    for c in scouts:
-        assert "committed draft" in c["prompt"]
-        assert "submit_findings" in c["prompt"]
-        assert isinstance(c["harvest_fallback"], str) and c["harvest_fallback"].strip()
-        # The draft prompt is fact-sheet-derived; its summary rode into the fallback.
-        assert "draft for" in c["harvest_fallback"]
-
-
-def test_recon_off_makes_no_draft_call(tmp_path):
-    recon = _recon_fn()
-    root, goal = _trivial_repo(tmp_path)
-    ctx = _ReconCtx(workspace_root=root, with_drafts=True)
-    run(recon(ctx, goal, _DIMS, ENFORCEMENT_OFF))
-
-    # OFF: no drafting, no fact sheet, harvest_fallback inert, prompts unchanged.
-    assert ctx.draft_calls == []
-    scouts = _scout_calls(ctx)
-    assert len(scouts) == len(_DIMS)
-    assert all(c.get("harvest_fallback") is None for c in scouts)
-    assert all("committed draft" not in c["prompt"] for c in scouts)
-    assert all("Pre-recon fact sheet" not in c["prompt"] for c in scouts)
-
-
-def test_recon_on_without_draft_findings_degrades_gracefully(tmp_path):
-    # enforcement on + manifest, but a ctx WITHOUT draft_findings -> 5a fact sheet
-    # still injected, commit-first simply inert (no drafts, no fallback).
-    recon = _recon_fn()
-    root, goal = _trivial_repo(tmp_path)
-    ctx = _ReconCtx(workspace_root=root, with_drafts=False)
-    run(recon(ctx, goal, _DIMS, ENFORCEMENT_ON))
-
-    scouts = _scout_calls(ctx)
-    assert ctx.draft_calls == []
-    assert all(c.get("harvest_fallback") is None for c in scouts)
-    assert all("committed draft" not in c["prompt"] for c in scouts)
-    # 5a still active: the fact sheet rode into the hints.
-    assert any("Pre-recon fact sheet" in c["prompt"] for c in scouts)

@@ -2,8 +2,8 @@
 
 A workflow is a plain async function ``async def fn(ctx, args) -> Any`` in which
 ordinary Python code (not an LLM lead) orchestrates one-shot agent sessions.
-This is a structured generalization of ``harness.evaluator.run_eval_task`` — it
-does not touch the Scheduler's pending-row / wake machinery.
+It composes reusable session primitives without touching the Scheduler's
+pending-row / wake machinery.
 
 The context exposes a handful of primitives:
 
@@ -25,12 +25,22 @@ Pure application layer: domain + stdlib imports only.
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import logging
+import math
+import operator
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from opencollab.application.async_timeout import abandon_on_timeout
+from opencollab.application.async_timeout import (
+    CallerTimeoutError,
+    consume_task_result,
+)
+from opencollab.application.async_timeout import (
+    abandon_on_timeout as abandon_on_timeout,
+)
 from opencollab.application.extension_valve import RequestExtensionTool
 from opencollab.application.ports import (
     EventPublisherPort,
@@ -49,14 +59,17 @@ from opencollab.application.submit_findings import (
     harvest_findings,
 )
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_MAX_CONCURRENCY = 4
 
 # Seconds of head-room kept before the run's hard wall (``deadline_monotonic``).
 # Once ``time.monotonic()`` is within this margin of the deadline, ``time_low()``
 # returns True so a wall-clock-aware workflow bails to a forced final write while
 # it can still land a patch — the decisive fix for runs that locate the edit but
-# die on the 1800s wall before any write (django-11564).
+# reach the hard wall before the final write completes.
 DEFAULT_DEADLINE_MARGIN_SECONDS = 120.0
+DEFAULT_INTERNAL_COMMIT_TIMEOUT_SECONDS = 120.0
 
 # Appended to a schema= prompt: the agent must finish by emitting structured
 # output via the injected tool rather than free-text.
@@ -151,6 +164,7 @@ class WorkflowBudget:
     def __init__(self, total: int | None, sessions: list[Any]) -> None:
         self._total = total
         self._sessions = sessions
+        self._leases: list[_BudgetLease] = []
 
     @property
     def total(self) -> int | None:
@@ -162,7 +176,31 @@ class WorkflowBudget:
     def remaining(self) -> float:
         if self._total is None:
             return float("inf")
-        return self._total - self.spent()
+        reserved_unspent = sum(lease.remaining() for lease in self._leases)
+        return self._total - self.spent() - reserved_unspent
+
+    def reserve(self, lease: _BudgetLease) -> None:
+        self._leases.append(lease)
+
+    def release(self, lease: _BudgetLease) -> None:
+        try:
+            self._leases.remove(lease)
+        except ValueError:
+            pass
+
+
+@dataclass
+class _BudgetLease:
+    """A per-call token allocation held while one workflow agent is active."""
+
+    total: int
+    reserved: int
+    sessions: list[Any]
+    pending_tasks: list[asyncio.Task[Any]] | None = None
+
+    def remaining(self) -> int:
+        spent = sum(max(0, int(getattr(s, "used_tokens", 0))) for s in self.sessions)
+        return max(0, self.total - spent)
 
 
 class WorkflowContext:
@@ -181,12 +219,28 @@ class WorkflowContext:
         deadline_margin_seconds: float = DEFAULT_DEADLINE_MARGIN_SECONDS,
         workspace_root: str | None = None,
     ) -> None:
+        if isinstance(max_concurrency, bool):
+            raise ValueError("max_concurrency must be a positive integer")
+        try:
+            max_concurrency = operator.index(max_concurrency)
+        except TypeError as exc:
+            raise ValueError("max_concurrency must be a positive integer") from exc
+        if max_concurrency < 1:
+            raise ValueError("max_concurrency must be a positive integer")
         self._factory = factory
         self._event_sink = event_sink
         self._tracer = tracer
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._sessions: list[Any] = []
         self.budget = WorkflowBudget(budget_total, self._sessions)
+        self._budget_lock = asyncio.Lock()
+        self._budget_waiters = 0
+        self._active_budget_lease: contextvars.ContextVar[_BudgetLease | None] = (
+            contextvars.ContextVar("workflow_budget_lease", default=None)
+        )
+        self._pending_cleanup_tasks: set[asyncio.Task[Any]] = set()
+        self._active_call_tasks: set[asyncio.Task[Any]] = set()
+        self._active_session_tasks: set[asyncio.Task[Any]] = set()
         self._tree_probe = tree_probe
         # Absolute path of the repo the sessions edit/read (the workspace passed to
         # ``run_workflow``). Read-only metadata for workflows that need to run a
@@ -242,6 +296,50 @@ class WorkflowContext:
         """
         return tuple(self._sessions)
 
+    async def wait_for_pending_cleanup(self) -> None:
+        """Wait until every context-owned call and session task is quiescent.
+
+        This includes active background ``agent`` calls, their current session
+        awaitables, and abandoned cancellation cleanup. Boundary owners call it
+        before reading artifacts or releasing the shared environment.
+        """
+        saw_empty = False
+        while True:
+            pending = set(self.pending_cleanup_tasks)
+            if not pending:
+                if saw_empty:
+                    return
+                saw_empty = True
+                await asyncio.sleep(0)
+                continue
+            saw_empty = False
+            await asyncio.gather(*pending, return_exceptions=True)
+            await asyncio.sleep(0)
+
+    @property
+    def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
+        """Snapshot of all active or cleaning context-owned execution tasks."""
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        subscriber_tasks: set[asyncio.Task[Any]] = set()
+        for session in self._sessions:
+            for task in getattr(session, "pending_cleanup_tasks", ()):
+                if isinstance(task, asyncio.Task):
+                    subscriber_tasks.add(task)
+        owned = (
+            self._pending_cleanup_tasks
+            | self._active_call_tasks
+            | self._active_session_tasks
+            | subscriber_tasks
+        )
+        return tuple(
+            task
+            for task in owned
+            if not task.done() and task is not current
+        )
+
     # -- wall clock -------------------------------------------------------- #
 
     def seconds_left(self) -> float:
@@ -260,9 +358,8 @@ class WorkflowContext:
 
         A wall-clock-aware workflow checks this alongside its token-budget floor
         and, when True, abandons further loops to spend its head-room on one
-        forced final write — the fix for runs that die on the wall after locating
-        the edit but before writing it (P7 / django-11564). Always False when no
-        deadline is wired, preserving today's behavior.
+        forced final write. This preserves time to persist work discovered near
+        the deadline. Always false when no deadline is wired.
         """
         return self.seconds_left() <= self._deadline_margin_seconds
 
@@ -324,24 +421,42 @@ class WorkflowContext:
         controlled way inside the workflow (its on-disk edits survive) rather than
         being truncated by the outer wall.
         """
-        if not over_budget_ok and self.budget.remaining() <= 0:
-            raise WorkflowBudgetExceeded(
-                f"workflow budget exhausted: spent {self.budget.spent()} "
-                f"of {self.budget.total}"
-            )
-
-        async with self._semaphore:
-            if schema is not None:
-                return await self._run_structured_agent(
-                    prompt, schema=schema, label=label, tools=tools,
-                    isolation=isolation, timeout=timeout, budget=budget,
-                )
-            # Enforcement wind-down (STEP 0): the scout path injects submit_findings
-            # and the structural commit brake. OFF (the default) routes to the
-            # unchanged ``_run_agent``, so every existing caller is byte-for-byte
-            # identical — the new path is reachable only when explicitly requested.
-            if enforcement_strength != ENFORCEMENT_OFF:
-                return await self._run_enforced_agent(
+        timeout = self._normalize_timeout(timeout)
+        call_task = asyncio.current_task()
+        if call_task is not None:
+            self._active_call_tasks.add(call_task)
+        slot_acquired = False
+        slot_handed_to_cleanup = False
+        try:
+            await self._semaphore.acquire()
+            slot_acquired = True
+            lease = await self._acquire_budget_lease(budget, over_budget_ok=over_budget_ok)
+            token = self._active_budget_lease.set(lease)
+            try:
+                if schema is not None:
+                    return await self._run_structured_agent(
+                        prompt, schema=schema, label=label, tools=tools,
+                        isolation=isolation, timeout=timeout, budget=budget,
+                    )
+                # Enforcement wind-down (STEP 0): the scout path injects submit_findings
+                # and the structural commit brake. OFF (the default) routes to the
+                # unchanged ``_run_agent``, so every existing caller is byte-for-byte
+                # identical — the new path is reachable only when explicitly requested.
+                if enforcement_strength != ENFORCEMENT_OFF:
+                    return await self._run_enforced_agent(
+                        prompt,
+                        label=label,
+                        tools=tools,
+                        isolation=isolation,
+                        tool_choice=tool_choice,
+                        thinking=thinking,
+                        timeout=timeout,
+                        budget=budget,
+                        enforcement_strength=enforcement_strength,
+                        commit_reserve=commit_reserve,
+                        harvest_fallback=harvest_fallback,
+                    )
+                return await self._run_agent(
                     prompt,
                     label=label,
                     tools=tools,
@@ -350,20 +465,121 @@ class WorkflowContext:
                     thinking=thinking,
                     timeout=timeout,
                     budget=budget,
-                    enforcement_strength=enforcement_strength,
-                    commit_reserve=commit_reserve,
-                    harvest_fallback=harvest_fallback,
                 )
-            return await self._run_agent(
-                prompt,
-                label=label,
-                tools=tools,
-                isolation=isolation,
-                tool_choice=tool_choice,
-                thinking=thinking,
-                timeout=timeout,
-                budget=budget,
+            finally:
+                self._active_budget_lease.reset(token)
+                slot_handed_to_cleanup = self._release_lease_when_quiescent(lease)
+        finally:
+            if slot_acquired and not slot_handed_to_cleanup:
+                self._semaphore.release()
+            if call_task is not None:
+                self._active_call_tasks.discard(call_task)
+
+    async def _release_call_after_tasks(
+        self, lease: _BudgetLease, tasks: list[asyncio.Task[Any]]
+    ) -> None:
+        """Release one timed-out call's budget and slot after it is quiescent."""
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self.budget.release(lease)
+            self._semaphore.release()
+
+    def _release_lease_when_quiescent(self, lease: _BudgetLease) -> bool:
+        """Release now, or hand the lease and semaphore slot to cleanup."""
+        pending = [task for task in (lease.pending_tasks or []) if not task.done()]
+        if not pending:
+            self.budget.release(lease)
+            return False
+        cleanup_task = asyncio.create_task(self._release_call_after_tasks(lease, pending))
+        self._track_pending_cleanup(cleanup_task)
+        return True
+
+    def _track_pending_cleanup(self, task: asyncio.Task[Any]) -> None:
+        """Own a background cleanup task and always consume its final result."""
+        if task.done():
+            consume_task_result(task)
+            return
+        self._pending_cleanup_tasks.add(task)
+        task.add_done_callback(self._pending_cleanup_done)
+
+    def _pending_cleanup_done(self, task: asyncio.Task[Any]) -> None:
+        self._pending_cleanup_tasks.discard(task)
+        consume_task_result(task)
+
+    def _active_session_done(self, task: asyncio.Task[Any]) -> None:
+        self._active_session_tasks.discard(task)
+        consume_task_result(task)
+
+    @staticmethod
+    def _normalize_timeout(timeout: float | None) -> float | None:
+        if timeout is None:
+            return None
+        if isinstance(timeout, bool):
+            raise ValueError("workflow timeout must be positive, finite, infinity, or None")
+        try:
+            timeout_seconds = float(timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "workflow timeout must be positive, finite, infinity, or None"
+            ) from exc
+        if math.isnan(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError(
+                "workflow timeout must be positive, finite, infinity, or None"
             )
+        if math.isinf(timeout_seconds):
+            return None
+        return timeout_seconds
+
+    async def _run_with_timeout(self, awaitable: Awaitable[Any], timeout: float | None) -> Any:
+        timeout_seconds = self._normalize_timeout(timeout)
+        task = asyncio.ensure_future(awaitable)
+        self._active_session_tasks.add(task)
+        task.add_done_callback(self._active_session_done)
+        try:
+            if timeout_seconds is None:
+                return await asyncio.shield(task)
+            done, _pending = await asyncio.wait({task}, timeout=timeout_seconds)
+            if task in done:
+                return task.result()
+            task.cancel()
+            raise CallerTimeoutError
+        except (CallerTimeoutError, asyncio.CancelledError):
+            if not task.done():
+                task.cancel()
+            lease = self._active_budget_lease.get()
+            if not task.done():
+                self._track_pending_cleanup(task)
+            if lease is not None and not task.done():
+                if lease.pending_tasks is None:
+                    lease.pending_tasks = []
+                lease.pending_tasks.append(task)
+            raise
+
+    @staticmethod
+    def _timeout_deadline(timeout: float | None) -> float | None:
+        timeout_seconds = WorkflowContext._normalize_timeout(timeout)
+        if timeout_seconds is None:
+            return None
+        return time.monotonic() + timeout_seconds
+
+    @staticmethod
+    def _remaining_timeout(deadline: float | None) -> float | None:
+        if deadline is None:
+            return None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise CallerTimeoutError
+        return remaining
+
+    def _internal_commit_deadline(self) -> float:
+        remaining = self.seconds_left()
+        if remaining <= 0:
+            raise CallerTimeoutError
+        timeout = DEFAULT_INTERNAL_COMMIT_TIMEOUT_SECONDS
+        if math.isfinite(remaining):
+            timeout = min(timeout, remaining)
+        return time.monotonic() + timeout
 
     async def _run_agent(
         self,
@@ -377,6 +593,7 @@ class WorkflowContext:
         timeout: float | None = None,
         budget: int | None = None,
     ) -> str | None:
+        deadline = self._timeout_deadline(timeout)
         session_budget = self._capped_session_budget(budget)
         try:
             session = self._factory.build_workflow_session(
@@ -394,17 +611,15 @@ class WorkflowContext:
 
         # Track the session immediately so its tokens count toward the budget
         # even if the run loop raises partway through.
-        self._sessions.append(session)
+        self._track_session(session)
         try:
-            await session.add_user_message(prompt)
             # ``timeout`` (e.g. ``ctx.seconds_left()``) bounds the run loop so a
             # near-deadline forced write is cancelled here, inside the workflow,
             # rather than by the outer ``asyncio.wait_for`` wall. Any tool edits
             # already written to disk before the cancel survive in the env, so the
-            # patch is still extractable. A non-positive timeout is treated as "no
-            # bound" — the caller is already past the deadline; let the call run.
-            return await abandon_on_timeout(session.run_loop(), timeout)
-        except asyncio.TimeoutError:
+            # patch is still extractable.
+            return await self._run_session_turn(session, prompt, deadline=deadline)
+        except CallerTimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
             return None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
@@ -436,6 +651,7 @@ class WorkflowContext:
         at once (commit-first friendly), exactly as the structured path does. Emits
         one ``commitment_terminus`` metric per scout to the orchestration trace.
         """
+        deadline = self._timeout_deadline(timeout)
         session_budget = self._capped_session_budget(budget)
         capture_done = asyncio.Event()
         submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
@@ -458,15 +674,19 @@ class WorkflowContext:
             await self.log(f"agent build failed ({label or 'agent'}): {exc}")
             return None
 
-        self._sessions.append(session)
+        self._track_session(session)
         self._configure_session_enforcement(
             session, enforcement_strength, commit_reserve, extension_tool
         )
         text: str | None = None
         try:
-            await session.add_user_message(prompt)
-            text = await abandon_on_timeout(session.run_loop(capture_done), timeout)
-        except asyncio.TimeoutError:
+            text = await self._run_session_turn(
+                session,
+                prompt,
+                deadline=deadline,
+                cancel_event=capture_done,
+            )
+        except CallerTimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             await self.log(f"agent failed ({label or 'agent'}): {exc}")
@@ -486,7 +706,11 @@ class WorkflowContext:
         # seldom (scouts are force-committed at ~80%); it salvages the chopped /
         # errored / strayed tail. Gated by construction: this method only runs when
         # enforcement is on.
-        if submit_tool.captured is None and ledger:
+        if (
+            submit_tool.captured is None
+            and ledger
+            and not self._active_call_has_pending_cleanup()
+        ):
             synthesized = await self._synthesize_dead_scout(
                 session, label, commit_reserve=commit_reserve
             )
@@ -530,10 +754,15 @@ class WorkflowContext:
             await self.log(f"dead-scout synth build failed ({synth_label}): {exc}")
             return None
 
-        self._sessions.append(session)
+        self._track_session(session)
         try:
-            await session.add_user_message(prompt)
-            await session.run_loop(capture_done)
+            deadline = self._internal_commit_deadline()
+            await self._run_session_turn(
+                session,
+                prompt,
+                deadline=deadline,
+                cancel_event=capture_done,
+            )
         except Exception as exc:  # noqa: BLE001 — one dead salvage never kills the fleet
             await self.log(f"dead-scout synth failed ({synth_label}): {exc}")
             return None
@@ -559,8 +788,37 @@ class WorkflowContext:
         live global remaining. Skips gracefully (``None``) if the shared pool is spent
         or the factory/session errors, so a failed draft never aborts the fleet.
         """
-        if self.budget.remaining() <= 0:
-            return None
+        call_task = asyncio.current_task()
+        if call_task is not None:
+            self._active_call_tasks.add(call_task)
+        slot_acquired = False
+        slot_handed_to_cleanup = False
+        try:
+            await self._semaphore.acquire()
+            slot_acquired = True
+            try:
+                lease = await self._acquire_budget_lease(budget, over_budget_ok=False)
+            except WorkflowBudgetExceeded:
+                return None
+            token = self._active_budget_lease.set(lease)
+            try:
+                return await self._draft_findings_with_lease(
+                    prompt,
+                    label=label,
+                    budget=budget,
+                )
+            finally:
+                self._active_budget_lease.reset(token)
+                slot_handed_to_cleanup = self._release_lease_when_quiescent(lease)
+        finally:
+            if slot_acquired and not slot_handed_to_cleanup:
+                self._semaphore.release()
+            if call_task is not None:
+                self._active_call_tasks.discard(call_task)
+
+    async def _draft_findings_with_lease(
+        self, prompt: str, *, label: str | None, budget: int | None
+    ) -> dict[str, Any] | None:
         session_budget = self._capped_session_budget(budget)
         capture_done = asyncio.Event()
         submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
@@ -577,10 +835,15 @@ class WorkflowContext:
         except Exception as exc:  # noqa: BLE001 — a failed draft must not abort the fleet
             await self.log(f"draft build failed ({label or 'draft'}): {exc}")
             return None
-        self._sessions.append(session)
+        self._track_session(session)
         try:
-            await session.add_user_message(prompt)
-            await session.run_loop(capture_done)
+            deadline = self._internal_commit_deadline()
+            await self._run_session_turn(
+                session,
+                prompt,
+                deadline=deadline,
+                cancel_event=capture_done,
+            )
         except Exception as exc:  # noqa: BLE001 — one dead draft never kills the fleet
             await self.log(f"draft failed ({label or 'draft'}): {exc}")
             return None
@@ -702,6 +965,7 @@ class WorkflowContext:
         burns the whole session budget (observed live: one valid capture
         followed by 28 wasted calls until budget death).
         """
+        deadline = self._timeout_deadline(timeout)
         capture_done = asyncio.Event()
         capture_tool = StructuredOutputTool(schema, on_capture=capture_done.set)
         seeded_prompt = prompt + _STRUCTURED_INSTRUCTION
@@ -721,17 +985,17 @@ class WorkflowContext:
             return None
 
         # Track immediately so tokens count even if a run_loop raises midway.
-        self._sessions.append(session)
+        self._track_session(session)
         try:
-            await session.add_user_message(seeded_prompt)
-            await self._run_session_loop(
+            await self._run_session_turn(
                 session,
-                capture_done,
-                timeout=timeout,
+                seeded_prompt,
+                deadline=deadline,
+                cancel_event=capture_done,
             )
             if _schema_satisfied(capture_tool.captured, schema):
                 return capture_tool.captured
-        except asyncio.TimeoutError:
+        except CallerTimeoutError:
             await self.log(f"structured agent timed out ({label or 'agent'}) after {timeout}s")
             return None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
@@ -745,6 +1009,13 @@ class WorkflowContext:
         # capture_tool keeps ``captured`` and the cancel event live across both
         # passes; the first session is handed in so its exploration history is
         # carried into the corrective turn.
+        try:
+            retry_timeout = self._remaining_timeout(deadline)
+        except CallerTimeoutError:
+            await self.log(
+                f"structured agent timed out ({label or 'agent'}) after {timeout}s"
+            )
+            return None
         return await self._forced_structured_commit(
             prompt,
             session,
@@ -753,7 +1024,8 @@ class WorkflowContext:
             schema=schema,
             label=label,
             isolation=isolation,
-            timeout=timeout,
+            timeout=retry_timeout,
+            budget=budget,
         )
 
     async def _forced_structured_commit(
@@ -767,6 +1039,7 @@ class WorkflowContext:
         label: str | None,
         isolation: bool,
         timeout: float | None,
+        budget: int | None,
     ) -> dict | None:
         """Build a single-tool, forced-``tool_choice`` corrective session.
 
@@ -784,8 +1057,9 @@ class WorkflowContext:
         commit "based on what you have already gathered" would address a blank
         session that gathered nothing.
         """
+        deadline = self._timeout_deadline(timeout)
         retry_prompt = prompt + "\n\n" + _STRUCTURED_RETRY
-        session_budget = self._session_budget()
+        session_budget = self._capped_session_budget(budget)
         try:
             session = self._factory.build_workflow_session(
                 prompt=retry_prompt,
@@ -800,16 +1074,16 @@ class WorkflowContext:
             await self.log(f"structured retry build failed ({label or 'agent'}): {exc}")
             return None
 
-        self._sessions.append(session)
+        self._track_session(session)
         try:
             self._carry_exploration(prior_session, session)
-            await session.add_user_message(retry_prompt)
-            await self._run_session_loop(
+            await self._run_session_turn(
                 session,
-                capture_done,
-                timeout=timeout,
+                retry_prompt,
+                deadline=deadline,
+                cancel_event=capture_done,
             )
-        except asyncio.TimeoutError:
+        except CallerTimeoutError:
             await self.log(f"structured retry timed out ({label or 'agent'}) after {timeout}s")
             return None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
@@ -817,14 +1091,21 @@ class WorkflowContext:
             return None
         return capture_tool.captured if _schema_satisfied(capture_tool.captured, schema) else None
 
-    @staticmethod
-    async def _run_session_loop(
+    async def _run_session_turn(
+        self,
         session: Any,
-        cancel_event: asyncio.Event | None,
+        prompt: str,
         *,
-        timeout: float | None,
+        deadline: float | None,
+        cancel_event: asyncio.Event | None = None,
     ) -> str:
-        return await abandon_on_timeout(session.run_loop(cancel_event), timeout)
+        """Add one user turn and run it within a shared absolute deadline."""
+        await self._run_with_timeout(
+            session.add_user_message(prompt),
+            self._remaining_timeout(deadline),
+        )
+        run_loop = session.run_loop() if cancel_event is None else session.run_loop(cancel_event)
+        return await self._run_with_timeout(run_loop, self._remaining_timeout(deadline))
 
     @staticmethod
     def _carry_exploration(prior_session: Any, session: Any) -> None:
@@ -850,6 +1131,9 @@ class WorkflowContext:
             pass
 
     def _session_budget(self) -> int:
+        lease = self._active_budget_lease.get()
+        if lease is not None:
+            return lease.remaining()
         remaining = self.budget.remaining()
         if remaining == float("inf"):
             return UNBOUNDED_SESSION_BUDGET
@@ -864,7 +1148,59 @@ class WorkflowContext:
         from overshooting the shared pool while the cap bounds a single runaway
         session; ``None`` reproduces the prior whole-pool behaviour."""
         base = self._session_budget()
-        return min(cap, base) if cap is not None else base
+        return min(max(0, cap), base) if cap is not None else base
+
+    async def _acquire_budget_lease(
+        self,
+        cap: int | None,
+        *,
+        over_budget_ok: bool,
+    ) -> _BudgetLease:
+        """Atomically reserve one agent call's maximum token allocation."""
+        self._budget_waiters += 1
+        try:
+            # Let sibling tasks launched by one gather register as contenders
+            # before the first uncapped caller chooses its share.
+            await asyncio.sleep(0)
+            async with self._budget_lock:
+                remaining = self.budget.remaining()
+                if remaining == float("inf"):
+                    total = max(0, cap) if cap is not None else UNBOUNDED_SESSION_BUDGET
+                    return _BudgetLease(total=total, reserved=0, sessions=[])
+
+                available = max(0, int(remaining))
+                if available <= 0 and not over_budget_ok:
+                    raise WorkflowBudgetExceeded(
+                        f"workflow budget exhausted: spent {self.budget.spent()} "
+                        f"of {self.budget.total}"
+                    )
+                if over_budget_ok and available <= 0:
+                    total = max(0, cap) if cap is not None else UNBOUNDED_SESSION_BUDGET
+                    return _BudgetLease(total=total, reserved=0, sessions=[])
+
+                if cap is None:
+                    total = max(1, available // max(1, self._budget_waiters))
+                else:
+                    total = min(max(0, cap), available)
+                lease = _BudgetLease(total=total, reserved=total, sessions=[])
+                self.budget.reserve(lease)
+                return lease
+        finally:
+            self._budget_waiters -= 1
+
+    def _track_session(self, session: Any) -> None:
+        self._sessions.append(session)
+        lease = self._active_budget_lease.get()
+        if lease is not None:
+            lease.sessions.append(session)
+
+    def _active_call_has_pending_cleanup(self) -> bool:
+        lease = self._active_budget_lease.get()
+        return bool(
+            lease is not None
+            and lease.pending_tasks
+            and any(not task.done() for task in lease.pending_tasks)
+        )
 
     # -- parallel ---------------------------------------------------------- #
 
@@ -919,9 +1255,17 @@ class WorkflowContext:
 
     async def _emit(self, kind: str, message: str) -> None:
         if self._tracer is not None:
-            self._tracer.log_step(step_type=f"workflow_{kind}", payload={"message": message})
+            try:
+                self._tracer.log_step(
+                    step_type=f"workflow_{kind}", payload={"message": message}
+                )
+            except Exception as exc:
+                logger.error("workflow %s trace failed: %s", kind, exc)
         if self._event_sink is not None:
-            await self._event_sink.emit(WorkflowEvent(kind=kind, message=message))
+            try:
+                await self._event_sink.emit(WorkflowEvent(kind=kind, message=message))
+            except Exception as exc:
+                logger.error("workflow %s event failed: %s", kind, exc)
 
 
 __all__ = [

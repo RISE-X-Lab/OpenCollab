@@ -4,17 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "opencollab"
-version = "0.1.0"
+version = "0.3.0"
 description = "Minimal multi-agent software development framework — first principles, context isolation, tool-based delegation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 authors = [{ name = "Yihong Dong", email = "dongyh@stu.pku.edu.cn" }]
-keywords = ["llm", "agent", "multi-agent", "coding-agent", "swe-bench", "software-engineering"]
+keywords = ["llm", "agent", "multi-agent", "coding-agent", "software-engineering"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
@@ -29,13 +30,10 @@ dependencies = [
     "prompt-toolkit>=3.0",
     "filelock>=3.15",
     "pydantic>=2.0",
-    "requests>=2.34.1",
     "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
-docker = ["docker>=7.0"]
-swebench = ["datasets>=2.0", "tqdm>=4.0", "docker>=7.0", "swebench"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.5"]
 
 [project.scripts]
@@ -47,7 +45,10 @@ Repository = "https://github.com/YihongDong/OpenCollab"
 Issues = "https://github.com/YihongDong/OpenCollab/issues"
 
 # Ruff configuration lives in the repo-root ruff.toml, so a single config governs
-# the whole tree (this package + scripts/ + swebench/ + workflows/).
+# the whole repository tree.
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+pythonpath = [".", ".."]
+testpaths = ["tests"]
+norecursedirs = [".git", ".venv", "__pycache__"]

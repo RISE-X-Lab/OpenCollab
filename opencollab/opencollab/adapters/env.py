@@ -1,382 +1,42 @@
-"""Environment — abstraction over execution contexts.
-
-First Principle: All side effects go through Environment.
-- LocalEnvironment: direct OS execution (daily dev)
-- WorktreeEnvironment: isolated git worktree per spawned agent (parallel agents)
-- DockerEnvironment: container sandbox (eval / SWE-bench)
-
-Ref:
-- Design doc: Environment base class with exec_cmd/read_file/write_file
-- openclaw: sandbox.ts workspaceDir + readonlyRoots
-- User feedback: parallel spawned agents MUST use separate physical workspaces (git worktree)
-"""
+"""Public execution-environment adapters."""
 
 from __future__ import annotations
 
-import asyncio
-import logging
-import os
-import shlex
-import shutil
-import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
-
-
-@dataclass
-class ExecResult:
-    returncode: int
-    stdout: str
-    stderr: str
+from opencollab.adapters._env_base import Environment, ExecResult
+from opencollab.adapters._env_docker import DockerEnvironment
+from opencollab.adapters._env_local import LocalEnvironment
+from opencollab.adapters._env_process import PROCESS_OUTPUT_CAPTURE_BYTES
+from opencollab.adapters._env_worktree import WorktreeEnvironment
 
 
-class Environment:
-    """Abstract execution environment. All tools operate through this."""
-
-    workspace: str = "."
-    local_filesystem: bool = False
-
-    async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
-        raise NotImplementedError
-
-    async def read_file(self, path: str) -> str:
-        raise NotImplementedError
-
-    async def write_file(self, path: str, content: str) -> None:
-        raise NotImplementedError
-
-    async def cleanup(self) -> None:
-        """Clean up any temporary resources."""
-        pass
-
-
-class LocalEnvironment(Environment):
-    """Direct OS execution — for interactive CLI use."""
-
-    local_filesystem = True
-
-    def __init__(self, workspace: str = "."):
-        self.workspace = os.path.abspath(workspace)
-
-    async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
-        try:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                cwd=self.workspace,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            return ExecResult(
-                returncode=proc.returncode or 0,
-                stdout=stdout.decode("utf-8", errors="replace"),
-                stderr=stderr.decode("utf-8", errors="replace"),
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            return ExecResult(returncode=-1, stdout="", stderr=f"Command timed out after {timeout}s")
-
-    async def read_file(self, path: str) -> str:
-        full = os.path.join(self.workspace, path) if not os.path.isabs(path) else path
-        with open(full, "r", encoding="utf-8", errors="replace") as f:
-            return f.read()
-
-    async def write_file(self, path: str, content: str) -> None:
-        full = os.path.join(self.workspace, path) if not os.path.isabs(path) else path
-        os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w", encoding="utf-8") as f:
-            f.write(content)
-
-
-class WorktreeEnvironment(Environment):
-    """Isolated git worktree — for parallel spawned-agent execution.
-
-    Each spawned agent gets a separate physical copy of the repo via
-    `git worktree add`. After task completion, changes are collected as a
-    diff patch.
-
-    This solves the concurrency problem: spawned agents cannot corrupt each
-    other's git state, env variables, or file locks.
-
-    Ref: User feedback on blind spot #2 — parallel delegation must use
-    separate physical workspaces, not just file locks.
-    """
-
-    local_filesystem = True
-
-    def __init__(self, source_workspace: str, branch_name: str | None = None):
-        import uuid
-
-        self._source = os.path.abspath(source_workspace)
-        # Use UUID to guarantee uniqueness even under parallel same-role delegation
-        self._branch = branch_name or f"opencollab-wt-{uuid.uuid4().hex[:12]}"
-        self._worktree_dir: str | None = None
-        self._local_env: LocalEnvironment | None = None
-
-    async def setup(self) -> str:
-        """Create the worktree. Returns the worktree directory path."""
-        self._worktree_dir = tempfile.mkdtemp(prefix="opencollab-wt-")
-
-        proc = await asyncio.create_subprocess_exec(
-            "git", "worktree", "add", "-b", self._branch, self._worktree_dir,
-            cwd=self._source,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            # Fallback: just copy the directory (non-git repos)
-            shutil.rmtree(self._worktree_dir, ignore_errors=True)
-            self._worktree_dir = tempfile.mkdtemp(prefix="opencollab-cp-")
-            shutil.copytree(self._source, self._worktree_dir, dirs_exist_ok=True)
-
-        self.workspace = self._worktree_dir
-        self._local_env = LocalEnvironment(self._worktree_dir)
-        return self._worktree_dir
-
-    async def get_diff(self) -> str:
-        """Get the diff of changes made in this worktree."""
-        if not self._local_env:
-            return ""
-        result = await self._local_env.exec_cmd("git diff HEAD")
-        return result.stdout
-
-    async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
-        if not self._local_env:
-            await self.setup()
-        return await self._local_env.exec_cmd(cmd, timeout)
-
-    async def read_file(self, path: str) -> str:
-        if not self._local_env:
-            await self.setup()
-        return await self._local_env.read_file(path)
-
-    async def write_file(self, path: str, content: str) -> None:
-        if not self._local_env:
-            await self.setup()
-        await self._local_env.write_file(path, content)
-
-    async def cleanup(self) -> None:
-        """Remove worktree and temporary branch."""
-        if self._worktree_dir and os.path.exists(self._worktree_dir):
-            # Try git worktree remove first
-            proc = await asyncio.create_subprocess_exec(
-                "git", "worktree", "remove", "--force", self._worktree_dir,
-                cwd=self._source,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                logger.warning(
-                    "git worktree remove exited %s for %s: %s",
-                    proc.returncode,
-                    self._worktree_dir,
-                    stderr.decode(errors="replace").strip(),
-                )
-
-            # Clean up branch
-            proc = await asyncio.create_subprocess_exec(
-                "git", "branch", "-D", self._branch,
-                cwd=self._source,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                logger.warning(
-                    "git branch -D exited %s for %s: %s",
-                    proc.returncode,
-                    self._branch,
-                    stderr.decode(errors="replace").strip(),
-                )
-
-            # Fallback: remove directory
-            if os.path.exists(self._worktree_dir):
-                shutil.rmtree(self._worktree_dir, ignore_errors=True)
-
-
-class DockerEnvironment(Environment):
-    """Docker container sandbox — for eval / SWE-bench.
-
-    Two modes:
-    - Start mode (default): ``setup()`` starts a fresh container, optionally
-      mounting a local directory. Used by ``harness/evaluator.py``.
-    - Attach mode: pass ``container_id`` to target an ALREADY-RUNNING container
-      (e.g. an official ``sweb.eval`` image started outside this process). No
-      ``setup()`` call is needed and ``cleanup()`` leaves the container alone.
-
-    ``exec_workdir`` sets the ``docker exec -w`` working directory. ``command_prefix``
-    wraps each command before execution (e.g. activating a conda env). When a prefix
-    is supplied, commands run through a login shell (``bash -lc``) so the activation
-    sticks. ``timeout_returncode`` is the ``returncode`` reported on timeout.
-
-    Ref: design doc Environment abstraction + Harness Engineering.
-    """
+class DockerWorkspaceEnvironment(DockerEnvironment):
+    """Attach tools to an already-running task container workspace."""
 
     def __init__(
         self,
-        image: str = "python:3.11-slim",
-        workspace: str = "/workspace",
         *,
-        container_id: str | None = None,
-        exec_workdir: str | None = None,
+        container_id: str,
+        repo_root: str,
         command_prefix: Callable[[str], str] | str | None = None,
         timeout_returncode: int = -1,
-    ):
-        self._image = image
-        self.workspace = workspace
-        self._container_id = container_id
-        self._exec_workdir = exec_workdir
-        self._command_prefix = command_prefix
-        self._timeout_returncode = timeout_returncode
-        self._attached = container_id is not None
-
-    async def setup(self, mount_dir: str | None = None) -> str:
-        """Start a container. Optionally mount a local directory."""
-        cmd = ["docker", "run", "-d", "--rm"]
-        if mount_dir:
-            cmd += ["-v", f"{os.path.abspath(mount_dir)}:{self.workspace}"]
-        cmd += ["-w", self.workspace, self._image, "sleep", "infinity"]
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+    ) -> None:
+        super().__init__(
+            workspace=repo_root,
+            container_id=container_id,
+            exec_workdir=repo_root,
+            command_prefix=command_prefix,
+            timeout_returncode=timeout_returncode,
         )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise RuntimeError(f"Failed to start container: {stderr.decode()}")
 
-        self._container_id = stdout.decode().strip()
-        return self._container_id
 
-    def _wrap_command(self, cmd: str) -> str:
-        prefix = self._command_prefix
-        if prefix is None:
-            return cmd
-        if callable(prefix):
-            return prefix(cmd)
-        return f"{prefix}\n{cmd}"
-
-    async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
-        if not self._container_id:
-            raise RuntimeError("Container not started. Call setup() first.")
-
-        exec_argv = ["docker", "exec"]
-        if self._exec_workdir:
-            exec_argv += ["-w", self._exec_workdir]
-        shell_flag = "-lc" if self._command_prefix is not None else "-c"
-        exec_argv += [self._container_id, "bash", shell_flag, self._wrap_command(cmd)]
-
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *exec_argv,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-            return ExecResult(
-                returncode=proc.returncode or 0,
-                stdout=stdout.decode("utf-8", errors="replace"),
-                stderr=stderr.decode("utf-8", errors="replace"),
-            )
-        except asyncio.TimeoutError:
-            await self._terminate_exec_process(proc)
-            return ExecResult(
-                returncode=self._timeout_returncode,
-                stdout="",
-                stderr=f"Command timed out after {timeout}s",
-            )
-        except asyncio.CancelledError:
-            await self._terminate_exec_process(proc)
-            raise
-
-    async def _terminate_exec_process(self, proc: asyncio.subprocess.Process | None) -> None:
-        if proc is None:
-            return
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            return
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5)
-        except (asyncio.TimeoutError, ProcessLookupError):
-            logger.warning("docker exec process did not exit after kill")
-
-    async def read_file(self, path: str) -> str:
-        quoted_path = shlex.quote(path)
-        result = await self.exec_cmd(f"cat -- {quoted_path}")
-        if result.returncode != 0:
-            raise FileNotFoundError(result.stderr)
-        return result.stdout
-
-    async def write_file(self, path: str, content: str) -> None:
-        if not self._container_id:
-            raise RuntimeError("Container not started. Call setup() first.")
-
-        exec_argv = ["docker", "exec", "-i"]
-        if self._exec_workdir:
-            exec_argv += ["-w", self._exec_workdir]
-        exec_argv += [
-            self._container_id,
-            "bash",
-            "-c",
-            'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"',
-            "opencollab-write",
-            path,
-        ]
-
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                *exec_argv,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=content.encode("utf-8")),
-                timeout=120.0,
-            )
-        except asyncio.TimeoutError as exc:
-            await self._terminate_exec_process(proc)
-            raise OSError(f"docker write timed out for {path}") from exc
-        except asyncio.CancelledError:
-            await self._terminate_exec_process(proc)
-            raise
-
-        if (proc.returncode or 0) != 0:
-            detail = (stderr or stdout).decode("utf-8", errors="replace").strip()
-            raise OSError(
-                f"docker write failed for {path} "
-                f"(exit {proc.returncode}): {detail}"
-            )
-        written = await self.read_file(path)
-        if written != content:
-            raise OSError(
-                f"docker write verification failed for {path}: "
-                f"expected {len(content)} chars, read back {len(written)} chars"
-            )
-
-    async def cleanup(self) -> None:
-        if self._attached:
-            return
-        if self._container_id:
-            proc = await asyncio.create_subprocess_exec(
-                "docker", "kill", self._container_id,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                logger.warning(
-                    "docker kill exited %s for %s: %s",
-                    proc.returncode,
-                    self._container_id,
-                    stderr.decode(errors="replace").strip(),
-                )
-            self._container_id = None
+__all__ = [
+    "DockerEnvironment",
+    "DockerWorkspaceEnvironment",
+    "Environment",
+    "ExecResult",
+    "LocalEnvironment",
+    "PROCESS_OUTPUT_CAPTURE_BYTES",
+    "WorktreeEnvironment",
+]

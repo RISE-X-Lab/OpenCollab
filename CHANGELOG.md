@@ -7,6 +7,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+- Moved benchmark runtime configuration to OpenCollab-Eval and historical experiment records to the external documentation workspace.
+- Added versioned SDK capability modules for external runtimes while keeping benchmark policy outside the framework package.
+- Raised the package version to 0.3.0 for the incompatible SDK API v2 boundary.
+
 ## [0.1.0] - 2026-07-03
 
 First public release of OpenCollab — run LLM coding agents three ways (a single

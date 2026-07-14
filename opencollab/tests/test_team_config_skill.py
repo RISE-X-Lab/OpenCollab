@@ -127,10 +127,7 @@ def test_build_usage_errors(tmp_path: Path) -> None:
     assert absent.returncode == 1
 
 
-@pytest.mark.parametrize(
-    "cfg",
-    ["team.example.yaml", "team.self.collab.yaml", "team.swebench.yaml"],
-)
+@pytest.mark.parametrize("cfg", ["team.example.yaml"])
 def test_shipped_team_configs_render(cfg: str, tmp_path: Path) -> None:
     src = REPO_ROOT / "configs" / cfg
     out = tmp_path / "bp.html"

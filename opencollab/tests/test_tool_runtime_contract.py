@@ -1,5 +1,6 @@
 import asyncio
-import builtins
+import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +16,7 @@ from opencollab.adapters.tools.git_diff import GitDiffTool
 from opencollab.adapters.tools.human import AskUserTool
 from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.tool_execution import ToolRuntime
+from tool_execution_test_support import AlwaysAllowPermissionPolicy as FakePermissionPolicy
 
 
 def run(coro):
@@ -54,11 +56,6 @@ class SpySafetyPolicy:
 
     async def check_cmd_interactive(self, cmd: str, confirm_fn=None) -> None:
         self.cmd_calls.append((cmd, confirm_fn))
-
-
-class FakePermissionPolicy:
-    async def confirm(self, prompt: str) -> bool:
-        return True
 
 
 class FakeRemoteEnv:
@@ -218,10 +215,10 @@ def test_file_read_preserves_file_not_found(tmp_path):
 
 
 def test_file_read_preserves_permission_error_string(monkeypatch, tmp_path):
-    def raise_permission_error(*args, **kwargs):
+    async def raise_permission_error(*args, **kwargs):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(builtins, "open", raise_permission_error)
+    monkeypatch.setattr(LocalEnvironment, "read_file", raise_permission_error)
     env = LocalEnvironment(str(tmp_path))
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
@@ -371,14 +368,93 @@ def test_apply_patch_remote_env_takes_no_host_lock(monkeypatch):
     assert SpyLock.instances == []
 
 
-def test_host_write_lock_taken_for_none_and_local_envs(tmp_path):
-    none_lock = base.host_write_lock(str(tmp_path / "x.txt"), None)
-    local_lock = base.host_write_lock(str(tmp_path / "y.txt"), LocalEnvironment(str(tmp_path)))
-    remote_lock = base.host_write_lock(str(tmp_path / "z.txt"), FakeRemoteEnv())
+def test_host_write_lock_files_live_outside_target_workspace(tmp_path):
+    env = LocalEnvironment(str(tmp_path))
+    lock_path = Path(base._host_lock_path("x.txt", env))
 
-    assert isinstance(none_lock, base.FileLock)
-    assert isinstance(local_lock, base.FileLock)
-    assert not isinstance(remote_lock, base.FileLock)
+    async def exercise():
+        async with base.host_write_lock("x.txt", env) as lock:
+            assert isinstance(lock, base.FileLock)
+            assert lock_path.exists()
+
+    run(exercise())
+
+    assert tmp_path not in lock_path.parents
+    assert list(tmp_path.rglob("*.lock")) == []
+
+
+class SlowLocalWriteEnv(FakeRemoteEnv):
+    local_filesystem = True
+    workspace = "/virtual/workspace"
+
+    async def read_file(self, path: str) -> str:
+        await asyncio.sleep(0.05)
+        return await super().read_file(path)
+
+    async def write_file(self, path: str, content: str) -> None:
+        await asyncio.sleep(0.05)
+        await super().write_file(path, content)
+
+
+def test_concurrent_host_writes_do_not_block_event_loop_on_lock():
+    env = SlowLocalWriteEnv({"note.txt": "initial"})
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    tool = FileWriteTool()
+
+    async def exercise():
+        await asyncio.wait_for(
+            asyncio.gather(
+                tool.execute_with_runtime(
+                    {
+                        "path": "note.txt",
+                        "mode": "create",
+                        "content": "first",
+                        "overwrite": True,
+                    },
+                    runtime,
+                ),
+                tool.execute_with_runtime(
+                    {
+                        "path": "note.txt",
+                        "mode": "create",
+                        "content": "second",
+                        "overwrite": True,
+                    },
+                    runtime,
+                ),
+            ),
+            timeout=1.0,
+        )
+
+    started = time.monotonic()
+    run(exercise())
+
+    assert time.monotonic() - started < 1.0
+    assert env.files["note.txt"] in {"first", "second"}
+
+
+def test_host_write_lock_never_pollutes_git_diff(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {"path": "note.txt", "mode": "create", "content": "hello\n"},
+            runtime,
+        )
+    )
+    status = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    assert result.startswith("Created/wrote")
+    assert ".lock" not in status
+    assert list(tmp_path.rglob("*.lock")) == []
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +470,7 @@ def test_grep_tool_requires_environment():
     assert result == "Error: no execution environment available."
 
 
-def test_grep_tool_preserves_env_exec_path_without_path_safety():
+def test_grep_tool_routes_search_path_through_safety_policy():
     env = FakeEnv(stdout="src/app.py:1:needle\n")
     safety = SpySafetyPolicy()
     runtime = ToolRuntime(environment=env, safety_policy=safety, permission_policy=None)
@@ -407,7 +483,7 @@ def test_grep_tool_preserves_env_exec_path_without_path_safety():
     )
 
     assert result == "src/app.py:1:needle"
-    assert safety.path_calls == []
+    assert safety.path_calls == ["../outside"]
     assert len(env.exec_calls) == 1
     cmd, timeout = env.exec_calls[0]
     assert "needle" in cmd

@@ -217,6 +217,9 @@ def build_session_runtime(
     llm_timeout: float = 600.0,
     store: SessionStorePort | None = None,
     auto_save_callback: Callable[[], None] | None = None,
+    auto_save_prepare_callback: Callable[
+        [], Callable[[], None] | None
+    ] | None = None,
     aid: int = -1,
     seed_user_messages: list[dict[str, Any]] | None = None,
     shaper: ShaperPort | None = None,
@@ -225,9 +228,10 @@ def build_session_runtime(
     """Build a ``SessionRuntime`` with the same construction order
     ``Session.__init__`` used to perform inline.
 
-    ``auto_save_callback`` is the bound method the facade exposes for
-    autosave; we accept it as an argument so the runtime does not need to
-    know about the facade. ``seed_user_messages`` are startup user-context
+    ``auto_save_callback`` is the bound method the facade exposes for direct
+    autosave. ``auto_save_prepare_callback`` freezes a payload on the event
+    loop and returns the file-I/O operation run by the subscriber worker.
+    ``seed_user_messages`` are startup user-context
     messages appended after the system prompt (e.g. a spawned agent's task);
     ``shaper`` reshapes the message list before each model call.
     """
@@ -235,8 +239,14 @@ def build_session_runtime(
     resolved_store: SessionStorePort = store if store is not None else SessionStore()
 
     event_bus = EventBus(event_sink)
+    auto_save_subscriber: AutoSaveSubscriber | None = None
     if auto_save_path and auto_save_callback is not None:
-        event_bus.subscribe(AutoSaveSubscriber(auto_save_callback))
+        auto_save_subscriber = AutoSaveSubscriber(
+            auto_save_callback,
+            prepare_fn=auto_save_prepare_callback,
+            serialization_key=auto_save_path,
+        )
+        event_bus.subscribe(auto_save_subscriber)
 
     state = _build_initial_state(agent, seed_user_messages)
     state.aid = aid
@@ -287,6 +297,7 @@ def build_session_runtime(
         tool_execution=tool_execution,
         runner=runner,
         auto_save_path=auto_save_path,
+        auto_save_subscriber=auto_save_subscriber,
     )
 
 

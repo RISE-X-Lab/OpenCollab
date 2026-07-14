@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
+from typing import Callable
 
 from opencollab.adapters.hooks import ShellHookRunner
 from opencollab.adapters.storage import SessionStore
@@ -21,6 +22,7 @@ from opencollab.bootstrap.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_THINKING,
     DEFAULT_THINKING_PARAMS,
+    DEFAULT_TOP_P,
 )
 from opencollab.bootstrap.container import RuntimeContext, build_workspace_safety_policy
 from opencollab.bootstrap.context_builder import SpawnConfig
@@ -30,6 +32,7 @@ from opencollab.bootstrap.session_factory import (
     make_run_dir,
 )
 from opencollab.bootstrap.team_config import load_team_config, resolve_team_file
+from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 
 
 def build_scheduler(
@@ -73,6 +76,10 @@ def build_scheduler(
             base_url=cfg["base_url"],
             llm_timeout=cfg.get("llm_timeout", 600.0),
             temperature=cfg.get("temperature", DEFAULT_TEMPERATURE),
+            top_p=cfg.get("top_p", DEFAULT_TOP_P),
+            max_output_tokens=cfg.get(
+                "max_output_tokens", DEFAULT_MAX_TOKENS_PER_STEP
+            ),
             thinking=cfg.get("thinking", DEFAULT_THINKING),
             thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
             tracer=ctx.tracer,
@@ -115,16 +122,27 @@ def build_scheduler(
         run_id = os.path.basename(run_dir)
         started_at = datetime.now(timezone.utc).isoformat()
 
-        def _write_manifest() -> None:
-            store.save_manifest(manifest_path, {
+        def _manifest_payload() -> dict:
+            return {
                 "run_id": run_id,
                 "started_at": started_at,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "team_file": str(team_file) if team_file else None,
                 "agents": scheduler.team_snapshot(),
-            })
+            }
 
-        scheduler.set_manifest_writer(_write_manifest)
+        def _write_manifest() -> None:
+            store.save_manifest(manifest_path, _manifest_payload())
+
+        def _prepare_manifest() -> Callable[[], None]:
+            payload = _manifest_payload()
+            return lambda: store.save_manifest(manifest_path, payload)
+
+        scheduler.set_manifest_writer(
+            _write_manifest,
+            prepare_fn=_prepare_manifest,
+            serialization_key=manifest_path,
+        )
 
     scheduler.create_init_process(
         LaunchSpec(session_file=session_file, auto_save_path=lead_save_path)
