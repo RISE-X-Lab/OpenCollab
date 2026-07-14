@@ -17,12 +17,12 @@ three of these axes as enums (`domain/context.py`); persistence is the fourth.
 
 | Axis | Question | Values (enum) |
 |------|----------|---------------|
-| **时机 Timing** | *When* is it attached? | `STARTUP` · `PER_TURN` · `DURING_EXECUTION` · `ON_DEMAND` (`LoadTiming`) |
-| **位置 Position** | *Where* in the message list? | `SYSTEM` · `USER_CONTEXT` (`ContextPosition`) |
-| **类型 Layer** | *What role* does it play? | `IDENTITY` `TEAM` `SKILL` `TASK` `TOOL_META` `PROJECT` `MEMORY` (`ContextLayer`) |
-| **持久化 Persistence** | Saved to the transcript, or model-view only? | persisted · ephemeral (shaped-copy-only) |
+| **Timing** | *When* is it attached? | `STARTUP` · `PER_TURN` · `DURING_EXECUTION` · `ON_DEMAND` (`LoadTiming`) |
+| **Position** | *Where* in the message list? | `SYSTEM` · `USER_CONTEXT` (`ContextPosition`) |
+| **Layer** | *What role* does it play? | `IDENTITY` `TEAM` `SKILL` `TASK` `TOOL_META` `PROJECT` `MEMORY` (`ContextLayer`) |
+| **Persistence** | Saved to the transcript, or model-view only? | persisted · ephemeral (shaped-copy-only) |
 
-`LAYER_PRIORITY` (`domain/context.py:60`) ranks the **类型** axis so that under
+`LAYER_PRIORITY` (`domain/context.py:60`) ranks the **Layer** axis so that under
 context pressure low-value layers are shed first and identity is shed last:
 
 ```

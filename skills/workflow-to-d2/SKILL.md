@@ -64,38 +64,38 @@ Edge: `a -> b: "label" { style: {...} }` — refer to nested nodes by dotted pat
 
 ## 5. Worked example (split-solve) — copy this shape, swap in the real topology
 ```
-goal: "goal (任务目标)" { class: terminal }
+goal: "goal (objective)" { class: terminal }
 analyze: "① analyze" { class: phase-analyze
   A: Analyst { class: agent }
   A_out: "PLAN_SCHEMA\n{root_cause, subtasks[]}" { class: schema }
   A -> A_out: produces { style: { stroke: "#d4a83a"; stroke-dash: 3; font-size: 10 } }
 }
-solve: "② solve   (subtask 逐个串行)" { class: phase-solve
+solve: "② solve   (subtasks, serial)" { class: phase-solve
   s1: "subtask 1" { class: subtask-box
     c: Coder { class: agent }
     t: Tester { class: agent }
     v: "VERDICT_SCHEMA" { class: schema }
     c -> t: summary { style.font-size: 10 }
-    t -> c: "findings (重试 ≤3)" { style: { stroke-dash: 3; font-size: 10 } }
+    t -> c: "findings (retry ≤3)" { style: { stroke-dash: 3; font-size: 10 } }
     t -> v: { style: { stroke: "#d4a83a"; stroke-dash: 3 } }
   }
   sn: "subtask N" { class: subtask-box
     c: Coder { class: agent }
     t: Tester { class: agent }
     c -> t: summary { style.font-size: 10 }
-    t -> c: "findings (重试)" { style: { stroke-dash: 3; font-size: 10 } }
+    t -> c: "findings (retry)" { style: { stroke-dash: 3; font-size: 10 } }
   }
-  s1.t -> sn.c: "PASS → 下一个" { style: { stroke: "#3a7d4a"; font-color: "#3a7d4a"; font-size: 10 } }
+  s1.t -> sn.c: "PASS → next" { style: { stroke: "#3a7d4a"; font-color: "#3a7d4a"; font-size: 10 } }
 }
-synthesize: "③ synthesize   (仅当 ≥1 PASS)" { class: phase-synth
+synthesize: "③ synthesize   (only if ≥1 PASS)" { class: phase-synth
   S: Synthesizer { class: agent }
 }
-stop: 止损 { class: stop }
+stop: "give up" { class: stop }
 done: "done | incomplete" { class: terminal }
 goal -> analyze.A
 analyze.A_out -> solve.s1.c: "subtasks[]" { style.font-size: 10 }
 solve.sn.t -> synthesize.S: PASS { style: { stroke: "#3a7d4a"; font-color: "#3a7d4a"; font-size: 10 } }
-solve.s1.t -> stop: 非PASS { style: { stroke: "#c0392b"; font-color: "#c0392b"; stroke-dash: 3; font-size: 10 } }
+solve.s1.t -> stop: "not PASS" { style: { stroke: "#c0392b"; font-color: "#c0392b"; stroke-dash: 3; font-size: 10 } }
 synthesize.S -> done
 stop -> done: incomplete { style: { stroke: "#c0392b"; font-color: "#c0392b"; stroke-dash: 3; font-size: 10 } }
 ```
