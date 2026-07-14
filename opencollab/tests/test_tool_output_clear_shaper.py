@@ -147,5 +147,6 @@ def test_model_context_window_lookup_matches_by_substring():
     assert model_context_window("claude-opus-4-8-2026") == 200_000
     assert model_context_window("gpt-4o-mini") == 128_000
     assert model_context_window("deepseek-chat") == 64_000
+    assert model_context_window("glm-5.2") == 400_000
     assert model_context_window("some-unknown-model") is None
     assert model_context_window(None) is None

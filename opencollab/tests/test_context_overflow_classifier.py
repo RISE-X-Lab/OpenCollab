@@ -10,8 +10,11 @@ transient-retry path.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
+
 from opencollab.adapters.llm.errors import is_context_overflow_error
-from opencollab.adapters.llm.retry import is_retryable_error
+from opencollab.adapters.llm.retry import extract_retry_after_seconds, is_retryable_error
 
 
 class FakeProviderError(Exception):
@@ -156,3 +159,31 @@ def test_overflow_with_retryable_sounding_message_still_not_retryable():
 def test_genuine_transient_error_still_retryable():
     err = FakeProviderError("Service temporarily unavailable", status_code=503)
     assert is_retryable_error(err) is True
+
+
+def test_retry_after_rejects_non_finite_and_negative_values():
+    class Response:
+        def __init__(self, value):
+            self.headers = {"Retry-After": value}
+
+    class Error(Exception):
+        def __init__(self, value):
+            self.response = Response(value)
+
+    assert extract_retry_after_seconds(Error("inf")) is None
+    assert extract_retry_after_seconds(Error("nan")) is None
+    assert extract_retry_after_seconds(Error("-1")) is None
+    assert extract_retry_after_seconds(Error("9999")) == 300.0
+
+
+def test_retry_after_accepts_standard_http_date():
+    class Response:
+        headers = {}
+
+    class Error(Exception):
+        response = Response()
+
+    now = datetime(2026, 7, 10, 12, 0, tzinfo=timezone.utc)
+    Error.response.headers["Retry-After"] = format_datetime(now + timedelta(seconds=45))
+
+    assert extract_retry_after_seconds(Error(), now=now) == 45.0

@@ -8,13 +8,50 @@ monkeypatched so no real LLM client is ever constructed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import threading
+import types
 from typing import Any
 
 import pytest
+from asyncio_test_support import assert_cancel_note, assert_cancel_reason
+from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.adapters.storage import SessionStore
+from opencollab.application.autosave import AutoSaveSubscriber
+from opencollab.application.event_bus import EventBus
 from opencollab.application.workflow import WorkflowBudgetExceeded, WorkflowContext
-from opencollab.bootstrap import workflow_runtime
+from opencollab.bootstrap import (
+    _workflow_runtime_cleanup as workflow_cleanup,
+)
+from opencollab.bootstrap import (
+    _workflow_runtime_execution as workflow_execution,
+)
+from opencollab.bootstrap import (
+    _workflow_runtime_session as workflow_session,
+)
+from opencollab.bootstrap import (
+    workflow_runtime,
+)
+from opencollab.bootstrap.session_factory import build_session, slug_label
+from opencollab.domain.agent import Agent
+from opencollab.domain.events import SessionRuntimeEvent
+
+
+class _InjectedEnvironment:
+    def __init__(self, *, abort_fails: bool = False) -> None:
+        self.revoked = False
+        self.abort_fails = abort_fails
+        self.abort_calls = 0
+
+    def revoke(self) -> None:
+        self.revoked = True
+
+    async def abort(self) -> None:
+        self.abort_calls += 1
+        if self.abort_fails:
+            raise RuntimeError("abort failed")
 
 
 class _FakeSession:
@@ -39,7 +76,7 @@ def _patch_build_session(monkeypatch) -> list[dict[str, Any]]:
         calls.append({"agent": agent, **kwargs})
         return _FakeSession(agent, agent.tools)
 
-    monkeypatch.setattr(workflow_runtime, "build_session", fake_build_session)
+    monkeypatch.setattr(workflow_session, "build_session", fake_build_session)
     return calls
 
 
@@ -53,6 +90,12 @@ def _cfg(**overrides) -> dict[str, Any]:
     }
     base.update(overrides)
     return base
+
+
+def test_workflow_runtime_public_module_uses_plain_reexports():
+    assert type(workflow_runtime) is types.ModuleType
+    assert workflow_runtime.WorkflowSessionFactory is workflow_session.WorkflowSessionFactory
+    assert workflow_runtime.build_workflow_context is workflow_session.build_workflow_context
 
 
 def test_build_workflow_context_returns_context(monkeypatch):
@@ -78,6 +121,21 @@ async def test_built_context_agent_runs_session_with_resolved_llm(monkeypatch):
     # The prompt is seeded as the agent's first user message.
     # The per-session budget is the remaining workflow budget.
     assert calls[0]["max_budget_tokens"] == 100_000
+
+
+@pytest.mark.asyncio
+async def test_built_context_injects_sampling_and_output_limits(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    ctx = workflow_runtime.build_workflow_context(
+        cfg=_cfg(temperature=1.0, top_p=1.0, max_output_tokens=32_768)
+    )
+
+    await ctx.agent("solve")
+
+    agent = calls[0]["agent"]
+    assert agent.temperature == 1.0
+    assert agent.top_p == 1.0
+    assert agent.max_tokens_per_step == 32_768
 
 
 @pytest.mark.asyncio
@@ -185,6 +243,37 @@ async def test_run_workflow_other_exceptions_propagate(monkeypatch):
         await workflow_runtime.run_workflow(fn, {}, cfg=_cfg())
 
 
+@pytest.mark.parametrize(
+    "cleanup_timeout",
+    [0, -1, float("nan"), float("inf"), True, "bad"],
+)
+@pytest.mark.asyncio
+async def test_run_workflow_rejects_invalid_cleanup_timeout_before_side_effects(
+    monkeypatch,
+    cleanup_timeout,
+):
+    built = False
+
+    def fail_if_built(**kwargs):
+        nonlocal built
+        built = True
+        raise AssertionError("context must not be built")
+
+    monkeypatch.setattr(workflow_execution, "build_workflow_context", fail_if_built)
+
+    async def fn(ctx, args):
+        return "unused"
+
+    with pytest.raises(ValueError, match="cleanup_timeout"):
+        await workflow_runtime.run_workflow(
+            fn,
+            {},
+            cfg=_cfg(),
+            cleanup_timeout=cleanup_timeout,
+        )
+    assert built is False
+
+
 # -- session persistence --------------------------------------------------- #
 
 
@@ -238,12 +327,12 @@ async def test_save_dir_slugs_agent_label_into_filename(monkeypatch, tmp_path):
 
 
 def test_slug_sanitizes_and_caps_labels():
-    assert workflow_runtime._slug("coder:s1r2") == "coder-s1r2"
-    assert workflow_runtime._slug("reviewer: 1") == "reviewer-1"
-    assert workflow_runtime._slug(":analyst:revise:") == "analyst-revise"
-    assert workflow_runtime._slug(None) == ""
-    assert workflow_runtime._slug("") == ""
-    assert len(workflow_runtime._slug("x" * 100)) == 40
+    assert slug_label("coder:s1r2") == "coder-s1r2"
+    assert slug_label("reviewer: 1") == "reviewer-1"
+    assert slug_label(":analyst:revise:") == "analyst-revise"
+    assert slug_label(None) == ""
+    assert slug_label("") == ""
+    assert len(slug_label("x" * 100)) == 40
 
 
 @pytest.mark.asyncio
@@ -270,6 +359,138 @@ async def test_run_workflow_writes_manifest(monkeypatch, tmp_path):
     assert manifest["args"] == {"goal": "x"}
     assert manifest["sessions"] == 2
     assert manifest["budget_total"] == 100_000
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_final_snapshot_captures_mutation_after_last_step_end(
+    monkeypatch,
+    tmp_path,
+):
+    class ReplyLLM:
+        async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+            return LLMResponse(
+                content="finished",
+                usage=Usage(input_tokens=4, output_tokens=2),
+                finish_reason="stop",
+            )
+
+    llm = ReplyLLM()
+
+    def build_real_session(**kwargs):
+        return build_session(llm=llm, **kwargs)
+
+    monkeypatch.setattr(workflow_session, "build_session", build_real_session)
+    holder: dict[str, Any] = {}
+
+    async def fn(ctx, args):
+        assert await ctx.agent("finish once", label="worker") == "finished"
+        session = ctx.sessions[0]
+        session.state.append_message(
+            {"role": "user", "content": "mutation after final step_end"}
+        )
+        holder["session"] = session
+        return "ok"
+
+    save_dir = str(tmp_path / "run")
+    assert await workflow_runtime.run_workflow(
+        fn,
+        {},
+        cfg=_cfg(),
+        save_dir=save_dir,
+        trace=False,
+    ) == "ok"
+
+    snapshot = SessionStore().load_snapshot(
+        os.path.join(save_dir, "000_worker.json"),
+        "system",
+    )
+    assert snapshot["messages"][-1]["role"] == "user"
+    assert snapshot["messages"][-1]["content"] == "mutation after final step_end"
+    assert snapshot["session_state"]["phase"] == holder["session"].state.phase.value
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_final_snapshot_captures_session_exception_state(
+    monkeypatch,
+    tmp_path,
+):
+    class FailingLLM:
+        async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+            raise RuntimeError("provider exploded")
+
+    def build_real_session(**kwargs):
+        return build_session(llm=FailingLLM(), **kwargs)
+
+    monkeypatch.setattr(workflow_session, "build_session", build_real_session)
+    holder: dict[str, Any] = {}
+
+    async def fn(ctx, args):
+        assert await ctx.agent("trigger failure", label="broken") is None
+        holder["session"] = ctx.sessions[0]
+        return "workflow survived"
+
+    save_dir = str(tmp_path / "run")
+    assert await workflow_runtime.run_workflow(
+        fn,
+        {},
+        cfg=_cfg(),
+        save_dir=save_dir,
+        trace=False,
+    ) == "workflow survived"
+
+    session = holder["session"]
+    snapshot = SessionStore().load_snapshot(
+        os.path.join(save_dir, "000_broken.json"),
+        "system",
+    )
+    assert snapshot["session_state"]["phase"] == session.state.phase.value == "error"
+    assert snapshot["session_state"]["terminal_reason"] == session.state.terminal_reason
+    assert "provider exploded" in snapshot["session_state"]["terminal_reason"]
+    assert snapshot["session_state"]["pending_events"] == []
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_final_snapshot_captures_cancelled_calling_llm_state(
+    monkeypatch,
+    tmp_path,
+):
+    class BlockingLLM:
+        async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+            await asyncio.Event().wait()
+
+    def build_real_session(**kwargs):
+        return build_session(llm=BlockingLLM(), **kwargs)
+
+    monkeypatch.setattr(workflow_session, "build_session", build_real_session)
+    holder: dict[str, Any] = {}
+
+    async def fn(ctx, args):
+        assert await ctx.agent(
+            "cancel during provider call",
+            label="cancelled",
+            timeout=0.01,
+        ) is None
+        holder["session"] = ctx.sessions[0]
+        return "timed out cleanly"
+
+    save_dir = str(tmp_path / "run")
+    assert await workflow_runtime.run_workflow(
+        fn,
+        {},
+        cfg=_cfg(),
+        save_dir=save_dir,
+        trace=False,
+    ) == "timed out cleanly"
+
+    session = holder["session"]
+    snapshot = SessionStore().load_snapshot(
+        os.path.join(save_dir, "000_cancelled.json"),
+        "system",
+    )
+    assert snapshot["session_state"]["phase"] == session.state.phase.value
+    assert snapshot["session_state"]["terminal_reason"] == session.state.terminal_reason
+    assert snapshot["session_state"]["pending_events"] == []
+    assert snapshot["messages"] == session.state.enriched_messages()
 
 
 @pytest.mark.asyncio
@@ -307,6 +528,129 @@ async def test_run_workflow_writes_orchestration_signals(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_run_workflow_projects_sticky_trace_failure_and_fails_closed(
+    monkeypatch,
+    tmp_path,
+):
+    _patch_build_session(monkeypatch)
+    instances: list[Any] = []
+
+    class FailingTracer:
+        write_error = "BlockingIOError: trajectory lock remained busy"
+        dropped_steps = 3
+
+        def __init__(self, *args, **kwargs) -> None:
+            self.closed = False
+            instances.append(self)
+
+        def log_step(self, *args, **kwargs) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(workflow_execution, "Tracer", FailingTracer)
+
+    async def fn(ctx, args):
+        return "computed"
+
+    save_dir = str(tmp_path / "run")
+    with pytest.raises(RuntimeError, match="technical workflow trace failed"):
+        await workflow_runtime.run_workflow(
+            fn,
+            {},
+            cfg=_cfg(),
+            save_dir=save_dir,
+        )
+
+    assert instances[0].closed is True
+    with open(os.path.join(save_dir, "workflow.json")) as handle:
+        manifest = json.load(handle)
+    assert manifest["trace_enabled"] is True
+    assert manifest["tracer_write_error"] == FailingTracer.write_error
+    assert manifest["tracer_dropped_steps"] == 3
+    assert "trajectory write failed" in manifest["tracer_failure"]
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_trace_close_failure_does_not_mask_workflow_error(
+    monkeypatch,
+    tmp_path,
+):
+    _patch_build_session(monkeypatch)
+
+    class CloseFailingTracer:
+        write_error = None
+        dropped_steps = 0
+
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def log_step(self, *args, **kwargs) -> None:
+            return None
+
+        def close(self) -> None:
+            raise OSError("trace close failed")
+
+    monkeypatch.setattr(workflow_execution, "Tracer", CloseFailingTracer)
+
+    async def fn(ctx, args):
+        raise ValueError("workflow failed first")
+
+    with pytest.raises(ValueError, match="workflow failed first") as caught:
+        await workflow_runtime.run_workflow(
+            fn,
+            {},
+            cfg=_cfg(),
+            save_dir=str(tmp_path / "run"),
+        )
+
+    assert any("workflow trace also failed" in note for note in caught.value.__notes__)
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_fails_closed_when_custom_tracer_diagnostics_raise(
+    monkeypatch,
+    tmp_path,
+):
+    _patch_build_session(monkeypatch)
+
+    class UninspectableTracer:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        @property
+        def write_error(self):
+            raise LookupError("broken diagnostics property")
+
+        def log_step(self, *args, **kwargs) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(workflow_execution, "Tracer", UninspectableTracer)
+
+    async def fn(ctx, args):
+        return "computed"
+
+    save_dir = str(tmp_path / "run")
+    with pytest.raises(RuntimeError, match="technical workflow trace failed"):
+        await workflow_runtime.run_workflow(
+            fn,
+            {},
+            cfg=_cfg(),
+            save_dir=save_dir,
+        )
+
+    with open(os.path.join(save_dir, "workflow.json")) as handle:
+        manifest = json.load(handle)
+    assert manifest["tracer_write_error"] is None
+    assert manifest["tracer_dropped_steps"] == 0
+    assert "diagnostics could not be inspected" in manifest["tracer_failure"]
+
+
+@pytest.mark.asyncio
 async def test_run_workflow_trace_false_skips_orchestration(monkeypatch, tmp_path):
     """``trace=False`` suppresses orchestration.jsonl even when the run is saved."""
     _patch_build_session(monkeypatch)
@@ -340,3 +684,690 @@ async def test_run_workflow_no_save_dir_skips_orchestration(monkeypatch, tmp_pat
 
     assert result == "ok"
     assert not os.path.exists(os.path.join(str(tmp_path), "orchestration.jsonl"))
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_quiesces_late_session_before_manifest_and_tracer_close(
+    monkeypatch,
+    tmp_path,
+):
+    order: list[str] = []
+    tracer_instances: list[Any] = []
+    sentinel = tmp_path / "late-write.txt"
+    holder: dict[str, Any] = {}
+
+    class RecordingTracer:
+        def __init__(self, *args, **kwargs) -> None:
+            self.closed = False
+            tracer_instances.append(self)
+
+        def log_step(self, step_type, payload, tokens=0, latency=0.0) -> None:
+            assert self.closed is False
+            if step_type == "late_cleanup":
+                order.append("late-trace")
+
+        def close(self) -> None:
+            self.closed = True
+            order.append("tracer-close")
+
+    class RevocableEnvironment:
+        def __init__(self) -> None:
+            self._aborted = False
+            self.abort_called = False
+            self.blocked_writes = 0
+
+        async def write_file(self, path: str, content: str) -> None:
+            if self._aborted:
+                self.blocked_writes += 1
+                raise RuntimeError("environment revoked")
+            sentinel.write_text(content, encoding="utf-8")
+
+        async def abort(self) -> None:
+            self.abort_called = True
+            self._aborted = True
+
+    class CancellationResistantSession:
+        used_tokens = 0
+
+        def __init__(self, environment, tracer) -> None:
+            self.env = environment
+            self.tracer = tracer
+            self.cancel_seen = asyncio.Event()
+
+        async def add_user_message(self, content: str) -> None:
+            return None
+
+        async def run_loop(self) -> str:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancel_seen.set()
+                while not self.env._aborted:
+                    try:
+                        await asyncio.sleep(0)
+                    except asyncio.CancelledError:
+                        continue
+                self.tracer.log_step("late_cleanup", {})
+                try:
+                    await self.env.write_file(str(sentinel), "too late")
+                except RuntimeError:
+                    pass
+                order.append("session-finished")
+                return "late"
+
+    class OneSessionFactory:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        def build_workflow_session(self, **kwargs):
+            return self.session
+
+    def fake_build_context(**kwargs):
+        environment = RevocableEnvironment()
+        session = CancellationResistantSession(environment, kwargs["tracer"])
+        holder.update(environment=environment, session=session)
+        return WorkflowContext(
+            OneSessionFactory(session),
+            tracer=kwargs["tracer"],
+            max_concurrency=kwargs["max_concurrency"],
+            budget_total=kwargs["budget"],
+        )
+
+    original_manifest = workflow_cleanup._write_workflow_manifest
+
+    def recording_manifest(*args, **kwargs):
+        order.append("manifest")
+        return original_manifest(*args, **kwargs)
+
+    monkeypatch.setattr(workflow_execution, "Tracer", RecordingTracer)
+    monkeypatch.setattr(workflow_execution, "build_workflow_context", fake_build_context)
+    monkeypatch.setattr(
+        workflow_cleanup,
+        "_write_workflow_manifest",
+        recording_manifest,
+    )
+
+    async def fn(ctx, args):
+        assert await ctx.agent("slow", timeout=0.001) is None
+        await asyncio.wait_for(holder["session"].cancel_seen.wait(), timeout=0.5)
+        return "ok"
+
+    save_dir = str(tmp_path / "run")
+    result = await workflow_runtime.run_workflow(
+        fn,
+        {},
+        cfg=_cfg(),
+        save_dir=save_dir,
+        cleanup_timeout=0.5,
+    )
+
+    assert result == "ok"
+    assert holder["environment"].abort_called is True
+    assert holder["environment"].blocked_writes == 1
+    assert sentinel.exists() is False
+    assert tracer_instances[0].closed is True
+    assert order.index("session-finished") < order.index("manifest")
+    assert order.index("session-finished") < order.index("tracer-close")
+    assert os.path.exists(os.path.join(save_dir, "workflow.json"))
+
+
+@pytest.mark.asyncio
+async def test_workflow_cleanup_marks_cancelled_blocking_autosave_nonquiescent():
+    first_started = threading.Event()
+    second_started = threading.Event()
+    release_first = threading.Event()
+    release_second = threading.Event()
+    calls: list[str] = []
+    call_count = 0
+
+    def blocking_save() -> None:
+        nonlocal call_count
+        call_count += 1
+        current = call_count
+        calls.append(f"start-{current}")
+        if current == 1:
+            first_started.set()
+            assert release_first.wait(timeout=2.0)
+        else:
+            second_started.set()
+            assert release_second.wait(timeout=2.0)
+        calls.append(f"end-{current}")
+
+    subscriber = AutoSaveSubscriber(blocking_save)
+    event_bus = EventBus(subscriber)
+
+    class SessionWithOwnedAutosave:
+        @property
+        def pending_cleanup_tasks(self):
+            return event_bus.pending_tasks
+
+    class UnusedFactory:
+        def build_workflow_session(self, **kwargs):
+            raise AssertionError("session creation is not used")
+
+    ctx = WorkflowContext(UnusedFactory())
+    ctx._track_session(SessionWithOwnedAutosave())
+
+    first_waiter = asyncio.create_task(
+        event_bus.emit(SessionRuntimeEvent(type="step_end"))
+    )
+    assert await asyncio.to_thread(first_started.wait, 1.0)
+    second_waiter = asyncio.create_task(
+        event_bus.emit(SessionRuntimeEvent(type="step_end"))
+    )
+    while len(subscriber.pending_tasks) < 2:
+        await asyncio.sleep(0)
+    first_waiter.cancel()
+    second_waiter.cancel()
+    waiter_results = await asyncio.gather(
+        first_waiter,
+        second_waiter,
+        return_exceptions=True,
+    )
+    assert all(isinstance(result, asyncio.CancelledError) for result in waiter_results)
+    owners = subscriber.pending_tasks
+    assert len(owners) == 2
+    assert event_bus.pending_tasks == owners
+
+    cleanup = asyncio.create_task(
+        workflow_cleanup._quiesce_workflow_context(ctx, timeout=0.02)
+    )
+    deadline = asyncio.get_running_loop().time() + 0.5
+    while not (
+        cleanup.done()
+        or all(owner.cancelled() or owner.done() for owner in owners)
+        or subscriber.failure_count > 0
+    ):
+        assert not cleanup.done()
+        assert asyncio.get_running_loop().time() < deadline
+        await asyncio.sleep(0)
+
+    try:
+        release_first.set()
+        assert await asyncio.to_thread(second_started.wait, 0.5)
+        quiesced, succeeded, _lingering = await cleanup
+        assert quiesced is False
+        assert succeeded is False
+        assert calls == ["start-1", "end-1", "start-2"]
+    finally:
+        release_first.set()
+        release_second.set()
+        await asyncio.gather(*owners, return_exceptions=True)
+
+    assert calls == ["start-1", "end-1", "start-2", "end-2"]
+    assert await workflow_cleanup._wait_for_context_cleanup(ctx, timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_workflow_cleanup_reports_completed_autosave_failure():
+    error = OSError("snapshot disk full")
+
+    def failed_save() -> None:
+        raise error
+
+    subscriber = AutoSaveSubscriber(failed_save)
+    event_bus = EventBus(subscriber)
+
+    class SessionWithFailedAutosave:
+        pending_cleanup_tasks = ()
+
+        @property
+        def persistence_errors(self):
+            return (subscriber.last_error,) if subscriber.last_error else ()
+
+    class UnusedFactory:
+        def build_workflow_session(self, **kwargs):
+            raise AssertionError("session creation is not used")
+
+    ctx = WorkflowContext(UnusedFactory())
+    ctx._track_session(SessionWithFailedAutosave())
+    await event_bus.emit(SessionRuntimeEvent(type="step_end"))
+
+    quiesced, succeeded, _lingering = await workflow_cleanup._quiesce_workflow_context(
+        ctx,
+        timeout=0.1,
+    )
+    assert quiesced is True
+    assert succeeded is False
+    assert subscriber.last_error is error
+
+
+@pytest.mark.asyncio
+async def test_workflow_cleanup_tracks_abandoned_provider_task_until_exit():
+    class CancellationResistantLLM:
+        def __init__(self):
+            self.cancel_seen = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancel_seen.set()
+                while not self.release.is_set():
+                    try:
+                        await self.release.wait()
+                    except asyncio.CancelledError:
+                        continue
+                raise
+
+    llm = CancellationResistantLLM()
+    session = build_session(
+        agent=Agent(
+            name="workflow_agent",
+            system_prompt="sys",
+            tools=[],
+            model="test-model",
+            provider="test",
+        ),
+        llm=llm,
+        llm_timeout=0.01,
+    )
+
+    class OneSessionFactory:
+        def build_workflow_session(self, **kwargs):
+            return session
+
+    ctx = WorkflowContext(OneSessionFactory())
+    assert await ctx.agent("trigger provider timeout") is None
+    assert llm.cancel_seen.is_set()
+    assert session.pending_cleanup_tasks
+
+    quiesced, succeeded, _lingering = await workflow_cleanup._quiesce_workflow_context(
+        ctx,
+        timeout=0.01,
+    )
+    assert quiesced is False
+    assert succeeded is False
+    pending = session.pending_cleanup_tasks
+    assert pending
+
+    llm.release.set()
+    await asyncio.gather(*pending, return_exceptions=True)
+    assert await workflow_cleanup._wait_for_context_cleanup(ctx, timeout=0.2)
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_reports_technical_cleanup_failure_after_quiescence(
+    monkeypatch,
+    tmp_path,
+):
+    calls = _patch_build_session(monkeypatch)
+    closed: list[bool] = []
+
+    class RecordingTracer:
+        def __init__(self, *args, **kwargs) -> None:
+            return None
+
+        def close(self) -> None:
+            closed.append(True)
+
+    async def failed_abort(ctx, *, timeout):
+        return True, False, ()
+
+    monkeypatch.setattr(workflow_execution, "Tracer", RecordingTracer)
+    monkeypatch.setattr(workflow_cleanup, "_quiesce_workflow_context", failed_abort)
+
+    async def fn(ctx, args):
+        await ctx.agent("done")
+        return "would otherwise succeed"
+
+    save_dir = str(tmp_path / "run")
+    with pytest.raises(RuntimeError, match="technical workflow cleanup failed"):
+        await workflow_runtime.run_workflow(
+            fn,
+            {},
+            cfg=_cfg(),
+            save_dir=save_dir,
+            cleanup_timeout=0.01,
+        )
+
+    assert calls
+    assert closed == [True]
+    assert os.path.exists(os.path.join(save_dir, "workflow.json")) is False
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_cleanup_failure_keeps_workflow_failure_as_cause(
+    monkeypatch,
+):
+    _patch_build_session(monkeypatch)
+
+    async def failed_cleanup(ctx, *, timeout):
+        return True, False, ()
+
+    monkeypatch.setattr(
+        workflow_execution,
+        "_quiesce_and_finalize_workflow_context",
+        failed_cleanup,
+    )
+
+    async def fn(ctx, args):
+        raise ValueError("workflow failed first")
+
+    with pytest.raises(RuntimeError, match="technical workflow cleanup failed") as caught:
+        await workflow_runtime.run_workflow(fn, {}, cfg=_cfg())
+
+    assert isinstance(caught.value.__cause__, ValueError)
+    assert str(caught.value.__cause__) == "workflow failed first"
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_cleanup_failure_is_note_on_primary_cancel(monkeypatch):
+    _patch_build_session(monkeypatch)
+    started = asyncio.Event()
+
+    async def failed_cleanup(ctx, *, timeout):
+        return True, False, ()
+
+    monkeypatch.setattr(
+        workflow_execution,
+        "_quiesce_and_finalize_workflow_context",
+        failed_cleanup,
+    )
+
+    async def fn(ctx, args):
+        started.set()
+        await asyncio.Event().wait()
+
+    run_task = asyncio.create_task(workflow_runtime.run_workflow(fn, {}, cfg=_cfg()))
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    run_task.cancel("primary cancellation")
+
+    with pytest.raises(asyncio.CancelledError) as caught:
+        await asyncio.wait_for(run_task, timeout=0.5)
+    assert_cancel_reason(caught.value, "primary cancellation")
+    assert_cancel_note(
+        caught.value,
+        "workflow cleanup also failed",
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_reports_manifest_failure(
+    monkeypatch,
+    tmp_path,
+):
+    _patch_build_session(monkeypatch)
+    class RecordingTracer:
+        write_error = None
+        dropped_steps = 0
+
+        def __init__(self, *args, **kwargs):
+            self.closed = False
+
+        def log_step(self, *args, **kwargs):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    def failing_manifest(*args, **kwargs):
+        raise OSError("manifest disk failed")
+
+    monkeypatch.setattr(workflow_execution, "Tracer", RecordingTracer)
+    monkeypatch.setattr(
+        workflow_cleanup,
+        "_write_workflow_manifest",
+        failing_manifest,
+    )
+
+    async def fn(ctx, args):
+        return "computed"
+
+    with pytest.raises(RuntimeError, match="technical workflow manifest persistence failed"):
+        await workflow_runtime.run_workflow(
+            fn,
+            {},
+            cfg=_cfg(),
+            save_dir=str(tmp_path / "run"),
+            cleanup_timeout=0.2,
+        )
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_waits_for_orphaned_background_agent(monkeypatch):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class BackgroundSession:
+        used_tokens = 0
+
+        async def add_user_message(self, content: str) -> None:
+            return None
+
+        async def run_loop(self) -> str:
+            started.set()
+            await release.wait()
+            return "background-finished"
+
+    class Factory:
+        def build_workflow_session(self, **kwargs):
+            return BackgroundSession()
+
+    def fake_build_context(**kwargs):
+        return WorkflowContext(
+            Factory(),
+            max_concurrency=kwargs["max_concurrency"],
+            budget_total=kwargs["budget"],
+        )
+
+    monkeypatch.setattr(workflow_execution, "build_workflow_context", fake_build_context)
+
+    async def fn(ctx, args):
+        asyncio.create_task(ctx.agent("background"))
+        return "workflow-returned"
+
+    run_task = asyncio.create_task(
+        workflow_runtime.run_workflow(
+            fn,
+            {},
+            cfg=_cfg(),
+            cleanup_timeout=0.2,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    await asyncio.sleep(0)
+    assert run_task.done() is False
+
+    release.set()
+    assert await asyncio.wait_for(run_task, timeout=0.5) == "workflow-returned"
+
+
+@pytest.mark.asyncio
+async def test_owned_tracer_closes_when_cleanup_fails(
+    monkeypatch,
+    tmp_path,
+):
+    holder: dict[str, Any] = {}
+    tracer_instances: list[Any] = []
+    order: list[str] = []
+
+    class RecordingTracer:
+        def __init__(self, *args, **kwargs) -> None:
+            self.closed = False
+            tracer_instances.append(self)
+
+        def log_step(self, step_type, payload, tokens=0, latency=0.0) -> None:
+            return None
+
+        def close(self) -> None:
+            self.closed = True
+            order.append("tracer-close")
+
+    class Environment:
+        def __init__(self) -> None:
+            self._aborted = False
+
+        async def abort(self) -> None:
+            self._aborted = True
+
+    class PermanentlyCancellationResistantSession:
+        used_tokens = 0
+
+        def __init__(self, environment, tracer) -> None:
+            self.env = environment
+            self.tracer = tracer
+            self.cancel_seen = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def add_user_message(self, content: str) -> None:
+            return None
+
+        async def run_loop(self) -> str:
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancel_seen.set()
+                while not self.release.is_set():
+                    try:
+                        await self.release.wait()
+                    except asyncio.CancelledError:
+                        continue
+                order.append("session-finished")
+                return "released-late"
+
+    class Factory:
+        def __init__(self, session) -> None:
+            self.session = session
+
+        def build_workflow_session(self, **kwargs):
+            return self.session
+
+    def fake_build_context(**kwargs):
+        environment = Environment()
+        session = PermanentlyCancellationResistantSession(
+            environment,
+            kwargs["tracer"],
+        )
+        holder.update(environment=environment, session=session)
+        context = WorkflowContext(
+            Factory(session),
+            tracer=kwargs["tracer"],
+            max_concurrency=kwargs["max_concurrency"],
+            budget_total=kwargs["budget"],
+        )
+        holder["context"] = context
+        return context
+
+    monkeypatch.setattr(workflow_execution, "Tracer", RecordingTracer)
+    monkeypatch.setattr(workflow_execution, "build_workflow_context", fake_build_context)
+
+    async def fn(ctx, args):
+        assert await ctx.agent("slow", timeout=0.001) is None
+        await asyncio.wait_for(holder["session"].cancel_seen.wait(), timeout=0.5)
+        return "workflow-returned"
+
+    with pytest.raises(RuntimeError, match="technical workflow cleanup failed"):
+        await workflow_runtime.run_workflow(
+            fn,
+            {},
+            cfg=_cfg(),
+            save_dir=str(tmp_path / "run"),
+            cleanup_timeout=0.005,
+        )
+
+    tracer = tracer_instances[0]
+    assert tracer.closed is True
+    pending = holder["context"].pending_cleanup_tasks
+    holder["session"].release.set()
+    await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=0.5)
+    assert order.index("tracer-close") < order.index("session-finished")
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_deadline_cancels_owner_and_aborts_injected_environment(monkeypatch):
+    cancelled = asyncio.Event()
+    environment = _InjectedEnvironment()
+
+    async def blocked(*_args, **_kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(workflow_runtime, "_run_workflow_with_integrity", blocked)
+    with pytest.raises(workflow_runtime.WorkflowDeadlineExceeded):
+        await workflow_runtime.run_workflow(
+            object(),
+            {},
+            cfg=_cfg(),
+            env=environment,
+            deadline_monotonic=asyncio.get_running_loop().time() + 0.01,
+            cleanup_timeout=0.1,
+        )
+    assert cancelled.is_set()
+    assert environment.revoked
+    assert environment.abort_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_deadline_reports_lifecycle_failure_when_abort_fails(monkeypatch):
+    environment = _InjectedEnvironment(abort_fails=True)
+
+    async def blocked(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(workflow_runtime, "_run_workflow_with_integrity", blocked)
+    with pytest.raises(workflow_runtime.WorkflowLifecycleError, match="quiescent"):
+        await workflow_runtime.run_workflow(
+            object(),
+            {},
+            cfg=_cfg(),
+            env=environment,
+            deadline_monotonic=asyncio.get_running_loop().time() + 0.01,
+            cleanup_timeout=0.1,
+        )
+    assert environment.revoked
+    assert environment.abort_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_deadline_preserves_inner_cleanup_failure(monkeypatch):
+    environment = _InjectedEnvironment()
+
+    async def failed_cleanup(*_args, **_kwargs):
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            environment.revoke()
+            raise RuntimeError("inner cleanup failed")
+
+    monkeypatch.setattr(
+        workflow_runtime,
+        "_run_workflow_with_integrity",
+        failed_cleanup,
+    )
+    with pytest.raises(
+        workflow_runtime.WorkflowLifecycleError,
+        match="terminal state",
+    ) as caught:
+        await workflow_runtime.run_workflow(
+            object(),
+            {},
+            cfg=_cfg(),
+            env=environment,
+            deadline_monotonic=asyncio.get_running_loop().time() + 0.01,
+            cleanup_timeout=0.1,
+        )
+    assert isinstance(caught.value.__cause__, RuntimeError)
+    assert str(caught.value.__cause__) == "inner cleanup failed"
+    assert environment.abort_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_preserves_inner_timeout(monkeypatch):
+    inner = asyncio.TimeoutError("provider timeout")
+
+    async def fail(*_args, **_kwargs):
+        raise inner
+
+    monkeypatch.setattr(workflow_runtime, "_run_workflow_with_integrity", fail)
+    with pytest.raises(asyncio.TimeoutError) as captured:
+        await workflow_runtime.run_workflow(
+            object(),
+            {},
+            cfg=_cfg(),
+            deadline_monotonic=asyncio.get_running_loop().time() + 1,
+        )
+    assert captured.value is inner

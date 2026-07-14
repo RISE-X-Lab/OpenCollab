@@ -1,5 +1,5 @@
 # Single source of truth for linting the WHOLE repository — the opencollab
-# package AND the repo-root tooling (scripts/, swebench/, workflows/).
+# package AND the repository-root framework tooling.
 # CI runs `ruff check .` from the repo root so nothing escapes the gate.
 line-length = 120
 target-version = "py310"
@@ -8,11 +8,4 @@ target-version = "py310"
 select = ["E", "F", "I", "W"]
 
 [lint.per-file-ignores]
-# Grandfathered pre-existing debt, so the repo-wide lint gate can land without a
-# large refactor of legacy eval tooling. New code is fully linted; these entries
-# should be deleted as the files are cleaned up.
-# TODO(review-2026-07-09): split the 1706-line runner and clear these ignores.
-"**/swe_v1_prolite_runner.py" = ["E501"]
-"**/glm_token_monitor.py" = ["E501"]
-"**/swe_committee_v2.py" = ["E731"]
 "**/test_predictive_extension.py" = ["E501"]  # long expected-data literals

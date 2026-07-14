@@ -3,10 +3,9 @@
 Two surfaces:
 - the default (no subcommand): one unified interactive agent. Agent 0 is the
   first session and can spawn child agents via the Scheduler.
-- ``eval``: headless batch evaluation for benchmarks (SWE-bench, etc.).
 
 Split by concern: ``toolbar`` (prompt bottom-toolbar), ``config_resolve``
-(CLI args + .env merge, API-key checks), ``eval`` (headless eval command).
+(CLI args + .env merge and API-key checks).
 This module keeps the Typer app, the chat REPL, and ``main()``.
 
 Ref:
@@ -33,9 +32,11 @@ from opencollab.adapters.cli.config_resolve import (
     print_missing_key_hint,
     resolve_config,
 )
-from opencollab.adapters.cli.eval import eval_cmd
 from opencollab.adapters.cli.toolbar import format_team_toolbar
 from opencollab.adapters.cli.workflow import app as workflow_app
+from opencollab.adapters.safe_files import read_regular_text
+from opencollab.application.async_timeout import run_with_bounded_shutdown
+from opencollab.application.exception_notes import add_exception_note
 
 app = typer.Typer(
     name="opencollab",
@@ -50,8 +51,8 @@ _PROMPT_STYLE = Style.from_dict({
 })
 # Cyan chevron input prompt — ties the input line to the brand accent.
 _PROMPT = HTML('<style fg="ansicyan"><b>❯</b></style><style fg="ansibrightblack"> </style>')
+MAX_CLI_PROMPT_FILE_BYTES = 4 * 1024 * 1024
 
-app.command(name="eval")(eval_cmd)
 app.add_typer(workflow_app, name="workflow")
 
 
@@ -116,9 +117,17 @@ def main_callback(
     # Agent 0 can spawn, so default to the higher budget.
     if budget is None:
         cfg["budget"] = max(cfg["budget"], 1_000_000)
-    asyncio.run(_run(workspace=workspace, cfg=cfg, session_file=session_file,
-                     trace=trace, yolo=yolo, use_worktrees=not no_worktrees,
-                     one_shot_prompt=one_shot))
+    run_with_bounded_shutdown(
+        _run(
+            workspace=workspace,
+            cfg=cfg,
+            session_file=session_file,
+            trace=trace,
+            yolo=yolo,
+            use_worktrees=not no_worktrees,
+            one_shot_prompt=one_shot,
+        )
+    )
 
 
 def _resolve_one_shot_prompt(prompt: str | None, prompt_file: str | None) -> str | None:
@@ -126,9 +135,11 @@ def _resolve_one_shot_prompt(prompt: str | None, prompt_file: str | None) -> str
         raise typer.BadParameter("--prompt and --prompt-file are mutually exclusive.")
     if prompt_file:
         try:
-            with open(prompt_file, "r", encoding="utf-8") as f:
-                text = f.read()
-        except OSError as exc:
+            text = read_regular_text(
+                prompt_file,
+                max_bytes=MAX_CLI_PROMPT_FILE_BYTES,
+            )
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
             raise typer.BadParameter(f"Cannot read --prompt-file: {exc}") from exc
         if not text.strip():
             raise typer.BadParameter(f"--prompt-file is empty: {prompt_file}")
@@ -199,6 +210,22 @@ async def _repl_loop(tui: Any, handle_turn, lead: Any, bottom_toolbar: Any = Non
         tui.print_turn_divider()
 
 
+async def _await_scheduler_cleanup(scheduler: Any) -> asyncio.CancelledError | None:
+    """Keep the CLI-owned scheduler teardown alive through repeated cancel."""
+    cleanup_task = asyncio.create_task(scheduler.cleanup())
+    repeated_cancellation: asyncio.CancelledError | None = None
+    while True:
+        try:
+            await asyncio.shield(cleanup_task)
+            return repeated_cancellation
+        except asyncio.CancelledError as exc:
+            if cleanup_task.done():
+                cleanup_task.result()
+                return repeated_cancellation or exc
+            if repeated_cancellation is None:
+                repeated_cancellation = exc
+
+
 async def _run(workspace: str, cfg: dict, session_file: str | None,
                trace: bool, yolo: bool, use_worktrees: bool,
                one_shot_prompt: str | None = None):
@@ -241,40 +268,107 @@ async def _run(workspace: str, cfg: dict, session_file: str | None,
         ask_policy=ask_policy,
         run_id_prefix="scheduler-",
     )
-    scheduler = build_scheduler(
-        ctx, use_worktrees=use_worktrees, interactive=True,
-        session_file=session_file, auto_save=True,
-    )
-    tui.set_team_provider(scheduler.team_roster)
-    lead = scheduler.lead_session
-    if session_file and os.path.exists(session_file):
-        console.print(f"[grey46]─[/grey46] [grey58]restored from {session_file}[/grey58]")
-    elif lead.auto_save_path:
-        console.print(f"[grey46]─[/grey46] [grey58]session → {lead.auto_save_path}[/grey58]")
+    scheduler = None
+    primary_failure: BaseException | None = None
+    cleanup_failure: BaseException | None = None
+    tracer_failure: BaseException | None = None
+    repeated_cancellation: asyncio.CancelledError | None = None
+    try:
+        scheduler = build_scheduler(
+            ctx, use_worktrees=use_worktrees, interactive=True,
+            session_file=session_file, auto_save=True,
+        )
+        tui.set_team_provider(scheduler.team_roster)
+        lead = scheduler.lead_session
+        if session_file and os.path.exists(session_file):
+            console.print(
+                f"[grey46]─[/grey46] [grey58]restored from {session_file}[/grey58]"
+            )
+        elif lead.auto_save_path:
+            console.print(
+                f"[grey46]─[/grey46] [grey58]session → {lead.auto_save_path}[/grey58]"
+            )
 
-    async def turn(line: str) -> None:
-        tui.reset()
-        tui.start_live()
+        async def turn(line: str) -> None:
+            tui.reset()
+            tui.start_live()
+            try:
+                await scheduler.run(line)
+            except KeyboardInterrupt:
+                pass  # abandon the turn, return to the REPL
+            finally:
+                tui.stop_live()
+                tui.print_stats(scheduler.used_tokens, lead.step_count)
+
+        def team_toolbar() -> str:
+            return format_team_toolbar(scheduler.team_roster())
+
+        if one_shot_prompt is not None:
+            await turn(one_shot_prompt)
+        else:
+            await _repl_loop(tui, turn, lead, bottom_toolbar=team_toolbar)
+    except BaseException as exc:
+        primary_failure = exc
+    if scheduler is not None:
         try:
-            await scheduler.run(line)
-        except KeyboardInterrupt:
-            pass  # abandon the turn, return to the REPL
-        finally:
-            tui.stop_live()
-            tui.print_stats(scheduler.used_tokens, lead.step_count)
-
-    def team_toolbar() -> str:
-        return format_team_toolbar(scheduler.team_roster())
-
-    if one_shot_prompt is not None:
-        await turn(one_shot_prompt)
-    else:
-        await _repl_loop(tui, turn, lead, bottom_toolbar=team_toolbar)
-
-    await scheduler.cleanup()
+            repeated_cancellation = await _await_scheduler_cleanup(scheduler)
+        except BaseException as exc:
+            cleanup_failure = exc
     if ctx.tracer:
-        ctx.tracer.close()
-        console.print(f"[grey46]─[/grey46] [grey58]trajectory → {ctx.tracer.path}[/grey58]")
+        try:
+            ctx.tracer.close()
+        except BaseException as exc:
+            tracer_failure = exc
+        else:
+            if getattr(ctx.tracer, "write_error", None):
+                tracer_failure = OSError(
+                    f"trajectory write failed: {ctx.tracer.write_error}"
+                )
+            else:
+                try:
+                    console.print(
+                        f"[grey46]─[/grey46] "
+                        f"[grey58]trajectory → {ctx.tracer.path}[/grey58]"
+                    )
+                except BaseException as exc:
+                    tracer_failure = exc
+    if primary_failure is not None:
+        if repeated_cancellation is not None:
+            add_exception_note(
+                primary_failure,
+                "caller cancelled again during scheduler cleanup",
+            )
+        if cleanup_failure is not None:
+            add_exception_note(
+                primary_failure,
+                "scheduler cleanup also failed: "
+                f"{type(cleanup_failure).__name__}: {cleanup_failure}",
+            )
+        if tracer_failure is not None:
+            add_exception_note(
+                primary_failure,
+                "tracer close also failed: "
+                f"{type(tracer_failure).__name__}: {tracer_failure}",
+            )
+        raise primary_failure
+    if cleanup_failure is not None:
+        if tracer_failure is not None:
+            add_exception_note(
+                cleanup_failure,
+                "tracer close also failed: "
+                f"{type(tracer_failure).__name__}: {tracer_failure}",
+            )
+        raise cleanup_failure
+    if repeated_cancellation is not None:
+        if tracer_failure is not None:
+            add_exception_note(
+                repeated_cancellation,
+                "tracer close also failed: "
+                f"{type(tracer_failure).__name__}: {tracer_failure}",
+            )
+        raise repeated_cancellation
+    if tracer_failure is not None:
+        raise tracer_failure
     console.print("\n[grey46]─[/grey46] [grey58]session ended.[/grey58]")
 
 

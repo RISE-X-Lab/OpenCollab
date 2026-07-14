@@ -19,11 +19,8 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
-from types import SimpleNamespace
 
-from opencollab.application.event_bus import EventBus
 from opencollab.application.extension_valve import (
     REQUEST_EXTENSION_TOOL_NAME,
     RequestExtensionTool,
@@ -34,103 +31,30 @@ from opencollab.application.session_run import (
     DEFAULT_MAX_EXTENSIONS,
     ENFORCEMENT_OFF,
     ENFORCEMENT_ON,
-    SessionRunUseCase,
 )
 from opencollab.application.submit_findings import SUBMIT_TOOL_NAME, SubmitFindingsTool
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase, SessionState
-from opencollab.domain.tools import ToolProcessingResult
-
-
-def run(coro):
-    return asyncio.run(coro)
-
-
-# --------------------------------------------------------------------------- #
-# Shared fakes (mirror test_session_wind_down.py / test_progress_watchdog.py).
-# --------------------------------------------------------------------------- #
-
-
-def llm_response(content=None, tool_calls=None, total_tokens=5, input_tokens=1, finish_reason="stop"):
-    return SimpleNamespace(
-        content=content,
-        tool_calls=tool_calls or [],
-        usage=SimpleNamespace(total_tokens=total_tokens, input_tokens=input_tokens),
-        finish_reason=finish_reason,
-        reasoning=None,
-    )
-
-
-def tool_call(call_id="call-1", name="submit_findings", arguments="{}"):
-    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
+from session_run_test_support import (
+    CapturingToolExecution,
+    FakeLLM,
+    build_runner,
+    llm_response,
+    run,
+    tool_call,
+)
+from session_run_test_support import (
+    ReadStub as _ReadStub,
+)
+from session_run_test_support import (
+    agent_with_submit as _agent_with_submit,
+)
 
 
 def ext_call(reason, call_id="ext-1"):
     return tool_call(
         call_id=call_id, name=REQUEST_EXTENSION_TOOL_NAME, arguments=json.dumps({"reason": reason})
     )
-
-
-class FakeLLM:
-    def __init__(self, responses=()):
-        self.responses = list(responses)
-        self.calls = []
-
-    async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
-        self.calls.append(
-            {
-                "messages": copy.deepcopy(messages),
-                "tools": copy.deepcopy(tools),
-                "tool_choice": kwargs.get("tool_choice"),
-            }
-        )
-        if not self.responses:
-            raise AssertionError("unexpected LLM call")
-        return self.responses.pop(0)
-
-
-class FakeToolExecution:
-    def __init__(self, result=None):
-        self.calls = []
-        self.result = result if result is not None else ToolProcessingResult()
-
-    async def process(self, tool_calls):
-        self.calls.append(copy.deepcopy(tool_calls))
-        return self.result
-
-
-class CapturingToolExecution:
-    """Runs tools for real against the agent's live toolset (like the dispatcher):
-    submit_findings / request_extension / file_read invoke the real tool; any other
-    name returns the same "unknown tool" error the real dispatcher produces."""
-
-    def __init__(self, agent):
-        self.agent = agent
-        self.calls = []
-
-    async def process(self, tool_calls):
-        self.calls.append(copy.deepcopy(tool_calls))
-        messages = []
-        for tc in tool_calls:
-            name = tc["function"]["name"]
-            tool = self.agent.find_tool(name)
-            if tool is None:
-                available = [t.name for t in self.agent.tools]
-                content = f"Error: unknown tool '{name}'. Available: {available}"
-            else:
-                params = json.loads(tc["function"].get("arguments") or "{}")
-                content = await tool.execute_with_runtime(params, None)
-            messages.append({"role": "tool", "tool_call_id": tc["id"], "content": content})
-        return ToolProcessingResult(messages_to_append=messages)
-
-
-class _ReadStub:
-    """Schema-only read stub (never executed) — for tests that don't read."""
-
-    name = "file_read"
-
-    def to_openai_schema(self):
-        return {"type": "function", "function": {"name": self.name, "parameters": {}}}
 
 
 class _ExecReadStub:
@@ -146,21 +70,6 @@ class _ExecReadStub:
 
     async def execute_with_runtime(self, params, runtime):
         return self._output
-
-
-def build_runner(*, state, agent, llm, event_bus=None, tool_execution=None, **kwargs):
-    return SessionRunUseCase(
-        agent=agent,
-        state=state,
-        llm=llm,
-        event_publisher=event_bus if event_bus is not None else EventBus(None),
-        tool_execution=tool_execution if tool_execution is not None else FakeToolExecution(),
-        **kwargs,
-    )
-
-
-def _agent_with_submit():
-    return Agent(name="scout", system_prompt="s", tools=[_ReadStub(), SubmitFindingsTool()])
 
 
 def _captured():
@@ -427,11 +336,28 @@ def test_t2_justified_extension_granted_then_hard_cap_forces_submit():
     llm = FakeLLM(
         [
             # turn 1 (OFFER): the scout justifies with a concrete, falsifiable reason.
-            llm_response(tool_calls=[ext_call(_GOOD_REASON)], total_tokens=1_000, finish_reason="tool_calls"),
+            llm_response(
+                tool_calls=[ext_call(_GOOD_REASON)],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),
             # turn 2 (granted extension): one more read.
-            llm_response(tool_calls=[tool_call(name="file_read", arguments="{}")], total_tokens=1_000, finish_reason="tool_calls"),
+            llm_response(
+                tool_calls=[tool_call(name="file_read", arguments="{}")],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),
             # turn 3 (forced wind-down, cap reached): submit.
-            llm_response(tool_calls=[tool_call(name="submit_findings", arguments=json.dumps(_captured()))], total_tokens=1_000, finish_reason="tool_calls"),
+            llm_response(
+                tool_calls=[
+                    tool_call(
+                        name="submit_findings",
+                        arguments=json.dumps(_captured()),
+                    )
+                ],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),
         ]
     )
     state = agent_state()
@@ -462,9 +388,22 @@ def test_t2_vacuous_reason_denied_immediately_forces_submit():
     llm = FakeLLM(
         [
             # OFFER turn: a vacuous reason.
-            llm_response(tool_calls=[ext_call("let me keep looking a bit more")], total_tokens=1_000, finish_reason="tool_calls"),
+            llm_response(
+                tool_calls=[ext_call("let me keep looking a bit more")],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),
             # forced submit turn.
-            llm_response(tool_calls=[tool_call(name="submit_findings", arguments=json.dumps(_captured()))], total_tokens=1_000, finish_reason="tool_calls"),
+            llm_response(
+                tool_calls=[
+                    tool_call(
+                        name="submit_findings",
+                        arguments=json.dumps(_captured()),
+                    )
+                ],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),
         ]
     )
     state = agent_state()
@@ -492,10 +431,31 @@ def test_t2_duplicate_reason_denied_through_runner():
     agent = Agent(name="scout", system_prompt="s", tools=[_ExecReadStub(), submit])
     llm = FakeLLM(
         [
-            llm_response(tool_calls=[ext_call(_GOOD_REASON)], total_tokens=1_000, finish_reason="tool_calls"),      # offer 1 -> granted
-            llm_response(tool_calls=[tool_call(name="file_read", arguments="{}")], total_tokens=1_000, finish_reason="tool_calls"),  # granted read
-            llm_response(tool_calls=[ext_call(_GOOD_REASON, call_id="ext-2")], total_tokens=1_000, finish_reason="tool_calls"),  # offer 2 -> dup
-            llm_response(tool_calls=[tool_call(name="submit_findings", arguments=json.dumps(_captured()))], total_tokens=1_000, finish_reason="tool_calls"),  # forced submit
+            llm_response(
+                tool_calls=[ext_call(_GOOD_REASON)],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),  # offer 1 -> granted
+            llm_response(
+                tool_calls=[tool_call(name="file_read", arguments="{}")],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),  # granted read
+            llm_response(
+                tool_calls=[ext_call(_GOOD_REASON, call_id="ext-2")],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),  # offer 2 -> duplicate
+            llm_response(
+                tool_calls=[
+                    tool_call(
+                        name="submit_findings",
+                        arguments=json.dumps(_captured()),
+                    )
+                ],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            ),  # forced submit
         ]
     )
     state = agent_state()
@@ -522,7 +482,13 @@ def test_offer_turn_voluntary_submit_commits_without_consuming_extension():
     ext = RequestExtensionTool()
     agent = Agent(name="scout", system_prompt="s", tools=[_ExecReadStub(), submit])
     llm = FakeLLM(
-        [llm_response(tool_calls=[tool_call(arguments=json.dumps(_captured()))], total_tokens=1_000, finish_reason="tool_calls")]
+        [
+            llm_response(
+                tool_calls=[tool_call(arguments=json.dumps(_captured()))],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            )
+        ]
     )
     state = agent_state()
     runner = build_runner(
@@ -571,7 +537,13 @@ def test_valve_not_offered_when_no_extension_tool_wired():
     agent = Agent(name="scout", system_prompt="s", tools=[_ExecReadStub(), submit])
     state = agent_state()
     llm = FakeLLM(
-        [llm_response(tool_calls=[tool_call(arguments=json.dumps(_captured()))], total_tokens=1_000, finish_reason="tool_calls")]
+        [
+            llm_response(
+                tool_calls=[tool_call(arguments=json.dumps(_captured()))],
+                total_tokens=1_000,
+                finish_reason="tool_calls",
+            )
+        ]
     )
     runner = build_runner(
         state=state, agent=agent, llm=llm, tool_execution=CapturingToolExecution(agent),
