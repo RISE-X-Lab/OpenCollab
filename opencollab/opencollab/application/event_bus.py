@@ -66,14 +66,22 @@ class EventBus:
                 continue
             if not inspect.isawaitable(result):
                 continue
+            subscriber = asyncio.create_task(self._isolate_self_cancel(result))
             try:
-                await result
+                await asyncio.shield(subscriber)
             except asyncio.CancelledError:
-                if asyncio.current_task().cancelling():
-                    raise
-                continue
+                subscriber.cancel()
+                await asyncio.gather(subscriber, return_exceptions=True)
+                raise
             except Exception:
                 continue
+
+    @staticmethod
+    async def _isolate_self_cancel(result: Awaitable[Any]) -> None:
+        try:
+            await result
+        except asyncio.CancelledError:
+            return
 
 
 __all__ = ["EventBus", "EventCallback"]
