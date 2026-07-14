@@ -45,6 +45,8 @@ async def test_local_exec_returns_command_output(tmp_path) -> None:
     assert result.stdout == "hello"
     assert result.stderr == "problem"
     assert not result.stdout_truncated
+    assert result.stdout_dropped_bytes == 0
+    assert result.stderr_dropped_bytes == 0
 
 
 async def test_local_exec_bounds_output(tmp_path, monkeypatch) -> None:

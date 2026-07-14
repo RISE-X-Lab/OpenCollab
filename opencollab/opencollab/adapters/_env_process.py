@@ -55,8 +55,9 @@ async def _read_bounded(
         if not chunk:
             break
         available = max(0, limit - len(retained))
-        retained.extend(chunk[:available])
-        dropped += len(chunk) - available
+        kept = chunk[:available]
+        retained.extend(kept)
+        dropped += len(chunk) - len(kept)
     return bytes(retained), dropped
 
 
