@@ -1,7 +1,7 @@
 # CLAUDE.md
 
-OpenCollab is a multi-agent software-development framework (chat, team, headless
-eval). The package lives in `opencollab/`; source root `opencollab/opencollab/`.
+OpenCollab is a multi-agent software-development framework. The package lives in
+`opencollab/`; source root `opencollab/opencollab/`.
 
 ## Architecture — strict clean architecture
 
@@ -13,7 +13,7 @@ Dependencies point inward only: `adapters → application → domain`.
 - `adapters/` — concrete impls: `cli/`, `tui/`, `llm/`, `tools/`, environments,
   tracing, session store.
 - `bootstrap/` — composition root; the only layer that knows concrete types.
-- `harness/` — headless eval runner.
+- `sdk/` — versioned integration surface used by external workflow and evaluation packages.
 
 Never add an inward → outward import (enforced by `tests/test_*_boundaries.py`).
 Need an outer capability inside? Add a port in `application/ports.py`, wire the

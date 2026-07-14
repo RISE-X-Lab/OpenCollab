@@ -12,6 +12,7 @@ at the center of the dependency graph alongside the other ``domain`` modules.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from fnmatch import fnmatch
 
@@ -54,6 +55,17 @@ class HookSpec:
     command: str
     matcher: str | None = None
     timeout: float = 30.0
+
+    def __post_init__(self) -> None:
+        if isinstance(self.timeout, bool):
+            raise ValueError("hook timeout must be a finite positive number")
+        try:
+            timeout = float(self.timeout)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("hook timeout must be a finite positive number") from exc
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("hook timeout must be a finite positive number")
+        object.__setattr__(self, "timeout", timeout)
 
 
 @dataclass(frozen=True)

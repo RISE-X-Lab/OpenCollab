@@ -27,7 +27,12 @@ class FakeSkillStore:
         return f"BODY OF {name}" if name in self._skills else None
 
 
-def _cfg(model="default-model", temperature=0.2):
+def _cfg(
+    model="default-model",
+    temperature=0.2,
+    top_p=None,
+    max_output_tokens=8_192,
+):
     return SpawnConfig(
         model=model,
         provider="openai",
@@ -38,6 +43,8 @@ def _cfg(model="default-model", temperature=0.2):
         event_bus=EventBus(None),
         permission_policy=None,
         temperature=temperature,
+        top_p=top_p,
+        max_output_tokens=max_output_tokens,
     )
 
 
@@ -110,6 +117,15 @@ def test_temperature_role_override_and_zero_is_honored():
     # as "unset" and fall back to the global 0.3.
     assert builder.build_agent("cold").temperature == 0.0
     assert builder.build_agent("plain").temperature == 0.3
+
+
+def test_sampling_and_output_limits_flow_into_agent():
+    agent = ContextBuilder(
+        _team(), _cfg(top_p=0.37, max_output_tokens=32_768)
+    ).build_agent("reviewer")
+
+    assert agent.top_p == 0.37
+    assert agent.max_tokens_per_step == 32_768
 
 
 def test_unknown_role_falls_back_to_generic_spec():

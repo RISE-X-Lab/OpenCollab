@@ -33,7 +33,7 @@ body:
         - Interactive (opencollab)
         - Team
         - Workflow (opencollab workflow run)
-        - Eval / SWE-bench
+        - SDK / external integration
         - Other / not sure
     validations:
       required: true

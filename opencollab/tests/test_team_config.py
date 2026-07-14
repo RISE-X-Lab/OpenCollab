@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import os
+
 import pytest
+from opencollab.bootstrap import team_config as team_config_mod
 from opencollab.bootstrap.team_config import (
     BASE_TOOL_NAMES,
     DEFAULT_LEAD_PROMPT,
     DEFAULT_ROLE_PROMPT,
     LEAD_TOOL_NAMES,
     RoleConfig,
+    TeamConfig,
     default_team_config,
     load_team_config,
 )
+from opencollab.domain.team import Topology
 
 TEAM_YAML = """\
 roles:
@@ -203,3 +208,159 @@ roles:
     monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(configs / "team.yaml"))
     with pytest.raises(ValueError, match="prompt"):
         load_team_config(str(tmp_path))
+
+
+@pytest.mark.parametrize("kind", ["fifo", "symlink", "oversized"])
+def test_team_config_rejects_unsafe_or_oversized_input(tmp_path, monkeypatch, kind):
+    config = tmp_path / "team.yaml"
+    if kind == "fifo":
+        os.mkfifo(config)
+    elif kind == "symlink":
+        real = tmp_path / "real.yaml"
+        real.write_text("roles: {}\n", encoding="utf-8")
+        config.symlink_to(real)
+    else:
+        config.write_text("x" * 65, encoding="utf-8")
+        monkeypatch.setattr(team_config_mod, "MAX_TEAM_CONFIG_BYTES", 64)
+    monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(config))
+
+    with pytest.raises(ValueError, match="team config"):
+        load_team_config(str(tmp_path))
+
+
+def test_role_prompt_file_cannot_escape_team_directory(tmp_path, monkeypatch):
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "team.yaml").write_text(
+        "roles:\n  lead:\n    tools: [bash]\n"
+        "    prompt_file: ../outside.md\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(configs / "team.yaml"))
+
+    with pytest.raises(ValueError, match="escapes team directory"):
+        load_team_config(str(tmp_path))
+
+
+@pytest.mark.parametrize("kind", ["symlink", "oversized"])
+def test_role_prompt_file_rejects_unsafe_or_oversized_input(
+    tmp_path,
+    monkeypatch,
+    kind,
+):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    prompt = configs / "role.md"
+    if kind == "symlink":
+        real = tmp_path / "real.md"
+        real.write_text("outside", encoding="utf-8")
+        prompt.symlink_to(real)
+    else:
+        prompt.write_text("x" * 65, encoding="utf-8")
+        monkeypatch.setattr(team_config_mod, "MAX_ROLE_PROMPT_BYTES", 64)
+    (configs / "team.yaml").write_text(
+        "roles:\n  lead:\n    tools: [bash]\n    prompt_file: role.md\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(configs / "team.yaml"))
+
+    with pytest.raises(ValueError, match="cannot be read safely"):
+        load_team_config(str(tmp_path))
+
+
+@pytest.mark.parametrize(
+    "yaml_text",
+    [
+        "roles:\n  '../outside':\n    prompt: unsafe\n",
+        "roles:\n  'line\\nbreak':\n    prompt: unsafe\n",
+        "roles:\n  lead:\n    prompt: ok\nentry: '../outside'\n",
+        "roles:\n  lead:\n    prompt: ok\ntopology:\n  lead: ['../outside']\n",
+    ],
+)
+def test_team_config_rejects_unsafe_role_identity(tmp_path, monkeypatch, yaml_text):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "team.yaml").write_text(yaml_text, encoding="utf-8")
+    monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(configs / "team.yaml"))
+
+    with pytest.raises(ValueError, match="role"):
+        load_team_config(str(tmp_path))
+
+
+def test_team_config_rejects_casefold_role_collision(tmp_path, monkeypatch):
+    yaml_text = (
+        "roles:\n"
+        "  Coder:\n    prompt: first\n"
+        "  coder:\n    prompt: second\n"
+    )
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "team.yaml").write_text(yaml_text, encoding="utf-8")
+    monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(configs / "team.yaml"))
+
+    with pytest.raises(ValueError, match="collide"):
+        load_team_config(str(tmp_path))
+
+
+def test_team_config_rejects_unicode_normalization_role_collision(
+    tmp_path,
+    monkeypatch,
+):
+    composed = "Caf\N{LATIN SMALL LETTER E WITH ACUTE}"
+    decomposed = "Cafe\N{COMBINING ACUTE ACCENT}"
+    yaml_text = (
+        "roles:\n"
+        f"  {composed!r}:\n    prompt: first\n"
+        f"  {decomposed!r}:\n    prompt: second\n"
+    )
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "team.yaml").write_text(yaml_text, encoding="utf-8")
+    monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(configs / "team.yaml"))
+
+    with pytest.raises(ValueError, match="collide"):
+        load_team_config(str(tmp_path))
+
+
+def test_programmatic_team_config_rejects_casefold_role_collision():
+    role = RoleConfig(prompt="role", tools=[])
+
+    with pytest.raises(ValueError, match="collide"):
+        TeamConfig(
+            roles={"Coder": role, "coder": role},
+            topology=Topology(allow_all=True),
+            entry="Coder",
+        )
+
+
+def test_programmatic_team_config_rejects_casefold_topology_source_collision():
+    lead = RoleConfig(prompt="lead", tools=[])
+
+    with pytest.raises(ValueError, match="topology source identities collide"):
+        TeamConfig(
+            roles={"lead": lead},
+            topology=Topology(
+                edges={
+                    "Lead": frozenset({"coder"}),
+                    "lead": frozenset({"reviewer"}),
+                }
+            ),
+            entry="lead",
+        )
+
+
+def test_programmatic_team_config_uses_one_casefold_identity():
+    coder = RoleConfig(prompt="coder prompt", tools=[])
+    reviewer = RoleConfig(prompt="reviewer prompt", tools=[])
+    team = TeamConfig(
+        roles={"Coder": coder, "Reviewer": reviewer},
+        topology=Topology(edges={"coder": frozenset({"reviewer"})}),
+        entry="CODER",
+    )
+
+    assert team.entry == "Coder"
+    assert team.role_for("coder") is coder
+    assert team.role_for("CODER") is coder
+    assert team.topology.allows("CODER", "REVIEWER") is True

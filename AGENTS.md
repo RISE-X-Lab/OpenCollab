@@ -27,7 +27,8 @@ adapters  →  application  →  domain
 - `opencollab/opencollab/application/` — use cases, scheduler, ports (`application/ports.py`). Imports `domain` + stdlib only.
 - `opencollab/opencollab/adapters/` — concrete impls (`cli/`, `tui/`, `llm/`, `tools/`, env, tracing, store).
 - `opencollab/opencollab/bootstrap/` — composition root; the only layer that knows concrete types.
-- `opencollab/opencollab/harness/`, `swebench/`, `workflows/`, `scripts/` — headless eval, deterministic workflows, tooling.
+- `opencollab/opencollab/sdk/` — versioned integration surface for external workflow and evaluation packages.
+- `scripts/` — framework launchers and provider diagnostics.
 
 Never add an inward → outward import (`tests/test_*_boundaries.py` fail the build on it).
 Need an outer capability inside? Add a **port** in `application/ports.py`, wire the
@@ -46,8 +47,8 @@ concrete type in `bootstrap/`. When splitting a module, keep its public names re
 
 ## Hard gates CI will fail your PR on
 
-1. **Lint** — `ruff check .` over the **whole** repo (package + `scripts/` + `swebench/`
-   + `workflows/` + tests). Config is the repo-root `ruff.toml` (line-length 120, py310).
+1. **Lint** — `ruff check .` over the **whole** repository. Config is the
+   repo-root `ruff.toml` (line-length 120, py310).
 2. **PR title** — Conventional Commits (see above).
 3. **File hygiene** — a newly added file over **500 KB**, or a new `.py` module over
    **800 lines**, fails the build.
@@ -62,21 +63,19 @@ concrete type in `bootstrap/`. When splitting a module, keep its public names re
 - **No compiled artifacts or large binaries in git.** Commit `.tex`/`.md` sources, not
   the built PDFs; keep images small; put decks/datasets in release assets, not history.
 - **Don't copy-paste or `base64`-embed logic that already exists as a tested module** —
-  import it. Remote runners already sync the package, so `import` from
-  `opencollab/harness/…` instead of inlining a second, drifting copy.
+  import it through the owning package's public interface.
 - **Keep modules focused** (< 800 lines) — split by feature/domain, not by type.
 
-## Eval integrity (load-bearing — read this)
+## Executable evidence integrity
 
-OpenCollab is an evaluation framework. A wrong `resolved: true` / `PASS` is worse than a
-crash: it silently corrupts results and hides a broken fix.
+OpenCollab tools and workflows must distinguish command completion from verified
+behavior. A successful process exit is evidence only for the command that actually
+ran.
 
-- **Never report a task resolved / a test PASS unless the target `FAIL_TO_PASS` tests
-  actually executed and passed.** No test collected ≠ pass.
-- If a test command cannot be derived or is empty, treat it as a **technical failure
-  (RED)** — never fall back to a no-op passing command (e.g. `true`).
-- A verifier / gate role must retain some way to run an executable probe before it may
-  issue a `PASS`; a verdict on prose alone is not acceptable.
+- Never report a test as passed unless the requested test targets executed and passed.
+- Empty commands, zero collected tests, help output, and collection-only runs are
+  unverified outcomes.
+- A verifier role must retain an executable probe before it may issue a passing verdict.
 
 ## See also
 

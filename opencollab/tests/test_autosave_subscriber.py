@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 import pytest
 from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber
@@ -31,13 +32,104 @@ def test_autosave_subscriber_ignores_other_events():
     assert calls == []
 
 
-def test_autosave_subscriber_swallows_save_errors():
+def test_autosave_subscriber_records_save_errors(caplog):
+    error = OSError("disk full")
+
     def boom():
-        raise OSError("disk full")
+        raise error
 
     sub = AutoSaveSubscriber(boom)
-    # Must not raise.
+    with caplog.at_level(logging.WARNING):
+        asyncio.run(sub.emit(SessionEvent(type="step_end")))
+
+    assert sub.last_error is error
+    assert sub.failure_count == 1
+    assert "auto-save failed: disk full" in caplog.text
+
+
+@pytest.mark.parametrize("fatal", [KeyboardInterrupt("stop"), SystemExit("exit")])
+def test_autosave_wraps_worker_base_exceptions_without_escaping(fatal):
+    def boom():
+        raise fatal
+
+    sub = AutoSaveSubscriber(boom)
+
     asyncio.run(sub.emit(SessionEvent(type="step_end")))
+
+    assert isinstance(sub.last_error, RuntimeError)
+    assert type(fatal).__name__ in str(sub.last_error)
+    assert sub.last_error.__cause__ is fatal
+    assert sub.failure_count == 1
+
+
+def test_session_surfaces_autosave_persistence_error():
+    error = OSError("snapshot write failed")
+
+    class FailingStore:
+        def save(self, path, messages, *, meta=None):
+            raise error
+
+        def load_messages(self, path, system_prompt):
+            raise AssertionError("load is not used")
+
+        def save_manifest(self, path, manifest):
+            raise AssertionError("manifest save is not used")
+
+    session = Session(
+        agent=FakeAgent(),
+        llm=FakeLLMClient(),
+        auto_save_path="unused.json",
+        store=FailingStore(),
+    )
+    asyncio.run(session.add_user_message("hello"))
+
+    assert session.persistence_errors == (error,)
+
+
+def test_autosave_queues_frozen_operations_in_order():
+    current = {"value": "first"}
+    saved: list[str] = []
+
+    def prepare():
+        frozen = current["value"]
+        return lambda: saved.append(frozen)
+
+    subscriber = AutoSaveSubscriber(lambda: None, prepare_fn=prepare)
+
+    async def scenario():
+        first = subscriber.enqueue()
+        current["value"] = "second"
+        second = subscriber.enqueue()
+        assert first is not None and second is not None
+        await asyncio.gather(first, second)
+
+    asyncio.run(scenario())
+    assert saved == ["first", "second"]
+    assert subscriber.pending_tasks == ()
+
+
+def test_cancelling_emit_keeps_submitted_save_owned():
+    prepared = asyncio.Event()
+    saved: list[str] = []
+
+    def prepare():
+        prepared.set()
+        return lambda: saved.append("saved")
+
+    subscriber = AutoSaveSubscriber(lambda: None, prepare_fn=prepare)
+
+    async def scenario():
+        emit = asyncio.create_task(subscriber.emit(SessionEvent(type="step_end")))
+        await prepared.wait()
+        emit.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await emit
+        pending = subscriber.pending_tasks
+        if pending:
+            await pending[0]
+
+    asyncio.run(scenario())
+    assert saved == ["saved"]
 
 
 def test_event_bus_fans_out_to_multiple_subscribers():
@@ -60,6 +152,45 @@ def test_event_bus_failure_in_one_subscriber_does_not_silence_others():
     bus.subscribe(lambda evt: seen.append(evt.type))
     asyncio.run(bus.emit(SessionEvent(type="ping")))
     assert seen == ["ping"]
+
+
+def test_event_bus_subscriber_self_cancel_does_not_silence_others():
+    bus = EventBus()
+    seen = []
+
+    async def self_cancel(_event):
+        raise asyncio.CancelledError
+
+    bus.subscribe(self_cancel)
+    bus.subscribe(lambda event: seen.append(event.type))
+
+    asyncio.run(bus.emit(SessionEvent(type="ping")))
+
+    assert seen == ["ping"]
+
+
+def test_event_bus_external_cancellation_still_propagates():
+    bus = EventBus()
+    started = asyncio.Event()
+    seen = []
+
+    async def blocking(_event):
+        started.set()
+        await asyncio.Event().wait()
+
+    bus.subscribe(blocking)
+    bus.subscribe(lambda event: seen.append(event.type))
+
+    async def scenario():
+        emit = asyncio.create_task(bus.emit(SessionEvent(type="ping")))
+        await started.wait()
+        emit.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await emit
+
+    asyncio.run(scenario())
+
+    assert seen == []
 
 
 def test_session_with_auto_save_path_writes_on_user_message(tmp_path):

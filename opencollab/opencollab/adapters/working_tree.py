@@ -37,7 +37,7 @@ class EnvWorkingTreeProbe:
         return bool(result.stdout.strip())
 
     async def changed_excluding(self, paths: Sequence[str]) -> bool:
-        # Empty excludes -> identical to ``changed()`` (CLI / non-SWE-bench runs).
+        # Empty excludes -> identical to ``changed()`` for ordinary runs.
         if not paths:
             return await self.changed()
         # Each ``:(exclude)<path>`` magic pathspec is ONE shlex-quoted token
