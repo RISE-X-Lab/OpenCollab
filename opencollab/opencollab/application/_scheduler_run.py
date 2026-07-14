@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
-from typing import Any
 
 from opencollab.domain.session import SessionPhase
 
@@ -67,39 +65,26 @@ class SchedulerRunMixin:
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
         turn_start = len(self._lead_session.state.messages)
         prior_lease = self._current_turn_budget(0)
-        state_snapshot = copy.deepcopy(self._lead_session.state.__dict__)
         self._reserve_turn_budget(0)
-        record: dict[str, Any] = {
-            "aid": 0,
-            "session": self._lead_session,
-            "inbox": [],
-            "messages": [],
-            "state_snapshot": state_snapshot,
-            "prior_lease": prior_lease,
-            "lease_restored": False,
-            "invalidated": False,
-            "committed": False,
-            "callback_attached": False,
-            "cleanup_terminal": False,
-        }
-        add_task = asyncio.create_task(self._lead_session.add_user_message(user_message))
-        record["add_task"] = add_task
-        self._lead_turn_record = record
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._message_delivery_tasks[0] = current_task
+        checkpoint = self._lead_session.state.checkpoint_user_turn()
         try:
-            await asyncio.shield(add_task)
+            await self._lead_session.add_user_message(user_message)
         except BaseException:
-            self._rollback_message_delivery_locked(0, record)
-            if not add_task.done():
-                add_task.cancel()
-            self._attach_late_message_restore(0, record, add_task)
+            self._lead_session.state.restore_user_turn(checkpoint)
+            self._autosave_session(0)
+            self._release_turn_budget(0)
+            if not self._shutting_down:
+                self._restore_turn_budget(0, prior_lease)
             raise
-        if self._shutting_down or record.get("invalidated", False):
-            self._rollback_message_delivery_locked(0, record)
-            self._attach_late_message_restore(0, record, add_task)
+        finally:
+            if self._message_delivery_tasks.get(0) is current_task:
+                self._message_delivery_tasks.pop(0, None)
+        if self._shutting_down:
+            self._release_turn_budget(0)
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
-        record["committed"] = True
-        if self._lead_turn_record is record:
-            self._lead_turn_record = None
         self._tasks[0] = asyncio.create_task(self._drive_agent(0, self._lead_session))
 
         while True:

@@ -10,6 +10,7 @@ import asyncio
 from pathlib import Path
 
 import opencollab.application.tool_execution as tool_execution_mod
+import opencollab.application.tool_execution_runtime as tool_execution_runtime
 from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.tool_execution import (
     DeferredCall,
@@ -17,6 +18,16 @@ from opencollab.application.tool_execution import (
     ToolRuntime,
 )
 from opencollab.domain.session import SessionState
+from tool_execution_test_support import (
+    AlwaysAllowPermissionPolicy as FakePermissionPolicy,
+)
+from tool_execution_test_support import (
+    FakeAgent,
+    RecordingEventPublisher,
+)
+from tool_execution_test_support import (
+    NullEventPublisher as FakeEventPublisher,
+)
 
 
 def run(coro):
@@ -29,27 +40,6 @@ class FakeEnv:
 
 class FakeSafetyPolicy:
     pass
-
-
-class FakePermissionPolicy:
-    async def confirm(self, prompt: str) -> bool:
-        return True
-
-
-class FakeEventPublisher:
-    async def emit(self, event):
-        pass
-
-
-class FakeAgent:
-    def __init__(self, tools):
-        self.tools = tools
-
-    def find_tool(self, name):
-        for t in self.tools:
-            if t.name == name:
-                return t
-        return None
 
 
 class RuntimeNativeTool:
@@ -78,14 +68,6 @@ class DeferredTool(RuntimeNativeTool):
     async def execute_with_runtime(self, params, runtime):
         self.runtime_calls.append((params, runtime))
         return DeferredCall(ref=17)
-
-
-class RecordingEventPublisher:
-    def __init__(self):
-        self.events = []
-
-    async def emit(self, event):
-        self.events.append(event)
 
 
 class FailingEventPublisher(RecordingEventPublisher):
@@ -125,7 +107,8 @@ def test_use_case_invokes_tool_execute_with_runtime():
 
 
 def test_use_case_times_out_hung_tool(monkeypatch):
-    monkeypatch.setattr(tool_execution_mod, "DEFAULT_TOOL_EXECUTION_TIMEOUT", 0.01)
+    monkeypatch.setattr(tool_execution_runtime, "DEFAULT_TOOL_EXECUTION_TIMEOUT", 0.01)
+    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.0)
     tool = HangingTool()
     use_case = ToolExecutionUseCase(
         agent=FakeAgent([tool]),
@@ -208,8 +191,8 @@ def test_nested_caller_timeout_is_not_reported_as_tool_outer_timeout():
 
 
 def test_deferred_tool_uses_timeout_and_always_emits_tool_end(monkeypatch):
-    monkeypatch.setattr(tool_execution_mod, "DEFAULT_TOOL_EXECUTION_TIMEOUT", 0.01)
-    monkeypatch.setattr(tool_execution_mod, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.0)
+    monkeypatch.setattr(tool_execution_runtime, "DEFAULT_TOOL_EXECUTION_TIMEOUT", 0.01)
+    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.0)
     tool = HangingTool()
     publisher = RecordingEventPublisher()
     use_case = ToolExecutionUseCase(
@@ -282,7 +265,7 @@ def test_non_finite_tool_timeout_falls_back_to_default():
         event_publisher=FakeEventPublisher(),
     )
 
-    expected = tool_execution_mod.DEFAULT_TOOL_EXECUTION_TIMEOUT + 10.0
+    expected = tool_execution_runtime.DEFAULT_TOOL_EXECUTION_TIMEOUT + 10.0
     assert use_case.tool_execution_timeout(tool, {"timeout": "nan"}) == expected
     assert use_case.tool_execution_timeout(tool, {"timeout": "inf"}) == expected
 
@@ -290,7 +273,7 @@ def test_non_finite_tool_timeout_falls_back_to_default():
 def test_invalid_timeout_environment_values_fall_back(monkeypatch):
     for value in ("nan", "inf", "-1", "invalid"):
         monkeypatch.setenv("OPENCOLLAB_TEST_TIMEOUT", value)
-        assert tool_execution_mod._positive_env_float("OPENCOLLAB_TEST_TIMEOUT", 17.0) == 17.0
+        assert tool_execution_runtime._positive_env_float("OPENCOLLAB_TEST_TIMEOUT", 17.0) == 17.0
 
 
 def test_outer_timeout_uses_tool_default_timeout_before_framework_fallback():

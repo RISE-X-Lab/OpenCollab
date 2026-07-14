@@ -41,6 +41,7 @@ class WorktreeEnvironment(Environment):
         self._base_commit: str | None = None
         self._git_mode = False
         self._branch_owned = False
+        self._worktree_registered = False
 
     async def _git(self, *args: str, timeout: float = WORKTREE_GIT_TIMEOUT_SECONDS) -> ExecResult:
         result = await run_process(
@@ -49,15 +50,7 @@ class WorktreeEnvironment(Environment):
             cwd=self._source,
             timeout=timeout,
         )
-        return ExecResult(
-            result.returncode,
-            result.stdout.decode("utf-8", errors="replace"),
-            result.stderr.decode("utf-8", errors="replace"),
-            result.stdout_dropped_bytes > 0,
-            result.stderr_dropped_bytes > 0,
-            result.stdout_dropped_bytes,
-            result.stderr_dropped_bytes,
-        )
+        return result.to_exec_result()
 
     async def setup(self) -> str:
         self._ensure_active()
@@ -124,27 +117,8 @@ class WorktreeEnvironment(Environment):
             self._base_commit,
         )
         if added.returncode != 0:
-            failure = RuntimeError(f"git worktree add failed: {added.stderr.strip()}")
-            try:
-                await self._delete_owned_branch(self._base_commit)
-            except BaseException as cleanup_error:
-                add_exception_note(
-                    failure,
-                    "worktree branch cleanup failed: "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
-                )
-            if self._worktree_dir is not None:
-                try:
-                    shutil.rmtree(self._worktree_dir)
-                except BaseException as cleanup_error:
-                    add_exception_note(
-                        failure,
-                        "worktree directory cleanup failed: "
-                        f"{type(cleanup_error).__name__}: {cleanup_error}"
-                    )
-                else:
-                    self._worktree_dir = None
-            raise failure
+            raise RuntimeError(f"git worktree add failed: {added.stderr.strip()}")
+        self._worktree_registered = True
 
     def _setup_directory_copy(self) -> None:
         self._worktree_dir = tempfile.mkdtemp(prefix="opencollab-cp-")
@@ -230,27 +204,17 @@ class WorktreeEnvironment(Environment):
                 failures.append(exc)
             else:
                 self._local_env = None
-        if self._git_mode and self._worktree_dir is not None:
-            branch_oid: str | None = None
-            if self._branch_owned:
-                branch = await self._git("rev-parse", f"refs/heads/{self._branch}")
-                if branch.returncode == 0:
-                    branch_oid = branch.stdout.strip()
+        if self._git_mode and self._worktree_registered and self._worktree_dir is not None:
             removed = await self._git("worktree", "remove", "--force", self._worktree_dir)
             if removed.returncode != 0:
                 failures.append(RuntimeError(f"git worktree remove failed: {removed.stderr.strip()}"))
             else:
-                self._worktree_dir = None
-                if self._branch_owned and branch_oid is not None:
-                    try:
-                        await self._delete_owned_branch(branch_oid)
-                    except BaseException as exc:
-                        failures.append(exc)
-        elif self._worktree_dir is not None:
+                self._worktree_registered = False
+        if not self._worktree_registered and self._worktree_dir is not None:
             try:
                 shutil.rmtree(self._worktree_dir)
             except FileNotFoundError:
-                pass
+                self._worktree_dir = None
             except BaseException as exc:
                 failures.append(exc)
             else:
@@ -275,9 +239,5 @@ class WorktreeEnvironment(Environment):
             self._cleanup_resources(),
             propagate_cancellation=True,
         )
-
-    async def abort(self) -> None:
-        await self.cleanup()
-
 
 __all__ = ["WorktreeEnvironment"]

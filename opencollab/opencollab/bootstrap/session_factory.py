@@ -119,9 +119,8 @@ def make_run_dir(workspace: str, *, prefix: str = "") -> str:
 
     The folder is named ``<prefix><timestamp>``; teams pass no prefix while
     workflow runs pass ``WORKFLOW_RUN_PREFIX`` so the two are distinguishable at
-    a glance even though they share this parent dir. A 4-char suffix is appended
-    if a same-second folder already exists, so two runs started within the same
-    second do not collide.
+    a glance even though they share this parent dir. A random suffix lets
+    concurrent callers reserve their directories without a retry loop.
     """
     if (
         not isinstance(prefix, str)
@@ -145,15 +144,9 @@ def make_run_dir(workspace: str, *, prefix: str = "") -> str:
             f"workspace state parent is not a real directory: {workspace}"
         ) from exc
     stamp = datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
-    for attempt in range(1_000):
-        suffix = "" if attempt == 0 else f"-{uuid.uuid4().hex[:8]}"
-        run_dir = base / f"{prefix}{stamp}{suffix}"
-        try:
-            run_dir.mkdir(mode=0o700)
-        except FileExistsError:
-            continue
-        return str(run_dir)
-    raise OSError("could not reserve a unique run directory")
+    run_dir = base / f"{prefix}{stamp}-{uuid.uuid4().hex}"
+    run_dir.mkdir(mode=0o700)
+    return str(run_dir)
 
 
 def build_session(

@@ -12,6 +12,7 @@ from opencollab.application.ports import ToolPort
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.bootstrap import container as session_mod
 from opencollab.domain.session import SessionState
+from tool_execution_test_support import AlwaysAllowPermissionPolicy as FakePermissionPolicy
 
 
 class FakeAgent:
@@ -27,11 +28,6 @@ class FakeAgent:
 
     def tool_schemas(self):
         return []
-
-
-class FakePermissionPolicy:
-    async def confirm(self, prompt: str) -> bool:
-        return True
 
 
 class RuntimeAwareTool:

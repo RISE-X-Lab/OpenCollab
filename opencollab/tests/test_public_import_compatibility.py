@@ -98,9 +98,7 @@ def test_added_runtime_fields_preserve_legacy_construction() -> None:
     assert runtime.auto_save_subscriber is None
 
 
-def test_split_facades_retain_every_legacy_public_binding() -> None:
-    expected = {"opencollab.bootstrap.workflow_runtime": {"importlib"}}
-
-    for module_name, names in expected.items():
-        module = importlib.import_module(module_name)
-        assert not (names - set(vars(module))), module_name
+def test_workflow_runtime_retains_its_declared_public_bindings() -> None:
+    module = importlib.import_module("opencollab.bootstrap.workflow_runtime")
+    assert set(module.__all__) <= set(vars(module))
+    assert "importlib" not in module.__all__

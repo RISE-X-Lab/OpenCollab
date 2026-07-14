@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-import opencollab.application.tool_execution as tool_execution_module
+import opencollab.application.tool_execution_runtime as tool_execution_runtime
 import pytest
 from opencollab.adapters.env import Environment
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
@@ -15,39 +15,33 @@ from opencollab.application.tool_execution import (
 )
 from opencollab.domain.session import SessionState
 from opencollab.domain.tools import LoopDetection
+from tool_execution_test_support import (
+    AlwaysAllowPermissionPolicy as FakePermissionPolicy,
+)
+from tool_execution_test_support import (
+    FakeAgent,
+)
+from tool_execution_test_support import (
+    RecordingEventPublisher as FakeEventPublisher,
+)
 
 
 def run(coro):
     return asyncio.run(coro)
 
 
-def tool_call(name: str = "fake_tool", arguments: str = "{}") -> dict:
+def tool_call(
+    name: str = "fake_tool",
+    arguments: object = "{}",
+    call_id: str = "call-1",
+) -> dict:
     return {
-        "id": "call-1",
+        "id": call_id,
         "function": {
             "name": name,
             "arguments": arguments,
         },
     }
-
-
-class FakeAgent:
-    def __init__(self, tools=None):
-        self.tools = tools or []
-
-    def find_tool(self, name):
-        for tool in self.tools:
-            if tool.name == name:
-                return tool
-        return None
-
-
-class FakeEventPublisher:
-    def __init__(self):
-        self.events = []
-
-    async def emit(self, event):
-        self.events.append(event)
 
 
 class FakeTracer:
@@ -56,11 +50,6 @@ class FakeTracer:
 
     def log_step(self, **kwargs):
         self.steps.append(kwargs)
-
-
-class FakePermissionPolicy:
-    async def confirm(self, prompt: str) -> bool:
-        return True
 
 
 class FakeSafetyPolicy:
@@ -137,34 +126,27 @@ def build_use_case(
     return use_case, publisher
 
 
-def test_tool_execution_use_case_preserves_invalid_json_error():
+@pytest.mark.parametrize(
+    ("arguments", "expected_error"),
+    [
+        ("{not-json", "Error: invalid JSON arguments: {not-json"),
+        (
+            '["not", "an", "object"]',
+            'Error: tool arguments must be a JSON object: ["not", "an", "object"]',
+        ),
+    ],
+    ids=["invalid-json", "non-object-json"],
+)
+def test_tool_execution_use_case_preserves_argument_errors(arguments, expected_error):
     use_case, publisher = build_use_case()
 
-    result = run(use_case.process([tool_call(arguments="{not-json")]))
+    result = run(use_case.process([tool_call(arguments=arguments)]))
 
     assert result.messages_to_append == [
         {
             "role": "tool",
             "tool_call_id": "call-1",
-            "content": "Error: invalid JSON arguments: {not-json",
-        }
-    ]
-    assert publisher.events == []
-
-
-def test_tool_execution_use_case_rejects_valid_json_non_object_arguments():
-    use_case, publisher = build_use_case()
-
-    result = run(use_case.process([tool_call(arguments='["not", "an", "object"]')]))
-
-    assert result.messages_to_append == [
-        {
-            "role": "tool",
-            "tool_call_id": "call-1",
-            "content": (
-                "Error: tool arguments must be a JSON object: "
-                '["not", "an", "object"]'
-            ),
+            "content": expected_error,
         }
     ]
     assert publisher.events == []
@@ -202,14 +184,8 @@ def test_batch_preflight_prevents_partial_execution_on_late_schema_error():
     tool = SideEffectTool()
     use_case, publisher = build_use_case(agent=FakeAgent(tools=[tool]))
     calls = [
-        {
-            "id": "call-good",
-            "function": {"name": "fake_tool", "arguments": '{"value": 1}'},
-        },
-        {
-            "id": "call-bad",
-            "function": {"name": "fake_tool", "arguments": '{"value": "x"}'},
-        },
+        tool_call(arguments='{"value": 1}', call_id="call-good"),
+        tool_call(arguments='{"value": "x"}', call_id="call-bad"),
     ]
 
     result = run(use_case.process(calls))
@@ -227,14 +203,8 @@ def test_batch_preflight_rejects_duplicate_ids_before_execution():
     tool = SideEffectTool()
     use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
     calls = [
-        {
-            "id": "duplicate",
-            "function": {"name": "fake_tool", "arguments": '{"value": 1}'},
-        },
-        {
-            "id": "duplicate",
-            "function": {"name": "fake_tool", "arguments": '{"value": 2}'},
-        },
+        tool_call(arguments='{"value": 1}', call_id="duplicate"),
+        tool_call(arguments='{"value": 2}', call_id="duplicate"),
     ]
 
     result = run(use_case.process(calls))
@@ -247,10 +217,7 @@ def test_batch_preflight_caps_call_count_before_execution():
     tool = SideEffectTool()
     use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
     calls = [
-        {
-            "id": f"call-{index}",
-            "function": {"name": "fake_tool", "arguments": '{"value": 1}'},
-        }
+        tool_call(arguments='{"value": 1}', call_id=f"call-{index}")
         for index in range(MAX_TOOL_CALLS_PER_BATCH + 1)
     ]
 
@@ -306,13 +273,10 @@ def test_tool_execution_use_case_catches_same_file_reread_with_shifting_ranges()
     # path-only hash (range args are ignored for file_read).
     path_hash = use_case.tool_call_hash("file_read", {"path": "x/ccode.py"})
     state.replace_recent_tool_hashes([path_hash] * 7)
-    call = {
-        "id": "call-1",
-        "function": {
-            "name": "file_read",
-            "arguments": '{"path": "x/ccode.py", "start": 900, "limit": 50}',
-        },
-    }
+    call = tool_call(
+        name="file_read",
+        arguments='{"path": "x/ccode.py", "start": 900, "limit": 50}',
+    )
 
     result = run(use_case.process([call]))
 
@@ -331,10 +295,7 @@ def test_tool_execution_use_case_allows_a_few_legitimate_rereads():
     use_case, _ = build_use_case(state=state, agent=agent)
     path_hash = use_case.tool_call_hash("file_read", {"path": "x/ccode.py"})
     state.replace_recent_tool_hashes([path_hash] * 2)  # two prior reads
-    call = {
-        "id": "call-1",
-        "function": {"name": "file_read", "arguments": '{"path": "x/ccode.py", "start": 1}'},
-    }
+    call = tool_call(name="file_read", arguments='{"path": "x/ccode.py", "start": 1}')
 
     result = run(use_case.process([call]))
 
@@ -353,14 +314,11 @@ def test_reads_without_write_counter_accumulates_and_resets():
     agent = FakeAgent(tools=[read_tool, write_tool])
     use_case, _ = build_use_case(state=state, agent=agent)
 
-    def call(name, cid, args):
-        return {"id": cid, "function": {"name": name, "arguments": args}}
-
-    run(use_case.process([call("file_read", "c1", '{"path": "a.py"}')])).apply_to(state)
-    run(use_case.process([call("file_read", "c2", '{"path": "b.py"}')])).apply_to(state)
+    run(use_case.process([tool_call("file_read", '{"path": "a.py"}', "c1")])).apply_to(state)
+    run(use_case.process([tool_call("file_read", '{"path": "b.py"}', "c2")])).apply_to(state)
     assert state.reads_since_last_edit == 2
 
-    run(use_case.process([call("file_write", "c3", '{"path": "a.py"}')])).apply_to(state)
+    run(use_case.process([tool_call("file_write", '{"path": "a.py"}', "c3")])).apply_to(state)
     assert state.reads_since_last_edit == 0  # a landed edit resets the counter
 
 
@@ -372,9 +330,7 @@ def test_reads_counter_ignores_failed_writes():
     agent = FakeAgent(tools=[bad_write])
     use_case, _ = build_use_case(state=state, agent=agent)
 
-    result = run(use_case.process([
-        {"id": "c1", "function": {"name": "file_write", "arguments": '{"path": "a.py"}'}}
-    ]))
+    result = run(use_case.process([tool_call("file_write", '{"path": "a.py"}', "c1")]))
     result.apply_to(state)
     assert state.reads_since_last_edit == 3  # failed write does not count as an edit
 
@@ -385,51 +341,38 @@ def _bash_tool(output: str = "ok"):
     return tool
 
 
-def test_bash_mutation_resets_counter():
-    # Bug B (OPTION 2): the coder lands real source edits via bash (sed -i,
-    # heredoc redirect). Such a mutating bash must reset reads_since_last_edit the
-    # same as file_write — otherwise the counter climbs forever and the hard
-    # "STOP reading" nudge mis-fires at a model already writing. FAILS pre-edit.
-    mutating = (
-        "sed -i 's/a/b/' x.py",
-        "cat > x.py <<'EOF'\nbody\nEOF",
-        # idiomatic pathlib read-modify-write shapes the coder commonly emits
-        "python -c \"from pathlib import Path; Path('x.py').write_text(src)\"",
-        "python -c \"Path('x.py').write_bytes(b)\"",
-    )
-    for cmd in mutating:
-        state = SessionState(messages=[], reads_since_last_edit=5)
-        agent = FakeAgent(tools=[_bash_tool(output="done")])
-        use_case, _ = build_use_case(state=state, agent=agent)
-        run(use_case.process([
-            {"id": "c1", "function": {"name": "bash", "arguments": json.dumps({"command": cmd})}}
-        ])).apply_to(state)
-        assert state.reads_since_last_edit == 0, f"mutating bash should reset: {cmd!r}"
-
-
-def test_bash_repro_does_not_reset_counter():
-    # A bash repro (python -c print) and a grep-style read are NOT edits — the
-    # heuristic must not reset on them (guards against over-firing). Passes today.
-    for cmd in ("python -c 'print(1)'", "grep -rn foo x.py", "pytest x.py 2>&1"):
-        state = SessionState(messages=[], reads_since_last_edit=5)
-        agent = FakeAgent(tools=[_bash_tool(output="output")])
-        use_case, _ = build_use_case(state=state, agent=agent)
-        run(use_case.process([
-            {"id": "c1", "function": {"name": "bash", "arguments": json.dumps({"command": cmd})}}
-        ])).apply_to(state)
-        assert state.reads_since_last_edit == 5, f"non-mutating bash must not reset: {cmd!r}"
-
-
-def test_bash_mutation_error_output_does_not_reset():
-    # A mutating-shaped bash whose OUTPUT is an error did not actually edit — it
-    # must NOT reset (mirrors test_reads_counter_ignores_failed_writes).
-    state = SessionState(messages=[], reads_since_last_edit=4)
-    agent = FakeAgent(tools=[_bash_tool(output="Error: sed: no such file")])
+@pytest.mark.parametrize(
+    ("command", "output", "initial_count", "expected_count"),
+    [
+        ("sed -i 's/a/b/' x.py", "done", 5, 0),
+        ("cat > x.py <<'EOF'\nbody\nEOF", "done", 5, 0),
+        ("python -c \"from pathlib import Path; Path('x.py').write_text(src)\"", "done", 5, 0),
+        ("python -c \"Path('x.py').write_bytes(b)\"", "done", 5, 0),
+        ("python -c 'print(1)'", "output", 5, 5),
+        ("grep -rn foo x.py", "output", 5, 5),
+        ("pytest x.py 2>&1", "output", 5, 5),
+        ("sed -i s/a/b/ x.py", "Error: sed: no such file", 4, 4),
+    ],
+    ids=[
+        "sed-mutation",
+        "heredoc-mutation",
+        "pathlib-text-mutation",
+        "pathlib-bytes-mutation",
+        "python-repro",
+        "grep-read",
+        "pytest-repro",
+        "failed-mutation",
+    ],
+)
+def test_bash_command_updates_read_counter(command, output, initial_count, expected_count):
+    state = SessionState(messages=[], reads_since_last_edit=initial_count)
+    agent = FakeAgent(tools=[_bash_tool(output=output)])
     use_case, _ = build_use_case(state=state, agent=agent)
-    run(use_case.process([
-        {"id": "c1", "function": {"name": "bash", "arguments": json.dumps({"command": "sed -i s/a/b/ x.py"})}}
-    ])).apply_to(state)
-    assert state.reads_since_last_edit == 4  # error output -> no reset
+    arguments = json.dumps({"command": command})
+
+    run(use_case.process([tool_call("bash", arguments, "c1")])).apply_to(state)
+
+    assert state.reads_since_last_edit == expected_count
 
 
 def test_tool_execution_use_case_executes_runtime_native_tool_and_events():
@@ -462,7 +405,8 @@ def test_tool_execution_use_case_executes_runtime_native_tool_and_events():
     assert publisher.events[1].data["tool"] == "fake_tool"
 
 
-def test_tool_event_failures_do_not_discard_executed_result():
+@pytest.mark.parametrize("fail_type", ["tool_start", "tool_end"])
+def test_tool_event_failures_do_not_discard_executed_result(fail_type):
     class FailingPublisher:
         def __init__(self, fail_type):
             self.fail_type = fail_type
@@ -471,17 +415,16 @@ def test_tool_event_failures_do_not_discard_executed_result():
             if event.type == self.fail_type:
                 raise RuntimeError(f"{event.type} failed")
 
-    for fail_type in ("tool_start", "tool_end"):
-        tool = RuntimeNativeTool()
-        use_case, _ = build_use_case(
-            agent=FakeAgent(tools=[tool]),
-            event_publisher=FailingPublisher(fail_type),
-        )
+    tool = RuntimeNativeTool()
+    use_case, _ = build_use_case(
+        agent=FakeAgent(tools=[tool]),
+        event_publisher=FailingPublisher(fail_type),
+    )
 
-        result = run(use_case.process([tool_call()]))
+    result = run(use_case.process([tool_call()]))
 
-        assert result.messages_to_append[0]["content"] == "runtime result"
-        assert len(tool.runtime_calls) == 1
+    assert result.messages_to_append[0]["content"] == "runtime result"
+    assert len(tool.runtime_calls) == 1
 
 
 def test_tool_trace_failure_does_not_discard_executed_result():
@@ -645,7 +588,7 @@ def _bounded_tool_use_case(tool, environment):
 
 @pytest.mark.asyncio
 async def test_stubborn_timed_out_tool_cannot_write_after_execute_returns(monkeypatch):
-    monkeypatch.setattr(tool_execution_module, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
+    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
     environment = RevocableEnvironment()
     tool = StubbornLateWriteTool()
     use_case = _bounded_tool_use_case(tool, environment)
@@ -672,7 +615,7 @@ async def test_stubborn_timed_out_tool_cannot_write_after_execute_returns(monkey
 
 @pytest.mark.asyncio
 async def test_stubborn_environment_abort_is_bounded_and_exposed(monkeypatch):
-    monkeypatch.setattr(tool_execution_module, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
+    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
 
     class StubbornAbortEnvironment(RevocableEnvironment):
         def __init__(self):
@@ -714,7 +657,7 @@ async def test_stubborn_environment_abort_is_bounded_and_exposed(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_cooperative_tool_timeout_keeps_existing_result_shape(monkeypatch):
-    monkeypatch.setattr(tool_execution_module, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
+    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
 
     class CooperativeTimeoutTool:
         name = "cooperative"
@@ -810,7 +753,7 @@ async def test_repeated_caller_cancel_cannot_interrupt_late_write_cleanup():
 
 @pytest.mark.asyncio
 async def test_caller_cancel_cannot_interrupt_tool_timeout_cleanup(monkeypatch):
-    monkeypatch.setattr(tool_execution_module, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
+    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
     environment = RevocableEnvironment()
     tool = StubbornLateWriteTool()
     use_case = _bounded_tool_use_case(tool, environment)

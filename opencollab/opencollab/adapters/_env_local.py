@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-import tempfile
+import uuid
 
 from opencollab.adapters._env_base import Environment, ExecResult
 from opencollab.adapters._env_process import (
@@ -15,6 +15,7 @@ from opencollab.adapters._env_process import (
     run_process,
 )
 from opencollab.adapters.safe_files import (
+    create_regular_bytes_atomic,
     read_regular_bytes,
     unlink_regular_file_durable,
     write_regular_bytes_atomic,
@@ -71,15 +72,7 @@ class LocalEnvironment(Environment):
         except ProcessCleanupError:
             self.revoke()
             raise
-        return ExecResult(
-            returncode=result.returncode,
-            stdout=result.stdout.decode("utf-8", errors="replace"),
-            stderr=result.stderr.decode("utf-8", errors="replace"),
-            stdout_truncated=result.stdout_dropped_bytes > 0,
-            stderr_truncated=result.stderr_dropped_bytes > 0,
-            stdout_dropped_bytes=result.stdout_dropped_bytes,
-            stderr_dropped_bytes=result.stderr_dropped_bytes,
-        )
+        return result.to_exec_result()
 
     async def read_file(self, path: str) -> str:
         self._ensure_active()
@@ -112,18 +105,12 @@ class LocalEnvironment(Environment):
         payload = content.encode("utf-8")
         if len(payload) > LOCAL_FILE_WRITE_LIMIT_BYTES:
             raise OSError("temporary file exceeds local write limit")
-        fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=self.workspace)
-        try:
-            with os.fdopen(fd, "wb") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-        except BaseException:
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
-            raise
+        path = os.path.join(self.workspace, f"{prefix}{uuid.uuid4().hex}{suffix}")
+        create_regular_bytes_atomic(
+            path,
+            payload,
+            max_bytes=LOCAL_FILE_WRITE_LIMIT_BYTES,
+        )
         self._temporary_files.add(path)
         return path
 
@@ -147,9 +134,5 @@ class LocalEnvironment(Environment):
                 self._temporary_files.discard(path)
         if failures:
             raise OSError("failed to remove one or more environment temporary files") from failures[0]
-
-    async def abort(self) -> None:
-        await self.cleanup()
-
 
 __all__ = ["LocalEnvironment"]

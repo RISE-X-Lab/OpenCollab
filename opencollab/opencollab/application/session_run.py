@@ -25,7 +25,7 @@ from opencollab.application.ports import (
 from opencollab.application.shaping import forced_shape
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
-from opencollab.domain.pending import PendingRow, RowKind, RowStatus
+from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
 from opencollab.domain.tools import ToolProcessingResult
 
@@ -358,27 +358,8 @@ class SessionRunUseCase:
         unexpected exception the session is marked failed and the exception
         re-raised; cancellation flushes the tracer before propagating.
         """
-        entry_phase = self.state.phase
-        if entry_phase in {SessionPhase.AWAITING_EVENTS, SessionPhase.DONE}:
-            if self._turn_start_message_index is None:
-                # Restored sessions do not yet persist this runtime-only cursor.
-                self._turn_start_message_index = 0
-        else:
-            self._turn_start_message_index = len(self.state.messages)
-
         try:
-            # A session suspended on deferred work resumes from its pending
-            # table; a completed turn (DONE) short-circuits to its last answer;
-            # an aborted turn (cancelled/budget/error) resumes to IDLE so a bare
-            # re-run continues. resume_to_idle no-ops on non-terminal phases.
-            if self.state.phase is SessionPhase.AWAITING_EVENTS:
-                self._resume_from_awaiting()
-            elif self.state.phase is not SessionPhase.DONE:
-                self.state.resume_to_idle()
-                # A fresh turn (or re-run) restores the once-per-turn empty-stop
-                # retry budget. A deferred-resume (AWAITING_EVENTS, above) is the
-                # same turn and must keep the flag as-is.
-                self._empty_stop_retried = False
+            self._prepare_turn()
             while not self._should_suspend():
                 await self.advance(cancel_event)
 
@@ -390,10 +371,36 @@ class SessionRunUseCase:
             self.state.fail(reason=f"{type(exc).__name__}: {exc}")
             raise
 
+        return self._last_turn_answer()
+
+    def _prepare_turn(self) -> None:
+        """Set the answer cursor and resume the phase appropriate to this call."""
+        entry_phase = self.state.phase
+        if entry_phase in {SessionPhase.AWAITING_EVENTS, SessionPhase.DONE}:
+            if self._turn_start_message_index is None:
+                # Restored sessions do not yet persist this runtime-only cursor.
+                self._turn_start_message_index = 0
+        else:
+            self._turn_start_message_index = len(self.state.messages)
+
+        if entry_phase is SessionPhase.AWAITING_EVENTS:
+            self._resume_from_awaiting()
+        elif entry_phase is not SessionPhase.DONE:
+            self.state.resume_to_idle()
+            # Deferred work belongs to the same turn; every other entry starts a
+            # fresh once-per-turn empty-response retry allowance.
+            self._empty_stop_retried = False
+
+    def _last_turn_answer(self) -> str:
+        """Return the last real assistant text produced by the current turn."""
         turn_start = self._turn_start_message_index or 0
-        for msg in reversed(self.state.messages[turn_start:]):
-            content = msg.get("content")
-            if msg["role"] == "assistant" and content and content != _EMPTY_STOP_PLACEHOLDER:
+        for message in reversed(self.state.messages[turn_start:]):
+            content = message.get("content")
+            if (
+                message["role"] == "assistant"
+                and content
+                and content != _EMPTY_STOP_PLACEHOLDER
+            ):
                 return content
         return ""
 
@@ -717,6 +724,65 @@ class SessionRunUseCase:
             },
         )
 
+    async def _stop_precheck(
+        self,
+        phase: SessionPhase,
+        reason: str,
+        event_reason: str,
+        *,
+        message: str | None = None,
+    ) -> None:
+        """Record one precheck rejection and enter its terminal phase."""
+        content = message or f"[{reason.capitalize()}. Session stopped.]"
+        self.state.append_message({"role": "system", "content": content})
+        await self.event_publisher.emit(self.event_factory.error(event_reason))
+        self.state.transition_to(phase, reason=reason)
+
+    async def _apply_enforcement_gate(self) -> bool:
+        """Apply the scout wind-down gate; return whether it chose the next phase."""
+        if not self._enforcement_on():
+            return False
+        if self.state.extension_offered:
+            self._resolve_extension_offer()
+            return True
+        if self.state.wind_down_done:
+            if not self._wind_down_retried:
+                self._wind_down_retried = True
+                self.state.forced_unsatisfied = True
+                self.state.append_message({"role": "system", "content": _WIND_DOWN_RETRY})
+                self.state.transition_to(SessionPhase.CALLING_LLM)
+                return True
+            await self._stop_precheck(
+                SessionPhase.BUDGET_EXCEEDED,
+                "wind-down complete: forced commit within reserve",
+                "budget_exceeded",
+            )
+            return True
+
+        explore_threshold = self.max_budget_tokens - self._commit_reserve
+        budget_spent = self.state.used_tokens >= explore_threshold
+        predicted_spent = self._predictive_overshoot(explore_threshold)
+        watchdog_tripped = (
+            self._brake_on() and self.state.steps_since_progress >= self._watchdog_k
+        )
+        low_yield_tripped = (
+            self._brake_on()
+            and self.state.low_yield_since_progress >= self._low_yield_m
+        )
+        brake = budget_spent or predicted_spent or watchdog_tripped or low_yield_tripped
+        if not brake or not self.state.pending_events.is_empty():
+            return False
+
+        self._trace_brake_trip(
+            budget_spent, predicted_spent, watchdog_tripped, low_yield_tripped
+        )
+        if self._extension_available():
+            self._offer_extension()
+        else:
+            self._enter_wind_down()
+        self.state.transition_to(SessionPhase.CALLING_LLM)
+        return True
+
     async def precheck(self, cancel_event: asyncio.Event | None) -> None:
         """Gate the next LLM call: cancellation, token budget, step limit.
 
@@ -724,9 +790,12 @@ class SessionRunUseCase:
         moves to the matching terminal phase; otherwise proceed to CALLING_LLM.
         """
         if cancel_event and cancel_event.is_set():
-            self.state.append_message({"role": "system", "content": "[Session interrupted by user]"})
-            await self.event_publisher.emit(self.event_factory.error("cancelled"))
-            self.state.transition_to(SessionPhase.CANCELLED, reason="interrupted by user")
+            await self._stop_precheck(
+                SessionPhase.CANCELLED,
+                "interrupted by user",
+                "cancelled",
+                message="[Session interrupted by user]",
+            )
             return
 
         if self.state.loop_blocked_since_progress >= DEFAULT_LOOP_BLOCKED_LIMIT:
@@ -734,103 +803,19 @@ class SessionRunUseCase:
                 "loop block limit reached: "
                 f"{self.state.loop_blocked_since_progress} repeated tool calls"
             )
-            self.state.append_message(
-                {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
+            await self._stop_precheck(
+                SessionPhase.STEP_LIMIT_EXCEEDED, reason, "loop_blocked"
             )
-            await self.event_publisher.emit(self.event_factory.error("loop_blocked"))
-            self.state.transition_to(SessionPhase.STEP_LIMIT_EXCEEDED, reason=reason)
             return
 
-        # Enforcement wind-down (STEP 0) — gated; with enforcement OFF this whole
-        # block is skipped and the budget trip below runs exactly as before. When
-        # ON, at ~80% of the cap we force a single structured submit instead of
-        # letting the scout get chopped mid-exploration.
-        if self._enforcement_on():
-            # STEP 4b: an extension OFFER from last turn takes priority — resolve the
-            # scout's commit-or-justify choice before any other gate. (A committed
-            # submit_findings on the offer turn sets the cancel event and is caught
-            # above as CANCELLED, so reaching here means it did not commit.)
-            if self.state.extension_offered:
-                self._resolve_extension_offer()
-                return
-            if self.state.wind_down_done:
-                # We only reach here when the protected submit turn did NOT commit —
-                # a successful capture sets the cancel event and is caught above as
-                # CANCELLED. Provider-compat backstop: a model that ignored the
-                # forced tool_choice and called another/unknown tool (or emitted an
-                # invalid submit) gets EXACTLY ONE more turn — re-stating that only
-                # submit_findings is available — before the loop goes terminal. The
-                # toolset stays submit-only and tool_choice stays forced from the
-                # initial trip, so the retry turn is constrained too. Capped at one
-                # retry (no loop); after it the harvest backstop salvages whatever
-                # was gathered. terminus only reaches "forced" if submit_findings
-                # actually fires (captured) — never recorded off the unknown-tool error.
-                if not self._wind_down_retried:
-                    self._wind_down_retried = True
-                    # Anti-windup (STEP 3): the forced-commit turn was issued but the
-                    # agent did NOT commit (a successful capture sets the cancel event
-                    # and is caught as CANCELLED above). Latch that the physical
-                    # tool-removal actuator went unsatisfied on the first forced turn;
-                    # the retry below is the single escalation before terminal.
-                    self.state.forced_unsatisfied = True
-                    self.state.append_message(
-                        {"role": "system", "content": _WIND_DOWN_RETRY}
-                    )
-                    self.state.transition_to(SessionPhase.CALLING_LLM)
-                    return
-                reason = "wind-down complete: forced commit within reserve"
-                self.state.append_message(
-                    {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
-                )
-                await self.event_publisher.emit(self.event_factory.error("budget_exceeded"))
-                self.state.transition_to(SessionPhase.BUDGET_EXCEEDED, reason=reason)
-                return
-            explore_threshold = self.max_budget_tokens - self._commit_reserve
-            budget_spent = self.state.used_tokens >= explore_threshold
-            # STEP 4a predictive overshoot guard: an ADDITIONAL budget-class trigger
-            # that trips ONE turn early when the running per-turn EWMA predicts the
-            # next turn would breach the threshold, so the protected submit turn fits
-            # inside the reserve instead of being the overshoot that gets chopped.
-            predicted_spent = self._predictive_overshoot(explore_threshold)
-            # STEP 3 brakes: two ADDITIONAL triggers into the same actuator, keyed on
-            # the STEP-1 sensor (never on has_write) via the distinct ``_brake_on``
-            # gate. The watchdog catches a scout spinning through no-progress STEPS
-            # while budget is still plentiful (the real pathology); the low-yield
-            # brake catches a run of zero-gain RESULTS. Routing through
-            # ``_enter_wind_down`` makes the terminal rung the non-degradable physical
-            # tool-removal + forced tool_choice — provider 'required'→'auto' silent
-            # degradation cannot weaken it.
-            watchdog_tripped = (
-                self._brake_on() and self.state.steps_since_progress >= self._watchdog_k
-            )
-            low_yield_tripped = (
-                self._brake_on() and self.state.low_yield_since_progress >= self._low_yield_m
-            )
-            brake = budget_spent or predicted_spent or watchdog_tripped or low_yield_tripped
-            # RED-TEAM gate: never force-commit while a tool call's result is still
-            # un-ingested (pending table non-empty) — that would discard the read
-            # that just returned. precheck is normally reached with a drained table.
-            if brake and self.state.pending_events.is_empty():
-                self._trace_brake_trip(
-                    budget_spent, predicted_spent, watchdog_tripped, low_yield_tripped
-                )
-                # STEP 4b valve: on the FIRST trip with the valve armed, offer
-                # commit-or-justify instead of force-committing; otherwise (no valve,
-                # offer outstanding, or cap reached) force the submit as in STEP 0/3.
-                if self._extension_available():
-                    self._offer_extension()
-                else:
-                    self._enter_wind_down()
-                self.state.transition_to(SessionPhase.CALLING_LLM)
-                return
+        if await self._apply_enforcement_gate():
+            return
 
         if self.state.used_tokens >= self.max_budget_tokens:
             reason = f"budget exceeded: {self.state.used_tokens} tokens used"
-            self.state.append_message(
-                {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
+            await self._stop_precheck(
+                SessionPhase.BUDGET_EXCEEDED, reason, "budget_exceeded"
             )
-            await self.event_publisher.emit(self.event_factory.error("budget_exceeded"))
-            self.state.transition_to(SessionPhase.BUDGET_EXCEEDED, reason=reason)
             return
 
         # Aggregate ceiling (defense-in-depth): even when this session is under
@@ -839,20 +824,16 @@ class SessionRunUseCase:
         # global pool that reserve-at-allocation is meant to protect.
         if self._team_budget_exhausted is not None and self._team_budget_exhausted():
             reason = "team budget exceeded: aggregate spend reached the global cap"
-            self.state.append_message(
-                {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
+            await self._stop_precheck(
+                SessionPhase.BUDGET_EXCEEDED, reason, "budget_exceeded"
             )
-            await self.event_publisher.emit(self.event_factory.error("budget_exceeded"))
-            self.state.transition_to(SessionPhase.BUDGET_EXCEEDED, reason=reason)
             return
 
         if self.state.step_count >= self.max_steps:
             reason = f"step limit reached: {self.state.step_count} steps"
-            self.state.append_message(
-                {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
+            await self._stop_precheck(
+                SessionPhase.STEP_LIMIT_EXCEEDED, reason, "step_limit_exceeded"
             )
-            await self.event_publisher.emit(self.event_factory.error("step_limit_exceeded"))
-            self.state.transition_to(SessionPhase.STEP_LIMIT_EXCEEDED, reason=reason)
             return
 
         self.state.transition_to(SessionPhase.CALLING_LLM)
@@ -987,7 +968,7 @@ class SessionRunUseCase:
         # answered before the next model call.
         table = self.state.pending_events
         order = {tc["id"]: i for i, tc in enumerate(original_tool_calls)}
-
+        completed_messages = list(blocked_messages)
         if immediate:
             proc = await self.tool_execution.process(immediate)
             proc.apply_hashes_to(self.state)  # hashes now; messages buffered
@@ -998,55 +979,9 @@ class SessionRunUseCase:
             # Likewise the STEP 1 information-gain counters: a buffered immediate
             # result is still a real tool result and must register its novelty.
             proc.apply_evidence_counter_to(self.state)
-            for message in proc.messages_to_append:
-                tid = message["tool_call_id"]
-                table.add(
-                    PendingRow(
-                        tool_call_id=tid,
-                        kind=RowKind.IMMEDIATE,
-                        order=order[tid],
-                        status=RowStatus.DONE,
-                        result=message["content"],
-                    )
-                )
-
-        for message in blocked_messages:
-            tid = message["tool_call_id"]
-            table.add(
-                PendingRow(
-                    tool_call_id=tid,
-                    kind=RowKind.IMMEDIATE,
-                    order=order[tid],
-                    status=RowStatus.DONE,
-                    result=message["content"],
-                )
-            )
-
-        for tc in deferred:
-            tid = tc["id"]
-            # Register the row before the spawn tool can start its child. A very
-            # fast child may finish while execute_deferred is still emitting its
-            # tool_end event; its completion must already have a row to fill.
-            table.add(
-                PendingRow(
-                    tool_call_id=tid,
-                    kind=RowKind.CHILD_AGENT,
-                    order=order[tid],
-                    status=RowStatus.PENDING,
-                )
-            )
-            ref, error = await self.tool_execution.execute_deferred(tc)
-            if ref is not None:
-                # Preserve a completion that may already have arrived while
-                # attaching the child reference for persistence/diagnostics.
-                table.rows[tid] = replace(table.rows[tid], ref=ref)
-            else:
-                table.fill(
-                    tid,
-                    status=RowStatus.FAILED,
-                    result=error or "Deferred tool failed without an error message.",
-                    error=error,
-                )
+            completed_messages = [*proc.messages_to_append, *completed_messages]
+        self._buffer_completed_rows(table, order, completed_messages)
+        await self._execute_deferred_tools(table, order, deferred)
 
         self._pending_tool_allowlist = None
         self._pending_tool_gate_label = None
@@ -1067,6 +1002,53 @@ class SessionRunUseCase:
         # provide observability of the spawn.
         self.clear_pending_step()
         self.state.transition_to(SessionPhase.AWAITING_EVENTS)
+
+    @staticmethod
+    def _buffer_completed_rows(
+        table: PendingEventTable,
+        order: dict[str, int],
+        messages: list[dict],
+    ) -> None:
+        for message in messages:
+            tool_call_id = message["tool_call_id"]
+            table.add(
+                PendingRow(
+                    tool_call_id=tool_call_id,
+                    kind=RowKind.IMMEDIATE,
+                    order=order[tool_call_id],
+                    status=RowStatus.DONE,
+                    result=message["content"],
+                )
+            )
+
+    async def _execute_deferred_tools(
+        self,
+        table: PendingEventTable,
+        order: dict[str, int],
+        tool_calls: list[dict],
+    ) -> None:
+        for tool_call in tool_calls:
+            tool_call_id = tool_call["id"]
+            # Register before the child starts so an immediate completion has a
+            # row to fill while execute_deferred is still emitting its event.
+            table.add(
+                PendingRow(
+                    tool_call_id=tool_call_id,
+                    kind=RowKind.CHILD_AGENT,
+                    order=order[tool_call_id],
+                    status=RowStatus.PENDING,
+                )
+            )
+            ref, error = await self.tool_execution.execute_deferred(tool_call)
+            if ref is not None:
+                table.rows[tool_call_id] = replace(table.rows[tool_call_id], ref=ref)
+            else:
+                table.fill(
+                    tool_call_id,
+                    status=RowStatus.FAILED,
+                    result=error or "Deferred tool failed without an error message.",
+                    error=error,
+                )
 
     def _split_tool_calls(self, tool_calls: list[dict]) -> tuple[list[dict], list[dict]]:
         """Partition a batch into (immediate, deferred) by deferrable name."""

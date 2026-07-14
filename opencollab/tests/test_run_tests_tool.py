@@ -10,6 +10,14 @@ def run(coro):
     return asyncio.run(coro)
 
 
+def runtime_for(environment, *, safety_policy=None):
+    return ToolRuntime(
+        environment=environment,
+        safety_policy=safety_policy,
+        permission_policy=None,
+    )
+
+
 class FakeEnv:
     def __init__(self, stdout="", stderr="", returncode=0):
         self._stdout = stdout
@@ -102,7 +110,7 @@ ModuleNotFoundError: No module named 'nope'
 
 def test_run_tests_runs_pytest_and_returns_pass_summary():
     env = FakeEnv(stdout=PASS_OUTPUT)
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
 
     result = run(RunTestsTool().execute_with_runtime({"target": "tests/test_x.py::test_y"}, runtime))
 
@@ -124,7 +132,7 @@ def test_run_tests_runs_pytest_and_returns_pass_summary():
 
 def test_run_tests_accepts_plain_pytest_q_summary():
     env = FakeEnv(stdout=PLAIN_PASS_OUTPUT)
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
 
     result = run(
         RunTestsTool().execute_with_runtime(
@@ -142,11 +150,7 @@ def test_run_tests_directory_target_requires_a_descendant_pass():
         "tests/test_x.py::test_one",
         "tests/unit/test_x.py::test_one",
     )
-    runtime = ToolRuntime(
-        environment=FakeEnv(stdout=output),
-        safety_policy=None,
-        permission_policy=None,
-    )
+    runtime = runtime_for(FakeEnv(stdout=output))
 
     result = run(
         RunTestsTool().execute_with_runtime({"target": "tests/unit"}, runtime)
@@ -154,21 +158,13 @@ def test_run_tests_directory_target_requires_a_descendant_pass():
 
     assert "Verdict: GREEN" in result
 
-    root_runtime = ToolRuntime(
-        environment=FakeEnv(stdout=output),
-        safety_policy=None,
-        permission_policy=None,
-    )
+    root_runtime = runtime_for(FakeEnv(stdout=output))
     root_result = run(
         RunTestsTool().execute_with_runtime({"target": "."}, root_runtime)
     )
     assert "Verdict: GREEN" in root_result
 
-    unrelated_runtime = ToolRuntime(
-        environment=FakeEnv(stdout=output),
-        safety_policy=None,
-        permission_policy=None,
-    )
+    unrelated_runtime = runtime_for(FakeEnv(stdout=output))
     unrelated = run(
         RunTestsTool().execute_with_runtime({"target": "tests/unitized"}, unrelated_runtime)
     )
@@ -180,11 +176,7 @@ def test_run_tests_preserves_spaces_in_parameterized_node_id_proof():
         "tests/test_x.py::test_one",
         "tests/test_x.py::test_one[x y]",
     )
-    runtime = ToolRuntime(
-        environment=FakeEnv(stdout=output),
-        safety_policy=None,
-        permission_policy=None,
-    )
+    runtime = runtime_for(FakeEnv(stdout=output))
 
     result = run(
         RunTestsTool().execute_with_runtime(
@@ -198,7 +190,7 @@ def test_run_tests_preserves_spaces_in_parameterized_node_id_proof():
 
 def test_run_tests_returns_failure_summary_and_traceback_head():
     env = FakeEnv(stdout=FAIL_OUTPUT, returncode=1)
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
 
     result = run(RunTestsTool().execute_with_runtime({}, runtime))
 
@@ -226,7 +218,7 @@ def test_run_tests_excludes_warnings_from_counts_with_separate_line():
     # '1 failed, 2 passed, 3 warnings' -> Counts shows passed/failed only,
     # warnings on their own line; the pass/fail decision is unaffected.
     env = FakeEnv(stdout=WARN_OUTPUT, returncode=1)
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
 
     result = run(RunTestsTool().execute_with_runtime({}, runtime))
 
@@ -243,7 +235,7 @@ def test_run_tests_full_suite_suppresses_passed_list():
     # No target -> full-suite run: PASSED list is suppressed to protect context,
     # only the aggregate count is reported.
     env = FakeEnv(stdout=PASS_OUTPUT)
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
 
     result = run(RunTestsTool().execute_with_runtime({}, runtime))
 
@@ -264,7 +256,7 @@ def test_run_tests_caps_passed_list_at_25():
         "========================= 30 passed in 0.10s =========================\n"
     )
     env = FakeEnv(stdout=output)
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
 
     result = run(
         RunTestsTool().execute_with_runtime({"target": "tests/test_x.py"}, runtime)
@@ -277,7 +269,7 @@ def test_run_tests_caps_passed_list_at_25():
 
 def test_run_tests_collection_crash_falls_back_to_output():
     env = FakeEnv(stdout=COLLECTION_CRASH_OUTPUT, returncode=2)
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
 
     result = run(RunTestsTool().execute_with_runtime({"target": "tests/test_x.py"}, runtime))
 
@@ -288,7 +280,7 @@ def test_run_tests_collection_crash_falls_back_to_output():
 def test_run_tests_honors_runner_options_and_safety_policy():
     env = FakeEnv(stdout=PASS_OUTPUT)
     safety = SpySafetyPolicy()
-    runtime = ToolRuntime(environment=env, safety_policy=safety, permission_policy=None)
+    runtime = runtime_for(env, safety_policy=safety)
 
     result = run(
         RunTestsTool().execute_with_runtime(
@@ -305,7 +297,7 @@ def test_run_tests_honors_runner_options_and_safety_policy():
 
 def test_run_tests_can_disable_runner_override_before_exec():
     env = FakeEnv(stdout=PASS_OUTPUT)
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
 
     result = run(
         RunTestsTool(allow_runner_override=False).execute_with_runtime(
@@ -322,7 +314,7 @@ def test_run_tests_can_disable_runner_override_before_exec():
 
 def test_run_tests_can_disable_extra_args_before_exec():
     env = FakeEnv(stdout=PASS_OUTPUT)
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
 
     result = run(
         RunTestsTool(allow_extra_args=False).execute_with_runtime(
@@ -337,14 +329,14 @@ def test_run_tests_can_disable_extra_args_before_exec():
 
 def test_run_tests_pytest_path_emits_green_verdict():
     env = FakeEnv(stdout=PASS_OUTPUT)
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
     result = run(RunTestsTool().execute_with_runtime({"target": "tests/test_x.py"}, runtime))
     assert "Verdict: GREEN" in result
 
 
 def test_run_tests_pytest_failure_emits_red_verdict_and_hint():
     env = FakeEnv(stdout=FAIL_OUTPUT, returncode=1)
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
     result = run(RunTestsTool().execute_with_runtime({}, runtime))
     assert "Verdict: RED" in result
     assert "Hint (expected vs got):" in result
@@ -371,7 +363,7 @@ def test_run_tests_falls_back_to_native_runner_when_pytest_missing():
         ("python -m pytest", 1, "No module named pytest"),
         ("test -x bin/test", 0, ""),
     ])
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
     result = run(
         RunTestsTool().execute_with_runtime(
             {"target": "tests/test_x.py::test_two"}, runtime
@@ -395,7 +387,7 @@ def test_run_tests_falls_back_to_go_runner_when_pytest_missing():
             '"Test":"TestEvaluate"}',
         ),
     ])
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
 
     result = run(
         RunTestsTool(allow_runner_override=False, allow_extra_args=False).execute_with_runtime(
@@ -420,7 +412,7 @@ def test_run_tests_falls_back_to_go_runner_when_pytest_finds_no_tests():
             '"Test":"TestEvaluate"}',
         ),
     ])
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
 
     result = run(
         RunTestsTool(allow_runner_override=False, allow_extra_args=False).execute_with_runtime(
@@ -439,7 +431,7 @@ def test_run_tests_native_fallback_quotes_translated_target():
         ("python -m pytest", 1, "No module named pytest"),
         ("test -x bin/test", 0, ""),
     ])
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
 
     result = run(
         RunTestsTool(allow_runner_override=False, allow_extra_args=False).execute_with_runtime(
@@ -455,7 +447,7 @@ def test_run_tests_native_fallback_quotes_translated_target():
 
 def test_run_tests_pinned_runner_suppresses_autodetect():
     env = ScriptedEnv([("bin/test", 0, "ok")])
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
     run(RunTestsTool().execute_with_runtime({"runner": "bin/test"}, runtime))
     cmds = [c for c, _ in env.exec_calls]
     assert cmds == []
@@ -467,7 +459,7 @@ def test_run_tests_native_exit_zero_without_proof_is_red():
         ("python -m pytest", 1, "No module named pytest"),
         ("test -f tox.ini", 0, ""),
     ])
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
     result = run(RunTestsTool().execute_with_runtime({}, runtime))
     assert "Verdict: RED" in result
     assert "Command: not executed" in result
@@ -477,13 +469,13 @@ def test_run_tests_native_exit_zero_without_proof_is_red():
 def test_run_tests_escalates_after_repeated_same_target_failures():
     tool = RunTestsTool()
     env = FakeEnv(stdout=FAIL_OUTPUT, returncode=1)
-    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(env)
     last = ""
     for _ in range(3):
         last = run(tool.execute_with_runtime({"target": "tests/test_x.py"}, runtime))
     assert "Escalation:" in last
     green_env = FakeEnv(stdout=PASS_OUTPUT)
-    green_runtime = ToolRuntime(environment=green_env, safety_policy=None, permission_policy=None)
+    green_runtime = runtime_for(green_env)
     after = run(tool.execute_with_runtime({"target": "tests/test_x.py"}, green_runtime))
     assert "Escalation:" not in after
 
@@ -605,11 +597,7 @@ def test_go_runner_requires_pass_proof_for_each_requested_package():
 
 
 def test_run_tests_rejects_zero_execution_pytest_modes():
-    runtime = ToolRuntime(
-        environment=FakeEnv(stdout="collected 3 items", returncode=0),
-        safety_policy=None,
-        permission_policy=None,
-    )
+    runtime = runtime_for(FakeEnv(stdout="collected 3 items", returncode=0))
 
     collect_only = run(
         RunTestsTool().execute_with_runtime({"extra_args": "--collect-only"}, runtime)
@@ -623,11 +611,7 @@ def test_run_tests_rejects_zero_execution_pytest_modes():
 
 
 def test_run_tests_rejects_noop_runner_green_forgery():
-    runtime = ToolRuntime(
-        environment=FakeEnv(stdout="ok", returncode=0),
-        safety_policy=None,
-        permission_policy=None,
-    )
+    runtime = runtime_for(FakeEnv(stdout="ok", returncode=0))
 
     result = run(
         RunTestsTool().execute_with_runtime({"runner": "true"}, runtime)
@@ -639,11 +623,7 @@ def test_run_tests_rejects_noop_runner_green_forgery():
 def test_run_tests_rejects_shell_wrapped_pytest_output_forgery():
     target = "tests/test_x.py::test_one"
     forged = f"PASSED {target}\n1 passed in 0.01s\n"
-    runtime = ToolRuntime(
-        environment=FakeEnv(stdout=forged, returncode=0),
-        safety_policy=None,
-        permission_policy=None,
-    )
+    runtime = runtime_for(FakeEnv(stdout=forged, returncode=0))
 
     tool = RunTestsTool()
     result = run(
@@ -673,11 +653,7 @@ def test_run_tests_rejects_multiple_pytest_result_summaries():
 
 def test_run_tests_records_only_parser_backed_green_targets():
     target = "tests/test_x.py::test_one"
-    runtime = ToolRuntime(
-        environment=FakeEnv(stdout=PLAIN_PASS_OUTPUT, returncode=0),
-        safety_policy=None,
-        permission_policy=None,
-    )
+    runtime = runtime_for(FakeEnv(stdout=PLAIN_PASS_OUTPUT, returncode=0))
 
     tool = RunTestsTool()
     result = run(tool.execute_with_runtime({"target": target}, runtime))
@@ -687,11 +663,7 @@ def test_run_tests_records_only_parser_backed_green_targets():
 
 
 def test_run_tests_requires_named_target_pass_proof():
-    runtime = ToolRuntime(
-        environment=FakeEnv(stdout=PASS_OUTPUT, returncode=0),
-        safety_policy=None,
-        permission_policy=None,
-    )
+    runtime = runtime_for(FakeEnv(stdout=PASS_OUTPUT, returncode=0))
 
     result = run(
         RunTestsTool().execute_with_runtime(
@@ -717,7 +689,7 @@ def test_go_runner_command_not_found_is_not_reported_as_pytest_missing():
 
 
 def test_run_tests_requires_execution_environment():
-    runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
+    runtime = runtime_for(None)
 
     result = run(RunTestsTool().execute_with_runtime({}, runtime))
 

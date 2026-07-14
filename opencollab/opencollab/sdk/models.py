@@ -48,6 +48,18 @@ def _positive_number(value: object, *, field_name: str, optional: bool = False) 
     return parsed
 
 
+def _number_in_range(value: object, *, field_name: str, maximum: float, optional: bool = False) -> None:
+    if value is None and optional:
+        return
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or not 0 <= float(value) <= maximum
+    ):
+        raise InvalidSDKRequestError(f"{field_name} must be a finite number from 0 to {maximum:g}")
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     """LLM configuration accepted by the stable workflow runtime boundary."""
@@ -71,16 +83,8 @@ class RuntimeConfig:
         if self.base_url is not None:
             _non_empty_text(self.base_url, field_name="base_url")
         _positive_number(self.llm_timeout_seconds, field_name="llm_timeout_seconds")
-        for value, field_name, maximum, optional in (
-            (self.temperature, "temperature", 2, False),
-            (self.top_p, "top_p", 1, True),
-        ):
-            if value is None and optional:
-                continue
-            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(float(value)):
-                raise InvalidSDKRequestError(f"{field_name} must be a finite number from 0 to {maximum}")
-            if not 0 <= float(value) <= maximum:
-                raise InvalidSDKRequestError(f"{field_name} must be a finite number from 0 to {maximum}")
+        _number_in_range(self.temperature, field_name="temperature", maximum=2)
+        _number_in_range(self.top_p, field_name="top_p", maximum=1, optional=True)
         _positive_integer(self.max_output_tokens, field_name="max_output_tokens")
         if not isinstance(self.thinking, bool):
             raise InvalidSDKRequestError("thinking must be a boolean")
@@ -156,6 +160,22 @@ class AgentRunBudget:
         _positive_number(self.cleanup_timeout_seconds, field_name="cleanup_timeout_seconds")
 
 
+def _normalize_run_context(request: WorkflowRunRequest | AgentRunRequest) -> None:
+    if request.environment is not None and not isinstance(request.environment, ExecutionEnvironment):
+        raise InvalidSDKRequestError("environment must implement the OpenCollab Environment contract")
+    for field_name in ("environment_workdir", "source_root", "workspace"):
+        value = getattr(request, field_name)
+        if value is not None:
+            _non_empty_text(value, field_name=field_name)
+    if request.artifact_dir is not None:
+        artifact_dir = os.fspath(request.artifact_dir)
+        if not artifact_dir or "\x00" in artifact_dir:
+            raise InvalidSDKRequestError("artifact_dir must be a valid filesystem path")
+        object.__setattr__(request, "artifact_dir", Path(artifact_dir))
+    if not isinstance(request.trace, bool):
+        raise InvalidSDKRequestError("trace must be a boolean")
+
+
 @dataclass(frozen=True, slots=True)
 class WorkflowRunRequest:
     """All inputs required to run one OpenCollab workflow.
@@ -189,19 +209,7 @@ class WorkflowRunRequest:
         object.__setattr__(self, "inputs", deepcopy(dict(self.inputs)))
         if not isinstance(self.budget, RunBudget):
             raise InvalidSDKRequestError("budget must be a RunBudget")
-        if self.environment is not None and not isinstance(self.environment, ExecutionEnvironment):
-            raise InvalidSDKRequestError("environment must implement the OpenCollab Environment contract")
-        for field_name in ("environment_workdir", "source_root", "workspace"):
-            value = getattr(self, field_name)
-            if value is not None:
-                _non_empty_text(value, field_name=field_name)
-        if self.artifact_dir is not None:
-            artifact_dir = os.fspath(self.artifact_dir)
-            if not artifact_dir or "\x00" in artifact_dir:
-                raise InvalidSDKRequestError("artifact_dir must be a valid filesystem path")
-            object.__setattr__(self, "artifact_dir", Path(artifact_dir))
-        if not isinstance(self.trace, bool):
-            raise InvalidSDKRequestError("trace must be a boolean")
+        _normalize_run_context(self)
 
 
 @dataclass(frozen=True, slots=True)
@@ -256,19 +264,7 @@ class AgentRunRequest:
         if not isinstance(self.tools, (list, tuple)):
             raise InvalidSDKRequestError("tools must be a sequence")
         object.__setattr__(self, "tools", tuple(self.tools))
-        if self.environment is not None and not isinstance(self.environment, ExecutionEnvironment):
-            raise InvalidSDKRequestError("environment must implement the OpenCollab Environment contract")
-        for field_name in ("environment_workdir", "source_root", "workspace"):
-            value = getattr(self, field_name)
-            if value is not None:
-                _non_empty_text(value, field_name=field_name)
-        if self.artifact_dir is not None:
-            artifact_dir = os.fspath(self.artifact_dir)
-            if not artifact_dir or "\x00" in artifact_dir:
-                raise InvalidSDKRequestError("artifact_dir must be a valid filesystem path")
-            object.__setattr__(self, "artifact_dir", Path(artifact_dir))
-        if not isinstance(self.trace, bool):
-            raise InvalidSDKRequestError("trace must be a boolean")
+        _normalize_run_context(self)
         if not isinstance(self.failure_mode, str) or self.failure_mode not in {
             "raise",
             "return",

@@ -104,12 +104,7 @@ def read_regular_text(
 def open_regular_text_append(path: str | os.PathLike[str]) -> TextIO:
     target = _absolute(path)
     ensure_directory_no_symlinks(target.parent)
-    try:
-        existing = os.stat(target, follow_symlinks=False)
-    except FileNotFoundError:
-        existing = None
-    if existing is not None and not stat.S_ISREG(existing.st_mode):
-        raise OSError(f"append target is not a regular file: {target}")
+    _current_regular(target, context="append")
     fd = os.open(
         target,
         os.O_WRONLY
@@ -169,17 +164,6 @@ def _current_regular(path: Path, *, context: str) -> os.stat_result | None:
     return info
 
 
-def _fsync_directory(path: Path) -> None:
-    fd = os.open(
-        path,
-        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
-    )
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 def write_regular_file_atomic(
     path: str | os.PathLike[str],
     writer: Callable[[BinaryIO], None],
@@ -222,7 +206,6 @@ def write_regular_file_atomic(
             os.unlink(temporary)
         else:
             os.replace(temporary, target)
-        _fsync_directory(target.parent)
     finally:
         if fd >= 0:
             os.close(fd)
@@ -279,7 +262,6 @@ def unlink_regular_file_durable(path: str | os.PathLike[str]) -> bool:
     if current is None:
         return False
     os.unlink(target)
-    _fsync_directory(target.parent)
     return True
 
 

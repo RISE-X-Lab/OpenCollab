@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import types
 
 import pytest
 from opencollab.adapters.env import LocalEnvironment
@@ -225,3 +226,7 @@ def test_scheduler_modules_do_not_import_bootstrap_safety():
 
     assert "opencollab.bootstrap.safety" not in scheduler_source
     assert "opencollab.bootstrap.safety" not in spawn_source
+
+
+def test_scheduler_public_module_uses_plain_module_semantics():
+    assert type(scheduler_mod) is types.ModuleType

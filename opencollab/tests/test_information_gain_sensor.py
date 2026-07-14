@@ -18,35 +18,17 @@ purely observational; later steps key brakes on them.
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 
-from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.tool_execution import (
-    ToolExecutionUseCase,
     _intrinsic_low_yield,
     _result_content_hash,
 )
 from opencollab.domain.session import MAX_SCOUT_LEDGER_CARDS, SessionState
+from tool_execution_test_support import build_sensor_use_case as _use_case
 
 
 def run(coro):
     return asyncio.run(coro)
-
-
-class FakeAgent:
-    def __init__(self, tools=None):
-        self.tools = tools or []
-
-    def find_tool(self, name):
-        for tool in self.tools:
-            if tool.name == name:
-                return tool
-        return None
-
-
-class FakeEventPublisher:
-    async def emit(self, event):  # pragma: no cover - trivial sink
-        pass
 
 
 class ScriptedTool:
@@ -61,29 +43,6 @@ class ScriptedTool:
     async def execute_with_runtime(self, args, runtime):
         self.calls.append(args)
         return self._outputs.pop(0) if self._outputs else ""
-
-
-def _event_factory() -> SessionEventFactory:
-    factory = default_session_event_factory(aid=-1)
-    return SessionEventFactory(
-        step_start=factory.step_start,
-        step_end=factory.step_end,
-        text_delta=factory.text_delta,
-        error=factory.error,
-        loop_detected=lambda tool, count: SimpleNamespace(type="loop_detected", data={}),
-        tool_start=lambda tool, args: SimpleNamespace(type="tool_start", data={}),
-        tool_end=lambda tool, latency: SimpleNamespace(type="tool_end", data={}),
-    )
-
-
-def _use_case(state, tool):
-    return ToolExecutionUseCase(
-        agent=FakeAgent(tools=[tool]),
-        environment=None,
-        state=state,
-        event_publisher=FakeEventPublisher(),
-        event_factory=_event_factory(),
-    )
 
 
 def _call(name, args, cid="c1"):

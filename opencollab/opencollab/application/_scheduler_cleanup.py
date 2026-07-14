@@ -8,32 +8,25 @@ import logging
 import math
 from typing import Any
 
-from opencollab.application._scheduler_constants import (
-    DEFAULT_SCHEDULER_CLEANUP_TIMEOUT,
-    MAX_FORCED_CLEANUP_TIMEOUT,
+from opencollab.application._scheduler_constants import DEFAULT_SCHEDULER_CLEANUP_TIMEOUT
+from opencollab.application.async_timeout import (
+    await_owned_operation,
+    cancel_tasks_and_wait,
+    consume_task_result,
 )
-from opencollab.application.async_timeout import force_task_terminal
-from opencollab.application.exception_notes import add_exception_note
 from opencollab.domain.pending import PendingRowError, RowStatus
 
 logger = logging.getLogger(__name__)
 
 
-class _RetryableSchedulerCleanupError(RuntimeError):
-    """A bounded cleanup reached a fully tracked, retry-safe failure state."""
-
-
-def _unique_task_owners(
-    *groups: Any,
-) -> list[tuple[int, asyncio.Task[Any]]]:
+def _unique_task_owners(*groups: Any) -> list[tuple[int, asyncio.Task[Any]]]:
     owners: list[tuple[int, asyncio.Task[Any]]] = []
     seen: set[asyncio.Task[Any]] = set()
     for group in groups:
         for aid, task in group:
-            if task in seen:
-                continue
-            seen.add(task)
-            owners.append((aid, task))
+            if task not in seen:
+                seen.add(task)
+                owners.append((aid, task))
     return owners
 
 
@@ -43,211 +36,81 @@ class SchedulerCleanupMixin:
         *,
         cleanup_timeout: float = DEFAULT_SCHEDULER_CLEANUP_TIMEOUT,
     ) -> None:
-        """Cancel pending tasks and clean up worktree environments."""
+        """Stop scheduler-owned work and persist one terminal snapshot."""
+        timeout = self._validate_cleanup_timeout(cleanup_timeout)
+        if self._cleanup_task is None:
+            self._cleanup_task = asyncio.create_task(self._cleanup_impl(timeout=timeout))
+        await await_owned_operation(self._cleanup_task, propagate_cancellation=True)
+
+    @staticmethod
+    def _validate_cleanup_timeout(value: object) -> float:
         try:
-            phase_timeout = float(cleanup_timeout)
+            timeout = float(value)
         except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError("cleanup_timeout must be a finite number greater than zero") from exc
-        if isinstance(cleanup_timeout, bool) or not math.isfinite(phase_timeout) or phase_timeout <= 0:
+        if isinstance(value, bool) or not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("cleanup_timeout must be a finite number greater than zero")
-        forced_timeout = min(MAX_FORCED_CLEANUP_TIMEOUT, max(0.1, phase_timeout))
+        return timeout
 
-        # Validation precedes task creation so an invalid call is entirely
-        # side-effect free. Concurrent cleanup callers share one teardown task;
-        # cancellation of any waiter cannot cancel the resource owner.
-        if self._cleanup_task is None:
-            self._cleanup_task = asyncio.create_task(
-                self._cleanup_impl(
-                    phase_timeout=phase_timeout,
-                    forced_timeout=forced_timeout,
-                )
-            )
-        cleanup_task = self._cleanup_task
-
-        cancellation: asyncio.CancelledError | None = None
-        cleanup_failure: BaseException | None = None
-        while True:
-            try:
-                await asyncio.shield(cleanup_task)
-                break
-            except asyncio.CancelledError as exc:
-                if cleanup_task.cancelled():
-                    raise
-                if cancellation is None:
-                    cancellation = exc
-                # Finish the already-bounded teardown before propagating caller
-                # cancellation. A repeated caller cancellation is recorded by
-                # the same loop and still cannot interrupt cleanup ownership.
-                continue
-            except BaseException as exc:
-                cleanup_failure = exc
-                break
-        if (
-            isinstance(cleanup_failure, _RetryableSchedulerCleanupError)
-            and self._cleanup_task is cleanup_task
-        ):
-            self._cleanup_task = None
-        if cancellation is not None:
-            if cleanup_failure is not None:
-                add_exception_note(
-                    cancellation,
-                    "scheduler cleanup also failed: "
-                    f"{type(cleanup_failure).__name__}: {cleanup_failure}",
-                )
-            raise cancellation
-        if cleanup_failure is not None:
-            raise cleanup_failure
-
-    async def _cleanup_impl(
-        self,
-        *,
-        phase_timeout: float,
-        forced_timeout: float,
-    ) -> None:
-        # This is the first teardown mutation. It runs in an owned task shielded
-        # from every cleanup caller, including a caller cancelled mid-wait.
+    async def _cleanup_impl(self, *, timeout: float) -> None:
         self._shutting_down = True
-        cleanup_failures: list[str] = []
+        failures: list[str] = []
         persistence_sessions = tuple(self._sessions.values())
         startup_aids = set(self._startup_tasks)
-        cleanup_origin_snapshot = {
-            **self._startup_origin,
-            **self._spawn_origin,
-        }
+        origins = {**self._startup_origin, **self._spawn_origin}
+        interrupted_deliveries = set(self._message_delivery_tasks)
         execution_tasks = _unique_task_owners(
-            self._cleanup_execution_tasks,
             self._tasks.items(),
             self._startup_tasks.items(),
         )
-        delivery_records = list(self._message_delivery_records.values())
-        if self._lead_turn_record is not None:
-            self._lead_turn_record["cleanup_terminal"] = True
-            delivery_records.append(self._lead_turn_record)
         delivery_tasks = _unique_task_owners(
-            self._cleanup_delivery_tasks,
             self._message_delivery_tasks.items(),
             ((0, task) for task in self._active_run_tasks),
         )
-        for record in delivery_records:
-            add_task = record.get("add_task")
-            if isinstance(add_task, asyncio.Task):
-                delivery_tasks.append((int(record["aid"]), add_task))
-        delivery_tasks = _unique_task_owners(delivery_tasks)
         tracked_tasks = _unique_task_owners(execution_tasks, delivery_tasks)
-        for task in {task for _, task in tracked_tasks}:
-            if not task.done():
-                task.cancel()
-
-        await self._rollback_message_deliveries(
-            delivery_records,
-            timeout=forced_timeout,
-        )
-
-        pending = await self._wait_for_cleanup_tasks(
-            {task for _, task in tracked_tasks},
-            timeout=phase_timeout,
-        )
-        execution_required_forced_stop = False
-        forced_execution_aids: set[int] = set()
-        environment_abort_succeeded = True
-        if pending:
-            pending_aids = {aid for aid, task in execution_tasks if task in pending}
-            if pending_aids or self._cleanup_environment_abort_tasks:
-                environment_abort_succeeded = await self._abort_session_environments(
-                    pending_aids,
-                    timeout=forced_timeout,
-                )
-            for task in pending:
-                task.cancel()
-            pending = await self._wait_for_cleanup_tasks(
-                pending,
-                timeout=forced_timeout,
-            )
-        if pending:
-            execution_required_forced_stop = True
-            forced_execution_aids = {aid for aid, task in execution_tasks if task in pending}
-            still_pending: set[asyncio.Task[Any]] = set()
-            for task in pending:
-                termination = await force_task_terminal(
-                    task,
-                    timeout=forced_timeout,
-                )
-                if not termination.terminal:
-                    still_pending.add(task)
-                for error in termination.errors:
-                    logger.error("forced scheduler task termination failed: %s", error)
-            pending = still_pending
-        if not pending and self._cleanup_environment_abort_tasks:
-            environment_abort_succeeded = await self._abort_session_environments(
-                set(),
-                timeout=forced_timeout,
-            )
-        if execution_required_forced_stop:
-            cleanup_failures.append("execution tasks did not quiesce")
-        if not environment_abort_succeeded:
-            cleanup_failures.append("session environment abort failed or timed out")
-
-        await self._rollback_message_deliveries(
-            delivery_records,
-            timeout=forced_timeout,
-        )
-
-        # A Task cancelled before its coroutine gets its first timeslice never
-        # enters ``_drive_agent``'s CancelledError handler. The same is true for
-        # a stubborn task still alive after both bounded phases. Finalize both
-        # states here so teardown cannot leave a scheduled ghost with a live
-        # lease or an unresolved parent row.
-        for aid, task in execution_tasks:
-            if not (
-                aid in forced_execution_aids
-                or task in pending
-                or task.cancelled()
-                or self._task_finished_with_error(task)
-            ):
-                continue
-            self._finalize_cleanup_failure(
-                aid,
-                origin_override=cleanup_origin_snapshot.get(aid),
-            )
+        running_execution = {
+            (aid, task) for aid, task in execution_tasks if not task.done()
+        }
+        running_delivery = {
+            (aid, task) for aid, task in delivery_tasks if not task.done()
+        }
+        all_tasks = {task for _aid, task in tracked_tasks}
+        pending = await cancel_tasks_and_wait(all_tasks, timeout=timeout)
+        for task in all_tasks - pending:
+            consume_task_result(task)
         for task in pending:
-            task.add_done_callback(self._consume_background_task)
+            task.add_done_callback(consume_task_result)
+
+        pending_aids = {aid for aid, task in running_execution if task in pending}
+        environments_aborted = await self._abort_session_environments(
+            pending_aids,
+            timeout=timeout,
+        )
+        pending = {task for task in pending if not task.done()}
+        if pending:
+            failures.append("execution tasks did not quiesce")
+        if interrupted_deliveries:
+            failures.append("message delivery was interrupted")
+        if not environments_aborted:
+            failures.append("session environment abort failed or timed out")
+
+        for aid, task in running_execution:
+            if task.cancelled() or task in pending or (task.done() and task.exception() is not None):
+                self._finalize_cleanup_failure(aid, origin_override=origins.get(aid))
+        if any(aid == 0 for aid, _task in running_delivery):
+            self._finalize_cleanup_failure(0)
         for aid in startup_aids:
-            self._finalize_cleanup_failure(
-                aid,
-                origin_override=cleanup_origin_snapshot.get(aid),
-            )
+            self._finalize_cleanup_failure(aid, origin_override=origins.get(aid))
             self.table.entries.pop(aid, None)
             self._sessions.pop(aid, None)
             self._locks.pop(aid, None)
             self._message_inbox.pop(aid, None)
+
         self._startup_tasks.clear()
         self._startup_envs.clear()
         self._startup_origin.clear()
-        for record in delivery_records:
-            aid = int(record["aid"])
-            self._message_delivery_tasks.pop(aid, None)
-            if self._message_delivery_records.get(aid) is record:
-                self._message_delivery_records.pop(aid, None)
-            if self._lead_turn_record is record:
-                self._lead_turn_record = None
-            add_task = record.get("add_task")
-            if isinstance(add_task, asyncio.Task):
-                self._attach_late_message_restore(aid, record, add_task)
-            if record.get("cleanup_terminal", False):
-                self._finalize_cleanup_failure(aid)
+        self._message_delivery_tasks.clear()
         self._active_run_tasks.clear()
-        execution_task_set = {task for _, task in execution_tasks}
-        self._cleanup_execution_tasks = {
-            (aid, task) for aid, task in execution_tasks if not task.done()
-        }
-        self._cleanup_delivery_tasks = {
-            (aid, task)
-            for aid, task in delivery_tasks
-            if task not in execution_task_set and not task.done()
-        }
-        # Teardown is terminal for this scheduler instance. Release even a
-        # seeded-but-never-run Lead lease and defensively clear any reservation /
-        # dedup entry whose owner disappeared before it entered a tracked task.
         self._lead_reservation = None
         self._child_reservation.clear()
         self._reservation_baseline.clear()
@@ -257,106 +120,55 @@ class SchedulerCleanupMixin:
 
         persistence_quiesced = await self._wait_for_session_persistence(
             persistence_sessions,
-            timeout=phase_timeout,
+            timeout=timeout,
         )
-        if not persistence_quiesced:
-            for task in self._pending_session_persistence_tasks(persistence_sessions):
-                task.cancel()
-            persistence_quiesced = await self._wait_for_session_persistence(
-                persistence_sessions,
-                timeout=forced_timeout,
-            )
-
         if persistence_quiesced:
             self._autosave_all_sessions()
-            persistence_quiesced = await self._wait_for_session_persistence(
-                persistence_sessions,
-                timeout=phase_timeout,
-            )
-            if not persistence_quiesced:
-                for task in self._pending_session_persistence_tasks(persistence_sessions):
-                    task.cancel()
-                persistence_quiesced = await self._wait_for_session_persistence(
-                    persistence_sessions,
-                    timeout=forced_timeout,
-                )
-        if persistence_quiesced:
             self._write_manifest()
             persistence_quiesced = await self._wait_for_session_persistence(
                 persistence_sessions,
-                timeout=phase_timeout,
+                timeout=max(0.1, timeout),
             )
-            if not persistence_quiesced:
-                for task in self._pending_session_persistence_tasks(persistence_sessions):
-                    task.cancel()
-                persistence_quiesced = await self._wait_for_session_persistence(
-                    persistence_sessions,
-                    timeout=forced_timeout,
-                )
         persistence_errors = self._session_persistence_errors(persistence_sessions)
-        worktree_release_safe = not execution_required_forced_stop and not pending and environment_abort_succeeded
-        if worktree_release_safe:
-            worktree_release_succeeded = await self._release_worktree_pool_bounded(
-                cleanup_timeout=phase_timeout,
-                forced_timeout=forced_timeout,
-            )
-        else:
-            worktree_release_succeeded = False
         if not persistence_quiesced:
-            cleanup_failures.append("session-owned tasks did not quiesce")
+            failures.append("session-owned tasks did not quiesce")
         if persistence_errors:
-            cleanup_failures.append("session persistence failed")
-        if not worktree_release_succeeded:
-            if worktree_release_safe:
-                cleanup_failures.append("worktree pool release failed or timed out")
-            else:
-                cleanup_failures.append(
-                    "worktree pool release skipped because execution ownership was not revoked and quiesced"
-                )
-        if cleanup_failures:
-            failure = _RetryableSchedulerCleanupError(
-                "technical scheduler cleanup failed: " + "; ".join(cleanup_failures)
+            failures.append("session persistence failed")
+
+        release_safe = not pending and environments_aborted
+        worktrees_released = release_safe and await self._release_worktree_pool_bounded(timeout=timeout)
+        if not worktrees_released:
+            failures.append(
+                "worktree pool release failed or timed out"
+                if release_safe
+                else "worktree pool release skipped because scheduler work did not quiesce"
             )
+        if failures:
+            failure = RuntimeError("technical scheduler cleanup failed: " + "; ".join(failures))
             if persistence_errors:
                 raise failure from persistence_errors[0]
             raise failure
-        self._cleanup_environment_abort_tasks.clear()
 
-    @staticmethod
-    async def _wait_for_cleanup_tasks(tasks: set[asyncio.Task[Any]], *, timeout: float) -> set[asyncio.Task[Any]]:
-        pending = {task for task in tasks if not task.done()}
-        if pending:
-            _done, pending = await asyncio.wait(
-                pending,
-                timeout=max(0.0, timeout),
-            )
-        for task in tasks - pending:
-            SchedulerCleanupMixin._consume_background_task(task)
-        return pending
-
-    def _persistence_sessions(
-        self,
-        initial: tuple[Any, ...],
-    ) -> tuple[Any, ...]:
+    def _persistence_sessions(self, initial: tuple[Any, ...]) -> tuple[Any, ...]:
         sessions: list[Any] = []
         seen: set[int] = set()
         for session in (*initial, *self._sessions.values()):
-            if id(session) in seen:
-                continue
-            seen.add(id(session))
-            sessions.append(session)
+            if id(session) not in seen:
+                seen.add(id(session))
+                sessions.append(session)
         return tuple(sessions)
 
     def _pending_session_persistence_tasks(
         self,
         sessions: tuple[Any, ...],
     ) -> set[asyncio.Task[Any]]:
-        pending: set[asyncio.Task[Any]] = set()
         current = asyncio.current_task()
-        for session in self._persistence_sessions(sessions):
-            for task in getattr(session, "pending_cleanup_tasks", ()):
-                if isinstance(task, asyncio.Task) and not task.done() and task is not current:
-                    pending.add(task)
+        pending = {
+            task
+            for session in self._persistence_sessions(sessions)
+            for task in getattr(session, "pending_cleanup_tasks", ())
+            if isinstance(task, asyncio.Task) and not task.done() and task is not current
+        }
         for subscriber in self._fallback_autosavers.values():
             pending.update(subscriber.pending_tasks)
         if self._manifest_subscriber is not None:
@@ -369,27 +181,18 @@ class SchedulerCleanupMixin:
         *,
         timeout: float,
     ) -> bool:
-        """Wait through one stable empty turn for subscriber-owned saves."""
-        deadline = asyncio.get_running_loop().time() + timeout
-        saw_empty = False
-        while True:
-            pending = self._pending_session_persistence_tasks(sessions)
-            if not pending:
-                if saw_empty:
-                    return True
-                saw_empty = True
-                await asyncio.sleep(0)
-                continue
-            saw_empty = False
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining <= 0:
-                return False
-            _done, still_pending = await asyncio.wait(
-                pending,
-                timeout=remaining,
-            )
-            if still_pending:
-                return False
+        pending = self._pending_session_persistence_tasks(sessions)
+        if not pending:
+            return True
+        _done, pending = await asyncio.wait(pending, timeout=timeout)
+        if pending:
+            for task in pending:
+                task.cancel()
+                task.add_done_callback(consume_task_result)
+            return False
+        for task in _done:
+            consume_task_result(task)
+        return True
 
     def _session_persistence_errors(
         self,
@@ -397,69 +200,19 @@ class SchedulerCleanupMixin:
     ) -> tuple[Exception, ...]:
         errors = list(self._scheduler_persistence_errors)
         for session in self._persistence_sessions(sessions):
-            for error in getattr(session, "persistence_errors", ()):
-                if isinstance(error, Exception):
-                    errors.append(error)
-        for subscriber in self._fallback_autosavers.values():
-            if subscriber.last_error is not None:
-                errors.append(subscriber.last_error)
+            errors.extend(
+                error
+                for error in getattr(session, "persistence_errors", ())
+                if isinstance(error, Exception)
+            )
+        errors.extend(
+            subscriber.last_error
+            for subscriber in self._fallback_autosavers.values()
+            if subscriber.last_error is not None
+        )
         if self._manifest_subscriber is not None and self._manifest_subscriber.last_error is not None:
             errors.append(self._manifest_subscriber.last_error)
         return tuple(errors)
-
-    @staticmethod
-    def _consume_background_task(task: asyncio.Future[Any]) -> None:
-        try:
-            task.result()
-        except BaseException:
-            pass
-
-    @staticmethod
-    def _task_finished_with_error(task: asyncio.Task[Any]) -> bool:
-        if not task.done():
-            return False
-        try:
-            return task.exception() is not None
-        except asyncio.CancelledError:
-            return True
-
-    async def _rollback_message_deliveries(
-        self,
-        records: list[dict[str, Any]],
-        *,
-        timeout: float,
-    ) -> None:
-        async def rollback(record: dict[str, Any]) -> None:
-            aid = int(record["aid"])
-            lock = self._locks.setdefault(aid, asyncio.Lock())
-            async with lock:
-                self._rollback_message_delivery_locked(aid, record)
-
-        rollback_tasks = {
-            asyncio.create_task(rollback(record)) for record in records if not record.get("committed", False)
-        }
-        pending = await self._wait_for_cleanup_tasks(
-            rollback_tasks,
-            timeout=timeout,
-        )
-        for task in pending:
-            task.cancel()
-        if pending:
-            pending = await self._wait_for_cleanup_tasks(
-                pending,
-                timeout=timeout,
-            )
-        if pending:
-            still_pending: set[asyncio.Task[Any]] = set()
-            for task in pending:
-                termination = await force_task_terminal(task, timeout=timeout)
-                if not termination.terminal:
-                    still_pending.add(task)
-                for error in termination.errors:
-                    logger.error("forced message rollback termination failed: %s", error)
-            pending = still_pending
-        for task in pending:
-            task.add_done_callback(self._consume_background_task)
 
     def _finalize_cleanup_failure(
         self,
@@ -471,11 +224,7 @@ class SchedulerCleanupMixin:
         self._release_reservations(aid)
         if aid in self._delivery_committed:
             return
-        origin = self._spawn_origin.pop(aid, None)
-        if origin is None:
-            origin = self._startup_origin.pop(aid, None)
-        if origin is None:
-            origin = origin_override
+        origin = self._spawn_origin.pop(aid, None) or self._startup_origin.pop(aid, None) or origin_override
         if origin is not None:
             parent_aid, tool_call_id = origin
             parent = self.table.get(parent_aid)
@@ -488,210 +237,79 @@ class SchedulerCleanupMixin:
                         error=reason,
                     )
                 except PendingRowError:
-                    logger.debug(
-                        "cleanup could not fail pending row %s on aid %s",
-                        tool_call_id,
-                        parent_aid,
-                    )
+                    logger.debug("cleanup could not fail pending row %s on aid %s", tool_call_id, parent_aid)
         scb = self.table.get(aid)
         if scb is not None:
             scb.state.cancel(reason)
             scb.result = reason
 
     async def _abort_session_environments(self, aids: set[int], *, timeout: float) -> bool:
+        environments: list[tuple[int, Any]] = []
         seen: set[int] = set()
-        abort_tasks: set[asyncio.Task[Any]] = set()
-        succeeded = True
-        candidates: list[tuple[int, Any]] = [
-            (-1, env)
-            for env, _task in self._cleanup_environment_abort_tasks.values()
-        ]
         for aid in aids:
             session = self._sessions.get(aid)
-            envs = [self._startup_envs.get(aid)]
+            candidates = [self._startup_envs.get(aid)]
             if session is not None:
-                envs.append(getattr(session, "env", None))
-                tool_execution = getattr(session, "tool_execution", None)
-                envs.append(getattr(tool_execution, "environment", None))
-            for env in envs:
-                if env is not None:
-                    candidates.append((aid, env))
-        for aid, env in candidates:
-            env_key = id(env)
-            if env_key in seen:
-                continue
-            seen.add(env_key)
-            existing = self._cleanup_environment_abort_tasks.get(env_key)
-            if existing is not None and existing[0] is env:
-                existing_task = existing[1]
-                if not existing_task.done():
-                    abort_tasks.add(existing_task)
-                    continue
-                if not existing_task.cancelled():
-                    try:
-                        existing_error = existing_task.exception()
-                    except asyncio.CancelledError:
-                        existing_error = None
-                    if existing_error is None:
-                        continue
-                    logger.error("session environment abort task failed: %s", existing_error)
-                self._cleanup_environment_abort_tasks.pop(env_key, None)
+                candidates.extend(
+                    [
+                        getattr(session, "env", None),
+                        getattr(getattr(session, "tool_execution", None), "environment", None),
+                    ]
+                )
+            for environment in candidates:
+                if environment is not None and id(environment) not in seen:
+                    seen.add(id(environment))
+                    environments.append((aid, environment))
+
+        succeeded = True
+        abort_tasks: set[asyncio.Task[Any]] = set()
+        for aid, environment in environments:
             try:
-                env._aborted = True
+                revoke = getattr(environment, "revoke", None)
+                if callable(revoke):
+                    revoke()
             except BaseException as exc:
                 succeeded = False
-                logger.error(
-                    "session environment synchronous revoke failed for aid %s: %s",
-                    aid,
-                    exc,
-                )
-            abort = getattr(env, "abort", None)
+                logger.error("session environment revoke failed for aid %s: %s", aid, exc)
+            abort = getattr(environment, "abort", None)
             if not callable(abort):
                 continue
             try:
                 result = abort()
+                if inspect.isawaitable(result):
+                    abort_tasks.add(asyncio.ensure_future(result))
             except BaseException as exc:
                 succeeded = False
                 logger.error("session environment abort failed for aid %s: %s", aid, exc)
-                continue
-            if inspect.isawaitable(result):
+        if abort_tasks:
+            done, pending = await asyncio.wait(abort_tasks, timeout=timeout)
+            for task in done:
                 try:
-                    abort_task = asyncio.ensure_future(result)
+                    task.result()
                 except BaseException as exc:
                     succeeded = False
-                    logger.error(
-                        "session environment abort scheduling failed for aid %s: %s",
-                        aid,
-                        exc,
-                    )
-                    close = getattr(result, "close", None)
-                    if callable(close):
-                        close()
-                else:
-                    self._cleanup_environment_abort_tasks[env_key] = (env, abort_task)
-                    abort_tasks.add(abort_task)
-
-        pending = await self._wait_for_cleanup_tasks(abort_tasks, timeout=timeout)
-        if pending:
-            succeeded = False
-        for task in pending:
-            task.cancel()
-        if pending:
-            pending = await self._wait_for_cleanup_tasks(
-                pending,
-                timeout=timeout,
-            )
-        if pending:
-            still_pending: set[asyncio.Task[Any]] = set()
+                    logger.error("session environment abort task failed: %s", exc)
             for task in pending:
-                termination = await force_task_terminal(task, timeout=timeout)
-                if not termination.terminal:
-                    still_pending.add(task)
-                for error in termination.errors:
-                    logger.error("forced session environment abort termination failed: %s", error)
-            pending = still_pending
-        if pending:
-            logger.error(
-                "%s session environment abort task(s) remained active after cleanup timeout",
-                len(pending),
-            )
-        for env_key, (_env, task) in tuple(self._cleanup_environment_abort_tasks.items()):
-            if task not in abort_tasks:
-                continue
-            if not task.done():
-                task.add_done_callback(self._consume_background_task)
-                continue
-            if task.cancelled():
+                task.cancel()
+                task.add_done_callback(consume_task_result)
+            if pending:
                 succeeded = False
-                self._cleanup_environment_abort_tasks.pop(env_key, None)
-                continue
-            try:
-                error = task.exception()
-            except asyncio.CancelledError:
-                succeeded = False
-                self._cleanup_environment_abort_tasks.pop(env_key, None)
-            else:
-                if error is not None:
-                    succeeded = False
-                    self._cleanup_environment_abort_tasks.pop(env_key, None)
-                    logger.error("session environment abort task failed: %s", error)
-        return succeeded and not pending
+                logger.error("%s session environment abort task(s) missed the cleanup deadline", len(pending))
+        return succeeded
 
-    async def _release_worktree_pool_bounded(
-        self,
-        *,
-        cleanup_timeout: float,
-        forced_timeout: float,
-    ) -> bool:
-        task = self._cleanup_worktree_release_task
-        if task is not None and task.done():
-            self._cleanup_worktree_release_task = None
-            if not task.cancelled():
-                try:
-                    prior_error = task.exception()
-                except asyncio.CancelledError:
-                    prior_error = None
-                if prior_error is None:
-                    return True
-                logger.error("worktree pool release failed: %s", prior_error)
-            task = None
-        if task is None:
-            try:
-                result = self._worktree_pool.release()
-            except BaseException as exc:
-                logger.error("worktree pool release failed: %s", exc)
-                return False
+    async def _release_worktree_pool_bounded(self, *, timeout: float) -> bool:
+        try:
+            result = self._worktree_pool.release()
             if not inspect.isawaitable(result):
                 return True
-            try:
-                task = asyncio.ensure_future(result)
-            except BaseException as exc:
-                logger.error("worktree pool release scheduling failed: %s", exc)
-                close = getattr(result, "close", None)
-                if callable(close):
-                    close()
+            task = asyncio.ensure_future(result)
+            done, pending = await asyncio.wait({task}, timeout=timeout)
+            if pending:
+                task.cancel()
+                task.add_done_callback(consume_task_result)
                 return False
-            self._cleanup_worktree_release_task = task
-        pending = await self._wait_for_cleanup_tasks(
-            {task},
-            timeout=cleanup_timeout,
-        )
-        succeeded = not pending
-        for pending_task in pending:
-            pending_task.cancel()
-        if pending:
-            pending = await self._wait_for_cleanup_tasks(
-                pending,
-                timeout=forced_timeout,
-            )
-        if pending:
-            termination = await force_task_terminal(
-                task,
-                timeout=forced_timeout,
-            )
-            pending = set() if termination.terminal else {task}
-            for error in termination.errors:
-                logger.error("forced worktree release termination failed: %s", error)
-        for pending_task in pending:
-            pending_task.add_done_callback(self._consume_background_task)
-        if pending:
-            logger.error("worktree pool release remained active after cleanup timeout")
+            task.result()
+            return bool(done)
+        except BaseException as exc:
+            logger.error("worktree pool release failed: %s", exc)
             return False
-        if task.cancelled():
-            if self._cleanup_worktree_release_task is task:
-                self._cleanup_worktree_release_task = None
-            return False
-        try:
-            error = task.exception()
-        except asyncio.CancelledError:
-            if self._cleanup_worktree_release_task is task:
-                self._cleanup_worktree_release_task = None
-            return False
-        if error is not None:
-            logger.error("worktree pool release failed: %s", error)
-            if self._cleanup_worktree_release_task is task:
-                self._cleanup_worktree_release_task = None
-            return False
-        if succeeded and self._cleanup_worktree_release_task is task:
-            self._cleanup_worktree_release_task = None
-        return succeeded
