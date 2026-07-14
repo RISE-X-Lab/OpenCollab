@@ -141,10 +141,7 @@ def test_bounded_shutdown_runs_pending_task_finalizers():
     assert finalized == [True]
 
 
-def test_bounded_shutdown_preserves_result_despite_cancellation_resistant_task():
-    # A background task that refuses cancellation must NOT discard the
-    # completed run's result: the run returns normally and the lingering task
-    # is surfaced as a non-fatal diagnostic rather than a crash-on-exit.
+def test_bounded_shutdown_rejects_result_with_cancellation_resistant_task():
     script = r'''
 import asyncio
 from opencollab.application.async_timeout import run_with_bounded_shutdown
@@ -161,8 +158,7 @@ async def main():
     await asyncio.sleep(0)
     return "RESULT_OK"
 
-value = run_with_bounded_shutdown(main(), shutdown_timeout=0.01)
-print("RESULT:" + repr(value))
+run_with_bounded_shutdown(main(), shutdown_timeout=0.01)
 '''
     env = dict(os.environ)
     env["PYTHONPATH"] = os.path.dirname(os.path.dirname(__file__))
@@ -175,8 +171,8 @@ print("RESULT:" + repr(value))
         check=False,
     )
 
-    assert completed.returncode == 0, completed.stderr
-    assert "RESULT:'RESULT_OK'" in completed.stdout
+    assert completed.returncode != 0
+    assert "RESULT:" not in completed.stdout
     assert "missed the shutdown deadline" in completed.stderr
 
 

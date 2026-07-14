@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import math
-import warnings
 from collections.abc import Awaitable, Iterable
 from dataclasses import dataclass
 from typing import Callable, TypeVar
@@ -254,15 +253,8 @@ def run_with_bounded_shutdown(
         if run_error is not None:
             raise run_error
         if lingering:
-            # A background task that missed the shutdown deadline must not
-            # discard the completed run's outcome. Surface it as a non-fatal
-            # diagnostic instead of turning a successful run into a
-            # crash-on-exit that loses the result.
-            warnings.warn(
-                f"{len(lingering)} async task(s) missed the shutdown deadline; "
-                "the completed run's result was preserved",
-                RuntimeWarning,
-                stacklevel=2,
+            raise AsyncRuntimeUnhealthyError(
+                f"{len(lingering)} async task(s) missed the shutdown deadline"
             )
         return result  # type: ignore[return-value]
     finally:

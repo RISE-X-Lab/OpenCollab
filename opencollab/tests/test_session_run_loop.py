@@ -1069,6 +1069,20 @@ def test_llm_trace_records_reasoning_when_present():
     assert llm_calls[0]["payload"]["reasoning"] == "step-by-step thoughts"
 
 
+def test_reasoning_is_preserved_in_assistant_tool_call_history():
+    state = SessionState(messages=_convo())
+    response = llm_response(
+        tool_calls=[tool_call()],
+        reasoning="I need to inspect the file first.",
+    )
+    runner = build_runner(state=state)
+
+    runner.append_assistant_message(response)
+
+    assert state.messages[-1]["reasoning_content"] == "I need to inspect the file first."
+    assert state.messages[-1]["tool_calls"] == response.tool_calls
+
+
 def test_llm_trace_omits_reasoning_when_absent():
     state = SessionState(messages=_convo())
     llm = FakeLLM([llm_response(content="answer")])  # reasoning defaults to None
