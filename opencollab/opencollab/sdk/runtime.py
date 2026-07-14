@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -21,6 +20,7 @@ from opencollab.application.workflow_registry import WorkflowSpec
 from opencollab.bootstrap.agent_runtime import (
     AgentRuntimeLifecycleError,
     AgentRuntimeResult,
+    run_environment_hook,
 )
 from opencollab.bootstrap.agent_runtime import (
     run_agent as _run_bootstrap_agent,
@@ -98,7 +98,7 @@ class OpenCollabRuntime:
         finally:
             if owned and not bootstrap_stopped_environment:
                 cleaned = await await_owned_operation(
-                    _run_environment_hook(
+                    run_environment_hook(
                         environment,
                         "cleanup",
                         timeout=request.budget.cleanup_timeout_seconds,
@@ -193,23 +193,6 @@ def _workspace_paths(request: WorkflowRunRequest | AgentRunRequest) -> tuple[str
     if source_root is None and request.environment is not None:
         source_root = getattr(request.environment, "source_workspace", None)
     return workdir, source_root
-
-
-async def _run_environment_hook(environment: Any, name: str, *, timeout: float) -> bool:
-    hook = getattr(environment, name, None)
-    if not callable(hook):
-        return False
-    try:
-        outcome = hook()
-    except Exception:
-        return False
-    if not inspect.isawaitable(outcome):
-        return True
-    try:
-        await asyncio.wait_for(outcome, timeout=timeout)
-    except BaseException:
-        return False
-    return True
 
 
 def _claim_artifact_dir(artifact_dir: Path) -> None:

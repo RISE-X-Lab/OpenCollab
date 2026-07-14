@@ -148,7 +148,12 @@ class WorktreeEnvironment(Environment):
 
     def _setup_directory_copy(self) -> None:
         self._worktree_dir = tempfile.mkdtemp(prefix="opencollab-cp-")
-        shutil.copytree(self._source, self._worktree_dir, dirs_exist_ok=True)
+        shutil.copytree(
+            self._source,
+            self._worktree_dir,
+            dirs_exist_ok=True,
+            symlinks=True,
+        )
 
     async def _delete_owned_branch(self, expected_oid: str | None) -> None:
         if not expected_oid:

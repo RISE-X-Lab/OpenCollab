@@ -28,7 +28,7 @@ from opencollab.adapters.working_tree import EnvWorkingTreeProbe
 from opencollab.application.async_timeout import (
     await_owned_operation,
     force_task_terminal,
-    isolate_tasks_from_shutdown,
+    terminate_tasks,
 )
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.exception_notes import add_exception_note

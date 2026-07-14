@@ -659,13 +659,15 @@ async def test_stubborn_timed_out_tool_cannot_write_after_execute_returns(monkey
     assert "environment was revoked" in output
     assert environment._aborted is True
     pending = use_case.pending_cleanup_tasks
-    assert pending == ()
+    assert len(pending) == 1
 
     tool.release.set()
+    await asyncio.gather(*pending)
     await asyncio.wait_for(tool.write_blocked.wait(), timeout=0.2)
 
     assert tool.write_blocked.is_set()
     assert environment.writes == []
+    assert use_case.pending_cleanup_tasks == ()
 
 
 @pytest.mark.asyncio
@@ -698,14 +700,16 @@ async def test_stubborn_environment_abort_is_bounded_and_exposed(monkeypatch):
     assert environment.abort_started.is_set()
     assert "environment abort did not quiesce within its bounded timeout" in output
     pending = use_case.pending_cleanup_tasks
-    assert pending == ()
+    assert len(pending) == 2
 
     tool.release.set()
     environment.abort_release.set()
+    await asyncio.gather(*pending)
     await asyncio.wait_for(tool.write_blocked.wait(), timeout=0.2)
 
     assert tool.write_blocked.is_set()
     assert environment.writes == []
+    assert use_case.pending_cleanup_tasks == ()
 
 
 @pytest.mark.asyncio
@@ -794,12 +798,14 @@ async def test_repeated_caller_cancel_cannot_interrupt_late_write_cleanup():
 
     assert environment._aborted is True
     pending = use_case.pending_cleanup_tasks
-    assert pending == ()
+    assert len(pending) == 1
     tool.release.set()
+    await asyncio.gather(*pending)
     await asyncio.wait_for(tool.write_blocked.wait(), timeout=0.2)
 
     assert tool.write_blocked.is_set()
     assert environment.writes == []
+    assert use_case.pending_cleanup_tasks == ()
 
 
 @pytest.mark.asyncio
@@ -817,12 +823,14 @@ async def test_caller_cancel_cannot_interrupt_tool_timeout_cleanup(monkeypatch):
 
     assert environment._aborted is True
     pending = use_case.pending_cleanup_tasks
-    assert pending == ()
+    assert len(pending) == 1
     tool.release.set()
+    await asyncio.gather(*pending)
     await asyncio.wait_for(tool.write_blocked.wait(), timeout=0.2)
 
     assert tool.write_blocked.is_set()
     assert environment.writes == []
+    assert use_case.pending_cleanup_tasks == ()
 
 
 @pytest.mark.asyncio

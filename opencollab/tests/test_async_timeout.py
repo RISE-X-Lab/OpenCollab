@@ -5,10 +5,8 @@ import os
 import subprocess
 import sys
 
-import opencollab.application.async_timeout as async_timeout_module
 import pytest
 from opencollab.application.async_timeout import (
-    AsyncRuntimeUnhealthyError,
     abandon_on_timeout,
     force_task_terminal,
     run_with_bounded_shutdown,
@@ -47,133 +45,127 @@ def test_bounded_shutdown_rejects_invalid_timeout_before_event_loop(
 
 
 def test_force_task_terminal_finishes_coroutine_that_consumes_cancel():
-    async def stubborn():
-        while True:
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                continue
-
-    async def scenario():
-        task = asyncio.create_task(stubborn())
-        await asyncio.sleep(0)
-        result = await force_task_terminal(task, timeout=0.01)
-        return task, result
-
-    task, result = asyncio.run(scenario())
-
-    assert task.done() is False
-    assert result.terminal is False
-    assert any(isinstance(error, TimeoutError) for error in result.errors)
-
-
-def test_detached_capacity_escalates_runtime_unhealthy(monkeypatch):
     release = None
+
+    async def stubborn():
+        assert release is not None
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
 
     async def scenario():
         nonlocal release
         release = asyncio.Event()
-
-        async def stubborn():
-            while not release.is_set():
-                try:
-                    await release.wait()
-                except asyncio.CancelledError:
-                    continue
-
         task = asyncio.create_task(stubborn())
         await asyncio.sleep(0)
-        monkeypatch.setattr(
-            async_timeout_module,
-            "_detach_task_from_loop",
-            lambda _task: True,
-        )
-        with pytest.raises(AsyncRuntimeUnhealthyError, match="process restart"):
-            await force_task_terminal(task, timeout=0.01)
+        result = await force_task_terminal(task, timeout=0.01)
         release.set()
         await task
+        return task, result
 
-    try:
-        asyncio.run(scenario())
-    finally:
-        async_timeout_module._ASYNC_RUNTIME_UNHEALTHY = False
+    task, result = asyncio.run(scenario())
 
-
-def test_force_task_terminal_isolates_synchronously_blocking_finally():
-    script = r'''
-import asyncio
-import threading
-
-from opencollab.application.async_timeout import force_task_terminal
-
-blocked = threading.Event()
-
-async def stubborn():
-    try:
-        while True:
-            try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                continue
-    finally:
-        blocked.wait()
-
-async def main():
-    task = asyncio.create_task(stubborn())
-    await asyncio.sleep(0)
-    result = await force_task_terminal(task, timeout=0.02)
+    assert task.done() is True
     assert result.terminal is False
-
-asyncio.run(main())
-'''
-    package_root = os.path.dirname(os.path.dirname(__file__))
-    env = dict(os.environ)
-    env["PYTHONPATH"] = package_root
-
-    completed = subprocess.run(
-        [sys.executable, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=2,
-        env=env,
-        check=False,
-    )
-
-    assert completed.returncode == 0, completed.stderr
+    assert any(isinstance(error, TimeoutError) for error in result.errors)
 
 
-def test_bounded_shutdown_does_not_run_blocking_pending_finally():
+def test_force_task_terminal_runs_cooperative_finally():
+    finalized: list[bool] = []
+
+    async def worker():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            finalized.append(True)
+
+    async def scenario():
+        task = asyncio.create_task(worker())
+        await asyncio.sleep(0)
+        result = await force_task_terminal(task, timeout=0.1)
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert result.terminal is True
+    assert result.errors == ()
+    assert finalized == [True]
+
+
+def test_bounded_shutdown_runs_pending_task_finalizers():
+    finalized: list[bool] = []
+
+    async def background():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await asyncio.sleep(0)
+            finalized.append(True)
+
+    async def main():
+        asyncio.create_task(background())
+        await asyncio.sleep(0)
+        return "done"
+
+    assert run_with_bounded_shutdown(main(), shutdown_timeout=0.1) == "done"
+    assert finalized == [True]
+
+
+def test_bounded_shutdown_reports_cancellation_resistant_task():
     script = r'''
 import asyncio
-import threading
-
 from opencollab.application.async_timeout import run_with_bounded_shutdown
 
-blocked = threading.Event()
-
-async def background():
-    try:
-        await asyncio.Event().wait()
-    finally:
-        blocked.wait()
+async def stubborn():
+    while True:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            continue
 
 async def main():
-    asyncio.create_task(background())
+    asyncio.create_task(stubborn())
     await asyncio.sleep(0)
 
-run_with_bounded_shutdown(main(), shutdown_timeout=0.02)
+run_with_bounded_shutdown(main(), shutdown_timeout=0.01)
 '''
-    package_root = os.path.dirname(os.path.dirname(__file__))
     env = dict(os.environ)
-    env["PYTHONPATH"] = package_root
-
+    env["PYTHONPATH"] = os.path.dirname(os.path.dirname(__file__))
     completed = subprocess.run(
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=2,
+        timeout=1,
         env=env,
         check=False,
     )
 
-    assert completed.returncode == 0, completed.stderr
+    assert completed.returncode != 0
+    assert "missed the shutdown deadline" in completed.stderr
+
+
+def test_bounded_shutdown_cancels_task_spawned_during_cleanup():
+    child_cancelled: list[bool] = []
+
+    async def child():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            child_cancelled.append(True)
+            raise
+
+    async def parent():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            asyncio.create_task(child())
+
+    async def main():
+        asyncio.create_task(parent())
+        await asyncio.sleep(0)
+        return "done"
+
+    assert run_with_bounded_shutdown(main(), shutdown_timeout=0.1) == "done"
+    assert child_cancelled == [True]

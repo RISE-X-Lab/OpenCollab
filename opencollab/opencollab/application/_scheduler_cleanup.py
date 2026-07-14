@@ -172,7 +172,7 @@ class SchedulerCleanupMixin:
                     task,
                     timeout=forced_timeout,
                 )
-                if not (termination.terminal or termination.isolated):
+                if not termination.terminal:
                     still_pending.add(task)
                 for error in termination.errors:
                     logger.error("forced scheduler task termination failed: %s", error)
@@ -453,7 +453,7 @@ class SchedulerCleanupMixin:
             still_pending: set[asyncio.Task[Any]] = set()
             for task in pending:
                 termination = await force_task_terminal(task, timeout=timeout)
-                if not (termination.terminal or termination.isolated):
+                if not termination.terminal:
                     still_pending.add(task)
                 for error in termination.errors:
                     logger.error("forced message rollback termination failed: %s", error)
@@ -585,7 +585,7 @@ class SchedulerCleanupMixin:
             still_pending: set[asyncio.Task[Any]] = set()
             for task in pending:
                 termination = await force_task_terminal(task, timeout=timeout)
-                if not (termination.terminal or termination.isolated):
+                if not termination.terminal:
                     still_pending.add(task)
                 for error in termination.errors:
                     logger.error("forced session environment abort termination failed: %s", error)

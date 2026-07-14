@@ -7,13 +7,10 @@ counts, the failing node-ids, and the head of the first traceback — instead of
 raw stdout. That gives the model a small, reliable signal it can act on and
 makes an unverified "it passes" claim much harder to make by accident.
 
-Defaults to ``python -m pytest``; override ``runner`` for projects with a custom
-entry point (e.g. ``bin/test``). When the caller does NOT pin a runner, the tool
-probes the workspace for a project-native runner (Go ``go test``, sympy
-``bin/test``, ``tox``, Django ``manage.py test``) and translates the pytest-style
-``target`` node-id to the native invocation; it also auto-falls-back to the
-native runner if pytest is missing (``No module named pytest``). Output is
-truncated to protect the context.
+Defaults to ``python -m pytest`` and also supports Go ``go test``. Other native
+runners are detected but rejected before execution until they have a parser that
+can prove the requested target actually ran. Output is truncated to protect the
+context.
 
 Every run ALWAYS ends with a one-line ``Verdict: GREEN|RED`` (plus, on RED, a
 missing-substring hint and — when the same failing target keeps failing — an
@@ -71,9 +68,9 @@ ESCALATE_AFTER = 3
 # base runner command). bin/test is sympy's; manage.py is Django's; tox is the
 # generic multi-env runner. Pytest is always tried first via DEFAULT_RUNNER.
 _NATIVE_PROBES: tuple[tuple[str, str], ...] = (
+    ("test -f go.mod", "go test"),
     ("test -x bin/test", "python bin/test"),
     ("test -f manage.py", "python manage.py test"),
-    ("test -f go.mod", "go test"),
     ("test -f tox.ini", "tox"),
 )
 
@@ -109,9 +106,9 @@ class RunTestsTool(Tool):
         "the first traceback — not raw stdout. Use it to VERIFY a fix instead of "
         "guessing. Pass `target` (a path or node-id like 'tests/test_x.py::test_y') "
         "to focus the run. "
-        "The runner is auto-detected for non-pytest projects (Go go.mod, sympy "
-        "bin/test, tox, Django manage.py test) and pytest node-ids are translated; "
-        "override `runner` only to force a specific command. For Go, pass `target` "
+        "Go projects are auto-detected when pytest is unavailable or collects no tests. "
+        "Other native runners return RED before execution until a proof parser exists. "
+        "For Go, pass `target` "
         "like './internal/server' or './internal/server::TestEvaluate'. Read the "
         "final 'Verdict: GREEN|RED' line as the authoritative pass/fail signal. "
         "Prefer this over bash for running the test suite; it returns a structured "
@@ -196,6 +193,8 @@ class RunTestsTool(Tool):
             return "Error: extra_args is disabled for this run_tests tool."
 
         runner = pinned_runner or DEFAULT_RUNNER
+        if pinned_runner is not None and not _is_supported_runner(runner):
+            return self._unsupported_runner_report(target, runner)
         try:
             # The public API accepts one exact selector. Reject an ambiguous
             # selector list before even the initial auto-detection probe; once
@@ -217,6 +216,8 @@ class RunTestsTool(Tool):
                     combined,
                 )
                 if native:
+                    if not _is_supported_runner(native):
+                        return self._unsupported_runner_report(target, native)
                     result, cmd, runner = await self._run(
                         env, native, target, extra_args, timeout, safety_policy,
                         runtime.confirm_fn(),
@@ -301,6 +302,25 @@ class RunTestsTool(Tool):
             )
         return "\n".join(parts)
 
+    def _unsupported_runner_report(self, target: str, runner: str) -> str:
+        """Reject runners that cannot prove exact target execution."""
+        if target:
+            self._verified_targets.discard(target)
+        streak = self._record(target, False)
+        parts = [
+            "Command: not executed",
+            "Exit code: not applicable",
+            f"Error: unsupported test runner without an executed-target proof parser: {runner}",
+            "Summary: use pytest or Go, or add a parser-backed proof adapter for this runner.",
+            "Verdict: RED",
+        ]
+        if streak >= ESCALATE_AFTER:
+            parts.append(
+                f"Escalation: target {target or '(suite)'} has failed "
+                f"{streak} runs in a row — choose a supported runner or add its proof adapter."
+            )
+        return "\n".join(parts)
+
     @property
     def verified_targets(self) -> frozenset[str]:
         """Exact requested targets whose latest parser-backed verdict was GREEN."""
@@ -376,6 +396,10 @@ def _is_pytest_runner(runner: str) -> bool:
     return _parts_invoke_pytest(parts)
 
 
+def _is_supported_runner(runner: str) -> bool:
+    return _is_pytest_runner(runner) or _is_go_runner(runner)
+
+
 def _validate_go_target_before_execution(
     runner: str,
     pinned_runner: str | None,
@@ -388,32 +412,11 @@ def _validate_go_target_before_execution(
         _go_target_specs(target)
 
 
-def _translate_native_target_args(target: str) -> list[str]:
-    """Map a pytest node-id to safely quoted native-runner arguments.
-
-    sympy ``bin/test`` and friends take a file path or test name, not a
-    ``path::node`` id. Drop the ``::`` selector and keep the leaf node name
-    (sympy/unittest match on it) alongside the path.
-    """
-    if not target:
-        return []
-    path, sep, node = target.partition("::")
-    if not sep:
-        return [shlex.quote(target)]
-    leaf = node.split("::")[-1]
-    args = [shlex.quote(path)]
-    if leaf:
-        args.append(shlex.quote(leaf))
-    return args
-
-
 def _build_command(runner: str, target: str, extra_args: str) -> str:
     # --tb=short keeps tracebacks compact; -rfE forces a failed/error summary
     # block even under -q so we can list failing node-ids reliably. -rA adds a
     # per-test short summary (incl. PASSED) so a downstream gate can confirm a
-    # NAMED test went green; -p no:cacheprovider makes runs deterministic. These
-    # flags are pytest-specific, so for a native runner (bin/test/tox/manage.py)
-    # we omit them and translate the node-id — pytest flags would error there.
+    # NAMED test went green; -p no:cacheprovider makes runs deterministic.
     if _is_pytest_runner(runner):
         parts = [runner, "--tb=short", "-rfE", "-rA", "-p", "no:cacheprovider", "-q"]
         if target:
@@ -422,8 +425,7 @@ def _build_command(runner: str, target: str, extra_args: str) -> str:
         parts = [_go_runner_command(runner), "-json"]
         parts.extend(_translate_go_target_args(target))
     else:
-        parts = [runner]
-        parts.extend(_translate_native_target_args(target))
+        raise ValueError(f"unsupported test runner without proof parser: {runner}")
     if extra_args:
         parts.append(extra_args)
     return " ".join(parts)

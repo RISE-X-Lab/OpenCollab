@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -35,17 +36,30 @@ async def _run_session(session: Any, prompt: str) -> str:
     return await session.run_loop()
 
 
-async def _run_hook(environment: Any, name: str, timeout: float) -> bool:
+def _consume_hook_result(task: asyncio.Future[object]) -> None:
+    try:
+        task.result()
+    except BaseException:
+        pass
+
+
+async def run_environment_hook(environment: Any, name: str, timeout: float) -> bool:
+    """Run one environment hook with bounded cancellation and honest failure."""
     hook = getattr(environment, name, None)
     if not callable(hook):
         return False
     try:
-        owner = asyncio.create_task(hook())
+        outcome = hook()
     except Exception:
         return False
+    if not inspect.isawaitable(outcome):
+        return True
+    owner = asyncio.ensure_future(outcome)
     done, pending = await asyncio.wait({owner}, timeout=timeout)
     if pending:
-        await force_task_terminal(owner, timeout=timeout)
+        termination = await force_task_terminal(owner, timeout=timeout)
+        if not termination.terminal:
+            owner.add_done_callback(_consume_hook_result)
         return False
     try:
         owner.result()
@@ -61,7 +75,7 @@ async def _abort_environment(environment: Any, timeout: float) -> bool:
         revoked = False
     else:
         revoked = True
-    aborted = await _run_hook(environment, "abort", timeout)
+    aborted = await run_environment_hook(environment, "abort", timeout)
     return revoked and aborted
 
 
@@ -107,7 +121,7 @@ async def _finalize_session(
     else:
         persistence_ready = session.auto_save_path is None or save_owner is not None
     persistence_quiesced = await _wait_session_tasks(session, timeout)
-    cleanup_quiesced = not cleanup_environment or await _run_hook(
+    cleanup_quiesced = not cleanup_environment or await run_environment_hook(
         environment,
         "cleanup",
         timeout,
@@ -253,4 +267,9 @@ async def run_agent(
         raise
 
 
-__all__ = ["AgentRuntimeLifecycleError", "AgentRuntimeResult", "run_agent"]
+__all__ = [
+    "AgentRuntimeLifecycleError",
+    "AgentRuntimeResult",
+    "run_agent",
+    "run_environment_hook",
+]

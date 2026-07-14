@@ -103,8 +103,6 @@ class ToolExecutionRuntimeMixin:
             task,
             timeout=self._cancellation_force_timeout,
         )
-        if termination.isolated:
-            self._pending_cleanup_tasks.discard(task)
         if termination.errors:
             detail = "; ".join(str(error) for error in termination.errors)
             abort_error = "; ".join(part for part in (abort_error, detail) if part)
@@ -133,7 +131,7 @@ class ToolExecutionRuntimeMixin:
         return bool(done)
 
     def _track_pending_cleanup(self, task: asyncio.Task[Any]) -> None:
-        if task.done() or _tool_execution_module().task_is_isolated(task) or task in self._pending_cleanup_tasks:
+        if task.done() or task in self._pending_cleanup_tasks:
             return
         self._pending_cleanup_tasks.add(task)
         task.add_done_callback(self._pending_cleanup_tasks.discard)
@@ -187,6 +185,8 @@ class ToolExecutionRuntimeMixin:
                 abort_task,
                 timeout=self._cancellation_force_timeout,
             )
+            if not termination.terminal:
+                self._track_pending_cleanup(abort_task)
             detail = "; ".join(str(error) for error in termination.errors)
             return "environment abort did not quiesce within its bounded timeout" + (f": {detail}" if detail else "")
         except asyncio.CancelledError:

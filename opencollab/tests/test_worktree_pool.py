@@ -66,6 +66,27 @@ async def test_non_git_source_uses_independent_directory_copy(tmp_path) -> None:
     assert not os.path.exists(workspace)
 
 
+async def test_non_git_copy_preserves_file_and_directory_symlinks(tmp_path) -> None:
+    source = tmp_path / "plain"
+    outside = tmp_path / "outside"
+    source.mkdir()
+    outside.mkdir()
+    (outside / "secret.txt").write_text("secret", encoding="utf-8")
+    (source / "file-link").symlink_to(outside / "secret.txt")
+    (source / "dir-link").symlink_to(outside, target_is_directory=True)
+    env = WorktreeEnvironment(str(source), branch_name="plain-links")
+
+    workspace = await env.setup()
+
+    assert os.path.islink(os.path.join(workspace, "file-link"))
+    assert os.path.islink(os.path.join(workspace, "dir-link"))
+    with pytest.raises(OSError):
+        await env.read_file("file-link")
+    with pytest.raises(OSError):
+        await env.read_file("dir-link/secret.txt")
+    await env.cleanup()
+
+
 async def test_git_worktree_reports_committed_and_untracked_changes(tmp_path) -> None:
     source = _repo(tmp_path / "repo")
     branch = "opencollab-test-diff"
@@ -81,6 +102,21 @@ async def test_git_worktree_reports_committed_and_untracked_changes(tmp_path) ->
     await env.cleanup()
     assert not os.path.exists(workspace)
     assert not _branch_exists(source, branch)
+
+
+async def test_git_worktree_rejects_truncated_patch_evidence(tmp_path) -> None:
+    source = _repo(tmp_path / "repo")
+    env = WorktreeEnvironment(str(source), branch_name="truncated-diff")
+    await env.setup()
+
+    async def truncated_exec(*_args, **_kwargs):
+        return ExecResult(0, "partial diff", "", stdout_truncated=True)
+
+    assert env._local_env is not None
+    env._local_env.exec_cmd = truncated_exec
+    with pytest.raises(RuntimeError, match="exceeded capture limit"):
+        await env.get_diff()
+    await env.cleanup()
 
 
 async def test_existing_branch_is_preserved_when_setup_fails(tmp_path) -> None:

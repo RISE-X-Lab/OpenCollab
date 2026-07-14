@@ -342,6 +342,25 @@ async def test_local_temp_cleanup_removes_registered_path(tmp_path) -> None:
     assert not os.path.exists(path)
 
 
+async def test_local_temp_cleanup_rejects_replaced_workspace_symlink(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    workspace.mkdir()
+    outside.mkdir()
+    env = LocalEnvironment(str(workspace))
+    path = await env.write_temp_file("owned", prefix="probe-", suffix=".txt")
+    saved_workspace = tmp_path / "saved-workspace"
+    workspace.rename(saved_workspace)
+    workspace.symlink_to(outside, target_is_directory=True)
+    foreign = outside / os.path.basename(path)
+    foreign.write_text("foreign", encoding="utf-8")
+
+    with pytest.raises(OSError, match="real directory"):
+        await env.remove_file(path)
+
+    assert foreign.read_text(encoding="utf-8") == "foreign"
+
+
 async def test_local_abort_blocks_future_operations_and_removes_temps(tmp_path) -> None:
     env = LocalEnvironment(str(tmp_path))
     path = await env.write_temp_file("payload", prefix="probe-", suffix=".txt")
