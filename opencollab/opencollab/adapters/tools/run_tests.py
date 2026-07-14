@@ -67,11 +67,16 @@ ESCALATE_AFTER = 3
 # (or when pytest is missing). Each entry: (probe-cmd that exits 0 iff present,
 # base runner command). bin/test is sympy's; manage.py is Django's; tox is the
 # generic multi-env runner. Pytest is always tried first via DEFAULT_RUNNER.
+# go.mod is probed LAST on purpose: the pytest-collected-nothing fallback only
+# trusts a Go runner, so returning "go test" first on a mixed Python+Go repo
+# would green off unrelated Go tests while the intended Python suite never ran.
+# Keeping go.mod last makes _detect_native_runner surface Go only when it is the
+# sole native signal.
 _NATIVE_PROBES: tuple[tuple[str, str], ...] = (
-    ("test -f go.mod", "go test"),
     ("test -x bin/test", "python bin/test"),
     ("test -f manage.py", "python manage.py test"),
     ("test -f tox.ini", "tox"),
+    ("test -f go.mod", "go test"),
 )
 
 # Count tokens pytest prints in its final summary line, e.g.

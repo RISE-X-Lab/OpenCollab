@@ -30,6 +30,14 @@ from opencollab.bootstrap._workflow_runtime_state import (
 from opencollab.bootstrap.agent_runtime import revoke_and_abort_environment
 from opencollab.bootstrap.session_factory import build_session
 
+# The integrity runtime's own bounded cleanup can legitimately span several
+# cleanup_timeout phases (session quiesce runs two passes, each bounded by its
+# persistence and environment-abort sub-phases). Give the owner that full
+# envelope to self-finish before escalating to the injected-environment fallback
+# and force-termination, so a slow-but-legitimate teardown is not force-cancelled
+# into a spurious WorkflowLifecycleError.
+_OWNER_CLEANUP_GRACE_PHASES = 4
+
 
 class WorkflowDeadlineExceeded(TimeoutError):
     """The caller-owned workflow wall-clock deadline expired."""
@@ -85,9 +93,12 @@ async def run_workflow(
             owner.cancel(*cancellation.args)
 
         # The integrity runtime already owns session quiescence, persistence,
-        # environment abort, and diagnostic notes. Give that lifecycle enough
-        # time to finish before using the injected-environment fallback.
-        done, _pending = await asyncio.wait({owner}, timeout=cleanup_timeout)
+        # environment abort, and diagnostic notes. Give that lifecycle its full
+        # multi-phase cleanup envelope to finish before using the
+        # injected-environment fallback.
+        done, _pending = await asyncio.wait(
+            {owner}, timeout=cleanup_timeout * _OWNER_CLEANUP_GRACE_PHASES
+        )
         aborted = env is None or bool(getattr(env, "revoked", False))
         if not aborted:
             aborted = await revoke_and_abort_environment(env, cleanup_timeout)
