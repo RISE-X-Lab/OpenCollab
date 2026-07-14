@@ -1,28 +1,16 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
+import opencollab.adapters.event_log as event_log
 from opencollab.adapters.event_log import JsonlEventSink
 
 
 class _CustomObject:
     def __str__(self) -> str:
         return "custom-object"
-
-
-def _load_loop_monitor_module():
-    root = Path(__file__).resolve().parents[2]
-    path = root / "scripts" / "swebench_loop_monitor.py"
-    spec = importlib.util.spec_from_file_location("swebench_loop_monitor", path)
-    assert spec is not None
-    assert spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 def test_jsonl_event_sink_serializes_custom_event_data(tmp_path):
@@ -44,13 +32,35 @@ def test_jsonl_event_sink_remains_passive_when_parent_cannot_be_created(tmp_path
     asyncio.run(sink.emit(SimpleNamespace(type="custom", data={"value": "ok"})))
 
     assert blocker.read_text(encoding="utf-8") == "occupied"
+    assert sink.write_error is not None
+    assert sink.dropped_events == 1
 
 
-def test_loop_monitor_truncate_obj_returns_json_safe_value():
-    monitor = _load_loop_monitor_module()
+def test_jsonl_event_sink_preserves_emission_order(tmp_path):
+    path = tmp_path / "events.jsonl"
+    sink = JsonlEventSink(str(path))
 
-    value = {"args": {"value": _CustomObject()}}
-    result = monitor._truncate_obj(value)
+    async def scenario():
+        for index in range(3):
+            await sink.emit(SimpleNamespace(type="ordered", data={"index": index}))
 
-    assert result == {"args": {"value": "custom-object"}}
-    json.dumps(result)
+    asyncio.run(scenario())
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    assert [row["data"]["index"] for row in rows] == [0, 1, 2]
+
+
+def test_jsonl_event_sink_retains_first_write_error(tmp_path, monkeypatch):
+    sink = JsonlEventSink(str(tmp_path / "events.jsonl"))
+    attempts = 0
+
+    def append(_path, _line):
+        nonlocal attempts
+        attempts += 1
+        raise OSError(f"failure {attempts}")
+
+    monkeypatch.setattr(event_log, "append_regular_text", append)
+    asyncio.run(sink.emit(SimpleNamespace(type="first", data={})))
+    asyncio.run(sink.emit(SimpleNamespace(type="second", data={})))
+
+    assert sink.write_error == "OSError: failure 1"
+    assert sink.dropped_events == 2

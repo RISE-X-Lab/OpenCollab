@@ -13,25 +13,19 @@ logs
 __pycache__/
 *.pyc
 .DS_Store
-evals/
-swe_workdir/
-eval_work/
 .understand-anything/
 tmp/
-opencollab-glm52-*.json
+output/
+mydocs/
+opencollab/mydocs/
 
-# Local GLM / SWE-bench evaluation run artifacts
-docs/monitoring/
+# Local OpenCollab runtime artifacts
 workflow_logs/
 **/workflow_logs/
 **/trajectories/
 **/orchestration.jsonl
 **/metrics*.jsonl
 **/monitor_snapshots.jsonl
-**/predictions*_raw.jsonl
-**/predictions_*_raw.jsonl
-**/*_official.json
-**/*_official_*.json
 
 *.aux
 *.fdb_latexmk

@@ -1,42 +1,31 @@
-"""ShellHookRunner — runs configured hook actions on a lifecycle event.
-
-Phase 1 ships one executor: ``command`` runs a shell command with the event
-payload as JSON on stdin and a few convenience env vars. It is observe-only — a
-nonzero exit or a timeout is logged, never raised — so a misbehaving hook can
-neither stall nor crash an agent (the EventBus already isolates subscriber
-failures; this is belt-and-brace).
-
-The ``prompt`` and ``agent`` executor keys are reserved: ``agent`` is the
-team-coordination bridge (a thin wrapper over ``SchedulerPort.spawn``), which is
-why the runner accepts a ``scheduler`` handle now even though phase 1 never uses
-it.
-"""
+"""Lifecycle hooks executed through the shared subprocess supervisor."""
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
+import math
 import os
-from typing import Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import Any
 
+from opencollab.adapters._env_process import ProcessCleanupError, run_process
 from opencollab.application.ports import HookPort
 from opencollab.domain.hooks import HookOutcome, HookSpec, match_hooks
 
 logger = logging.getLogger(__name__)
-
 CommandExecutor = Callable[[HookSpec, dict[str, Any]], Awaitable[None]]
 
 
 class ShellHookRunner(HookPort):
+    """Run configured shell hooks without letting failures stop the agent."""
+
     def __init__(self, specs: tuple[HookSpec, ...], *, scheduler: Any = None):
         self._specs = specs
-        # Reserved for the phase-2 ``agent`` executor (event-driven spawn).
         self._scheduler = scheduler
-        self._executors: dict[str, CommandExecutor] = {
-            "command": self._run_command,
-        }
+        self.cleanup_quiesced = True
+        self._executors: dict[str, CommandExecutor] = {"command": self._run_command}
 
     async def fire(self, event_name: str, payload: dict[str, Any]) -> HookOutcome:
         for spec in match_hooks(self._specs, event_name, payload.get("tool")):
@@ -47,43 +36,51 @@ class ShellHookRunner(HookPort):
         return HookOutcome()
 
     async def _run_command(self, spec: HookSpec, payload: dict[str, Any]) -> None:
-        env = {
+        command = spec.command.rstrip()
+        if command.endswith("&") and not command.endswith("&&"):
+            logger.warning("background hook commands are unsupported: %s", spec.command)
+            return
+        try:
+            timeout = float(spec.timeout)
+        except (TypeError, ValueError):
+            logger.warning("hook command has invalid timeout %r: %s", spec.timeout, spec.command)
+            return
+        if not math.isfinite(timeout) or timeout <= 0:
+            logger.warning("hook command has invalid timeout %r: %s", spec.timeout, spec.command)
+            return
+        try:
+            stdin_bytes = json.dumps(payload).encode()
+        except (TypeError, ValueError) as exc:
+            logger.warning("hook payload could not be serialized (%s): %s", spec.command, exc)
+            return
+        environment = {
+            **os.environ,
             "OPENCOLLAB_HOOK_EVENT": str(payload.get("hook_event_name", "")),
             "OPENCOLLAB_TOOL": str(payload.get("tool", "")),
             "OPENCOLLAB_AID": str(payload.get("aid", "")),
         }
         try:
-            proc = await asyncio.create_subprocess_shell(
+            result = await run_process(
                 spec.command,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env={**os.environ, **env},
+                shell=True,
+                timeout=timeout,
+                input_bytes=stdin_bytes,
+                env=environment,
             )
-        except Exception as exc:  # spawn failure (bad shell, OS limit)
+        except asyncio.TimeoutError:
+            logger.warning("hook command timed out after %.2fs: %s", timeout, spec.command)
+            return
+        except ProcessCleanupError as exc:
+            self.cleanup_quiesced = False
+            logger.warning("hook command cleanup failed (%s): %s", spec.command, exc)
+            raise
+        except asyncio.CancelledError:
+            raise
+        except (OSError, ValueError) as exc:
             logger.warning("hook command failed to start (%s): %s", spec.command, exc)
             return
-
-        stdin_bytes = json.dumps(payload).encode()
-        try:
-            _, stderr = await asyncio.wait_for(proc.communicate(stdin_bytes), timeout=spec.timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            # Reap the killed process, but bounded: on Python 3.11+ a
-            # ``proc.wait()`` after a cancelled ``communicate()`` can hang on the
-            # wedged pipe transport, so cap it rather than block the caller.
-            with contextlib.suppress(asyncio.TimeoutError):
-                await asyncio.wait_for(proc.wait(), timeout=1.0)
-            logger.warning("hook command timed out after %.1fs: %s", spec.timeout, spec.command)
-            return
-
-        if proc.returncode != 0:
-            logger.warning(
-                "hook command exited %s: %s\n%s",
-                proc.returncode,
-                spec.command,
-                stderr.decode(errors="replace")[:500],
-            )
+        if result.returncode != 0:
+            logger.warning("hook command exited %s: %s", result.returncode, spec.command)
 
 
 __all__ = ["ShellHookRunner"]

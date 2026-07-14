@@ -9,6 +9,7 @@ one bad sink cannot break siblings or the loop.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from typing import Any, Awaitable, Callable
 
 from opencollab.application.ports import EventPublisherPort
@@ -37,6 +38,20 @@ class EventBus:
         """Read-only view of every subscribed target, in subscription order."""
         return tuple(self._targets)
 
+    @property
+    def pending_tasks(self) -> tuple[asyncio.Task[Any], ...]:
+        """Live tasks owned by subscribers."""
+        pending: list[asyncio.Task[Any]] = []
+        seen: set[int] = set()
+        for target in self._targets:
+            tasks = getattr(target, "pending_tasks", ())
+            for task in tasks:
+                if not isinstance(task, asyncio.Task) or task.done() or id(task) in seen:
+                    continue
+                seen.add(id(task))
+                pending.append(task)
+        return tuple(pending)
+
     async def emit(self, event: Any) -> None:
         for target in self._targets:
             try:
@@ -44,11 +59,29 @@ class EventBus:
                     result = target.emit(event)  # type: ignore[union-attr]
                 else:
                     result = target(event)  # type: ignore[operator]
-                if asyncio.iscoroutine(result):
-                    await result
+            except asyncio.CancelledError:
+                raise
             except Exception:
                 # Subscriber failure must not break siblings or the loop.
                 continue
+            if not inspect.isawaitable(result):
+                continue
+            subscriber = asyncio.create_task(self._isolate_self_cancel(result))
+            try:
+                await asyncio.shield(subscriber)
+            except asyncio.CancelledError:
+                subscriber.cancel()
+                await asyncio.gather(subscriber, return_exceptions=True)
+                raise
+            except Exception:
+                continue
+
+    @staticmethod
+    async def _isolate_self_cancel(result: Awaitable[Any]) -> None:
+        try:
+            await result
+        except asyncio.CancelledError:
+            return
 
 
 __all__ = ["EventBus", "EventCallback"]

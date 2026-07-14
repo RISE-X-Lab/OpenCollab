@@ -16,13 +16,12 @@ Usage:
   scripts/start_opencollab.sh [extra opencollab args...]
 
 The unified interactive agent (agent 0, which can spawn child agents) starts
-by default. Pass `eval <tasks.jsonl>` for headless evaluation.
+by default.
 
 Examples:
   scripts/start_opencollab.sh
   scripts/start_opencollab.sh --trace
   scripts/start_opencollab.sh --yolo --no-worktrees
-  scripts/start_opencollab.sh eval tasks.jsonl
 
 Configuration:
   Copy configs/.env.example to configs/.env and set OPENCOLLAB_API_KEY.

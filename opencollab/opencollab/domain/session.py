@@ -7,6 +7,8 @@ from typing import Any
 
 from opencollab.domain.pending import PendingEventTable
 
+MAX_SCOUT_LEDGER_CARDS = 256
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -112,6 +114,22 @@ class InvalidPhaseTransition(Exception):
         self.src = src
         self.dst = dst
         super().__init__(f"Illegal session phase transition: {src.value} -> {dst.value}")
+
+
+@dataclass(frozen=True)
+class _UserTurnCheckpoint:
+    message_count: int
+    timestamp_count: int
+    phase: SessionPhase
+    terminal_reason: str | None
+    recent_call_hashes: tuple[str, ...]
+    reads_since_last_edit: int
+    low_yield_since_progress: int
+    distinct_evidence_count: int
+    steps_since_progress: int
+    loop_blocked_since_progress: int
+    seen_result_hashes: frozenset[str]
+    scout_ledger: tuple[dict[str, Any], ...]
 
 
 @dataclass
@@ -355,6 +373,38 @@ class SessionState:
             self.transition_to(SessionPhase.IDLE)
             self.terminal_reason = None
 
+    def checkpoint_user_turn(self) -> _UserTurnCheckpoint:
+        """Capture only state changed while accepting a new user message."""
+        return _UserTurnCheckpoint(
+            message_count=len(self.messages),
+            timestamp_count=len(self.message_timestamps),
+            phase=self.phase,
+            terminal_reason=self.terminal_reason,
+            recent_call_hashes=tuple(self.recent_call_hashes),
+            reads_since_last_edit=self.reads_since_last_edit,
+            low_yield_since_progress=self.low_yield_since_progress,
+            distinct_evidence_count=self.distinct_evidence_count,
+            steps_since_progress=self.steps_since_progress,
+            loop_blocked_since_progress=self.loop_blocked_since_progress,
+            seen_result_hashes=frozenset(self._seen_result_hashes),
+            scout_ledger=tuple(dict(card) for card in self.scout_ledger),
+        )
+
+    def restore_user_turn(self, checkpoint: _UserTurnCheckpoint) -> None:
+        """Roll back an interrupted user-message append to its commit boundary."""
+        del self.messages[checkpoint.message_count :]
+        del self.message_timestamps[checkpoint.timestamp_count :]
+        self.phase = checkpoint.phase
+        self.terminal_reason = checkpoint.terminal_reason
+        self.recent_call_hashes = list(checkpoint.recent_call_hashes)
+        self.reads_since_last_edit = checkpoint.reads_since_last_edit
+        self.low_yield_since_progress = checkpoint.low_yield_since_progress
+        self.distinct_evidence_count = checkpoint.distinct_evidence_count
+        self.steps_since_progress = checkpoint.steps_since_progress
+        self.loop_blocked_since_progress = checkpoint.loop_blocked_since_progress
+        self._seen_result_hashes = set(checkpoint.seen_result_hashes)
+        self.scout_ledger = [dict(card) for card in checkpoint.scout_ledger]
+
     def reset_for_user_turn(self) -> None:
         """Prepare an existing session to accept a new user turn.
 
@@ -427,6 +477,8 @@ class SessionState:
                     "snippet": card.get("snippet", ""),
                 }
             )
+            if len(self.scout_ledger) > MAX_SCOUT_LEDGER_CARDS:
+                del self.scout_ledger[:-MAX_SCOUT_LEDGER_CARDS]
 
     def remember_tool_call_hash(self, call_hash: str, max_window: int | None = None) -> None:
         self.recent_call_hashes.append(call_hash)

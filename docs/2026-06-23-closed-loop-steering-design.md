@@ -156,8 +156,8 @@ Composition rules:
 - `application/session_run.py`: `_build_steering_block()`; in `call_llm()` fold
   into the trailing `user` turn (persisted) or append to the shaped copy on a
   continuation step (ephemeral); set `tool_choice="required"` for Rung B.
-- `workflows/analyst_solve.py` (P1): Rung C in `_run_phase`; thresholds as
-  constants.
+- Companion solver workflows may add an evaluation-specific final-write rung;
+  the reference implementation lives in `opencollab_eval.workflows.analyst_solve`.
 
 ## Tests
 

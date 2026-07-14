@@ -87,6 +87,7 @@ class LLMClient:
         thinking_params: dict[str, Any] | None = None,
         tool_choice: Any = None,
         top_p: float | None = None,
+        max_output_tokens: int | None = None,
     ) -> LLMResponse:
         """Single-shot completion. Returns full response.
 
@@ -114,6 +115,7 @@ class LLMClient:
                     thinking_params=thinking_params,
                     tool_choice=tool_choice,
                     top_p=top_p,
+                    max_output_tokens=max_output_tokens,
                 )
             else:
                 response = await complete_openai(
@@ -127,6 +129,7 @@ class LLMClient:
                     thinking_params=thinking_params,
                     tool_choice=tool_choice,
                     top_p=top_p,
+                    max_output_tokens=max_output_tokens,
                 )
             await _record_api_usage_async(
                 provider=self.provider,

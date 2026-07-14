@@ -13,6 +13,7 @@ from opencollab.adapters.llm.anthropic_provider import _parse_response as parse_
 from opencollab.adapters.llm.anthropic_provider import _parse_usage as parse_anthropic_usage
 from opencollab.adapters.llm.openai_provider import _build_request_kwargs as build_openai_kwargs
 from opencollab.adapters.llm.openai_provider import _parse_response as parse_openai_response
+from opencollab.adapters.llm.openai_provider import _usage_int as openai_usage_int
 from opencollab.adapters.llm.providers import (
     is_anthropic,
     normalize_provider,
@@ -284,6 +285,20 @@ def test_anthropic_top_p_omitted_when_none():
         0.2,
     )
     assert "top_p" not in kwargs
+
+
+def test_max_output_tokens_reaches_both_provider_payloads():
+    messages = [{"role": "user", "content": "hi"}]
+
+    openai_kwargs = build_openai_kwargs(
+        "glm-5.2", messages, None, 1.0, max_output_tokens=32768
+    )
+    anthropic_kwargs = build_anthropic_kwargs(
+        "glm-5.2", messages, None, 1.0, max_output_tokens=32768
+    )
+
+    assert openai_kwargs["max_tokens"] == 32768
+    assert anthropic_kwargs["max_tokens"] == 32768
 
 
 def test_anthropic_tool_choice_required_maps_to_any():
@@ -594,3 +609,8 @@ def test_openai_content_markup_takes_precedence_over_reasoning():
 
     assert [tc["function"]["name"] for tc in result.tool_calls] == ["grep"]
     assert result.content is None
+
+
+@pytest.mark.parametrize("value", [float("inf"), float("nan"), -1, "-2"])
+def test_openai_usage_rejects_non_finite_and_negative_values(value):
+    assert openai_usage_int({"tokens": value}, "tokens") == 0
