@@ -9,7 +9,7 @@ import os
 from collections.abc import Sequence
 from typing import Any
 
-from opencollab.application.async_timeout import isolate_tasks_from_shutdown
+from opencollab.application.async_timeout import terminate_tasks
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import TracePort
@@ -192,7 +192,7 @@ async def _abort_session_environments(
         task.cancel()
     if pending:
         _done, pending = await asyncio.wait(pending, timeout=timeout)
-    await isolate_tasks_from_shutdown(pending, timeout=timeout)
+    await terminate_tasks(pending, timeout=timeout)
     abort_quiesced = not pending
     return abort_quiesced, succeeded and abort_quiesced, tuple(pending)
 
@@ -338,7 +338,7 @@ async def _persist_workflow_manifest_owned(
         for task in pending:
             task.cancel()
         _done, pending = await asyncio.wait(pending, timeout=timeout)
-    await isolate_tasks_from_shutdown(pending, timeout=timeout)
+    await terminate_tasks(pending, timeout=timeout)
     write_owners = _track_manifest_daemon_writes(subscriber)
     if write_owners:
         _done, write_owners = await asyncio.wait(write_owners, timeout=0)
@@ -389,7 +389,7 @@ async def _wait_for_late_quiescence(
         saw_empty = False
         remaining = deadline - asyncio.get_running_loop().time()
         if remaining <= 0:
-            await isolate_tasks_from_shutdown(pending, timeout=1e-6)
+            await terminate_tasks(pending, timeout=1e-6)
             return False
         waiter = asyncio.create_task(asyncio.wait(pending, timeout=remaining))
         while True:
@@ -402,7 +402,7 @@ async def _wait_for_late_quiescence(
                 continue
         _done, still_pending = waiter.result()
         if still_pending and asyncio.get_running_loop().time() >= deadline:
-            await isolate_tasks_from_shutdown(still_pending, timeout=1e-6)
+            await terminate_tasks(still_pending, timeout=1e-6)
             return False
         extras.update(still_pending)
 

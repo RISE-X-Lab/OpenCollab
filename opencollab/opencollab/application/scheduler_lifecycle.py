@@ -343,14 +343,26 @@ class LifecycleMixin:
         # delivering, so a later spawn can reuse this child's unspent headroom.
         self._release_reservations(aid)
 
-        # Append worktree diff if available. Finalization integrations are
-        # observational: a diff/tracer/event failure cannot strand the parent.
+        # A completed coding task still needs its patch evidence. Tracing and
+        # event delivery are observational, but a missing diff is a technical
+        # failure because the parent cannot verify what changed.
         env = getattr(session, "env", None)
         if env is not None:
             try:
                 result = await self._append_worktree_diff(env, result)
             except Exception as exc:
                 logger.error("worktree diff failed for aid %s: %s", aid, exc)
+                scb.state.fail()
+                result = f"Error: worktree diff extraction failed: {exc}"
+                scb.result = result
+                await self._safe_emit_scheduler_event(
+                    self._events.agent_failed(aid, scb.agent.name, str(exc))
+                )
+                await self._deliver_to_parent(aid, result, RowStatus.FAILED)
+                await self._drain_message_inbox(aid, allow_current_task=True)
+                if not self._shutting_down:
+                    await self._drain_ready_message_inboxes()
+                return
 
         if self._shutting_down:
             self._finalize_cleanup_failure(aid)

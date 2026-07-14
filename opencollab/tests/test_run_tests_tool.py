@@ -290,16 +290,17 @@ def test_run_tests_honors_runner_options_and_safety_policy():
     safety = SpySafetyPolicy()
     runtime = ToolRuntime(environment=env, safety_policy=safety, permission_policy=None)
 
-    run(
+    result = run(
         RunTestsTool().execute_with_runtime(
             {"runner": "bin/test", "extra_args": "-k smoke", "timeout": 30},
             runtime,
         )
     )
 
-    expected = "bin/test -k smoke"
-    assert env.exec_calls == [(expected, 30)]
-    assert safety.cmd_calls == [(expected, None)]
+    assert "Command: not executed" in result
+    assert "Verdict: RED" in result
+    assert env.exec_calls == []
+    assert safety.cmd_calls == []
 
 
 def test_run_tests_can_disable_runner_override_before_exec():
@@ -369,7 +370,6 @@ def test_run_tests_falls_back_to_native_runner_when_pytest_missing():
     env = ScriptedEnv([
         ("python -m pytest", 1, "No module named pytest"),
         ("test -x bin/test", 0, ""),
-        ("python bin/test", 0, "tests passed"),
     ])
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
     result = run(
@@ -378,11 +378,10 @@ def test_run_tests_falls_back_to_native_runner_when_pytest_missing():
         )
     )
     cmds = [c for c, _ in env.exec_calls]
-    assert any("python bin/test" in c for c in cmds)
-    native = next(c for c in cmds if "python bin/test" in c)
-    assert "::" not in native and "test_two" in native
+    assert not any("python bin/test" in c for c in cmds)
     assert "Verdict: RED" in result
-    assert "no parser-backed executed-test proof" in result
+    assert "Command: not executed" in result
+    assert "without an executed-target proof parser" in result
 
 
 def test_run_tests_falls_back_to_go_runner_when_pytest_missing():
@@ -439,7 +438,6 @@ def test_run_tests_native_fallback_quotes_translated_target():
     env = ScriptedEnv([
         ("python -m pytest", 1, "No module named pytest"),
         ("test -x bin/test", 0, ""),
-        ("python bin/test", 0, "tests passed"),
     ])
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
@@ -450,8 +448,8 @@ def test_run_tests_native_fallback_quotes_translated_target():
     )
 
     cmds = [c for c, _ in env.exec_calls]
-    native = next(c for c in cmds if "python bin/test" in c)
-    assert native == "python bin/test tests/test_x.py 'test_two; touch pwned'"
+    assert not any("python bin/test" in c for c in cmds)
+    assert "Command: not executed" in result
     assert "Verdict: RED" in result
 
 
@@ -460,6 +458,7 @@ def test_run_tests_pinned_runner_suppresses_autodetect():
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
     run(RunTestsTool().execute_with_runtime({"runner": "bin/test"}, runtime))
     cmds = [c for c, _ in env.exec_calls]
+    assert cmds == []
     assert not any(c.startswith("test -x") for c in cmds)
 
 
@@ -467,12 +466,12 @@ def test_run_tests_native_exit_zero_without_proof_is_red():
     env = ScriptedEnv([
         ("python -m pytest", 1, "No module named pytest"),
         ("test -f tox.ini", 0, ""),
-        ("tox", 0, "all environments succeeded"),
     ])
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
     result = run(RunTestsTool().execute_with_runtime({}, runtime))
     assert "Verdict: RED" in result
-    assert "no parser-backed executed-test proof" in result
+    assert "Command: not executed" in result
+    assert not any(command.startswith("tox") for command, _timeout in env.exec_calls)
 
 
 def test_run_tests_escalates_after_repeated_same_target_failures():
@@ -489,17 +488,10 @@ def test_run_tests_escalates_after_repeated_same_target_failures():
     assert "Escalation:" not in after
 
 
-def test_build_command_native_runner_omits_pytest_flags_and_translates():
+def test_build_command_rejects_native_runner_without_proof_parser():
     from opencollab.adapters.tools.run_tests import _build_command
-    cmd = _build_command("python bin/test", "tests/test_x.py::test_two", "")
-    assert "--tb=short" not in cmd and "-rA" not in cmd
-    assert "::" not in cmd and "test_two" in cmd
-
-
-def test_build_command_native_runner_quotes_translated_target():
-    from opencollab.adapters.tools.run_tests import _build_command
-    cmd = _build_command("python bin/test", "tests/test_x.py::test_two; touch pwned", "")
-    assert cmd == "python bin/test tests/test_x.py 'test_two; touch pwned'"
+    with pytest.raises(ValueError, match="without proof parser"):
+        _build_command("python bin/test", "tests/test_x.py::test_two", "")
 
 
 @pytest.mark.parametrize(

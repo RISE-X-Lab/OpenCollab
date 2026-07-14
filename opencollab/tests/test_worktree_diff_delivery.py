@@ -114,9 +114,9 @@ def test_child_worktree_diff_is_delivered_to_parent_pending_row():
     assert scheduler.table.get(1).result == row.result
 
 
-@pytest.mark.parametrize("failure_site", ["diff", "tracer", "event"])
-def test_child_finalization_failure_still_delivers_to_parent(failure_site):
-    env = _FailingDiffEnv("") if failure_site == "diff" else _DiffEnv("")
+@pytest.mark.parametrize("failure_site", ["tracer", "event"])
+def test_observability_failure_still_delivers_to_parent(failure_site):
+    env = _DiffEnv("")
     child = _ChildSession("coder", "implemented it", env)
     lead = _LeadSession()
 
@@ -151,4 +151,37 @@ def test_child_finalization_failure_still_delivers_to_parent(failure_site):
     row = lead.state.pending_events.rows["tc-1"]
     assert row.status is RowStatus.DONE
     assert row.result == "implemented it"
+    assert 1 not in scheduler._spawn_origin
+
+
+def test_worktree_diff_failure_marks_child_failed():
+    child = _ChildSession("coder", "implemented it", _FailingDiffEnv(""))
+    lead = _LeadSession()
+    scheduler = Scheduler(
+        session_factory=_Factory(child),
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(None),
+    )
+    scheduler.register_lead(lead)
+
+    async def scenario() -> None:
+        aid = await scheduler.spawn(0, "coder", "implement", tool_call_id="tc-1")
+        lead.state.pending_events.add(
+            PendingRow(
+                tool_call_id="tc-1",
+                kind=RowKind.CHILD_AGENT,
+                order=0,
+                ref=aid,
+                status=RowStatus.PENDING,
+            )
+        )
+        lead.state.set_phase(SessionPhase.AWAITING_EVENTS)
+        await scheduler._tasks[aid]
+
+    asyncio.run(scenario())
+
+    row = lead.state.pending_events.rows["tc-1"]
+    assert row.status is RowStatus.FAILED
+    assert row.result == "Error: worktree diff extraction failed: diff failed"
+    assert scheduler.table.get(1).state.phase is SessionPhase.ERROR
     assert 1 not in scheduler._spawn_origin

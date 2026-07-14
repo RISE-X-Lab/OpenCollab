@@ -148,3 +148,17 @@ def test_durable_unlink_removes_regular_file_and_reports_missing(tmp_path) -> No
     assert unlink_regular_file_durable(path)
     assert not path.exists()
     assert unlink_regular_file_durable(path) is False
+
+
+def test_durable_unlink_rejects_symlinked_parent(tmp_path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    foreign = outside / "owned"
+    foreign.write_bytes(b"foreign")
+    parent = tmp_path / "parent"
+    parent.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(OSError, match="real directory"):
+        unlink_regular_file_durable(parent / "owned")
+
+    assert foreign.read_bytes() == b"foreign"

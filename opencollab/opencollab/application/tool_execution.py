@@ -20,9 +20,6 @@ from opencollab.application.async_timeout import (
 from opencollab.application.async_timeout import (
     force_task_terminal as force_task_terminal,
 )
-from opencollab.application.async_timeout import (
-    task_is_isolated as task_is_isolated,
-)
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
     AskUserPort,

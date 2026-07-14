@@ -274,6 +274,7 @@ def create_regular_bytes_atomic(
 
 def unlink_regular_file_durable(path: str | os.PathLike[str]) -> bool:
     target = _absolute(path)
+    _check_directory_components(target.parent, create=False)
     current = _current_regular(target, context="owned file")
     if current is None:
         return False

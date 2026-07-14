@@ -36,7 +36,6 @@ from typing import Any
 
 from opencollab.application.async_timeout import (
     CallerTimeoutError,
-    task_is_isolated,
 )
 from opencollab.application.async_timeout import (
     abandon_on_timeout as abandon_on_timeout,
@@ -337,9 +336,7 @@ class WorkflowContext:
         return tuple(
             task
             for task in owned
-            if not task.done()
-            and not task_is_isolated(task)
-            and task is not current
+            if not task.done() and task is not current
         )
 
     # -- wall clock -------------------------------------------------------- #

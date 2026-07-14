@@ -82,6 +82,17 @@ class PureEnvironment:
             await self.cleanup_release.wait()
 
 
+class CancellationResistantEnvironment(PureEnvironment):
+    async def cleanup(self) -> None:
+        self.cleanup_calls += 1
+        self.cleanup_started.set()
+        while not self.cleanup_release.is_set():
+            try:
+                await self.cleanup_release.wait()
+            except asyncio.CancelledError:
+                continue
+
+
 def _workflow_request(tmp_path: Path, **overrides) -> WorkflowRunRequest:
     values = {
         "workflow": sample_workflow,
@@ -161,6 +172,30 @@ async def test_owned_workflow_cleanup_survives_double_cancellation(monkeypatch, 
     environment.cleanup_release.set()
     with pytest.raises(asyncio.CancelledError):
         await owner
+    assert environment.cleanup_calls == 1
+
+
+async def test_owned_workflow_reports_cleanup_that_misses_bounded_deadline(
+    monkeypatch, tmp_path
+) -> None:
+    environment = CancellationResistantEnvironment()
+
+    async def fake_bootstrap(*_args, **_kwargs):
+        return "done"
+
+    monkeypatch.setattr(sdk_runtime, "LocalEnvironment", lambda _workspace: environment)
+    monkeypatch.setattr(sdk_runtime, "_run_hardened_workflow", fake_bootstrap)
+    request = _workflow_request(
+        tmp_path,
+        artifact_dir=None,
+        budget=RunBudget(cleanup_timeout_seconds=0.01),
+    )
+
+    with pytest.raises(WorkflowRunLifecycleError, match="cleanup failed"):
+        await OpenCollabRuntime().run_workflow(request)
+
+    environment.cleanup_release.set()
+    await asyncio.sleep(0)
     assert environment.cleanup_calls == 1
 
 
