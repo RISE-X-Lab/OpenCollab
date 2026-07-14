@@ -199,6 +199,35 @@ def test_openai_thinking_on_adds_extra_body():
     assert kwargs["extra_body"] == {"enable_thinking": True}
 
 
+def test_openai_preserves_reasoning_content_for_tool_follow_up():
+    kwargs = build_openai_kwargs(
+        "kimi-for-coding",
+        [
+            {"role": "user", "content": "inspect the repository"},
+            {
+                "role": "assistant",
+                "reasoning_content": "I need to read the target file.",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "type": "function",
+                        "function": {"name": "read_file", "arguments": '{"path":"a.py"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": "contents"},
+        ],
+        None,
+        0.2,
+        thinking=True,
+        thinking_params={"thinking": {"type": "enabled", "keep": "all"}},
+    )
+
+    assistant = kwargs["messages"][1]
+    assert assistant["reasoning_content"] == "I need to read the target file."
+    assert kwargs["extra_body"] == {"thinking": {"type": "enabled", "keep": "all"}}
+
+
 def test_openai_thinking_off_adds_no_extra_body():
     """thinking=False leaves the request unchanged — no extra_body key."""
     kwargs = build_openai_kwargs(
@@ -232,6 +261,34 @@ def test_openai_tool_choice_required_is_passed_through():
         0.0,
         tool_choice="required",
     )
+    assert kwargs["tool_choice"] == "required"
+
+
+def test_openai_kimi_thinking_uses_auto_for_forced_write():
+    kwargs = build_openai_kwargs(
+        "kimi-for-coding",
+        [{"role": "user", "content": "write the final patch"}],
+        [{"type": "function", "function": {"name": "write_file", "parameters": {}}}],
+        1.0,
+        thinking=True,
+        thinking_params={"thinking": {"type": "enabled", "keep": "all"}},
+        tool_choice="required",
+    )
+
+    assert kwargs["tool_choice"] == "auto"
+
+
+def test_openai_other_thinking_model_keeps_required_tool_choice():
+    kwargs = build_openai_kwargs(
+        "another-thinking-model",
+        [{"role": "user", "content": "write"}],
+        [{"type": "function", "function": {"name": "write_file", "parameters": {}}}],
+        1.0,
+        thinking=True,
+        thinking_params={"thinking": {"type": "enabled", "keep": "all"}},
+        tool_choice="required",
+    )
+
     assert kwargs["tool_choice"] == "required"
 
 

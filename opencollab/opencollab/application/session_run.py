@@ -1526,6 +1526,9 @@ class SessionRunUseCase:
         if not response.content and not response.tool_calls:
             return
         assistant_msg: dict[str, Any] = {"role": "assistant"}
+        reasoning = getattr(response, "reasoning", None)
+        if reasoning:
+            assistant_msg["reasoning_content"] = reasoning
         if response.content:
             assistant_msg["content"] = response.content
         if response.tool_calls:
