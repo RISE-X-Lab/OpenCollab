@@ -426,6 +426,30 @@ def test_run_tests_falls_back_to_go_runner_when_pytest_finds_no_tests():
     assert "Verdict: GREEN" in result
 
 
+def test_run_tests_no_tests_does_not_green_off_go_when_python_suite_present():
+    # Mixed repo: a Python-native suite (bin/test) AND go.mod are both present,
+    # and pytest collected nothing. bin/test is affirmative evidence that a real
+    # Python suite exists that pytest simply did not collect, so falling back to
+    # Go would green off unrelated Go tests while the intended suite never ran.
+    env = ScriptedEnv([
+        ("python -m pytest", 5, "no tests ran in 0.01s"),
+        ("test -x bin/test", 0, ""),
+        ("test -f go.mod", 0, ""),
+        ("go test", 0, '{"Action":"pass","Package":"m","Test":"T"}'),
+    ])
+    runtime = runtime_for(env)
+
+    result = run(
+        RunTestsTool(allow_runner_override=False, allow_extra_args=False).execute_with_runtime(
+            {}, runtime
+        )
+    )
+
+    cmds = [c for c, _ in env.exec_calls]
+    assert not any("go test" in c for c in cmds)
+    assert "Verdict: GREEN" not in result
+
+
 def test_run_tests_native_fallback_quotes_translated_target():
     env = ScriptedEnv([
         ("python -m pytest", 1, "No module named pytest"),
