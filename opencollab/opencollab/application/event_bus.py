@@ -22,7 +22,6 @@ class EventBus:
 
     def __init__(self, target: EventPublisherPort | EventCallback | None = None):
         self._targets: list[EventPublisherPort | EventCallback] = []
-        self._pending_tasks: set[asyncio.Task[Any]] = set()
         if target is not None:
             self.subscribe(target)
 
@@ -41,14 +40,9 @@ class EventBus:
 
     @property
     def pending_tasks(self) -> tuple[asyncio.Task[Any], ...]:
-        """Live tasks owned by subscribers after their callback waiter exits."""
+        """Live tasks owned by subscribers."""
         pending: list[asyncio.Task[Any]] = []
         seen: set[int] = set()
-        for task in self._pending_tasks:
-            if task.done() or id(task) in seen:
-                continue
-            seen.add(id(task))
-            pending.append(task)
         for target in self._targets:
             tasks = getattr(target, "pending_tasks", ())
             for task in tasks:
@@ -66,35 +60,20 @@ class EventBus:
                 else:
                     result = target(event)  # type: ignore[operator]
             except asyncio.CancelledError:
-                continue
+                raise
             except Exception:
                 # Subscriber failure must not break siblings or the loop.
                 continue
             if not inspect.isawaitable(result):
                 continue
-            owner = asyncio.ensure_future(result)
-            self._pending_tasks.add(owner)
-            owner.add_done_callback(self._pending_tasks.discard)
             try:
-                await asyncio.wait({owner})
+                await result
             except asyncio.CancelledError:
-                owner.cancel()
-                owner.add_done_callback(_consume_task_result)
-                raise
-            try:
-                owner.result()
-            except asyncio.CancelledError:
-                # A subscriber that cancels itself is an isolated sink failure.
+                if asyncio.current_task().cancelling():
+                    raise
                 continue
             except Exception:
                 continue
-
-
-def _consume_task_result(task: asyncio.Future[Any]) -> None:
-    try:
-        task.result()
-    except BaseException:
-        pass
 
 
 __all__ = ["EventBus", "EventCallback"]

@@ -16,7 +16,6 @@ import asyncio
 import contextlib
 import hashlib
 import os
-import stat
 import tempfile
 from collections.abc import AsyncIterator
 from typing import Any
@@ -32,22 +31,7 @@ HOST_WRITE_LOCK_POLL_SECONDS = 0.02
 def _host_lock_root() -> str:
     uid = os.getuid() if hasattr(os, "getuid") else 0
     root = os.path.join(tempfile.gettempdir(), f"opencollab-write-locks-{uid}")
-    try:
-        os.mkdir(root, 0o700)
-    except FileExistsError:
-        pass
-    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    fd = os.open(root, flags)
-    try:
-        info = os.fstat(fd)
-        if not stat.S_ISDIR(info.st_mode):
-            raise PermissionError("host write-lock root is not a directory")
-        if hasattr(os, "getuid") and info.st_uid != os.getuid():
-            raise PermissionError("host write-lock root has a foreign owner")
-        if info.st_mode & 0o077:
-            os.fchmod(fd, 0o700)
-    finally:
-        os.close(fd)
+    os.makedirs(root, mode=0o700, exist_ok=True)
     return root
 
 

@@ -17,6 +17,7 @@ from opencollab.application.workflow_registry import (
     WorkflowSpec,
     workflow,
 )
+from opencollab.bootstrap import _workflow_runtime_discovery as workflow_discovery
 
 
 def test_workflow_decorator_attaches_frozen_spec_metadata():
@@ -254,7 +255,7 @@ def test_discover_workflows_rejects_unsafe_or_oversized_source(
         source.symlink_to(outside)
     else:
         source.write_text("x" * 65, encoding="utf-8")
-        monkeypatch.setattr(workflow_runtime, "MAX_WORKFLOW_SOURCE_BYTES", 64)
+        monkeypatch.setattr(workflow_discovery, "MAX_WORKFLOW_SOURCE_BYTES", 64)
 
     with pytest.raises(ValueError, match="workflow source"):
         workflow_runtime.discover_workflows(str(wf_dir))
@@ -277,7 +278,7 @@ def test_discover_workflows_directory_enumeration_is_bounded(tmp_path, monkeypat
 
     for index in range(4):
         (tmp_path / f"entry-{index}").touch()
-    monkeypatch.setattr(workflow_runtime, "MAX_WORKFLOW_DIRECTORY_ENTRIES", 3)
+    monkeypatch.setattr(workflow_discovery, "MAX_WORKFLOW_DIRECTORY_ENTRIES", 3)
 
     with pytest.raises(ValueError, match="entries exceed limit"):
         workflow_runtime.discover_workflows(str(tmp_path))

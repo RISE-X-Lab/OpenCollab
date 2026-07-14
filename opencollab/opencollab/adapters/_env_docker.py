@@ -9,6 +9,7 @@ import re
 import shlex
 import uuid
 from collections.abc import Callable
+from typing import NoReturn
 
 from opencollab.adapters._env_base import Environment, ExecResult
 from opencollab.adapters._env_process import (
@@ -193,46 +194,43 @@ class DockerEnvironment(Environment):
         try:
             result = await self._docker(*args, timeout=DOCKER_SETUP_TIMEOUT_SECONDS)
         except BaseException as exc:
-            if not await await_owned_operation(
-                self._remove_container_if_owned(),
-                propagate_cancellation=not isinstance(exc, asyncio.CancelledError),
-            ):
-                cleanup_error = ProcessCleanupError(
-                    "Docker setup failed and owned container removal was not proven"
-                )
-                add_exception_note(
-                    cleanup_error,
-                    f"Original setup failure: {type(exc).__name__}: {exc}"
-                )
-                raise cleanup_error from exc
-            raise
+            await self._discard_failed_setup(exc)
         candidate = result.stdout.decode("ascii", errors="ignore").strip()
         if result.returncode != 0 or not _FULL_ID_RE.fullmatch(candidate):
-            try:
-                removed = await await_owned_operation(
-                    self._remove_container_if_owned(),
-                    propagate_cancellation=True,
+            await self._discard_failed_setup(
+                RuntimeError(
+                    "Failed to start container: "
+                    + result.stderr.decode("utf-8", errors="replace").strip()
                 )
-            except asyncio.CancelledError:
-                raise
-            except BaseException as cleanup_error:
-                failure = RuntimeError("Failed to start container")
-                add_exception_note(
-                    failure,
-                    "Docker setup cleanup failed: "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
-                )
-                raise failure from cleanup_error
-            if not removed:
-                raise ProcessCleanupError(
-                    "Failed to start container and cleanup could not prove container removal"
-                )
-            raise RuntimeError(
-                "Failed to start container: "
-                + result.stderr.decode("utf-8", errors="replace").strip()
             )
         self._container_id = candidate.lower()
         return self._container_id
+
+    async def _discard_failed_setup(self, failure: BaseException) -> NoReturn:
+        try:
+            removed = await await_owned_operation(
+                self._remove_container_if_owned(),
+                propagate_cancellation=not isinstance(failure, asyncio.CancelledError),
+            )
+        except asyncio.CancelledError:
+            raise
+        except BaseException as cleanup_error:
+            add_exception_note(
+                failure,
+                "Docker setup cleanup failed: "
+                f"{type(cleanup_error).__name__}: {cleanup_error}",
+            )
+            raise failure from cleanup_error
+        if not removed:
+            cleanup_error = ProcessCleanupError(
+                "Docker setup failed and owned container removal was not proven"
+            )
+            add_exception_note(
+                cleanup_error,
+                f"Original setup failure: {type(failure).__name__}: {failure}",
+            )
+            raise cleanup_error from failure
+        raise failure
 
     async def _remove_container_if_owned(self) -> bool:
         if self._attached:
@@ -357,15 +355,7 @@ class DockerEnvironment(Environment):
             if not await await_owned_operation(self._recover_inner(token)):
                 add_exception_note(exc, "cancelled container command did not quiesce")
             raise
-        return ExecResult(
-            result.returncode,
-            result.stdout.decode("utf-8", errors="replace"),
-            result.stderr.decode("utf-8", errors="replace"),
-            result.stdout_dropped_bytes > 0,
-            result.stderr_dropped_bytes > 0,
-            result.stdout_dropped_bytes,
-            result.stderr_dropped_bytes,
-        )
+        return result.to_exec_result()
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         return await self._exec(cmd, timeout=timeout)
@@ -438,12 +428,5 @@ class DockerEnvironment(Environment):
             self._cleanup_resources(),
             propagate_cancellation=True,
         )
-
-    async def abort(self) -> None:
-        self.revoke()
-        if self._attached:
-            return
-        await self.cleanup()
-
 
 __all__ = ["DockerEnvironment"]

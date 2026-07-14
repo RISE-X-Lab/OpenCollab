@@ -242,6 +242,20 @@ def test_workflow_request_normalizes_artifact_path() -> None:
         )
 
 
+def test_request_validation_preserves_public_error_priority() -> None:
+    @sdk.workflow(name="sample", description="sample")
+    async def sample(ctx, args):
+        return None
+
+    config = sdk.RuntimeConfig(model="model", provider="provider")
+    with pytest.raises(sdk.InvalidSDKRequestError, match="config"):
+        sdk.WorkflowRunRequest(workflow=sample, config=object(), inputs=object())
+    with pytest.raises(sdk.InvalidSDKRequestError, match="config"):
+        sdk.AgentRunRequest(prompt="task", config=object(), budget=object(), tools=object())
+    with pytest.raises(sdk.InvalidSDKRequestError, match="budget"):
+        sdk.AgentRunRequest(prompt="task", config=config, budget=object(), tools=object())
+
+
 def test_command_result_protocol_accepts_sdk_and_adapter_values() -> None:
     sdk_result = sdk.ExecResult(returncode=0, stdout="ok", stderr="")
     adapter_result = AdapterExecResult(returncode=0, stdout="ok", stderr="")

@@ -217,7 +217,12 @@ def test_send_message_to_busy_target_autosaves_pending_xml(tmp_path):
     )
     scheduler._sessions[1] = teammate
 
-    result = run(scheduler.send_message(0, 1, "follow up", "check <this> & report"))
+    async def scenario():
+        result = await scheduler.send_message(0, 1, "follow up", "check <this> & report")
+        await asyncio.gather(*scheduler._fallback_autosavers[1].pending_tasks)
+        return result
+
+    result = run(scenario())
 
     assert result == "Message queued to aid 1."
     assert teammate.added == []
@@ -231,7 +236,7 @@ def test_send_message_to_busy_target_autosaves_pending_xml(tmp_path):
     )
 
 
-def test_delivery_autosave_never_contains_message_and_same_pending_sidecar(tmp_path):
+def test_delivery_final_autosave_commits_message_and_removes_pending_sidecar(tmp_path):
     class AutosavingOnAdd(PersistingFakeSession):
         def __init__(self, path):
             super().__init__(["handled"], role="coder", auto_save_path=path)
@@ -259,6 +264,10 @@ def test_delivery_autosave_never_contains_message_and_same_pending_sidecar(tmp_p
     async def scenario():
         await scheduler.send_message(0, 1, "once", "deliver exactly once")
         await scheduler._tasks[1]
+        await asyncio.gather(
+            *scheduler._fallback_autosavers[1].pending_tasks,
+            return_exceptions=True,
+        )
 
     run(scenario())
 
@@ -268,10 +277,11 @@ def test_delivery_autosave_never_contains_message_and_same_pending_sidecar(tmp_p
         if any("deliver exactly once" in str(message.get("content")) for message in snapshot["messages"])
     ]
     assert delivery_snapshots
-    assert all("pending_messages" not in snapshot for snapshot in delivery_snapshots)
+    assert "pending_messages" not in delivery_snapshots[-1]
+    assert teammate.state.pending_user_messages == []
 
 
-def test_add_user_message_failure_rolls_back_inbox_and_session_state():
+def test_add_user_message_failure_rolls_back_partial_state_and_restores_budget():
     class FailingAdd(FakeSession):
         async def add_user_message(self, content):
             self.state.append_message({"role": "user", "content": content})

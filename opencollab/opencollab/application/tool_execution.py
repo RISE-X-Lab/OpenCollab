@@ -2,23 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import inspect as inspect
 import json
 import logging
 import math
-import os
-import time as time
-from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from opencollab.application.async_timeout import (
-    CallerTimeoutError,
+    CallerTimeoutError as CallerTimeoutError,
 )
 from opencollab.application.async_timeout import (
     abandon_on_timeout as abandon_on_timeout,
-)
-from opencollab.application.async_timeout import (
-    force_task_terminal as force_task_terminal,
 )
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
@@ -30,48 +23,27 @@ from opencollab.application.ports import (
     TracePort,
 )
 from opencollab.application.schema_validate import validate
-from opencollab.application.tool_execution_runtime import ToolExecutionRuntimeMixin
+from opencollab.application.tool_execution_runtime import (
+    DEFAULT_TOOL_CANCELLATION_CLEANUP_TIMEOUT,
+    DEFAULT_TOOL_CANCELLATION_FORCE_TIMEOUT,
+    DEFAULT_TOOL_ENVIRONMENT_ABORT_TIMEOUT,
+    ToolExecutionRuntimeMixin,
+)
+from opencollab.application.tool_execution_runtime import (
+    DeferredCall as DeferredCall,
+)
+from opencollab.application.tool_execution_runtime import (
+    ToolRuntime as ToolRuntime,
+)
 from opencollab.domain.session import SessionState
 from opencollab.domain.tools import MAX_CALL_HASH_WINDOW, LoopDetection, ToolProcessingResult
 
 logger = logging.getLogger(__name__)
 
 
-class _ToolExecutionTimeoutError(CallerTimeoutError):
-    """Raised only by this use case's own per-tool deadline."""
-
-
-def _positive_env_float(name: str, default: float) -> float:
-    try:
-        value = float(os.environ.get(name, str(default)))
-    except (TypeError, ValueError, OverflowError):
-        return default
-    return value if math.isfinite(value) and value > 0 else default
-
 # Loop detection (ref: opencode doom_loop detection — 3 identical calls)
 MAX_SIMILAR_CALLS = 3
 MAX_TOOL_CALLS_PER_BATCH = 32
-
-# A single tool call must not be able to hold a session forever. Individual
-# tools still pass their own command timeout to the environment; this outer
-# guard catches hangs before that layer is reached, including approval hooks,
-# adapter bugs, or stuck subprocess creation.
-DEFAULT_TOOL_EXECUTION_TIMEOUT = _positive_env_float(
-    "OPENCOLLAB_TOOL_EXECUTION_TIMEOUT", 180.0
-)
-MAX_TOOL_EXECUTION_TIMEOUT = _positive_env_float(
-    "OPENCOLLAB_TOOL_EXECUTION_MAX_TIMEOUT", 900.0
-)
-TOOL_EXECUTION_TIMEOUT_GRACE = 10.0
-DEFAULT_TOOL_CANCELLATION_CLEANUP_TIMEOUT = _positive_env_float(
-    "OPENCOLLAB_TOOL_CANCELLATION_CLEANUP_TIMEOUT", 1.0
-)
-DEFAULT_TOOL_CANCELLATION_FORCE_TIMEOUT = _positive_env_float(
-    "OPENCOLLAB_TOOL_CANCELLATION_FORCE_TIMEOUT", 0.5
-)
-DEFAULT_TOOL_ENVIRONMENT_ABORT_TIMEOUT = _positive_env_float(
-    "OPENCOLLAB_TOOL_ENVIRONMENT_ABORT_TIMEOUT", 1.0
-)
 
 
 def _require_positive_finite_timeout(value: Any, *, name: str) -> float:
@@ -222,39 +194,6 @@ def _bash_likely_mutates(args: dict) -> bool:
     if "open(" in cmd and ("'w'" in cmd or '"w"' in cmd or "'a'" in cmd or '"a"' in cmd):
         return True
     return False
-
-
-@dataclass(frozen=True)
-class DeferredCall:
-    """Returned by a deferrable tool instead of a result string.
-
-    Signals that the tool handed work off (e.g. spawned a child agent) and
-    this call's result arrives later; ``ref`` identifies the deferred work —
-    for ``spawn_agent``, the child's aid — and is recorded on the pending row
-    that suspends the session until the result is delivered.
-    """
-
-    ref: int
-
-
-@dataclass(frozen=True)
-class ToolRuntime:
-    environment: EnvironmentPort | None
-    safety_policy: SafetyPolicyPort | None
-    permission_policy: PermissionPort | None
-    ask_policy: AskUserPort | None = None
-    aid: int = -1
-    tool_call_id: str | None = None
-
-    def confirm_fn(self):
-        if self.permission_policy is None:
-            return None
-        return self.permission_policy.confirm
-
-    def ask_fn(self):
-        if self.ask_policy is None:
-            return None
-        return self.ask_policy.ask
 
 
 class CallbackPermissionPolicy:

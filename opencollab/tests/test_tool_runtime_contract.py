@@ -16,6 +16,7 @@ from opencollab.adapters.tools.git_diff import GitDiffTool
 from opencollab.adapters.tools.human import AskUserTool
 from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.tool_execution import ToolRuntime
+from tool_execution_test_support import AlwaysAllowPermissionPolicy as FakePermissionPolicy
 
 
 def run(coro):
@@ -55,11 +56,6 @@ class SpySafetyPolicy:
 
     async def check_cmd_interactive(self, cmd: str, confirm_fn=None) -> None:
         self.cmd_calls.append((cmd, confirm_fn))
-
-
-class FakePermissionPolicy:
-    async def confirm(self, prompt: str) -> bool:
-        return True
 
 
 class FakeRemoteEnv:

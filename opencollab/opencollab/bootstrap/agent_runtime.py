@@ -7,7 +7,11 @@ import inspect
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from opencollab.application.async_timeout import await_owned_operation, force_task_terminal
+from opencollab.application.async_timeout import (
+    await_owned_operation,
+    consume_task_result,
+    force_task_terminal,
+)
 from opencollab.application.ports import LLMPort, TracePort
 from opencollab.bootstrap.container import build_workspace_safety_policy
 from opencollab.bootstrap.session_factory import build_session
@@ -36,13 +40,6 @@ async def _run_session(session: Any, prompt: str) -> str:
     return await session.run_loop()
 
 
-def _consume_hook_result(task: asyncio.Future[object]) -> None:
-    try:
-        task.result()
-    except BaseException:
-        pass
-
-
 async def run_environment_hook(environment: Any, name: str, timeout: float) -> bool:
     """Run one environment hook with bounded cancellation and honest failure."""
     hook = getattr(environment, name, None)
@@ -59,7 +56,7 @@ async def run_environment_hook(environment: Any, name: str, timeout: float) -> b
     if pending:
         termination = await force_task_terminal(owner, timeout=timeout)
         if not termination.terminal:
-            owner.add_done_callback(_consume_hook_result)
+            owner.add_done_callback(consume_task_result)
         return False
     try:
         owner.result()
@@ -68,41 +65,27 @@ async def run_environment_hook(environment: Any, name: str, timeout: float) -> b
     return True
 
 
-async def _abort_environment(environment: Any, timeout: float) -> bool:
-    try:
-        environment.revoke()
-    except Exception:
-        revoked = False
-    else:
-        revoked = True
+async def revoke_and_abort_environment(environment: Any, timeout: float) -> bool:
+    revoke = getattr(environment, "revoke", None)
+    revoked = True
+    if callable(revoke):
+        try:
+            revoke()
+        except Exception:
+            revoked = False
     aborted = await run_environment_hook(environment, "abort", timeout)
     return revoked and aborted
 
 
 async def _wait_session_tasks(session: Any, timeout: float) -> bool:
-    deadline = asyncio.get_running_loop().time() + timeout
-    saw_empty = False
-    while True:
-        pending = {
-            task
-            for task in session.pending_cleanup_tasks
-            if not task.done() and task is not asyncio.current_task()
-        }
-        if not pending:
-            if saw_empty:
-                return True
-            saw_empty = True
-            await asyncio.sleep(0)
-            continue
-        saw_empty = False
-        remaining = deadline - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            return False
-        _done, pending = await asyncio.wait(pending, timeout=remaining)
-        if pending:
-            for task in pending:
-                await force_task_terminal(task, timeout=timeout)
-            return False
+    pending = {
+        task
+        for task in session.pending_cleanup_tasks
+        if not task.done() and task is not asyncio.current_task()
+    }
+    if pending:
+        _done, pending = await asyncio.wait(pending, timeout=timeout)
+    return not pending and not session.pending_cleanup_tasks
 
 
 async def _finalize_session(
@@ -201,7 +184,7 @@ async def run_agent(
         return finalization_result
 
     async def stop_owned() -> tuple[bool, bool, bool]:
-        aborted = await _abort_environment(environment, cleanup_timeout_seconds)
+        aborted = await revoke_and_abort_environment(environment, cleanup_timeout_seconds)
         termination = await force_task_terminal(owner, timeout=cleanup_timeout_seconds)
         finalized = await finalize_once()
         return aborted, termination.terminal, finalized
@@ -270,6 +253,7 @@ async def run_agent(
 __all__ = [
     "AgentRuntimeLifecycleError",
     "AgentRuntimeResult",
+    "revoke_and_abort_environment",
     "run_agent",
     "run_environment_hook",
 ]

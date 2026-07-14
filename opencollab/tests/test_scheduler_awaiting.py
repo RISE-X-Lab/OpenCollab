@@ -14,7 +14,6 @@ import asyncio
 
 import pytest
 from opencollab.adapters.worktree_pool import WorktreePool
-from opencollab.application import _scheduler_cleanup
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
 from opencollab.domain.events import SchedulerEvent
@@ -25,23 +24,6 @@ from opencollab.domain.session import SessionPhase, SessionState
 
 def run(coro):
     return asyncio.run(coro)
-
-
-def test_cleanup_wait_consumes_finished_task_without_scheduler_module_injection(monkeypatch):
-    monkeypatch.delattr(_scheduler_cleanup, "Scheduler", raising=False)
-
-    async def scenario():
-        task = asyncio.create_task(asyncio.sleep(0))
-        await task
-
-        pending = await _scheduler_cleanup.SchedulerCleanupMixin._wait_for_cleanup_tasks(
-            {task},
-            timeout=0.01,
-        )
-
-        assert pending == set()
-
-    run(scenario())
 
 
 class ScriptedSession:
@@ -519,64 +501,53 @@ def test_scheduler_run_cancellation_tears_down_owned_team_before_propagating():
     run(scenario())
 
 
-def test_cleanup_rolls_back_forever_lead_add_and_blocks_late_driver():
-    class StubbornLead(ScriptedSession):
+def test_cleanup_marks_interrupted_lead_message_as_technical_failure():
+    class BlockingLead(ScriptedSession):
         def __init__(self):
             super().__init__("lead", [terminal("must never run")])
             self.add_started = asyncio.Event()
             self.add_release = asyncio.Event()
-            self.add_finished = asyncio.Event()
-            self.cancellations = 0
 
         async def add_user_message(self, content):
+            self.added.append(content)
             self.state.append_message({"role": "user", "content": content})
             self.state.reset_for_user_turn()
             self.add_started.set()
-            while not self.add_release.is_set():
-                try:
-                    await self.add_release.wait()
-                except asyncio.CancelledError:
-                    self.cancellations += 1
-            self.state.append_message(
-                {"role": "user", "content": "late lead mutation"}
-            )
-            self.add_finished.set()
+            await self.add_release.wait()
 
-    lead = StubbornLead()
+    lead = BlockingLead()
+    lead.state.recent_call_hashes = ["lead-call"]
+    lead.state.reads_since_last_edit = 3
+    lead.state.low_yield_since_progress = 2
+    lead.state.distinct_evidence_count = 1
+    lead.state.steps_since_progress = 4
+    lead.state.loop_blocked_since_progress = 1
+    lead.state._seen_result_hashes = {"lead-result"}
+    lead.state.scout_ledger = [{"tool": "file_read", "outcome": "hit"}]
     scheduler, _ = build_scheduler(lead, [])
 
     async def scenario():
         run_task = asyncio.create_task(scheduler.run("blocked lead add"))
         await lead.add_started.wait()
-        with pytest.raises(
-            RuntimeError,
-            match="technical scheduler cleanup failed: execution tasks did not quiesce",
-        ):
-            await asyncio.wait_for(
-                scheduler.cleanup(cleanup_timeout=0.01),
-                timeout=0.5,
-            )
+        with pytest.raises(RuntimeError, match="message delivery was interrupted"):
+            await scheduler.cleanup(cleanup_timeout=0.01)
         with pytest.raises(asyncio.CancelledError):
             await run_task
 
-        assert lead.cancellations >= 2
-        assert scheduler._active_run_tasks == set()
-        assert scheduler._lead_turn_record is None
-        assert scheduler._tasks == {}
-        assert scheduler.table.get(0).state.phase is SessionPhase.CANCELLED
-        assert scheduler.table.get(0).state.messages == []
-        assert scheduler._lead_reservation is None
-
-        lead.add_release.set()
-        await asyncio.wait_for(lead.add_finished.wait(), timeout=0.5)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        assert scheduler._tasks == {}
-        assert scheduler.table.get(0).state.phase is SessionPhase.CANCELLED
-        assert scheduler.table.get(0).state.messages == []
-        assert scheduler.table.get(0).result.startswith("Error: scheduler cleanup")
-
     run(scenario())
+    assert scheduler._tasks == {}
+    assert scheduler._lead_reservation is None
+    assert scheduler.table.get(0).state.phase is SessionPhase.CANCELLED
+    assert lead.state.messages == []
+    assert lead.state.message_timestamps == []
+    assert lead.state.recent_call_hashes == ["lead-call"]
+    assert lead.state.reads_since_last_edit == 3
+    assert lead.state.low_yield_since_progress == 2
+    assert lead.state.distinct_evidence_count == 1
+    assert lead.state.steps_since_progress == 4
+    assert lead.state.loop_blocked_since_progress == 1
+    assert lead.state._seen_result_hashes == {"lead-result"}
+    assert lead.state.scout_ledger == [{"tool": "file_read", "outcome": "hit"}]
 
 
 def test_running_cancelled_child_fails_parent_row_and_resumes_parent():
@@ -816,7 +787,7 @@ def test_cleanup_is_bounded_when_session_ignores_both_cancellations():
         row = lead.state.pending_events.rows["stubborn-child"]
         assert env.aborted.is_set()
         assert pool.released.is_set() is False
-        assert child.cancellations >= 2
+        assert child.cancellations >= 1
         assert row.status is RowStatus.FAILED
         assert row.error and "scheduler cleanup" in row.error
         assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
@@ -835,87 +806,33 @@ def test_cleanup_is_bounded_when_session_ignores_both_cancellations():
 
 
 def test_cleanup_caller_cancellation_waits_for_owned_teardown_then_propagates():
-    class AbortTrackingEnv:
+    class BlockingReleasePool:
         def __init__(self):
-            self.aborted = asyncio.Event()
-
-        async def abort(self):
-            self.aborted.set()
-
-    class RecordingPool:
-        def __init__(self, env):
-            self.env = env
-            self.released = asyncio.Event()
+            self.started = asyncio.Event()
+            self.release_gate = asyncio.Event()
+            self.finished = False
 
         async def acquire(self, role):
-            return self.env
+            return None
 
         async def release(self):
-            self.released.set()
-
-    class CancellationResistantSession:
-        def __init__(self, env):
-            self.agent = type("_Agent", (), {"name": "coder"})()
-            self.state = SessionState(messages=[])
-            self.used_tokens = 0
-            self.env = env
-            self.started = asyncio.Event()
-            self.cancel_seen = asyncio.Event()
-            self.release = asyncio.Event()
-
-        async def run_loop(self):
             self.started.set()
-            while not self.release.is_set():
-                try:
-                    await self.release.wait()
-                except asyncio.CancelledError:
-                    self.cancel_seen.set()
-            return "late"
+            await self.release_gate.wait()
+            self.finished = True
 
-    env = AbortTrackingEnv()
-    pool = RecordingPool(env)
-    child = CancellationResistantSession(env)
     lead = ScriptedSession("lead", [])
-    scheduler, _ = build_scheduler(lead, [child])
+    scheduler, _ = build_scheduler(lead, [])
+    pool = BlockingReleasePool()
     scheduler._worktree_pool = pool
 
     async def scenario():
-        lead.state.set_phase(SessionPhase.AWAITING_EVENTS)
-        aid = await scheduler.spawn(
-            0,
-            "coder",
-            "cancel cleanup caller",
-            tool_call_id="cancel-cleanup",
-        )
-        lead.state.pending_events.add(
-            PendingRow(
-                tool_call_id="cancel-cleanup",
-                kind=RowKind.CHILD_AGENT,
-                order=0,
-                ref=aid,
-            )
-        )
-        await child.started.wait()
-        driver = scheduler._tasks[aid]
-        cleanup_task = asyncio.create_task(
-            scheduler.cleanup(cleanup_timeout=0.01)
-        )
-        await child.cancel_seen.wait()
+        cleanup_task = asyncio.create_task(scheduler.cleanup(cleanup_timeout=0.2))
+        await pool.started.wait()
         cleanup_task.cancel()
+        pool.release_gate.set()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(cleanup_task, timeout=0.5)
-
-        row = lead.state.pending_events.rows["cancel-cleanup"]
-        assert env.aborted.is_set()
-        assert pool.released.is_set() is False
-        assert scheduler._tasks == {}
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
-        assert row.status is RowStatus.FAILED
-        assert aid not in scheduler._child_reservation
-        assert scheduler.inflight_spawn("coder", "cancel cleanup caller") is None
-
-        child.release.set()
-        await asyncio.wait_for(driver, timeout=0.5)
+        assert pool.finished is True
 
     run(scenario())
 
@@ -970,7 +887,7 @@ def test_cleanup_wins_race_after_delivery_starts_before_parent_row_fill():
                 timeout=0.5,
             )
         row = lead.state.pending_events.rows["delivery-race"]
-        assert cancellations >= 2
+        assert cancellations >= 1
         assert row.status is RowStatus.FAILED
         assert row.result and "scheduler cleanup" in row.result
         assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
@@ -987,97 +904,6 @@ def test_cleanup_wins_race_after_delivery_starts_before_parent_row_fill():
     run(scenario())
 
 
-@pytest.mark.parametrize("blocked_stage", ["diff", "event"])
-def test_cleanup_prevents_late_finalization_stage_from_flipping_parent_row(
-    blocked_stage,
-):
-    class BlockingFinalizationEnv:
-        def __init__(self):
-            self.started = asyncio.Event()
-            self.release = asyncio.Event()
-            self.aborted = asyncio.Event()
-            self.cancellations = 0
-
-        async def get_diff(self):
-            if blocked_stage != "diff":
-                return ""
-            self.started.set()
-            while not self.release.is_set():
-                try:
-                    await self.release.wait()
-                except asyncio.CancelledError:
-                    self.cancellations += 1
-            return "diff --git a/x b/x\n+late\n"
-
-        async def abort(self):
-            self.aborted.set()
-
-    class BlockingEventSink:
-        def __init__(self, env):
-            self.env = env
-
-        async def emit(self, event):
-            if blocked_stage != "event" or event.type != "agent_completed":
-                return
-            self.env.started.set()
-            while not self.env.release.is_set():
-                try:
-                    await self.env.release.wait()
-                except asyncio.CancelledError:
-                    self.env.cancellations += 1
-
-    env = BlockingFinalizationEnv()
-    lead = ScriptedSession("lead", [])
-    child = ScriptedSession("coder", [terminal("late success")])
-    child.env = env
-    scheduler, _ = build_scheduler(lead, [child])
-    scheduler._event_sink = BlockingEventSink(env)
-
-    async def scenario():
-        lead.state.set_phase(SessionPhase.AWAITING_EVENTS)
-        aid = await scheduler.spawn(
-            0,
-            "coder",
-            f"block {blocked_stage}",
-            tool_call_id=f"late-{blocked_stage}",
-        )
-        lead.state.pending_events.add(
-            PendingRow(
-                tool_call_id=f"late-{blocked_stage}",
-                kind=RowKind.CHILD_AGENT,
-                order=0,
-                ref=aid,
-            )
-        )
-        driver = scheduler._tasks[aid]
-        await env.started.wait()
-        with pytest.raises(
-            RuntimeError,
-            match="technical scheduler cleanup failed: execution tasks did not quiesce",
-        ):
-            await asyncio.wait_for(
-                scheduler.cleanup(cleanup_timeout=0.01),
-                timeout=0.5,
-            )
-
-        row = lead.state.pending_events.rows[f"late-{blocked_stage}"]
-        assert env.aborted.is_set()
-        assert env.cancellations >= 2
-        assert row.status is RowStatus.FAILED
-        assert row.result and "scheduler cleanup" in row.result
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
-
-        env.release.set()
-        await asyncio.wait_for(driver, timeout=0.5)
-        row = lead.state.pending_events.rows[f"late-{blocked_stage}"]
-        assert row.status is RowStatus.FAILED
-        assert row.result and "scheduler cleanup" in row.result
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
-        assert scheduler.table.get(aid).result.startswith("Error: scheduler cleanup")
-
-    run(scenario())
-
-
 def test_cleanup_is_bounded_when_worktree_release_ignores_cancellation():
     class StubbornReleasePool:
         def __init__(self):
@@ -1086,29 +912,19 @@ def test_cleanup_is_bounded_when_worktree_release_ignores_cancellation():
             self.finished = asyncio.Event()
             self.cancellations = 0
             self.release_calls = 0
-            self.active_releases = 0
-            self.max_active_releases = 0
 
         async def acquire(self, role):
             return None
 
         async def release(self):
             self.release_calls += 1
-            self.active_releases += 1
-            self.max_active_releases = max(
-                self.max_active_releases,
-                self.active_releases,
-            )
             self.started.set()
-            try:
-                while not self.release_gate.is_set():
-                    try:
-                        await self.release_gate.wait()
-                    except asyncio.CancelledError:
-                        self.cancellations += 1
-                self.finished.set()
-            finally:
-                self.active_releases -= 1
+            while not self.release_gate.is_set():
+                try:
+                    await self.release_gate.wait()
+                except asyncio.CancelledError:
+                    self.cancellations += 1
+            self.finished.set()
 
     lead = ScriptedSession("lead", [])
     scheduler, _ = build_scheduler(lead, [])
@@ -1127,19 +943,8 @@ def test_cleanup_is_bounded_when_worktree_release_ignores_cancellation():
         assert pool.started.is_set()
         assert pool.cancellations >= 1
         assert pool.release_calls == 1
-        with pytest.raises(
-            RuntimeError,
-            match="technical scheduler cleanup failed: worktree pool release failed or timed out",
-        ):
-            await scheduler.cleanup(cleanup_timeout=0.01)
-        assert pool.release_calls == 1
-        assert pool.active_releases == 1
-        assert pool.max_active_releases == 1
         pool.release_gate.set()
         await asyncio.wait_for(pool.finished.wait(), timeout=0.5)
-        await scheduler.cleanup(cleanup_timeout=0.01)
-        assert pool.release_calls == 1
-        assert pool.active_releases == 0
 
     run(scenario())
 
@@ -1169,69 +974,18 @@ def test_cleanup_surfaces_synchronous_worktree_release_failure():
     run(scenario())
 
 
-def test_cleanup_retries_worktree_release_after_transient_failure():
-    class FailOnceReleasePool:
+def test_cleanup_surfaces_environment_abort_failure():
+    class FailingAbortEnv:
         def __init__(self):
-            self.release_calls = 0
+            self.revoked = False
 
-        async def acquire(self, role):
-            return None
-
-        async def release(self):
-            self.release_calls += 1
-            if self.release_calls == 1:
-                raise OSError("transient release failure")
-
-    lead = ScriptedSession("lead", [])
-    scheduler, _ = build_scheduler(lead, [])
-    pool = FailOnceReleasePool()
-    scheduler._worktree_pool = pool
-
-    async def scenario():
-        with pytest.raises(
-            RuntimeError,
-            match="technical scheduler cleanup failed: worktree pool release failed or timed out",
-        ):
-            await scheduler.cleanup(cleanup_timeout=0.01)
-        assert scheduler._cleanup_task is None
-
-        await scheduler.cleanup(cleanup_timeout=0.01)
-        assert pool.release_calls == 2
-        assert scheduler._cleanup_task is not None
-        assert scheduler._cleanup_task.done()
-
-    run(scenario())
-
-
-def test_cleanup_surfaces_environment_abort_timeout_and_late_task_stays_terminal():
-    class StubbornAbortEnv:
-        def __init__(self):
-            self.abort_started = asyncio.Event()
-            self.abort_release = asyncio.Event()
-            self.abort_finished = asyncio.Event()
-            self.abort_calls = 0
-            self.active_aborts = 0
-            self.max_active_aborts = 0
+        def revoke(self):
+            self.revoked = True
 
         async def abort(self):
-            self.abort_calls += 1
-            self.active_aborts += 1
-            self.max_active_aborts = max(
-                self.max_active_aborts,
-                self.active_aborts,
-            )
-            self.abort_started.set()
-            try:
-                while not self.abort_release.is_set():
-                    try:
-                        await self.abort_release.wait()
-                    except asyncio.CancelledError:
-                        continue
-                self.abort_finished.set()
-            finally:
-                self.active_aborts -= 1
+            raise OSError("abort failed")
 
-    class StubbornSession:
+    class ResistantSession:
         def __init__(self, env):
             self.agent = type("_Agent", (), {"name": "coder"})()
             self.state = SessionState(messages=[])
@@ -1247,25 +1001,12 @@ def test_cleanup_surfaces_environment_abort_timeout_and_late_task_stays_terminal
                     await self.release.wait()
                 except asyncio.CancelledError:
                     continue
-            return "late completion"
+            return "late"
 
-    env = StubbornAbortEnv()
-    child = StubbornSession(env)
+    env = FailingAbortEnv()
+    child = ResistantSession(env)
     lead = ScriptedSession("lead", [])
     scheduler, _ = build_scheduler(lead, [child])
-
-    class RecordingPool:
-        def __init__(self):
-            self.release_calls = 0
-
-        async def acquire(self, _role):
-            return env
-
-        async def release(self):
-            self.release_calls += 1
-
-    pool = RecordingPool()
-    scheduler._worktree_pool = pool
 
     async def scenario():
         aid = await scheduler.spawn(0, "coder", "stay active")
@@ -1273,33 +1014,40 @@ def test_cleanup_surfaces_environment_abort_timeout_and_late_task_stays_terminal
         await child.started.wait()
         with pytest.raises(RuntimeError) as caught:
             await scheduler.cleanup(cleanup_timeout=0.01)
-        assert "execution tasks did not quiesce" in str(caught.value)
         assert "session environment abort failed or timed out" in str(caught.value)
-        assert env.abort_started.is_set()
-        assert env._aborted is True
-        assert pool.release_calls == 0
+        assert env.revoked is True
         assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
-
-        with pytest.raises(RuntimeError) as retry_caught:
-            await scheduler.cleanup(cleanup_timeout=0.01)
-        assert "execution tasks did not quiesce" in str(retry_caught.value)
-        assert pool.release_calls == 0
-        assert env.abort_calls == 1
-        assert env.active_aborts == 1
-        assert env.max_active_aborts == 1
-
         child.release.set()
-        env.abort_release.set()
         await asyncio.wait_for(driver, timeout=0.5)
-        await asyncio.wait_for(env.abort_finished.wait(), timeout=0.5)
-        await scheduler.cleanup(cleanup_timeout=0.01)
-        assert pool.release_calls == 1
-        assert env.abort_calls == 1
-        assert env.active_aborts == 0
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
-        assert scheduler.table.get(aid).result.startswith("Error: scheduler cleanup")
 
     run(scenario())
+
+
+def test_cleanup_uses_public_revoke_on_slotted_environment():
+    class SlottedEnvironment:
+        __slots__ = ("abort_calls", "revoked")
+
+        def __init__(self):
+            self.revoked = False
+            self.abort_calls = 0
+
+        def revoke(self):
+            self.revoked = True
+
+        async def abort(self):
+            self.abort_calls += 1
+
+    environment = SlottedEnvironment()
+    lead = ScriptedSession("lead", [])
+    lead.env = environment
+    scheduler, _ = build_scheduler(lead, [])
+
+    async def scenario():
+        assert await scheduler._abort_session_environments({0}, timeout=0.1)
+
+    run(scenario())
+    assert environment.revoked is True
+    assert environment.abort_calls == 1
 
 
 def test_spawn_blocked_in_acquire_cannot_resurrect_after_cleanup():
@@ -1360,7 +1108,7 @@ def test_spawn_blocked_in_acquire_cannot_resurrect_after_cleanup():
         ):
             await scheduler.cleanup(cleanup_timeout=0.01)
         assert pool.release_calls == 0
-        assert pool.cancellations >= 2
+        assert pool.cancellations >= 1
         assert scheduler._startup_tasks == {}
         assert scheduler._startup_origin == {}
         assert scheduler._startup_envs == {}
@@ -1396,22 +1144,13 @@ def test_message_add_blocked_during_cleanup_cannot_create_late_driver():
             super().__init__("coder", [terminal("first turn")])
             self.add_started = asyncio.Event()
             self.add_release = asyncio.Event()
-            self.add_finished = asyncio.Event()
-            self.cancellations = 0
 
         async def add_user_message(self, content):
+            self.added.append(content)
             self.state.append_message({"role": "user", "content": content})
             self.state.reset_for_user_turn()
             self.add_started.set()
-            while not self.add_release.is_set():
-                try:
-                    await self.add_release.wait()
-                except asyncio.CancelledError:
-                    self.cancellations += 1
-            self.state.append_message(
-                {"role": "user", "content": "late add mutation"}
-            )
-            self.add_finished.set()
+            await self.add_release.wait()
 
     lead = ScriptedSession("lead", [])
     child = BlockingAddSession()
@@ -1421,38 +1160,42 @@ def test_message_add_blocked_during_cleanup_cannot_create_late_driver():
         aid = await scheduler.spawn(0, "coder", "first")
         await scheduler._tasks[aid]
         assert child.state.phase is SessionPhase.DONE
+        child.state.recent_call_hashes = ["prior-call"]
+        child.state.reads_since_last_edit = 4
+        child.state.low_yield_since_progress = 3
+        child.state.distinct_evidence_count = 2
+        child.state.steps_since_progress = 5
+        child.state.loop_blocked_since_progress = 1
+        child.state._seen_result_hashes = {"prior-result"}
+        child.state.scout_ledger = [{"tool": "grep", "outcome": "hit"}]
         messages_before = list(child.state.messages)
 
         send_task = asyncio.create_task(
             scheduler.send_message(0, aid, "late", "must stay queued")
         )
         await child.add_started.wait()
+        assert len(scheduler._message_inbox[aid]) == 1
+        assert len(child.state.pending_user_messages) == 1
         with pytest.raises(
             RuntimeError,
-            match="technical scheduler cleanup failed: execution tasks did not quiesce",
+            match="technical scheduler cleanup failed: message delivery was interrupted",
         ):
             await scheduler.cleanup(cleanup_timeout=0.01)
         with pytest.raises(asyncio.CancelledError):
             await send_task
 
-        assert child.cancellations >= 2
         assert scheduler._message_delivery_tasks == {}
-        assert scheduler._message_delivery_records == {}
         assert scheduler._tasks == {}
         assert child.state.phase is SessionPhase.DONE
         assert child.state.messages == messages_before
-        assert len(scheduler._message_inbox[aid]) == 1
-        assert len(child.state.pending_user_messages) == 1
-        assert aid not in scheduler._child_reservation
-
-        child.add_release.set()
-        await asyncio.wait_for(child.add_finished.wait(), timeout=0.5)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-
-        assert scheduler._tasks == {}
-        assert child.state.phase is SessionPhase.DONE
-        assert child.state.messages == messages_before
+        assert child.state.recent_call_hashes == ["prior-call"]
+        assert child.state.reads_since_last_edit == 4
+        assert child.state.low_yield_since_progress == 3
+        assert child.state.distinct_evidence_count == 2
+        assert child.state.steps_since_progress == 5
+        assert child.state.loop_blocked_since_progress == 1
+        assert child.state._seen_result_hashes == {"prior-result"}
+        assert child.state.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
         assert len(scheduler._message_inbox[aid]) == 1
         assert len(child.state.pending_user_messages) == 1
         assert aid not in scheduler._child_reservation

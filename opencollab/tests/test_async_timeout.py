@@ -8,6 +8,7 @@ import sys
 import pytest
 from opencollab.application.async_timeout import (
     abandon_on_timeout,
+    cancel_tasks_and_wait,
     force_task_terminal,
     run_with_bounded_shutdown,
 )
@@ -92,6 +93,33 @@ def test_force_task_terminal_runs_cooperative_finally():
     assert result.terminal is True
     assert result.errors == ()
     assert finalized == [True]
+
+
+def test_cancel_tasks_and_wait_returns_only_cancellation_resistant_tasks():
+    async def scenario():
+        release = asyncio.Event()
+
+        async def cooperative():
+            await asyncio.Event().wait()
+
+        async def resistant():
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                await release.wait()
+
+        cooperative_task = asyncio.create_task(cooperative())
+        resistant_task = asyncio.create_task(resistant())
+        await asyncio.sleep(0)
+        pending = await cancel_tasks_and_wait(
+            (cooperative_task, resistant_task, resistant_task),
+            timeout=0.01,
+        )
+        assert pending == {resistant_task}
+        release.set()
+        await resistant_task
+
+    asyncio.run(scenario())
 
 
 def test_bounded_shutdown_runs_pending_task_finalizers():

@@ -523,12 +523,22 @@ def test_tool_processor_returns_result_before_state_application():
     assert session._recent_call_hashes == result.recent_hash_updates
 
 
-def test_tool_permission_error_is_returned_as_tool_message():
-    tool = FakeTool(exc=PermissionError("blocked"))
-    fake_llm = FakeLLMClient([
-        llm_response(tool_calls=[tool_call(arguments='{"value": 1}')], finish_reason="tool_calls"),
-        llm_response(content="after permission"),
-    ])
+@pytest.mark.parametrize(
+    ("error", "final_answer", "expected_content"),
+    [
+        (PermissionError("blocked"), "after permission", "Permission denied: blocked"),
+        (ValueError("bad value"), "after exception", "Tool execution error: ValueError: bad value"),
+    ],
+    ids=["permission-error", "tool-exception"],
+)
+def test_tool_errors_are_returned_as_tool_messages(error, final_answer, expected_content):
+    tool = FakeTool(exc=error)
+    fake_llm = FakeLLMClient(
+        [
+            llm_response(tool_calls=[tool_call(arguments='{"value": 1}')], finish_reason="tool_calls"),
+            llm_response(content=final_answer),
+        ]
+    )
     events, on_event = event_collector()
     session = Session(
         agent=FakeAgent(tools=[tool]),
@@ -538,64 +548,34 @@ def test_tool_permission_error_is_returned_as_tool_message():
 
     result = run(session.run_loop())
 
-    assert result == "after permission"
+    assert result == final_answer
     assert session.messages[2] == {
         "role": "tool",
         "tool_call_id": "call-1",
-        "content": "Permission denied: blocked",
+        "content": expected_content,
     }
     assert [event.type for event in events[:3]] == ["step_start", "tool_start", "tool_end"]
 
 
-def test_tool_exception_is_returned_as_tool_message():
-    tool = FakeTool(exc=ValueError("bad value"))
-    fake_llm = FakeLLMClient([
-        llm_response(tool_calls=[tool_call(arguments='{"value": 1}')], finish_reason="tool_calls"),
-        llm_response(content="after exception"),
-    ])
-    session = Session(agent=FakeAgent(tools=[tool]), llm=fake_llm)
-
-    result = run(session.run_loop())
-
-    assert result == "after exception"
-    assert session.messages[2] == {
-        "role": "tool",
-        "tool_call_id": "call-1",
-        "content": "Tool execution error: ValueError: bad value",
-    }
-
-
-def test_invalid_json_tool_arguments_append_error_tool_message_without_execution():
-    tool = FakeTool()
-    fake_llm = FakeLLMClient([
-        llm_response(tool_calls=[tool_call(arguments="{not json")], finish_reason="tool_calls"),
-        llm_response(content="recovered"),
-    ])
-    events, on_event = event_collector()
-    session = Session(
-        agent=FakeAgent(tools=[tool]),
-        llm=fake_llm,
-        event_sink=EventBus(on_event),
-    )
-
-    result = run(session.run_loop())
-
-    assert result == "recovered"
-    assert tool.calls == []
-    assert session.messages[2] == {
-        "role": "tool",
-        "tool_call_id": "call-1",
-        "content": "Error: invalid JSON arguments: {not json",
-    }
-    assert "tool_start" not in [event.type for event in events]
-
-
-def test_unknown_tool_appends_available_tools_error():
+@pytest.mark.parametrize(
+    ("call", "expected_content"),
+    [
+        (tool_call(arguments="{not json"), "Error: invalid JSON arguments: {not json"),
+        (
+            tool_call(name="missing_tool", arguments='{"value": 1}'),
+            "Error: unknown tool 'missing_tool'. Available: ['known_tool']",
+        ),
+    ],
+    ids=["invalid-json", "unknown-tool"],
+)
+def test_invalid_tool_calls_append_error_without_execution(call, expected_content):
     known_tool = FakeTool(name="known_tool")
-    fake_llm = FakeLLMClient([
-        llm_response(tool_calls=[tool_call(name="missing_tool", arguments='{"value": 1}')], finish_reason="tool_calls"),
-        llm_response(content="after unknown"),
-    ])
+    fake_llm = FakeLLMClient(
+        [
+            llm_response(tool_calls=[call], finish_reason="tool_calls"),
+            llm_response(content="recovered"),
+        ]
+    )
     events, on_event = event_collector()
     session = Session(
         agent=FakeAgent(tools=[known_tool]),
@@ -605,12 +585,12 @@ def test_unknown_tool_appends_available_tools_error():
 
     result = run(session.run_loop())
 
-    assert result == "after unknown"
+    assert result == "recovered"
     assert known_tool.calls == []
     assert session.messages[2] == {
         "role": "tool",
         "tool_call_id": "call-1",
-        "content": "Error: unknown tool 'missing_tool'. Available: ['known_tool']",
+        "content": expected_content,
     }
     assert "tool_start" not in [event.type for event in events]
 

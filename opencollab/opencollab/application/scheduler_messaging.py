@@ -15,7 +15,6 @@ helpers defined on ``Scheduler``.
 from __future__ import annotations
 
 import asyncio
-import copy
 import xml.etree.ElementTree as ET
 from xml.sax.saxutils import escape, quoteattr
 
@@ -212,50 +211,28 @@ class MessagingMixin:
             if len(messages) == 1
             else self._format_teammate_message_batch(messages)
         )
-        state_snapshot = copy.deepcopy(session.state.__dict__)
-        del inbox[: len(messages)]
-        for message in messages:
-            session.state.discard_pending_user_message(message.xml)
-
-        record: dict[str, object] = {
-            "aid": aid,
-            "session": session,
-            "inbox": inbox,
-            "messages": messages,
-            "state_snapshot": state_snapshot,
-            "prior_lease": prior_lease,
-            "lease_restored": False,
-            "invalidated": False,
-            "committed": False,
-            "callback_attached": False,
-        }
-        add_task = asyncio.create_task(session.add_user_message(delivery))
-        record["add_task"] = add_task
-        self._message_delivery_records[aid] = record
         if current_task is not None:
             self._message_delivery_tasks[aid] = current_task
+        checkpoint = session.state.checkpoint_user_turn()
         try:
-            # Shield separates outer delivery ownership from a cancellation-
-            # resistant add hook. Cleanup cancels the outer task to release this
-            # recipient lock immediately, then handles the inner task separately.
-            await asyncio.shield(add_task)
+            await session.add_user_message(delivery)
         except BaseException:
-            self._rollback_message_delivery_locked(aid, record)
-            if not add_task.done():
-                add_task.cancel()
-            self._attach_late_message_restore(aid, record, add_task)
+            session.state.restore_user_turn(checkpoint)
+            self._autosave_session(aid)
+            self._release_turn_budget(aid)
+            if not self._shutting_down:
+                self._restore_turn_budget(aid, prior_lease)
             raise
         finally:
             if self._message_delivery_tasks.get(aid) is current_task:
                 self._message_delivery_tasks.pop(aid, None)
 
-        if self._shutting_down or record.get("invalidated", False):
-            self._rollback_message_delivery_locked(aid, record)
-            self._attach_late_message_restore(aid, record, add_task)
+        if self._shutting_down:
+            self._release_turn_budget(aid)
             return []
-        record["committed"] = True
-        if self._message_delivery_records.get(aid) is record:
-            self._message_delivery_records.pop(aid, None)
+        del inbox[: len(messages)]
+        for message in messages:
+            session.state.discard_pending_user_message(message.xml)
         self._autosave_session(aid)
 
         self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
@@ -270,70 +247,3 @@ class MessagingMixin:
             )
             for message in messages
         ]
-
-    def _rollback_message_delivery_locked(
-        self,
-        aid: int,
-        record: dict[str, object],
-    ) -> None:
-        """Restore one recipient turn while its per-aid lock is held."""
-        session = record["session"]
-        inbox = record["inbox"]
-        messages = record["messages"]
-        state_snapshot = record["state_snapshot"]
-        session.state.__dict__.clear()
-        session.state.__dict__.update(copy.deepcopy(state_snapshot))
-        inbox[:] = list(messages)
-        if not record.get("lease_restored", False):
-            self._release_turn_budget(aid)
-            self._restore_turn_budget(aid, record.get("prior_lease"))
-            record["lease_restored"] = True
-        add_task = record.get("add_task")
-        if isinstance(add_task, asyncio.Task) and not add_task.done():
-            record["late_restore_required"] = True
-        record["invalidated"] = True
-        self._autosave_session(aid)
-
-    def _attach_late_message_restore(
-        self,
-        aid: int,
-        record: dict[str, object],
-        add_task: asyncio.Task[object],
-    ) -> None:
-        """Reapply the snapshot after a cancellation-resistant add finally exits."""
-        if record.get("callback_attached", False):
-            return
-        if add_task.done() and not record.get("late_restore_required", False):
-            self._consume_background_task(add_task)
-            if self._message_delivery_records.get(aid) is record:
-                self._message_delivery_records.pop(aid, None)
-            if self._lead_turn_record is record:
-                self._lead_turn_record = None
-            return
-        record["callback_attached"] = True
-
-        def restore_after_add(done: asyncio.Task[object]) -> None:
-            self._consume_background_task(done)
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                return
-            loop.create_task(self._restore_late_message_delivery(aid, record))
-
-        add_task.add_done_callback(restore_after_add)
-
-    async def _restore_late_message_delivery(
-        self,
-        aid: int,
-        record: dict[str, object],
-    ) -> None:
-        lock = self._locks.setdefault(aid, asyncio.Lock())
-        async with lock:
-            if record.get("invalidated", False):
-                self._rollback_message_delivery_locked(aid, record)
-                if record.get("cleanup_terminal", False):
-                    self._finalize_cleanup_failure(aid)
-        if self._message_delivery_records.get(aid) is record:
-            self._message_delivery_records.pop(aid, None)
-        if self._lead_turn_record is record:
-            self._lead_turn_record = None

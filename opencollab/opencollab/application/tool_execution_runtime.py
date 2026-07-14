@@ -1,15 +1,72 @@
 from __future__ import annotations
 
 import asyncio
-import sys
-from typing import TYPE_CHECKING, Any, Callable
+import inspect
+import json
+import logging
+import math
+import os
+import time
+from dataclasses import dataclass
+from typing import Any, Callable
 
-if TYPE_CHECKING:
-    from opencollab.application.tool_execution import ToolRuntime
+from opencollab.application.async_timeout import (
+    CallerTimeoutError,
+    await_owned_operation,
+    consume_task_result,
+)
+from opencollab.application.ports import AskUserPort, EnvironmentPort, PermissionPort, SafetyPolicyPort
+
+logger = logging.getLogger(__name__)
 
 
-def _tool_execution_module():
-    return sys.modules["opencollab.application.tool_execution"]
+def _positive_env_float(name: str, default: float) -> float:
+    try:
+        value = float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return value if math.isfinite(value) and value > 0 else default
+
+
+class _ToolExecutionTimeoutError(CallerTimeoutError):
+    """Raised only by this use case's own per-tool deadline."""
+
+
+DEFAULT_TOOL_EXECUTION_TIMEOUT = _positive_env_float("OPENCOLLAB_TOOL_EXECUTION_TIMEOUT", 180.0)
+MAX_TOOL_EXECUTION_TIMEOUT = _positive_env_float("OPENCOLLAB_TOOL_EXECUTION_MAX_TIMEOUT", 900.0)
+TOOL_EXECUTION_TIMEOUT_GRACE = 10.0
+DEFAULT_TOOL_CANCELLATION_CLEANUP_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_CANCELLATION_CLEANUP_TIMEOUT", 1.0
+)
+DEFAULT_TOOL_CANCELLATION_FORCE_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_CANCELLATION_FORCE_TIMEOUT", 0.5
+)
+DEFAULT_TOOL_ENVIRONMENT_ABORT_TIMEOUT = _positive_env_float(
+    "OPENCOLLAB_TOOL_ENVIRONMENT_ABORT_TIMEOUT", 1.0
+)
+
+
+@dataclass(frozen=True)
+class DeferredCall:
+    """Reference to work whose tool result will arrive asynchronously."""
+
+    ref: int
+
+
+@dataclass(frozen=True)
+class ToolRuntime:
+    environment: EnvironmentPort | None
+    safety_policy: SafetyPolicyPort | None
+    permission_policy: PermissionPort | None
+    ask_policy: AskUserPort | None = None
+    aid: int = -1
+    tool_call_id: str | None = None
+
+    def confirm_fn(self):
+        return None if self.permission_policy is None else self.permission_policy.confirm
+
+    def ask_fn(self):
+        return None if self.ask_policy is None else self.ask_policy.ask
 
 
 class ToolExecutionRuntimeMixin:
@@ -25,7 +82,7 @@ class ToolExecutionRuntimeMixin:
         Returns ``(output, latency_seconds)`` — never raises, so one failing
         tool cannot abort the rest of the batch.
         """
-        start = _tool_execution_module().time.monotonic()
+        start = time.monotonic()
         runtime = self.tool_runtime(tool_call_id=tool_id)
         timeout = self.tool_execution_timeout(tool, args)
         execution_task: asyncio.Task[Any] | None = None
@@ -33,7 +90,7 @@ class ToolExecutionRuntimeMixin:
             execution = tool.execute_with_runtime(args, runtime)
             execution_task = asyncio.ensure_future(execution)
             result = await self._await_execution_task(execution_task, timeout)
-        except _tool_execution_module()._ToolExecutionTimeoutError:
+        except _ToolExecutionTimeoutError:
             tool_name = self._tool_display_name(tool)
             timeout_result = f"Tool execution timed out after {timeout:.1f}s while running '{tool_name}'."
             if execution_task is None:
@@ -49,7 +106,7 @@ class ToolExecutionRuntimeMixin:
                     result = timeout_result
                 else:
                     details = [
-                        "Tool cancellation cleanup failed after two bounded cancellation attempts",
+                        "Tool cancellation cleanup failed to meet its bounded deadline",
                         "the execution environment was revoked before returning",
                     ]
                     if revoke_error:
@@ -70,7 +127,7 @@ class ToolExecutionRuntimeMixin:
             if execution_task is not None and not execution_task.done():
                 self._track_pending_cleanup(execution_task)
 
-        return result, _tool_execution_module().time.monotonic() - start
+        return result, time.monotonic() - start
 
     @staticmethod
     async def _await_execution_task(task: asyncio.Task[Any], timeout: float | None) -> Any:
@@ -80,54 +137,31 @@ class ToolExecutionRuntimeMixin:
         if task in done:
             return task.result()
         task.cancel()
-        raise _tool_execution_module()._ToolExecutionTimeoutError
-
-    async def _quiesce_cancelled_task(self, task: asyncio.Task[Any]) -> bool:
-        """Give one cancellation time to unwind, then cancel once more."""
-        if await self._wait_task(task, self._cancellation_cleanup_timeout):
-            return True
-        task.cancel()
-        return await self._wait_task(task, self._cancellation_force_timeout)
+        raise _ToolExecutionTimeoutError
 
     async def _cleanup_caller_cancelled_execution(self, task: asyncio.Task[Any]) -> None:
         task.cancel()
         await self._cleanup_timed_out_execution(task)
 
     async def _cleanup_timed_out_execution(self, task: asyncio.Task[Any]) -> tuple[bool, str | None, str | None]:
-        if await self._quiesce_cancelled_task(task):
+        task.cancel()
+        if await self._wait_task(task, self._cancellation_cleanup_timeout):
             return True, None, None
         self._track_pending_cleanup(task)
-        revoke_error = self._revoke_environment_sync()
+        revoke_error = self._revoke_environment()
         abort_error = await self._abort_environment_bounded()
-        termination = await _tool_execution_module().force_task_terminal(
-            task,
-            timeout=self._cancellation_force_timeout,
-        )
-        if termination.errors:
-            detail = "; ".join(str(error) for error in termination.errors)
-            abort_error = "; ".join(part for part in (abort_error, detail) if part)
         return False, revoke_error, abort_error
 
     async def _await_owned_cleanup_despite_cancellation(self, cleanup_task: asyncio.Task[Any]) -> None:
-        """Finish owned cleanup even when the caller repeats ``Task.cancel``."""
-        while True:
-            try:
-                await asyncio.shield(cleanup_task)
-                return
-            except asyncio.CancelledError:
-                if cleanup_task.done():
-                    self._consume_task_result(cleanup_task)
-                    return
-                continue
-            except BaseException:
-                self._consume_task_result(cleanup_task)
-                return
+        try:
+            await await_owned_operation(cleanup_task)
+        except BaseException:
+            consume_task_result(cleanup_task)
 
-    @staticmethod
-    async def _wait_task(task: asyncio.Task[Any], timeout: float) -> bool:
+    async def _wait_task(self, task: asyncio.Task[Any], timeout: float) -> bool:
         done, _pending = await asyncio.wait({task}, timeout=timeout)
         if done:
-            _tool_execution_module().ToolExecutionUseCase._consume_task_result(task)
+            consume_task_result(task)
         return bool(done)
 
     def _track_pending_cleanup(self, task: asyncio.Task[Any]) -> None:
@@ -135,22 +169,17 @@ class ToolExecutionRuntimeMixin:
             return
         self._pending_cleanup_tasks.add(task)
         task.add_done_callback(self._pending_cleanup_tasks.discard)
-        task.add_done_callback(self._consume_task_result)
+        task.add_done_callback(consume_task_result)
 
-    @staticmethod
-    def _consume_task_result(task: asyncio.Task[Any]) -> None:
-        try:
-            task.result()
-        except BaseException:
-            pass
-
-    def _revoke_environment_sync(self) -> str | None:
-        """Synchronously block concrete Environment methods before abort awaits."""
+    def _revoke_environment(self) -> str | None:
         if self.environment is None:
             return "no execution environment was available to revoke"
+        revoke = getattr(self.environment, "revoke", None)
+        if not callable(revoke):
+            return "environment revocation was unavailable"
         try:
-            setattr(self.environment, "_aborted", True)
-        except Exception as exc:  # pragma: no cover - exotic immutable ports
+            revoke()
+        except Exception as exc:
             return f"environment revocation failed: {type(exc).__name__}: {exc}"
         return None
 
@@ -164,7 +193,7 @@ class ToolExecutionRuntimeMixin:
             outcome = abort()
         except Exception as exc:
             return f"environment abort failed: {type(exc).__name__}: {exc}"
-        if not _tool_execution_module().inspect.isawaitable(outcome):
+        if not inspect.isawaitable(outcome):
             return None
 
         try:
@@ -181,14 +210,8 @@ class ToolExecutionRuntimeMixin:
             if await self._wait_task(abort_task, self._cancellation_force_timeout):
                 failure = self._task_failure(abort_task, label="environment abort")
                 return failure or "environment abort timed out and was cancelled"
-            termination = await _tool_execution_module().force_task_terminal(
-                abort_task,
-                timeout=self._cancellation_force_timeout,
-            )
-            if not termination.terminal:
-                self._track_pending_cleanup(abort_task)
-            detail = "; ".join(str(error) for error in termination.errors)
-            return "environment abort did not quiesce within its bounded timeout" + (f": {detail}" if detail else "")
+            self._track_pending_cleanup(abort_task)
+            return "environment abort did not quiesce within its bounded timeout"
         except asyncio.CancelledError:
             abort_task.cancel()
             self._track_pending_cleanup(abort_task)
@@ -213,15 +236,15 @@ class ToolExecutionRuntimeMixin:
         requested = self._numeric_timeout((args or {}).get("timeout"))
         base = requested if requested is not None else self._tool_default_timeout(tool)
         return min(
-            base + _tool_execution_module().TOOL_EXECUTION_TIMEOUT_GRACE,
-            _tool_execution_module().MAX_TOOL_EXECUTION_TIMEOUT,
+            base + TOOL_EXECUTION_TIMEOUT_GRACE,
+            MAX_TOOL_EXECUTION_TIMEOUT,
         )
 
     def _tool_default_timeout(self, tool: Any) -> float:
         configured = self._numeric_timeout(getattr(tool, "default_timeout", None))
         if configured is not None:
             return configured
-        return _tool_execution_module().DEFAULT_TOOL_EXECUTION_TIMEOUT
+        return DEFAULT_TOOL_EXECUTION_TIMEOUT
 
     def _numeric_timeout(self, value: Any) -> float | None:
         if value is None or isinstance(value, bool):
@@ -230,12 +253,12 @@ class ToolExecutionRuntimeMixin:
             timeout = float(value)
         except (TypeError, ValueError):
             return None
-        if not _tool_execution_module().math.isfinite(timeout) or timeout <= 0:
+        if not math.isfinite(timeout) or timeout <= 0:
             return None
         return timeout
 
     def tool_runtime(self, tool_call_id: str | None = None) -> ToolRuntime:
-        return _tool_execution_module().ToolRuntime(
+        return ToolRuntime(
             environment=self.environment,
             safety_policy=self.safety_policy,
             permission_policy=self.permission_policy,
@@ -262,7 +285,7 @@ class ToolExecutionRuntimeMixin:
         tool_name = func["name"]
         try:
             args = self.parse_tool_args(func)
-        except _tool_execution_module().json.JSONDecodeError:
+        except json.JSONDecodeError:
             raw_args = str(func.get("arguments", ""))
             return None, f"Error: invalid JSON arguments: {raw_args[:200]}"
         except ValueError:
@@ -287,7 +310,7 @@ class ToolExecutionRuntimeMixin:
                 label="tool_end",
             )
 
-        if isinstance(outcome, _tool_execution_module().DeferredCall):
+        if isinstance(outcome, DeferredCall):
             return outcome.ref, None
         return None, str(outcome)
 
@@ -307,7 +330,7 @@ class ToolExecutionRuntimeMixin:
         payload.update(detail)
         # Cap any args snapshot so a trace record can't balloon.
         if isinstance(payload.get("args"), dict):
-            snapshot = _tool_execution_module().json.dumps(payload["args"], default=str)[:500]
+            snapshot = json.dumps(payload["args"], default=str)[:500]
             payload["args"] = snapshot
         self._trace_observation(step_type=step_type, payload=payload)
 
@@ -316,7 +339,7 @@ class ToolExecutionRuntimeMixin:
         try:
             await self.event_publisher.emit(build_event())
         except Exception as exc:
-            _tool_execution_module().logger.error("%s event failed: %s", label, exc)
+            logger.error("%s event failed: %s", label, exc)
 
     def _trace_observation(self, **payload: Any) -> None:
         if not self.tracer:
@@ -324,7 +347,7 @@ class ToolExecutionRuntimeMixin:
         try:
             self.tracer.log_step(**payload)
         except Exception as exc:
-            _tool_execution_module().logger.error("tool trace failed: %s", exc)
+            logger.error("tool trace failed: %s", exc)
 
     def trace_payload(self, tool_name: str, args: dict, tool_output: str) -> dict[str, Any]:
         # Cap result in trace to 4k to keep trajectory files manageable.

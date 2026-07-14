@@ -24,9 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from types import SimpleNamespace
 
-from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.session_run import (
     DEFAULT_LOW_YIELD_M,
     DEFAULT_WATCHDOG_K,
@@ -38,7 +36,6 @@ from opencollab.application.submit_findings import (
     SubmitFindingsTool,
     commitment_terminus_payload,
 )
-from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase, SessionState
 from session_run_test_support import (
@@ -55,6 +52,7 @@ from session_run_test_support import (
 from session_run_test_support import (
     agent_with_submit as _agent_with_submit,
 )
+from tool_execution_test_support import build_sensor_use_case as _use_case
 
 
 def _captured():
@@ -301,22 +299,6 @@ def test_watchdog_forced_turn_ignored_escalates_and_latches_forced_unsatisfied()
 # --------------------------------------------------------------------------- #
 
 
-class FakeAgent:
-    def __init__(self, tools=None):
-        self.tools = tools or []
-
-    def find_tool(self, name):
-        for tool in self.tools:
-            if tool.name == name:
-                return tool
-        return None
-
-
-class FakeEventPublisher:
-    async def emit(self, event):  # pragma: no cover - trivial sink
-        pass
-
-
 class ScriptedTool:
     def __init__(self, name, outputs):
         self.name = name
@@ -324,29 +306,6 @@ class ScriptedTool:
 
     async def execute_with_runtime(self, args, runtime):
         return self._outputs.pop(0) if self._outputs else ""
-
-
-def _event_factory() -> SessionEventFactory:
-    factory = default_session_event_factory(aid=-1)
-    return SessionEventFactory(
-        step_start=factory.step_start,
-        step_end=factory.step_end,
-        text_delta=factory.text_delta,
-        error=factory.error,
-        loop_detected=lambda tool, count: SimpleNamespace(type="loop_detected", data={}),
-        tool_start=lambda tool, args: SimpleNamespace(type="tool_start", data={}),
-        tool_end=lambda tool, latency: SimpleNamespace(type="tool_end", data={}),
-    )
-
-
-def _use_case(state, tool):
-    return ToolExecutionUseCase(
-        agent=FakeAgent(tools=[tool]),
-        environment=None,
-        state=state,
-        event_publisher=FakeEventPublisher(),
-        event_factory=_event_factory(),
-    )
 
 
 def _run_one(state, tool, name, args):

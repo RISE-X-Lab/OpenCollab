@@ -12,51 +12,26 @@ The class is assembled from cohesive application-layer mixins:
 - ``MessagingMixin`` (``scheduler_messaging``) — teammate-message inbox
 - ``InflightDedupMixin`` (``scheduler_dedup``) — single-flight spawn dedup
 
-This module keeps construction and the compatibility import surface.
+This module keeps construction and the public import surface.
 """
-
-# ruff: noqa: F401
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
-import copy
-import inspect
-import logging
-import math
-import sys
-import types
 from typing import Any, Callable
 
-from opencollab.application import (
-    _scheduler_cleanup,
-    _scheduler_constants,
-    _scheduler_persistence,
-    _scheduler_review,
-    _scheduler_run,
-    _scheduler_team,
-)
 from opencollab.application._scheduler_cleanup import SchedulerCleanupMixin
-from opencollab.application._scheduler_constants import (
-    DEFAULT_SCHEDULER_CLEANUP_TIMEOUT,
-    MAX_FORCED_CLEANUP_TIMEOUT,
-    WORKTREE_DIFF_KEEP_CHARS,
-    WORKTREE_DIFF_MAX_CHARS,
-)
 from opencollab.application._scheduler_persistence import SchedulerPersistenceMixin
 from opencollab.application._scheduler_review import SchedulerReviewMixin
 from opencollab.application._scheduler_run import SchedulerRunMixin
 from opencollab.application._scheduler_team import SchedulerTeamMixin
-from opencollab.application.async_timeout import force_task_terminal
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.events import (
     SchedulerEventFactory,
     default_scheduler_event_factory,
 )
 from opencollab.application.ports import (
-    DiffCapablePort,
-    EnvironmentPort,
     EventPublisherPort,
     PermissionPort,
     SessionFactoryPort,
@@ -66,16 +41,12 @@ from opencollab.application.ports import (
 from opencollab.application.scheduler_dedup import InflightDedupMixin
 from opencollab.application.scheduler_lifecycle import LifecycleMixin
 from opencollab.application.scheduler_messaging import MessagingMixin
-from opencollab.application.scheduler_types import LaunchSpec, QueuedTeammateMessage
-from opencollab.application.self_collaboration import run_spawn_with_review
-from opencollab.domain.events import SchedulerEvent
+from opencollab.application.scheduler_types import LaunchSpec as LaunchSpec
+from opencollab.application.scheduler_types import QueuedTeammateMessage as QueuedTeammateMessage
 from opencollab.domain.identity import role_collision_key, validate_role_identity
-from opencollab.domain.pending import PendingRowError, RowStatus
-from opencollab.domain.scheduler import SessionTable, lead_reserve, split_budget
-from opencollab.domain.session import SessionPhase
+from opencollab.domain.scheduler import SessionTable
 from opencollab.domain.team import Topology
 
-logger = logging.getLogger(__name__)
 
 class Scheduler(
     SchedulerPersistenceMixin,
@@ -144,7 +115,6 @@ class Scheduler(
         self._locks: dict[int, asyncio.Lock] = {}
         self._run_lock = asyncio.Lock()
         self._active_run_tasks: set[asyncio.Task[Any]] = set()
-        self._lead_turn_record: dict[str, Any] | None = None
         self._lead_session: Any | None = None
         # child aid -> (parent aid, tool_call_id) for deferred spawns: lets a
         # child's completion fill the exact pending row that suspended its
@@ -175,12 +145,9 @@ class Scheduler(
         # aid -> queued teammate messages waiting to be appended as user
         # messages once that session is not running or suspended on pending work.
         self._message_inbox: dict[int, list[QueuedTeammateMessage]] = {}
-        # A recipient turn is transactional across ``add_user_message``. The
-        # outer delivery task and its rollback record stay owned until the add
-        # commits, letting cleanup cancel a blocked external send and restore the
-        # pre-delivery state even when the inner add coroutine ignores cancellation.
+        # The outer delivery task remains owned while ``add_user_message`` runs.
+        # The durable inbox entry is removed only after that call succeeds.
         self._message_delivery_tasks: dict[int, asyncio.Task[Any]] = {}
-        self._message_delivery_records: dict[int, dict[str, Any]] = {}
         # Optional bootstrap-injected callback that persists a team.json manifest
         # from the current roster. Kept as a callback so the application layer
         # stays free of filesystem I/O.
@@ -188,13 +155,6 @@ class Scheduler(
         self._manifest_subscriber: AutoSaveSubscriber | None = None
         self._shutting_down = False
         self._cleanup_task: asyncio.Task[None] | None = None
-        self._cleanup_execution_tasks: set[tuple[int, asyncio.Task[Any]]] = set()
-        self._cleanup_delivery_tasks: set[tuple[int, asyncio.Task[Any]]] = set()
-        self._cleanup_environment_abort_tasks: dict[
-            int,
-            tuple[Any, asyncio.Task[Any]],
-        ] = {}
-        self._cleanup_worktree_release_task: asyncio.Task[Any] | None = None
         self._fallback_autosavers: dict[int, AutoSaveSubscriber] = {}
         self._scheduler_persistence_errors: list[Exception] = []
         # A synchronous review loop temporarily yields its caller's turn lease
@@ -205,30 +165,5 @@ class Scheduler(
         self._review_parent_lease_tracker: contextvars.ContextVar[
             tuple[int, dict[str, int]] | None
         ] = contextvars.ContextVar("review_parent_lease_tracker", default=None)
-
-
-_COMPATIBILITY_MODULES = (
-    _scheduler_constants,
-    _scheduler_persistence,
-    _scheduler_team,
-    _scheduler_run,
-    _scheduler_cleanup,
-    _scheduler_review,
-)
-
-
-class _SchedulerFacade(types.ModuleType):
-    """Mirror patched compatibility names into focused scheduler modules."""
-
-    def __setattr__(self, name: str, value: object) -> None:
-        super().__setattr__(name, value)
-        if name.startswith("__"):
-            return
-        for module in _COMPATIBILITY_MODULES:
-            if hasattr(module, name):
-                setattr(module, name, value)
-
-
-sys.modules[__name__].__class__ = _SchedulerFacade
 
 __all__ = ["LaunchSpec", "QueuedTeammateMessage", "Scheduler"]

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Sequence
 from typing import Any
 
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.llm.types import DEFAULT_MAX_OUTPUT_TOKENS
 from opencollab.adapters.working_tree import EnvWorkingTreeProbe
 from opencollab.application.ports import EventPublisherPort, TracePort
 from opencollab.application.workflow import WorkflowContext
@@ -15,9 +17,15 @@ from opencollab.bootstrap.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_THINKING,
     DEFAULT_THINKING_PARAMS,
+    DEFAULT_TOP_P,
 )
 from opencollab.bootstrap.session_factory import build_session, workflow_transcript_path
 from opencollab.domain.agent import Agent
+
+_WORKFLOW_ENV_OVERRIDE: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
+    "workflow_environment_override",
+    default=None,
+)
 
 
 class WorkflowSessionFactory:
@@ -42,6 +50,8 @@ class WorkflowSessionFactory:
         event_sink: EventPublisherPort | None = None,
         llm_timeout: float = 600.0,
         temperature: float = DEFAULT_TEMPERATURE,
+        top_p: float | None = DEFAULT_TOP_P,
+        max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
         thinking: bool = DEFAULT_THINKING,
         thinking_params: dict | None = None,
         save_dir: str | None = None,
@@ -56,6 +66,8 @@ class WorkflowSessionFactory:
         self._event_sink = event_sink
         self._llm_timeout = llm_timeout
         self._temperature = temperature
+        self._top_p = top_p
+        self._max_output_tokens = max_output_tokens
         self._thinking = thinking
         self._thinking_params = thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
         # Run folder where each one-shot session's transcript is autosaved. When
@@ -105,6 +117,8 @@ class WorkflowSessionFactory:
             api_key=self._api_key,
             base_url=self._base_url,
             temperature=self._temperature,
+            top_p=self._top_p,
+            max_tokens_per_step=self._max_output_tokens,
             thinking=use_thinking,
             thinking_params=self._thinking_params,
             tool_choice=tool_choice,
@@ -146,6 +160,7 @@ def build_workflow_context(
     folder each session's transcript is autosaved into; ``None`` keeps sessions
     ephemeral.
     """
+    environment = env if env is not None else _WORKFLOW_ENV_OVERRIDE.get()
     factory = WorkflowSessionFactory(
         model=cfg["model"],
         provider=cfg["provider"],
@@ -156,15 +171,17 @@ def build_workflow_context(
         event_sink=event_sink,
         llm_timeout=float(cfg.get("llm_timeout", 600.0)),
         temperature=float(cfg.get("temperature", DEFAULT_TEMPERATURE)),
+        top_p=cfg.get("top_p", DEFAULT_TOP_P),
+        max_output_tokens=int(cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)),
         thinking=bool(cfg.get("thinking", DEFAULT_THINKING)),
         thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
         save_dir=save_dir,
-        env=env,
+        env=environment,
     )
     budget_total = budget if budget is not None else cfg.get("budget")
     # Working-tree probe over the same workspace the sessions edit, so the
     # workflow can verify a real edit landed before declaring success.
-    probe_env = env or (LocalEnvironment(workspace) if workspace else LocalEnvironment())
+    probe_env = environment or (LocalEnvironment(workspace) if workspace else LocalEnvironment())
     return WorkflowContext(
         factory,
         event_sink=event_sink,

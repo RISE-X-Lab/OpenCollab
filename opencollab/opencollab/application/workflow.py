@@ -36,6 +36,7 @@ from typing import Any
 
 from opencollab.application.async_timeout import (
     CallerTimeoutError,
+    consume_task_result,
 )
 from opencollab.application.async_timeout import (
     abandon_on_timeout as abandon_on_timeout,
@@ -467,19 +468,7 @@ class WorkflowContext:
                 )
             finally:
                 self._active_budget_lease.reset(token)
-                pending = [
-                    task
-                    for task in (lease.pending_tasks or [])
-                    if not task.done()
-                ]
-                if pending:
-                    cleanup_task = asyncio.create_task(
-                        self._release_call_after_tasks(lease, pending)
-                    )
-                    self._track_pending_cleanup(cleanup_task)
-                    slot_handed_to_cleanup = True
-                else:
-                    self.budget.release(lease)
+                slot_handed_to_cleanup = self._release_lease_when_quiescent(lease)
         finally:
             if slot_acquired and not slot_handed_to_cleanup:
                 self._semaphore.release()
@@ -496,28 +485,31 @@ class WorkflowContext:
             self.budget.release(lease)
             self._semaphore.release()
 
+    def _release_lease_when_quiescent(self, lease: _BudgetLease) -> bool:
+        """Release now, or hand the lease and semaphore slot to cleanup."""
+        pending = [task for task in (lease.pending_tasks or []) if not task.done()]
+        if not pending:
+            self.budget.release(lease)
+            return False
+        cleanup_task = asyncio.create_task(self._release_call_after_tasks(lease, pending))
+        self._track_pending_cleanup(cleanup_task)
+        return True
+
     def _track_pending_cleanup(self, task: asyncio.Task[Any]) -> None:
         """Own a background cleanup task and always consume its final result."""
         if task.done():
-            self._consume_task_result(task)
+            consume_task_result(task)
             return
         self._pending_cleanup_tasks.add(task)
         task.add_done_callback(self._pending_cleanup_done)
 
     def _pending_cleanup_done(self, task: asyncio.Task[Any]) -> None:
         self._pending_cleanup_tasks.discard(task)
-        self._consume_task_result(task)
+        consume_task_result(task)
 
     def _active_session_done(self, task: asyncio.Task[Any]) -> None:
         self._active_session_tasks.discard(task)
-        self._consume_task_result(task)
-
-    @staticmethod
-    def _consume_task_result(task: asyncio.Task[Any]) -> None:
-        try:
-            task.result()
-        except BaseException:
-            pass
+        consume_task_result(task)
 
     @staticmethod
     def _normalize_timeout(timeout: float | None) -> float | None:
@@ -621,18 +613,12 @@ class WorkflowContext:
         # even if the run loop raises partway through.
         self._track_session(session)
         try:
-            message_timeout = self._remaining_timeout(deadline)
-            await self._run_with_timeout(
-                session.add_user_message(prompt),
-                message_timeout,
-            )
             # ``timeout`` (e.g. ``ctx.seconds_left()``) bounds the run loop so a
             # near-deadline forced write is cancelled here, inside the workflow,
             # rather than by the outer ``asyncio.wait_for`` wall. Any tool edits
             # already written to disk before the cancel survive in the env, so the
             # patch is still extractable.
-            run_timeout = self._remaining_timeout(deadline)
-            return await self._run_with_timeout(session.run_loop(), run_timeout)
+            return await self._run_session_turn(session, prompt, deadline=deadline)
         except CallerTimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
             return None
@@ -694,15 +680,11 @@ class WorkflowContext:
         )
         text: str | None = None
         try:
-            message_timeout = self._remaining_timeout(deadline)
-            await self._run_with_timeout(
-                session.add_user_message(prompt),
-                message_timeout,
-            )
-            run_timeout = self._remaining_timeout(deadline)
-            text = await self._run_with_timeout(
-                session.run_loop(capture_done),
-                run_timeout,
+            text = await self._run_session_turn(
+                session,
+                prompt,
+                deadline=deadline,
+                cancel_event=capture_done,
             )
         except CallerTimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
@@ -775,13 +757,11 @@ class WorkflowContext:
         self._track_session(session)
         try:
             deadline = self._internal_commit_deadline()
-            await self._run_with_timeout(
-                session.add_user_message(prompt),
-                self._remaining_timeout(deadline),
-            )
-            await self._run_with_timeout(
-                session.run_loop(capture_done),
-                self._remaining_timeout(deadline),
+            await self._run_session_turn(
+                session,
+                prompt,
+                deadline=deadline,
+                cancel_event=capture_done,
             )
         except Exception as exc:  # noqa: BLE001 — one dead salvage never kills the fleet
             await self.log(f"dead-scout synth failed ({synth_label}): {exc}")
@@ -829,19 +809,7 @@ class WorkflowContext:
                 )
             finally:
                 self._active_budget_lease.reset(token)
-                pending = [
-                    task
-                    for task in (lease.pending_tasks or [])
-                    if not task.done()
-                ]
-                if pending:
-                    cleanup_task = asyncio.create_task(
-                        self._release_call_after_tasks(lease, pending)
-                    )
-                    self._track_pending_cleanup(cleanup_task)
-                    slot_handed_to_cleanup = True
-                else:
-                    self.budget.release(lease)
+                slot_handed_to_cleanup = self._release_lease_when_quiescent(lease)
         finally:
             if slot_acquired and not slot_handed_to_cleanup:
                 self._semaphore.release()
@@ -870,13 +838,11 @@ class WorkflowContext:
         self._track_session(session)
         try:
             deadline = self._internal_commit_deadline()
-            await self._run_with_timeout(
-                session.add_user_message(prompt),
-                self._remaining_timeout(deadline),
-            )
-            await self._run_with_timeout(
-                session.run_loop(capture_done),
-                self._remaining_timeout(deadline),
+            await self._run_session_turn(
+                session,
+                prompt,
+                deadline=deadline,
+                cancel_event=capture_done,
             )
         except Exception as exc:  # noqa: BLE001 — one dead draft never kills the fleet
             await self.log(f"draft failed ({label or 'draft'}): {exc}")
@@ -1021,16 +987,11 @@ class WorkflowContext:
         # Track immediately so tokens count even if a run_loop raises midway.
         self._track_session(session)
         try:
-            message_timeout = self._remaining_timeout(deadline)
-            await self._run_with_timeout(
-                session.add_user_message(seeded_prompt),
-                message_timeout,
-            )
-            run_timeout = self._remaining_timeout(deadline)
-            await self._run_session_loop(
+            await self._run_session_turn(
                 session,
-                capture_done,
-                timeout=run_timeout,
+                seeded_prompt,
+                deadline=deadline,
+                cancel_event=capture_done,
             )
             if _schema_satisfied(capture_tool.captured, schema):
                 return capture_tool.captured
@@ -1116,16 +1077,11 @@ class WorkflowContext:
         self._track_session(session)
         try:
             self._carry_exploration(prior_session, session)
-            message_timeout = self._remaining_timeout(deadline)
-            await self._run_with_timeout(
-                session.add_user_message(retry_prompt),
-                message_timeout,
-            )
-            run_timeout = self._remaining_timeout(deadline)
-            await self._run_session_loop(
+            await self._run_session_turn(
                 session,
-                capture_done,
-                timeout=run_timeout,
+                retry_prompt,
+                deadline=deadline,
+                cancel_event=capture_done,
             )
         except CallerTimeoutError:
             await self.log(f"structured retry timed out ({label or 'agent'}) after {timeout}s")
@@ -1135,14 +1091,21 @@ class WorkflowContext:
             return None
         return capture_tool.captured if _schema_satisfied(capture_tool.captured, schema) else None
 
-    async def _run_session_loop(
+    async def _run_session_turn(
         self,
         session: Any,
-        cancel_event: asyncio.Event | None,
+        prompt: str,
         *,
-        timeout: float | None,
+        deadline: float | None,
+        cancel_event: asyncio.Event | None = None,
     ) -> str:
-        return await self._run_with_timeout(session.run_loop(cancel_event), timeout)
+        """Add one user turn and run it within a shared absolute deadline."""
+        await self._run_with_timeout(
+            session.add_user_message(prompt),
+            self._remaining_timeout(deadline),
+        )
+        run_loop = session.run_loop() if cancel_event is None else session.run_loop(cancel_event)
+        return await self._run_with_timeout(run_loop, self._remaining_timeout(deadline))
 
     @staticmethod
     def _carry_exploration(prior_session: Any, session: Any) -> None:

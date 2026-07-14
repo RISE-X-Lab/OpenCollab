@@ -72,40 +72,30 @@ class WorktreePool:
         await _finish_cleanup(self._release_owned())
 
     async def _release_owned(self) -> None:
-        failures: list[tuple[WorktreeEnvironment, BaseException]] = []
-        remaining: list[WorktreeEnvironment] = []
-        for env in list(self._envs):
+        failures: list[str] = []
+        for env in tuple(self._envs):
             try:
                 await _finish_cleanup(env.cleanup())
             except BaseException as exc:
-                failures.append((env, exc))
-                remaining.append(env)
+                failures.append(f"{env.workspace}: {type(exc).__name__}: {exc}")
                 logger.warning("worktree cleanup failed for %s", env.workspace, exc_info=True)
-        self._envs[:] = remaining
+            else:
+                self._envs.remove(env)
         if failures:
-            detail = "; ".join(
-                f"{env.workspace}: {type(exc).__name__}: {exc}"
-                for env, exc in failures
+            raise OSError(
+                "worktree pool cleanup failed; retry state retained: " + "; ".join(failures)
             )
-            raise OSError(f"worktree pool cleanup failed; retry state retained: {detail}")
 
     async def release_env(self, env: Environment) -> None:
         """Release one failed spawn's environment without touching siblings."""
-        if not isinstance(env, WorktreeEnvironment):
-            return
-        await _finish_cleanup(self._release_env_owned(env))
-
-    async def _release_env_owned(self, env: WorktreeEnvironment) -> None:
-        try:
-            self._envs.remove(env)
-        except ValueError:
+        if not isinstance(env, WorktreeEnvironment) or env not in self._envs:
             return
         try:
             await _finish_cleanup(env.cleanup())
         except BaseException:
-            self._envs.append(env)
             logger.warning("worktree cleanup failed for %s", env.workspace, exc_info=True)
             raise
+        self._envs.remove(env)
 
     async def cleanup(self) -> None:
         """Compatibility alias for older callers."""

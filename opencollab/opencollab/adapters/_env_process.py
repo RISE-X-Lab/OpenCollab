@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from opencollab.adapters._env_base import ExecResult
 from opencollab.application.async_timeout import await_owned_operation
 
 PROCESS_OUTPUT_CAPTURE_BYTES = 1024 * 1024
@@ -27,7 +28,18 @@ class ProcessResult:
     stderr: bytes
     stdout_dropped_bytes: int = 0
     stderr_dropped_bytes: int = 0
-    cleanup_quiesced: bool = True
+
+    def to_exec_result(self) -> ExecResult:
+        """Decode captured process output into the public environment result."""
+        return ExecResult(
+            self.returncode,
+            self.stdout.decode("utf-8", errors="replace"),
+            self.stderr.decode("utf-8", errors="replace"),
+            self.stdout_dropped_bytes > 0,
+            self.stderr_dropped_bytes > 0,
+            self.stdout_dropped_bytes,
+            self.stderr_dropped_bytes,
+        )
 
 
 async def _read_bounded(
@@ -60,6 +72,15 @@ def _group_exists(group_id: int) -> bool:
     return True
 
 
+async def _wait_for_group_exit(group_id: int, timeout: float) -> bool:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while _group_exists(group_id):
+        if asyncio.get_running_loop().time() >= deadline:
+            return False
+        await asyncio.sleep(0.01)
+    return True
+
+
 async def terminate_process(
     process: asyncio.subprocess.Process,
     *,
@@ -79,23 +100,28 @@ async def terminate_process(
             pass
 
     send(signal.SIGTERM)
-    deadline = asyncio.get_running_loop().time() + term_grace
-    while _group_exists(group_id):
-        if asyncio.get_running_loop().time() >= deadline:
-            break
-        await asyncio.sleep(0.01)
-    if _group_exists(group_id):
+    if not await _wait_for_group_exit(group_id, term_grace):
         send(signal.SIGKILL)
     try:
         await asyncio.wait_for(process.wait(), timeout=kill_grace)
     except asyncio.TimeoutError:
         return False
-    deadline = asyncio.get_running_loop().time() + kill_grace
-    while _group_exists(group_id):
-        if asyncio.get_running_loop().time() >= deadline:
-            return False
-        await asyncio.sleep(0.01)
-    return True
+    return await _wait_for_group_exit(group_id, kill_grace)
+
+
+async def _require_process_exit(
+    process: asyncio.subprocess.Process,
+    message: str,
+    cause: BaseException | None = None,
+    *,
+    propagate: bool = True,
+) -> None:
+    quiesced = await await_owned_operation(
+        terminate_process(process),
+        propagate_cancellation=propagate,
+    )
+    if not quiesced:
+        raise ProcessCleanupError(message) from cause
 
 
 class ProcessRegistry:
@@ -239,38 +265,27 @@ async def run_process(
         try:
             await asyncio.wait_for(write_input_and_wait(), timeout=float(timeout))
         except asyncio.TimeoutError as exc:
-            quiesced = await await_owned_operation(
-                terminate_process(process),
-                propagate_cancellation=True,
-            )
-            if not quiesced:
-                raise ProcessCleanupError("timed out command did not quiesce") from exc
+            await _require_process_exit(process, "timed out command did not quiesce", exc)
+            quiesced = True
             raise
         except asyncio.CancelledError as cancellation:
-            quiesced = await await_owned_operation(terminate_process(process))
-            if not quiesced:
-                raise ProcessCleanupError("cancelled command did not quiesce")
+            await _require_process_exit(
+                process, "cancelled command did not quiesce", propagate=False
+            )
+            quiesced = True
             raise cancellation
-        quiesced = await await_owned_operation(
-            terminate_process(process),
-            propagate_cancellation=True,
-        )
-        if not quiesced:
-            raise ProcessCleanupError("command process group did not quiesce after leader exit")
+        await _require_process_exit(process, "command process group did not quiesce after leader exit")
+        quiesced = True
         try:
             (stdout, stdout_dropped), (stderr, stderr_dropped) = await asyncio.wait_for(
                 asyncio.gather(stdout_task, stderr_task),
                 timeout=PROCESS_KILL_GRACE_SECONDS,
             )
         except asyncio.TimeoutError as exc:
-            quiesced = await await_owned_operation(
-                terminate_process(process),
-                propagate_cancellation=True,
+            await _require_process_exit(
+                process, "command output pipes and process group did not quiesce", exc
             )
-            if not quiesced:
-                raise ProcessCleanupError(
-                    "command output pipes and process group did not quiesce"
-                ) from exc
+            quiesced = True
             raise ProcessCleanupError("command output pipes did not quiesce") from exc
         return ProcessResult(
             returncode=process.returncode or 0,

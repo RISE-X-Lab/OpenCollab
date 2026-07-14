@@ -133,6 +133,20 @@ async def terminate_tasks(
     return tuple(results)
 
 
+async def cancel_tasks_and_wait(
+    tasks: Iterable[asyncio.Future[object]],
+    *,
+    timeout: float,
+) -> set[asyncio.Future[object]]:
+    """Cancel unique pending tasks, wait once, and return any still pending."""
+    pending = {task for task in tasks if not task.done()}
+    for task in pending:
+        task.cancel()
+    if pending:
+        _done, pending = await asyncio.wait(pending, timeout=timeout)
+    return pending
+
+
 async def abandon_on_timeout(
     awaitable: Awaitable[T],
     timeout: float | None,
@@ -166,18 +180,18 @@ async def abandon_on_timeout(
         done, _ = await asyncio.wait({task}, timeout=normalized_timeout)
     except asyncio.CancelledError:
         task.cancel()
-        task.add_done_callback(_consume_task_result)
+        task.add_done_callback(consume_task_result)
         raise
 
     if task in done:
         return task.result()
 
     task.cancel()
-    task.add_done_callback(_consume_task_result)
+    task.add_done_callback(consume_task_result)
     raise timeout_error_type
 
 
-def _consume_task_result(task: asyncio.Future) -> None:
+def consume_task_result(task: asyncio.Future) -> None:
     try:
         task.result()
     except BaseException:
@@ -239,7 +253,7 @@ def run_with_bounded_shutdown(
                 f"{len(lingering)} async task(s) missed the shutdown deadline"
             )
         for task in observed:
-            _consume_task_result(task)
+            consume_task_result(task)
         if run_error is not None:
             raise run_error
         return result  # type: ignore[return-value]
