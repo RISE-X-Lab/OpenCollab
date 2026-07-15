@@ -52,9 +52,7 @@ from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.shaping import (
     DEFAULT_TOOL_RESULT_BUDGET,
     AutoCompactShaper,
-    ContextCollapseShaper,
     EagerToolOutputClearShaper,
-    LowPriorityContextShedShaper,
     OldHistorySnipShaper,
     PerToolResultBudgetShaper,
     ShaperPipeline,
@@ -159,8 +157,8 @@ def _build_default_shaper(
     the reactive history layers then bound the *total* view once it crosses the
     trigger — clear old tool *content* in place (lowest loss) → snip whole old
     tool turns → auto-compact (summarize the remaining old span via the ported
-    prompt) → reserved collapse slot. All read-time over a copy; transcript
-    stays full for lossless resume.
+    prompt). All read-time over a copy; transcript stays full for lossless
+    resume.
     """
     # Trigger/target scale to the active model's real context window, degrading
     # to fixed defaults when the model is unrecognised.
@@ -176,11 +174,9 @@ def _build_default_shaper(
         (
             EagerToolOutputClearShaper(compactable_tools=COMPACTABLE_TOOL_NAMES),
             PerToolResultBudgetShaper(DEFAULT_TOOL_RESULT_BUDGET),
-            LowPriorityContextShedShaper(**history_kwargs),
             ToolOutputClearShaper(compactable_tools=COMPACTABLE_TOOL_NAMES, **history_kwargs),
             OldHistorySnipShaper(**history_kwargs),
             AutoCompactShaper(summarizer=summarizer, **history_kwargs),
-            ContextCollapseShaper(),
         )
     )
 
