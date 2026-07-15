@@ -516,14 +516,14 @@ def test_cleanup_marks_interrupted_lead_message_as_technical_failure():
             await self.add_release.wait()
 
     lead = BlockingLead()
-    lead.state.recent_call_hashes = ["lead-call"]
-    lead.state.reads_since_last_edit = 3
-    lead.state.low_yield_since_progress = 2
-    lead.state.distinct_evidence_count = 1
-    lead.state.steps_since_progress = 4
-    lead.state.loop_blocked_since_progress = 1
-    lead.state._seen_result_hashes = {"lead-result"}
-    lead.state.scout_ledger = [{"tool": "file_read", "outcome": "hit"}]
+    lead.state.turn.recent_call_hashes = ["lead-call"]
+    lead.state.turn.reads_since_last_edit = 3
+    lead.state.turn.low_yield_since_progress = 2
+    lead.state.turn.distinct_evidence_count = 1
+    lead.state.turn.steps_since_progress = 4
+    lead.state.turn.loop_blocked_since_progress = 1
+    lead.state.turn.seen_result_hashes = {"lead-result"}
+    lead.state.turn.scout_ledger = [{"tool": "file_read", "outcome": "hit"}]
     scheduler, _ = build_scheduler(lead, [])
 
     async def scenario():
@@ -540,14 +540,14 @@ def test_cleanup_marks_interrupted_lead_message_as_technical_failure():
     assert scheduler.table.get(0).state.phase is SessionPhase.STOPPED
     assert lead.state.messages == []
     assert lead.state.message_timestamps == []
-    assert lead.state.recent_call_hashes == ["lead-call"]
-    assert lead.state.reads_since_last_edit == 3
-    assert lead.state.low_yield_since_progress == 2
-    assert lead.state.distinct_evidence_count == 1
-    assert lead.state.steps_since_progress == 4
-    assert lead.state.loop_blocked_since_progress == 1
-    assert lead.state._seen_result_hashes == {"lead-result"}
-    assert lead.state.scout_ledger == [{"tool": "file_read", "outcome": "hit"}]
+    assert lead.state.turn.recent_call_hashes == ["lead-call"]
+    assert lead.state.turn.reads_since_last_edit == 3
+    assert lead.state.turn.low_yield_since_progress == 2
+    assert lead.state.turn.distinct_evidence_count == 1
+    assert lead.state.turn.steps_since_progress == 4
+    assert lead.state.turn.loop_blocked_since_progress == 1
+    assert lead.state.turn.seen_result_hashes == {"lead-result"}
+    assert lead.state.turn.scout_ledger == [{"tool": "file_read", "outcome": "hit"}]
 
 
 def test_running_cancelled_child_fails_parent_row_and_resumes_parent():
@@ -1160,14 +1160,14 @@ def test_message_add_blocked_during_cleanup_cannot_create_late_driver():
         aid = await scheduler.spawn(0, "coder", "first")
         await scheduler._tasks[aid]
         assert child.state.phase is SessionPhase.DONE
-        child.state.recent_call_hashes = ["prior-call"]
-        child.state.reads_since_last_edit = 4
-        child.state.low_yield_since_progress = 3
-        child.state.distinct_evidence_count = 2
-        child.state.steps_since_progress = 5
-        child.state.loop_blocked_since_progress = 1
-        child.state._seen_result_hashes = {"prior-result"}
-        child.state.scout_ledger = [{"tool": "grep", "outcome": "hit"}]
+        child.state.turn.recent_call_hashes = ["prior-call"]
+        child.state.turn.reads_since_last_edit = 4
+        child.state.turn.low_yield_since_progress = 3
+        child.state.turn.distinct_evidence_count = 2
+        child.state.turn.steps_since_progress = 5
+        child.state.turn.loop_blocked_since_progress = 1
+        child.state.turn.seen_result_hashes = {"prior-result"}
+        child.state.turn.scout_ledger = [{"tool": "grep", "outcome": "hit"}]
         messages_before = list(child.state.messages)
 
         send_task = asyncio.create_task(
@@ -1188,14 +1188,14 @@ def test_message_add_blocked_during_cleanup_cannot_create_late_driver():
         assert scheduler._tasks == {}
         assert child.state.phase is SessionPhase.DONE
         assert child.state.messages == messages_before
-        assert child.state.recent_call_hashes == ["prior-call"]
-        assert child.state.reads_since_last_edit == 4
-        assert child.state.low_yield_since_progress == 3
-        assert child.state.distinct_evidence_count == 2
-        assert child.state.steps_since_progress == 5
-        assert child.state.loop_blocked_since_progress == 1
-        assert child.state._seen_result_hashes == {"prior-result"}
-        assert child.state.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
+        assert child.state.turn.recent_call_hashes == ["prior-call"]
+        assert child.state.turn.reads_since_last_edit == 4
+        assert child.state.turn.low_yield_since_progress == 3
+        assert child.state.turn.distinct_evidence_count == 2
+        assert child.state.turn.steps_since_progress == 5
+        assert child.state.turn.loop_blocked_since_progress == 1
+        assert child.state.turn.seen_result_hashes == {"prior-result"}
+        assert child.state.turn.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
         assert len(scheduler._message_inbox[aid]) == 1
         assert len(child.state.pending_user_messages) == 1
         assert aid not in scheduler._child_reservation

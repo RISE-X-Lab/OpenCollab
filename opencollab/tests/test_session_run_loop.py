@@ -13,7 +13,11 @@ from opencollab.application.session_run import (
     SessionRunUseCase,
 )
 from opencollab.domain.pending import RowKind, RowStatus
-from opencollab.domain.session import SessionPhase, SessionState
+from opencollab.domain.session import (
+    SessionPhase,
+    SessionState,
+    TurnEnforcementState,
+)
 from opencollab.domain.tools import ToolProcessingResult
 
 
@@ -312,7 +316,7 @@ def test_run_loop_loop_block_limit_stops_before_next_llm_call():
     events, bus = collect_events()
     state = SessionState(
         messages=[{"role": "system", "content": "sys"}],
-        loop_blocked_since_progress=3,
+        turn=TurnEnforcementState(loop_blocked_since_progress=3),
     )
     llm = FakeLLM()
     runner = build_runner(state=state, llm=llm, event_bus=bus)
@@ -454,7 +458,8 @@ def test_steering_no_write_nudge_for_readonly_session():
     # A scout/tester/planner has no write tool — the write nudge would be nonsense,
     # so only the status line is shown even at a high read count.
     state = SessionState(
-        messages=[{"role": "tool", "content": "r"}], reads_since_last_edit=99
+        messages=[{"role": "tool", "content": "r"}],
+        turn=TurnEnforcementState(reads_since_last_edit=99),
     )
     runner = build_runner(state=state, agent=_agent_with_tools("file_read", "grep"))
     msg, override, _level = runner._build_steering_block(state.messages)
@@ -470,7 +475,7 @@ def test_steering_hard_rung_forces_tool_choice_through_run_loop():
         messages=[{"role": "tool", "content": "prev"}],
         used_tokens=1_000,
         step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
     )
     llm = FakeLLM([llm_response(content="done")])
     runner = build_runner(
@@ -487,7 +492,7 @@ def test_steering_structured_hard_rung_forces_structured_output():
         messages=[{"role": "tool", "content": "prev"}],
         used_tokens=1_000,
         step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
     )
     llm = FakeLLM([llm_response(content="done")])
     runner = build_runner(
@@ -512,7 +517,7 @@ def test_steering_hard_rung_blocks_read_tool_call_before_execution():
         messages=[{"role": "tool", "content": "prev"}],
         used_tokens=1_000,
         step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
     )
     read_call = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
     llm = FakeLLM(
@@ -539,7 +544,7 @@ def test_steering_hard_rung_blocks_read_tool_call_before_execution():
     assert len(tool_messages) == 1
     assert tool_messages[0]["tool_call_id"] == "r1"
     assert "not allowed during the hard write gate" in tool_messages[0]["content"]
-    assert state.reads_since_last_edit == READS_NUDGE_HARD
+    assert state.turn.reads_since_last_edit == READS_NUDGE_HARD
 
 
 def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
@@ -547,7 +552,7 @@ def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
         messages=[{"role": "tool", "content": "prev"}],
         used_tokens=1_000,
         step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
     )
     read_call = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
     write_call = tool_call(call_id="w1", name="apply_patch", arguments='{"patch": "..."}')
@@ -584,7 +589,7 @@ def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
     assert [m["tool_call_id"] for m in tool_messages] == ["r1", "w1"]
     assert "not allowed during the hard write gate" in tool_messages[0]["content"]
     assert tool_messages[1]["content"] == "patched"
-    assert state.reads_since_last_edit == 0
+    assert state.turn.reads_since_last_edit == 0
 
 
 def test_steering_reaches_provider_and_is_persisted():
@@ -685,7 +690,7 @@ def _steering_runner(reads, *, tools=("file_read", "apply_patch"), tracer=None, 
         messages=[{"role": "tool", "content": "r"}],
         used_tokens=1_000,
         step_count=3,
-        reads_since_last_edit=reads,
+        turn=TurnEnforcementState(reads_since_last_edit=reads),
         aid=aid,
     )
     llm = FakeLLM([llm_response(content="done") for _ in range(8)])
@@ -1045,7 +1050,7 @@ def test_mixed_batch_folds_in_reads_counter_for_immediate_reads():
     run(runner.run_loop())
 
     assert state.phase is SessionPhase.AWAITING_EVENTS
-    assert state.reads_since_last_edit == 1  # immediate read counted despite buffering
+    assert state.turn.reads_since_last_edit == 1  # immediate read counted despite buffering
 
 
 def test_deferred_rejected_synchronously_does_not_suspend():

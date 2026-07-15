@@ -849,7 +849,8 @@ class WorkflowContext:
         """The scout's harness-authored evidence ledger (STEP 2), or [] when a
         duck-typed session/state does not carry one."""
         state = getattr(session, "state", None)
-        ledger = getattr(state, "scout_ledger", None)
+        turn = getattr(state, "turn", None)
+        ledger = getattr(turn, "scout_ledger", None)
         return list(ledger) if ledger else []
 
     def _emit_dead_scout_synthesis(

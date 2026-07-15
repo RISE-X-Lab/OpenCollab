@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -101,20 +102,62 @@ class InvalidPhaseTransition(Exception):
         super().__init__(f"Illegal session phase transition: {src.value} -> {dst.value}")
 
 
+@dataclass
+class TurnEnforcementState:
+    """The per-turn enforcement window — the brake panel's per-turn half.
+
+    These eight fields are the unit that ``checkpoint_user_turn`` /
+    ``restore_user_turn`` snapshot and roll back as a whole, and that
+    ``reset_for_user_turn`` clears on a fresh user turn. They live in their own
+    record — rather than smeared flat on ``SessionState`` — precisely because
+    one mechanism (the user-turn boundary) saves, restores, and resets them
+    together, the same reason a kernel PCB carves its saved-register set into a
+    dedicated ``struct``. Session-*lifetime* latches (``wind_down_done`` /
+    ``wind_down_token_mark``) have a different reset discipline and stay flat on
+    ``SessionState``; they are not part of this snapshot.
+
+    All eight are maintained ALWAYS (cheap, observational); only the precheck
+    brakes that READ them are gated behind ``enforcement_strength``, so a
+    self-regulating run is byte-for-byte unchanged.
+    """
+
+    # Loop-detection window: path-normalized (tool, args) hashes of recent tool
+    # calls; drives the repeated-call loop block.
+    recent_call_hashes: list[str] = field(default_factory=list)
+    # Closed-loop steering signal: read-only tool calls (file_read/grep) since
+    # the last successful edit. Drives the reads-without-write nudge/escalation;
+    # reset to 0 on a successful write.
+    reads_since_last_edit: int = 0
+    # Information-gain sensor (STEP 1): consecutive low-yield results since the
+    # last informative one (reset to 0 on any informative result). A result is
+    # "informative" when NOVEL (unseen content OR unseen path-normalized call
+    # hash) AND not an empty/"No matches"-class result; else "low-yield".
+    low_yield_since_progress: int = 0
+    # Informative results tallied in the current turn.
+    distinct_evidence_count: int = 0
+    # Novelty memory for the sensor: holds both content and (tool, args) call
+    # hashes, so a re-read at a shifted range still scores zero gain.
+    seen_result_hashes: set[str] = field(default_factory=set)
+    # Evidence ledger (STEP 2): one compact ``{tool, target, outcome, snippet}``
+    # card per executed tool result, read by the harvest backstop / dead-scout
+    # synthesizer to salvage a chopped scout.
+    scout_ledger: list[dict[str, Any]] = field(default_factory=list)
+    # Progress watchdog (STEP 3): consecutive no-progress tool STEPS (batches),
+    # where progress is a landed write OR a novel informative ("hit") result.
+    steps_since_progress: int = 0
+    # Hard loop-block brake: repeated identical/normalized calls short-circuited;
+    # stops the session after repeated warnings.
+    loop_blocked_since_progress: int = 0
+
+
 @dataclass(frozen=True)
 class _UserTurnCheckpoint:
     message_count: int
     timestamp_count: int
     phase: SessionPhase
     terminal_reason: str | None
-    recent_call_hashes: tuple[str, ...]
-    reads_since_last_edit: int
-    low_yield_since_progress: int
-    distinct_evidence_count: int
-    steps_since_progress: int
-    loop_blocked_since_progress: int
-    seen_result_hashes: frozenset[str]
-    scout_ledger: tuple[dict[str, Any], ...]
+    # The per-turn enforcement window, snapshotted and rolled back as one unit.
+    turn: TurnEnforcementState
 
 
 @dataclass
@@ -133,71 +176,22 @@ class SessionState:
     # literal text (P6). Observability only; like ``used_tokens`` it is a
     # session-lifetime tally and is NOT reset by ``reset_for_user_turn``.
     markup_recovered: int = 0
-    recent_call_hashes: list[str] = field(default_factory=list)
-    # Closed-loop steering signal: how many read-only tool calls (file_read/grep)
-    # have run since the last successful edit. Drives the reads-without-write
-    # nudge/escalation in the steering block. Per-turn like ``recent_call_hashes``
-    # (reset by ``reset_for_user_turn``); reset to 0 on a successful write.
-    reads_since_last_edit: int = 0
-    # Enforcement wind-down (STEP 0). ``wind_down_done`` flips True the first time
-    # the enforcement precheck forces a scout into its single protected submit
-    # turn; it is the latch that grants EXACTLY ONE more CALLING_LLM and then
-    # routes to a terminal. ``wind_down_token_mark`` records ``used_tokens`` at the
-    # trip so the commitment-terminus metric can report ``submit_turn_cost`` (the
-    # tokens the protected submit turn spent). Both are inert unless
-    # ``enforcement_strength`` is on, so a self-regulating run never touches them.
+    # The per-turn enforcement window (loop hashes, reads/low-yield/watchdog
+    # counters, novelty memory, evidence ledger) — see ``TurnEnforcementState``.
+    # It is snapshotted/rolled-back by checkpoint/restore and cleared by
+    # ``reset_for_user_turn`` as one unit, which is why it lives in its own record
+    # rather than smeared flat here.
+    turn: TurnEnforcementState = field(default_factory=TurnEnforcementState)
+    # === enforcement: session-lifetime latches (NOT reset per user turn) ===
+    # ``wind_down_done`` flips True the first time the enforcement precheck forces
+    # a scout into its single protected submit turn — the latch that grants
+    # EXACTLY ONE more CALLING_LLM and then routes to a terminal.
+    # ``wind_down_token_mark`` records ``used_tokens`` at the trip so the
+    # commitment-terminus metric can report ``submit_turn_cost``. Both are inert
+    # unless ``enforcement_strength`` is on, so a self-regulating run never touches
+    # them. Unlike the per-turn window they survive a user-turn boundary.
     wind_down_done: bool = False
     wind_down_token_mark: int = 0
-    # Information-gain sensor (STEP 1). A purely OBSERVATIONAL trio maintained on
-    # every executed tool result regardless of ``enforcement_strength`` (cheap; it
-    # feeds later brakes but adds NO control flow itself yet). A result is
-    # "informative" when its content is NOVEL — neither its content hash nor its
-    # path-normalized (tool, args) call hash has been seen before — AND it is not
-    # an empty read or a "No matches"-class result; otherwise it is "low-yield".
-    # ``low_yield_since_progress`` counts consecutive low-yield results since the
-    # last informative one (reset to 0 on any informative result);
-    # ``distinct_evidence_count`` tallies informative results in the current turn.
-    # ``_seen_result_hashes`` is the novelty memory (holds both content and call
-    # hashes). Keying on NOVELTY (not the literal "No matches" string) means a
-    # model re-reading a known file at a shifted range to dodge a string match
-    # still scores zero gain. All three reset on a fresh user turn, like the
-    # sibling per-turn signals ``reads_since_last_edit`` / ``recent_call_hashes``.
-    low_yield_since_progress: int = 0
-    distinct_evidence_count: int = 0
-    _seen_result_hashes: set[str] = field(default_factory=set)
-    # Harness-authored evidence ledger (STEP 2). A deterministic, ALWAYS-ON
-    # durable capture FLOOR: one compact card ``{tool, target, outcome, snippet}``
-    # appended per EXECUTED tool result, built purely from the tool-result envelope
-    # (no model involvement, so capture can never fail). ``outcome`` REUSES the
-    # STEP-1 classification — ``hit`` (novel informative), ``NO-MATCH`` (empty /
-    # "No matches"-class intrinsic low-yield), ``duplicate`` (seen-before content or
-    # path-normalized call). The harvest backstop reads this ledger to salvage a
-    # chopped scout, and the dead-scout synthesizer feeds it back to the model. Like
-    # the sibling observational counters it is per-turn (reset by
-    # ``reset_for_user_turn``) and adds NO control flow of its own.
-    scout_ledger: list[dict[str, Any]] = field(default_factory=list)
-    # Progress watchdog (STEP 3). ``steps_since_progress`` counts consecutive
-    # tool-executing STEPS (batches) that produced NO progress, where progress is a
-    # landed write OR a novel informative ("hit") result — the same signal the
-    # STEP-1 sensor / STEP-2 ledger record. It resets to 0 on any progress step and
-    # increments by 1 per no-progress tool batch. Maintained ALWAYS (cheap,
-    # observational, like the STEP-1 counters); only the precheck BRAKE that reads
-    # it is gated behind enforcement, so a self-regulating run is byte-for-byte
-    # unchanged. The watchdog brake trips when it reaches K even with budget
-    # remaining (catches spin while budget is plentiful). Per-turn — reset by
-    # ``reset_for_user_turn`` alongside its sibling sensor counters.
-    steps_since_progress: int = 0
-    # Anti-windup latch (STEP 3). Set True when a forced-commit turn (wind-down /
-    # watchdog / low-yield brake) was issued but the agent did NOT commit on it and
-    # the loop had to escalate to its single retry. Observability only — the actual
-    # escalation is the runner's ``_wind_down_retried`` latch; this records that the
-    # physical tool-removal actuator was not satisfied on the first forced turn. A
-    # session-lifetime latch like ``wind_down_done`` (not reset per user turn).
-    forced_unsatisfied: bool = False
-    # Hard loop-block brake. Tool execution short-circuits repeated identical or
-    # path-normalized calls; this counter lets that short-circuit stop a session
-    # after repeated warnings instead of paying for more near-identical turns.
-    loop_blocked_since_progress: int = 0
     phase: SessionPhase = SessionPhase.IDLE
     # Human-readable detail for the current terminal phase (e.g. the exception
     # for ERROR, the token/step counts for the resource caps). ``None`` while
@@ -354,14 +348,8 @@ class SessionState:
             timestamp_count=len(self.message_timestamps),
             phase=self.phase,
             terminal_reason=self.terminal_reason,
-            recent_call_hashes=tuple(self.recent_call_hashes),
-            reads_since_last_edit=self.reads_since_last_edit,
-            low_yield_since_progress=self.low_yield_since_progress,
-            distinct_evidence_count=self.distinct_evidence_count,
-            steps_since_progress=self.steps_since_progress,
-            loop_blocked_since_progress=self.loop_blocked_since_progress,
-            seen_result_hashes=frozenset(self._seen_result_hashes),
-            scout_ledger=tuple(dict(card) for card in self.scout_ledger),
+            # Deep-copy the whole per-turn window as one pristine, reusable unit.
+            turn=copy.deepcopy(self.turn),
         )
 
     def restore_user_turn(self, checkpoint: _UserTurnCheckpoint) -> None:
@@ -370,33 +358,22 @@ class SessionState:
         del self.message_timestamps[checkpoint.timestamp_count :]
         self.phase = checkpoint.phase
         self.terminal_reason = checkpoint.terminal_reason
-        self.recent_call_hashes = list(checkpoint.recent_call_hashes)
-        self.reads_since_last_edit = checkpoint.reads_since_last_edit
-        self.low_yield_since_progress = checkpoint.low_yield_since_progress
-        self.distinct_evidence_count = checkpoint.distinct_evidence_count
-        self.steps_since_progress = checkpoint.steps_since_progress
-        self.loop_blocked_since_progress = checkpoint.loop_blocked_since_progress
-        self._seen_result_hashes = set(checkpoint.seen_result_hashes)
-        self.scout_ledger = [dict(card) for card in checkpoint.scout_ledger]
+        # A fresh copy each restore, so the checkpoint stays reusable.
+        self.turn = copy.deepcopy(checkpoint.turn)
 
     def reset_for_user_turn(self) -> None:
         """Prepare an existing session to accept a new user turn.
 
         Resets only *per-turn* state: the terminal phase (back to IDLE) and the
-        loop-detection hashes. ``step_count`` and ``used_tokens`` are
+        whole per-turn enforcement window. ``step_count`` and ``used_tokens`` are
         intentionally preserved — both ``max_steps`` and ``max_budget_tokens``
         are session-lifetime caps, so a long-lived interactive/messaged session
         keeps accumulating across turns rather than getting a fresh allowance.
+        The session-lifetime latches (``wind_down_done`` / ``wind_down_token_mark``)
+        are likewise preserved.
         """
         self.resume_to_idle()
-        self.clear_recent_tool_hashes()
-        self.reads_since_last_edit = 0
-        self.low_yield_since_progress = 0
-        self.distinct_evidence_count = 0
-        self.steps_since_progress = 0
-        self.loop_blocked_since_progress = 0
-        self._seen_result_hashes.clear()
-        self.scout_ledger.clear()
+        self.turn = TurnEnforcementState()
 
     def record_evidence_signal(
         self,
@@ -428,22 +405,22 @@ class SessionState:
         so callers that do not produce cards are byte-for-byte unchanged.
         """
         already_seen = (
-            content_hash in self._seen_result_hashes
-            or call_hash in self._seen_result_hashes
+            content_hash in self.turn.seen_result_hashes
+            or call_hash in self.turn.seen_result_hashes
         )
-        self._seen_result_hashes.add(content_hash)
-        self._seen_result_hashes.add(call_hash)
+        self.turn.seen_result_hashes.add(content_hash)
+        self.turn.seen_result_hashes.add(call_hash)
         if not intrinsic_low_yield and not already_seen:
-            self.low_yield_since_progress = 0
-            self.distinct_evidence_count += 1
+            self.turn.low_yield_since_progress = 0
+            self.turn.distinct_evidence_count += 1
             outcome = "hit"
         else:
             # Same control flow as STEP 1 (low-yield bumps the counter); only the
             # ledger label distinguishes an intrinsic no-result from a re-seen dup.
-            self.low_yield_since_progress += 1
+            self.turn.low_yield_since_progress += 1
             outcome = "NO-MATCH" if intrinsic_low_yield else "duplicate"
         if card is not None:
-            self.scout_ledger.append(
+            self.turn.scout_ledger.append(
                 {
                     "tool": card.get("tool", ""),
                     "target": card.get("target", ""),
@@ -451,16 +428,13 @@ class SessionState:
                     "snippet": card.get("snippet", ""),
                 }
             )
-            if len(self.scout_ledger) > MAX_SCOUT_LEDGER_CARDS:
-                del self.scout_ledger[:-MAX_SCOUT_LEDGER_CARDS]
+            if len(self.turn.scout_ledger) > MAX_SCOUT_LEDGER_CARDS:
+                del self.turn.scout_ledger[:-MAX_SCOUT_LEDGER_CARDS]
 
     def remember_tool_call_hash(self, call_hash: str, max_window: int | None = None) -> None:
-        self.recent_call_hashes.append(call_hash)
-        if max_window is not None and len(self.recent_call_hashes) > max_window:
-            self.recent_call_hashes = self.recent_call_hashes[-max_window:]
-
-    def clear_recent_tool_hashes(self) -> None:
-        self.recent_call_hashes.clear()
+        self.turn.recent_call_hashes.append(call_hash)
+        if max_window is not None and len(self.turn.recent_call_hashes) > max_window:
+            self.turn.recent_call_hashes = self.turn.recent_call_hashes[-max_window:]
 
     def replace_recent_tool_hashes(self, call_hashes: list[str]) -> None:
-        self.recent_call_hashes = call_hashes
+        self.turn.recent_call_hashes = call_hashes

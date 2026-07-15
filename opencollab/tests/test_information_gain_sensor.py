@@ -82,22 +82,22 @@ def test_t1_low_yield_increments_and_novel_resets_and_counts():
 
     # 1) A novel grep hit -> informative: low_yield stays 0, distinct = 1.
     _run_one(state, ScriptedTool("grep", ["fs.py:42: end = start + n"]), "grep", '{"pattern":"end"}')
-    assert state.distinct_evidence_count == 1
-    assert state.low_yield_since_progress == 0
+    assert state.turn.distinct_evidence_count == 1
+    assert state.turn.low_yield_since_progress == 0
 
     # 2) Exact CONTENT duplicate (different args, identical returned content) ->
     #    low-yield, no new evidence. (call hash differs; content hash collides.)
     _run_one(state, ScriptedTool("grep", ["fs.py:42: end = start + n"]), "grep", '{"pattern":"start"}')
-    assert state.distinct_evidence_count == 1
-    assert state.low_yield_since_progress == 1
+    assert state.turn.distinct_evidence_count == 1
+    assert state.turn.low_yield_since_progress == 1
 
     # 3) An empty read -> low-yield.
     _run_one(state, ScriptedTool("file_read", [""]), "file_read", '{"path":"empty.py"}')
-    assert state.low_yield_since_progress == 2
+    assert state.turn.low_yield_since_progress == 2
 
     # 4) A "No matches found" grep -> low-yield (the no-match class, first seen).
     _run_one(state, ScriptedTool("grep", ["No matches found for pattern: zzz"]), "grep", '{"pattern":"zzz"}')
-    assert state.low_yield_since_progress == 3
+    assert state.turn.low_yield_since_progress == 3
 
     # 5) A NOVEL informative result RESETS low_yield and increments distinct.
     _run_one(
@@ -106,8 +106,8 @@ def test_t1_low_yield_increments_and_novel_resets_and_counts():
         "file_read",
         '{"path":"b.py"}',
     )
-    assert state.low_yield_since_progress == 0
-    assert state.distinct_evidence_count == 2
+    assert state.turn.low_yield_since_progress == 0
+    assert state.turn.distinct_evidence_count == 2
 
 
 def test_t1_path_normalized_reread_scores_zero_gain_even_with_new_content():
@@ -122,8 +122,8 @@ def test_t1_path_normalized_reread_scores_zero_gain_even_with_new_content():
         "file_read",
         '{"path":"ccode.py","offset":1}',
     )
-    assert state.distinct_evidence_count == 1
-    assert state.low_yield_since_progress == 0
+    assert state.turn.distinct_evidence_count == 1
+    assert state.turn.low_yield_since_progress == 0
 
     _run_one(
         state,
@@ -131,8 +131,8 @@ def test_t1_path_normalized_reread_scores_zero_gain_even_with_new_content():
         "file_read",
         '{"path":"ccode.py","offset":50}',
     )
-    assert state.distinct_evidence_count == 1  # NOT counted as new evidence
-    assert state.low_yield_since_progress == 1
+    assert state.turn.distinct_evidence_count == 1  # NOT counted as new evidence
+    assert state.turn.low_yield_since_progress == 1
 
 
 def test_t1_within_batch_duplicate_is_low_yield():
@@ -142,20 +142,20 @@ def test_t1_within_batch_duplicate_is_low_yield():
     tool = ScriptedTool("grep", ["hit X", "hit X"])
     batch = [_call("grep", '{"pattern":"a"}', cid="c1"), _call("grep", '{"pattern":"b"}', cid="c2")]
     run(_use_case(state, tool).process(batch)).apply_to(state)
-    assert state.distinct_evidence_count == 1
-    assert state.low_yield_since_progress == 1
+    assert state.turn.distinct_evidence_count == 1
+    assert state.turn.low_yield_since_progress == 1
 
 
 def test_t1_counters_reset_on_a_fresh_user_turn():
     state = SessionState(messages=[])
     _run_one(state, ScriptedTool("grep", ["a hit"]), "grep", '{"pattern":"a"}')
     _run_one(state, ScriptedTool("grep", ["No matches found for pattern: z"]), "grep", '{"pattern":"z"}')
-    assert state.distinct_evidence_count == 1 and state.low_yield_since_progress == 1
+    assert state.turn.distinct_evidence_count == 1 and state.turn.low_yield_since_progress == 1
 
     state.reset_for_user_turn()
-    assert state.low_yield_since_progress == 0
-    assert state.distinct_evidence_count == 0
-    assert state._seen_result_hashes == set()
+    assert state.turn.low_yield_since_progress == 0
+    assert state.turn.distinct_evidence_count == 0
+    assert state.turn.seen_result_hashes == set()
 
 
 # --------------------------------------------------------------------------- #
@@ -173,5 +173,5 @@ def test_evidence_ledger_retains_only_bounded_latest_cards():
             card={"tool": "grep", "target": str(index), "snippet": "hit"},
         )
 
-    assert len(state.scout_ledger) == MAX_SCOUT_LEDGER_CARDS
-    assert state.scout_ledger[0]["target"] == "5"
+    assert len(state.turn.scout_ledger) == MAX_SCOUT_LEDGER_CARDS
+    assert state.turn.scout_ledger[0]["target"] == "5"

@@ -23,6 +23,7 @@ from opencollab.application.submit_findings import (
     SUBMIT_TOOL_NAME,
 )
 from opencollab.application.workflow import WorkflowContext
+from opencollab.domain.session import TurnEnforcementState
 
 
 def run(coro):
@@ -63,7 +64,9 @@ class _FakeState:
         self.wind_down_done = False
         self.wind_down_token_mark = 0
         self.messages = messages if messages is not None else []
-        self.scout_ledger = scout_ledger if scout_ledger is not None else []
+        self.turn = TurnEnforcementState(
+            scout_ledger=scout_ledger if scout_ledger is not None else []
+        )
 
 
 class _FakeRunner:
