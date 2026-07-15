@@ -780,6 +780,61 @@ def test_save_and_load_round_trip_restores_control_flow_latches(tmp_path):
     assert restored.loop_blocked_since_progress == 2
 
 
+def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
+    # The user-message append transaction snapshots the per-turn enforcement
+    # window and rolls it back if the append fails, so a failed turn cannot
+    # leave stale brake counters. This locks that contract at the field level
+    # (shape-agnostic: only the public checkpoint/restore methods are used).
+    agent = FakeAgent()
+    session = Session(agent=agent, llm=FakeLLMClient())
+    state = session.state
+    state.recent_call_hashes = ["h-a"]
+    state.reads_since_last_edit = 5
+    state.low_yield_since_progress = 2
+    state.distinct_evidence_count = 3
+    state._seen_result_hashes = {"seen-a"}
+    state.scout_ledger = [{"tool": "grep", "outcome": "hit"}]
+    state.steps_since_progress = 1
+    state.loop_blocked_since_progress = 4
+    # A session-lifetime latch is deliberately NOT part of the per-turn snapshot.
+    state.wind_down_done = True
+
+    checkpoint = state.checkpoint_user_turn()
+
+    state.recent_call_hashes.append("h-b")
+    state.reads_since_last_edit = 99
+    state.low_yield_since_progress = 99
+    state.distinct_evidence_count = 99
+    state._seen_result_hashes.add("seen-b")
+    state.scout_ledger.append({"tool": "read", "outcome": "duplicate"})
+    state.steps_since_progress = 99
+    state.loop_blocked_since_progress = 99
+    state.wind_down_done = False
+
+    state.restore_user_turn(checkpoint)
+
+    assert state.recent_call_hashes == ["h-a"]
+    assert state.reads_since_last_edit == 5
+    assert state.low_yield_since_progress == 2
+    assert state.distinct_evidence_count == 3
+    assert state._seen_result_hashes == {"seen-a"}
+    assert state.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
+    assert state.steps_since_progress == 1
+    assert state.loop_blocked_since_progress == 4
+    # The lifetime latch is not touched by a per-turn restore.
+    assert state.wind_down_done is False
+
+    # The checkpoint is an independent snapshot: mutating restored state and
+    # restoring a second time still yields the checkpoint values.
+    state.recent_call_hashes.append("h-c")
+    state.scout_ledger.append({"tool": "x", "outcome": "y"})
+    state.reads_since_last_edit = 42
+    state.restore_user_turn(checkpoint)
+    assert state.recent_call_hashes == ["h-a"]
+    assert state.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
+    assert state.reads_since_last_edit == 5
+
+
 def test_save_and_load_round_trip_restores_stopped_phase_and_reason(tmp_path):
     # The single graceful-stop terminal round-trips carrying its reason string;
     # the *why* lives in terminal_reason, not in a per-terminal phase member.
