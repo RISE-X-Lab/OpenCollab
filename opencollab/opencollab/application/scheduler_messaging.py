@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import xml.etree.ElementTree as ET
+from typing import Any
 from xml.sax.saxutils import escape, quoteattr
 
 from opencollab.application.scheduler_types import QueuedTeammateMessage
@@ -88,6 +89,38 @@ class MessagingMixin:
         for event in delivered_events:
             await self._safe_emit_scheduler_event(event)
         return f"Message queued to aid {to_aid}."
+
+    async def _append_user_turn_txn(
+        self, aid: int, session: Any, message: str, prior_lease: tuple[int, int] | None
+    ) -> None:
+        """Append ``message`` as a user turn under a rollback transaction.
+
+        The single transaction shared by the lead run loop (``_run_exclusive``,
+        aid 0) and the message-inbox drain (``_drain_message_inbox_locked``, any
+        aid). The caller has already reserved the turn lease and captured
+        ``prior_lease``; this owns only the atomic part: mark the delivery task,
+        snapshot the turn, try the append, and on ANY failure roll the turn back
+        byte-identical (``restore_user_turn``) and release-then-restore the lease
+        before re-raising, always popping the delivery-task marker in
+        ``finally``. Each caller keeps its own preamble (reserve) and postscript
+        (drive-task / shutting-down handling).
+        """
+        current_task = asyncio.current_task()
+        if current_task is not None:
+            self._message_delivery_tasks[aid] = current_task
+        checkpoint = session.state.checkpoint_user_turn()
+        try:
+            await session.add_user_message(message)
+        except BaseException:
+            session.state.restore_user_turn(checkpoint)
+            self._autosave_session(aid)
+            self._release_turn_budget(aid)
+            if not self._shutting_down:
+                self._restore_turn_budget(aid, prior_lease)
+            raise
+        finally:
+            if self._message_delivery_tasks.get(aid) is current_task:
+                self._message_delivery_tasks.pop(aid, None)
 
     def _restore_message_inbox(self, aid: int, state: object) -> None:
         """Rebuild scheduler-owned delivery records from a durable sidecar."""
@@ -209,21 +242,7 @@ class MessagingMixin:
             if len(messages) == 1
             else self._format_teammate_message_batch(messages)
         )
-        if current_task is not None:
-            self._message_delivery_tasks[aid] = current_task
-        checkpoint = session.state.checkpoint_user_turn()
-        try:
-            await session.add_user_message(delivery)
-        except BaseException:
-            session.state.restore_user_turn(checkpoint)
-            self._autosave_session(aid)
-            self._release_turn_budget(aid)
-            if not self._shutting_down:
-                self._restore_turn_budget(aid, prior_lease)
-            raise
-        finally:
-            if self._message_delivery_tasks.get(aid) is current_task:
-                self._message_delivery_tasks.pop(aid, None)
+        await self._append_user_turn_txn(aid, session, delivery, prior_lease)
 
         if self._shutting_down:
             self._release_turn_budget(aid)
