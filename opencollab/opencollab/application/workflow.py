@@ -41,7 +41,6 @@ from opencollab.application.async_timeout import (
 from opencollab.application.async_timeout import (
     abandon_on_timeout as abandon_on_timeout,
 )
-from opencollab.application.extension_valve import RequestExtensionTool
 from opencollab.application.ports import (
     EventPublisherPort,
     TracePort,
@@ -655,10 +654,6 @@ class WorkflowContext:
         session_budget = self._capped_session_budget(budget)
         capture_done = asyncio.Event()
         submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
-        # STEP 4b single-justified-extension valve: the request_extension capture
-        # tool is held by the runner and injected ONLY at the wind-down offer turn
-        # (never in the scout's normal toolset), so normal exploration is unchanged.
-        extension_tool = RequestExtensionTool()
         combined_tools = [*(tools or []), submit_tool]
         try:
             session = self._factory.build_workflow_session(
@@ -676,7 +671,7 @@ class WorkflowContext:
 
         self._track_session(session)
         self._configure_session_enforcement(
-            session, enforcement_strength, commit_reserve, extension_tool
+            session, enforcement_strength, commit_reserve
         )
         text: str | None = None
         try:
@@ -884,11 +879,9 @@ class WorkflowContext:
         session: Any,
         enforcement_strength: str,
         commit_reserve: int,
-        extension_tool: Any | None = None,
     ) -> None:
         """Arm the session runner's wind-down post-build (the agent already carries
-        the submit tool). ``extension_tool`` (STEP 4b) arms the single-justified-
-        extension valve. Defensive: a duck-typed session without a configurable
+        the submit tool). Defensive: a duck-typed session without a configurable
         runner is left as-is rather than aborting the scout."""
         runner = getattr(session, "runner", None)
         configure = getattr(runner, "configure_enforcement", None)
@@ -896,7 +889,6 @@ class WorkflowContext:
             configure(
                 enforcement_strength=enforcement_strength,
                 commit_reserve=commit_reserve,
-                extension_tool=extension_tool,
             )
 
     @staticmethod

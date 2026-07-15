@@ -71,12 +71,6 @@ def test_configure_enforcement_validates_runtime_knobs():
         runner.configure_enforcement(
             enforcement_strength=ENFORCEMENT_ON, commit_reserve=101
         )
-    with pytest.raises(ValueError, match="0..3"):
-        runner.configure_enforcement(
-            enforcement_strength=ENFORCEMENT_ON,
-            commit_reserve=20,
-            max_extensions=4,
-        )
 
 
 # --------------------------------------------------------------------------- #
@@ -474,13 +468,9 @@ class _FakeTracer:
 class _FakeRunner:
     def __init__(self):
         self.configured = None
-        self.extension_tool = None
 
-    def configure_enforcement(
-        self, *, enforcement_strength, commit_reserve, extension_tool=None, max_extensions=None
-    ):
+    def configure_enforcement(self, *, enforcement_strength, commit_reserve):
         self.configured = (enforcement_strength, commit_reserve)
-        self.extension_tool = extension_tool
 
 
 class _FakeState:

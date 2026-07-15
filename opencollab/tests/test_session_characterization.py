@@ -796,9 +796,6 @@ def test_save_and_load_round_trip_restores_control_flow_latches(tmp_path):
     state.wind_down_token_mark = 123
     state.forced_unsatisfied = True
     state.loop_blocked_since_progress = 2
-    state.extension_offered = True
-    state.extensions_granted = 1
-    state.extension_reasons = ["need one exact signature"]
     path = tmp_path / "control-state.json"
 
     session.save(str(path))
@@ -815,9 +812,6 @@ def test_save_and_load_round_trip_restores_control_flow_latches(tmp_path):
     assert restored.wind_down_token_mark == 123
     assert restored.forced_unsatisfied is True
     assert restored.loop_blocked_since_progress == 2
-    assert restored.extension_offered is True
-    assert restored.extensions_granted == 1
-    assert restored.extension_reasons == ["need one exact signature"]
 
 
 @pytest.mark.parametrize(
