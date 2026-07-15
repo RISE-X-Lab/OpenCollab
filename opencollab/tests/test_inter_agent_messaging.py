@@ -307,7 +307,7 @@ def test_add_user_message_failure_rolls_back_partial_state_and_restores_budget()
     assert len(scheduler._message_inbox[1]) == 1
     assert 1 not in scheduler._tasks
     assert scheduler.allocated_tokens == allocation_before
-    assert 1 not in scheduler._child_reservation
+    assert 1 not in scheduler._child_lease
 
 
 def test_run_lead_add_user_message_failure_rolls_back_turn_and_restores_lease():
@@ -341,7 +341,7 @@ def test_run_lead_add_user_message_failure_rolls_back_turn_and_restores_lease():
     )
     scheduler.register_lead(lead)
 
-    prior_lease = scheduler._lead_reservation
+    prior_lease = scheduler._lead_lease
     allocation_before = scheduler.allocated_tokens
 
     with pytest.raises(RuntimeError, match="lead append hook failed"):
@@ -351,7 +351,7 @@ def test_run_lead_add_user_message_failure_rolls_back_turn_and_restores_lease():
     assert lead.state.messages == []
     assert lead.state.phase is SessionPhase.IDLE
     # lease released-then-restored: neither leaked nor left None
-    assert scheduler._lead_reservation == prior_lease
+    assert scheduler._lead_lease == prior_lease
     assert scheduler.allocated_tokens == allocation_before
     # finally-pop cleared the delivery task; no drive task was ever created
     assert 0 not in scheduler._message_delivery_tasks

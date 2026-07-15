@@ -118,7 +118,7 @@ class SchedulerPersistenceMixin:
         """
         return self.used_tokens >= self._max_budget_tokens
 
-    def _seed_lead_reservation(self) -> None:
+    def _seed_lead_lease(self) -> None:
         """Seed the running allocation with the Lead's reserve (idempotent).
 
         Called when agent 0 is registered. The Lead keeps the full pool as its
@@ -127,7 +127,7 @@ class SchedulerPersistenceMixin:
         receives at most one equal share from the remaining pool.
         """
         used = self._session_used_tokens(0)
-        self._lead_reservation = (lead_reserve(self._max_budget_tokens), used)
+        self._lead_lease = (lead_reserve(self._max_budget_tokens), used)
 
     def _session_used_tokens(self, aid: int) -> int:
         scb = self.table.get(aid)
@@ -142,13 +142,13 @@ class SchedulerPersistenceMixin:
 
     def _budget_committed(self) -> int:
         committed = max(0, self.used_tokens)
-        if self._lead_reservation is not None:
-            grant, baseline = self._lead_reservation
+        if self._lead_lease is not None:
+            grant, baseline = self._lead_lease
             has_registered_lead = self._lead_session is not None and self._sessions.get(0) is self._lead_session
             lead_used = self._session_used_tokens(0) if has_registered_lead else baseline
             committed += max(0, grant - max(0, lead_used - baseline))
-        for aid, grant in self._child_reservation.items():
-            committed += self._lease_remaining(aid, grant, self._reservation_baseline.get(aid, 0))
+        for aid, grant in self._child_lease.items():
+            committed += self._lease_remaining(aid, grant, self._lease_baseline.get(aid, 0))
         return committed
 
     def _reserve_child_budget(self, aid: int) -> int:
@@ -159,21 +159,21 @@ class SchedulerPersistenceMixin:
         Returns the granted cap.
         """
         grant = split_budget(self._max_budget_tokens, self._budget_committed())
-        self._child_reservation[aid] = grant
-        self._reservation_baseline[aid] = self._session_used_tokens(aid)
+        self._child_lease[aid] = grant
+        self._lease_baseline[aid] = self._session_used_tokens(aid)
         return grant
 
-    def _reserve_turn_budget(self, aid: int) -> int:
+    def _reserve_turn_lease(self, aid: int) -> int:
         """Lease every currently available token to a resuming session turn."""
-        self._release_turn_budget(aid)
+        self._release_turn_lease(aid)
         grant = max(0, self._max_budget_tokens - self._budget_committed())
         session = self._sessions.get(aid)
         baseline = self._session_used_tokens(aid)
         if aid == 0 and self._lead_session is not None and session is self._lead_session:
-            self._lead_reservation = (grant, baseline) if grant > 0 else None
+            self._lead_lease = (grant, baseline) if grant > 0 else None
         elif grant > 0:
-            self._child_reservation[aid] = grant
-            self._reservation_baseline[aid] = baseline
+            self._child_lease[aid] = grant
+            self._lease_baseline[aid] = baseline
         self._set_session_budget_limit(aid, baseline + grant)
         return grant
 
@@ -193,8 +193,8 @@ class SchedulerPersistenceMixin:
         if session is None:
             return False
         if aid == 0 and self._lead_session is not None and session is self._lead_session:
-            grant = self._reserve_turn_budget(aid)
-        elif aid in self._child_reservation:
+            grant = self._reserve_turn_lease(aid)
+        elif aid in self._child_lease:
             return True
         else:
             grant = self._reserve_child_budget(aid)
@@ -207,27 +207,27 @@ class SchedulerPersistenceMixin:
         # a durable inbox entry that can never become runnable.
         return grant > 0 or self.budget_exhausted
 
-    def _release_turn_budget(self, aid: int) -> tuple[int, int] | None:
+    def _release_turn_lease(self, aid: int) -> tuple[int, int] | None:
         if aid == 0 and self._lead_session is not None and self._sessions.get(0) is self._lead_session:
-            lease = self._lead_reservation
-            self._lead_reservation = None
+            lease = self._lead_lease
+            self._lead_lease = None
             return lease
-        grant = self._child_reservation.pop(aid, None)
-        baseline = self._reservation_baseline.pop(aid, None)
+        grant = self._child_lease.pop(aid, None)
+        baseline = self._lease_baseline.pop(aid, None)
         if grant is None:
             return None
         return grant, baseline or 0
 
-    def _current_turn_budget(self, aid: int) -> tuple[int, int] | None:
+    def _current_turn_lease(self, aid: int) -> tuple[int, int] | None:
         """Snapshot ``aid``'s lease without mutating the shared allocation."""
         if aid == 0 and self._lead_session is not None and self._sessions.get(0) is self._lead_session:
-            return self._lead_reservation
-        grant = self._child_reservation.get(aid)
+            return self._lead_lease
+        grant = self._child_lease.get(aid)
         if grant is None:
             return None
-        return grant, self._reservation_baseline.get(aid, 0)
+        return grant, self._lease_baseline.get(aid, 0)
 
-    def _restore_turn_budget(self, aid: int, lease: tuple[int, int] | None) -> None:
+    def _restore_turn_lease(self, aid: int, lease: tuple[int, int] | None) -> None:
         if lease is None:
             return
         old_grant, old_baseline = lease
@@ -238,10 +238,10 @@ class SchedulerPersistenceMixin:
         grant = min(old_remaining, available)
         baseline = used
         if aid == 0 and self._lead_session is not None and session is self._lead_session:
-            self._lead_reservation = (grant, baseline) if grant > 0 else None
+            self._lead_lease = (grant, baseline) if grant > 0 else None
         elif grant > 0:
-            self._child_reservation[aid] = grant
-            self._reservation_baseline[aid] = baseline
+            self._child_lease[aid] = grant
+            self._lease_baseline[aid] = baseline
         self._set_session_budget_limit(aid, baseline + grant)
 
     def _release_child_budget(self, aid: int) -> None:
@@ -249,6 +249,6 @@ class SchedulerPersistenceMixin:
 
         Idempotent: a child is finalized at most once per reservation.
         """
-        grant = self._child_reservation.pop(aid, None)
+        grant = self._child_lease.pop(aid, None)
         if grant is not None:
-            self._reservation_baseline.pop(aid, None)
+            self._lease_baseline.pop(aid, None)
