@@ -43,17 +43,11 @@ def _build_request_kwargs(
         kwargs["max_tokens"] = int(max_output_tokens)
     if tools:
         kwargs["tools"] = tools
-        # Kimi's thinking endpoint rejects ``required``. The forced-write step
-        # still has a strict artifact gate, so ``auto`` preserves K2.7 while a
-        # missing write remains a failed run.
-        kimi_thinking = (
-            model == "kimi-for-coding"
-            and thinking
-            and isinstance(thinking_params, dict)
-            and isinstance(thinking_params.get("thinking"), dict)
-            and thinking_params["thinking"].get("type") == "enabled"
-        )
-        kwargs["tool_choice"] = "auto" if kimi_thinking and tool_choice == "required" else tool_choice or "auto"
+        choice = tool_choice or "auto"
+        # Kimi Code rejects forced choices; downstream artifact gates validate auto results.
+        if model == "kimi-for-coding" and (choice == "required" or isinstance(choice, dict)):
+            choice = "auto"
+        kwargs["tool_choice"] = choice
     # Thinking passthrough: when on, the provider-specific reasoning params ride
     # along as ``extra_body`` (a valid OpenAI SDK create() kwarg) — for DashScope
     # compatible mode this is ``{"enable_thinking": True}``. When off, nothing is

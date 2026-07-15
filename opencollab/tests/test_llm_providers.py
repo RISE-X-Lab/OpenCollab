@@ -264,15 +264,23 @@ def test_openai_tool_choice_required_is_passed_through():
     assert kwargs["tool_choice"] == "required"
 
 
-def test_openai_kimi_thinking_uses_auto_for_forced_write():
+@pytest.mark.parametrize(
+    ("thinking", "tool_choice"),
+    [
+        (True, "required"),
+        (True, {"type": "function", "function": {"name": "structured_output"}}),
+        (False, {"type": "function", "function": {"name": "structured_output"}}),
+    ],
+)
+def test_openai_kimi_uses_auto_for_unsupported_forced_tool_choice(thinking, tool_choice):
     kwargs = build_openai_kwargs(
         "kimi-for-coding",
         [{"role": "user", "content": "write the final patch"}],
         [{"type": "function", "function": {"name": "write_file", "parameters": {}}}],
         1.0,
-        thinking=True,
+        thinking=thinking,
         thinking_params={"thinking": {"type": "enabled", "keep": "all"}},
-        tool_choice="required",
+        tool_choice=tool_choice,
     )
 
     assert kwargs["tool_choice"] == "auto"
@@ -290,6 +298,19 @@ def test_openai_other_thinking_model_keeps_required_tool_choice():
     )
 
     assert kwargs["tool_choice"] == "required"
+
+
+def test_openai_other_model_keeps_named_tool_choice():
+    choice = {"type": "function", "function": {"name": "structured_output"}}
+    kwargs = build_openai_kwargs(
+        "another-thinking-model",
+        [{"role": "user", "content": "write"}],
+        [{"type": "function", "function": {"name": "structured_output", "parameters": {}}}],
+        1.0,
+        tool_choice=choice,
+    )
+
+    assert kwargs["tool_choice"] == choice
 
 
 # ---------------------------------------------------------------------------
