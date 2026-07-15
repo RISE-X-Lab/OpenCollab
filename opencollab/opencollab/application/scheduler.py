@@ -65,6 +65,28 @@ class Scheduler(
     - spawn() creates a new SCB and schedules it for execution
     - run() drives the main loop, waiting for all agents to complete
     - Results are injected into parent sessions as system messages
+
+    One of two Strategies driving ``session.run_loop()``: this event-driven,
+    LLM-supervised scheduler and the code-driven ``WorkflowContext`` are
+    interchangeable regimes over the identical Session process primitive.
+
+    OS process model — the metaphor this subsystem operationalizes:
+      Session (its run_loop)       -> a process
+      SessionControlBlock (SCB)    -> the process control block (PCB)
+      SessionTable                 -> the process table
+      aid / parent_aid             -> pid / ppid
+      spawn()                      -> fork(): transactional — a failure rolls
+                                      back the budget lease, worktree, and maps
+                                      so a half-forked child never leaks
+      budget lease                 -> a CPU/memory quota, reserved at grant
+      Topology                     -> the IPC permission matrix (who may
+                                      message / spawn whom)
+      pending_events               -> the ready/wait queue + wakeup: an
+        (AWAITING_EVENTS)             AWAITING_EVENTS parent blocks on its
+                                      children and is woken when the whole
+                                      batch has answered
+      IDLE / run-ring /            -> process states: ready / running /
+        DONE|STOPPED|ERROR            blocked / exit(0) | killed | crash
     """
 
     def __init__(
