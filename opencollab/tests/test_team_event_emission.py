@@ -755,7 +755,7 @@ def test_spawn_with_review_restores_parent_turn_budget(monkeypatch):
         scheduler._tasks[0] = asyncio.current_task()
         try:
             result = await scheduler.spawn_with_review(0, "write fn")
-            assert scheduler._lead_reservation is not None
+            assert scheduler._lead_lease is not None
             assert scheduler.allocated_tokens <= scheduler._max_budget_tokens
             return result
         finally:

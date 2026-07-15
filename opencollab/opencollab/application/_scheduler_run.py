@@ -51,7 +51,7 @@ class SchedulerRunMixin:
         if self._lead_session.state.phase is SessionPhase.AWAITING_EVENTS:
             task = self._tasks.get(0)
             if task is None or task.done():
-                self._reserve_turn_budget(0)
+                self._reserve_turn_lease(0)
                 self._tasks[0] = asyncio.create_task(self._drive_agent(0, self._lead_session))
             await self.wait_until_terminal(0)
 
@@ -64,11 +64,11 @@ class SchedulerRunMixin:
         if self._shutting_down:
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
         turn_start = len(self._lead_session.state.messages)
-        prior_lease = self._current_turn_budget(0)
-        self._reserve_turn_budget(0)
+        prior_lease = self._current_turn_lease(0)
+        self._reserve_turn_lease(0)
         await self._append_user_turn_txn(0, self._lead_session, user_message, prior_lease)
         if self._shutting_down:
-            self._release_turn_budget(0)
+            self._release_turn_lease(0)
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
         self._tasks[0] = asyncio.create_task(self._drive_agent(0, self._lead_session))
 

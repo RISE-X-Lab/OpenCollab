@@ -114,9 +114,9 @@ class MessagingMixin:
         except BaseException:
             session.state.restore_user_turn(checkpoint)
             self._autosave_session(aid)
-            self._release_turn_budget(aid)
+            self._release_turn_lease(aid)
             if not self._shutting_down:
-                self._restore_turn_budget(aid, prior_lease)
+                self._restore_turn_lease(aid, prior_lease)
             raise
         finally:
             if self._message_delivery_tasks.get(aid) is current_task:
@@ -232,7 +232,7 @@ class MessagingMixin:
             return []
         if scb.state.phase is SessionPhase.AWAITING_EVENTS or not scb.state.pending_events.is_empty():
             return []
-        prior_lease = self._current_turn_budget(aid)
+        prior_lease = self._current_turn_lease(aid)
         if self._shutting_down or not self._reserve_message_budget(aid):
             return []
 
@@ -245,7 +245,7 @@ class MessagingMixin:
         await self._append_user_turn_txn(aid, session, delivery, prior_lease)
 
         if self._shutting_down:
-            self._release_turn_budget(aid)
+            self._release_turn_lease(aid)
             return []
         del inbox[: len(messages)]
         for message in messages:

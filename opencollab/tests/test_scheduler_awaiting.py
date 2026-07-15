@@ -496,7 +496,7 @@ def test_scheduler_run_cancellation_tears_down_owned_team_before_propagating():
         assert scheduler._shutting_down is True
         assert scheduler._tasks == {}
         assert scheduler.table.get(0).state.phase is SessionPhase.STOPPED
-        assert scheduler._lead_reservation is None
+        assert scheduler._lead_lease is None
 
     run(scenario())
 
@@ -536,7 +536,7 @@ def test_cleanup_marks_interrupted_lead_message_as_technical_failure():
 
     run(scenario())
     assert scheduler._tasks == {}
-    assert scheduler._lead_reservation is None
+    assert scheduler._lead_lease is None
     assert scheduler.table.get(0).state.phase is SessionPhase.STOPPED
     assert lead.state.messages == []
     assert lead.state.message_timestamps == []
@@ -686,14 +686,14 @@ def test_cleanup_finalizes_driver_cancelled_before_first_timeslice():
 
     async def scenario():
         aid = await scheduler.spawn(0, "coder", "cancel immediately")
-        assert aid in scheduler._child_reservation
+        assert aid in scheduler._child_lease
         await scheduler.cleanup()
         return aid
 
     aid = run(scenario())
 
     assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
-    assert aid not in scheduler._child_reservation
+    assert aid not in scheduler._child_lease
     assert scheduler.inflight_spawn("coder", "cancel immediately") is None
     assert aid not in scheduler._spawn_origin
 
@@ -701,12 +701,12 @@ def test_cleanup_finalizes_driver_cancelled_before_first_timeslice():
 def test_cleanup_releases_seeded_lead_lease_without_an_active_turn():
     lead = ScriptedSession("lead", [])
     scheduler, _ = build_scheduler(lead, [])
-    assert scheduler._lead_reservation is not None
+    assert scheduler._lead_lease is not None
     assert scheduler.allocated_tokens > 0
 
     run(scheduler.cleanup(cleanup_timeout=0.01))
 
-    assert scheduler._lead_reservation is None
+    assert scheduler._lead_lease is None
     assert scheduler.allocated_tokens == 0
 
 
@@ -792,7 +792,7 @@ def test_cleanup_is_bounded_when_session_ignores_both_cancellations():
         assert row.error and "scheduler cleanup" in row.error
         assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
         assert scheduler.table.get(aid).result.startswith("Error: scheduler cleanup")
-        assert aid not in scheduler._child_reservation
+        assert aid not in scheduler._child_lease
         assert scheduler.inflight_spawn("coder", "ignore cancellation") is None
         assert scheduler._tasks == {}
 
@@ -1112,7 +1112,7 @@ def test_spawn_blocked_in_acquire_cannot_resurrect_after_cleanup():
         assert scheduler._startup_tasks == {}
         assert scheduler._startup_origin == {}
         assert scheduler._startup_envs == {}
-        assert scheduler._child_reservation == {}
+        assert scheduler._child_lease == {}
         assert scheduler.inflight_spawn("coder", "blocked startup") is None
         startup_row = lead.state.pending_events.rows["startup-race"]
         assert startup_row.status is RowStatus.FAILED
@@ -1125,7 +1125,7 @@ def test_spawn_blocked_in_acquire_cannot_resurrect_after_cleanup():
         assert set(scheduler.table.entries) == {0}
         assert set(scheduler._sessions) == {0}
         assert scheduler._tasks == {}
-        assert scheduler._child_reservation == {}
+        assert scheduler._child_lease == {}
         assert scheduler.inflight_spawn("coder", "blocked startup") is None
         assert pool.release_env_calls == 1
 
@@ -1198,7 +1198,7 @@ def test_message_add_blocked_during_cleanup_cannot_create_late_driver():
         assert child.state.turn.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
         assert len(scheduler._message_inbox[aid]) == 1
         assert len(child.state.pending_user_messages) == 1
-        assert aid not in scheduler._child_reservation
+        assert aid not in scheduler._child_lease
 
     run(scenario())
 
@@ -1246,7 +1246,7 @@ def test_cleanup_rejects_invalid_timeout_before_any_side_effect(invalid_timeout)
         assert scheduler._shutting_down is False
         assert scheduler._tasks[aid] is driver
         assert driver.done() is False
-        assert aid in scheduler._child_reservation
+        assert aid in scheduler._child_lease
         assert pool.release_calls == 0
 
         release.set()
