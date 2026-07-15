@@ -96,7 +96,7 @@ def test_t1_watchdog_trips_with_budget_remaining_and_forces_commit():
     submit = SubmitFindingsTool(on_capture=capture_done.set)
     agent = Agent(name="scout", system_prompt="s", tools=[_ReadStub(), submit])
     state = SessionState(messages=[{"role": "user", "content": "investigate"}], used_tokens=1_000)
-    state.steps_since_progress = DEFAULT_WATCHDOG_K  # K no-progress steps
+    state.turn.steps_since_progress = DEFAULT_WATCHDOG_K  # K no-progress steps
     llm = FakeLLM(
         [llm_response(tool_calls=[tool_call(arguments=json.dumps(_captured()))], finish_reason="tool_calls")]
     )
@@ -135,7 +135,7 @@ def test_t1_watchdog_just_below_k_does_not_trip():
     # K-1 no-progress steps must NOT brake (off-by-one guard).
     agent = _agent_with_submit()
     state = SessionState(messages=[{"role": "user", "content": "x"}], used_tokens=1_000)
-    state.steps_since_progress = DEFAULT_WATCHDOG_K - 1
+    state.turn.steps_since_progress = DEFAULT_WATCHDOG_K - 1
     llm = FakeLLM([llm_response(content="still exploring")])
     runner = build_runner(
         state=state, agent=agent, llm=llm,
@@ -156,7 +156,7 @@ def test_t2_low_yield_brake_trips_at_m_and_forces_commit():
     submit = SubmitFindingsTool(on_capture=capture_done.set)
     agent = Agent(name="scout", system_prompt="s", tools=[_ReadStub(), submit])
     state = SessionState(messages=[{"role": "user", "content": "investigate"}], used_tokens=2_000)
-    state.low_yield_since_progress = DEFAULT_LOW_YIELD_M  # M low-yield results
+    state.turn.low_yield_since_progress = DEFAULT_LOW_YIELD_M  # M low-yield results
     llm = FakeLLM(
         [llm_response(tool_calls=[tool_call(arguments=json.dumps(_captured()))], finish_reason="tool_calls")]
     )
@@ -186,8 +186,8 @@ def test_t2_off_pinned_counters_never_brake_reference_behavior():
     # its normal turn and finishes DONE on its plain-text answer.
     agent = _agent_with_submit()
     state = SessionState(messages=[{"role": "user", "content": "investigate"}], used_tokens=2_000)
-    state.steps_since_progress = 99
-    state.low_yield_since_progress = 99
+    state.turn.steps_since_progress = 99
+    state.turn.low_yield_since_progress = 99
     llm = FakeLLM([llm_response(content="here is my answer")])
     runner = build_runner(
         state=state,
@@ -219,8 +219,8 @@ def test_watchdog_not_entered_while_a_tool_result_is_pending():
     from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 
     state = SessionState(messages=[{"role": "user", "content": "x"}], used_tokens=1_000)
-    state.steps_since_progress = 99
-    state.low_yield_since_progress = 99
+    state.turn.steps_since_progress = 99
+    state.turn.low_yield_since_progress = 99
     state.pending_events.add(
         PendingRow(tool_call_id="t1", kind=RowKind.CHILD_AGENT, order=0, status=RowStatus.PENDING)
     )
@@ -241,16 +241,16 @@ def test_watchdog_not_entered_while_a_tool_result_is_pending():
 # --------------------------------------------------------------------------- #
 
 
-def test_watchdog_forced_turn_ignored_escalates_and_latches_forced_unsatisfied():
+def test_watchdog_forced_turn_ignored_escalates_once_then_commits():
     # Watchdog fires (budget plentiful); the scout IGNORES the forced tool_choice
     # and calls a now-unknown tool on the forced turn. The actuator escalates with
-    # exactly ONE retry (submit-only stays enforced) and latches forced_unsatisfied;
-    # the scout then commits on the retry -> terminus "forced".
+    # exactly ONE retry (submit-only stays enforced); the scout then commits on the
+    # retry -> terminus "forced".
     capture_done = asyncio.Event()
     submit = SubmitFindingsTool(on_capture=capture_done.set)
     agent = Agent(name="scout", system_prompt="s", tools=[_ReadStub(), submit])
     state = SessionState(messages=[{"role": "user", "content": "x"}], used_tokens=1_000)
-    state.steps_since_progress = DEFAULT_WATCHDOG_K
+    state.turn.steps_since_progress = DEFAULT_WATCHDOG_K
     llm = FakeLLM(
         [
             llm_response(tool_calls=[tool_call(name="grep", arguments="{}")], finish_reason="tool_calls"),
@@ -273,7 +273,6 @@ def test_watchdog_forced_turn_ignored_escalates_and_latches_forced_unsatisfied()
     run(runner.run_loop(capture_done))
 
     assert len(llm.calls) == 2  # forced turn + exactly one retry
-    assert state.forced_unsatisfied is True
     # Tool-removal stayed enforced across the retry (the terminal, non-degradable rung).
     assert [t.name for t in agent.tools] == [SUBMIT_TOOL_NAME]
     assert llm.calls[0]["tool_choice"] == _FORCED_SUBMIT_CHOICE
@@ -302,6 +301,6 @@ def _run_one(state, tool, name, args):
 
 def test_steps_since_progress_resets_on_user_turn():
     state = SessionState(messages=[])
-    state.steps_since_progress = 5
+    state.turn.steps_since_progress = 5
     state.reset_for_user_turn()
-    assert state.steps_since_progress == 0
+    assert state.turn.steps_since_progress == 0

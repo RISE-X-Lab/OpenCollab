@@ -148,7 +148,7 @@ def test_reset_for_user_turn_clears_done_and_hashes():
     s.remember_tool_call_hash("h1")
     s.reset_for_user_turn()
     assert s.phase is SessionPhase.IDLE
-    assert s.recent_call_hashes == []
+    assert s.turn.recent_call_hashes == []
 
 
 def test_reset_for_user_turn_preserves_step_count():

@@ -442,7 +442,7 @@ def test_loop_block_short_circuit_counts_toward_hard_brake():
     result = run(use_case.process([tool_call(arguments='{"value": 1}')]))
     result.apply_to(state)
 
-    assert state.loop_blocked_since_progress == 1
+    assert state.turn.loop_blocked_since_progress == 1
     assert result.loop_detections == [LoopDetection(tool="fake_tool", count=3)]
 
 

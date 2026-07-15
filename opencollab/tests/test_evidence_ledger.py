@@ -25,7 +25,7 @@ from opencollab.application.submit_findings import (
     SUBMIT_TOOL_NAME,
     harvest_findings,
 )
-from opencollab.domain.session import SessionState
+from opencollab.domain.session import SessionState, TurnEnforcementState
 from tool_execution_test_support import build_sensor_use_case as _use_case
 
 
@@ -83,7 +83,7 @@ def test_t1_ledger_accumulates_correct_cards_across_tool_calls():
         '{"path":"b.py"}',
     )
 
-    ledger = state.scout_ledger
+    ledger = state.turn.scout_ledger
     assert len(ledger) == 5
     assert [c["outcome"] for c in ledger] == ["hit", "duplicate", "NO-MATCH", "NO-MATCH", "hit"]
     assert [c["tool"] for c in ledger] == ["grep", "grep", "file_read", "grep", "file_read"]
@@ -98,9 +98,9 @@ def test_t1_ledger_accumulates_correct_cards_across_tool_calls():
 def test_t1_ledger_resets_on_a_fresh_user_turn():
     state = SessionState(messages=[])
     _run_one(state, ScriptedTool("grep", ["a hit"]), "grep", '{"pattern":"a"}')
-    assert len(state.scout_ledger) == 1
+    assert len(state.turn.scout_ledger) == 1
     state.reset_for_user_turn()
-    assert state.scout_ledger == []
+    assert state.turn.scout_ledger == []
 
 
 def test_t1_harvest_backstop_reads_the_ledger_for_a_partial_salvage():
@@ -173,7 +173,9 @@ class _FakeState:
         self.wind_down_done = False
         self.wind_down_token_mark = 0
         self.messages = messages if messages is not None else []
-        self.scout_ledger = scout_ledger if scout_ledger is not None else []
+        self.turn = TurnEnforcementState(
+            scout_ledger=scout_ledger if scout_ledger is not None else []
+        )
 
 
 class _FakeSession:

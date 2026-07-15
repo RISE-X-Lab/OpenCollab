@@ -479,8 +479,8 @@ class SessionRunUseCase:
                 "budget_spent": budget_spent,
                 "watchdog_tripped": watchdog_tripped,
                 "low_yield_tripped": low_yield_tripped,
-                "steps_since_progress": self.state.steps_since_progress,
-                "low_yield_since_progress": self.state.low_yield_since_progress,
+                "steps_since_progress": self.state.turn.steps_since_progress,
+                "low_yield_since_progress": self.state.turn.low_yield_since_progress,
                 "used_tokens": self.state.used_tokens,
                 "step": self.state.step_count,
             },
@@ -511,7 +511,6 @@ class SessionRunUseCase:
         if self.state.wind_down_done:
             if not self._wind_down_retried:
                 self._wind_down_retried = True
-                self.state.forced_unsatisfied = True
                 self.state.append_message({"role": "system", "content": _WIND_DOWN_RETRY})
                 self.state.transition_to(SessionPhase.CALLING_LLM)
                 return True
@@ -523,11 +522,11 @@ class SessionRunUseCase:
         explore_threshold = self.max_budget_tokens - self._commit_reserve
         budget_spent = self.state.used_tokens >= explore_threshold
         watchdog_tripped = (
-            self._brake_on() and self.state.steps_since_progress >= self._watchdog_k
+            self._brake_on() and self.state.turn.steps_since_progress >= self._watchdog_k
         )
         low_yield_tripped = (
             self._brake_on()
-            and self.state.low_yield_since_progress >= self._low_yield_m
+            and self.state.turn.low_yield_since_progress >= self._low_yield_m
         )
         brake = budget_spent or watchdog_tripped or low_yield_tripped
         if not brake or not self.state.pending_events.is_empty():
@@ -552,10 +551,10 @@ class SessionRunUseCase:
             )
             return
 
-        if self.state.loop_blocked_since_progress >= DEFAULT_LOOP_BLOCKED_LIMIT:
+        if self.state.turn.loop_blocked_since_progress >= DEFAULT_LOOP_BLOCKED_LIMIT:
             reason = (
                 "loop block limit reached: "
-                f"{self.state.loop_blocked_since_progress} repeated tool calls"
+                f"{self.state.turn.loop_blocked_since_progress} repeated tool calls"
             )
             await self._stop_precheck(reason)
             return
@@ -844,7 +843,7 @@ class SessionRunUseCase:
         steps_left = max(0, self.max_steps - self.state.step_count)
         status = f"[Budget: ~{remaining_k}k/{total_k}k tokens left, ~{steps_left} steps left.]"
 
-        reads = self.state.reads_since_last_edit
+        reads = self.state.turn.reads_since_last_edit
         tool_names = {
             getattr(t, "name", None)
             for t in getattr(self.agent, "tools", []) or []
@@ -1188,7 +1187,7 @@ class SessionRunUseCase:
             # never escalates), the escalation has NOT de-escalated, so leave the
             # mark intact (re-arming would let a later still-high turn re-fire a
             # duplicate steering_nudge).
-            if self.state.reads_since_last_edit < READS_NUDGE_SOFT:
+            if self.state.turn.reads_since_last_edit < READS_NUDGE_SOFT:
                 self._last_steering_level = None
             return
         if rank[level] > rank[self._last_steering_level] and self.tracer is not None:
@@ -1199,7 +1198,7 @@ class SessionRunUseCase:
                     "agent": getattr(self.agent, "role", None)
                     or getattr(self.agent, "label", None)
                     or self.agent.model,
-                    "reads_since_last_edit": self.state.reads_since_last_edit,
+                    "reads_since_last_edit": self.state.turn.reads_since_last_edit,
                     "level": level,
                     "tool_choice_override": level == "hard",
                     "step": self.state.step_count,
