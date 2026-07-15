@@ -20,6 +20,39 @@ def test_every_phase_is_in_the_transition_table():
     assert set(PHASE_TRANSITIONS) == set(SessionPhase)
 
 
+def test_phase_and_terminal_sets_are_exactly_as_declared():
+    # Value-lock backstopping the self-referential topology tests in this file:
+    # they derive their parametrize cases FROM PHASE_TRANSITIONS/TERMINAL_PHASES,
+    # so a wrong topology would still satisfy them. This pins the exact intended
+    # shape as string literals, so adding/removing a phase or terminal is a
+    # conscious, reviewed edit here. (Lane S1 rewrites this to the collapsed
+    # 10-phase / 3-terminal shape — that rewrite is the point.)
+    assert {p.value for p in SessionPhase} == {
+        "scheduled",
+        "idle",
+        "precheck",
+        "calling_llm",
+        "handling_response",
+        "executing_tools",
+        "awaiting_events",
+        "autosaving",
+        "done",
+        "cancelled",
+        "budget_exceeded",
+        "step_limit_exceeded",
+        "context_overflow",
+        "error",
+    }
+    assert {p.value for p in TERMINAL_PHASES} == {
+        "done",
+        "cancelled",
+        "budget_exceeded",
+        "step_limit_exceeded",
+        "context_overflow",
+        "error",
+    }
+
+
 def test_terminal_phases_only_resume_to_idle():
     for phase in TERMINAL_PHASES:
         assert PHASE_TRANSITIONS[phase] == frozenset({SessionPhase.IDLE})
