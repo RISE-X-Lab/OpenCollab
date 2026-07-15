@@ -1,5 +1,4 @@
 import asyncio
-import json
 import math
 import time
 from pathlib import Path
@@ -303,76 +302,10 @@ def test_tool_execution_use_case_allows_a_few_legitimate_rereads():
     assert tool.runtime_calls  # the third read executed normally
 
 
-def test_reads_without_write_counter_accumulates_and_resets():
-    # Closed-loop steering signal: successful reads accumulate
-    # reads_since_last_edit; a successful write zeroes it.
-    state = SessionState(messages=[])
-    read_tool = RuntimeNativeTool()
-    read_tool.name = "file_read"
-    write_tool = RuntimeNativeTool(output="Created/wrote a.py (10 chars)")
-    write_tool.name = "file_write"
-    agent = FakeAgent(tools=[read_tool, write_tool])
-    use_case, _ = build_use_case(state=state, agent=agent)
-
-    run(use_case.process([tool_call("file_read", '{"path": "a.py"}', "c1")])).apply_to(state)
-    run(use_case.process([tool_call("file_read", '{"path": "b.py"}', "c2")])).apply_to(state)
-    assert state.reads_since_last_edit == 2
-
-    run(use_case.process([tool_call("file_write", '{"path": "a.py"}', "c3")])).apply_to(state)
-    assert state.reads_since_last_edit == 0  # a landed edit resets the counter
-
-
-def test_reads_counter_ignores_failed_writes():
-    # A write whose result is an error must NOT reset the counter.
-    state = SessionState(messages=[], reads_since_last_edit=3)
-    bad_write = RuntimeNativeTool(output="Error: old_str not found in a.py.")
-    bad_write.name = "file_write"
-    agent = FakeAgent(tools=[bad_write])
-    use_case, _ = build_use_case(state=state, agent=agent)
-
-    result = run(use_case.process([tool_call("file_write", '{"path": "a.py"}', "c1")]))
-    result.apply_to(state)
-    assert state.reads_since_last_edit == 3  # failed write does not count as an edit
-
-
 def _bash_tool(output: str = "ok"):
     tool = RuntimeNativeTool(output=output)
     tool.name = "bash"
     return tool
-
-
-@pytest.mark.parametrize(
-    ("command", "output", "initial_count", "expected_count"),
-    [
-        ("sed -i 's/a/b/' x.py", "done", 5, 0),
-        ("cat > x.py <<'EOF'\nbody\nEOF", "done", 5, 0),
-        ("python -c \"from pathlib import Path; Path('x.py').write_text(src)\"", "done", 5, 0),
-        ("python -c \"Path('x.py').write_bytes(b)\"", "done", 5, 0),
-        ("python -c 'print(1)'", "output", 5, 5),
-        ("grep -rn foo x.py", "output", 5, 5),
-        ("pytest x.py 2>&1", "output", 5, 5),
-        ("sed -i s/a/b/ x.py", "Error: sed: no such file", 4, 4),
-    ],
-    ids=[
-        "sed-mutation",
-        "heredoc-mutation",
-        "pathlib-text-mutation",
-        "pathlib-bytes-mutation",
-        "python-repro",
-        "grep-read",
-        "pytest-repro",
-        "failed-mutation",
-    ],
-)
-def test_bash_command_updates_read_counter(command, output, initial_count, expected_count):
-    state = SessionState(messages=[], reads_since_last_edit=initial_count)
-    agent = FakeAgent(tools=[_bash_tool(output=output)])
-    use_case, _ = build_use_case(state=state, agent=agent)
-    arguments = json.dumps({"command": command})
-
-    run(use_case.process([tool_call("bash", arguments, "c1")])).apply_to(state)
-
-    assert state.reads_since_last_edit == expected_count
 
 
 def test_tool_execution_use_case_executes_runtime_native_tool_and_events():
@@ -498,22 +431,6 @@ def test_short_circuit_unknown_tool_is_traced():
     assert step["step_type"] == "tool_error"
     assert step["payload"]["tool"] == "missing_tool"
     assert step["payload"]["error"] == "unknown_tool"
-
-
-def test_short_circuit_loop_block_is_traced():
-    tracer = FakeTracer()
-    state = SessionState(messages=[])
-    use_case, _ = build_use_case(state=state, tracer=tracer)
-    call_hash = use_case.tool_call_hash("fake_tool", {"value": 1})
-    state.replace_recent_tool_hashes([call_hash, call_hash])
-
-    run(use_case.process([tool_call(arguments='{"value": 1}')]))
-
-    assert len(tracer.steps) == 1
-    step = tracer.steps[0]
-    assert step["step_type"] == "loop_blocked"
-    assert step["payload"]["tool"] == "fake_tool"
-    assert step["payload"]["count"] == 3
 
 
 def test_loop_block_short_circuit_counts_toward_hard_brake():

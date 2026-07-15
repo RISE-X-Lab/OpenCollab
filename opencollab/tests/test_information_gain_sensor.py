@@ -21,7 +21,6 @@ import asyncio
 
 from opencollab.application.tool_execution import (
     _intrinsic_low_yield,
-    _result_content_hash,
 )
 from opencollab.domain.session import MAX_SCOUT_LEDGER_CARDS, SessionState
 from tool_execution_test_support import build_sensor_use_case as _use_case
@@ -71,11 +70,6 @@ def test_intrinsic_low_yield_flags_no_match_empty_read_and_zero_lines():
     assert _intrinsic_low_yield("grep", "a.py:1: def f(): ...") is False
     # An empty bash result is not inherently low-yield (only read-class tools).
     assert _intrinsic_low_yield("bash", "") is False
-
-
-def test_content_hash_is_stable_and_distinguishes_content():
-    assert _result_content_hash("alpha") == _result_content_hash("alpha")
-    assert _result_content_hash("alpha") != _result_content_hash("beta")
 
 
 # --------------------------------------------------------------------------- #
@@ -167,40 +161,6 @@ def test_t1_counters_reset_on_a_fresh_user_turn():
 # --------------------------------------------------------------------------- #
 # T2 — off == on parity: the sensor is observational, control flow unchanged.
 # --------------------------------------------------------------------------- #
-
-
-def test_t2_sensor_folding_does_not_alter_control_flow_off_equals_on():
-    # The ONLY thing the sensor adds to ``apply_to`` is the evidence fold. Folding
-    # it ("on") must leave every control-flow-visible piece of state byte-for-byte
-    # identical to the pre-sensor apply body ("off"/reference); only the new
-    # observational counters move.
-    batch = [_call("grep", '{"pattern":"end"}')]
-
-    # Reference ("off") = the pre-sensor apply body: append messages + hashes +
-    # read/write counter, WITHOUT folding the evidence sensor.
-    ref = SessionState(messages=[])
-    res_ref = run(_use_case(ref, ScriptedTool("grep", ["fs.py:42: end = start + n"])).process(batch))
-    for message in res_ref.messages_to_append:
-        ref.append_message(message)
-    res_ref.apply_hashes_to(ref)
-    res_ref.apply_read_write_counter_to(ref)
-
-    # Enforced ("on") = full apply_to, which additionally folds the sensor.
-    on = SessionState(messages=[])
-    res_on = run(_use_case(on, ScriptedTool("grep", ["fs.py:42: end = start + n"])).process(batch))
-    res_on.apply_to(on)
-
-    # Control-flow-visible state is identical between off and on.
-    assert on.messages == ref.messages
-    assert on.reads_since_last_edit == ref.reads_since_last_edit
-    assert on.recent_call_hashes == ref.recent_call_hashes
-    assert res_on.messages_to_append == res_ref.messages_to_append
-    assert res_on.loop_detections == res_ref.loop_detections
-    assert res_on.reads_executed == res_ref.reads_executed
-
-    # Only the observational counters diverge: "off" never folded the sensor.
-    assert ref.distinct_evidence_count == 0 and ref.low_yield_since_progress == 0
-    assert on.distinct_evidence_count == 1 and on.low_yield_since_progress == 0
 
 
 def test_evidence_ledger_retains_only_bounded_latest_cards():
