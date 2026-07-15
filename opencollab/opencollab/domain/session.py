@@ -15,7 +15,6 @@ def _now_iso() -> str:
 
 
 class SessionPhase(Enum):
-    SCHEDULED = "scheduled"
     IDLE = "idle"
     PRECHECK = "precheck"
     CALLING_LLM = "calling_llm"
@@ -24,10 +23,7 @@ class SessionPhase(Enum):
     AWAITING_EVENTS = "awaiting_events"
     AUTOSAVING = "autosaving"
     DONE = "done"
-    CANCELLED = "cancelled"
-    BUDGET_EXCEEDED = "budget_exceeded"
-    STEP_LIMIT_EXCEEDED = "step_limit_exceeded"
-    CONTEXT_OVERFLOW = "context_overflow"
+    STOPPED = "stopped"
     ERROR = "error"
 
     def is_terminal(self) -> bool:
@@ -37,10 +33,7 @@ class SessionPhase(Enum):
 TERMINAL_PHASES = frozenset(
     {
         SessionPhase.DONE,
-        SessionPhase.CANCELLED,
-        SessionPhase.BUDGET_EXCEEDED,
-        SessionPhase.STEP_LIMIT_EXCEEDED,
-        SessionPhase.CONTEXT_OVERFLOW,
+        SessionPhase.STOPPED,
         SessionPhase.ERROR,
     }
 )
@@ -50,23 +43,24 @@ TERMINAL_PHASES = frozenset(
 # transitions the loop may make. ``transition_to`` validates against this.
 # ``set_phase`` is the unchecked primitive reserved for process birth/enqueue
 # by the Scheduler, snapshot/restore, and tests. Two named escapes may fire
-# from any phase: ``fail`` -> ERROR and ``cancel`` -> CANCELLED. ERROR is only
-# ever reached that way (it has no inbound edge below); CANCELLED also has a
+# from any phase: ``fail`` -> ERROR and ``cancel`` -> STOPPED. ERROR is only
+# ever reached that way (it has no inbound edge below); STOPPED also has a
 # validated in-loop edge from PRECHECK, so the scheduler's out-of-band
 # ``cancel`` covers the case where an agent task is killed mid-loop.
 #
-# BUDGET_EXCEEDED and STEP_LIMIT_EXCEEDED are distinct resource-cap terminals,
-# both reached from PRECHECK: the former when cumulative ``used_tokens`` hits
-# ``max_budget_tokens``, the latter when cumulative ``step_count`` hits
-# ``max_steps``. Both caps are session-lifetime (see ``reset_for_user_turn``).
-# ``terminal_reason`` carries the human-readable detail for every terminal phase.
-#
-# CONTEXT_OVERFLOW is the context-window safety-net terminal, reached from
-# CALLING_LLM: the provider rejected the prompt as too large for the model's
-# window even after a forced maximal compaction pass + a single retry (e.g. the
-# pinned identity/team/task seed alone exceeds the window). It is a *controlled*
-# graceful stop — not an unhandled ERROR — so a child that overflows delivers a
-# clean result to its parent rather than crashing the parent's turn.
+# Three terminals: DONE (the turn produced a final answer), ERROR (an unhandled
+# fault, reached only via ``fail``), and STOPPED — one graceful-stop terminal
+# covering every controlled halt. The *why* of a STOPPED lives in
+# ``terminal_reason`` (a human-readable string), not in a parallel set of enum
+# members: a spent token budget, a reached step limit, a repeated-tool-call loop
+# block, a user cancel, and a context-window overflow all resolve to
+# STOPPED(reason=...). STOPPED is reached from PRECHECK (budget / step / loop /
+# cancel gates) and from CALLING_LLM (context overflow: the provider rejected the
+# prompt as too large even after a forced maximal compaction pass + one retry —
+# e.g. the pinned identity/team/task seed alone exceeds the window). Every STOPPED
+# is a *controlled* stop that delivers a clean result to the parent, never an
+# unhandled ERROR, so a child that overflows or exhausts its budget does not crash
+# the parent's turn.
 #
 # AWAITING_EVENTS is a non-terminal *suspend* state: the loop stops there (the
 # task returns) when a step deferred work (e.g. a spawned child) and the
@@ -74,18 +68,12 @@ TERMINAL_PHASES = frozenset(
 # row is filled. EXECUTING_TOOLS branches to AUTOSAVING (all tools immediate) or
 # AWAITING_EVENTS (any deferred tool present).
 PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
-    SessionPhase.SCHEDULED: frozenset({SessionPhase.IDLE}),
     SessionPhase.IDLE: frozenset({SessionPhase.PRECHECK}),
     SessionPhase.PRECHECK: frozenset(
-        {
-            SessionPhase.CALLING_LLM,
-            SessionPhase.CANCELLED,
-            SessionPhase.BUDGET_EXCEEDED,
-            SessionPhase.STEP_LIMIT_EXCEEDED,
-        }
+        {SessionPhase.CALLING_LLM, SessionPhase.STOPPED}
     ),
     SessionPhase.CALLING_LLM: frozenset(
-        {SessionPhase.HANDLING_RESPONSE, SessionPhase.CONTEXT_OVERFLOW}
+        {SessionPhase.HANDLING_RESPONSE, SessionPhase.STOPPED}
     ),
     # AUTOSAVING is the empty-stop retry route: the turn produced nothing to
     # execute, so it autosaves like any step and loops back to PRECHECK.
@@ -99,10 +87,7 @@ PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
     SessionPhase.AUTOSAVING: frozenset({SessionPhase.PRECHECK}),
     # Terminal phases resume back to IDLE for a fresh user turn or a re-run.
     SessionPhase.DONE: frozenset({SessionPhase.IDLE}),
-    SessionPhase.CANCELLED: frozenset({SessionPhase.IDLE}),
-    SessionPhase.BUDGET_EXCEEDED: frozenset({SessionPhase.IDLE}),
-    SessionPhase.STEP_LIMIT_EXCEEDED: frozenset({SessionPhase.IDLE}),
-    SessionPhase.CONTEXT_OVERFLOW: frozenset({SessionPhase.IDLE}),
+    SessionPhase.STOPPED: frozenset({SessionPhase.IDLE}),
     SessionPhase.ERROR: frozenset({SessionPhase.IDLE}),
 }
 
@@ -346,11 +331,11 @@ class SessionState:
         self.terminal_reason = reason or "error"
 
     def cancel(self, reason: str | None = None) -> None:
-        """Out-of-band escape to CANCELLED from any phase, used by the scheduler
+        """Out-of-band escape to STOPPED from any phase, used by the scheduler
         when an agent task is killed mid-loop. The in-loop cancel uses the
-        validated PRECHECK -> CANCELLED edge via ``transition_to`` instead.
+        validated PRECHECK -> STOPPED edge via ``transition_to`` instead.
         """
-        self.phase = SessionPhase.CANCELLED
+        self.phase = SessionPhase.STOPPED
         self.terminal_reason = reason or "cancelled"
 
     def resume_to_idle(self) -> None:

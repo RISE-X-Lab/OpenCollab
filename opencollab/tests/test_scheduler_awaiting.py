@@ -424,7 +424,7 @@ def test_scheduler_run_retrieves_finished_task_exception(caplog):
 
 def test_scheduler_run_does_not_return_previous_turn_answer():
     async def precheck_stop(sess: ScriptedSession) -> str:
-        sess.state.set_phase(SessionPhase.STEP_LIMIT_EXCEEDED)
+        sess.state.set_phase(SessionPhase.STOPPED)
         sess.state.append_message(
             {"role": "system", "content": "[Step limit reached. Session stopped.]"}
         )
@@ -495,7 +495,7 @@ def test_scheduler_run_cancellation_tears_down_owned_team_before_propagating():
 
         assert scheduler._shutting_down is True
         assert scheduler._tasks == {}
-        assert scheduler.table.get(0).state.phase is SessionPhase.CANCELLED
+        assert scheduler.table.get(0).state.phase is SessionPhase.STOPPED
         assert scheduler._lead_reservation is None
 
     run(scenario())
@@ -537,7 +537,7 @@ def test_cleanup_marks_interrupted_lead_message_as_technical_failure():
     run(scenario())
     assert scheduler._tasks == {}
     assert scheduler._lead_reservation is None
-    assert scheduler.table.get(0).state.phase is SessionPhase.CANCELLED
+    assert scheduler.table.get(0).state.phase is SessionPhase.STOPPED
     assert lead.state.messages == []
     assert lead.state.message_timestamps == []
     assert lead.state.recent_call_hashes == ["lead-call"]
@@ -585,7 +585,7 @@ def test_running_cancelled_child_fails_parent_row_and_resumes_parent():
 
     aid = run(scenario())
 
-    assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+    assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
     assert scheduler.table.get(aid).result.startswith("Error: agent cancelled")
     assert lead.state.phase is SessionPhase.DONE
     assert lead.state.pending_events.is_empty()
@@ -669,7 +669,7 @@ def test_cleanup_cancellation_does_not_start_message_replacement_task():
 
     assert scheduler._shutting_down is True
     assert scheduler._tasks == {}
-    assert child.state.phase is SessionPhase.CANCELLED
+    assert child.state.phase is SessionPhase.STOPPED
     assert scheduler._message_inbox[aid]
 
 
@@ -692,7 +692,7 @@ def test_cleanup_finalizes_driver_cancelled_before_first_timeslice():
 
     aid = run(scenario())
 
-    assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+    assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
     assert aid not in scheduler._child_reservation
     assert scheduler.inflight_spawn("coder", "cancel immediately") is None
     assert aid not in scheduler._spawn_origin
@@ -790,7 +790,7 @@ def test_cleanup_is_bounded_when_session_ignores_both_cancellations():
         assert child.cancellations >= 1
         assert row.status is RowStatus.FAILED
         assert row.error and "scheduler cleanup" in row.error
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+        assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
         assert scheduler.table.get(aid).result.startswith("Error: scheduler cleanup")
         assert aid not in scheduler._child_reservation
         assert scheduler.inflight_spawn("coder", "ignore cancellation") is None
@@ -799,7 +799,7 @@ def test_cleanup_is_bounded_when_session_ignores_both_cancellations():
         child.release.set()
         await asyncio.wait_for(child.finished.wait(), timeout=0.5)
         await asyncio.wait_for(driver, timeout=0.5)
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+        assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
         assert scheduler.table.get(aid).result.startswith("Error: scheduler cleanup")
 
     run(scenario())
@@ -890,7 +890,7 @@ def test_cleanup_wins_race_after_delivery_starts_before_parent_row_fill():
         assert cancellations >= 1
         assert row.status is RowStatus.FAILED
         assert row.result and "scheduler cleanup" in row.result
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+        assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
         assert scheduler.table.get(aid).result.startswith("Error: scheduler cleanup")
         assert aid not in scheduler._spawn_origin
 
@@ -899,7 +899,7 @@ def test_cleanup_wins_race_after_delivery_starts_before_parent_row_fill():
         row = lead.state.pending_events.rows["delivery-race"]
         assert row.status is RowStatus.FAILED
         assert row.result and "scheduler cleanup" in row.result
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+        assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
 
     run(scenario())
 
@@ -1016,7 +1016,7 @@ def test_cleanup_surfaces_environment_abort_failure():
             await scheduler.cleanup(cleanup_timeout=0.01)
         assert "session environment abort failed or timed out" in str(caught.value)
         assert env.revoked is True
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+        assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
         child.release.set()
         await asyncio.wait_for(driver, timeout=0.5)
 

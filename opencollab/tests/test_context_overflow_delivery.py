@@ -202,14 +202,14 @@ def test_overflowed_child_delivers_controlled_result_not_crash():
 
     # The child reached the dedicated graceful terminal (not ERROR).
     child = factory.child
-    assert child.state.phase is SessionPhase.CONTEXT_OVERFLOW
+    assert child.state.phase is SessionPhase.STOPPED
     # The child tried the provider exactly twice (initial + one forced retry).
     assert len(child.llm.calls) == 2
 
     # The child's completion was delivered to the parent's row as a controlled
     # DONE result (ERROR would have made it a FAILED row).
     child_scb = scheduler.table.get(child.state.aid)
-    assert child_scb.state.phase is SessionPhase.CONTEXT_OVERFLOW
+    assert child_scb.state.phase is SessionPhase.STOPPED
 
     # The lead's second call saw a tool result for the spawn (a delivered,
     # non-crashing completion), confirming the row was filled and it re-activated.
@@ -259,7 +259,7 @@ def test_delivery_status_of_overflowed_child_is_done_not_failed():
     # output (empty/controlled), and the lead's turn completed cleanly. The row
     # status surfaced as DONE — verified via the filled tool message actually
     # flowing into the lead's history rather than an error string.
-    assert factory.child.state.phase is SessionPhase.CONTEXT_OVERFLOW
+    assert factory.child.state.phase is SessionPhase.STOPPED
     assert lead_state.phase is SessionPhase.DONE
     # The delivered tool message exists and is not an "Error:" string (which is
     # how a FAILED/ERROR child would have been surfaced).

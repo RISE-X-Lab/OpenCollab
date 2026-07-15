@@ -361,8 +361,6 @@ class SessionRunUseCase:
     async def advance(self, cancel_event: asyncio.Event | None = None) -> None:
         """Execute one FSM step: dispatch the current phase to its handler."""
         match self.state.phase:
-            case SessionPhase.SCHEDULED:
-                self.state.transition_to(SessionPhase.IDLE)
             case SessionPhase.IDLE:
                 self.state.transition_to(SessionPhase.PRECHECK)
             case SessionPhase.PRECHECK:
@@ -490,17 +488,21 @@ class SessionRunUseCase:
 
     async def _stop_precheck(
         self,
-        phase: SessionPhase,
         reason: str,
-        event_reason: str,
         *,
         message: str | None = None,
     ) -> None:
-        """Record one precheck rejection and enter its terminal phase."""
+        """Record one precheck rejection and stop the session (STOPPED).
+
+        ``reason`` is the single disposition detail: it becomes ``terminal_reason``,
+        the emitted error-event reason, and (unless ``message`` overrides) the
+        visible system message. There is one graceful-stop terminal; the *why*
+        lives in this string, not in a parallel phase/event taxonomy.
+        """
         content = message or f"[{reason.capitalize()}. Session stopped.]"
         self.state.append_message({"role": "system", "content": content})
-        await self.event_publisher.emit(self.event_factory.error(event_reason))
-        self.state.transition_to(phase, reason=reason)
+        await self.event_publisher.emit(self.event_factory.error(reason))
+        self.state.transition_to(SessionPhase.STOPPED, reason=reason)
 
     async def _apply_enforcement_gate(self) -> bool:
         """Apply the scout wind-down gate; return whether it chose the next phase."""
@@ -514,9 +516,7 @@ class SessionRunUseCase:
                 self.state.transition_to(SessionPhase.CALLING_LLM)
                 return True
             await self._stop_precheck(
-                SessionPhase.BUDGET_EXCEEDED,
-                "wind-down complete: forced commit within reserve",
-                "budget_exceeded",
+                "wind-down complete: forced commit within reserve"
             )
             return True
 
@@ -539,16 +539,15 @@ class SessionRunUseCase:
         return True
 
     async def precheck(self, cancel_event: asyncio.Event | None) -> None:
-        """Gate the next LLM call: cancellation, token budget, step limit.
+        """Gate the next LLM call: cancellation, loop-block, token budget, step limit.
 
         Each guard appends a visible system message, emits an error event, and
-        moves to the matching terminal phase; otherwise proceed to CALLING_LLM.
+        stops the session via ``_stop_precheck`` (STOPPED with a reason string);
+        otherwise proceed to CALLING_LLM.
         """
         if cancel_event and cancel_event.is_set():
             await self._stop_precheck(
-                SessionPhase.CANCELLED,
                 "interrupted by user",
-                "cancelled",
                 message="[Session interrupted by user]",
             )
             return
@@ -558,9 +557,7 @@ class SessionRunUseCase:
                 "loop block limit reached: "
                 f"{self.state.loop_blocked_since_progress} repeated tool calls"
             )
-            await self._stop_precheck(
-                SessionPhase.STEP_LIMIT_EXCEEDED, reason, "loop_blocked"
-            )
+            await self._stop_precheck(reason)
             return
 
         if await self._apply_enforcement_gate():
@@ -568,9 +565,7 @@ class SessionRunUseCase:
 
         if self.state.used_tokens >= self.max_budget_tokens:
             reason = f"budget exceeded: {self.state.used_tokens} tokens used"
-            await self._stop_precheck(
-                SessionPhase.BUDGET_EXCEEDED, reason, "budget_exceeded"
-            )
+            await self._stop_precheck(reason)
             return
 
         # Aggregate ceiling (defense-in-depth): even when this session is under
@@ -579,16 +574,12 @@ class SessionRunUseCase:
         # global pool that reserve-at-allocation is meant to protect.
         if self._team_budget_exhausted is not None and self._team_budget_exhausted():
             reason = "team budget exceeded: aggregate spend reached the global cap"
-            await self._stop_precheck(
-                SessionPhase.BUDGET_EXCEEDED, reason, "budget_exceeded"
-            )
+            await self._stop_precheck(reason)
             return
 
         if self.state.step_count >= self.max_steps:
             reason = f"step limit reached: {self.state.step_count} steps"
-            await self._stop_precheck(
-                SessionPhase.STEP_LIMIT_EXCEEDED, reason, "step_limit_exceeded"
-            )
+            await self._stop_precheck(reason)
             return
 
         self.state.transition_to(SessionPhase.CALLING_LLM)
@@ -1166,19 +1157,19 @@ class SessionRunUseCase:
 
     async def _stop_on_context_overflow(self) -> None:
         """Graceful terminal stop when a prompt overflows the model window even
-        after forced compaction + one retry. Mirrors the BUDGET_EXCEEDED
+        after forced compaction + one retry. Mirrors the budget-exhaustion
         degradation: a visible system message, an error event, and a validated
-        transition to the dedicated CONTEXT_OVERFLOW terminal. A child stopped
-        this way delivers a controlled result to its parent (DONE row) rather
-        than crashing the parent's turn.
+        transition to STOPPED (reason names the overflow). A child stopped this
+        way delivers a controlled result to its parent (DONE row) rather than
+        crashing the parent's turn.
         """
         reason = "context overflow: prompt exceeds the model context window even after compaction"
         self.state.append_message(
             {"role": "system", "content": f"[{reason.capitalize()}. Session stopped.]"}
         )
-        await self.event_publisher.emit(self.event_factory.error("context_overflow"))
+        await self.event_publisher.emit(self.event_factory.error(reason))
         self.clear_pending_step()
-        self.state.transition_to(SessionPhase.CONTEXT_OVERFLOW, reason=reason)
+        self.state.transition_to(SessionPhase.STOPPED, reason=reason)
 
     def _maybe_trace_steering(self, level: str | None) -> None:
         """Emit a ``steering_nudge`` trace step on an UPWARD level crossing.

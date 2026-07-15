@@ -200,13 +200,13 @@ def test_run_loop_budget_exceeded_emits_error_and_sets_phase():
 
     assert result == ""
     assert llm.calls == []
-    assert state.phase is SessionPhase.BUDGET_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
     assert state.terminal_reason == "budget exceeded: 10 tokens used"
     assert state.messages[-1] == {
         "role": "system",
         "content": "[Budget exceeded: 10 tokens used. Session stopped.]",
     }
-    assert events == [("error", {"reason": "budget_exceeded", "aid": -1})]
+    assert events == [("error", {"reason": "budget exceeded: 10 tokens used", "aid": -1})]
 
 
 def test_run_loop_team_aggregate_ceiling_stops_under_own_cap():
@@ -228,9 +228,11 @@ def test_run_loop_team_aggregate_ceiling_stops_under_own_cap():
 
     assert result == ""
     assert llm.calls == []  # never called the model
-    assert state.phase is SessionPhase.BUDGET_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
     assert "team budget exceeded" in state.terminal_reason
-    assert events == [("error", {"reason": "budget_exceeded", "aid": -1})]
+    assert events == [
+        ("error", {"reason": "team budget exceeded: aggregate spend reached the global cap", "aid": -1})
+    ]
 
 
 def test_run_loop_team_aggregate_ceiling_not_reached_proceeds_normally():
@@ -261,13 +263,13 @@ def test_run_loop_step_limit_exceeded_emits_error_and_sets_phase():
 
     assert result == ""
     assert llm.calls == []
-    assert state.phase is SessionPhase.STEP_LIMIT_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
     assert state.terminal_reason == "step limit reached: 3 steps"
     assert state.messages[-1] == {
         "role": "system",
         "content": "[Step limit reached: 3 steps. Session stopped.]",
     }
-    assert events == [("error", {"reason": "step_limit_exceeded", "aid": -1})]
+    assert events == [("error", {"reason": "step limit reached: 3 steps", "aid": -1})]
 
 
 def test_new_turn_precheck_failure_does_not_return_previous_answer():
@@ -287,7 +289,7 @@ def test_new_turn_precheck_failure_does_not_return_previous_answer():
 
     assert result == ""
     assert llm.calls == []
-    assert state.phase is SessionPhase.STEP_LIMIT_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
 
 
 def test_run_loop_cancel_event_appends_interrupt_and_sets_phase():
@@ -302,9 +304,9 @@ def test_run_loop_cancel_event_appends_interrupt_and_sets_phase():
 
     assert result == ""
     assert llm.calls == []
-    assert state.phase is SessionPhase.CANCELLED
+    assert state.phase is SessionPhase.STOPPED
     assert state.messages[-1] == {"role": "system", "content": "[Session interrupted by user]"}
-    assert events == [("error", {"reason": "cancelled", "aid": -1})]
+    assert events == [("error", {"reason": "interrupted by user", "aid": -1})]
 
 
 def test_run_loop_loop_block_limit_stops_before_next_llm_call():
@@ -320,9 +322,9 @@ def test_run_loop_loop_block_limit_stops_before_next_llm_call():
 
     assert result == ""
     assert llm.calls == []
-    assert state.phase is SessionPhase.STEP_LIMIT_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
     assert state.terminal_reason == "loop block limit reached: 3 repeated tool calls"
-    assert events == [("error", {"reason": "loop_blocked", "aid": -1})]
+    assert events == [("error", {"reason": "loop block limit reached: 3 repeated tool calls", "aid": -1})]
 
 
 def test_run_loop_llm_step_events_trace_and_message_shape():
@@ -1435,7 +1437,7 @@ def test_persistent_overflow_stops_gracefully_not_unhandled():
     result = run(runner.run_loop())
 
     assert result == ""
-    assert state.phase is SessionPhase.CONTEXT_OVERFLOW
+    assert state.phase is SessionPhase.STOPPED
     assert state.terminal_reason.startswith("context overflow")
     assert state.messages[-1] == {
         "role": "system",
@@ -1447,7 +1449,7 @@ def test_persistent_overflow_stops_gracefully_not_unhandled():
     # Both the recompaction notice and the final overflow error were emitted.
     reasons = [data["reason"] for etype, data in events if etype == "error"]
     assert "context_overflow_recompacted" in reasons
-    assert "context_overflow" in reasons
+    assert "context overflow: prompt exceeds the model context window even after compaction" in reasons
     # The provider was tried exactly twice (initial + one forced retry).
     assert len(llm.calls) == 2
 

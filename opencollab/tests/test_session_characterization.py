@@ -300,22 +300,6 @@ def test_snapshot_preserves_historical_subset_only():
     assert snap._recent_call_hashes == []
 
 
-def test_run_loop_cancellation_appends_interruption_and_emits_error():
-    fake_llm = FakeLLMClient()
-    events, on_event = event_collector()
-    session = Session(agent=FakeAgent(), llm=fake_llm, event_sink=EventBus(on_event))
-    cancel_event = asyncio.Event()
-    cancel_event.set()
-
-    result = run(session.run_loop(cancel_event=cancel_event))
-
-    assert result == ""
-    assert fake_llm.calls == []
-    assert session.messages[-1] == {"role": "system", "content": "[Session interrupted by user]"}
-    assert session.is_done is False
-    assert [(event.type, event.data) for event in events] == [("error", {"reason": "cancelled", "aid": -1})]
-
-
 def test_budget_exceeded_stops_before_llm_call_and_emits_error():
     fake_llm = FakeLLMClient()
     events, on_event = event_collector()
@@ -336,7 +320,9 @@ def test_budget_exceeded_stops_before_llm_call_and_emits_error():
         "role": "system",
         "content": "[Budget exceeded: 10 tokens used. Session stopped.]",
     }
-    assert [(event.type, event.data) for event in events] == [("error", {"reason": "budget_exceeded", "aid": -1})]
+    assert [(event.type, event.data) for event in events] == [
+        ("error", {"reason": "budget exceeded: 10 tokens used", "aid": -1})
+    ]
 
 
 def test_run_loop_does_not_route_to_mutating_compaction():
@@ -450,7 +436,7 @@ def test_run_loop_with_zero_max_steps_exits_without_llm_call():
     assert fake_llm.calls == []
     assert session.step_count == 0
     assert session.is_done is False
-    assert session.phase == SessionPhase.STEP_LIMIT_EXCEEDED
+    assert session.phase == SessionPhase.STOPPED
     assert session.state.terminal_reason == "step limit reached: 0 steps"
 
 
@@ -814,50 +800,60 @@ def test_save_and_load_round_trip_restores_control_flow_latches(tmp_path):
     assert restored.loop_blocked_since_progress == 2
 
 
-@pytest.mark.parametrize(
-    "phase, reason",
-    [
-        (SessionPhase.CANCELLED, "cancelled"),
-        (SessionPhase.BUDGET_EXCEEDED, "budget exceeded: 10 tokens used"),
-        (SessionPhase.STEP_LIMIT_EXCEEDED, "step limit reached: 3 steps"),
-        (SessionPhase.CONTEXT_OVERFLOW, "context overflow: pinned seed exceeds window"),
-    ],
-)
-def test_save_and_load_round_trip_restores_terminal_phase_and_reason(tmp_path, phase, reason):
-    # Golden master for Lane S1's terminal collapse. Every graceful terminal
-    # currently round-trips to itself carrying terminal_reason. Without this net,
-    # a phase rename would silently degrade a persisted terminal to IDLE (the
-    # restore ValueError fallback), losing the disposition with no error. When S1
-    # collapses these into STOPPED(reason), this test is consciously updated and a
-    # migration map is added so legacy snapshots keep their disposition.
+def test_save_and_load_round_trip_restores_stopped_phase_and_reason(tmp_path):
+    # The single graceful-stop terminal round-trips carrying its reason string;
+    # the *why* lives in terminal_reason, not in a per-terminal phase member.
     agent = FakeAgent()
     session = Session(agent=agent, llm=FakeLLMClient())
-    session.state.set_phase(phase)
-    session.state.terminal_reason = reason
+    session.state.set_phase(SessionPhase.STOPPED)
+    session.state.terminal_reason = "budget exceeded: 10 tokens used"
     path = tmp_path / "terminal.json"
 
     session.save(str(path))
     loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
 
-    assert loaded.state.phase is phase
-    assert loaded.state.terminal_reason == reason
+    assert loaded.state.phase is SessionPhase.STOPPED
+    assert loaded.state.terminal_reason == "budget exceeded: 10 tokens used"
 
 
-def test_restore_of_unknown_phase_string_falls_back_to_idle(tmp_path):
-    # Characterizes the restore() fallback for an unrecognized phase string:
-    # SessionPhase(str) raises ValueError -> IDLE. This branch is otherwise
-    # untested. Lane S1 adds a migration map so legacy *terminal* strings map to
-    # STOPPED, while a genuinely unknown string still falls back here — at which
-    # point this test splits into those two cases.
+@pytest.mark.parametrize(
+    "legacy_phase",
+    ["cancelled", "budget_exceeded", "step_limit_exceeded", "context_overflow"],
+)
+def test_restore_migrates_legacy_terminal_phase_string_to_stopped(tmp_path, legacy_phase):
+    # Snapshots written before the Lane S1 terminal collapse carry the old
+    # per-terminal phase strings. restore() migrates each to STOPPED (keeping its
+    # terminal_reason) instead of silently degrading to IDLE via the unknown-value
+    # fallback — the disposition survives the format change.
     agent = FakeAgent()
     session = Session(agent=agent, llm=FakeLLMClient())
-    session.state.set_phase(SessionPhase.BUDGET_EXCEEDED)
+    session.state.set_phase(SessionPhase.STOPPED)
+    session.state.terminal_reason = "legacy detail"
+    path = tmp_path / "legacy-terminal.json"
+    session.save(str(path))
+
+    snapshot = json.loads(path.read_text())
+    snapshot["session_state"]["phase"] = legacy_phase
+    path.write_text(json.dumps(snapshot))
+
+    loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
+    assert loaded.state.phase is SessionPhase.STOPPED
+    assert loaded.state.terminal_reason == "legacy detail"
+
+
+@pytest.mark.parametrize("phase_string", ["a_phase_that_no_longer_exists", "scheduled"])
+def test_restore_of_unknown_or_retired_phase_string_falls_back_to_idle(tmp_path, phase_string):
+    # A genuinely unknown phase string, and the retired pure-transitional
+    # 'scheduled', both restore to IDLE (re-runnable) rather than a terminal.
+    agent = FakeAgent()
+    session = Session(agent=agent, llm=FakeLLMClient())
+    session.state.set_phase(SessionPhase.STOPPED)
     session.state.terminal_reason = "budget exceeded: 10 tokens used"
     path = tmp_path / "legacy.json"
     session.save(str(path))
 
     snapshot = json.loads(path.read_text())
-    snapshot["session_state"]["phase"] = "a_phase_that_no_longer_exists"
+    snapshot["session_state"]["phase"] = phase_string
     path.write_text(json.dumps(snapshot))
 
     loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
