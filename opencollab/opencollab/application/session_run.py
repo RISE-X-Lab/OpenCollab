@@ -1512,6 +1512,7 @@ class SessionRunUseCase:
             reasoning = getattr(response, "reasoning", None)
             if reasoning:
                 payload["reasoning"] = reasoning
+            payload["thinking"] = bool(getattr(self.agent, "thinking", False))
             self.tracer.log_step(
                 step_type="llm_call",
                 payload=payload,
