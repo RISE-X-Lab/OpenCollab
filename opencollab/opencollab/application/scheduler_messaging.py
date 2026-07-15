@@ -43,9 +43,7 @@ class MessagingMixin:
         target = self._sessions.get(to_aid)
         if target is None:
             return f"Error: no agent with aid {to_aid}."
-        if self._topology is not None and not self._topology.allows(
-            self._role_of(from_aid), self._role_of(to_aid)
-        ):
+        if self._topology_forbids(self._role_of(from_aid), self._role_of(to_aid)):
             return (
                 f"Error: role '{self._role_of(from_aid)}' is not permitted to "
                 f"message '{self._role_of(to_aid)}' under the team topology."
