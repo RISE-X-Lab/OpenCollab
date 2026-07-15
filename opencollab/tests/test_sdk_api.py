@@ -59,6 +59,7 @@ def test_public_sdk_exports_versioned_authoring_and_runtime_surface() -> None:
     }
     assert set(sdk.__all__) == expected
     assert sdk.model_context_window("gpt-4o") == 128_000
+    assert sdk.model_context_window("kimi-for-coding") == 262_144
 
 
 def test_public_sdk_function_signatures_and_value_fields_are_stable() -> None:
