@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 
 import pytest
 from opencollab.adapters.llm import LLMResponse, Usage
@@ -817,6 +818,56 @@ def test_save_and_load_round_trip_restores_control_flow_latches(tmp_path):
     assert restored.extension_offered is True
     assert restored.extensions_granted == 1
     assert restored.extension_reasons == ["need one exact signature"]
+
+
+@pytest.mark.parametrize(
+    "phase, reason",
+    [
+        (SessionPhase.CANCELLED, "cancelled"),
+        (SessionPhase.BUDGET_EXCEEDED, "budget exceeded: 10 tokens used"),
+        (SessionPhase.STEP_LIMIT_EXCEEDED, "step limit reached: 3 steps"),
+        (SessionPhase.CONTEXT_OVERFLOW, "context overflow: pinned seed exceeds window"),
+    ],
+)
+def test_save_and_load_round_trip_restores_terminal_phase_and_reason(tmp_path, phase, reason):
+    # Golden master for Lane S1's terminal collapse. Every graceful terminal
+    # currently round-trips to itself carrying terminal_reason. Without this net,
+    # a phase rename would silently degrade a persisted terminal to IDLE (the
+    # restore ValueError fallback), losing the disposition with no error. When S1
+    # collapses these into STOPPED(reason), this test is consciously updated and a
+    # migration map is added so legacy snapshots keep their disposition.
+    agent = FakeAgent()
+    session = Session(agent=agent, llm=FakeLLMClient())
+    session.state.set_phase(phase)
+    session.state.terminal_reason = reason
+    path = tmp_path / "terminal.json"
+
+    session.save(str(path))
+    loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
+
+    assert loaded.state.phase is phase
+    assert loaded.state.terminal_reason == reason
+
+
+def test_restore_of_unknown_phase_string_falls_back_to_idle(tmp_path):
+    # Characterizes the restore() fallback for an unrecognized phase string:
+    # SessionPhase(str) raises ValueError -> IDLE. This branch is otherwise
+    # untested. Lane S1 adds a migration map so legacy *terminal* strings map to
+    # STOPPED, while a genuinely unknown string still falls back here — at which
+    # point this test splits into those two cases.
+    agent = FakeAgent()
+    session = Session(agent=agent, llm=FakeLLMClient())
+    session.state.set_phase(SessionPhase.BUDGET_EXCEEDED)
+    session.state.terminal_reason = "budget exceeded: 10 tokens used"
+    path = tmp_path / "legacy.json"
+    session.save(str(path))
+
+    snapshot = json.loads(path.read_text())
+    snapshot["session_state"]["phase"] = "a_phase_that_no_longer_exists"
+    path.write_text(json.dumps(snapshot))
+
+    loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
+    assert loaded.state.phase is SessionPhase.IDLE
 
 
 def test_restore_pairs_reused_tool_call_ids_in_transcript_order(tmp_path):
