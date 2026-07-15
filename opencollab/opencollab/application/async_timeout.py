@@ -51,10 +51,6 @@ class CallerTimeoutError(asyncio.TimeoutError):
     """
 
 
-class AsyncRuntimeUnhealthyError(RuntimeError):
-    """Raised when pending async work misses a required shutdown deadline."""
-
-
 @dataclass(frozen=True)
 class TaskTerminationResult:
     terminal: bool
@@ -117,21 +113,6 @@ async def force_task_terminal(
         cancellation=cancellation,
         errors=tuple(errors),
     )
-
-
-async def terminate_tasks(
-    tasks: Iterable[asyncio.Future[object]],
-    *,
-    timeout: float,
-) -> tuple[TaskTerminationResult, ...]:
-    """Cancel unique pending tasks and report which reached a terminal state."""
-    unique = tuple(dict.fromkeys(task for task in tasks if not task.done()))
-    if not unique:
-        return ()
-    results = await asyncio.gather(
-        *(force_task_terminal(task, timeout=timeout) for task in unique)
-    )
-    return tuple(results)
 
 
 async def cancel_tasks_and_wait(
