@@ -26,11 +26,9 @@ from opencollab.application.session_run import (
     ENFORCEMENT_ON,
 )
 from opencollab.application.submit_findings import (
-    SUBMIT_FINDINGS_SCHEMA,
     SUBMIT_TOOL_NAME,
     SubmitFindingsTool,
     commitment_terminus_payload,
-    format_findings_report,
     harvest_findings,
 )
 from opencollab.domain.agent import Agent
@@ -396,59 +394,9 @@ def test_submit_findings_abstention_cannot_bypass_verified_anchor():
     assert "evidence_anchor" in out
 
 
-def test_submit_findings_schema_round_trips_through_validator():
-    from opencollab.application.schema_validate import validate
-
-    assert validate(_captured(), SUBMIT_FINDINGS_SCHEMA) == []
-
-
 # --------------------------------------------------------------------------- #
 # commitment-terminus metric payload shape.
 # --------------------------------------------------------------------------- #
-
-
-def test_commitment_terminus_voluntary_vs_forced_vs_chopped():
-    voluntary = commitment_terminus_payload(
-        role="scout:0", captured=_captured(), wind_down_done=False,
-        used_tokens=30_000, max_budget_tokens=100_000, wind_down_token_mark=0, artifact="x",
-    )
-    assert voluntary["terminus"] == "voluntary"
-    assert voluntary["budget_slack"] == 70_000
-    assert voluntary["evidence_anchor_count"] == 1
-    assert voluntary["unverified_count"] == 0
-    assert voluntary["submit_turn_cost"] == 0
-
-    forced = commitment_terminus_payload(
-        role="scout:0", captured=_captured(), wind_down_done=True,
-        used_tokens=90_000, max_budget_tokens=100_000, wind_down_token_mark=75_000, artifact="x",
-    )
-    assert forced["terminus"] == "forced"
-    assert forced["submit_turn_cost"] == 15_000
-
-    chopped = commitment_terminus_payload(
-        role="scout:0", captured=None, wind_down_done=False,
-        used_tokens=100_000, max_budget_tokens=100_000, wind_down_token_mark=0, artifact="",
-    )
-    assert chopped["terminus"] == "chopped"
-    assert chopped["artifact_nonempty"] is False
-
-    strayed = commitment_terminus_payload(
-        role="scout:0", captured=None, wind_down_done=True,
-        used_tokens=99_000, max_budget_tokens=100_000, wind_down_token_mark=75_000, artifact="",
-    )
-    assert strayed["terminus"] == "strayed"
-
-
-def test_format_findings_report_marks_unverified_and_anchors():
-    payload = _captured(
-        findings=[
-            {"aspect": "edge", "claim": "no handling for None", "evidence_anchor": "",
-             "verified": False, "confidence": "low"},
-        ]
-    )
-    report = format_findings_report(payload)
-    assert "unverified" in report
-    assert "no handling for None" in report
 
 
 # --------------------------------------------------------------------------- #

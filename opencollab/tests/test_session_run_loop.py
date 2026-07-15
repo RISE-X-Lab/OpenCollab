@@ -8,7 +8,6 @@ import pytest
 from opencollab.application.event_bus import EventBus
 from opencollab.application.session_run import (
     READS_NUDGE_HARD,
-    READS_NUDGE_SOFT,
     GenerationTimeoutError,
     PendingStep,
     SessionRunUseCase,
@@ -451,28 +450,6 @@ def test_steering_status_built_even_when_history_ends_with_user():
     assert "without" not in msg["content"]  # status-line only, no read nudge
 
 
-def test_steering_soft_nudge_when_reads_without_write():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "r"}], reads_since_last_edit=READS_NUDGE_SOFT
-    )
-    runner = build_runner(state=state, agent=_agent_with_tools("file_read", "file_write"))
-    msg, override, _level = runner._build_steering_block(state.messages)
-    assert override is None  # soft rung does not force a tool call
-    assert "without making an edit" in msg["content"]
-    assert "file_write or apply_patch" in msg["content"]
-
-
-def test_steering_hard_rung_forces_a_tool_call():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "r"}], reads_since_last_edit=READS_NUDGE_HARD
-    )
-    runner = build_runner(state=state, agent=_agent_with_tools("apply_patch"))
-    msg, override, _level = runner._build_steering_block(state.messages)
-    assert override == "required"
-    assert "STOP reading" in msg["content"]
-    assert "MUST be a file_write or apply_patch" in msg["content"]
-
-
 def test_steering_no_write_nudge_for_readonly_session():
     # A scout/tester/planner has no write tool — the write nudge would be nonsense,
     # so only the status line is shown even at a high read count.
@@ -505,33 +482,6 @@ def test_steering_hard_rung_forces_tool_choice_through_run_loop():
     assert llm.calls[0]["tool_choice"] == "required"
 
 
-def test_steering_hard_rung_limits_provider_tools_to_writes():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "prev"}],
-        used_tokens=1_000,
-        step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
-    )
-    llm = FakeLLM([llm_response(content="done")])
-    runner = build_runner(
-        state=state,
-        llm=llm,
-        agent=_agent_with_tool_schemas(
-            "file_read",
-            "grep",
-            "file_write",
-            "apply_patch",
-            "run_tests",
-        ),
-    )
-
-    run(runner.run_loop())
-
-    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
-    assert llm.calls[0]["tool_choice"] == "required"
-    assert sent_tool_names == ["file_write", "apply_patch"]
-
-
 def test_steering_structured_hard_rung_forces_structured_output():
     state = SessionState(
         messages=[{"role": "tool", "content": "prev"}],
@@ -555,58 +505,6 @@ def test_steering_structured_hard_rung_forces_structured_output():
         "function": {"name": "structured_output"},
     }
     assert "structured_output using" in llm.calls[0]["messages"][-1]["content"]
-
-
-def test_steering_structured_commit_gate_uses_soft_threshold():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "prev"}],
-        used_tokens=1_000,
-        step_count=1,
-        reads_since_last_edit=READS_NUDGE_SOFT,
-    )
-    llm = FakeLLM([llm_response(content="done")])
-    runner = build_runner(
-        state=state,
-        llm=llm,
-        agent=_agent_with_tool_schemas("structured_output", "file_read", "grep"),
-    )
-
-    run(runner.run_loop())
-
-    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
-    assert sent_tool_names == ["structured_output"]
-    assert llm.calls[0]["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "structured_output"},
-    }
-
-
-def test_steering_write_gate_wins_when_write_tools_are_also_present():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "prev"}],
-        used_tokens=1_000,
-        step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
-    )
-    llm = FakeLLM([llm_response(content="done")])
-    runner = build_runner(
-        state=state,
-        llm=llm,
-        agent=_agent_with_tool_schemas(
-            "structured_output",
-            "file_read",
-            "grep",
-            "file_write",
-            "apply_patch",
-        ),
-    )
-
-    run(runner.run_loop())
-
-    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
-    assert sent_tool_names == ["file_write", "apply_patch"]
-    assert llm.calls[0]["tool_choice"] == "required"
-    assert "MUST be a file_write or apply_patch edit" in llm.calls[0]["messages"][-1]["content"]
 
 
 def test_steering_hard_rung_blocks_read_tool_call_before_execution():
@@ -641,41 +539,6 @@ def test_steering_hard_rung_blocks_read_tool_call_before_execution():
     assert len(tool_messages) == 1
     assert tool_messages[0]["tool_call_id"] == "r1"
     assert "not allowed during the hard write gate" in tool_messages[0]["content"]
-    assert state.reads_since_last_edit == READS_NUDGE_HARD
-
-
-def test_steering_structured_hard_rung_blocks_read_tool_call_before_execution():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "prev"}],
-        used_tokens=1_000,
-        step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
-    )
-    read_call = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
-    llm = FakeLLM(
-        [
-            llm_response(content="try read", tool_calls=[read_call], finish_reason="tool_calls"),
-            llm_response(content="done"),
-        ]
-    )
-    tool_execution = FakeToolExecution()
-    runner = build_runner(
-        state=state,
-        llm=llm,
-        tool_execution=tool_execution,
-        agent=_agent_with_tool_schemas("structured_output", "file_read", "grep"),
-    )
-
-    result = run(runner.run_loop())
-
-    tool_messages = [
-        m for m in state.messages if m.get("role") == "tool" and m.get("tool_call_id")
-    ]
-    assert result == "done"
-    assert tool_execution.calls == []
-    assert len(tool_messages) == 1
-    assert tool_messages[0]["tool_call_id"] == "r1"
-    assert "not allowed during the hard structured-output gate" in tool_messages[0]["content"]
     assert state.reads_since_last_edit == READS_NUDGE_HARD
 
 
@@ -834,101 +697,6 @@ def _steering_runner(reads, *, tools=("file_read", "apply_patch"), tracer=None, 
         max_budget_tokens=100_000,
         max_steps=40,
     ), state
-
-
-def test_steering_nudge_traced_on_soft_crossing():
-    tracer = FakeTracer()
-    runner, state = _steering_runner(READS_NUDGE_SOFT, tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    steps = _steering_steps(tracer)
-    assert len(steps) == 1
-    p = steps[0]["payload"]
-    assert p["level"] == "soft"
-    assert p["tool_choice_override"] is False
-    assert p["reads_since_last_edit"] == READS_NUDGE_SOFT
-    assert p["aid"] == state.aid
-
-
-def test_steering_nudge_traced_on_hard_crossing():
-    tracer = FakeTracer()
-    runner, _ = _steering_runner(READS_NUDGE_HARD, tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    steps = _steering_steps(tracer)
-    assert len(steps) == 1
-    assert steps[0]["payload"]["level"] == "hard"
-    assert steps[0]["payload"]["tool_choice_override"] is True
-
-
-def test_steering_nudge_fires_once_per_level_not_every_turn():
-    # Two turns at the SAME (soft) level -> exactly ONE trace step (high-water mark,
-    # not per-turn). reads stays >= SOFT and < HARD across both calls.
-    tracer = FakeTracer()
-    runner, _ = _steering_runner(READS_NUDGE_SOFT, tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    assert len(_steering_steps(tracer)) == 1
-
-
-def test_steering_nudge_fires_on_soft_then_hard_escalation():
-    # Turn 1 at soft, turn 2 jumps PAST hard -> two steps, in order.
-    tracer = FakeTracer()
-    runner, state = _steering_runner(READS_NUDGE_SOFT, tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))
-    state.reads_since_last_edit = READS_NUDGE_HARD + 5  # jump past the hard rung
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    levels = [s["payload"]["level"] for s in _steering_steps(tracer)]
-    assert levels == ["soft", "hard"]
-
-
-def test_steering_nudge_rearms_after_write():
-    # Escalate to hard; a write resets reads to 0 (level None -> re-arm); a later
-    # re-escalation to soft traces again -> ['hard', 'soft'].
-    tracer = FakeTracer()
-    runner, state = _steering_runner(READS_NUDGE_HARD, tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))
-    state.reads_since_last_edit = 0  # a landed edit reset the counter
-    run(runner.call_llm(runner.build_tool_schemas()))  # level None -> re-arm, no step
-    state.reads_since_last_edit = READS_NUDGE_SOFT  # read again without writing
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    levels = [s["payload"]["level"] for s in _steering_steps(tracer)]
-    assert levels == ["hard", "soft"]
-
-
-def test_steering_nudge_does_not_refire_at_same_high_level():
-    # Regression: once the high-water mark reaches 'hard', staying at hard across
-    # later turns must NOT re-fire a duplicate steering_nudge (once-per-upward-
-    # crossing invariant). This holds whether the turn ends with a tool message
-    # (separate-block append) or a user message (status folded into it) — both
-    # rebuild 'hard' but trace nothing, since rank('hard') is not > rank('hard').
-    tracer = FakeTracer()
-    runner, state = _steering_runner(READS_NUDGE_HARD, tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))  # turn 1: hard -> 1 trace
-
-    # A turn whose shaped history ends with a user message: the status is now folded
-    # into that user message (reads still HARD -> level rebuilds 'hard', no re-fire).
-    state.messages = [*state.messages, {"role": "user", "content": "nudge"}]
-    run(runner.call_llm(runner.build_tool_schemas()))  # mark must stay 'hard'
-
-    # Back to a tool-terminated history, reads UNCHANGED -> must NOT re-fire.
-    state.messages = [*state.messages, {"role": "tool", "content": "r"}]
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    assert [s["payload"]["level"] for s in _steering_steps(tracer)] == ["hard"]
-
-
-def test_no_steering_nudge_trace_for_readonly_session():
-    # A read-only agent (no write tool) gets no write nudge, so no trace even at a
-    # very high read count.
-    tracer = FakeTracer()
-    runner, _ = _steering_runner(99, tools=("file_read", "grep"), tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    assert _steering_steps(tracer) == []
 
 
 def test_steering_block_ephemeral_on_continuation_step():

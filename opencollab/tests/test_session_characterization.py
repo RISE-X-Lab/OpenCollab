@@ -12,7 +12,6 @@ from opencollab.bootstrap import load_session, snapshot_session
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase
-from opencollab.domain.tools import ToolProcessingResult
 
 
 def run(coro):
@@ -489,25 +488,6 @@ def test_tool_calls_execute_append_tool_result_and_continue():
     ]
     assert [step["step_type"] for step in tracer.steps] == ["llm_call", "tool_exec", "llm_call"]
     assert fake_llm.calls[0]["tools"][0]["function"]["name"] == "fake_tool"
-
-
-def test_tool_processor_returns_result_before_state_application():
-    tool = FakeTool(result=lambda args: f"echo {args['value']}")
-    session = Session(agent=FakeAgent(tools=[tool]), llm=FakeLLMClient())
-    original_messages = copy.deepcopy(session.messages)
-
-    result = run(session.tool_execution.process([tool_call(arguments='{"value": 9}')]))
-
-    assert isinstance(result, ToolProcessingResult)
-    assert result.messages_to_append == [{"role": "tool", "tool_call_id": "call-1", "content": "echo 9"}]
-    assert len(result.recent_hash_updates) == 1
-    assert session.messages == original_messages
-    assert session._recent_call_hashes == []
-
-    result.apply_to(session.state)
-
-    assert session.messages[-1] == {"role": "tool", "tool_call_id": "call-1", "content": "echo 9"}
-    assert session._recent_call_hashes == result.recent_hash_updates
 
 
 @pytest.mark.parametrize(

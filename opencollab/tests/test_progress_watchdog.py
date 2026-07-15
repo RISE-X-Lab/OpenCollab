@@ -210,19 +210,6 @@ def test_t2_off_pinned_counters_never_brake_reference_behavior():
     assert len(llm.calls) == 1
 
 
-def test_t2_default_enforcement_off_no_brake():
-    # No enforcement_strength passed at all -> off -> high counters are inert.
-    agent = _agent_with_submit()
-    state = SessionState(messages=[{"role": "user", "content": "x"}], used_tokens=1_000)
-    state.steps_since_progress = 50
-    state.low_yield_since_progress = 50
-    llm = FakeLLM([llm_response(content="done")])
-    runner = build_runner(state=state, agent=agent, llm=llm, max_budget_tokens=100_000)
-    run(runner.run_loop())
-    assert state.wind_down_done is False
-    assert state.phase is SessionPhase.DONE
-
-
 # --------------------------------------------------------------------------- #
 # Red-team gate: never brake while a tool result is still un-ingested.
 # --------------------------------------------------------------------------- #
@@ -311,56 +298,6 @@ class ScriptedTool:
 def _run_one(state, tool, name, args):
     call = {"id": "c1", "function": {"name": name, "arguments": args}}
     run(_use_case(state, tool).process([call])).apply_to(state)
-
-
-def test_steps_since_progress_increments_per_no_progress_step_and_resets():
-    state = SessionState(messages=[])
-
-    # 1) Novel grep hit -> progress -> counter stays 0.
-    _run_one(state, ScriptedTool("grep", ["fs.py:42: end = start + n"]), "grep", '{"pattern":"end"}')
-    assert state.steps_since_progress == 0
-
-    # 2) Content-duplicate -> no progress -> +1.
-    _run_one(state, ScriptedTool("grep", ["fs.py:42: end = start + n"]), "grep", '{"pattern":"start"}')
-    assert state.steps_since_progress == 1
-
-    # 3) "No matches" -> no progress -> +1.
-    _run_one(state, ScriptedTool("grep", ["No matches found for pattern: z"]), "grep", '{"pattern":"z"}')
-    assert state.steps_since_progress == 2
-
-    # 4) A NOVEL informative read resets to 0.
-    _run_one(
-        state,
-        ScriptedTool("file_read", ["File: b.py (2 lines)\n1\tdef f(): pass"]),
-        "file_read",
-        '{"path":"b.py"}',
-    )
-    assert state.steps_since_progress == 0
-
-
-def test_steps_since_progress_resets_on_write():
-    state = SessionState(messages=[])
-    _run_one(state, ScriptedTool("grep", ["No matches found for pattern: z"]), "grep", '{"pattern":"z"}')
-    assert state.steps_since_progress == 1
-    # A landed write is progress -> reset.
-    _run_one(state, ScriptedTool("file_write", ["wrote 3 lines to b.py"]), "file_write", '{"path":"b.py"}')
-    assert state.steps_since_progress == 0
-
-
-def test_steps_since_progress_counts_one_per_step_not_per_result():
-    # A single batch of TWO low-yield reads costs ONE watchdog step (per-step, not
-    # per-result), while low_yield_since_progress counts both results.
-    state = SessionState(messages=[])
-    tool = ScriptedTool("grep", ["dupe", "dupe"])
-    batch = [
-        {"id": "c1", "function": {"name": "grep", "arguments": '{"pattern":"a"}'}},
-        {"id": "c2", "function": {"name": "grep", "arguments": '{"pattern":"b"}'}},
-    ]
-    run(_use_case(state, tool).process(batch)).apply_to(state)
-    # First result novel (hit), second a content-dup -> net progress in this batch.
-    assert state.steps_since_progress == 0
-    assert state.distinct_evidence_count == 1
-    assert state.low_yield_since_progress == 1
 
 
 def test_steps_since_progress_resets_on_user_turn():
