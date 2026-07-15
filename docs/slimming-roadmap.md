@@ -11,7 +11,10 @@
 ## 铁律(每个会话都必须遵守)
 
 1. **一个会话只做一个 Lane**,一分支一 PR,不越界。分支从最新 `main`(或上一 lane 的 tip)切。
-2. **改行为的步骤先布网**:先写 golden-master / characterization 测试锁住当前行为(先跑确认绿),再动物理代码。
+2. **改行为前:先对齐 → 再布网 → 只锁核心**(仅改行为的步骤适用):
+   - **先对齐**:动码前先向人报告**现状逻辑 + 期望逻辑**,讨论达成一致再开工(别闷头改)。
+   - **再布网**:写 golden-master / characterization 测试锁住**要保住的行为**(先跑确认绿),再动物理代码。
+   - **只锁核心**:网只覆盖**核心不变量**(FSM 拓扑、判分读的 `AgentRunResult.outcome`、持久化往返、预算闸门…);**外围 / 展示层测试(TUI、toolbar、渲染串之类)该删就删,完全不必锁**——锁核心是为了别人 fork 后能自由改外围而不被我们的具体行为绑死,不是让 fork 复刻我们的每个像素。
 3. **docstring 只加 docstring / rename / 抽已重复项**,**绝不加新抽象层**(小而美,prefer deletion over abstraction)。
 4. **不许碰**(都是 live / 核心):`config.py` 的 file-first key 优先级、`fact_sheet.py`、`ports.py` 成员、`spawn_with_review`。
 5. **完成判据**:`cd opencollab && .venv/bin/python -m pytest -q` 全绿 + `.venv/bin/ruff check opencollab/` 绿 + `tests/test_*_boundaries.py` 绿。(首次需 `cd opencollab && uv sync --extra dev`。)
