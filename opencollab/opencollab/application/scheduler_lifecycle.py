@@ -40,8 +40,6 @@ class LifecycleMixin:
         session.agent.name = validate_role_identity(session.agent.name)
         aid = self.table.allocate_aid()  # = 0
         session.state.aid = aid
-        if session.state.phase is SessionPhase.IDLE:
-            session.state.set_phase(SessionPhase.SCHEDULED)
         scb = SessionControlBlock(
             aid=aid,
             parent_aid=None,
@@ -164,7 +162,6 @@ class LifecycleMixin:
                 context=context,
             )
             session.agent.name = role
-            session.state.set_phase(SessionPhase.SCHEDULED)
 
             # Create SCB
             scb = SessionControlBlock(

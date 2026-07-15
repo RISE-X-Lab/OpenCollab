@@ -60,7 +60,7 @@ class _RendererDisplayMixin:
         "idle": _STYLE_SUCCESS,
         "available": _STYLE_MUTED,
         "failed": _STYLE_ERROR,
-        "cancelled": _STYLE_WARNING,
+        "stopped": _STYLE_WARNING,
     }
 
     def _agent_label(self, aid: int) -> str:

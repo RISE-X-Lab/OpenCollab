@@ -276,11 +276,7 @@ class Session:
                 if row is not None:
                     self.state.pending_events.add(row)
 
-        phase_value = raw_state.get("phase", SessionPhase.IDLE.value)
-        try:
-            phase = SessionPhase(str(phase_value))
-        except ValueError:
-            phase = SessionPhase.IDLE
+        phase = _restore_phase(raw_state.get("phase", SessionPhase.IDLE.value))
         if phase is SessionPhase.AWAITING_EVENTS:
             self._complete_missing_pending_rows()
         # In-flight provider/tool phases depend on process-local coroutines that
@@ -413,6 +409,28 @@ class Session:
     def _auto_save(self) -> None:
         if self._auto_save_path:
             self.save(self._auto_save_path)
+
+
+# Legacy phase strings from snapshots written before the Lane S1 terminal
+# collapse: the four graceful terminals folded into STOPPED and the pure-
+# transitional SCHEDULED was removed. Migrating them here keeps a pre-collapse
+# snapshot's disposition instead of silently degrading it to IDLE via the
+# unknown-value fallback.
+_LEGACY_TERMINAL_PHASES = frozenset(
+    {"cancelled", "budget_exceeded", "step_limit_exceeded", "context_overflow"}
+)
+
+
+def _restore_phase(raw: object) -> SessionPhase:
+    value = str(raw)
+    if value in _LEGACY_TERMINAL_PHASES:
+        return SessionPhase.STOPPED
+    if value == "scheduled":  # pre-collapse enqueue phase, now folded into IDLE
+        return SessionPhase.IDLE
+    try:
+        return SessionPhase(value)
+    except ValueError:
+        return SessionPhase.IDLE
 
 
 def _snapshot_nonnegative_int(value: object) -> int:

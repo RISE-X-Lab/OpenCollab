@@ -96,13 +96,13 @@ def test_t1_off_budget_exhausted_is_byte_for_byte_today():
 
     assert result == ""
     assert llm.calls == []  # no extra wind-down turn
-    assert state.phase is SessionPhase.BUDGET_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
     assert state.terminal_reason == "budget exceeded: 10 tokens used"
     assert state.messages[-1] == {
         "role": "system",
         "content": "[Budget exceeded: 10 tokens used. Session stopped.]",
     }
-    assert events == [("error", {"reason": "budget_exceeded", "aid": -1})]
+    assert events == [("error", {"reason": "budget exceeded: 10 tokens used", "aid": -1})]
     # Wind-down state never touched, and tools never swapped.
     assert state.wind_down_done is False
     assert [t.name for t in runner.agent.tools] == ["file_read", SUBMIT_TOOL_NAME]
@@ -116,7 +116,7 @@ def test_t1_default_enforcement_is_off():
 
     run(runner.run_loop())
 
-    assert state.phase is SessionPhase.BUDGET_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
     assert state.wind_down_done is False
     assert llm.calls == []
 
@@ -241,7 +241,7 @@ def test_t2_winddown_retry_capped_at_one_then_terminal_strayed():
     run(runner.run_loop())
 
     assert len(llm.calls) == 2  # capped: forced + 1 retry, NO third turn
-    assert state.phase is SessionPhase.BUDGET_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
     assert submit.captured is None
     payload = commitment_terminus_payload(
         role="scout:0", captured=None, wind_down_done=True,
