@@ -146,7 +146,12 @@ class _BudgetLease:
 
 
 class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
-    """Primitives a workflow function uses to orchestrate agent sessions."""
+    """Primitives a workflow function uses to orchestrate agent sessions.
+
+    One of two Strategies driving ``session.run_loop()``: this deterministic,
+    code-driven regime and the event-driven, LLM-supervised ``Scheduler`` are
+    interchangeable over the identical Session process primitive.
+    """
 
     def __init__(
         self,

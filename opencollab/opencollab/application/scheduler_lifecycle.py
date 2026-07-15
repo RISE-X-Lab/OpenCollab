@@ -258,7 +258,7 @@ class LifecycleMixin:
             )
 
     def _release_leases(self, aid: int) -> None:
-        """Release a terminal child's single-flight and budget reservations.
+        """Release a terminal child's single-flight and budget leases.
 
         Both are held from spawn until the child reaches a terminal phase; this
         frees them together so a later spawn can reuse the (role, task) key and
