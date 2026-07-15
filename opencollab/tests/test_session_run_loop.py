@@ -7,11 +7,11 @@ from types import SimpleNamespace
 import pytest
 from opencollab.application.event_bus import EventBus
 from opencollab.application.session_run import (
-    READS_NUDGE_HARD,
     GenerationTimeoutError,
     PendingStep,
     SessionRunUseCase,
 )
+from opencollab.application.steering import READS_NUDGE_HARD, build_steering_block
 from opencollab.domain.pending import RowKind, RowStatus
 from opencollab.domain.session import (
     SessionPhase,
@@ -427,27 +427,24 @@ def _agent_with_tool_schemas(*names):
 
 
 def test_steering_status_line_built_from_budget_and_steps():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "r"}], used_tokens=120_000, step_count=10
+    # 120k of 500k used -> 380k left; 40 - 10 steps -> ~30 left.
+    msg, override, _level = build_steering_block(
+        used_tokens=120_000, max_budget_tokens=500_000, step_count=10, max_steps=40,
+        reads=0, has_write=True, has_structured_output=False, structured_override=None,
     )
-    runner = build_runner(state=state, max_budget_tokens=500_000, max_steps=40)
-    msg, override, _level = runner._build_steering_block(state.messages)
     assert override is None
     assert msg["role"] == "user"
-    # 120k of 500k used -> 380k left; 40 - 10 steps -> ~30 left.
     assert "380k/500k tokens left" in msg["content"]
     assert "~30 steps left" in msg["content"]
 
 
-def test_steering_status_built_even_when_history_ends_with_user():
+def test_steering_status_only_when_reads_are_low():
     # The status block is ALWAYS built; on a fresh post-user turn reads is ~0 so
-    # only the status line comes back (no write nudge). The caller folds it into
-    # the last user message rather than appending a second consecutive user turn.
-    state = SessionState(
-        messages=[{"role": "user", "content": "task"}], used_tokens=10_000, step_count=1
+    # only the status line comes back (no write nudge).
+    msg, override, _level = build_steering_block(
+        used_tokens=10_000, max_budget_tokens=100_000, step_count=1, max_steps=20,
+        reads=0, has_write=True, has_structured_output=False, structured_override=None,
     )
-    runner = build_runner(state=state, max_budget_tokens=100_000, max_steps=20)
-    msg, override, _level = runner._build_steering_block(state.messages)
     assert override is None
     assert msg["role"] == "user"
     assert "tokens left" in msg["content"]
@@ -457,12 +454,10 @@ def test_steering_status_built_even_when_history_ends_with_user():
 def test_steering_no_write_nudge_for_readonly_session():
     # A scout/tester/planner has no write tool — the write nudge would be nonsense,
     # so only the status line is shown even at a high read count.
-    state = SessionState(
-        messages=[{"role": "tool", "content": "r"}],
-        turn=TurnEnforcementState(reads_since_last_edit=99),
+    msg, override, _level = build_steering_block(
+        used_tokens=0, max_budget_tokens=100_000, step_count=0, max_steps=20,
+        reads=99, has_write=False, has_structured_output=False, structured_override=None,
     )
-    runner = build_runner(state=state, agent=_agent_with_tools("file_read", "grep"))
-    msg, override, _level = runner._build_steering_block(state.messages)
     assert override is None
     assert "without" not in msg["content"]
     assert msg["content"].startswith("[Budget:")

@@ -17,6 +17,11 @@ from opencollab.application.ports import (
     TracePort,
 )
 from opencollab.application.shaping import forced_shape
+from opencollab.application.steering import (
+    READS_NUDGE_SOFT,
+    build_steering_block,
+    fold_steering,
+)
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, RowStatus
@@ -66,16 +71,13 @@ _EMPTY_STOP_NUDGE = (
 # Filtered out of ``run_loop``'s answer scan so it is never mistaken for output.
 _EMPTY_STOP_PLACEHOLDER = "[no output produced this turn]"
 
-# Closed-loop steering: a lean per-turn block (budget self-awareness + a
-# reads-without-write escalation) injected each turn. At the start of a turn it
-# is folded into the trailing user message IN PLACE, so the budget the model saw
-# is saved to the transcript; on continuation steps it rides in the shaped copy
-# only (ephemeral). Soft: advise a write; hard: demand it + force a tool call.
+# Closed-loop steering (the reads-without-write nudge) lives in
+# ``application/steering.py``; the tool vocabulary it keys on stays here because
+# wind-down shares it. ``READS_NUDGE_SOFT`` is imported above for the trace seam's
+# re-arm check.
 _READ_TOOLS = frozenset({"file_read", "grep"})
 _WRITE_TOOLS = frozenset({"file_write", "apply_patch"})
 _STRUCTURED_OUTPUT_TOOL = "structured_output"
-READS_NUDGE_SOFT = 8
-READS_NUDGE_HARD = 16
 
 # Enforcement strength (STEP 0). ``off`` is the self-regulating default: every
 # wind-down branch below is gated on enforcement being on, so with ``off`` the
@@ -505,7 +507,21 @@ class SessionRunUseCase:
         self.state.transition_to(SessionPhase.STOPPED, reason=reason)
 
     async def _apply_enforcement_gate(self) -> bool:
-        """Apply the scout wind-down gate; return whether it chose the next phase."""
+        """The enforcement funnel: THREE triggers -> ONE actuator. Returns whether
+        it chose the next phase (so the caller yields the transition to it).
+
+        Off unless enforcement is on (the self-regulating default never enters).
+        When on, three independent brakes converge on a single actuator
+        (``_enter_wind_down``, which narrows the toolset to submit-only and forces
+        the commit): the token budget spent past the commit reserve, the progress
+        watchdog (``steps_since_progress`` >= K), and the low-yield sensor
+        (``low_yield_since_progress`` >= M). Any one trips it; none fires while a
+        tool result is still un-ingested (``pending_events`` non-empty).
+
+        Once wound down, the latch grants EXACTLY ONE protected commit turn, then a
+        single retry (``_wind_down_retried``) if that turn strays, then a terminal
+        STOPPED — never an unbounded forced loop.
+        """
         if not self._enforcement_on():
             return False
         if self.state.wind_down_done:
@@ -817,80 +833,6 @@ class SessionRunUseCase:
     def build_tool_schemas(self) -> list[dict] | None:
         return self.agent.tool_schemas() or None
 
-    def _build_steering_block(
-        self, messages: list[dict]
-    ) -> tuple[dict | None, Any | None, str | None]:
-        """Build the per-turn closed-loop steering message + any tool_choice force.
-
-        Returns ``(message, tool_choice_override_or_None, level)`` where ``level``
-        is ``'hard'``/``'soft'``/``None`` — the trace seam reads it to log upward
-        crossings. The message is a lean ``role:"user"`` block carrying budget
-        self-awareness plus, when the session can edit and has read without
-        writing, a write nudge (soft) or a hard demand (with
-        ``tool_choice="required"``). The message is always built; on a fresh
-        post-user turn ``reads_since_last_edit`` is ~0 so only the status line is
-        returned, which is correct.
-
-        The caller folds this content into ``state.messages``' last message when
-        the history ends with a ``user`` message (the start of a turn), persisting
-        the budget to the transcript without adding a message; on a continuation
-        step (non-user tail) it rides in the shaped copy only. A fresh block is
-        rebuilt each turn from the live counters either way.
-        """
-        total = self.max_budget_tokens or 0
-        remaining_k = max(0, total - self.state.used_tokens) // 1000
-        total_k = total // 1000
-        steps_left = max(0, self.max_steps - self.state.step_count)
-        status = f"[Budget: ~{remaining_k}k/{total_k}k tokens left, ~{steps_left} steps left.]"
-
-        reads = self.state.turn.reads_since_last_edit
-        tool_names = {
-            getattr(t, "name", None)
-            for t in getattr(self.agent, "tools", []) or []
-        }
-        has_write = bool(tool_names & _WRITE_TOOLS)
-        has_structured_output = _STRUCTURED_OUTPUT_TOOL in tool_names
-        override: Any | None = None
-        level: str | None = None
-        extra = ""
-        if has_write and reads >= READS_NUDGE_HARD:
-            extra = (
-                f" You have read {reads} times without making an edit. STOP reading"
-                " — your next action MUST be a file_write or apply_patch edit."
-            )
-            override = "required"
-            level = "hard"
-        elif has_write and reads >= READS_NUDGE_SOFT:
-            extra = (
-                f" You have read {reads} times without making an edit. If"
-                " you can describe the fix, make it now with file_write or"
-                " apply_patch before reading more."
-            )
-            level = "soft"
-        elif has_structured_output and reads >= READS_NUDGE_SOFT:
-            extra = (
-                f" You have read {reads} times without submitting structured output."
-                " STOP reading — your next action MUST be structured_output using"
-                " the evidence you already have."
-            )
-            override = _submit_tool_choice(_STRUCTURED_OUTPUT_TOOL)
-            level = "hard"
-        return {"role": "user", "content": status + extra}, override, level
-
-    def _fold_steering(self, last_user_msg: dict, steering_text: str) -> dict:
-        """Return a copy of a trailing ``user`` message with the steering line
-        folded into its content (string concat, or content-part append for the
-        provider list form). The original dict is not mutated.
-        """
-        content = last_user_msg.get("content")
-        if isinstance(content, str):
-            folded = f"{content}\n\n{steering_text}" if content else steering_text
-        elif isinstance(content, list):
-            folded = [*content, {"type": "text", "text": steering_text}]
-        else:
-            folded = steering_text
-        return {**last_user_msg, "content": folded}
-
     def _write_only_tool_schemas(self, tools: list[dict] | None) -> list[dict] | None:
         return self._tool_schemas_with_names(tools, _WRITE_TOOLS)
 
@@ -990,8 +932,19 @@ class SessionRunUseCase:
         # transcript. On a continuation step the tail is a tool/assistant message
         # with no user turn to fold into, so the block rides in the shaped copy
         # only: the model still sees it, but it stays out of the persisted history.
-        steering, tool_choice_override, steering_level = self._build_steering_block(
-            self.state.messages
+        tool_names = {
+            getattr(t, "name", None)
+            for t in getattr(self.agent, "tools", []) or []
+        }
+        steering, tool_choice_override, steering_level = build_steering_block(
+            used_tokens=self.state.used_tokens,
+            max_budget_tokens=self.max_budget_tokens or 0,
+            step_count=self.state.step_count,
+            max_steps=self.max_steps,
+            reads=self.state.turn.reads_since_last_edit,
+            has_write=bool(tool_names & _WRITE_TOOLS),
+            has_structured_output=_STRUCTURED_OUTPUT_TOOL in tool_names,
+            structured_override=_submit_tool_choice(_STRUCTURED_OUTPUT_TOOL),
         )
         self._maybe_trace_steering(steering_level)
         persisted = (
@@ -1000,7 +953,7 @@ class SessionRunUseCase:
             and self.state.messages[-1].get("role") == "user"
         )
         if persisted:
-            self.state.messages[-1] = self._fold_steering(
+            self.state.messages[-1] = fold_steering(
                 self.state.messages[-1], steering["content"]
             )
         messages = (
