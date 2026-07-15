@@ -68,11 +68,6 @@ class AutoSaveSubscriber(EventPublisherPort):
         """Queued or active saves that teardown must await."""
         return tuple(owner for owner in self._owners if not owner.done())
 
-    @property
-    def pending_write_futures(self) -> tuple[()]:
-        """Compatibility view; writes are owned entirely by ``pending_tasks``."""
-        return ()
-
     async def emit(self, event: SessionEvent) -> None:
         if event.type not in SAVE_TRIGGERS:
             return
