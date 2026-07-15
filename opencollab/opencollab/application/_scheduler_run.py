@@ -66,22 +66,7 @@ class SchedulerRunMixin:
         turn_start = len(self._lead_session.state.messages)
         prior_lease = self._current_turn_budget(0)
         self._reserve_turn_budget(0)
-        current_task = asyncio.current_task()
-        if current_task is not None:
-            self._message_delivery_tasks[0] = current_task
-        checkpoint = self._lead_session.state.checkpoint_user_turn()
-        try:
-            await self._lead_session.add_user_message(user_message)
-        except BaseException:
-            self._lead_session.state.restore_user_turn(checkpoint)
-            self._autosave_session(0)
-            self._release_turn_budget(0)
-            if not self._shutting_down:
-                self._restore_turn_budget(0, prior_lease)
-            raise
-        finally:
-            if self._message_delivery_tasks.get(0) is current_task:
-                self._message_delivery_tasks.pop(0, None)
+        await self._append_user_turn_txn(0, self._lead_session, user_message, prior_lease)
         if self._shutting_down:
             self._release_turn_budget(0)
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
