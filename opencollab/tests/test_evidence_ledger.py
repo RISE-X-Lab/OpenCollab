@@ -201,13 +201,9 @@ class _FakeTracer:
 class _FakeRunner:
     def __init__(self):
         self.configured = None
-        self.extension_tool = None
 
-    def configure_enforcement(
-        self, *, enforcement_strength, commit_reserve, extension_tool=None, max_extensions=None
-    ):
+    def configure_enforcement(self, *, enforcement_strength, commit_reserve):
         self.configured = (enforcement_strength, commit_reserve)
-        self.extension_tool = extension_tool
 
 
 class _FakeState:

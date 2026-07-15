@@ -268,14 +268,6 @@ class Session:
         self.state.loop_blocked_since_progress = _snapshot_nonnegative_int(
             raw_state.get("loop_blocked_since_progress")
         )
-        self.state.extension_offered = bool(raw_state.get("extension_offered", False))
-        self.state.extensions_granted = _snapshot_nonnegative_int(
-            raw_state.get("extensions_granted")
-        )
-        reasons = raw_state.get("extension_reasons")
-        self.state.extension_reasons = (
-            [str(value) for value in reasons] if isinstance(reasons, list) else []
-        )
         self.state.pending_events.clear()
         rows = raw_state.get("pending_events", [])
         if isinstance(rows, list):
@@ -394,9 +386,6 @@ class Session:
                 "wind_down_token_mark": self.state.wind_down_token_mark,
                 "forced_unsatisfied": self.state.forced_unsatisfied,
                 "loop_blocked_since_progress": self.state.loop_blocked_since_progress,
-                "extension_offered": self.state.extension_offered,
-                "extensions_granted": self.state.extensions_granted,
-                "extension_reasons": list(self.state.extension_reasons),
                 "phase": self.state.phase.value,
                 "terminal_reason": self.state.terminal_reason,
                 "pending_events": [_serialize_pending_row(row) for row in self.state.pending_events.rows.values()],

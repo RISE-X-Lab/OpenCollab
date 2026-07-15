@@ -213,17 +213,6 @@ class SessionState:
     # path-normalized calls; this counter lets that short-circuit stop a session
     # after repeated warnings instead of paying for more near-identical turns.
     loop_blocked_since_progress: int = 0
-    # Single-justified-extension valve (STEP 4b). At a wind-down trip the scout is
-    # offered "commit OR justify one more read"; ``extension_offered`` latches that
-    # the offer turn is outstanding so the NEXT precheck resolves the model's choice
-    # before any other gate. ``extensions_granted`` counts the bounded grants (hard
-    # cap = 1) and ``extension_reasons`` records the granted reasons so a duplicate
-    # reason is denied as non-novel. All three are inert unless
-    # ``enforcement_strength`` is on AND a ``request_extension`` tool is wired; they
-    # are session-lifetime latches like ``wind_down_done`` (not reset per user turn).
-    extension_offered: bool = False
-    extensions_granted: int = 0
-    extension_reasons: list[str] = field(default_factory=list)
     phase: SessionPhase = SessionPhase.IDLE
     # Human-readable detail for the current terminal phase (e.g. the exception
     # for ERROR, the token/step counts for the resource caps). ``None`` while
