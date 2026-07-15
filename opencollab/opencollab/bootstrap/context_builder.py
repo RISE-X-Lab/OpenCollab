@@ -36,7 +36,6 @@ from opencollab.domain.context import (
     ContextPlan,
     ContextPosition,
     ContextSource,
-    LoadTiming,
 )
 from opencollab.domain.scheduler import DelegationTask
 from opencollab.domain.skill import SkillManifest
@@ -73,13 +72,12 @@ class ContextBuilder:
 
     Owns the single role -> ``Agent`` assembly used for both the lead and
     spawned agents. ``build_plan`` is the editorial step: it emits an ordered
-    set of ``ContextSource`` objects, each tagged with its layer / load-timing /
-    structural position. Identity and team land in the system prompt; the task
-    and (reserved) project/memory layers are user-context. ``build_agent``
+    set of ``ContextSource`` objects, each tagged with its layer and structural
+    position. Identity, team and (when present) the project repo map land in the
+    system prompt; the task lands as a user-context message. ``build_agent``
     resolves the role's tool *names* to concrete Tools and folds the plan's
-    SYSTEM sources into ``Agent.system_prompt``. Tool descriptions are NOT
-    injected into the prompt — those already reach the LLM as function-calling
-    schemas, so the tool-meta layer is a registered-but-deferred source.
+    SYSTEM sources into ``Agent.system_prompt``. Tool schemas are NOT injected
+    as prose — they already reach the LLM as function-calling schemas.
     """
 
     def __init__(
@@ -109,17 +107,17 @@ class ContextBuilder:
     ) -> ContextPlan:
         """Emit the ordered context sources for ``role_name``.
 
-        Startup sources (identity, team, and the task when given) carry content
-        and are assembled into messages; project/memory/tool-meta are registered
-        with a ``loader_key`` for a future lazy-loading pass but contribute no
-        content this period.
+        Identity, the team section, the skill catalog and (when present) the
+        project repo map carry content and assemble into the system prompt; the
+        task, when given, becomes the sole user-context message. A source is
+        emitted only when it has content — reserved long-term layers (memory,
+        RAG) are an honest gap, not registered-but-empty placeholders.
         """
         role = self._team.role_for(role_name)
         sources: list[ContextSource] = [
             ContextSource(
                 name="identity",
                 layer=ContextLayer.IDENTITY,
-                timing=LoadTiming.STARTUP,
                 position=ContextPosition.SYSTEM,
                 content=role.prompt,
             )
@@ -130,7 +128,6 @@ class ContextBuilder:
                 ContextSource(
                     name="team",
                     layer=ContextLayer.TEAM,
-                    timing=LoadTiming.STARTUP,
                     position=ContextPosition.SYSTEM,
                     content=team_section,
                 )
@@ -145,33 +142,21 @@ class ContextBuilder:
                     ContextSource(
                         name="skills",
                         layer=ContextLayer.SKILL,
-                        timing=LoadTiming.STARTUP,
                         position=ContextPosition.SYSTEM,
                         content=catalog,
                     )
                 )
-        # Project layer: with content (a repo map from the composition root)
-        # it ships at startup in the system prompt — SYSTEM so both the lead
-        # and spawn paths pick it up (only spawns seed user-context messages).
-        # Without content it stays a registered-but-deferred source.
+        # Project layer: a repo map from the composition root, when present,
+        # ships at startup in the system prompt — SYSTEM so both the lead and
+        # spawn paths pick it up (only spawns seed user-context messages). With
+        # no repo map the layer simply does not appear.
         if self._project_context:
             sources.append(
                 ContextSource(
                     name="project",
                     layer=ContextLayer.PROJECT,
-                    timing=LoadTiming.STARTUP,
                     position=ContextPosition.SYSTEM,
                     content=self._project_context,
-                )
-            )
-        else:
-            sources.append(
-                ContextSource(
-                    name="project",
-                    layer=ContextLayer.PROJECT,
-                    timing=LoadTiming.ON_DEMAND,
-                    position=ContextPosition.USER_CONTEXT,
-                    loader_key="project",
                 )
             )
         if task is not None:
@@ -179,34 +164,12 @@ class ContextBuilder:
                 ContextSource(
                     name="task",
                     layer=ContextLayer.TASK,
-                    timing=LoadTiming.STARTUP,
                     position=ContextPosition.USER_CONTEXT,
                     content=DelegationTask(
                         role=role_name, task=task, context=context
                     ).render(),
                 )
             )
-        # Recalled memory — reserved; registered now, loaded later.
-        sources.append(
-            ContextSource(
-                name="memory",
-                layer=ContextLayer.MEMORY,
-                timing=LoadTiming.ON_DEMAND,
-                position=ContextPosition.USER_CONTEXT,
-                loader_key="memory",
-            )
-        )
-        # Tool schemas already reach the model via function-calling; the layer
-        # is registered for completeness, not injected as prose.
-        sources.append(
-            ContextSource(
-                name="tool_meta",
-                layer=ContextLayer.TOOL_META,
-                timing=LoadTiming.ON_DEMAND,
-                position=ContextPosition.SYSTEM,
-                loader_key="tools",
-            )
-        )
         return ContextPlan(sources=tuple(sources))
 
     def build_agent(
