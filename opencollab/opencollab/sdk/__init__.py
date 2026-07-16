@@ -1,4 +1,12 @@
-"""Versioned public Python API for integrations built on OpenCollab."""
+"""Versioned public Python API for integrations built on OpenCollab.
+
+The surface is this top-level facade: the names re-exported here (plus the
+``environment``/``models``/``runtime``/``tools``/``usage``/``workflows``
+implementation modules they come from). ``SDK_API_VERSION`` is the compatibility
+contract ``test_sdk_api.py`` enforces — export set, dataclass field order, and
+public signatures are all frozen against it, so a breaking change must bump the
+version. Surface == contract: there are no extra submodule re-export shims.
+"""
 
 from __future__ import annotations
 
