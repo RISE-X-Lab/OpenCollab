@@ -42,13 +42,9 @@ class AutoSaveSubscriber(EventPublisherPort):
         save_fn: SaveOperation,
         *,
         prepare_fn: PrepareSave | None = None,
-        serialization_key: str | None = None,
     ):
         self._save = save_fn
         self._prepare = prepare_fn
-        # Kept as an accepted argument for SDK compatibility. Ordering belongs
-        # to one subscriber; callers must not create competing writers.
-        self._serialization_key = serialization_key
         self._tail: asyncio.Task[None] | None = None
         self._owners: set[asyncio.Task[None]] = set()
         self._last_error: Exception | None = None
