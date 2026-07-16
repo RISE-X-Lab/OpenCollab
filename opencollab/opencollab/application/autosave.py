@@ -30,11 +30,20 @@ def _run_save(operation: SaveOperation) -> Exception | None:
 
 
 class AutoSaveSubscriber(EventPublisherPort):
-    """Freeze and save snapshots in submission order on one event loop.
+    """Freeze-then-flush persistence of session snapshots (Command + Memento).
 
-    ``prepare_fn`` captures mutable session state before the save task is
-    scheduled. The subscriber owns every queued task so caller cancellation
-    cannot silently discard an already submitted snapshot.
+    Two phases keep the write off the hot path without tearing the snapshot:
+    *freeze* runs ``prepare_fn`` synchronously on the event loop to capture a
+    self-consistent copy of mutable session state, then *flush* runs the file
+    I/O off-thread via ``asyncio.to_thread``. Saves chain in strict submission
+    order — each flush awaits the previous tail before writing — so a later
+    snapshot never overtakes an earlier one.
+
+    Ordering is guaranteed by *single-subscriber ownership*, not by any key:
+    one subscriber owns every queued task, so caller cancellation cannot
+    silently discard an already submitted snapshot, and callers must not create
+    competing writers for the same target. Within-episode durability only —
+    this is not cross-episode learning.
     """
 
     def __init__(
