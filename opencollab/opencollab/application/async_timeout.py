@@ -4,7 +4,6 @@ import asyncio
 import math
 import warnings
 from collections.abc import Awaitable, Iterable
-from dataclasses import dataclass
 from typing import Callable, TypeVar
 
 from opencollab.application.exception_notes import add_exception_note
@@ -51,20 +50,17 @@ class CallerTimeoutError(asyncio.TimeoutError):
     """
 
 
-@dataclass(frozen=True)
-class TaskTerminationResult:
-    terminal: bool
-    cancellation: asyncio.CancelledError | None
-    errors: tuple[BaseException, ...]
-
-
 async def force_task_terminal(
     task: asyncio.Future[object],
     *,
     timeout: float = 0.1,
-    cancellation: asyncio.CancelledError | None = None,
-) -> TaskTerminationResult:
-    """Cancel an async owner and wait up to one cooperative deadline."""
+) -> bool:
+    """Cancel an async owner and wait up to one cooperative deadline.
+
+    Returns whether the task reached a terminal state within the deadline; a
+    still-running task means the deadline expired first. Callers only need that
+    verdict, so the retrieved result/exception is consumed and discarded here.
+    """
     if isinstance(timeout, bool):
         raise ValueError("task termination timeout must be finite and positive")
     try:
@@ -77,10 +73,8 @@ async def force_task_terminal(
         raise ValueError("task termination timeout must be finite and positive")
     if task is asyncio.current_task():
         raise RuntimeError("cannot force the current task to terminate")
-    errors: list[BaseException] = []
 
     async def wait_one_phase() -> None:
-        nonlocal cancellation
         deadline = asyncio.get_running_loop().time() + phase_timeout
         while not task.done():
             remaining = deadline - asyncio.get_running_loop().time()
@@ -88,31 +82,20 @@ async def force_task_terminal(
                 return
             try:
                 await asyncio.wait({task}, timeout=remaining)
-            except asyncio.CancelledError as exc:
-                if cancellation is None:
-                    cancellation = exc
+            except asyncio.CancelledError:
+                # Keep the owner alive through repeated caller cancellation.
+                pass
 
     if not task.done():
         task.cancel()
         await wait_one_phase()
     if task.done():
+        # Retrieve so asyncio doesn't warn the result was never consumed.
         try:
             task.result()
-        except asyncio.CancelledError:
+        except BaseException:
             pass
-        except BaseException as exc:
-            errors.append(exc)
-    else:
-        errors.append(
-            TimeoutError(
-                "async owner did not reach a terminal state before the cleanup deadline"
-            )
-        )
-    return TaskTerminationResult(
-        terminal=task.done(),
-        cancellation=cancellation,
-        errors=tuple(errors),
-    )
+    return task.done()
 
 
 async def cancel_tasks_and_wait(
