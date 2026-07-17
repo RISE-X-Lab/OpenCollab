@@ -38,6 +38,19 @@ def test_retired_sdk_compatibility_modules_are_absent() -> None:
     sdk_root = _PACKAGE_ROOT / "sdk"
     assert not (sdk_root / "eval_compat.py").exists()
     assert not (sdk_root / "experimental.py").exists()
+    # The zero-consumer capability shims retired in Lane S4c. The versioned SDK
+    # surface is the top-level facade (locked by test_sdk_api), not these
+    # submodule re-exports; they must stay deleted so surface == contract.
+    for retired in (
+        "agents",
+        "config",
+        "environments",
+        "lifecycle",
+        "persistence",
+        "repository",
+        "tracing",
+    ):
+        assert not (sdk_root / f"{retired}.py").exists(), retired
 
 
 def test_sdk_capability_modules_export_only_public_names() -> None:
