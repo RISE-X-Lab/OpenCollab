@@ -22,10 +22,15 @@ from opencollab.adapters.safe_files import (
 
 
 class Tracer:
-    """Transparent, append-only trajectory recorder.
+    """Transparent, append-only trajectory recorder (fail-soft Observer sink).
 
     Records every LLM call, tool execution, delegation, and compaction event
     with timestamps, token counts, and latencies.
+
+    Fail-soft latch-and-drop: on the first write error it latches the error,
+    closes the file, and thereafter *counts* dropped steps instead of raising —
+    trajectory recording must never crash the run it observes, nor silently
+    pretend a dropped step was written.
 
     Usage:
         tracer = Tracer("my-session")

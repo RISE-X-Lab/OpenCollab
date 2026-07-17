@@ -1,11 +1,11 @@
 ---
 name: sequence-diagram
-description: Draw a polished UML sequence / swimlane diagram (时序图 / 泳道图) of a software-engineering interaction. Use whenever the task asks to diagram, chart, visualize, or draw a flow over TIME between components — an API request, login/auth flow, checkout/payment saga, message-queue pipeline, RPC call chain, deploy sequence — from a description or from source you read. Produces a styled .d2 (d2's shape: sequence_diagram) rendered to .svg.
+description: Draw a polished UML sequence / swimlane diagram of a software-engineering interaction. Use whenever the task asks to diagram, chart, visualize, or draw a flow over TIME between components — an API request, login/auth flow, checkout/payment saga, message-queue pipeline, RPC call chain, deploy sequence — from a description or from source you read. Produces a styled .d2 (d2's shape: sequence_diagram) rendered to .svg.
 ---
 
 Turn a software-engineering interaction — an API request, an auth/login flow, a
 checkout saga, a queue pipeline, a deploy sequence — into a STYLED UML sequence
-diagram (时序图 / 泳道图, lifelines = lanes) using d2's native
+diagram (lifelines = lanes) using d2's native
 `shape: sequence_diagram`, then render it to SVG. Input is either a
 natural-language description or source you read as TEXT. You already have `bash`
 (and likely `file_read`); this grants no new tools. The shell cwd does NOT
@@ -84,10 +84,10 @@ Fragments nest.
 
 ## 5. Worked example (checkout) — append BELOW the header, swap in real topology
 ```
-browser:  "Browser\n(顾客)"        { class: actor }
+browser:  "Browser\n(customer)"    { class: actor }
 api:      "API Gateway"            { class: service }
 order:    "Order Service"          { class: service }
-pay:      "Payment Gateway\n(外部)" { class: external }
+pay:      "Payment Gateway\n(external)" { class: external }
 db:       "Orders DB"              { class: store }
 
 browser -> api: "POST /checkout" { class: call }

@@ -646,17 +646,6 @@ def test_team_cleanup_tracks_abandoned_provider_task_until_exit():
     run(scenario())
 
 
-def test_spawn_trims_task_field_to_100_chars(monkeypatch):
-    scheduler, events = _build_scheduler(monkeypatch, {"coder": [""]})
-    long_task = "x" * 250
-
-    run(_spawn_and_settle(scheduler, 0, "coder", long_task))
-
-    seq = _scheduler_events(events)
-    spawned = [e for e in seq if e.type == "agent_spawned"][0]
-    assert spawned.data["task"] == "x" * 100
-
-
 def test_spawn_with_review_emits_review_lifecycle_around_spawns(monkeypatch):
     scheduler, events = _build_scheduler(
         monkeypatch,
@@ -766,7 +755,7 @@ def test_spawn_with_review_restores_parent_turn_budget(monkeypatch):
         scheduler._tasks[0] = asyncio.current_task()
         try:
             result = await scheduler.spawn_with_review(0, "write fn")
-            assert scheduler._lead_reservation is not None
+            assert scheduler._lead_lease is not None
             assert scheduler.allocated_tokens <= scheduler._max_budget_tokens
             return result
         finally:

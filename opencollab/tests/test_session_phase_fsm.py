@@ -20,6 +20,28 @@ def test_every_phase_is_in_the_transition_table():
     assert set(PHASE_TRANSITIONS) == set(SessionPhase)
 
 
+def test_phase_and_terminal_sets_are_exactly_as_declared():
+    # Value-lock backstopping the self-referential topology tests in this file:
+    # they derive their parametrize cases FROM PHASE_TRANSITIONS/TERMINAL_PHASES,
+    # so a wrong topology would still satisfy them. This pins the exact intended
+    # shape as string literals, so adding/removing a phase or terminal is a
+    # conscious, reviewed edit here. Ten phases; three terminals (DONE / STOPPED /
+    # ERROR) — every controlled halt is STOPPED(reason=...), not its own member.
+    assert {p.value for p in SessionPhase} == {
+        "idle",
+        "precheck",
+        "calling_llm",
+        "handling_response",
+        "executing_tools",
+        "awaiting_events",
+        "autosaving",
+        "done",
+        "stopped",
+        "error",
+    }
+    assert {p.value for p in TERMINAL_PHASES} == {"done", "stopped", "error"}
+
+
 def test_terminal_phases_only_resume_to_idle():
     for phase in TERMINAL_PHASES:
         assert PHASE_TRANSITIONS[phase] == frozenset({SessionPhase.IDLE})
@@ -43,7 +65,7 @@ def test_legal_edges_transition(src: SessionPhase, dst: SessionPhase):
         (SessionPhase.CALLING_LLM, SessionPhase.DONE),
         (SessionPhase.HANDLING_RESPONSE, SessionPhase.PRECHECK),
         (SessionPhase.DONE, SessionPhase.PRECHECK),
-        (SessionPhase.SCHEDULED, SessionPhase.CALLING_LLM),
+        (SessionPhase.STOPPED, SessionPhase.PRECHECK),
         (SessionPhase.AWAITING_EVENTS, SessionPhase.DONE),
         (SessionPhase.AWAITING_EVENTS, SessionPhase.AUTOSAVING),
         (SessionPhase.EXECUTING_TOOLS, SessionPhase.PRECHECK),
@@ -60,10 +82,11 @@ def test_illegal_edges_raise(src: SessionPhase, dst: SessionPhase):
 
 def test_set_phase_is_unchecked_escape():
     # set_phase is the out-of-band primitive used for process birth and
-    # snapshot/restore — it bypasses validation by design.
+    # snapshot/restore — it bypasses validation by design (EXECUTING_TOOLS ->
+    # STOPPED is not a legal run-loop edge).
     s = state(SessionPhase.EXECUTING_TOOLS)
-    s.set_phase(SessionPhase.SCHEDULED)
-    assert s.phase is SessionPhase.SCHEDULED
+    s.set_phase(SessionPhase.STOPPED)
+    assert s.phase is SessionPhase.STOPPED
 
 
 @pytest.mark.parametrize("src", list(SessionPhase))
@@ -74,10 +97,10 @@ def test_fail_escapes_to_error_from_any_phase(src: SessionPhase):
 
 
 @pytest.mark.parametrize("src", list(SessionPhase))
-def test_cancel_escapes_to_cancelled_from_any_phase(src: SessionPhase):
+def test_cancel_escapes_to_stopped_from_any_phase(src: SessionPhase):
     s = state(src)
     s.cancel()
-    assert s.phase is SessionPhase.CANCELLED
+    assert s.phase is SessionPhase.STOPPED
 
 
 @pytest.mark.parametrize("src", sorted(TERMINAL_PHASES, key=lambda p: p.value))
@@ -125,7 +148,7 @@ def test_reset_for_user_turn_clears_done_and_hashes():
     s.remember_tool_call_hash("h1")
     s.reset_for_user_turn()
     assert s.phase is SessionPhase.IDLE
-    assert s.recent_call_hashes == []
+    assert s.turn.recent_call_hashes == []
 
 
 def test_reset_for_user_turn_preserves_step_count():
@@ -145,14 +168,14 @@ def test_fail_and_cancel_record_terminal_reason():
 
     s2 = state(SessionPhase.EXECUTING_TOOLS)
     s2.cancel()
-    assert s2.phase is SessionPhase.CANCELLED
+    assert s2.phase is SessionPhase.STOPPED
     assert s2.terminal_reason == "cancelled"
 
 
 def test_transition_to_records_terminal_reason_and_resume_clears_it():
     s = state(SessionPhase.PRECHECK)
-    s.transition_to(SessionPhase.STEP_LIMIT_EXCEEDED, reason="step limit reached: 5 steps")
-    assert s.phase is SessionPhase.STEP_LIMIT_EXCEEDED
+    s.transition_to(SessionPhase.STOPPED, reason="step limit reached: 5 steps")
+    assert s.phase is SessionPhase.STOPPED
     assert s.terminal_reason == "step limit reached: 5 steps"
     s.resume_to_idle()
     assert s.phase is SessionPhase.IDLE
