@@ -45,3 +45,10 @@ container.name
 
 # Compiled report artifacts — commit the .tex/.md sources, not the build output
 docs/**/*.pdf
+
+# Local dev tooling (self-protected by nested .gitignores, listed here for clarity)
+.venv/
+.ruff_cache/
+
+# Internal working drafts — keep local, do not publish
+docs/2026-07-12-oc-module-refactor-report.md

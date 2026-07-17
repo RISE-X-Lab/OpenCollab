@@ -68,9 +68,9 @@ class ToolProcessingResult:
         model keeps reading without writing.
         """
         if self.write_succeeded:
-            state.reads_since_last_edit = 0
+            state.turn.reads_since_last_edit = 0
         else:
-            state.reads_since_last_edit += self.reads_executed
+            state.turn.reads_since_last_edit += self.reads_executed
 
     def apply_evidence_counter_to(self, state: SessionState) -> None:
         """Fold this batch's information-gain signals into the novelty counters
@@ -95,7 +95,7 @@ class ToolProcessingResult:
         the counters above this is maintained ALWAYS — only the precheck brake that
         reads it is gated, so the off path is unchanged.
         """
-        distinct_before = state.distinct_evidence_count
+        distinct_before = state.turn.distinct_evidence_count
         made_progress = self.write_succeeded
         for i, (content_hash, call_hash, intrinsic_low_yield) in enumerate(self.evidence_signals):
             card = self.evidence_cards[i] if i < len(self.evidence_cards) else None
@@ -104,16 +104,16 @@ class ToolProcessingResult:
             )
         if self.evidence_signals:
             made_progress = (
-                self.write_succeeded or state.distinct_evidence_count > distinct_before
+                self.write_succeeded or state.turn.distinct_evidence_count > distinct_before
             )
             if made_progress:
-                state.steps_since_progress = 0
+                state.turn.steps_since_progress = 0
             else:
-                state.steps_since_progress += 1
+                state.turn.steps_since_progress += 1
         if made_progress:
-            state.loop_blocked_since_progress = 0
+            state.turn.loop_blocked_since_progress = 0
         elif self.loop_detections:
-            state.loop_blocked_since_progress += len(self.loop_detections)
+            state.turn.loop_blocked_since_progress += len(self.loop_detections)
 
     def apply_hashes_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         """Apply only the loop-detection hashes, not the result messages.

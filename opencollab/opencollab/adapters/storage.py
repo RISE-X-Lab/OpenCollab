@@ -85,13 +85,6 @@ class SessionStore:
             if role not in self.allowed_roles:
                 raise ValueError(f"Invalid message role at position {lineno}: {role}")
 
-    def _parse(self, text: str) -> list[dict[str, Any]]:
-        """Read the structured-JSON format, falling back to legacy JSONL."""
-        obj = self._parse_document(text)
-        if isinstance(obj, dict):
-            return list(obj.get("messages", []))
-        return obj
-
     def _parse_document(self, text: str) -> dict[str, Any] | list[dict[str, Any]]:
         if not text.strip():
             return []

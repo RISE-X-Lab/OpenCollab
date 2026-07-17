@@ -302,7 +302,7 @@ def test_team_panel_renders_when_roster_present():
 def test_team_provider_renders_configured_team_before_any_spawn():
     tui = _make_tui()
     tui.set_team_provider(lambda: [
-        {"aid": 0, "role": "lead", "phase": "scheduled", "busy": False},
+        {"aid": 0, "role": "lead", "phase": "idle", "busy": False},
         {"aid": None, "role": "analyst", "phase": "available", "busy": False},
         {"aid": None, "role": "coder", "phase": "available", "busy": False},
     ])
@@ -327,9 +327,10 @@ def test_team_provider_settled_phases_render_idle():
     tui = _make_tui()
     tui.set_team_provider(lambda: [
         {"aid": 0, "role": "lead", "phase": "done", "busy": False},
-        {"aid": 1, "role": "coder", "phase": "scheduled", "busy": False},
+        {"aid": 1, "role": "coder", "phase": "idle", "busy": False},
     ])
     panel = tui._build_team_panel()
+    # A settled 'done' agent and a fresh 'idle' agent both present as idle.
     assert "Lead [idle]" in panel.plain
     assert "A1 coder [idle]" in panel.plain
 

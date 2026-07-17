@@ -111,9 +111,9 @@ class SchedulerCleanupMixin:
         self._startup_origin.clear()
         self._message_delivery_tasks.clear()
         self._active_run_tasks.clear()
-        self._lead_reservation = None
-        self._child_reservation.clear()
-        self._reservation_baseline.clear()
+        self._lead_lease = None
+        self._child_lease.clear()
+        self._lease_baseline.clear()
         self._inflight.clear()
         self._inflight_key_of.clear()
         self._tasks.clear()
@@ -221,7 +221,7 @@ class SchedulerCleanupMixin:
         origin_override: tuple[int, str] | None = None,
     ) -> None:
         reason = "Error: scheduler cleanup cancelled delegated work"
-        self._release_reservations(aid)
+        self._release_leases(aid)
         if aid in self._delivery_committed:
             return
         origin = self._spawn_origin.pop(aid, None) or self._startup_origin.pop(aid, None) or origin_override

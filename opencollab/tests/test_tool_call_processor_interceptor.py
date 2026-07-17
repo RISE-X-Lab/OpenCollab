@@ -7,8 +7,8 @@ import pytest
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.application.event_bus import EventBus
-from opencollab.application.extension_valve import RequestExtensionTool
 from opencollab.application.ports import ToolPort
+from opencollab.application.submit_findings import SubmitFindingsTool
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.bootstrap import container as session_mod
 from opencollab.domain.session import SessionState
@@ -148,7 +148,7 @@ def test_tool_execution_does_not_expand_legacy_runtime_arguments():
 
 
 def test_application_tool_exposes_typed_timeout_policy():
-    tool = RequestExtensionTool()
+    tool = SubmitFindingsTool()
 
     assert tool.default_timeout is None
     assert tool.disable_outer_timeout is False

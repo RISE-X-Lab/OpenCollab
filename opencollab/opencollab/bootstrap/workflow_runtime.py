@@ -104,12 +104,8 @@ async def run_workflow(
             aborted = await revoke_and_abort_environment(env, cleanup_timeout)
         if done:
             return aborted, True
-        termination = await force_task_terminal(
-            owner,
-            timeout=cleanup_timeout,
-            cancellation=cancellation,
-        )
-        return aborted, termination.terminal
+        terminal = await force_task_terminal(owner, timeout=cleanup_timeout)
+        return aborted, terminal
 
     async def stop_once(
         cancellation: asyncio.CancelledError,

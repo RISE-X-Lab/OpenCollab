@@ -20,7 +20,7 @@ _TOOLBAR_STATE_STYLES = {
     "idle": _TOOLBAR_SUCCESS,
     "available": _TOOLBAR_MUTED,  # configured-only slots recede
     "failed": _TOOLBAR_ERROR,
-    "cancelled": _TOOLBAR_WARNING,
+    "stopped": _TOOLBAR_WARNING,
 }
 
 

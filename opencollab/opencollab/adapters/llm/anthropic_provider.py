@@ -10,7 +10,12 @@ import json
 from typing import Any
 
 from opencollab.adapters.llm.retry import with_retry
-from opencollab.adapters.llm.types import DEFAULT_MAX_OUTPUT_TOKENS, LLMResponse, Usage
+from opencollab.adapters.llm.types import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    LLMResponse,
+    Usage,
+    rescue_empty_turn,
+)
 
 
 def _anthropic_tool_choice(tool_choice: Any) -> dict[str, Any] | None:
@@ -140,13 +145,10 @@ def _parse_response(resp: Any) -> LLMResponse:
                 "function": {"name": block.name, "arguments": json.dumps(block.input)},
             })
 
-    # Mirror of the OpenAI provider: keep the thinking text for trajectory
-    # observability, and only rescue a genuinely empty turn (no text and no tool
-    # calls) by falling back to it, so an empty-stop never silently ends the
-    # session.
+    # Keep the thinking text for trajectory observability; the shared rescue
+    # rung falls back to it only when the turn is otherwise empty.
     reasoning = thinking_text or None
-    if not content and not tool_calls and reasoning:
-        content = reasoning
+    content = rescue_empty_turn(content, tool_calls, reasoning)
 
     return LLMResponse(
         content=content or None,

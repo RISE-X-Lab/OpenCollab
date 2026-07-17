@@ -23,9 +23,10 @@ re-exported.
 ## Commands
 
 ```bash
-cd opencollab && .venv/bin/python -m pytest -q   # tests (baseline: 490 pass)
+cd opencollab && uv sync --extra dev              # one-time: create .venv with dev deps
+cd opencollab && .venv/bin/python -m pytest -q    # tests (keep green; ~1439 collected)
 cd opencollab && .venv/bin/ruff check opencollab/ # lint
-scripts/start_opencollab.sh [team]                # run the app
+scripts/start_opencollab.sh                       # run the app (interactive; a team when configs/team.yaml is present)
 ```
 
 Conventional commits; `refactor:` commits stay behavior-preserving.

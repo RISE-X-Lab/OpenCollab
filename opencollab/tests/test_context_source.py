@@ -8,37 +8,35 @@ from opencollab.domain.context import (
     ContextPlan,
     ContextPosition,
     ContextSource,
-    LoadTiming,
 )
 
 
-def _src(name, layer, timing, position, content="", loader_key=None):
+def _src(name, layer, position, content="", priority=None):
     return ContextSource(
         name=name,
         layer=layer,
-        timing=timing,
         position=position,
         content=content,
-        loader_key=loader_key,
+        priority=priority,
     )
 
 
-def test_system_prompt_joins_only_startup_system_sources_in_order():
+def test_system_prompt_joins_only_system_sources_in_order():
     plan = ContextPlan(
         sources=(
-            _src("identity", ContextLayer.IDENTITY, LoadTiming.STARTUP, ContextPosition.SYSTEM, "I am lead."),
-            _src("team", ContextLayer.TEAM, LoadTiming.STARTUP, ContextPosition.SYSTEM, "## Your team"),
-            _src("task", ContextLayer.TASK, LoadTiming.STARTUP, ContextPosition.USER_CONTEXT, "do the thing"),
+            _src("identity", ContextLayer.IDENTITY, ContextPosition.SYSTEM, "I am lead."),
+            _src("team", ContextLayer.TEAM, ContextPosition.SYSTEM, "## Your team"),
+            _src("task", ContextLayer.TASK, ContextPosition.USER_CONTEXT, "do the thing"),
         )
     )
     assert plan.system_prompt() == "I am lead.\n\n## Your team"
 
 
-def test_startup_user_messages_take_only_user_context_startup_sources():
+def test_startup_user_messages_take_only_user_context_sources():
     plan = ContextPlan(
         sources=(
-            _src("identity", ContextLayer.IDENTITY, LoadTiming.STARTUP, ContextPosition.SYSTEM, "I am lead."),
-            _src("task", ContextLayer.TASK, LoadTiming.STARTUP, ContextPosition.USER_CONTEXT, "do the thing"),
+            _src("identity", ContextLayer.IDENTITY, ContextPosition.SYSTEM, "I am lead."),
+            _src("task", ContextLayer.TASK, ContextPosition.USER_CONTEXT, "do the thing"),
         )
     )
     assert plan.startup_user_messages() == [
@@ -50,80 +48,44 @@ def test_startup_user_messages_take_only_user_context_startup_sources():
     ]
 
 
-def test_messages_is_system_then_user_context():
+def test_empty_content_sources_are_skipped_from_both_channels():
     plan = ContextPlan(
         sources=(
-            _src("identity", ContextLayer.IDENTITY, LoadTiming.STARTUP, ContextPosition.SYSTEM, "I am lead."),
-            _src("task", ContextLayer.TASK, LoadTiming.STARTUP, ContextPosition.USER_CONTEXT, "do the thing"),
+            _src("identity", ContextLayer.IDENTITY, ContextPosition.SYSTEM, "I am lead."),
+            # empty content: skipped everywhere — no registered-but-empty leak.
+            _src("team", ContextLayer.TEAM, ContextPosition.SYSTEM, ""),
+            _src("blank-task", ContextLayer.TASK, ContextPosition.USER_CONTEXT, ""),
         )
     )
-    assert plan.messages() == [
-        {"role": "system", "content": "I am lead."},
-        {
-            "role": "user",
-            "content": "do the thing",
-            "_ctx": {"layer": "task", "priority": LAYER_PRIORITY[ContextLayer.TASK]},
-        },
-    ]
-
-
-def test_deferred_and_empty_sources_do_not_enter_messages():
-    plan = ContextPlan(
-        sources=(
-            _src("identity", ContextLayer.IDENTITY, LoadTiming.STARTUP, ContextPosition.SYSTEM, "I am lead."),
-            # registered but on-demand: contributes no content this period
-            _src(
-                "memory", ContextLayer.MEMORY, LoadTiming.ON_DEMAND,
-                ContextPosition.USER_CONTEXT, loader_key="memory",
-            ),
-            # startup but empty content: skipped
-            _src("team", ContextLayer.TEAM, LoadTiming.STARTUP, ContextPosition.SYSTEM, ""),
-        )
-    )
-    assert plan.startup_user_messages() == []
     assert plan.system_prompt() == "I am lead."
-    assert {s.name for s in plan.deferred_sources()} == {"memory"}
+    assert plan.startup_user_messages() == []
 
 
 def test_assembly_is_generic_over_position_not_layer():
-    # A brand-new, never-before-seen layer assembles correctly with no code
-    # change: a USER_CONTEXT/STARTUP source becomes a user message purely by its
-    # position, proving messages() does not special-case known layers.
-    novel = ContextSource(
-        name="novel",
-        layer=ContextLayer.PROJECT,  # stand-in for "some new layer"
-        timing=LoadTiming.STARTUP,
-        position=ContextPosition.USER_CONTEXT,
-        content="project conventions here",
-    )
+    # A source assembles purely by its POSITION: a USER_CONTEXT source becomes a
+    # user message regardless of layer, proving assembly never special-cases a
+    # known layer.
     plan = ContextPlan(
         sources=(
-            _src("identity", ContextLayer.IDENTITY, LoadTiming.STARTUP, ContextPosition.SYSTEM, "sys"),
-            novel,
+            _src("identity", ContextLayer.IDENTITY, ContextPosition.SYSTEM, "sys"),
+            _src("proj", ContextLayer.PROJECT, ContextPosition.USER_CONTEXT, "project conventions here"),
         )
     )
-    assert plan.messages() == [
-        {"role": "system", "content": "sys"},
+    assert plan.system_prompt() == "sys"
+    assert plan.startup_user_messages() == [
         {
             "role": "user",
             "content": "project conventions here",
             "_ctx": {"layer": "project", "priority": LAYER_PRIORITY[ContextLayer.PROJECT]},
-        },
+        }
     ]
 
 
 def test_effective_priority_falls_back_to_layer_default_then_override():
-    base = _src(
-        "memory", ContextLayer.MEMORY, LoadTiming.STARTUP,
-        ContextPosition.USER_CONTEXT, "m",
-    )
-    assert base.effective_priority == LAYER_PRIORITY[ContextLayer.MEMORY]
-    pinned = ContextSource(
-        name="vip-memory",
-        layer=ContextLayer.MEMORY,
-        timing=LoadTiming.STARTUP,
-        position=ContextPosition.USER_CONTEXT,
-        content="m",
+    base = _src("proj", ContextLayer.PROJECT, ContextPosition.USER_CONTEXT, "p")
+    assert base.effective_priority == LAYER_PRIORITY[ContextLayer.PROJECT]
+    pinned = _src(
+        "vip-project", ContextLayer.PROJECT, ContextPosition.USER_CONTEXT, "p",
         priority=95,  # explicit override beats the layer default
     )
     assert pinned.effective_priority == 95
@@ -132,12 +94,12 @@ def test_effective_priority_falls_back_to_layer_default_then_override():
 def test_startup_user_messages_stamp_layer_and_priority():
     plan = ContextPlan(
         sources=(
-            _src("project", ContextLayer.PROJECT, LoadTiming.STARTUP, ContextPosition.USER_CONTEXT, "p"),
-            _src("memory", ContextLayer.MEMORY, LoadTiming.STARTUP, ContextPosition.USER_CONTEXT, "m"),
+            _src("project", ContextLayer.PROJECT, ContextPosition.USER_CONTEXT, "p"),
+            _src("task", ContextLayer.TASK, ContextPosition.USER_CONTEXT, "t"),
         )
     )
     tags = [m["_ctx"] for m in plan.startup_user_messages()]
     assert tags == [
         {"layer": "project", "priority": LAYER_PRIORITY[ContextLayer.PROJECT]},
-        {"layer": "memory", "priority": LAYER_PRIORITY[ContextLayer.MEMORY]},
+        {"layer": "task", "priority": LAYER_PRIORITY[ContextLayer.TASK]},
     ]

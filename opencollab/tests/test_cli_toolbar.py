@@ -20,8 +20,8 @@ def _plain_and_fragments(toolbar):
     return plain, fragments
 
 
-def test_team_toolbar_displays_scheduled_lead_as_idle_in_green():
-    toolbar = format_team_toolbar([{"aid": 0, "phase": "scheduled", "busy": False}])
+def test_team_toolbar_displays_idle_lead_in_green():
+    toolbar = format_team_toolbar([{"aid": 0, "phase": "idle", "busy": False}])
     plain, fragments = _plain_and_fragments(toolbar)
 
     assert plain == "Team: Lead(idle)"

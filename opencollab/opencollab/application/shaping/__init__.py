@@ -23,9 +23,6 @@ the reactive layers below rarely have to fire. Two orthogonal pressures:
   layers (``reactive``) no-op until estimated context crosses a trigger, then
   degrade progressively —
 
-    A−. ``LowPriorityContextShedShaper`` — sheds the lowest-priority layered
-        *context sources* (project/memory, never the pinned identity/team/task)
-        before touching tool/turn history. Dormant until deferred sources load.
     A0. ``ToolOutputClearShaper`` — lowest-loss. Clears the *content* of old
         compactable tool results in place, keeping the call/answer skeleton.
     A.  ``OldHistorySnipShaper``  — cheapest deletion. Drops whole old,
@@ -33,8 +30,6 @@ the reactive layers below rarely have to fire. Two orthogonal pressures:
     B.  ``AutoCompactShaper``     — last resort. Summarizes the remaining old
         span into one *visible* marker via an injected summarizer (model call;
         default-off switch).
-    C.  ``ContextCollapseShaper`` — reserved read-time-projection slot; identity
-        this period (insertion point only).
 
 Every history layer is a read-time projection over a *copy*: ``state.messages``
 and the persisted transcript always keep the full original history, so a resume
@@ -70,8 +65,6 @@ from opencollab.application.shaping.reactive import (
     DEFAULT_COMPACTABLE_TOOLS,
     DEFAULT_TOOL_CLEAR_KEEP_RECENT,
     AutoCompactShaper,
-    ContextCollapseShaper,
-    LowPriorityContextShedShaper,
     OldHistorySnipShaper,
     SummarizerPort,
     ToolOutputClearShaper,
@@ -104,8 +97,6 @@ __all__ = [
     "PerToolResultBudgetShaper",
     "EagerToolOutputClearShaper",
     "ToolOutputClearShaper",
-    "LowPriorityContextShedShaper",
     "OldHistorySnipShaper",
     "AutoCompactShaper",
-    "ContextCollapseShaper",
 ]

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from opencollab.adapters.tools._paths import checked_path
 from opencollab.adapters.tools.apply_patch_engine import (
     _apply_line_replace,
     _apply_unified_diff,
@@ -102,13 +103,11 @@ class ApplyPatchTool(Tool):
         path = params["path"]
         mode = params["mode"]
         env = runtime.environment
-        safety_policy = runtime.safety_policy
 
         if not env:
             return "Error: no execution environment available."
 
-        if safety_policy:
-            path = safety_policy.check_path(path)
+        path = checked_path(runtime, path)
 
         try:
             async with host_write_lock(path, env):

@@ -54,8 +54,8 @@ async def run_environment_hook(environment: Any, name: str, timeout: float) -> b
     owner = asyncio.ensure_future(outcome)
     done, pending = await asyncio.wait({owner}, timeout=timeout)
     if pending:
-        termination = await force_task_terminal(owner, timeout=timeout)
-        if not termination.terminal:
+        terminal = await force_task_terminal(owner, timeout=timeout)
+        if not terminal:
             owner.add_done_callback(consume_task_result)
         return False
     try:
@@ -185,9 +185,9 @@ async def run_agent(
 
     async def stop_owned() -> tuple[bool, bool, bool]:
         aborted = await revoke_and_abort_environment(environment, cleanup_timeout_seconds)
-        termination = await force_task_terminal(owner, timeout=cleanup_timeout_seconds)
+        terminal = await force_task_terminal(owner, timeout=cleanup_timeout_seconds)
         finalized = await finalize_once()
-        return aborted, termination.terminal, finalized
+        return aborted, terminal, finalized
 
     async def stop_once(*, propagate_cancellation: bool) -> tuple[bool, bool, bool]:
         nonlocal stop_task

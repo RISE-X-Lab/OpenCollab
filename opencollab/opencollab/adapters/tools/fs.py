@@ -15,6 +15,7 @@ import shlex
 from typing import Any
 
 from opencollab.adapters.tools._output import truncate
+from opencollab.adapters.tools._paths import checked_path
 from opencollab.adapters.tools.base import Tool, host_write_lock
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -73,13 +74,11 @@ class FileReadTool(Tool):
         offset = params.get("offset", 1)
         limit = params.get("limit", 500)
         env = runtime.environment
-        safety_policy = runtime.safety_policy
 
         if not env:
             return "Error: no execution environment available."
 
-        if safety_policy:
-            path = safety_policy.check_path(path)
+        path = checked_path(runtime, path)
 
         try:
             content = await env.read_file(path)
@@ -175,7 +174,6 @@ class FileWriteTool(Tool):
         path = params["path"]
         mode = params["mode"]
         env = runtime.environment
-        safety_policy = runtime.safety_policy
 
         if not env:
             return "Error: no execution environment available."
@@ -186,8 +184,7 @@ class FileWriteTool(Tool):
                 "target via str_replace (or apply_patch for a content-anchored diff)."
             )
 
-        if safety_policy:
-            path = safety_policy.check_path(path)
+        path = checked_path(runtime, path)
 
         try:
             async with host_write_lock(path, env):
@@ -323,15 +320,13 @@ class GrepTool(Tool):
         glob_pattern = params.get("glob")
         raw_max_results = params.get("max_results", 50)
         env = runtime.environment
-        safety_policy = runtime.safety_policy
 
         if not env:
             return "Error: no execution environment available."
-        if safety_policy:
-            try:
-                search_path = safety_policy.check_path(search_path)
-            except PermissionError as exc:
-                return f"Error: {exc}"
+        try:
+            search_path = checked_path(runtime, search_path)
+        except PermissionError as exc:
+            return f"Error: {exc}"
         try:
             max_results = int(raw_max_results)
         except (TypeError, ValueError):

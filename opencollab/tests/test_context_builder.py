@@ -6,7 +6,7 @@ import pytest
 from opencollab.application.event_bus import EventBus
 from opencollab.bootstrap.container import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.team_config import BASE_TOOL_NAMES, RoleConfig, TeamConfig
-from opencollab.domain.context import ContextLayer, ContextPosition, LoadTiming
+from opencollab.domain.context import ContextLayer, ContextPosition
 from opencollab.domain.skill import SkillManifest
 from opencollab.domain.team import Topology
 
@@ -160,11 +160,10 @@ def _sources_by_name(plan):
     return {s.name: s for s in plan.sources}
 
 
-def test_build_plan_identity_is_startup_system_source_with_role_prompt():
+def test_build_plan_identity_is_system_source_with_role_prompt():
     plan = ContextBuilder(_team(), _cfg()).build_plan("coder")
     identity = _sources_by_name(plan)["identity"]
     assert identity.layer is ContextLayer.IDENTITY
-    assert identity.timing is LoadTiming.STARTUP
     assert identity.position is ContextPosition.SYSTEM
     assert identity.content == "Coder."
 
@@ -176,11 +175,10 @@ def test_build_plan_team_section_is_startup_system_source_when_present():
     assert "## Your team" in team.content
 
 
-def test_build_plan_task_is_startup_user_context_source_when_given():
+def test_build_plan_task_is_user_context_source_when_given():
     plan = ContextBuilder(_team(), _cfg()).build_plan("coder", task="build it", context="ctx")
     task = _sources_by_name(plan)["task"]
     assert task.layer is ContextLayer.TASK
-    assert task.timing is LoadTiming.STARTUP
     assert task.position is ContextPosition.USER_CONTEXT
     assert "build it" in task.content and "ctx" in task.content
     assert plan.startup_user_messages() == [
@@ -198,17 +196,13 @@ def test_build_plan_omits_task_source_when_no_task():
     assert plan.startup_user_messages() == []
 
 
-def test_build_plan_registers_reserved_layers_as_deferred_not_loaded():
+def test_build_plan_has_no_reserved_placeholder_sources():
+    # The reserved long-term layers (project-when-absent / memory / tool-meta)
+    # were registered-but-empty placeholders; they are now an honest gap — only
+    # sources that actually carry content are emitted.
     plan = ContextBuilder(_team(), _cfg()).build_plan("coder", task="t")
-    deferred = {s.name: s for s in plan.deferred_sources()}
-    assert set(deferred) == {"project", "memory", "tool_meta"}
-    # reserved layers carry a loader_key and contribute no content this period
-    for s in deferred.values():
-        assert s.loader_key is not None
-        assert s.content == ""
-    # ...and none of them leak into the assembled messages
-    bodies = [m["content"] for m in plan.messages()]
-    assert all("loader" not in b for b in bodies)
+    assert set(_sources_by_name(plan)) == {"identity", "task"}
+    assert all(s.content for s in plan.sources)
 
 
 def test_build_agent_system_prompt_matches_plan_system_sources():
@@ -235,7 +229,6 @@ def test_skill_catalog_emitted_when_role_has_use_skill_and_store_nonempty():
     skills = _sources_by_name(plan)["skills"]
     assert skills.layer is ContextLayer.SKILL
     assert skills.position is ContextPosition.SYSTEM
-    assert skills.timing is LoadTiming.STARTUP
     # The catalog lists each skill name + description and tells the model to invoke.
     assert "use_skill" in skills.content
     assert "- alpha: Alpha desc." in skills.content

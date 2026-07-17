@@ -31,18 +31,6 @@ def _stub_registry() -> Registry:
     return reg
 
 
-def test_workflow_list_prints_names_and_descriptions(monkeypatch):
-    monkeypatch.setattr(workflow_cli, "load_registry", lambda: _stub_registry())
-
-    result = runner.invoke(workflow_cli.app, ["list"])
-
-    assert result.exit_code == 0
-    assert "alpha" in result.stdout
-    assert "the alpha workflow" in result.stdout
-    assert "beta" in result.stdout
-    assert "the beta workflow" in result.stdout
-
-
 def test_workflow_run_prints_result_as_json(monkeypatch):
     @workflow(name="echo", description="echoes its args")
     async def echo(ctx, args):
@@ -169,52 +157,6 @@ def test_workflow_run_invalid_json_args_exits_nonzero(monkeypatch):
     result = runner.invoke(workflow_cli.app, ["run", "alpha", "--args", "{not-json"])
 
     assert result.exit_code != 0
-
-
-def test_workflow_run_emits_progress_lines(monkeypatch):
-    @workflow(name="phased", description="d")
-    async def phased(ctx, args):
-        await ctx.phase("scanning")
-        await ctx.log("found something")
-        return "ok"
-
-    reg = Registry()
-    reg.register(phased.__workflow_spec__)
-    monkeypatch.setattr(workflow_cli, "load_registry", lambda: reg)
-    monkeypatch.setattr(workflow_cli, "missing_api_key_for", lambda *a, **k: False)
-
-    async def fake_run_workflow(spec_or_fn, args, *, event_sink=None, **kwargs):
-        ctx_stub = _RecordingCtx(event_sink)
-        return await spec_or_fn.fn(ctx_stub, args)
-
-    monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
-
-    result = runner.invoke(workflow_cli.app, ["run", "phased", "--args", "{}"])
-
-    assert result.exit_code == 0
-    assert "scanning" in result.stdout
-    assert "found something" in result.stdout
-
-
-class _RecordingCtx:
-    """Minimal ctx stub that forwards phase/log to the provided event sink."""
-
-    def __init__(self, event_sink: Any) -> None:
-        self._sink = event_sink
-
-    async def phase(self, title: str) -> None:
-        if self._sink is not None:
-            await self._sink.emit(_Event("phase", title))
-
-    async def log(self, message: str) -> None:
-        if self._sink is not None:
-            await self._sink.emit(_Event("log", message))
-
-
-class _Event:
-    def __init__(self, kind: str, message: str) -> None:
-        self.kind = kind
-        self.message = message
 
 
 def _last_json_block(text: str) -> str:

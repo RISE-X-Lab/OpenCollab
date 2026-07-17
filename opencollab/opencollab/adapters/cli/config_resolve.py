@@ -7,18 +7,9 @@ missing-key hint.
 
 from __future__ import annotations
 
-from typing import Any
-
 from rich.console import Console
 
 from opencollab.bootstrap.config import accepted_api_key_envs, missing_api_key
-
-
-def _safe_int(value: Any, default: int) -> int:
-    try:
-        return int(value) if value else default
-    except (TypeError, ValueError):
-        return default
 
 
 def missing_api_key_for(provider: str | None, api_key: str | None, base_url: str | None = None) -> bool:
@@ -43,6 +34,9 @@ def resolve_config(workspace: str, model: str | None, provider: str | None,
     """Merge CLI args with .env defaults. CLI args take precedence."""
     from opencollab.bootstrap.config import build_config
 
+    # ``build_config`` returns a validated ``OpenCollabConfig`` (budget is
+    # ``int`` with ``ge=1``; filter_messages is ``bool``), so ``model_dump``
+    # already yields correctly-typed values — no re-coercion needed here.
     cfg = build_config(
         workspace,
         overrides={
@@ -58,12 +52,12 @@ def resolve_config(workspace: str, model: str | None, provider: str | None,
         "provider": cfg["provider"],
         "api_key": cfg["api_key"],
         "base_url": cfg["base_url"],
-        "budget": _safe_int(cfg["budget"], 1_000_000),
+        "budget": cfg["budget"],
         "temperature": cfg["temperature"],
         "top_p": cfg.get("top_p"),
         "max_output_tokens": cfg["max_output_tokens"],
         "thinking": cfg["thinking"],
         "thinking_params": cfg["thinking_params"],
         "llm_timeout": cfg["llm_timeout"],
-        "filter_messages": bool(cfg["filter_messages"]),
+        "filter_messages": cfg["filter_messages"],
     }

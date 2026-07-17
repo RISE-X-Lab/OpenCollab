@@ -25,12 +25,22 @@ class SchedulerTeamMixin:
         scb = self.table.get(aid)
         return scb.agent.name if scb is not None else "?"
 
+    def _topology_forbids(self, src_role: str, dst_role: str) -> bool:
+        """True when a team topology is configured and forbids ``src_role`` → ``dst_role``.
+
+        The single deny decision shared by the two verbs — spawn
+        (``_check_topology`` raises ``PermissionError``) and ``send_message``
+        (returns an error-string tool result). Each caller keeps its own role
+        resolution and its own response shape; only the boolean is shared, so
+        ``allows`` is consulted exactly one way for both. Takes role *strings*,
+        not aids: a spawn target has no aid yet.
+        """
+        return self._topology is not None and not self._topology.allows(src_role, dst_role)
+
     def _check_topology(self, src_aid: int, dst_role: str, *, verb: str) -> None:
         """Raise ``PermissionError`` if the topology forbids src → dst_role."""
-        if self._topology is None:
-            return
         src_role = self._role_of(src_aid)
-        if not self._topology.allows(src_role, dst_role):
+        if self._topology_forbids(src_role, dst_role):
             raise PermissionError(f"Role '{src_role}' is not permitted to {verb} '{dst_role}' under the team topology.")
 
     def team_snapshot(self) -> list[dict[str, Any]]:

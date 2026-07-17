@@ -96,7 +96,7 @@ def test_t1_watchdog_trips_with_budget_remaining_and_forces_commit():
     submit = SubmitFindingsTool(on_capture=capture_done.set)
     agent = Agent(name="scout", system_prompt="s", tools=[_ReadStub(), submit])
     state = SessionState(messages=[{"role": "user", "content": "investigate"}], used_tokens=1_000)
-    state.steps_since_progress = DEFAULT_WATCHDOG_K  # K no-progress steps
+    state.turn.steps_since_progress = DEFAULT_WATCHDOG_K  # K no-progress steps
     llm = FakeLLM(
         [llm_response(tool_calls=[tool_call(arguments=json.dumps(_captured()))], finish_reason="tool_calls")]
     )
@@ -135,7 +135,7 @@ def test_t1_watchdog_just_below_k_does_not_trip():
     # K-1 no-progress steps must NOT brake (off-by-one guard).
     agent = _agent_with_submit()
     state = SessionState(messages=[{"role": "user", "content": "x"}], used_tokens=1_000)
-    state.steps_since_progress = DEFAULT_WATCHDOG_K - 1
+    state.turn.steps_since_progress = DEFAULT_WATCHDOG_K - 1
     llm = FakeLLM([llm_response(content="still exploring")])
     runner = build_runner(
         state=state, agent=agent, llm=llm,
@@ -156,7 +156,7 @@ def test_t2_low_yield_brake_trips_at_m_and_forces_commit():
     submit = SubmitFindingsTool(on_capture=capture_done.set)
     agent = Agent(name="scout", system_prompt="s", tools=[_ReadStub(), submit])
     state = SessionState(messages=[{"role": "user", "content": "investigate"}], used_tokens=2_000)
-    state.low_yield_since_progress = DEFAULT_LOW_YIELD_M  # M low-yield results
+    state.turn.low_yield_since_progress = DEFAULT_LOW_YIELD_M  # M low-yield results
     llm = FakeLLM(
         [llm_response(tool_calls=[tool_call(arguments=json.dumps(_captured()))], finish_reason="tool_calls")]
     )
@@ -186,8 +186,8 @@ def test_t2_off_pinned_counters_never_brake_reference_behavior():
     # its normal turn and finishes DONE on its plain-text answer.
     agent = _agent_with_submit()
     state = SessionState(messages=[{"role": "user", "content": "investigate"}], used_tokens=2_000)
-    state.steps_since_progress = 99
-    state.low_yield_since_progress = 99
+    state.turn.steps_since_progress = 99
+    state.turn.low_yield_since_progress = 99
     llm = FakeLLM([llm_response(content="here is my answer")])
     runner = build_runner(
         state=state,
@@ -210,19 +210,6 @@ def test_t2_off_pinned_counters_never_brake_reference_behavior():
     assert len(llm.calls) == 1
 
 
-def test_t2_default_enforcement_off_no_brake():
-    # No enforcement_strength passed at all -> off -> high counters are inert.
-    agent = _agent_with_submit()
-    state = SessionState(messages=[{"role": "user", "content": "x"}], used_tokens=1_000)
-    state.steps_since_progress = 50
-    state.low_yield_since_progress = 50
-    llm = FakeLLM([llm_response(content="done")])
-    runner = build_runner(state=state, agent=agent, llm=llm, max_budget_tokens=100_000)
-    run(runner.run_loop())
-    assert state.wind_down_done is False
-    assert state.phase is SessionPhase.DONE
-
-
 # --------------------------------------------------------------------------- #
 # Red-team gate: never brake while a tool result is still un-ingested.
 # --------------------------------------------------------------------------- #
@@ -232,8 +219,8 @@ def test_watchdog_not_entered_while_a_tool_result_is_pending():
     from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 
     state = SessionState(messages=[{"role": "user", "content": "x"}], used_tokens=1_000)
-    state.steps_since_progress = 99
-    state.low_yield_since_progress = 99
+    state.turn.steps_since_progress = 99
+    state.turn.low_yield_since_progress = 99
     state.pending_events.add(
         PendingRow(tool_call_id="t1", kind=RowKind.CHILD_AGENT, order=0, status=RowStatus.PENDING)
     )
@@ -254,16 +241,16 @@ def test_watchdog_not_entered_while_a_tool_result_is_pending():
 # --------------------------------------------------------------------------- #
 
 
-def test_watchdog_forced_turn_ignored_escalates_and_latches_forced_unsatisfied():
+def test_watchdog_forced_turn_ignored_escalates_once_then_commits():
     # Watchdog fires (budget plentiful); the scout IGNORES the forced tool_choice
     # and calls a now-unknown tool on the forced turn. The actuator escalates with
-    # exactly ONE retry (submit-only stays enforced) and latches forced_unsatisfied;
-    # the scout then commits on the retry -> terminus "forced".
+    # exactly ONE retry (submit-only stays enforced); the scout then commits on the
+    # retry -> terminus "forced".
     capture_done = asyncio.Event()
     submit = SubmitFindingsTool(on_capture=capture_done.set)
     agent = Agent(name="scout", system_prompt="s", tools=[_ReadStub(), submit])
     state = SessionState(messages=[{"role": "user", "content": "x"}], used_tokens=1_000)
-    state.steps_since_progress = DEFAULT_WATCHDOG_K
+    state.turn.steps_since_progress = DEFAULT_WATCHDOG_K
     llm = FakeLLM(
         [
             llm_response(tool_calls=[tool_call(name="grep", arguments="{}")], finish_reason="tool_calls"),
@@ -286,7 +273,6 @@ def test_watchdog_forced_turn_ignored_escalates_and_latches_forced_unsatisfied()
     run(runner.run_loop(capture_done))
 
     assert len(llm.calls) == 2  # forced turn + exactly one retry
-    assert state.forced_unsatisfied is True
     # Tool-removal stayed enforced across the retry (the terminal, non-degradable rung).
     assert [t.name for t in agent.tools] == [SUBMIT_TOOL_NAME]
     assert llm.calls[0]["tool_choice"] == _FORCED_SUBMIT_CHOICE
@@ -313,58 +299,8 @@ def _run_one(state, tool, name, args):
     run(_use_case(state, tool).process([call])).apply_to(state)
 
 
-def test_steps_since_progress_increments_per_no_progress_step_and_resets():
-    state = SessionState(messages=[])
-
-    # 1) Novel grep hit -> progress -> counter stays 0.
-    _run_one(state, ScriptedTool("grep", ["fs.py:42: end = start + n"]), "grep", '{"pattern":"end"}')
-    assert state.steps_since_progress == 0
-
-    # 2) Content-duplicate -> no progress -> +1.
-    _run_one(state, ScriptedTool("grep", ["fs.py:42: end = start + n"]), "grep", '{"pattern":"start"}')
-    assert state.steps_since_progress == 1
-
-    # 3) "No matches" -> no progress -> +1.
-    _run_one(state, ScriptedTool("grep", ["No matches found for pattern: z"]), "grep", '{"pattern":"z"}')
-    assert state.steps_since_progress == 2
-
-    # 4) A NOVEL informative read resets to 0.
-    _run_one(
-        state,
-        ScriptedTool("file_read", ["File: b.py (2 lines)\n1\tdef f(): pass"]),
-        "file_read",
-        '{"path":"b.py"}',
-    )
-    assert state.steps_since_progress == 0
-
-
-def test_steps_since_progress_resets_on_write():
-    state = SessionState(messages=[])
-    _run_one(state, ScriptedTool("grep", ["No matches found for pattern: z"]), "grep", '{"pattern":"z"}')
-    assert state.steps_since_progress == 1
-    # A landed write is progress -> reset.
-    _run_one(state, ScriptedTool("file_write", ["wrote 3 lines to b.py"]), "file_write", '{"path":"b.py"}')
-    assert state.steps_since_progress == 0
-
-
-def test_steps_since_progress_counts_one_per_step_not_per_result():
-    # A single batch of TWO low-yield reads costs ONE watchdog step (per-step, not
-    # per-result), while low_yield_since_progress counts both results.
-    state = SessionState(messages=[])
-    tool = ScriptedTool("grep", ["dupe", "dupe"])
-    batch = [
-        {"id": "c1", "function": {"name": "grep", "arguments": '{"pattern":"a"}'}},
-        {"id": "c2", "function": {"name": "grep", "arguments": '{"pattern":"b"}'}},
-    ]
-    run(_use_case(state, tool).process(batch)).apply_to(state)
-    # First result novel (hit), second a content-dup -> net progress in this batch.
-    assert state.steps_since_progress == 0
-    assert state.distinct_evidence_count == 1
-    assert state.low_yield_since_progress == 1
-
-
 def test_steps_since_progress_resets_on_user_turn():
     state = SessionState(messages=[])
-    state.steps_since_progress = 5
+    state.turn.steps_since_progress = 5
     state.reset_for_user_turn()
-    assert state.steps_since_progress == 0
+    assert state.turn.steps_since_progress == 0

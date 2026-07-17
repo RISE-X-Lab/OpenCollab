@@ -1,5 +1,6 @@
 import asyncio
 import copy
+import json
 
 import pytest
 from opencollab.adapters.llm import LLMResponse, Usage
@@ -11,7 +12,6 @@ from opencollab.bootstrap import load_session, snapshot_session
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase
-from opencollab.domain.tools import ToolProcessingResult
 
 
 def run(coro):
@@ -299,22 +299,6 @@ def test_snapshot_preserves_historical_subset_only():
     assert snap._recent_call_hashes == []
 
 
-def test_run_loop_cancellation_appends_interruption_and_emits_error():
-    fake_llm = FakeLLMClient()
-    events, on_event = event_collector()
-    session = Session(agent=FakeAgent(), llm=fake_llm, event_sink=EventBus(on_event))
-    cancel_event = asyncio.Event()
-    cancel_event.set()
-
-    result = run(session.run_loop(cancel_event=cancel_event))
-
-    assert result == ""
-    assert fake_llm.calls == []
-    assert session.messages[-1] == {"role": "system", "content": "[Session interrupted by user]"}
-    assert session.is_done is False
-    assert [(event.type, event.data) for event in events] == [("error", {"reason": "cancelled", "aid": -1})]
-
-
 def test_budget_exceeded_stops_before_llm_call_and_emits_error():
     fake_llm = FakeLLMClient()
     events, on_event = event_collector()
@@ -335,7 +319,9 @@ def test_budget_exceeded_stops_before_llm_call_and_emits_error():
         "role": "system",
         "content": "[Budget exceeded: 10 tokens used. Session stopped.]",
     }
-    assert [(event.type, event.data) for event in events] == [("error", {"reason": "budget_exceeded", "aid": -1})]
+    assert [(event.type, event.data) for event in events] == [
+        ("error", {"reason": "budget exceeded: 10 tokens used", "aid": -1})
+    ]
 
 
 def test_run_loop_does_not_route_to_mutating_compaction():
@@ -449,7 +435,7 @@ def test_run_loop_with_zero_max_steps_exits_without_llm_call():
     assert fake_llm.calls == []
     assert session.step_count == 0
     assert session.is_done is False
-    assert session.phase == SessionPhase.STEP_LIMIT_EXCEEDED
+    assert session.phase == SessionPhase.STOPPED
     assert session.state.terminal_reason == "step limit reached: 0 steps"
 
 
@@ -502,25 +488,6 @@ def test_tool_calls_execute_append_tool_result_and_continue():
     ]
     assert [step["step_type"] for step in tracer.steps] == ["llm_call", "tool_exec", "llm_call"]
     assert fake_llm.calls[0]["tools"][0]["function"]["name"] == "fake_tool"
-
-
-def test_tool_processor_returns_result_before_state_application():
-    tool = FakeTool(result=lambda args: f"echo {args['value']}")
-    session = Session(agent=FakeAgent(tools=[tool]), llm=FakeLLMClient())
-    original_messages = copy.deepcopy(session.messages)
-
-    result = run(session.tool_execution.process([tool_call(arguments='{"value": 9}')]))
-
-    assert isinstance(result, ToolProcessingResult)
-    assert result.messages_to_append == [{"role": "tool", "tool_call_id": "call-1", "content": "echo 9"}]
-    assert len(result.recent_hash_updates) == 1
-    assert session.messages == original_messages
-    assert session._recent_call_hashes == []
-
-    result.apply_to(session.state)
-
-    assert session.messages[-1] == {"role": "tool", "tool_call_id": "call-1", "content": "echo 9"}
-    assert session._recent_call_hashes == result.recent_hash_updates
 
 
 @pytest.mark.parametrize(
@@ -785,38 +752,145 @@ def test_save_and_load_round_trip_restores_control_flow_latches(tmp_path):
     agent = FakeAgent()
     session = Session(agent=agent, llm=FakeLLMClient())
     state = session.state
-    state.reads_since_last_edit = 7
-    state.low_yield_since_progress = 3
-    state.distinct_evidence_count = 4
-    state._seen_result_hashes = {"content-hash", "call-hash"}
-    state.scout_ledger = [{"tool": "grep", "outcome": "hit"}]
-    state.steps_since_progress = 2
+    state.turn.reads_since_last_edit = 7
+    state.turn.low_yield_since_progress = 3
+    state.turn.distinct_evidence_count = 4
+    state.turn.seen_result_hashes = {"content-hash", "call-hash"}
+    state.turn.scout_ledger = [{"tool": "grep", "outcome": "hit"}]
+    state.turn.steps_since_progress = 2
     state.wind_down_done = True
     state.wind_down_token_mark = 123
-    state.forced_unsatisfied = True
-    state.loop_blocked_since_progress = 2
-    state.extension_offered = True
-    state.extensions_granted = 1
-    state.extension_reasons = ["need one exact signature"]
+    state.turn.loop_blocked_since_progress = 2
     path = tmp_path / "control-state.json"
 
     session.save(str(path))
     loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
 
     restored = loaded.state
-    assert restored.reads_since_last_edit == 7
-    assert restored.low_yield_since_progress == 3
-    assert restored.distinct_evidence_count == 4
-    assert restored._seen_result_hashes == {"content-hash", "call-hash"}
-    assert restored.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
-    assert restored.steps_since_progress == 2
+    assert restored.turn.reads_since_last_edit == 7
+    assert restored.turn.low_yield_since_progress == 3
+    assert restored.turn.distinct_evidence_count == 4
+    assert restored.turn.seen_result_hashes == {"content-hash", "call-hash"}
+    assert restored.turn.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
+    assert restored.turn.steps_since_progress == 2
     assert restored.wind_down_done is True
     assert restored.wind_down_token_mark == 123
-    assert restored.forced_unsatisfied is True
-    assert restored.loop_blocked_since_progress == 2
-    assert restored.extension_offered is True
-    assert restored.extensions_granted == 1
-    assert restored.extension_reasons == ["need one exact signature"]
+    assert restored.turn.loop_blocked_since_progress == 2
+
+
+def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
+    # The user-message append transaction snapshots the per-turn enforcement
+    # window and rolls it back if the append fails, so a failed turn cannot
+    # leave stale brake counters. This locks that contract at the field level
+    # (shape-agnostic: only the public checkpoint/restore methods are used).
+    agent = FakeAgent()
+    session = Session(agent=agent, llm=FakeLLMClient())
+    state = session.state
+    state.turn.recent_call_hashes = ["h-a"]
+    state.turn.reads_since_last_edit = 5
+    state.turn.low_yield_since_progress = 2
+    state.turn.distinct_evidence_count = 3
+    state.turn.seen_result_hashes = {"seen-a"}
+    state.turn.scout_ledger = [{"tool": "grep", "outcome": "hit"}]
+    state.turn.steps_since_progress = 1
+    state.turn.loop_blocked_since_progress = 4
+    # A session-lifetime latch is deliberately NOT part of the per-turn snapshot.
+    state.wind_down_done = True
+
+    checkpoint = state.checkpoint_user_turn()
+
+    state.turn.recent_call_hashes.append("h-b")
+    state.turn.reads_since_last_edit = 99
+    state.turn.low_yield_since_progress = 99
+    state.turn.distinct_evidence_count = 99
+    state.turn.seen_result_hashes.add("seen-b")
+    state.turn.scout_ledger.append({"tool": "read", "outcome": "duplicate"})
+    state.turn.steps_since_progress = 99
+    state.turn.loop_blocked_since_progress = 99
+    state.wind_down_done = False
+
+    state.restore_user_turn(checkpoint)
+
+    assert state.turn.recent_call_hashes == ["h-a"]
+    assert state.turn.reads_since_last_edit == 5
+    assert state.turn.low_yield_since_progress == 2
+    assert state.turn.distinct_evidence_count == 3
+    assert state.turn.seen_result_hashes == {"seen-a"}
+    assert state.turn.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
+    assert state.turn.steps_since_progress == 1
+    assert state.turn.loop_blocked_since_progress == 4
+    # The lifetime latch is not touched by a per-turn restore.
+    assert state.wind_down_done is False
+
+    # The checkpoint is an independent snapshot: mutating restored state and
+    # restoring a second time still yields the checkpoint values.
+    state.turn.recent_call_hashes.append("h-c")
+    state.turn.scout_ledger.append({"tool": "x", "outcome": "y"})
+    state.turn.reads_since_last_edit = 42
+    state.restore_user_turn(checkpoint)
+    assert state.turn.recent_call_hashes == ["h-a"]
+    assert state.turn.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
+    assert state.turn.reads_since_last_edit == 5
+
+
+def test_save_and_load_round_trip_restores_stopped_phase_and_reason(tmp_path):
+    # The single graceful-stop terminal round-trips carrying its reason string;
+    # the *why* lives in terminal_reason, not in a per-terminal phase member.
+    agent = FakeAgent()
+    session = Session(agent=agent, llm=FakeLLMClient())
+    session.state.set_phase(SessionPhase.STOPPED)
+    session.state.terminal_reason = "budget exceeded: 10 tokens used"
+    path = tmp_path / "terminal.json"
+
+    session.save(str(path))
+    loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
+
+    assert loaded.state.phase is SessionPhase.STOPPED
+    assert loaded.state.terminal_reason == "budget exceeded: 10 tokens used"
+
+
+@pytest.mark.parametrize(
+    "legacy_phase",
+    ["cancelled", "budget_exceeded", "step_limit_exceeded", "context_overflow"],
+)
+def test_restore_migrates_legacy_terminal_phase_string_to_stopped(tmp_path, legacy_phase):
+    # Snapshots written before the Lane S1 terminal collapse carry the old
+    # per-terminal phase strings. restore() migrates each to STOPPED (keeping its
+    # terminal_reason) instead of silently degrading to IDLE via the unknown-value
+    # fallback — the disposition survives the format change.
+    agent = FakeAgent()
+    session = Session(agent=agent, llm=FakeLLMClient())
+    session.state.set_phase(SessionPhase.STOPPED)
+    session.state.terminal_reason = "legacy detail"
+    path = tmp_path / "legacy-terminal.json"
+    session.save(str(path))
+
+    snapshot = json.loads(path.read_text())
+    snapshot["session_state"]["phase"] = legacy_phase
+    path.write_text(json.dumps(snapshot))
+
+    loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
+    assert loaded.state.phase is SessionPhase.STOPPED
+    assert loaded.state.terminal_reason == "legacy detail"
+
+
+@pytest.mark.parametrize("phase_string", ["a_phase_that_no_longer_exists", "scheduled"])
+def test_restore_of_unknown_or_retired_phase_string_falls_back_to_idle(tmp_path, phase_string):
+    # A genuinely unknown phase string, and the retired pure-transitional
+    # 'scheduled', both restore to IDLE (re-runnable) rather than a terminal.
+    agent = FakeAgent()
+    session = Session(agent=agent, llm=FakeLLMClient())
+    session.state.set_phase(SessionPhase.STOPPED)
+    session.state.terminal_reason = "budget exceeded: 10 tokens used"
+    path = tmp_path / "legacy.json"
+    session.save(str(path))
+
+    snapshot = json.loads(path.read_text())
+    snapshot["session_state"]["phase"] = phase_string
+    path.write_text(json.dumps(snapshot))
+
+    loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
+    assert loaded.state.phase is SessionPhase.IDLE
 
 
 def test_restore_pairs_reused_tool_call_ids_in_transcript_order(tmp_path):

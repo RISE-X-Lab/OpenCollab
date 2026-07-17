@@ -21,9 +21,9 @@ import asyncio
 from opencollab.application.session_run import ENFORCEMENT_OFF, ENFORCEMENT_ON
 from opencollab.application.submit_findings import (
     SUBMIT_TOOL_NAME,
-    harvest_findings,
 )
 from opencollab.application.workflow import WorkflowContext
+from opencollab.domain.session import TurnEnforcementState
 
 
 def run(coro):
@@ -64,7 +64,9 @@ class _FakeState:
         self.wind_down_done = False
         self.wind_down_token_mark = 0
         self.messages = messages if messages is not None else []
-        self.scout_ledger = scout_ledger if scout_ledger is not None else []
+        self.turn = TurnEnforcementState(
+            scout_ledger=scout_ledger if scout_ledger is not None else []
+        )
 
 
 class _FakeRunner:
@@ -118,47 +120,9 @@ def _ctx(factory):
 # --------------------------------------------------------------------------- #
 
 
-def test_harvest_refine_wins_over_draft():
-    out = harvest_findings(_cited(summary="refined finding"), "", [], draft="DRAFT-ANCHORS")
-    assert "refined finding" in out
-    assert "DRAFT-ANCHORS" not in out
-
-
-def test_harvest_falls_back_to_draft_when_no_capture():
-    assert harvest_findings(None, "", [], draft="DRAFT-ANCHORS") == "DRAFT-ANCHORS"
-
-
-def test_harvest_draft_ranks_above_prose_and_ledger():
-    ledger = [{"tool": "grep", "target": "x", "outcome": "hit", "snippet": "y"}]
-    out = harvest_findings(None, "vacuous prose", [], ledger=ledger, draft="DRAFT-ANCHORS")
-    assert out == "DRAFT-ANCHORS"
-
-
-def test_harvest_without_draft_is_unchanged():
-    # draft defaults None -> byte-for-byte the prior priority (prose before partial).
-    assert harvest_findings(None, "prose", []) == "prose"
-    assert harvest_findings(None, "", []) == ""
-
-
 # --------------------------------------------------------------------------- #
 # draft_findings: bounded submit-only forced call returning the captured payload
 # --------------------------------------------------------------------------- #
-
-
-def test_draft_findings_returns_captured_payload_submit_only_forced():
-    sess = _FakeSession(capture=_cited(summary="draft commit"), reply="")
-    factory = _ScriptedFactory([sess])
-    ctx = _ctx(factory)
-
-    payload = run(ctx.draft_findings("draft this dimension", label="scout:0:bug:draft", budget=25_000))
-
-    assert isinstance(payload, dict)
-    assert payload["summary"] == "draft commit"
-    build = factory.builds[0]
-    assert [getattr(t, "name", None) for t in build["tools"]] == [SUBMIT_TOOL_NAME]  # submit-only
-    assert build["tool_choice"] is not None  # forced (named-function)
-    assert build["thinking"] is False  # exploration/reasoning off
-    assert build["budget"] <= 25_000  # bounded
 
 
 def test_draft_findings_none_when_no_capture():

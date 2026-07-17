@@ -19,11 +19,13 @@ from opencollab.application.workflow import (
     WorkflowBudgetExceeded,
     WorkflowContext,
 )
+from opencollab.domain.session import TurnEnforcementState
 
 
 class FakeState:
     def __init__(self) -> None:
         self.messages: list[dict[str, Any]] = []
+        self.turn = TurnEnforcementState()
 
 
 class FakeSession:
@@ -777,7 +779,7 @@ async def test_pending_cleanup_callback_consumes_late_exception():
 @pytest.mark.asyncio
 async def test_enforced_timeout_does_not_start_synth_while_scout_cleans_up():
     timed_out = CancelCleanupSession()
-    timed_out.state.scout_ledger = [
+    timed_out.state.turn.scout_ledger = [
         {
             "tool": "read_file",
             "target": "module.py",

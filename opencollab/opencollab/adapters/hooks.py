@@ -28,6 +28,14 @@ class ShellHookRunner(HookPort):
         self._executors: dict[str, CommandExecutor] = {"command": self._run_command}
 
     async def fire(self, event_name: str, payload: dict[str, Any]) -> HookOutcome:
+        """Run every hook bound to this event, then always allow (observe-only).
+
+        Phase-1 wiring is observe-only: matched command hooks run for their side
+        effects but the returned ``HookOutcome`` is always the default allow. The
+        ``HookOutcome.allow`` deny seam is forward-declared (so phase-2 PreToolUse
+        blocking needs no signature change) but unbuilt — hooks cannot currently
+        block a tool call.
+        """
         for spec in match_hooks(self._specs, event_name, payload.get("tool")):
             executor = self._executors.get(spec.action_type)
             if executor is None:

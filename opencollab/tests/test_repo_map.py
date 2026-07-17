@@ -21,7 +21,7 @@ from opencollab.application.event_bus import EventBus
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.session_factory import DefaultSessionFactory
 from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
-from opencollab.domain.context import ContextPosition, LoadTiming
+from opencollab.domain.context import ContextPosition
 from opencollab.domain.team import Topology
 
 
@@ -168,7 +168,6 @@ def test_project_context_ships_as_startup_system_source():
 
     plan = builder.build_plan("lead")
     project = next(s for s in plan.sources if s.name == "project")
-    assert project.timing is LoadTiming.STARTUP
     assert project.position is ContextPosition.SYSTEM
     assert project.content == repo_map
 
@@ -177,12 +176,11 @@ def test_project_context_ships_as_startup_system_source():
     assert "src/core.py" in agent.system_prompt
 
 
-def test_without_project_context_layer_stays_deferred():
+def test_without_project_context_no_project_source_is_emitted():
+    # No repo map → the project layer is simply absent (an honest gap), not a
+    # registered-but-empty deferred placeholder.
     plan = ContextBuilder(_team(), _spawn_cfg()).build_plan("lead")
-    project = next(s for s in plan.sources if s.name == "project")
-    assert project.timing is LoadTiming.ON_DEMAND
-    assert project.content == ""
-    assert project.loader_key == "project"
+    assert not any(s.name == "project" for s in plan.sources)
 
 
 def test_session_factory_injects_lead_workspace_repo_map(tmp_path):
