@@ -292,7 +292,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                     }
                 )
             return result
-        recent_call_hashes = list(self.state.recent_call_hashes)
+        recent_call_hashes = list(self.state.turn.recent_call_hashes)
 
         for tc in tool_calls:
             func = tc["function"]

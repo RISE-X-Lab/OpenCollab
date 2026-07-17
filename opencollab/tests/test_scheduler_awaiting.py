@@ -424,7 +424,7 @@ def test_scheduler_run_retrieves_finished_task_exception(caplog):
 
 def test_scheduler_run_does_not_return_previous_turn_answer():
     async def precheck_stop(sess: ScriptedSession) -> str:
-        sess.state.set_phase(SessionPhase.STEP_LIMIT_EXCEEDED)
+        sess.state.set_phase(SessionPhase.STOPPED)
         sess.state.append_message(
             {"role": "system", "content": "[Step limit reached. Session stopped.]"}
         )
@@ -495,8 +495,8 @@ def test_scheduler_run_cancellation_tears_down_owned_team_before_propagating():
 
         assert scheduler._shutting_down is True
         assert scheduler._tasks == {}
-        assert scheduler.table.get(0).state.phase is SessionPhase.CANCELLED
-        assert scheduler._lead_reservation is None
+        assert scheduler.table.get(0).state.phase is SessionPhase.STOPPED
+        assert scheduler._lead_lease is None
 
     run(scenario())
 
@@ -516,14 +516,14 @@ def test_cleanup_marks_interrupted_lead_message_as_technical_failure():
             await self.add_release.wait()
 
     lead = BlockingLead()
-    lead.state.recent_call_hashes = ["lead-call"]
-    lead.state.reads_since_last_edit = 3
-    lead.state.low_yield_since_progress = 2
-    lead.state.distinct_evidence_count = 1
-    lead.state.steps_since_progress = 4
-    lead.state.loop_blocked_since_progress = 1
-    lead.state._seen_result_hashes = {"lead-result"}
-    lead.state.scout_ledger = [{"tool": "file_read", "outcome": "hit"}]
+    lead.state.turn.recent_call_hashes = ["lead-call"]
+    lead.state.turn.reads_since_last_edit = 3
+    lead.state.turn.low_yield_since_progress = 2
+    lead.state.turn.distinct_evidence_count = 1
+    lead.state.turn.steps_since_progress = 4
+    lead.state.turn.loop_blocked_since_progress = 1
+    lead.state.turn.seen_result_hashes = {"lead-result"}
+    lead.state.turn.scout_ledger = [{"tool": "file_read", "outcome": "hit"}]
     scheduler, _ = build_scheduler(lead, [])
 
     async def scenario():
@@ -536,18 +536,18 @@ def test_cleanup_marks_interrupted_lead_message_as_technical_failure():
 
     run(scenario())
     assert scheduler._tasks == {}
-    assert scheduler._lead_reservation is None
-    assert scheduler.table.get(0).state.phase is SessionPhase.CANCELLED
+    assert scheduler._lead_lease is None
+    assert scheduler.table.get(0).state.phase is SessionPhase.STOPPED
     assert lead.state.messages == []
     assert lead.state.message_timestamps == []
-    assert lead.state.recent_call_hashes == ["lead-call"]
-    assert lead.state.reads_since_last_edit == 3
-    assert lead.state.low_yield_since_progress == 2
-    assert lead.state.distinct_evidence_count == 1
-    assert lead.state.steps_since_progress == 4
-    assert lead.state.loop_blocked_since_progress == 1
-    assert lead.state._seen_result_hashes == {"lead-result"}
-    assert lead.state.scout_ledger == [{"tool": "file_read", "outcome": "hit"}]
+    assert lead.state.turn.recent_call_hashes == ["lead-call"]
+    assert lead.state.turn.reads_since_last_edit == 3
+    assert lead.state.turn.low_yield_since_progress == 2
+    assert lead.state.turn.distinct_evidence_count == 1
+    assert lead.state.turn.steps_since_progress == 4
+    assert lead.state.turn.loop_blocked_since_progress == 1
+    assert lead.state.turn.seen_result_hashes == {"lead-result"}
+    assert lead.state.turn.scout_ledger == [{"tool": "file_read", "outcome": "hit"}]
 
 
 def test_running_cancelled_child_fails_parent_row_and_resumes_parent():
@@ -585,7 +585,7 @@ def test_running_cancelled_child_fails_parent_row_and_resumes_parent():
 
     aid = run(scenario())
 
-    assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+    assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
     assert scheduler.table.get(aid).result.startswith("Error: agent cancelled")
     assert lead.state.phase is SessionPhase.DONE
     assert lead.state.pending_events.is_empty()
@@ -669,7 +669,7 @@ def test_cleanup_cancellation_does_not_start_message_replacement_task():
 
     assert scheduler._shutting_down is True
     assert scheduler._tasks == {}
-    assert child.state.phase is SessionPhase.CANCELLED
+    assert child.state.phase is SessionPhase.STOPPED
     assert scheduler._message_inbox[aid]
 
 
@@ -686,14 +686,14 @@ def test_cleanup_finalizes_driver_cancelled_before_first_timeslice():
 
     async def scenario():
         aid = await scheduler.spawn(0, "coder", "cancel immediately")
-        assert aid in scheduler._child_reservation
+        assert aid in scheduler._child_lease
         await scheduler.cleanup()
         return aid
 
     aid = run(scenario())
 
-    assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
-    assert aid not in scheduler._child_reservation
+    assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
+    assert aid not in scheduler._child_lease
     assert scheduler.inflight_spawn("coder", "cancel immediately") is None
     assert aid not in scheduler._spawn_origin
 
@@ -701,12 +701,12 @@ def test_cleanup_finalizes_driver_cancelled_before_first_timeslice():
 def test_cleanup_releases_seeded_lead_lease_without_an_active_turn():
     lead = ScriptedSession("lead", [])
     scheduler, _ = build_scheduler(lead, [])
-    assert scheduler._lead_reservation is not None
+    assert scheduler._lead_lease is not None
     assert scheduler.allocated_tokens > 0
 
     run(scheduler.cleanup(cleanup_timeout=0.01))
 
-    assert scheduler._lead_reservation is None
+    assert scheduler._lead_lease is None
     assert scheduler.allocated_tokens == 0
 
 
@@ -790,16 +790,16 @@ def test_cleanup_is_bounded_when_session_ignores_both_cancellations():
         assert child.cancellations >= 1
         assert row.status is RowStatus.FAILED
         assert row.error and "scheduler cleanup" in row.error
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+        assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
         assert scheduler.table.get(aid).result.startswith("Error: scheduler cleanup")
-        assert aid not in scheduler._child_reservation
+        assert aid not in scheduler._child_lease
         assert scheduler.inflight_spawn("coder", "ignore cancellation") is None
         assert scheduler._tasks == {}
 
         child.release.set()
         await asyncio.wait_for(child.finished.wait(), timeout=0.5)
         await asyncio.wait_for(driver, timeout=0.5)
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+        assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
         assert scheduler.table.get(aid).result.startswith("Error: scheduler cleanup")
 
     run(scenario())
@@ -890,7 +890,7 @@ def test_cleanup_wins_race_after_delivery_starts_before_parent_row_fill():
         assert cancellations >= 1
         assert row.status is RowStatus.FAILED
         assert row.result and "scheduler cleanup" in row.result
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+        assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
         assert scheduler.table.get(aid).result.startswith("Error: scheduler cleanup")
         assert aid not in scheduler._spawn_origin
 
@@ -899,7 +899,7 @@ def test_cleanup_wins_race_after_delivery_starts_before_parent_row_fill():
         row = lead.state.pending_events.rows["delivery-race"]
         assert row.status is RowStatus.FAILED
         assert row.result and "scheduler cleanup" in row.result
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+        assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
 
     run(scenario())
 
@@ -1016,7 +1016,7 @@ def test_cleanup_surfaces_environment_abort_failure():
             await scheduler.cleanup(cleanup_timeout=0.01)
         assert "session environment abort failed or timed out" in str(caught.value)
         assert env.revoked is True
-        assert scheduler.table.get(aid).state.phase is SessionPhase.CANCELLED
+        assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
         child.release.set()
         await asyncio.wait_for(driver, timeout=0.5)
 
@@ -1112,7 +1112,7 @@ def test_spawn_blocked_in_acquire_cannot_resurrect_after_cleanup():
         assert scheduler._startup_tasks == {}
         assert scheduler._startup_origin == {}
         assert scheduler._startup_envs == {}
-        assert scheduler._child_reservation == {}
+        assert scheduler._child_lease == {}
         assert scheduler.inflight_spawn("coder", "blocked startup") is None
         startup_row = lead.state.pending_events.rows["startup-race"]
         assert startup_row.status is RowStatus.FAILED
@@ -1125,7 +1125,7 @@ def test_spawn_blocked_in_acquire_cannot_resurrect_after_cleanup():
         assert set(scheduler.table.entries) == {0}
         assert set(scheduler._sessions) == {0}
         assert scheduler._tasks == {}
-        assert scheduler._child_reservation == {}
+        assert scheduler._child_lease == {}
         assert scheduler.inflight_spawn("coder", "blocked startup") is None
         assert pool.release_env_calls == 1
 
@@ -1160,14 +1160,14 @@ def test_message_add_blocked_during_cleanup_cannot_create_late_driver():
         aid = await scheduler.spawn(0, "coder", "first")
         await scheduler._tasks[aid]
         assert child.state.phase is SessionPhase.DONE
-        child.state.recent_call_hashes = ["prior-call"]
-        child.state.reads_since_last_edit = 4
-        child.state.low_yield_since_progress = 3
-        child.state.distinct_evidence_count = 2
-        child.state.steps_since_progress = 5
-        child.state.loop_blocked_since_progress = 1
-        child.state._seen_result_hashes = {"prior-result"}
-        child.state.scout_ledger = [{"tool": "grep", "outcome": "hit"}]
+        child.state.turn.recent_call_hashes = ["prior-call"]
+        child.state.turn.reads_since_last_edit = 4
+        child.state.turn.low_yield_since_progress = 3
+        child.state.turn.distinct_evidence_count = 2
+        child.state.turn.steps_since_progress = 5
+        child.state.turn.loop_blocked_since_progress = 1
+        child.state.turn.seen_result_hashes = {"prior-result"}
+        child.state.turn.scout_ledger = [{"tool": "grep", "outcome": "hit"}]
         messages_before = list(child.state.messages)
 
         send_task = asyncio.create_task(
@@ -1188,17 +1188,17 @@ def test_message_add_blocked_during_cleanup_cannot_create_late_driver():
         assert scheduler._tasks == {}
         assert child.state.phase is SessionPhase.DONE
         assert child.state.messages == messages_before
-        assert child.state.recent_call_hashes == ["prior-call"]
-        assert child.state.reads_since_last_edit == 4
-        assert child.state.low_yield_since_progress == 3
-        assert child.state.distinct_evidence_count == 2
-        assert child.state.steps_since_progress == 5
-        assert child.state.loop_blocked_since_progress == 1
-        assert child.state._seen_result_hashes == {"prior-result"}
-        assert child.state.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
+        assert child.state.turn.recent_call_hashes == ["prior-call"]
+        assert child.state.turn.reads_since_last_edit == 4
+        assert child.state.turn.low_yield_since_progress == 3
+        assert child.state.turn.distinct_evidence_count == 2
+        assert child.state.turn.steps_since_progress == 5
+        assert child.state.turn.loop_blocked_since_progress == 1
+        assert child.state.turn.seen_result_hashes == {"prior-result"}
+        assert child.state.turn.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
         assert len(scheduler._message_inbox[aid]) == 1
         assert len(child.state.pending_user_messages) == 1
-        assert aid not in scheduler._child_reservation
+        assert aid not in scheduler._child_lease
 
     run(scenario())
 
@@ -1246,7 +1246,7 @@ def test_cleanup_rejects_invalid_timeout_before_any_side_effect(invalid_timeout)
         assert scheduler._shutting_down is False
         assert scheduler._tasks[aid] is driver
         assert driver.done() is False
-        assert aid in scheduler._child_reservation
+        assert aid in scheduler._child_lease
         assert pool.release_calls == 0
 
         release.set()

@@ -120,9 +120,6 @@ class SessionTable:
     def total_used_tokens(self) -> int:
         return sum(scb.state.used_tokens for scb in self.entries.values())
 
-    def all_done(self) -> bool:
-        return all(scb.state.phase.is_terminal() for scb in self.entries.values())
-
 
 __all__ = [
     "DelegationTask",

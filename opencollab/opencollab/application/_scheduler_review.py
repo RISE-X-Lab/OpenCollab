@@ -65,4 +65,4 @@ class SchedulerReviewMixin:
         finally:
             self._review_parent_lease_tracker.reset(token)
             if tracker["outstanding"] > 0 and not self._shutting_down and self.table.get(parent_aid) is not None:
-                self._reserve_turn_budget(parent_aid)
+                self._reserve_turn_lease(parent_aid)

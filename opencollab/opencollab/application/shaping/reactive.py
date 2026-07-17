@@ -1,10 +1,10 @@
-"""Reactive history-compaction layers (lazy-degradation chain A0/A/B/C).
+"""Reactive history-compaction layers (lazy-degradation chain A0/A/B).
 
 These layers no-op until the estimated context crosses a trigger, then degrade
 progressively: clear old tool *content* in place (lowest loss) → snip whole old
-tool-exchange turns → auto-compact (model-generated summary, default-off) →
-reserved collapse slot. Every layer is a read-time projection over a *copy*:
-``state.messages`` and the persisted transcript keep the full original history.
+tool-exchange turns → auto-compact (model-generated summary, default-off). Every
+layer is a read-time projection over a *copy*: ``state.messages`` and the
+persisted transcript keep the full original history.
 """
 
 from __future__ import annotations
@@ -16,10 +16,8 @@ from opencollab.application.shaping.pipeline import (
     DEFAULT_HISTORY_KEEP_RECENT_GROUPS,
     DEFAULT_HISTORY_TARGET_TOKENS,
     DEFAULT_HISTORY_TRIGGER_TOKENS,
-    PIN_FLOOR,
     _droppable_region,
     approx_messages_tokens,
-    ctx_priority,
     pinned_free_region,
 )
 
@@ -142,43 +140,6 @@ class ToolOutputClearShaper(_ReactiveHistoryShaper):
         return set(compactable_ids[: -self.keep_recent])
 
 
-class LowPriorityContextShedShaper(_ReactiveHistoryShaper):
-    """Layer A− — shed the lowest-priority *context sources* under pressure.
-
-    The only layer that acts on the layered-context seed rather than tool/turn
-    history. When over trigger, it removes whole startup context-source messages
-    (those carrying a ``_ctx`` priority below ``PIN_FLOOR`` — i.e. project/memory,
-    not the pinned identity/team/task) lowest-priority-first, oldest as the
-    tie-break, until the estimate falls to ``target_tokens`` or none remain.
-
-    Pinned sources and untagged messages (tool work, user/assistant turns) are
-    never touched — those are the recency layers' responsibility. Dormant until
-    deferred PROJECT/MEMORY sources actually carry content, so it is a no-op on
-    today's runs; it makes the priority ranking load-bearing for when they do.
-    """
-
-    def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not self._over_trigger(messages):
-            return messages
-        sheddable = [
-            i
-            for i, m in enumerate(messages)
-            if (p := ctx_priority(m)) is not None and p < PIN_FLOOR
-        ]
-        if not sheddable:
-            return messages
-        # Lowest priority first; older (smaller index) breaks ties.
-        order = sorted(sheddable, key=lambda i: (ctx_priority(messages[i]), i))
-        running = self._estimate(messages)
-        drop: set[int] = set()
-        for i in order:
-            drop.add(i)
-            running -= self._estimate([messages[i]])
-            if running <= self.target_tokens:
-                break
-        return [m for i, m in enumerate(messages) if i not in drop]
-
-
 class OldHistorySnipShaper(_ReactiveHistoryShaper):
     """Layer A — cheapest history compaction: pure deletion of old turns.
 
@@ -254,16 +215,3 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
             "compacted": True,
         }
         return [*messages[:start], marker, *messages[end:]]
-
-
-class ContextCollapseShaper:
-    """Layer C — reserved insertion point only (Liu et al. 2026 §4.3).
-
-    Context collapse is a read-time projection over full history with boundary
-    markers and chained reconstruction. Not implemented this period: this is an
-    explicit identity placeholder so the pipeline already holds C's slot (after
-    auto-compact) and a later upgrade only swaps the body.
-    """
-
-    def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return messages

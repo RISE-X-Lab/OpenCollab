@@ -68,8 +68,7 @@ def test_force_task_terminal_finishes_coroutine_that_consumes_cancel():
     task, result = asyncio.run(scenario())
 
     assert task.done() is True
-    assert result.terminal is False
-    assert any(isinstance(error, TimeoutError) for error in result.errors)
+    assert result is False
 
 
 def test_force_task_terminal_runs_cooperative_finally():
@@ -90,8 +89,7 @@ def test_force_task_terminal_runs_cooperative_finally():
 
     result = asyncio.run(scenario())
 
-    assert result.terminal is True
-    assert result.errors == ()
+    assert result is True
     assert finalized == [True]
 
 
