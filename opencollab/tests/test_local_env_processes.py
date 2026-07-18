@@ -62,11 +62,13 @@ async def test_local_timeout_kills_descendant_before_it_mutates_workspace(tmp_pa
     ready = tmp_path / "ready"
     sentinel = tmp_path / "late-write"
     env = LocalEnvironment(str(tmp_path))
-    owner = asyncio.create_task(env.exec_cmd(_descendant_command(ready, sentinel), timeout=0.08))
+    owner = asyncio.create_task(
+        env.exec_cmd(_descendant_command(ready, sentinel, delay=1.0), timeout=0.5)
+    )
     await _wait_for(ready)
     result = await owner
     assert result.returncode == -1
-    await asyncio.sleep(0.4)
+    await asyncio.sleep(1.1)
     assert not sentinel.exists()
 
 
