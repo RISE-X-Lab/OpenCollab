@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/YihongDong/OpenCollab/actions/workflows/ci.yml"><img src="https://github.com/YihongDong/OpenCollab/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg" alt="License: MulanPSL-2.0"></a>
   <img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg" alt="Python 3.10 | 3.11 | 3.12">
   <a href="assets/README.md"><img src="https://img.shields.io/badge/brand-assets-7C3AED.svg" alt="Brand assets"></a>
 </p>
@@ -59,6 +59,13 @@ Point `configs/.env` at any OpenAI-compatible (or Anthropic) endpoint. To run as
 a team, also `cp configs/team.example.yaml configs/team.yaml`. **Never commit
 real API keys.**
 
+## Python SDK
+
+External integrations should import the versioned public surface from
+`opencollab.sdk`; internal package paths are not compatibility-stable. See the
+[package guide](opencollab/README.md#python-sdk) for a minimal agent example and
+the SDK compatibility contract.
+
 <!-- ## Learn more
 
 | You want… | Read |
@@ -72,3 +79,8 @@ real API keys.**
 
 Contributing: see [`CLAUDE.md`](CLAUDE.md). Conventional commits; `refactor:`
 commits stay behavior-preserving.
+
+## License
+
+OpenCollab is licensed under the [Mulan Permissive Software License v2](LICENSE)
+(`MulanPSL-2.0`).
