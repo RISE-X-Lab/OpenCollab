@@ -62,6 +62,50 @@ OpenCollab-Eval repository. Integrations depend on `opencollab.sdk`; OpenCollab
 can evolve its internal layers without forcing evaluation code to track private
 module paths.
 
+## Python SDK
+
+`opencollab.sdk` is the supported integration facade. Its
+`SDK_API_VERSION` identifies the compatibility contract independently of the
+package release version; SDK v2 covers single-agent runs, workflow runs,
+execution environments, and curated coding tools.
+
+```python
+import asyncio
+import os
+
+from opencollab.sdk import (
+    AgentRunBudget,
+    AgentRunRequest,
+    OpenCollabRuntime,
+    RuntimeConfig,
+    coding_toolset,
+)
+
+
+async def main() -> None:
+    request = AgentRunRequest(
+        prompt="Inspect this repository and report its release readiness.",
+        config=RuntimeConfig(
+            model=os.environ["OPENCOLLAB_MODEL"],
+            provider=os.environ.get("OPENCOLLAB_PROVIDER", "openai"),
+            api_key=os.environ.get("OPENCOLLAB_API_KEY"),
+            base_url=os.environ.get("OPENCOLLAB_BASE_URL"),
+        ),
+        budget=AgentRunBudget(max_tokens=100_000, max_steps=20),
+        tools=coding_toolset(),
+        workspace=".",
+    )
+    result = await OpenCollabRuntime().run_agent(request)
+    print(result.output)
+
+
+asyncio.run(main())
+```
+
+Import public names from `opencollab.sdk` or its documented capability modules.
+Treat other package paths as internal. An `artifact_dir`, when supplied, must be
+new or empty because each SDK run claims it for executable evidence.
+
 ## Architecture
 
 OpenCollab follows a strict clean architecture: dependencies point inward only,
@@ -138,3 +182,10 @@ wired; the session FSM doesn't yet persist budget/phase across restarts. See
 
 An archived module-by-module map and dependency graph (a snapshot, not kept in
 sync) lives under `../docs/archive/repomap/`.
+
+## License
+
+OpenCollab is distributed under the
+[Mulan Permissive Software License v2](https://github.com/YihongDong/OpenCollab/blob/main/LICENSE)
+(`MulanPSL-2.0`). The complete license text is included in source and wheel
+distributions.
