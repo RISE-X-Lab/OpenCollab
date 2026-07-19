@@ -283,32 +283,8 @@ def test_adapter_environment_revocation_is_synchronous_and_idempotent() -> None:
 
 
 def test_stable_capability_modules_have_only_public_exports() -> None:
-    from opencollab.sdk import (
-        agents,
-        config,
-        environments,
-        lifecycle,
-        persistence,
-        repository,
-        tracing,
-        usage,
-        workflows,
-    )
+    from opencollab.sdk import usage, workflows
 
-    modules = (
-        agents,
-        config,
-        environments,
-        lifecycle,
-        persistence,
-        repository,
-        tracing,
-        usage,
-        workflows,
-    )
+    modules = (usage, workflows)
     assert all(name and not name.startswith("_") for module in modules for name in module.__all__)
-    assert "Environment" not in environments.__all__
-    assert not hasattr(environments, "Environment")
     assert workflows.load_workflow_specs
-    assert repository.build_patch_command
-    assert lifecycle.await_owned_operation

@@ -23,11 +23,9 @@ import copy
 
 from opencollab.application.submit_findings import (
     SUBMIT_TOOL_NAME,
-    build_dead_scout_synthesis_prompt,
-    format_evidence_ledger,
     harvest_findings,
 )
-from opencollab.domain.session import SessionState
+from opencollab.domain.session import SessionState, TurnEnforcementState
 from tool_execution_test_support import build_sensor_use_case as _use_case
 
 
@@ -85,7 +83,7 @@ def test_t1_ledger_accumulates_correct_cards_across_tool_calls():
         '{"path":"b.py"}',
     )
 
-    ledger = state.scout_ledger
+    ledger = state.turn.scout_ledger
     assert len(ledger) == 5
     assert [c["outcome"] for c in ledger] == ["hit", "duplicate", "NO-MATCH", "NO-MATCH", "hit"]
     assert [c["tool"] for c in ledger] == ["grep", "grep", "file_read", "grep", "file_read"]
@@ -100,46 +98,9 @@ def test_t1_ledger_accumulates_correct_cards_across_tool_calls():
 def test_t1_ledger_resets_on_a_fresh_user_turn():
     state = SessionState(messages=[])
     _run_one(state, ScriptedTool("grep", ["a hit"]), "grep", '{"pattern":"a"}')
-    assert len(state.scout_ledger) == 1
+    assert len(state.turn.scout_ledger) == 1
     state.reset_for_user_turn()
-    assert state.scout_ledger == []
-
-
-def test_t1_ledger_is_always_on_but_does_not_alter_control_flow_off_equals_on():
-    # Parity guard (mirrors STEP 1): folding the ledger ("on") leaves every
-    # control-flow-visible piece of state byte-for-byte identical to NOT folding it
-    # ("off"/reference); only the new observational ledger + counters move.
-    batch = [_call("grep", '{"pattern":"end"}')]
-
-    ref = SessionState(messages=[])
-    res_ref = run(_use_case(ref, ScriptedTool("grep", ["fs.py:42: end"])).process(batch))
-    for message in res_ref.messages_to_append:
-        ref.append_message(message)
-    res_ref.apply_hashes_to(ref)
-    res_ref.apply_read_write_counter_to(ref)
-
-    on = SessionState(messages=[])
-    res_on = run(_use_case(on, ScriptedTool("grep", ["fs.py:42: end"])).process(batch))
-    res_on.apply_to(on)
-
-    assert on.messages == ref.messages
-    assert on.reads_since_last_edit == ref.reads_since_last_edit
-    assert on.recent_call_hashes == ref.recent_call_hashes
-    assert res_on.messages_to_append == res_ref.messages_to_append
-    # Only the observational ledger diverges: "off" never folded it.
-    assert ref.scout_ledger == []
-    assert len(on.scout_ledger) == 1 and on.scout_ledger[0]["outcome"] == "hit"
-
-
-def test_t1_format_evidence_ledger_renders_compact_cards():
-    cards = [
-        {"tool": "grep", "target": "end", "outcome": "hit", "snippet": "fs.py:42: end = start + n"},
-        {"tool": "file_read", "target": "empty.py", "outcome": "NO-MATCH", "snippet": ""},
-    ]
-    text = format_evidence_ledger(cards)
-    assert "[hit]" in text and "[NO-MATCH]" in text
-    assert "grep end" in text
-    assert "fs.py:42" in text
+    assert state.turn.scout_ledger == []
 
 
 def test_t1_harvest_backstop_reads_the_ledger_for_a_partial_salvage():
@@ -201,13 +162,9 @@ class _FakeTracer:
 class _FakeRunner:
     def __init__(self):
         self.configured = None
-        self.extension_tool = None
 
-    def configure_enforcement(
-        self, *, enforcement_strength, commit_reserve, extension_tool=None, max_extensions=None
-    ):
+    def configure_enforcement(self, *, enforcement_strength, commit_reserve):
         self.configured = (enforcement_strength, commit_reserve)
-        self.extension_tool = extension_tool
 
 
 class _FakeState:
@@ -216,7 +173,9 @@ class _FakeState:
         self.wind_down_done = False
         self.wind_down_token_mark = 0
         self.messages = messages if messages is not None else []
-        self.scout_ledger = scout_ledger if scout_ledger is not None else []
+        self.turn = TurnEnforcementState(
+            scout_ledger=scout_ledger if scout_ledger is not None else []
+        )
 
 
 class _FakeSession:
@@ -381,10 +340,3 @@ def test_t2_off_path_never_synthesizes():
     assert not any(s["step_type"] == "dead_scout_synthesis" for s in tracer.steps)
 
 
-def test_build_dead_scout_synthesis_prompt_embeds_ledger_and_results():
-    prompt = build_dead_scout_synthesis_prompt(_DEAD_LEDGER, _DEAD_MESSAGES)
-    assert "submit_findings" in prompt
-    assert "fs.py:42" in prompt  # ledger evidence
-    assert "[hit]" in prompt
-    # The instruction forbids new exploration and forbids fabrication.
-    assert "do NOT" in prompt or "Do NOT" in prompt

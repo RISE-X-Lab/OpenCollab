@@ -168,7 +168,7 @@ class Session:
 
     @property
     def _recent_call_hashes(self) -> list[str]:
-        return self.state.recent_call_hashes
+        return self.state.turn.recent_call_hashes
 
     @_recent_call_hashes.setter
     def _recent_call_hashes(self, value: list[str]) -> None:
@@ -236,45 +236,36 @@ class Session:
         self.state.replace_recent_tool_hashes(
             [str(value) for value in hashes] if isinstance(hashes, list) else []
         )
-        self.state.reads_since_last_edit = _snapshot_nonnegative_int(
+        self.state.turn.reads_since_last_edit = _snapshot_nonnegative_int(
             raw_state.get("reads_since_last_edit")
         )
-        self.state.low_yield_since_progress = _snapshot_nonnegative_int(
+        self.state.turn.low_yield_since_progress = _snapshot_nonnegative_int(
             raw_state.get("low_yield_since_progress")
         )
-        self.state.distinct_evidence_count = _snapshot_nonnegative_int(
+        self.state.turn.distinct_evidence_count = _snapshot_nonnegative_int(
             raw_state.get("distinct_evidence_count")
         )
         seen_hashes = raw_state.get("seen_result_hashes")
-        self.state._seen_result_hashes = (
+        self.state.turn.seen_result_hashes = (
             {str(value) for value in seen_hashes}
             if isinstance(seen_hashes, list)
             else set()
         )
         ledger = raw_state.get("scout_ledger")
-        self.state.scout_ledger = (
+        self.state.turn.scout_ledger = (
             [dict(card) for card in ledger if isinstance(card, dict)]
             if isinstance(ledger, list)
             else []
         )
-        self.state.steps_since_progress = _snapshot_nonnegative_int(
+        self.state.turn.steps_since_progress = _snapshot_nonnegative_int(
             raw_state.get("steps_since_progress")
         )
         self.state.wind_down_done = bool(raw_state.get("wind_down_done", False))
         self.state.wind_down_token_mark = _snapshot_nonnegative_int(
             raw_state.get("wind_down_token_mark")
         )
-        self.state.forced_unsatisfied = bool(raw_state.get("forced_unsatisfied", False))
-        self.state.loop_blocked_since_progress = _snapshot_nonnegative_int(
+        self.state.turn.loop_blocked_since_progress = _snapshot_nonnegative_int(
             raw_state.get("loop_blocked_since_progress")
-        )
-        self.state.extension_offered = bool(raw_state.get("extension_offered", False))
-        self.state.extensions_granted = _snapshot_nonnegative_int(
-            raw_state.get("extensions_granted")
-        )
-        reasons = raw_state.get("extension_reasons")
-        self.state.extension_reasons = (
-            [str(value) for value in reasons] if isinstance(reasons, list) else []
         )
         self.state.pending_events.clear()
         rows = raw_state.get("pending_events", [])
@@ -284,11 +275,7 @@ class Session:
                 if row is not None:
                     self.state.pending_events.add(row)
 
-        phase_value = raw_state.get("phase", SessionPhase.IDLE.value)
-        try:
-            phase = SessionPhase(str(phase_value))
-        except ValueError:
-            phase = SessionPhase.IDLE
+        phase = _restore_phase(raw_state.get("phase", SessionPhase.IDLE.value))
         if phase is SessionPhase.AWAITING_EVENTS:
             self._complete_missing_pending_rows()
         # In-flight provider/tool phases depend on process-local coroutines that
@@ -383,20 +370,16 @@ class Session:
                 "context_tokens": self.state.context_tokens,
                 "step_count": self.state.step_count,
                 "markup_recovered": self.state.markup_recovered,
-                "recent_call_hashes": list(self.state.recent_call_hashes),
-                "reads_since_last_edit": self.state.reads_since_last_edit,
-                "low_yield_since_progress": self.state.low_yield_since_progress,
-                "distinct_evidence_count": self.state.distinct_evidence_count,
-                "seen_result_hashes": sorted(self.state._seen_result_hashes),
-                "scout_ledger": [dict(card) for card in self.state.scout_ledger],
-                "steps_since_progress": self.state.steps_since_progress,
+                "recent_call_hashes": list(self.state.turn.recent_call_hashes),
+                "reads_since_last_edit": self.state.turn.reads_since_last_edit,
+                "low_yield_since_progress": self.state.turn.low_yield_since_progress,
+                "distinct_evidence_count": self.state.turn.distinct_evidence_count,
+                "seen_result_hashes": sorted(self.state.turn.seen_result_hashes),
+                "scout_ledger": [dict(card) for card in self.state.turn.scout_ledger],
+                "steps_since_progress": self.state.turn.steps_since_progress,
                 "wind_down_done": self.state.wind_down_done,
                 "wind_down_token_mark": self.state.wind_down_token_mark,
-                "forced_unsatisfied": self.state.forced_unsatisfied,
-                "loop_blocked_since_progress": self.state.loop_blocked_since_progress,
-                "extension_offered": self.state.extension_offered,
-                "extensions_granted": self.state.extensions_granted,
-                "extension_reasons": list(self.state.extension_reasons),
+                "loop_blocked_since_progress": self.state.turn.loop_blocked_since_progress,
                 "phase": self.state.phase.value,
                 "terminal_reason": self.state.terminal_reason,
                 "pending_events": [_serialize_pending_row(row) for row in self.state.pending_events.rows.values()],
@@ -424,6 +407,28 @@ class Session:
     def _auto_save(self) -> None:
         if self._auto_save_path:
             self.save(self._auto_save_path)
+
+
+# Legacy phase strings from snapshots written before the Lane S1 terminal
+# collapse: the four graceful terminals folded into STOPPED and the pure-
+# transitional SCHEDULED was removed. Migrating them here keeps a pre-collapse
+# snapshot's disposition instead of silently degrading it to IDLE via the
+# unknown-value fallback.
+_LEGACY_TERMINAL_PHASES = frozenset(
+    {"cancelled", "budget_exceeded", "step_limit_exceeded", "context_overflow"}
+)
+
+
+def _restore_phase(raw: object) -> SessionPhase:
+    value = str(raw)
+    if value in _LEGACY_TERMINAL_PHASES:
+        return SessionPhase.STOPPED
+    if value == "scheduled":  # pre-collapse enqueue phase, now folded into IDLE
+        return SessionPhase.IDLE
+    try:
+        return SessionPhase(value)
+    except ValueError:
+        return SessionPhase.IDLE
 
 
 def _snapshot_nonnegative_int(value: object) -> int:

@@ -307,7 +307,55 @@ def test_add_user_message_failure_rolls_back_partial_state_and_restores_budget()
     assert len(scheduler._message_inbox[1]) == 1
     assert 1 not in scheduler._tasks
     assert scheduler.allocated_tokens == allocation_before
-    assert 1 not in scheduler._child_reservation
+    assert 1 not in scheduler._child_lease
+
+
+def test_run_lead_add_user_message_failure_rolls_back_turn_and_restores_lease():
+    """A-path (lead, aid=0) twin of the message-path rollback net above.
+
+    ``_run_exclusive`` reserves a fresh lead turn lease, checkpoints, then calls
+    ``add_user_message``. If that raises, the same checkpoint -> try ->
+    except-restore -> finally-pop transaction must leave the lead turn
+    byte-identical and the lease released-then-restored — the exact contract
+    S2 single-sources into ``_append_user_turn_txn``. The message path (aid!=0)
+    is netted above; this locks the lead path so the extraction cannot silently
+    drift the lead's preamble contract.
+    """
+
+    class FailingAdd(FakeSession):
+        async def add_user_message(self, content):
+            self.state.append_message({"role": "user", "content": content})
+            self.state.reset_for_user_turn()
+            raise RuntimeError("lead append hook failed")
+
+    lead = FailingAdd([], role="lead")
+    captured: list = []
+
+    async def sink(event):
+        captured.append(event)
+
+    scheduler = Scheduler(
+        session_factory=FakeFactory(lead),
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(sink),
+    )
+    scheduler.register_lead(lead)
+
+    prior_lease = scheduler._lead_lease
+    allocation_before = scheduler.allocated_tokens
+
+    with pytest.raises(RuntimeError, match="lead append hook failed"):
+        run(scheduler.run("kick off the team"))
+
+    # user-turn append rolled back byte-identical (restore_user_turn)
+    assert lead.state.messages == []
+    assert lead.state.phase is SessionPhase.IDLE
+    # lease released-then-restored: neither leaked nor left None
+    assert scheduler._lead_lease == prior_lease
+    assert scheduler.allocated_tokens == allocation_before
+    # finally-pop cleared the delivery task; no drive task was ever created
+    assert 0 not in scheduler._message_delivery_tasks
+    assert 0 not in scheduler._tasks
 
 
 def test_multiple_queued_messages_are_delivered_as_one_timestamped_user_turn():

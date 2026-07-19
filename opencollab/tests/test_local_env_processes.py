@@ -61,14 +61,23 @@ async def test_local_exec_bounds_output(tmp_path, monkeypatch) -> None:
 async def test_local_timeout_kills_descendant_before_it_mutates_workspace(tmp_path) -> None:
     ready = tmp_path / "ready"
     sentinel = tmp_path / "late-write"
+    # The timeout must fire *after* the descendant has started (written `ready`) but
+    # *before* its deferred mutating write. An 80ms budget raced interpreter cold-start
+    # — a double `python` spawn can take ~90ms, so the kill sometimes landed before
+    # `ready` and the test hung on `_wait_for`. Give the timeout a wide margin over
+    # cold-start and defer the mutating write well past it; the kill-before-write
+    # guarantee does not need a tight window.
+    late_write_delay = 1.0
     env = LocalEnvironment(str(tmp_path))
     owner = asyncio.create_task(
-        env.exec_cmd(_descendant_command(ready, sentinel, delay=1.0), timeout=0.5)
+        env.exec_cmd(_descendant_command(ready, sentinel, delay=late_write_delay), timeout=0.5)
     )
     await _wait_for(ready)
     result = await owner
     assert result.returncode == -1
-    await asyncio.sleep(1.1)
+    # A surviving descendant would write at most timeout(0.5)+delay(1.0)=1.5s after exec
+    # start; wait comfortably past that before asserting the write never landed.
+    await asyncio.sleep(late_write_delay + 0.6)
     assert not sentinel.exists()
 
 

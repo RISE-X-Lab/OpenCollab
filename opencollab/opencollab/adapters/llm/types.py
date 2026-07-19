@@ -54,6 +54,26 @@ class LLMResponse:
     reasoning: str | None = None
 
 
+def rescue_empty_turn(
+    content: str | None,
+    tool_calls: list[dict[str, Any]],
+    reasoning: str | None,
+) -> str | None:
+    """Empty-stop rescue rung, shared by both providers.
+
+    Providers keep chain-of-thought (``reasoning``) separate from the answer
+    (``content``). When a completion returns neither answer text nor a tool
+    call, an empty ``content`` would silently end the session; fall back to the
+    reasoning so the turn still carries something forward. Returns ``content``
+    unchanged whenever the turn already produced an answer or a tool call — so
+    this is the single source both ``openai_provider`` and ``anthropic_provider``
+    delegate to instead of hand-mirroring the guard.
+    """
+    if not content and not tool_calls:
+        return reasoning
+    return content
+
+
 # ---------------------------------------------------------------------------
 # Model context windows
 # ---------------------------------------------------------------------------

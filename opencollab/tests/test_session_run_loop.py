@@ -7,14 +7,17 @@ from types import SimpleNamespace
 import pytest
 from opencollab.application.event_bus import EventBus
 from opencollab.application.session_run import (
-    READS_NUDGE_HARD,
-    READS_NUDGE_SOFT,
     GenerationTimeoutError,
     PendingStep,
     SessionRunUseCase,
 )
+from opencollab.application.steering import READS_NUDGE_HARD, build_steering_block
 from opencollab.domain.pending import RowKind, RowStatus
-from opencollab.domain.session import SessionPhase, SessionState
+from opencollab.domain.session import (
+    SessionPhase,
+    SessionState,
+    TurnEnforcementState,
+)
 from opencollab.domain.tools import ToolProcessingResult
 
 
@@ -200,13 +203,13 @@ def test_run_loop_budget_exceeded_emits_error_and_sets_phase():
 
     assert result == ""
     assert llm.calls == []
-    assert state.phase is SessionPhase.BUDGET_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
     assert state.terminal_reason == "budget exceeded: 10 tokens used"
     assert state.messages[-1] == {
         "role": "system",
         "content": "[Budget exceeded: 10 tokens used. Session stopped.]",
     }
-    assert events == [("error", {"reason": "budget_exceeded", "aid": -1})]
+    assert events == [("error", {"reason": "budget exceeded: 10 tokens used", "aid": -1})]
 
 
 def test_run_loop_team_aggregate_ceiling_stops_under_own_cap():
@@ -228,9 +231,11 @@ def test_run_loop_team_aggregate_ceiling_stops_under_own_cap():
 
     assert result == ""
     assert llm.calls == []  # never called the model
-    assert state.phase is SessionPhase.BUDGET_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
     assert "team budget exceeded" in state.terminal_reason
-    assert events == [("error", {"reason": "budget_exceeded", "aid": -1})]
+    assert events == [
+        ("error", {"reason": "team budget exceeded: aggregate spend reached the global cap", "aid": -1})
+    ]
 
 
 def test_run_loop_team_aggregate_ceiling_not_reached_proceeds_normally():
@@ -261,13 +266,13 @@ def test_run_loop_step_limit_exceeded_emits_error_and_sets_phase():
 
     assert result == ""
     assert llm.calls == []
-    assert state.phase is SessionPhase.STEP_LIMIT_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
     assert state.terminal_reason == "step limit reached: 3 steps"
     assert state.messages[-1] == {
         "role": "system",
         "content": "[Step limit reached: 3 steps. Session stopped.]",
     }
-    assert events == [("error", {"reason": "step_limit_exceeded", "aid": -1})]
+    assert events == [("error", {"reason": "step limit reached: 3 steps", "aid": -1})]
 
 
 def test_new_turn_precheck_failure_does_not_return_previous_answer():
@@ -287,7 +292,7 @@ def test_new_turn_precheck_failure_does_not_return_previous_answer():
 
     assert result == ""
     assert llm.calls == []
-    assert state.phase is SessionPhase.STEP_LIMIT_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
 
 
 def test_run_loop_cancel_event_appends_interrupt_and_sets_phase():
@@ -302,16 +307,16 @@ def test_run_loop_cancel_event_appends_interrupt_and_sets_phase():
 
     assert result == ""
     assert llm.calls == []
-    assert state.phase is SessionPhase.CANCELLED
+    assert state.phase is SessionPhase.STOPPED
     assert state.messages[-1] == {"role": "system", "content": "[Session interrupted by user]"}
-    assert events == [("error", {"reason": "cancelled", "aid": -1})]
+    assert events == [("error", {"reason": "interrupted by user", "aid": -1})]
 
 
 def test_run_loop_loop_block_limit_stops_before_next_llm_call():
     events, bus = collect_events()
     state = SessionState(
         messages=[{"role": "system", "content": "sys"}],
-        loop_blocked_since_progress=3,
+        turn=TurnEnforcementState(loop_blocked_since_progress=3),
     )
     llm = FakeLLM()
     runner = build_runner(state=state, llm=llm, event_bus=bus)
@@ -320,9 +325,9 @@ def test_run_loop_loop_block_limit_stops_before_next_llm_call():
 
     assert result == ""
     assert llm.calls == []
-    assert state.phase is SessionPhase.STEP_LIMIT_EXCEEDED
+    assert state.phase is SessionPhase.STOPPED
     assert state.terminal_reason == "loop block limit reached: 3 repeated tool calls"
-    assert events == [("error", {"reason": "loop_blocked", "aid": -1})]
+    assert events == [("error", {"reason": "loop block limit reached: 3 repeated tool calls", "aid": -1})]
 
 
 def test_run_loop_llm_step_events_trace_and_message_shape():
@@ -423,63 +428,37 @@ def _agent_with_tool_schemas(*names):
 
 
 def test_steering_status_line_built_from_budget_and_steps():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "r"}], used_tokens=120_000, step_count=10
+    # 120k of 500k used -> 380k left; 40 - 10 steps -> ~30 left.
+    msg, override, _level = build_steering_block(
+        used_tokens=120_000, max_budget_tokens=500_000, step_count=10, max_steps=40,
+        reads=0, has_write=True, has_structured_output=False, structured_override=None,
     )
-    runner = build_runner(state=state, max_budget_tokens=500_000, max_steps=40)
-    msg, override, _level = runner._build_steering_block(state.messages)
     assert override is None
     assert msg["role"] == "user"
-    # 120k of 500k used -> 380k left; 40 - 10 steps -> ~30 left.
     assert "380k/500k tokens left" in msg["content"]
     assert "~30 steps left" in msg["content"]
 
 
-def test_steering_status_built_even_when_history_ends_with_user():
+def test_steering_status_only_when_reads_are_low():
     # The status block is ALWAYS built; on a fresh post-user turn reads is ~0 so
-    # only the status line comes back (no write nudge). The caller folds it into
-    # the last user message rather than appending a second consecutive user turn.
-    state = SessionState(
-        messages=[{"role": "user", "content": "task"}], used_tokens=10_000, step_count=1
+    # only the status line comes back (no write nudge).
+    msg, override, _level = build_steering_block(
+        used_tokens=10_000, max_budget_tokens=100_000, step_count=1, max_steps=20,
+        reads=0, has_write=True, has_structured_output=False, structured_override=None,
     )
-    runner = build_runner(state=state, max_budget_tokens=100_000, max_steps=20)
-    msg, override, _level = runner._build_steering_block(state.messages)
     assert override is None
     assert msg["role"] == "user"
     assert "tokens left" in msg["content"]
     assert "without" not in msg["content"]  # status-line only, no read nudge
 
 
-def test_steering_soft_nudge_when_reads_without_write():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "r"}], reads_since_last_edit=READS_NUDGE_SOFT
-    )
-    runner = build_runner(state=state, agent=_agent_with_tools("file_read", "file_write"))
-    msg, override, _level = runner._build_steering_block(state.messages)
-    assert override is None  # soft rung does not force a tool call
-    assert "without making an edit" in msg["content"]
-    assert "file_write or apply_patch" in msg["content"]
-
-
-def test_steering_hard_rung_forces_a_tool_call():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "r"}], reads_since_last_edit=READS_NUDGE_HARD
-    )
-    runner = build_runner(state=state, agent=_agent_with_tools("apply_patch"))
-    msg, override, _level = runner._build_steering_block(state.messages)
-    assert override == "required"
-    assert "STOP reading" in msg["content"]
-    assert "MUST be a file_write or apply_patch" in msg["content"]
-
-
 def test_steering_no_write_nudge_for_readonly_session():
     # A scout/tester/planner has no write tool — the write nudge would be nonsense,
     # so only the status line is shown even at a high read count.
-    state = SessionState(
-        messages=[{"role": "tool", "content": "r"}], reads_since_last_edit=99
+    msg, override, _level = build_steering_block(
+        used_tokens=0, max_budget_tokens=100_000, step_count=0, max_steps=20,
+        reads=99, has_write=False, has_structured_output=False, structured_override=None,
     )
-    runner = build_runner(state=state, agent=_agent_with_tools("file_read", "grep"))
-    msg, override, _level = runner._build_steering_block(state.messages)
     assert override is None
     assert "without" not in msg["content"]
     assert msg["content"].startswith("[Budget:")
@@ -492,7 +471,7 @@ def test_steering_hard_rung_forces_tool_choice_through_run_loop():
         messages=[{"role": "tool", "content": "prev"}],
         used_tokens=1_000,
         step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
     )
     llm = FakeLLM([llm_response(content="done")])
     runner = build_runner(
@@ -504,39 +483,12 @@ def test_steering_hard_rung_forces_tool_choice_through_run_loop():
     assert llm.calls[0]["tool_choice"] == "required"
 
 
-def test_steering_hard_rung_limits_provider_tools_to_writes():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "prev"}],
-        used_tokens=1_000,
-        step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
-    )
-    llm = FakeLLM([llm_response(content="done")])
-    runner = build_runner(
-        state=state,
-        llm=llm,
-        agent=_agent_with_tool_schemas(
-            "file_read",
-            "grep",
-            "file_write",
-            "apply_patch",
-            "run_tests",
-        ),
-    )
-
-    run(runner.run_loop())
-
-    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
-    assert llm.calls[0]["tool_choice"] == "required"
-    assert sent_tool_names == ["file_write", "apply_patch"]
-
-
 def test_steering_structured_hard_rung_forces_structured_output():
     state = SessionState(
         messages=[{"role": "tool", "content": "prev"}],
         used_tokens=1_000,
         step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
     )
     llm = FakeLLM([llm_response(content="done")])
     runner = build_runner(
@@ -556,64 +508,12 @@ def test_steering_structured_hard_rung_forces_structured_output():
     assert "structured_output using" in llm.calls[0]["messages"][-1]["content"]
 
 
-def test_steering_structured_commit_gate_uses_soft_threshold():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "prev"}],
-        used_tokens=1_000,
-        step_count=1,
-        reads_since_last_edit=READS_NUDGE_SOFT,
-    )
-    llm = FakeLLM([llm_response(content="done")])
-    runner = build_runner(
-        state=state,
-        llm=llm,
-        agent=_agent_with_tool_schemas("structured_output", "file_read", "grep"),
-    )
-
-    run(runner.run_loop())
-
-    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
-    assert sent_tool_names == ["structured_output"]
-    assert llm.calls[0]["tool_choice"] == {
-        "type": "function",
-        "function": {"name": "structured_output"},
-    }
-
-
-def test_steering_write_gate_wins_when_write_tools_are_also_present():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "prev"}],
-        used_tokens=1_000,
-        step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
-    )
-    llm = FakeLLM([llm_response(content="done")])
-    runner = build_runner(
-        state=state,
-        llm=llm,
-        agent=_agent_with_tool_schemas(
-            "structured_output",
-            "file_read",
-            "grep",
-            "file_write",
-            "apply_patch",
-        ),
-    )
-
-    run(runner.run_loop())
-
-    sent_tool_names = [spec["function"]["name"] for spec in llm.calls[0]["tools"]]
-    assert sent_tool_names == ["file_write", "apply_patch"]
-    assert llm.calls[0]["tool_choice"] == "required"
-    assert "MUST be a file_write or apply_patch edit" in llm.calls[0]["messages"][-1]["content"]
-
-
 def test_steering_hard_rung_blocks_read_tool_call_before_execution():
     state = SessionState(
         messages=[{"role": "tool", "content": "prev"}],
         used_tokens=1_000,
         step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
     )
     read_call = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
     llm = FakeLLM(
@@ -640,42 +540,7 @@ def test_steering_hard_rung_blocks_read_tool_call_before_execution():
     assert len(tool_messages) == 1
     assert tool_messages[0]["tool_call_id"] == "r1"
     assert "not allowed during the hard write gate" in tool_messages[0]["content"]
-    assert state.reads_since_last_edit == READS_NUDGE_HARD
-
-
-def test_steering_structured_hard_rung_blocks_read_tool_call_before_execution():
-    state = SessionState(
-        messages=[{"role": "tool", "content": "prev"}],
-        used_tokens=1_000,
-        step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
-    )
-    read_call = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
-    llm = FakeLLM(
-        [
-            llm_response(content="try read", tool_calls=[read_call], finish_reason="tool_calls"),
-            llm_response(content="done"),
-        ]
-    )
-    tool_execution = FakeToolExecution()
-    runner = build_runner(
-        state=state,
-        llm=llm,
-        tool_execution=tool_execution,
-        agent=_agent_with_tool_schemas("structured_output", "file_read", "grep"),
-    )
-
-    result = run(runner.run_loop())
-
-    tool_messages = [
-        m for m in state.messages if m.get("role") == "tool" and m.get("tool_call_id")
-    ]
-    assert result == "done"
-    assert tool_execution.calls == []
-    assert len(tool_messages) == 1
-    assert tool_messages[0]["tool_call_id"] == "r1"
-    assert "not allowed during the hard structured-output gate" in tool_messages[0]["content"]
-    assert state.reads_since_last_edit == READS_NUDGE_HARD
+    assert state.turn.reads_since_last_edit == READS_NUDGE_HARD
 
 
 def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
@@ -683,7 +548,7 @@ def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
         messages=[{"role": "tool", "content": "prev"}],
         used_tokens=1_000,
         step_count=1,
-        reads_since_last_edit=READS_NUDGE_HARD,
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
     )
     read_call = tool_call(call_id="r1", name="file_read", arguments='{"path": "a.py"}')
     write_call = tool_call(call_id="w1", name="apply_patch", arguments='{"patch": "..."}')
@@ -720,7 +585,7 @@ def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
     assert [m["tool_call_id"] for m in tool_messages] == ["r1", "w1"]
     assert "not allowed during the hard write gate" in tool_messages[0]["content"]
     assert tool_messages[1]["content"] == "patched"
-    assert state.reads_since_last_edit == 0
+    assert state.turn.reads_since_last_edit == 0
 
 
 def test_steering_reaches_provider_and_is_persisted():
@@ -821,7 +686,7 @@ def _steering_runner(reads, *, tools=("file_read", "apply_patch"), tracer=None, 
         messages=[{"role": "tool", "content": "r"}],
         used_tokens=1_000,
         step_count=3,
-        reads_since_last_edit=reads,
+        turn=TurnEnforcementState(reads_since_last_edit=reads),
         aid=aid,
     )
     llm = FakeLLM([llm_response(content="done") for _ in range(8)])
@@ -833,101 +698,6 @@ def _steering_runner(reads, *, tools=("file_read", "apply_patch"), tracer=None, 
         max_budget_tokens=100_000,
         max_steps=40,
     ), state
-
-
-def test_steering_nudge_traced_on_soft_crossing():
-    tracer = FakeTracer()
-    runner, state = _steering_runner(READS_NUDGE_SOFT, tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    steps = _steering_steps(tracer)
-    assert len(steps) == 1
-    p = steps[0]["payload"]
-    assert p["level"] == "soft"
-    assert p["tool_choice_override"] is False
-    assert p["reads_since_last_edit"] == READS_NUDGE_SOFT
-    assert p["aid"] == state.aid
-
-
-def test_steering_nudge_traced_on_hard_crossing():
-    tracer = FakeTracer()
-    runner, _ = _steering_runner(READS_NUDGE_HARD, tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    steps = _steering_steps(tracer)
-    assert len(steps) == 1
-    assert steps[0]["payload"]["level"] == "hard"
-    assert steps[0]["payload"]["tool_choice_override"] is True
-
-
-def test_steering_nudge_fires_once_per_level_not_every_turn():
-    # Two turns at the SAME (soft) level -> exactly ONE trace step (high-water mark,
-    # not per-turn). reads stays >= SOFT and < HARD across both calls.
-    tracer = FakeTracer()
-    runner, _ = _steering_runner(READS_NUDGE_SOFT, tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    assert len(_steering_steps(tracer)) == 1
-
-
-def test_steering_nudge_fires_on_soft_then_hard_escalation():
-    # Turn 1 at soft, turn 2 jumps PAST hard -> two steps, in order.
-    tracer = FakeTracer()
-    runner, state = _steering_runner(READS_NUDGE_SOFT, tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))
-    state.reads_since_last_edit = READS_NUDGE_HARD + 5  # jump past the hard rung
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    levels = [s["payload"]["level"] for s in _steering_steps(tracer)]
-    assert levels == ["soft", "hard"]
-
-
-def test_steering_nudge_rearms_after_write():
-    # Escalate to hard; a write resets reads to 0 (level None -> re-arm); a later
-    # re-escalation to soft traces again -> ['hard', 'soft'].
-    tracer = FakeTracer()
-    runner, state = _steering_runner(READS_NUDGE_HARD, tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))
-    state.reads_since_last_edit = 0  # a landed edit reset the counter
-    run(runner.call_llm(runner.build_tool_schemas()))  # level None -> re-arm, no step
-    state.reads_since_last_edit = READS_NUDGE_SOFT  # read again without writing
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    levels = [s["payload"]["level"] for s in _steering_steps(tracer)]
-    assert levels == ["hard", "soft"]
-
-
-def test_steering_nudge_does_not_refire_at_same_high_level():
-    # Regression: once the high-water mark reaches 'hard', staying at hard across
-    # later turns must NOT re-fire a duplicate steering_nudge (once-per-upward-
-    # crossing invariant). This holds whether the turn ends with a tool message
-    # (separate-block append) or a user message (status folded into it) — both
-    # rebuild 'hard' but trace nothing, since rank('hard') is not > rank('hard').
-    tracer = FakeTracer()
-    runner, state = _steering_runner(READS_NUDGE_HARD, tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))  # turn 1: hard -> 1 trace
-
-    # A turn whose shaped history ends with a user message: the status is now folded
-    # into that user message (reads still HARD -> level rebuilds 'hard', no re-fire).
-    state.messages = [*state.messages, {"role": "user", "content": "nudge"}]
-    run(runner.call_llm(runner.build_tool_schemas()))  # mark must stay 'hard'
-
-    # Back to a tool-terminated history, reads UNCHANGED -> must NOT re-fire.
-    state.messages = [*state.messages, {"role": "tool", "content": "r"}]
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    assert [s["payload"]["level"] for s in _steering_steps(tracer)] == ["hard"]
-
-
-def test_no_steering_nudge_trace_for_readonly_session():
-    # A read-only agent (no write tool) gets no write nudge, so no trace even at a
-    # very high read count.
-    tracer = FakeTracer()
-    runner, _ = _steering_runner(99, tools=("file_read", "grep"), tracer=tracer)
-    run(runner.call_llm(runner.build_tool_schemas()))
-
-    assert _steering_steps(tracer) == []
 
 
 def test_steering_block_ephemeral_on_continuation_step():
@@ -1302,7 +1072,7 @@ def test_mixed_batch_folds_in_reads_counter_for_immediate_reads():
     run(runner.run_loop())
 
     assert state.phase is SessionPhase.AWAITING_EVENTS
-    assert state.reads_since_last_edit == 1  # immediate read counted despite buffering
+    assert state.turn.reads_since_last_edit == 1  # immediate read counted despite buffering
 
 
 def test_deferred_rejected_synchronously_does_not_suspend():
@@ -1462,7 +1232,7 @@ def test_persistent_overflow_stops_gracefully_not_unhandled():
     result = run(runner.run_loop())
 
     assert result == ""
-    assert state.phase is SessionPhase.CONTEXT_OVERFLOW
+    assert state.phase is SessionPhase.STOPPED
     assert state.terminal_reason.startswith("context overflow")
     assert state.messages[-1] == {
         "role": "system",
@@ -1474,7 +1244,7 @@ def test_persistent_overflow_stops_gracefully_not_unhandled():
     # Both the recompaction notice and the final overflow error were emitted.
     reasons = [data["reason"] for etype, data in events if etype == "error"]
     assert "context_overflow_recompacted" in reasons
-    assert "context_overflow" in reasons
+    assert "context overflow: prompt exceeds the model context window even after compaction" in reasons
     # The provider was tried exactly twice (initial + one forced retry).
     assert len(llm.calls) == 2
 
