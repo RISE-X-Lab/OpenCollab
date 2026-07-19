@@ -1,5 +1,5 @@
 {
-    "venvPath": "opencollab",
+    "venvPath": ".",
     "venv": ".venv",
-    "exclude": ["**/__pycache__", "opencollab/.venv"]
+    "exclude": ["**/__pycache__", "**/.venv"]
 }

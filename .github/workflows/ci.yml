@@ -12,9 +12,6 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
-    defaults:
-      run:
-        working-directory: opencollab
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -25,8 +22,7 @@ jobs:
       - name: Sync dependencies
         run: uv sync --extra dev
       - name: Lint (whole repo)
-        working-directory: .
-        run: uv run --project opencollab ruff check .
+        run: uv run ruff check .
       - name: Test
         run: uv run pytest -q
 
@@ -34,9 +30,6 @@ jobs:
     name: macOS path integrity
     runs-on: macos-latest
     timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: opencollab
     steps:
       - uses: actions/checkout@v4
       - name: Install uv

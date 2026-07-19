@@ -2,10 +2,13 @@
 # Bootstrap and start OpenCollab from the repository root.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PROJECT_DIR="$REPO_ROOT/opencollab"
-VENV_DIR="$PROJECT_DIR/.venv"
+# Resolve the checkout physically so a symlinked repository path does not leak
+# into the workspace path. Safe file access deliberately rejects symlinked
+# directory components below that trusted root.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+PROJECT_DIR="$REPO_ROOT"
+VENV_DIR="$REPO_ROOT/.venv"
 CONFIG_DIR="$REPO_ROOT/configs"
 CONFIG_FILE="$CONFIG_DIR/.env"
 EXAMPLE_CONFIG="$CONFIG_DIR/.env.example"

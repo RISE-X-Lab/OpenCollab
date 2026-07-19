@@ -12,19 +12,18 @@ OpenCollab follows a strict clean architecture — dependencies point inward onl
 adapters  →  application  →  domain
 ```
 
-- `opencollab/opencollab/domain/` — pure value objects + the session FSM. Standard library only, no I/O.
-- `opencollab/opencollab/application/` — use cases, scheduler, ports (`application/ports.py`). Imports `domain` + stdlib only.
-- `opencollab/opencollab/adapters/` — concrete implementations: `cli/`, `tui/`, `llm/`, `tools/`, environments, tracing, session store.
-- `opencollab/opencollab/bootstrap/` — composition root; the only layer that knows concrete types.
-- `opencollab/opencollab/sdk/` — the versioned boundary for external workflow and evaluation packages.
+- `opencollab/domain/` — pure value objects + the session FSM. Standard library only, no I/O.
+- `opencollab/application/` — use cases, scheduler, ports (`application/ports.py`). Imports `domain` + stdlib only.
+- `opencollab/adapters/` — concrete implementations: `cli/`, `tui/`, `llm/`, `tools/`, environments, tracing, session store.
+- `opencollab/bootstrap/` — composition root; the only layer that knows concrete types.
+- `opencollab/sdk/` — the versioned boundary for external workflow and evaluation packages.
 - `scripts/` — framework launchers and provider diagnostics.
 
 ## Development setup
 
-OpenCollab uses [uv](https://docs.astral.sh/uv/). From the package root:
+OpenCollab uses [uv](https://docs.astral.sh/uv/). From the repository root:
 
 ```bash
-cd opencollab
 uv sync --extra dev            # create .venv with runtime + dev dependencies
 ```
 
@@ -38,8 +37,8 @@ cp configs/.env.example configs/.env   # then set OPENCOLLAB_API_KEY
 ## Checks (must pass before a PR)
 
 ```bash
-uv run --project opencollab ruff check .   # lint the whole repo (root ruff.toml)
-cd opencollab && uv run pytest -q           # test suite
+uv run ruff check .   # lint the whole repository (root ruff.toml)
+uv run pytest -q      # test suite
 ```
 
 New behavior needs tests, and the suite must stay green.

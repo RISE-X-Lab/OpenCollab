@@ -9,6 +9,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - Adopted the Mulan Permissive Software License v2 (`MulanPSL-2.0`) for OpenCollab.
+- Flattened the Python project layout so the repository root owns build metadata, tests, and the canonical license
+  while public `opencollab.*` import paths remain unchanged.
 - Prepared the public SDK distribution for release with a package-version consistency gate, typed-package metadata,
   bundled license text, and a minimal integration example.
 - Moved benchmark runtime configuration to OpenCollab-Eval and historical experiment records to the external documentation workspace.
