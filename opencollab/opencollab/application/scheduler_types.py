@@ -28,7 +28,7 @@ class RosterEntry(TypedDict):
 
 
 # Live phases that present as "settled" (idle) in a roster display.
-_SETTLED_PHASES = frozenset({"done", "scheduled"})
+_SETTLED_PHASES = frozenset({"done"})
 
 
 def roster_display_state(entry: RosterEntry) -> str:

@@ -420,7 +420,7 @@ def test_consumed_child_tokens_are_not_reclaimed_as_fresh_headroom():
         await sched._tasks[aid]
 
         # The lease is gone, while its consumed tokens stay committed.
-        assert aid not in sched._child_reservation
+        assert aid not in sched._child_lease
         assert sched.allocated_tokens == lead_reserve(total) + grant
 
         gate.clear()
@@ -449,7 +449,7 @@ def test_lead_yields_unused_turn_lease_before_parallel_children():
         lead.state.set_phase(SessionPhase.DONE)
         sched.register_lead(lead)
 
-        assert sched._reserve_turn_budget(0) == total
+        assert sched._reserve_turn_lease(0) == total
         lead.state.add_used_tokens(100_000)
         sched._tasks[0] = asyncio.current_task()
         await sched.spawn(0, "coder", "a")
@@ -487,7 +487,7 @@ def test_message_revival_reacquires_child_budget_before_starting_turn():
         gate.clear()
 
         await sched.send_message(0, aid, "again", "continue")
-        assert aid in sched._child_reservation
+        assert aid in sched._child_lease
         assert not sched._tasks[aid].done()
 
         await sched.spawn(0, "coder", "second")
@@ -538,7 +538,7 @@ def test_cancelled_agent_retries_other_messages_waiting_for_budget():
             await sched._tasks[running[0]]
 
         assert 99 in sched._tasks
-        assert 99 in sched._child_reservation
+        assert 99 in sched._child_lease
         assert sched._message_inbox[99] == []
 
         gate.set()

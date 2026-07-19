@@ -40,8 +40,6 @@ class LifecycleMixin:
         session.agent.name = validate_role_identity(session.agent.name)
         aid = self.table.allocate_aid()  # = 0
         session.state.aid = aid
-        if session.state.phase is SessionPhase.IDLE:
-            session.state.set_phase(SessionPhase.SCHEDULED)
         scb = SessionControlBlock(
             aid=aid,
             parent_aid=None,
@@ -54,7 +52,7 @@ class LifecycleMixin:
         self._restore_message_inbox(aid, session.state)
         # Seed the running allocation with the Lead's reserve so the first child
         # is granted from the pool minus the Lead's headroom.
-        self._seed_lead_reservation()
+        self._seed_lead_lease()
         self._write_manifest()
         return aid
 
@@ -135,7 +133,7 @@ class LifecycleMixin:
                     or parent_scb.state.phase is SessionPhase.EXECUTING_TOOLS
                 )
             ):
-                parent_lease = self._release_turn_budget(parent_aid)
+                parent_lease = self._release_turn_lease(parent_aid)
                 if parent_lease is not None:
                     self._track_review_parent_lease_release(parent_aid, 1)
             self._reserve_inflight(aid, role, task)
@@ -164,7 +162,6 @@ class LifecycleMixin:
                 context=context,
             )
             session.agent.name = role
-            session.state.set_phase(SessionPhase.SCHEDULED)
 
             # Create SCB
             scb = SessionControlBlock(
@@ -197,7 +194,7 @@ class LifecycleMixin:
             # Driver task was never scheduled, so nothing will release these.
             await self._rollback_failed_spawn(aid, env)
             if not self._shutting_down:
-                self._restore_turn_budget(parent_aid, parent_lease)
+                self._restore_turn_lease(parent_aid, parent_lease)
                 if parent_lease is not None:
                     self._track_review_parent_lease_release(parent_aid, -1)
             if tool_call_id is not None:
@@ -210,7 +207,7 @@ class LifecycleMixin:
         except BaseException:
             await self._rollback_failed_spawn(aid, env)
             if not self._shutting_down:
-                self._restore_turn_budget(parent_aid, parent_lease)
+                self._restore_turn_lease(parent_aid, parent_lease)
                 if parent_lease is not None:
                     self._track_review_parent_lease_release(parent_aid, -1)
             raise
@@ -221,7 +218,7 @@ class LifecycleMixin:
 
     async def _rollback_failed_spawn(self, aid: int, env: Any | None) -> None:
         """Undo every side effect created before a child driver task exists."""
-        self._release_reservations(aid)
+        self._release_leases(aid)
         self.table.entries.pop(aid, None)
         self._sessions.pop(aid, None)
         self._spawn_origin.pop(aid, None)
@@ -260,15 +257,15 @@ class LifecycleMixin:
                 parent_aid,
             )
 
-    def _release_reservations(self, aid: int) -> None:
-        """Release a terminal child's single-flight and budget reservations.
+    def _release_leases(self, aid: int) -> None:
+        """Release a terminal child's single-flight and budget leases.
 
         Both are held from spawn until the child reaches a terminal phase; this
         frees them together so a later spawn can reuse the (role, task) key and
         the unspent budget headroom. Idempotent at each site.
         """
         self._clear_inflight(aid)
-        self._release_turn_budget(aid)
+        self._release_turn_lease(aid)
 
     async def _drive_agent(self, aid: int, session: Any) -> None:
         """Run a session's loop once and finalize.
@@ -289,7 +286,7 @@ class LifecycleMixin:
         try:
             result = await session.run_loop()
         except asyncio.CancelledError:
-            self._release_reservations(aid)
+            self._release_leases(aid)
             scb.state.cancel()
             reason = "Error: agent cancelled before completing delegated work"
             scb.result = reason
@@ -307,7 +304,7 @@ class LifecycleMixin:
                 await self._drain_ready_message_inboxes()
             raise
         except Exception as exc:
-            self._release_reservations(aid)
+            self._release_leases(aid)
             scb.state.fail()
             scb.result = f"Error: {exc}"
             try:
@@ -341,7 +338,7 @@ class LifecycleMixin:
 
         # Terminal — release the single-flight + budget reservations before
         # delivering, so a later spawn can reuse this child's unspent headroom.
-        self._release_reservations(aid)
+        self._release_leases(aid)
 
         # A completed coding task still needs its patch evidence. Tracing and
         # event delivery are observational, but a missing diff is a technical
@@ -484,7 +481,7 @@ class LifecycleMixin:
                 and (in_flight is None or in_flight.done())
             )
             if should_resume:
-                self._reserve_turn_budget(parent_aid)
+                self._reserve_turn_lease(parent_aid)
                 self._tasks[parent_aid] = asyncio.create_task(
                     self._drive_agent(parent_aid, parent_session)
                 )
@@ -535,7 +532,7 @@ class LifecycleMixin:
                 and parent_scb.state.phase is SessionPhase.AWAITING_EVENTS
                 and parent_scb.state.pending_events.is_complete()
             ):
-                self._reserve_turn_budget(parent_aid)
+                self._reserve_turn_lease(parent_aid)
                 self._tasks[parent_aid] = asyncio.create_task(
                     self._drive_agent(parent_aid, parent_session)
                 )

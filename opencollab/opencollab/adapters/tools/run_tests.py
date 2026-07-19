@@ -541,7 +541,15 @@ def _is_green(
     runner: str = DEFAULT_RUNNER,
     target: str = "",
 ) -> bool:
-    """Require positive evidence that at least one requested test executed."""
+    """The GREEN verdict's positive-proof specification.
+
+    A run is GREEN only on *positive evidence* that a requested test actually
+    executed and passed — never on a bare exit code, which a no-op command or a
+    zero-test mode can forge. Each runner family plugs in its own proof adapter
+    (pytest: exactly one summary line carrying a passing count plus per-target
+    pass proof; go: parsed ``PASS`` lines); a runner with no parser-backed
+    adapter cannot authorize GREEN and returns ``False`` by construction.
+    """
     summaries = _summary_lines(output)
     if _is_pytest_runner(runner) and len(summaries) != 1:
         # One tool invocation represents one pytest session. Multiple result

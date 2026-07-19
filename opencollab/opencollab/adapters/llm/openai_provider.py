@@ -16,6 +16,7 @@ from opencollab.adapters.llm.types import (
     Usage,
     estimate_messages_tokens,
     estimate_tokens,
+    rescue_empty_turn,
 )
 
 
@@ -206,11 +207,9 @@ def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
     usage.markup_recovered = 1 if markup_recovered else 0
     # Thinking providers (e.g. kimi-k2.6 with ``enable_thinking``) put the
     # chain-of-thought in ``reasoning_content`` and the answer in ``content``.
-    # Keep the reasoning for trajectory observability. Belt-and-suspenders: if a
-    # turn ever returns content=None with neither an answer nor a tool call,
-    # fall back to the reasoning rather than emit a silent empty-stop turn.
-    if not content and not tool_calls:
-        content = reasoning
+    # Keep the reasoning for trajectory observability; the shared rescue rung
+    # falls back to it only when the turn is otherwise empty.
+    content = rescue_empty_turn(content, tool_calls, reasoning)
     return LLMResponse(
         content=content,
         tool_calls=tool_calls,
