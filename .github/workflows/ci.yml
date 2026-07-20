@@ -173,11 +173,16 @@ jobs:
 
           import importlib.metadata as metadata
           import importlib.resources as resources
+          import os
+          import re
+          import subprocess
           import sys
           from pathlib import Path
 
           import opencollab
           import opencollab.sdk as sdk
+          from opencollab.adapters.cli.main import app
+          from typer.main import get_command
 
           package_path = Path(opencollab.__file__).resolve()
           assert package_path.is_relative_to(Path(sys.prefix).resolve()), package_path
@@ -191,19 +196,42 @@ jobs:
           installed_metadata = metadata.metadata("opencollab")
           assert installed_metadata["License-Expression"] == "MulanPSL-2.0"
           assert "Typing :: Typed" not in installed_metadata.get_all("Classifier", [])
+
+          cli = Path(sys.executable).with_name("opencollab")
+
+          def run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+              completed = subprocess.run(
+                  [str(cli), *args],
+                  cwd=Path.cwd(),
+                  env=env,
+                  capture_output=True,
+                  text=True,
+                  timeout=30,
+                  check=False,
+              )
+              assert completed.returncode == 0, (args, completed.stdout, completed.stderr)
+              return completed
+
+          for help_args in (("--help",), ("workflow", "--help"), ("workflow", "run", "--help")):
+              run_cli(*help_args)
+
+          root_command = get_command(app)
+          root_options = {option for parameter in root_command.params for option in parameter.opts}
+          assert "--workspace" in root_options
+          assert "workflow" in root_command.commands
+          workflow_command = root_command.commands["workflow"]
+          assert {"list", "run"}.issubset(workflow_command.commands)
+          run_command = workflow_command.commands["run"]
+          run_options = {option for parameter in run_command.params for option in parameter.opts}
+          assert "--args" in run_options
+
+          workflow_env = dict(os.environ)
+          workflow_env["OPENCOLLAB_WORKFLOWS_DIR"] = str(Path.cwd() / "workflows")
+          workflow_list = run_cli("workflow", "list", env=workflow_env)
+          plain_workflow_list = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", workflow_list.stdout)
+          assert "No workflows found." in plain_workflow_list, workflow_list.stdout
           print("Installed package and SDK probes passed.")
           PY
-          "$install_root/bin/opencollab" --help > top-help.txt
-          "$install_root/bin/opencollab" workflow --help > workflow-help.txt
-          "$install_root/bin/opencollab" workflow run --help > workflow-run-help.txt
-          OPENCOLLAB_WORKFLOWS_DIR="$probe_root/workflows" \
-            "$install_root/bin/opencollab" workflow list > workflow-list.txt
-          grep -Fq -- '--workspace' top-help.txt
-          grep -Fq 'workflow' top-help.txt
-          grep -Fq 'list' workflow-help.txt
-          grep -Fq 'run' workflow-help.txt
-          grep -Fq -- '--args' workflow-run-help.txt
-          grep -Fq 'No workflows found' workflow-list.txt
 
   macos-integrity:
     name: macOS path integrity
