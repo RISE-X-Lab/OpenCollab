@@ -32,8 +32,8 @@ def test_readme_advertises_the_distribution_license() -> None:
     assert "[Mulan Permissive Software License v2](LICENSE)" in readme
 
 
-def test_distribution_is_marked_as_typed() -> None:
+def test_distribution_does_not_claim_package_wide_typing() -> None:
     pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
-    assert '"Typing :: Typed"' in pyproject
-    assert (_PACKAGE_ROOT / "py.typed").read_text(encoding="utf-8").strip() == ""
+    assert '"Typing :: Typed"' not in pyproject
+    assert not (_PACKAGE_ROOT / "py.typed").exists()

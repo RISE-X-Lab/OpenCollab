@@ -43,10 +43,8 @@ Two ways to run the same agents:
 
 | Mode | Command | What it is |
 |------|---------|------------|
-| **Team** | _(coming soon)_ | An autonomous multi-agent team: a lead plans the work and spawns specialists — coder, reviewer, tester — that collaborate until it's done. The LLM decides who does what; a single agent is just a team of one. |
-| **Dynamic Workflow** | _(coming soon)_ | Deterministic orchestration: you script the control flow in Python — fan-out, loops, verification gates — and the LLM fills in each step. The structure is yours, not the model's to choose. |
-
-> Commands land with the CLI — for now, start from **Quick start** below.
+| **Team** | `opencollab --workspace .` | An autonomous multi-agent team: a lead plans the work and spawns specialists — coder, reviewer, tester — that collaborate until it's done. The LLM decides who does what; a single agent is just a team of one. |
+| **Dynamic Workflow** | `opencollab workflow run NAME` | Deterministic orchestration: you script the control flow in Python — fan-out, loops, verification gates — and the LLM fills in each step. The structure is yours, not the model's to choose. |
 
 ## Quick start
 
@@ -98,8 +96,13 @@ call the installed binary directly:
 
 ```bash
 .venv/bin/opencollab --workspace .
-.venv/bin/opencollab workflow run NAME --args '{"goal": "..."}' --dir path/to/workflows
+OPENCOLLAB_WORKFLOWS_DIR=path/to/workflows \
+  .venv/bin/opencollab workflow run NAME --args '{"goal": "..."}'
 ```
+
+The workflow directory contains caller-authored Python modules tagged with
+`@workflow`. The same `OPENCOLLAB_WORKFLOWS_DIR` setting applies to both
+`opencollab workflow list` and `opencollab workflow run`.
 
 Useful flags: `--trace` records a trajectory (every LLM call and tool exec);
 `--no-worktrees` disables per-child git-worktree isolation; `--yolo`
