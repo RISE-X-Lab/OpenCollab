@@ -198,12 +198,12 @@ jobs:
           "$install_root/bin/opencollab" workflow run --help > workflow-run-help.txt
           OPENCOLLAB_WORKFLOWS_DIR="$probe_root/workflows" \
             "$install_root/bin/opencollab" workflow list > workflow-list.txt
-          rg -q -- '--workspace' top-help.txt
-          rg -q 'workflow' top-help.txt
-          rg -q 'list' workflow-help.txt
-          rg -q 'run' workflow-help.txt
-          rg -q -- '--args' workflow-run-help.txt
-          rg -q 'No workflows found' workflow-list.txt
+          grep -Fq -- '--workspace' top-help.txt
+          grep -Fq 'workflow' top-help.txt
+          grep -Fq 'list' workflow-help.txt
+          grep -Fq 'run' workflow-help.txt
+          grep -Fq -- '--args' workflow-run-help.txt
+          grep -Fq 'No workflows found' workflow-list.txt
 
   macos-integrity:
     name: macOS path integrity
