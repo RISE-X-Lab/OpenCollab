@@ -215,8 +215,8 @@ Measured on the current tree, lane range `1205dc3..HEAD` (branch `refactor/slim-
 
 | Slice | + | − | **net** | files |
 |--|--:|--:|--:|--:|
-| **Production code** (`opencollab/opencollab/**`) | 334 | 810 | **−476** | 12 |
-| Tests (`opencollab/tests/**`) | 316 | 1347 | **−1031** | 17 |
+| **Production code** (`opencollab/**`) | 334 | 810 | **−476** | 12 |
+| Tests (`tests/**`) | 316 | 1347 | **−1031** | 17 |
 | Docs (roadmap + catalog) | 352 | 0 | +352 | 2 |
 | **Total** | 1002 | 2157 | **−1155** | 31 |
 
@@ -267,7 +267,7 @@ The 9 commits, in order:
 
 ## 7. Exhibits (anchors for the report)
 
-All paths under `opencollab/opencollab/`. Verified against the `refactor/slim-s1-fsm` tip.
+All paths under `opencollab/`. Verified against the `refactor/slim-s1-fsm` tip.
 
 | Exhibit | Anchor | Feeds report § |
 |--|--|--|

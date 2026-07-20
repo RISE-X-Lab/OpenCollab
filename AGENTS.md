@@ -8,9 +8,9 @@ long form.
 ## Setup & the checks your change must pass
 
 ```bash
-cd opencollab && uv sync --extra dev          # create .venv with runtime + dev deps
-uv run --project opencollab ruff check .      # run from the REPO ROOT — lints the whole tree
-cd opencollab && uv run pytest -q             # test suite; must stay green
+uv sync --extra dev          # create .venv with runtime + dev deps
+uv run ruff check .          # lint the whole repository
+uv run pytest -q             # test suite; must stay green
 ```
 
 New behavior needs tests. Do not weaken or delete a test to make CI pass.
@@ -23,11 +23,11 @@ Strict clean architecture — dependencies point **inward only**:
 adapters  →  application  →  domain
 ```
 
-- `opencollab/opencollab/domain/` — pure value objects + session FSM. **Stdlib only, no I/O.**
-- `opencollab/opencollab/application/` — use cases, scheduler, ports (`application/ports.py`). Imports `domain` + stdlib only.
-- `opencollab/opencollab/adapters/` — concrete impls (`cli/`, `tui/`, `llm/`, `tools/`, env, tracing, store).
-- `opencollab/opencollab/bootstrap/` — composition root; the only layer that knows concrete types.
-- `opencollab/opencollab/sdk/` — versioned integration surface for external workflow and evaluation packages.
+- `opencollab/domain/` — pure value objects + session FSM. **Stdlib only, no I/O.**
+- `opencollab/application/` — use cases, scheduler, ports (`application/ports.py`). Imports `domain` + stdlib only.
+- `opencollab/adapters/` — concrete impls (`cli/`, `tui/`, `llm/`, `tools/`, env, tracing, store).
+- `opencollab/bootstrap/` — composition root; the only layer that knows concrete types.
+- `opencollab/sdk/` — versioned integration surface for external workflow and evaluation packages.
 - `scripts/` — framework launchers and provider diagnostics.
 
 Never add an inward → outward import (`tests/test_*_boundaries.py` fail the build on it).
