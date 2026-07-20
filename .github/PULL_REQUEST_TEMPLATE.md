@@ -14,7 +14,7 @@
 <!-- Commands run, tests added, manual checks. -->
 
 ```bash
-cd opencollab && uv run pytest -q && uv run ruff check opencollab/
+uv run pytest -q && uv run ruff check .
 ```
 
 ## Checklist

@@ -17,7 +17,7 @@
    - **只锁核心**:网只覆盖**核心不变量**(FSM 拓扑、判分读的 `AgentRunResult.outcome`、持久化往返、预算闸门…);**外围 / 展示层测试(TUI、toolbar、渲染串之类)该删就删,完全不必锁**——锁核心是为了别人 fork 后能自由改外围而不被我们的具体行为绑死,不是让 fork 复刻我们的每个像素。
 3. **docstring 只加 docstring / rename / 抽已重复项**,**绝不加新抽象层**(小而美,prefer deletion over abstraction)。
 4. **不许碰**(都是 live / 核心):`config.py` 的 file-first key 优先级、`fact_sheet.py`、`ports.py` 成员、`spawn_with_review`。
-5. **完成判据**:`cd opencollab && .venv/bin/python -m pytest -q` 全绿 + `.venv/bin/ruff check opencollab/` 绿 + `tests/test_*_boundaries.py` 绿。(首次需 `cd opencollab && uv sync --extra dev`。)
+5. **完成判据**:`uv run pytest -q` 全绿 + `uv run ruff check .` 绿 + `tests/test_*_boundaries.py` 绿。(首次需 `uv sync --extra dev`。)
 6. **收尾**:conventional commit(`refactor:` / `docs:` / `test:`),**不 push、不合并**,等人确认。完成后在项目记忆 `project_slimming_plan.md` 里标记本 lane 完成(给下一个会话看)。
 
 ---
@@ -46,7 +46,7 @@
 - 删 `application/async_timeout.py` 的 `terminate_tasks` + `AsyncRuntimeUnhealthyError`,及 `sdk/lifecycle.py` 对应 `__all__` 项
 - 删 `domain/scheduler.py` 的 `SchedulerState.all_done`、`application/_scheduler_constants.py` 的 `MAX_FORCED_CLEANUP_TIMEOUT`
 - 删 `application/autosave.py` 的 `pending_write_futures` 空 compat 属性(若本 lane 一起做)
-- 删幽灵 `opencollab/opencollab/harness/`(只剩 pyc)+ `opencollab/container.id`、`container.name` 运行时残留,并把后两者加进 `.gitignore`
+- 删幽灵 `opencollab/harness/`(只剩 pyc)+ `opencollab/container.id`、`container.name` 运行时残留,并把后两者加进 `.gitignore`
 - 归档 `docs/2026-06-15-context-loader-design.md` → `docs/archive/`(front-matter 已注明 not implemented;`grep ContextLoaderPort` = 0)
 **解锁**:无(纯清场)。
 
@@ -120,12 +120,12 @@
 
 **Phase 1（清场）:**
 ```
-在 OpenCollab 项目继续既定重构。先读 docs/slimming-roadmap.md 的「铁律」+「Phase 1 · 清场」两段,严格照办。本会话只做 Phase 1 清场,一分支。每删一项先 grep 证明 0 引用。完成判据=cd opencollab && .venv/bin/python -m pytest -q 全绿 + .venv/bin/ruff check opencollab/ 绿。conventional commit 不 push,并在项目记忆 project_slimming_plan.md 标记 Phase 1 完成。开始。
+在 OpenCollab 项目继续既定重构。先读 docs/slimming-roadmap.md 的「铁律」+「Phase 1 · 清场」两段,严格照办。本会话只做 Phase 1 清场,一分支。每删一项先 grep 证明 0 引用。完成判据=uv run pytest -q 全绿 + uv run ruff check . 绿。conventional commit 不 push,并在项目记忆 project_slimming_plan.md 标记 Phase 1 完成。开始。
 ```
 
 **Lane S1 / S2 / S3 / S4a / S4b / S4c（把 Sx 换成对应名）:**
 ```
-在 OpenCollab 项目继续既定重构。先读 docs/slimming-roadmap.md 的「铁律」+「Lane Sx」两段,再读 docs/pattern-catalog.md 里它引用的 § 作为深层证据。本会话只做 Lane Sx 这一个 lane,一分支,严格按 lane 内列出的步骤顺序(改行为的步骤先布 golden-master 网)。完成判据=cd opencollab && .venv/bin/python -m pytest -q 全绿 + .venv/bin/ruff check opencollab/ 绿 + tests/test_*_boundaries.py 绿。conventional commit 不 push,并在项目记忆 project_slimming_plan.md 标记 Lane Sx 完成。开始。
+在 OpenCollab 项目继续既定重构。先读 docs/slimming-roadmap.md 的「铁律」+「Lane Sx」两段,再读 docs/pattern-catalog.md 里它引用的 § 作为深层证据。本会话只做 Lane Sx 这一个 lane,一分支,严格按 lane 内列出的步骤顺序(改行为的步骤先布 golden-master 网)。完成判据=uv run pytest -q 全绿 + uv run ruff check . 绿 + tests/test_*_boundaries.py 绿。conventional commit 不 push,并在项目记忆 project_slimming_plan.md 标记 Lane Sx 完成。开始。
 ```
 
 **Phase 3（写报告）:**
