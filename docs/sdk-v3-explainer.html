@@ -1,0 +1,1979 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#eaf1f2">
+  <title>OpenCollab SDK 0.4 — 四个名字，一套运行语义</title>
+  <meta
+    name="description"
+    content="OpenCollab SDK 0.4 架构剖面：公共 API 如何从 37 个导出收敛为 4 个名字，同时保留完整的清理、超时与证据语义。"
+  >
+  <style>
+    :root {
+      --mist: #eaf1f2;
+      --porcelain: #f8fbfa;
+      --ink: #142c3b;
+      --ink-soft: #36505d;
+      --cobalt: #3157e8;
+      --cobalt-deep: #1f3ca9;
+      --coral: #ef6a4c;
+      --mint: #8ec9b8;
+      --mint-pale: #d8eee7;
+      --line: rgba(20, 44, 59, 0.18);
+      --line-strong: rgba(20, 44, 59, 0.34);
+      --shadow: 0 28px 80px rgba(20, 44, 59, 0.13);
+      --display: "Arial Narrow", "Aptos Narrow", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --body: "Source Han Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --page: min(1240px, calc(100vw - 48px));
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--mist);
+      font-family: var(--body);
+      font-size: 16px;
+      line-height: 1.68;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      content: "";
+      background:
+        radial-gradient(circle at 9% 4%, rgba(142, 201, 184, 0.24), transparent 28%),
+        radial-gradient(circle at 92% 18%, rgba(49, 87, 232, 0.10), transparent 30%),
+        var(--mist);
+    }
+
+    a {
+      color: inherit;
+    }
+
+    button,
+    a {
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    :focus-visible {
+      outline: 3px solid var(--coral);
+      outline-offset: 4px;
+    }
+
+    .skip-link {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 100;
+      padding: 10px 14px;
+      color: var(--porcelain);
+      background: var(--ink);
+      transform: translateY(-160%);
+      transition: transform 160ms ease;
+    }
+
+    .skip-link:focus {
+      transform: translateY(0);
+    }
+
+    .hero {
+      position: relative;
+      min-height: 100svh;
+      overflow: hidden;
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    .hero::before {
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      content: "";
+      opacity: 0.7;
+      background-image:
+        linear-gradient(rgba(20, 44, 59, 0.055) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(20, 44, 59, 0.055) 1px, transparent 1px);
+      background-size: 24px 24px;
+      mask-image: linear-gradient(to bottom, black 0%, rgba(0, 0, 0, 0.85) 72%, transparent 100%);
+    }
+
+    .masthead {
+      width: var(--page);
+      margin: 0 auto;
+      min-height: 76px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      border-bottom: 1px solid var(--line-strong);
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+    }
+
+    .brand-mark {
+      width: 28px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      color: var(--porcelain);
+      background: var(--ink);
+      clip-path: polygon(0 0, 72% 0, 100% 28%, 100% 100%, 28% 100%, 0 72%);
+    }
+
+    .mast-meta {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      color: var(--ink-soft);
+    }
+
+    .ci-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .ci-status::before {
+      width: 8px;
+      height: 8px;
+      content: "";
+      background: #3d8b72;
+      border-radius: 50%;
+      box-shadow: 0 0 0 4px rgba(61, 139, 114, 0.13);
+    }
+
+    .pr-link {
+      text-decoration-thickness: 1px;
+      text-underline-offset: 4px;
+    }
+
+    .hero-layout {
+      width: var(--page);
+      margin: 0 auto;
+      padding: clamp(54px, 8vh, 100px) 0 72px;
+      display: grid;
+      grid-template-columns: minmax(330px, 0.8fr) minmax(560px, 1.2fr);
+      align-items: center;
+      gap: clamp(42px, 6vw, 96px);
+    }
+
+    .hero-copy {
+      position: relative;
+      z-index: 2;
+    }
+
+    .eyebrow,
+    .section-kicker,
+    .micro-label {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.13em;
+      line-height: 1.4;
+      text-transform: uppercase;
+    }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--cobalt-deep);
+    }
+
+    .eyebrow::before {
+      width: 38px;
+      height: 2px;
+      content: "";
+      background: var(--cobalt);
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      text-wrap: pretty;
+    }
+
+    h1 {
+      max-width: 650px;
+      margin: 24px 0 28px;
+      font-family: var(--display);
+      font-size: clamp(54px, 7.3vw, 108px);
+      font-weight: 760;
+      letter-spacing: -0.065em;
+      line-height: 0.91;
+    }
+
+    h1 span {
+      display: block;
+    }
+
+    h1 .thesis-accent {
+      position: relative;
+      width: fit-content;
+      color: var(--cobalt);
+    }
+
+    h1 .thesis-accent::after {
+      position: absolute;
+      right: -0.18em;
+      bottom: 0.08em;
+      width: 0.16em;
+      height: 0.16em;
+      content: "";
+      background: var(--coral);
+      border-radius: 50%;
+    }
+
+    .hero-lede {
+      max-width: 580px;
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: clamp(17px, 1.4vw, 20px);
+      line-height: 1.75;
+    }
+
+    .api-signature {
+      margin: 34px 0 0;
+      padding: 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      list-style: none;
+    }
+
+    .api-signature li {
+      padding: 8px 11px;
+      color: var(--ink);
+      background: rgba(248, 251, 250, 0.66);
+      border: 1px solid var(--line-strong);
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1;
+      box-shadow: 3px 3px 0 rgba(20, 44, 59, 0.08);
+    }
+
+    .hero-note {
+      margin-top: 34px;
+      padding-left: 16px;
+      color: var(--ink-soft);
+      border-left: 3px solid var(--coral);
+      font-size: 13px;
+    }
+
+    .machine {
+      position: relative;
+      margin: 0;
+      min-width: 0;
+      filter: drop-shadow(0 30px 50px rgba(20, 44, 59, 0.12));
+    }
+
+    .machine-shell {
+      position: relative;
+      padding: 18px;
+      background: rgba(248, 251, 250, 0.76);
+      border: 1px solid var(--line-strong);
+      backdrop-filter: blur(16px);
+      clip-path: polygon(0 0, calc(100% - 30px) 0, 100% 30px, 100% 100%, 30px 100%, 0 calc(100% - 30px));
+    }
+
+    .machine-shell::before,
+    .machine-shell::after {
+      position: absolute;
+      z-index: 4;
+      width: 34px;
+      height: 34px;
+      pointer-events: none;
+      content: "";
+    }
+
+    .machine-shell::before {
+      top: 0;
+      right: 0;
+      border-top: 1px solid var(--line-strong);
+      border-right: 1px solid var(--line-strong);
+    }
+
+    .machine-shell::after {
+      bottom: 0;
+      left: 0;
+      border-bottom: 1px solid var(--line-strong);
+      border-left: 1px solid var(--line-strong);
+    }
+
+    .machine-toolbar {
+      min-height: 42px;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
+      font-family: var(--mono);
+    }
+
+    .machine-title {
+      display: grid;
+      gap: 3px;
+    }
+
+    .machine-title strong {
+      font-size: 12px;
+      letter-spacing: 0.1em;
+    }
+
+    .machine-title span {
+      color: var(--ink-soft);
+      font-size: 10px;
+    }
+
+    .view-switch {
+      display: inline-grid;
+      grid-template-columns: 1fr 1fr;
+      padding: 3px;
+      background: var(--mint-pale);
+      border: 1px solid rgba(20, 44, 59, 0.2);
+    }
+
+    .view-switch button {
+      min-width: 66px;
+      padding: 7px 10px;
+      color: var(--ink-soft);
+      background: transparent;
+      border: 0;
+      font: 700 10px/1 var(--mono);
+      letter-spacing: 0.08em;
+      cursor: pointer;
+    }
+
+    .view-switch button[aria-pressed="true"] {
+      color: var(--porcelain);
+      background: var(--ink);
+    }
+
+    .machine-stage {
+      position: relative;
+      min-height: 610px;
+      padding: 28px 28px 22px;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto 42px auto 58px auto 48px auto;
+      align-items: center;
+      background:
+        linear-gradient(90deg, transparent 49.85%, rgba(20, 44, 59, 0.08) 50%, transparent 50.15%),
+        linear-gradient(rgba(20, 44, 59, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(20, 44, 59, 0.035) 1px, transparent 1px),
+        rgba(234, 241, 242, 0.64);
+      background-size: auto, 18px 18px, 18px 18px, auto;
+      border: 1px solid var(--line);
+    }
+
+    .surface-panel {
+      position: relative;
+      z-index: 3;
+      padding: 17px;
+      background: var(--porcelain);
+      border: 2px solid var(--cobalt);
+      box-shadow: 8px 8px 0 rgba(49, 87, 232, 0.10);
+      transition: transform 420ms cubic-bezier(0.2, 0.75, 0.2, 1), box-shadow 420ms ease;
+    }
+
+    .panel-label {
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      color: var(--cobalt-deep);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.11em;
+      line-height: 1.2;
+      text-transform: uppercase;
+    }
+
+    .panel-label span:last-child {
+      color: var(--ink-soft);
+      font-weight: 500;
+      letter-spacing: 0;
+      text-transform: none;
+    }
+
+    .port-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .api-port {
+      position: relative;
+      min-height: 48px;
+      padding: 11px 7px;
+      display: grid;
+      place-items: center;
+      color: var(--porcelain);
+      background: var(--cobalt);
+      font-family: var(--mono);
+      font-size: clamp(9px, 0.8vw, 11px);
+      font-weight: 700;
+      text-align: center;
+      overflow-wrap: anywhere;
+    }
+
+    .api-port::after {
+      position: absolute;
+      bottom: -7px;
+      left: 50%;
+      width: 10px;
+      height: 10px;
+      content: "";
+      background: var(--porcelain);
+      border: 2px solid var(--cobalt);
+      border-radius: 50%;
+      transform: translateX(-50%);
+    }
+
+    .machine-internals {
+      display: contents;
+    }
+
+    .trace-trunk,
+    .trace-fan,
+    .trace-inward {
+      position: relative;
+      min-height: 100%;
+      transition: opacity 320ms ease, filter 320ms ease, transform 420ms ease;
+    }
+
+    .trace-trunk::before,
+    .trace-inward::before {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 50%;
+      width: 2px;
+      content: "";
+      background: var(--coral);
+      transform: translateX(-50%) scaleY(0);
+      transform-origin: top;
+      animation: grow-line 700ms 500ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    }
+
+    .trace-inward::before {
+      background: var(--mint);
+      animation-delay: 1.25s;
+    }
+
+    .trace-trunk::after,
+    .trace-inward::after {
+      position: absolute;
+      bottom: 2px;
+      left: 50%;
+      width: 7px;
+      height: 7px;
+      content: "";
+      background: var(--coral);
+      border-radius: 50%;
+      transform: translate(-50%, 50%);
+    }
+
+    .trace-inward::after {
+      background: var(--mint);
+    }
+
+    .core-panel {
+      position: relative;
+      z-index: 2;
+      width: min(320px, 72%);
+      margin: 0 auto;
+      padding: 16px 20px;
+      color: var(--porcelain);
+      background: var(--ink);
+      border: 1px solid var(--ink);
+      text-align: center;
+      box-shadow: 8px 8px 0 rgba(239, 106, 76, 0.17);
+      transition: opacity 320ms ease, filter 320ms ease, transform 420ms ease;
+    }
+
+    .core-panel strong,
+    .runtime-card strong,
+    .foundation-card strong {
+      display: block;
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: -0.02em;
+    }
+
+    .core-panel span,
+    .runtime-card span,
+    .foundation-card span {
+      display: block;
+      margin-top: 4px;
+      color: rgba(248, 251, 250, 0.72);
+      font-size: 10px;
+      line-height: 1.35;
+    }
+
+    .trace-fan::before {
+      position: absolute;
+      top: 0;
+      left: 16.7%;
+      width: 66.6%;
+      height: 32px;
+      content: "";
+      border-right: 2px solid var(--coral);
+      border-bottom: 2px solid var(--coral);
+      border-left: 2px solid var(--coral);
+      transform: scaleX(0);
+      transform-origin: center;
+      animation: grow-fan 700ms 880ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
+    }
+
+    .trace-fan::after {
+      position: absolute;
+      top: 0;
+      left: 50%;
+      width: 2px;
+      height: 32px;
+      content: "";
+      background: var(--coral);
+      transform: translateX(-50%) scaleY(0);
+      transform-origin: top;
+      animation: grow-line 500ms 880ms ease forwards;
+    }
+
+    .runtime-row {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      transition: opacity 320ms ease, filter 320ms ease, transform 420ms ease;
+    }
+
+    .runtime-card {
+      min-height: 75px;
+      padding: 14px 10px;
+      display: grid;
+      align-content: center;
+      color: var(--porcelain);
+      background: var(--cobalt-deep);
+      border-top: 4px solid var(--coral);
+      text-align: center;
+    }
+
+    .foundation-stack {
+      display: grid;
+      grid-template-columns: 1.1fr 0.9fr;
+      gap: 10px;
+      transition: opacity 320ms ease, filter 320ms ease, transform 420ms ease;
+    }
+
+    .foundation-card {
+      min-height: 58px;
+      padding: 12px 14px;
+      display: grid;
+      align-content: center;
+      background: var(--mint-pale);
+      border: 1px solid rgba(20, 44, 59, 0.25);
+    }
+
+    .foundation-card span {
+      color: var(--ink-soft);
+    }
+
+    .adapter-rack {
+      position: absolute;
+      top: 232px;
+      right: -1px;
+      z-index: 3;
+      width: 108px;
+      padding: 12px 10px;
+      color: var(--ink);
+      background: var(--coral);
+      border-left: 5px solid var(--porcelain);
+      font-family: var(--mono);
+      transition: opacity 320ms ease, filter 320ms ease, transform 420ms ease;
+    }
+
+    .adapter-rack strong {
+      display: block;
+      margin-bottom: 7px;
+      color: var(--ink);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+    }
+
+    .adapter-rack span {
+      display: block;
+      padding: 3px 0;
+      color: rgba(20, 44, 59, 0.82);
+      font-size: 9px;
+      border-top: 1px solid rgba(20, 44, 59, 0.18);
+    }
+
+    .machine[data-view="surface"] .surface-panel {
+      transform: translateY(178px) scale(1.03);
+      box-shadow: 12px 12px 0 rgba(49, 87, 232, 0.13);
+    }
+
+    .machine[data-view="surface"] .trace-trunk,
+    .machine[data-view="surface"] .trace-fan,
+    .machine[data-view="surface"] .trace-inward,
+    .machine[data-view="surface"] .core-panel,
+    .machine[data-view="surface"] .runtime-row,
+    .machine[data-view="surface"] .foundation-stack,
+    .machine[data-view="surface"] .adapter-rack {
+      opacity: 0.1;
+      filter: blur(5px);
+      transform: scale(0.96);
+    }
+
+    .machine-caption {
+      margin: 13px 4px 0;
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      color: var(--ink-soft);
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.5;
+    }
+
+    .machine-caption strong {
+      color: var(--ink);
+    }
+
+    main {
+      overflow: clip;
+    }
+
+    .section-shell {
+      position: relative;
+      width: var(--page);
+      margin: 0 auto;
+      padding: clamp(84px, 11vw, 154px) 0;
+    }
+
+    .section-shell + .section-shell {
+      border-top: 1px solid var(--line-strong);
+    }
+
+    .section-rail {
+      position: absolute;
+      top: clamp(84px, 11vw, 154px);
+      left: -38px;
+      color: var(--ink-soft);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+    }
+
+    .section-heading {
+      margin-bottom: clamp(44px, 6vw, 78px);
+      display: grid;
+      grid-template-columns: minmax(280px, 0.8fr) minmax(320px, 1.2fr);
+      gap: 70px;
+      align-items: end;
+    }
+
+    .section-kicker {
+      color: var(--cobalt-deep);
+    }
+
+    h2 {
+      max-width: 780px;
+      margin: 12px 0 0;
+      font-family: var(--display);
+      font-size: clamp(40px, 5.4vw, 76px);
+      font-weight: 760;
+      letter-spacing: -0.055em;
+      line-height: 0.98;
+    }
+
+    .section-intro {
+      max-width: 630px;
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: clamp(16px, 1.4vw, 19px);
+    }
+
+    .thesis-band {
+      width: 100%;
+      padding: clamp(60px, 8vw, 108px) max(24px, calc((100vw - min(1240px, calc(100vw - 48px))) / 2));
+      color: var(--porcelain);
+      background: var(--ink);
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: clamp(28px, 5vw, 72px);
+      align-items: start;
+    }
+
+    .thesis-index {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.12em;
+      writing-mode: vertical-rl;
+    }
+
+    .thesis-band blockquote {
+      max-width: 1100px;
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(35px, 5vw, 72px);
+      font-weight: 680;
+      letter-spacing: -0.045em;
+      line-height: 1.08;
+    }
+
+    .thesis-band em {
+      color: var(--mint);
+      font-style: normal;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .metric-card {
+      position: relative;
+      min-height: 290px;
+      padding: 26px;
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      background: rgba(248, 251, 250, 0.76);
+      border: 1px solid var(--line-strong);
+      box-shadow: 8px 8px 0 rgba(20, 44, 59, 0.06);
+    }
+
+    .metric-value {
+      align-self: center;
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      font-family: var(--display);
+      font-size: clamp(64px, 8vw, 108px);
+      font-weight: 780;
+      letter-spacing: -0.07em;
+      line-height: 0.9;
+    }
+
+    .metric-value del {
+      color: var(--ink-soft);
+      font-size: 0.42em;
+      font-weight: 500;
+      text-decoration-color: var(--coral);
+      text-decoration-thickness: 3px;
+    }
+
+    .metric-value .arrow {
+      color: var(--coral);
+      font-family: var(--mono);
+      font-size: 0.3em;
+      letter-spacing: 0;
+    }
+
+    .metric-copy {
+      position: relative;
+      z-index: 1;
+      max-width: 290px;
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 14px;
+    }
+
+    .layer-map {
+      display: grid;
+      gap: 10px;
+    }
+
+    .layer-row {
+      min-height: 112px;
+      padding: 20px 24px;
+      display: grid;
+      grid-template-columns: 210px 1fr 1fr;
+      align-items: center;
+      gap: 30px;
+      background: rgba(248, 251, 250, 0.72);
+      border: 1px solid var(--line);
+      transition: transform 180ms ease, border-color 180ms ease;
+    }
+
+    .layer-row:hover {
+      border-color: var(--cobalt);
+      transform: translateX(6px);
+    }
+
+    .layer-row:nth-child(3) {
+      color: var(--porcelain);
+      background: var(--ink);
+    }
+
+    .layer-name {
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .layer-name small {
+      display: block;
+      margin-top: 6px;
+      color: var(--ink-soft);
+      font-size: 10px;
+      font-weight: 500;
+    }
+
+    .layer-row:nth-child(3) .layer-name small,
+    .layer-row:nth-child(3) .layer-duty,
+    .layer-row:nth-child(3) .layer-limit {
+      color: rgba(248, 251, 250, 0.67);
+    }
+
+    .layer-duty,
+    .layer-limit {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 14px;
+    }
+
+    .layer-duty::before,
+    .layer-limit::before {
+      display: block;
+      margin-bottom: 5px;
+      font: 700 9px/1 var(--mono);
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    .layer-duty::before {
+      color: var(--cobalt);
+      content: "OWNS";
+    }
+
+    .layer-limit::before {
+      color: var(--coral);
+      content: "DOES NOT OWN";
+    }
+
+    .lifecycle-track {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .lifecycle-track::before {
+      position: absolute;
+      top: 33px;
+      right: 7%;
+      left: 7%;
+      height: 2px;
+      content: "";
+      background: linear-gradient(90deg, var(--cobalt), var(--coral) 50%, var(--mint));
+    }
+
+    .life-step {
+      position: relative;
+      z-index: 1;
+      min-height: 218px;
+      padding: 0 12px 18px;
+      background: linear-gradient(to bottom, transparent 0 66px, rgba(248, 251, 250, 0.72) 66px);
+      border: 1px solid transparent;
+      border-bottom-color: var(--line-strong);
+    }
+
+    .life-node {
+      width: 66px;
+      height: 66px;
+      margin: 0 auto 20px;
+      display: grid;
+      place-items: center;
+      color: var(--porcelain);
+      background: var(--ink);
+      border: 8px solid var(--mist);
+      border-radius: 50%;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .life-step:nth-child(3) .life-node,
+    .life-step:nth-child(4) .life-node {
+      color: var(--ink);
+      background: var(--coral);
+    }
+
+    .life-step:nth-child(n+5) .life-node {
+      color: var(--ink);
+      background: var(--mint);
+    }
+
+    .life-step h3 {
+      margin: 0 0 8px;
+      font-family: var(--mono);
+      font-size: 12px;
+      letter-spacing: -0.02em;
+      text-align: center;
+    }
+
+    .life-step p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 12px;
+      line-height: 1.55;
+      text-align: center;
+    }
+
+    .semantics-layout {
+      display: grid;
+      grid-template-columns: minmax(300px, 0.9fr) minmax(420px, 1.1fr);
+      gap: clamp(34px, 6vw, 88px);
+      align-items: center;
+    }
+
+    .result-object {
+      position: relative;
+      padding: 26px;
+      color: var(--porcelain);
+      background: var(--ink);
+      box-shadow: 14px 14px 0 var(--mint);
+      clip-path: polygon(0 0, calc(100% - 22px) 0, 100% 22px, 100% 100%, 0 100%);
+    }
+
+    .result-object::before {
+      display: block;
+      margin-bottom: 17px;
+      color: var(--mint);
+      content: "UNIFIED OUTCOME";
+      font: 700 10px/1 var(--mono);
+      letter-spacing: 0.12em;
+    }
+
+    pre {
+      margin: 0;
+      overflow-x: auto;
+      font: 12px/1.75 var(--mono);
+      tab-size: 2;
+    }
+
+    .tok-type { color: #a8c7ff; }
+    .tok-key { color: #8ec9b8; }
+    .tok-string { color: #ff9f87; }
+    .tok-comment { color: #8396a0; }
+    .tok-call { color: #d8e483; }
+
+    .state-network {
+      position: relative;
+      display: grid;
+      gap: 11px;
+    }
+
+    .state-card {
+      position: relative;
+      min-height: 88px;
+      padding: 16px 20px 16px 72px;
+      display: grid;
+      align-content: center;
+      background: rgba(248, 251, 250, 0.76);
+      border: 1px solid var(--line-strong);
+    }
+
+    .state-card::before {
+      position: absolute;
+      top: 50%;
+      left: 24px;
+      width: 22px;
+      height: 22px;
+      content: "";
+      background: var(--mint);
+      border-radius: 50%;
+      transform: translateY(-50%);
+      box-shadow: 0 0 0 6px rgba(142, 201, 184, 0.2);
+    }
+
+    .state-card.stopped::before {
+      background: var(--cobalt);
+      box-shadow: 0 0 0 6px rgba(49, 87, 232, 0.13);
+    }
+
+    .state-card.failed::before,
+    .state-card.infrastructure::before {
+      background: var(--coral);
+      box-shadow: 0 0 0 6px rgba(239, 106, 76, 0.14);
+    }
+
+    .state-card.infrastructure {
+      margin-top: 12px;
+      background: rgba(239, 106, 76, 0.09);
+      border-color: var(--coral);
+    }
+
+    .state-card.infrastructure::after {
+      position: absolute;
+      top: -17px;
+      left: 33px;
+      width: 1px;
+      height: 16px;
+      content: "";
+      background: var(--coral);
+    }
+
+    .state-card strong {
+      font-family: var(--mono);
+      font-size: 13px;
+    }
+
+    .state-card span {
+      margin-top: 4px;
+      color: var(--ink-soft);
+      font-size: 13px;
+    }
+
+    .migration-grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 16px;
+      align-items: stretch;
+    }
+
+    .code-panel {
+      position: relative;
+      min-width: 0;
+      padding: 24px;
+      overflow: hidden;
+      color: var(--porcelain);
+      background: #1d3544;
+      border-top: 4px solid var(--ink-soft);
+    }
+
+    .code-panel.after {
+      background: var(--ink);
+      border-top-color: var(--mint);
+      box-shadow: 10px 10px 0 rgba(142, 201, 184, 0.35);
+    }
+
+    .code-panel header {
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      font-family: var(--mono);
+    }
+
+    .code-panel header strong {
+      font-size: 12px;
+      letter-spacing: 0.08em;
+    }
+
+    .code-panel header span {
+      color: rgba(248, 251, 250, 0.58);
+      font-size: 10px;
+    }
+
+    .honesty-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .ledger {
+      padding: 28px;
+      background: rgba(248, 251, 250, 0.72);
+      border: 1px solid var(--line-strong);
+    }
+
+    .ledger h3 {
+      margin: 0 0 22px;
+      font-family: var(--display);
+      font-size: 32px;
+      letter-spacing: -0.04em;
+    }
+
+    .ledger.keep h3 {
+      color: #2c765f;
+    }
+
+    .ledger.cut h3 {
+      color: var(--coral);
+    }
+
+    .ledger ul {
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 13px;
+      list-style: none;
+    }
+
+    .ledger li {
+      position: relative;
+      padding-left: 24px;
+      color: var(--ink-soft);
+      font-size: 14px;
+    }
+
+    .ledger li::before {
+      position: absolute;
+      top: 0.67em;
+      left: 0;
+      width: 10px;
+      height: 2px;
+      content: "";
+      background: currentColor;
+    }
+
+    .verification-strip {
+      margin-top: 16px;
+      padding: 20px 24px;
+      display: grid;
+      grid-template-columns: 1.1fr repeat(4, auto);
+      align-items: center;
+      gap: 22px;
+      color: var(--porcelain);
+      background: var(--cobalt-deep);
+      font-family: var(--mono);
+    }
+
+    .verification-strip strong {
+      font-size: 12px;
+      letter-spacing: 0.08em;
+    }
+
+    .verification-strip span {
+      color: rgba(248, 251, 250, 0.75);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
+    .page-footer {
+      padding: 64px 24px 52px;
+      color: var(--porcelain);
+      background: var(--ink);
+    }
+
+    .footer-inner {
+      width: var(--page);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: end;
+      gap: 36px;
+    }
+
+    .footer-title {
+      max-width: 850px;
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(36px, 5vw, 70px);
+      font-weight: 720;
+      letter-spacing: -0.05em;
+      line-height: 1;
+    }
+
+    .footer-title span {
+      color: var(--mint);
+    }
+
+    .footer-link {
+      padding: 13px 16px;
+      color: var(--ink);
+      background: var(--mint);
+      font: 700 11px/1 var(--mono);
+      letter-spacing: 0.08em;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: transform 160ms ease, box-shadow 160ms ease;
+    }
+
+    .footer-link:hover {
+      transform: translate(-4px, -4px);
+      box-shadow: 6px 6px 0 var(--coral);
+    }
+
+    .footer-meta {
+      width: var(--page);
+      margin: 40px auto 0;
+      padding-top: 18px;
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      color: rgba(248, 251, 250, 0.56);
+      border-top: 1px solid rgba(248, 251, 250, 0.18);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+
+    @keyframes grow-line {
+      to { transform: translateX(-50%) scaleY(1); }
+    }
+
+    @keyframes grow-fan {
+      to { transform: scaleX(1); }
+    }
+
+    @keyframes hero-enter {
+      from {
+        opacity: 0;
+        transform: translateY(18px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .hero-copy > * {
+      opacity: 0;
+      animation: hero-enter 650ms cubic-bezier(0.2, 0.75, 0.2, 1) forwards;
+    }
+
+    .hero-copy > :nth-child(1) { animation-delay: 80ms; }
+    .hero-copy > :nth-child(2) { animation-delay: 150ms; }
+    .hero-copy > :nth-child(3) { animation-delay: 230ms; }
+    .hero-copy > :nth-child(4) { animation-delay: 310ms; }
+    .hero-copy > :nth-child(5) { animation-delay: 390ms; }
+
+    @media (max-width: 1080px) {
+      :root {
+        --page: min(940px, calc(100vw - 40px));
+      }
+
+      .hero-layout {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-copy {
+        max-width: 780px;
+      }
+
+      .machine {
+        width: min(760px, 100%);
+        margin: 0 auto;
+      }
+
+      .section-rail {
+        display: none;
+      }
+
+      .lifecycle-track {
+        grid-template-columns: repeat(4, 1fr);
+        gap: 18px 8px;
+      }
+
+      .lifecycle-track::before {
+        display: none;
+      }
+
+      .life-step {
+        border: 1px solid var(--line);
+      }
+
+      .verification-strip {
+        grid-template-columns: 1fr 1fr 1fr;
+      }
+
+      .verification-strip strong {
+        grid-column: 1 / -1;
+      }
+    }
+
+    @media (max-width: 760px) {
+      :root {
+        --page: calc(100vw - 28px);
+      }
+
+      .masthead {
+        min-height: 66px;
+      }
+
+      .mast-meta > span:not(.ci-status) {
+        display: none;
+      }
+
+      .ci-status {
+        font-size: 9px;
+      }
+
+      .hero-layout {
+        padding-top: 48px;
+      }
+
+      h1 {
+        font-size: clamp(52px, 16vw, 82px);
+      }
+
+      .machine-shell {
+        padding: 10px;
+      }
+
+      .machine-toolbar {
+        padding: 5px 4px 10px;
+      }
+
+      .machine-title span {
+        display: none;
+      }
+
+      .machine-stage {
+        min-height: 690px;
+        padding: 20px 14px;
+        grid-template-rows: auto 42px auto 52px auto 42px auto;
+      }
+
+      .port-row {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .api-port {
+        font-size: 9px;
+      }
+
+      .core-panel {
+        width: 88%;
+      }
+
+      .runtime-row {
+        gap: 5px;
+      }
+
+      .runtime-card {
+        padding: 12px 4px;
+      }
+
+      .runtime-card strong {
+        font-size: 9px;
+      }
+
+      .runtime-card span {
+        display: none;
+      }
+
+      .adapter-rack {
+        top: 314px;
+        width: 86px;
+      }
+
+      .machine[data-view="surface"] .surface-panel {
+        transform: translateY(210px) scale(1.02);
+      }
+
+      .machine-caption {
+        display: block;
+      }
+
+      .machine-caption span:last-child {
+        display: block;
+        margin-top: 4px;
+      }
+
+      .thesis-band {
+        grid-template-columns: 1fr;
+      }
+
+      .thesis-index {
+        writing-mode: initial;
+      }
+
+      .section-heading {
+        grid-template-columns: 1fr;
+        gap: 24px;
+      }
+
+      .metric-grid,
+      .semantics-layout,
+      .migration-grid,
+      .honesty-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .metric-card {
+        min-height: 230px;
+      }
+
+      .layer-row {
+        grid-template-columns: 1fr;
+        gap: 14px;
+      }
+
+      .layer-duty,
+      .layer-limit {
+        padding-top: 12px;
+        border-top: 1px solid var(--line);
+      }
+
+      .layer-row:nth-child(3) .layer-duty,
+      .layer-row:nth-child(3) .layer-limit {
+        border-top-color: rgba(248, 251, 250, 0.16);
+      }
+
+      .lifecycle-track {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .life-step {
+        min-height: 200px;
+      }
+
+      .verification-strip {
+        grid-template-columns: 1fr 1fr;
+        gap: 13px;
+      }
+
+      .verification-strip span {
+        white-space: normal;
+      }
+
+      .footer-inner {
+        grid-template-columns: 1fr;
+      }
+
+      .footer-link {
+        width: fit-content;
+      }
+
+      .footer-meta {
+        flex-direction: column;
+        gap: 7px;
+      }
+    }
+
+    @media (max-width: 420px) {
+      .mast-meta .ci-status {
+        display: none;
+      }
+
+      .view-switch button {
+        min-width: 54px;
+      }
+
+      .machine-stage {
+        min-height: 700px;
+      }
+
+      .lifecycle-track {
+        grid-template-columns: 1fr;
+      }
+
+      .life-step {
+        min-height: auto;
+        padding: 16px;
+        display: grid;
+        grid-template-columns: 58px 1fr;
+        gap: 12px;
+        align-items: center;
+      }
+
+      .life-node {
+        width: 54px;
+        height: 54px;
+        margin: 0;
+      }
+
+      .life-step h3,
+      .life-step p {
+        grid-column: 2;
+        text-align: left;
+      }
+
+      .life-step h3 {
+        align-self: end;
+      }
+
+      .life-step p {
+        align-self: start;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-delay: 0ms !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+
+      .hero-copy > * {
+        opacity: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到正文</a>
+
+  <header class="hero" id="top">
+    <nav class="masthead" aria-label="页面信息">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">OC</span>
+        <span>OpenCollab / SDK Cutaway</span>
+      </div>
+      <div class="mast-meta">
+        <span>Package 0.4.0</span>
+        <span class="ci-status">All checks green</span>
+        <a
+          class="pr-link"
+          href="https://github.com/YihongDong/OpenCollab/pull/26"
+          target="_blank"
+          rel="noreferrer"
+        >PR #26 ↗</a>
+      </div>
+    </nav>
+
+    <div class="hero-layout">
+      <div class="hero-copy">
+        <p class="eyebrow">SDK 0.4 / architecture thesis</p>
+        <h1>
+          <span>门面只有</span>
+          <span class="thesis-accent">四个名字</span>
+          <span>机器仍然完整</span>
+        </h1>
+        <p class="hero-lede">
+          OpenCollab 把调用者必须记住的表面，从请求 DTO 图收敛成一个客户端；
+          超时、清理、持久化与证据校验没有被删掉，而是回到了唯一正确的位置：bootstrap。
+        </p>
+        <ul class="api-signature" aria-label="四个公共导出">
+          <li>OpenCollab</li>
+          <li>RunResult</li>
+          <li>RunError</li>
+          <li>workflow</li>
+        </ul>
+        <p class="hero-note">收窄认知入口，而不是安全边界。右侧可切换“表层 / 剖面”。</p>
+      </div>
+
+      <figure class="machine" data-view="cutaway" aria-labelledby="machine-heading">
+        <div class="machine-shell">
+          <div class="machine-toolbar">
+            <div class="machine-title">
+              <strong id="machine-heading">SDK X-RAY / OC-04</strong>
+              <span>public aperture → composition root → hardened runtimes</span>
+            </div>
+            <div class="view-switch" role="group" aria-label="架构视图">
+              <button type="button" data-machine-view="surface" aria-pressed="false">表层</button>
+              <button type="button" data-machine-view="cutaway" aria-pressed="true">剖面</button>
+            </div>
+          </div>
+
+          <div class="machine-stage">
+            <div class="surface-panel">
+              <div class="panel-label">
+                <span>Public surface</span>
+                <span>lazy loaded · SemVer</span>
+              </div>
+              <div class="port-row">
+                <span class="api-port">OpenCollab</span>
+                <span class="api-port">RunResult</span>
+                <span class="api-port">RunError</span>
+                <span class="api-port">workflow</span>
+              </div>
+            </div>
+
+            <div class="machine-internals">
+              <div class="trace-trunk" aria-hidden="true"></div>
+
+              <div class="core-panel">
+                <strong>bootstrap/programmatic.py</strong>
+                <span>concrete assembly · ownership · evidence</span>
+              </div>
+
+              <div class="trace-fan" aria-hidden="true"></div>
+
+              <div class="runtime-row">
+                <div class="runtime-card">
+                  <strong>agent_runtime</strong>
+                  <span>one agent</span>
+                </div>
+                <div class="runtime-card">
+                  <strong>Scheduler</strong>
+                  <span>one team</span>
+                </div>
+                <div class="runtime-card">
+                  <strong>workflow_runtime</strong>
+                  <span>one flow</span>
+                </div>
+              </div>
+
+              <div class="trace-inward" aria-hidden="true"></div>
+
+              <div class="foundation-stack">
+                <div class="foundation-card">
+                  <strong>application</strong>
+                  <span>use cases · ports · scheduling</span>
+                </div>
+                <div class="foundation-card">
+                  <strong>domain</strong>
+                  <span>FSM · value objects</span>
+                </div>
+              </div>
+
+              <aside class="adapter-rack" aria-label="由 bootstrap 组装的适配器">
+                <strong>ADAPTER RACK</strong>
+                <span>LLM</span>
+                <span>TOOLS</span>
+                <span>ENV</span>
+                <span>TRACE</span>
+                <span>STORE</span>
+              </aside>
+            </div>
+          </div>
+        </div>
+        <figcaption class="machine-caption">
+          <span><strong>依赖方向：</strong>adapters → application → domain</span>
+          <span>SDK 只委托 bootstrap，不直接 import concrete adapters/domain</span>
+        </figcaption>
+      </figure>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="thesis-band" aria-label="重构原则">
+      <div class="thesis-index">DESIGN PRINCIPLE / 01</div>
+      <blockquote>
+        精简的是调用者必须记住的东西，<em>不是清理、超时与证据。</em>
+      </blockquote>
+    </section>
+
+    <section class="section-shell" id="why">
+      <span class="section-rail" aria-hidden="true">CONTRACT APERTURE</span>
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">Why this refactor</p>
+          <h2>把认知入口收窄</h2>
+        </div>
+        <p class="section-intro">
+          v2 的问题不是功能不够，而是每次调用都要求用户先理解配置、预算、请求和结果四层对象。
+          0.4 保留能力，删除仪式。
+        </p>
+      </div>
+
+      <div class="metric-grid">
+        <article class="metric-card">
+          <p class="micro-label">Top-level exports</p>
+          <div class="metric-value"><del>37</del><span class="arrow">→</span><span>4</span></div>
+          <p class="metric-copy">日常入口只剩客户端、结果、错误和装饰器；高级协议按需导入。</p>
+        </article>
+        <article class="metric-card">
+          <p class="micro-label">Frozen DTO fields</p>
+          <div class="metric-value"><del>63</del><span class="arrow">→</span><span>7</span></div>
+          <p class="metric-copy">Agent、Team、Workflow 共用一个 RunResult，不再各有一套结果语法。</p>
+        </article>
+        <article class="metric-card">
+          <p class="micro-label">First-class regimes</p>
+          <div class="metric-value"><del>2</del><span class="arrow">→</span><span>3</span></div>
+          <p class="metric-copy">Team 不再是内部特例；agent、team、workflow 成为对称的一等入口。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section-shell" id="ownership">
+      <span class="section-rail" aria-hidden="true">OWNERSHIP MAP</span>
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">Architecture</p>
+          <h2>每层只知道它该知道的</h2>
+        </div>
+        <p class="section-intro">
+          关键变化不是把旧 Runtime 换个名字，而是取消 SDK 内部的第二套组装逻辑。
+          具体类型只在 bootstrap 相遇。
+        </p>
+      </div>
+
+      <div class="layer-map" role="list" aria-label="各层职责">
+        <article class="layer-row" role="listitem">
+          <div class="layer-name">opencollab/__init__.py<small>lazy public aperture</small></div>
+          <p class="layer-duty">惰性暴露四个公共名字，保持根包冷启动轻量。</p>
+          <p class="layer-limit">不解析配置，不加载 LLM，不组装运行时。</p>
+        </article>
+        <article class="layer-row" role="listitem">
+          <div class="layer-name">sdk/client.py<small>thin stateful facade</small></div>
+          <p class="layer-duty">构造时解析一次配置；校验普通参数；把调用委托出去。</p>
+          <p class="layer-limit">不 import concrete adapter，不管理 Session 生命周期。</p>
+        </article>
+        <article class="layer-row" role="listitem">
+          <div class="layer-name">bootstrap/programmatic.py<small>single composition root</small></div>
+          <p class="layer-duty">组装 Agent、Environment、Tracer、Scheduler；确认资源所有权。</p>
+          <p class="layer-limit">不创造第二套业务状态机，不复制 application 规则。</p>
+        </article>
+        <article class="layer-row" role="listitem">
+          <div class="layer-name">hardened runtimes<small>agent · team · workflow</small></div>
+          <p class="layer-duty">执行、取消、清理、持久化，并返回真实 token/session 指标。</p>
+          <p class="layer-limit">不向调用者泄漏三套不同的结果模型。</p>
+        </article>
+        <article class="layer-row" role="listitem">
+          <div class="layer-name">application → domain<small>inward dependency</small></div>
+          <p class="layer-duty">用例、端口、调度和纯 FSM 保持独立可测。</p>
+          <p class="layer-limit">不知道 CLI、SDK、LLM provider 或文件系统实现。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section-shell" id="lifecycle">
+      <span class="section-rail" aria-hidden="true">OWNED LIFECYCLE</span>
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">Execution path</p>
+          <h2>小门面，硬生命周期</h2>
+        </div>
+        <p class="section-intro">
+          这七步是真实的先后顺序。只有在工作静默、证据可信后，调用方才拿到 RunResult。
+        </p>
+      </div>
+
+      <div class="lifecycle-track" aria-label="一次运行的七个步骤">
+        <article class="life-step">
+          <div class="life-node">01</div>
+          <h3>VALIDATE</h3>
+          <p>校验 prompt、budget、timeout、路径和 workflow 输入。</p>
+        </article>
+        <article class="life-step">
+          <div class="life-node">02</div>
+          <h3>RESOLVE</h3>
+          <p>复用中央配置，并解析 coding/read 工具预设。</p>
+        </article>
+        <article class="life-step">
+          <div class="life-node">03</div>
+          <h3>CLAIM</h3>
+          <p>原子写入 .opencollab-run，拒绝证据目录复用。</p>
+        </article>
+        <article class="life-step">
+          <div class="life-node">04</div>
+          <h3>COMPOSE</h3>
+          <p>bootstrap 组装具体环境、工具、追踪与执行者。</p>
+        </article>
+        <article class="life-step">
+          <div class="life-node">05</div>
+          <h3>EXECUTE</h3>
+          <p>进入已有 hardened runtime，不另造执行循环。</p>
+        </article>
+        <article class="life-step">
+          <div class="life-node">06</div>
+          <h3>QUIESCE</h3>
+          <p>有界取消、撤销副作用、等待清理和保存任务结束。</p>
+        </article>
+        <article class="life-step">
+          <div class="life-node">07</div>
+          <h3>VERIFY</h3>
+          <p>验证 claim、transcript 或 manifest，再生成结果。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section-shell" id="semantics">
+      <span class="section-rail" aria-hidden="true">OUTCOME SEMANTICS</span>
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">One result model</p>
+          <h2>执行失败，不等于基础设施失真</h2>
+        </div>
+        <p class="section-intro">
+          可描述的运行结局返回 RunResult；无法证明资源已经收干净、证据已经落盘时，才抛 RunError。
+        </p>
+      </div>
+
+      <div class="semantics-layout">
+        <div class="result-object" aria-label="RunResult 字段">
+<pre><span class="tok-type">RunResult</span>(
+  <span class="tok-key">output</span>=...,
+  <span class="tok-key">status</span>=<span class="tok-string">"completed | stopped | failed"</span>,
+  <span class="tok-key">reason</span>=...,
+  <span class="tok-key">tokens</span>=...,
+  <span class="tok-key">artifacts</span>=...,
+  <span class="tok-key">error</span>=...,
+  <span class="tok-key">metrics</span>=...,
+)</pre>
+        </div>
+
+        <div class="state-network">
+          <div class="state-card completed">
+            <strong>completed</strong>
+            <span>正常完成；output 可用，result.ok 为 true。</span>
+          </div>
+          <div class="state-card stopped">
+            <strong>stopped</strong>
+            <span>超时或预算停止，但终止与清理已得到证明。</span>
+          </div>
+          <div class="state-card failed">
+            <strong>failed</strong>
+            <span>模型、workflow 或 team 执行失败；错误作为结果证据保留。</span>
+          </div>
+          <div class="state-card infrastructure">
+            <strong>RunError</strong>
+            <span>任务未静默、清理失败或证据不完整；拒绝返回“可信结果”。</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section-shell" id="migration">
+      <span class="section-rail" aria-hidden="true">CALL-SITE MIGRATION</span>
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">Before / after</p>
+          <h2>从组装请求，到表达意图</h2>
+        </div>
+        <p class="section-intro">
+          配置在 OpenCollab 构造时解析一次；每次调用只说这次要做什么、花多少预算、证据放哪里。
+        </p>
+      </div>
+
+      <div class="migration-grid">
+        <article class="code-panel before">
+          <header>
+            <strong>SDK v2 / request graph</strong>
+            <span>removed in 0.4</span>
+          </header>
+<pre><span class="tok-key">request</span> = <span class="tok-call">AgentRunRequest</span>(
+  prompt=<span class="tok-string">"检查仓库是否可发布"</span>,
+  config=<span class="tok-call">RuntimeConfig</span>(
+    model=<span class="tok-string">"..."</span>,
+    provider=<span class="tok-string">"..."</span>,
+    api_key=<span class="tok-string">"..."</span>,
+  ),
+  budget=<span class="tok-call">AgentRunBudget</span>(
+    max_tokens=<span class="tok-string">100_000</span>,
+    max_steps=<span class="tok-string">20</span>,
+  ),
+  tools=<span class="tok-call">coding_toolset</span>(),
+  workspace=<span class="tok-string">"."</span>,
+)
+
+<span class="tok-key">result</span> = <span class="tok-key">await</span> <span class="tok-call">OpenCollabRuntime</span>()\
+  .run_agent(request)</pre>
+        </article>
+
+        <article class="code-panel after">
+          <header>
+            <strong>SDK 0.4 / plain intent</strong>
+            <span>one client · one result</span>
+          </header>
+<pre><span class="tok-key">from</span> opencollab <span class="tok-key">import</span> OpenCollab
+
+<span class="tok-key">oc</span> = <span class="tok-call">OpenCollab</span>(<span class="tok-string">"."</span>)
+
+<span class="tok-key">result</span> = <span class="tok-key">await</span> oc.agent(
+  <span class="tok-string">"检查仓库是否可发布"</span>,
+  budget=<span class="tok-string">100_000</span>,
+  artifacts=<span class="tok-string">"artifacts/release"</span>,
+)
+
+<span class="tok-call">print</span>(
+  result.<span class="tok-call">raise_for_status</span>().output
+)</pre>
+        </article>
+      </div>
+    </section>
+
+    <section class="section-shell" id="tradeoffs">
+      <span class="section-rail" aria-hidden="true">HONEST TRADE-OFFS</span>
+      <div class="section-heading">
+        <div>
+          <p class="section-kicker">Deliberate boundaries</p>
+          <h2>保留什么，也明确不保留什么</h2>
+        </div>
+        <p class="section-intro">
+          小 SDK 最怕以兼容为名重新长回两套表面。0.4 是 alpha 阶段的一次有意断代。
+        </p>
+      </div>
+
+      <div class="honesty-grid">
+        <article class="ledger keep">
+          <h3>继续守住</h3>
+          <ul>
+            <li>中央配置解析与凭据优先级</li>
+            <li>有界取消、环境 revoke / abort / cleanup</li>
+            <li>Agent transcript、Team manifest 与 Workflow evidence</li>
+            <li>调用方自有 Environment 的清晰所有权</li>
+            <li>application → domain 的向内依赖</li>
+          </ul>
+        </article>
+        <article class="ledger cut">
+          <h3>有意切掉</h3>
+          <ul>
+            <li>OpenCollabRuntime 与请求/预算 DTO 图</li>
+            <li>独立 SDK_API_VERSION；统一跟随 package SemVer</li>
+            <li>七个旧 sdk.* capability / compatibility 模块</li>
+            <li>Team 自定义 Environment：暂不模糊 scheduler/worktree 所有权</li>
+            <li>假装外部 OpenCollab-Eval 已迁移；升级前必须单独验证</li>
+          </ul>
+        </article>
+      </div>
+
+      <div class="verification-strip" aria-label="验证结果">
+        <strong>VERIFIED / PR #26</strong>
+        <span>1363 tests</span>
+        <span>Python 3.10–3.12</span>
+        <span>macOS path integrity</span>
+        <span>wheel install probe</span>
+      </div>
+    </section>
+  </main>
+
+  <footer class="page-footer">
+    <div class="footer-inner">
+      <p class="footer-title">四个名字在门口，<span>完整机器在里面。</span></p>
+      <a
+        class="footer-link"
+        href="https://github.com/YihongDong/OpenCollab/pull/26"
+        target="_blank"
+        rel="noreferrer"
+      >REVIEW PR #26 ↗</a>
+    </div>
+    <div class="footer-meta">
+      <span>OpenCollab SDK 0.4 architecture cutaway</span>
+      <span>refactor/slim-sdk-v3 · PR #26</span>
+    </div>
+  </footer>
+
+  <script>
+    const machine = document.querySelector(".machine");
+    const viewButtons = document.querySelectorAll("[data-machine-view]");
+
+    function setMachineView(view) {
+      machine.dataset.view = view;
+      viewButtons.forEach((button) => {
+        button.setAttribute(
+          "aria-pressed",
+          String(button.dataset.machineView === view)
+        );
+      });
+    }
+
+    viewButtons.forEach((button) => {
+      button.addEventListener("click", () => setMachineView(button.dataset.machineView));
+    });
+  </script>
+</body>
+</html>
