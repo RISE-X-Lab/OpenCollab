@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable
 
 from opencollab.adapters.hooks import ShellHookRunner
@@ -43,6 +44,8 @@ def build_scheduler(
     session_file: str | None = None,
     auto_save: bool = True,
     enable_hooks: bool = True,
+    team_config_path: str | os.PathLike[str] | None = None,
+    save_dir: str | os.PathLike[str] | None = None,
 ) -> Scheduler:
     """Build the Scheduler and let it create agent 0 (the init process).
 
@@ -60,12 +63,18 @@ def build_scheduler(
     runs free of hook side effects.
     """
     cfg = ctx.config
-    team_cfg = load_team_config(ctx.workspace)
+    team_cfg = load_team_config(ctx.workspace, path=team_config_path)
     event_bus = EventBus(ctx.event_sink)
 
     # Per-run folder: every agent's transcript plus a team.json manifest land
     # here. Known before the factory so spawned children inherit the same dir.
-    run_dir: str | None = make_run_dir(ctx.workspace) if auto_save else None
+    run_dir: str | None = None
+    if auto_save:
+        run_dir = (
+            os.path.abspath(os.fspath(save_dir))
+            if save_dir is not None
+            else make_run_dir(ctx.workspace)
+        )
     lead_save_path = agent_save_path(run_dir, 0, team_cfg.entry) if run_dir else None
 
     session_factory = DefaultSessionFactory(
@@ -118,7 +127,11 @@ def build_scheduler(
     if run_dir is not None:
         store = SessionStore()
         manifest_path = os.path.join(run_dir, "team.json")
-        team_file = resolve_team_file(ctx.workspace)
+        team_file = (
+            Path(os.path.abspath(os.fspath(team_config_path)))
+            if team_config_path is not None
+            else resolve_team_file(ctx.workspace)
+        )
         run_id = os.path.basename(run_dir)
         started_at = datetime.now(timezone.utc).isoformat()
 

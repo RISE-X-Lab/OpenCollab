@@ -43,7 +43,7 @@
 ### Phase 1 · 清场（零风险死码）
 **目标**:纯删,无前置,~-40 行。每删一项先 `grep -rn` 证明 0 引用(排除定义处 + 测试)。
 - 删 `adapters/storage.py` 的 `JsonlStore._parse`(被 `_parse_document` 取代)
-- 删 `application/async_timeout.py` 的 `terminate_tasks` + `AsyncRuntimeUnhealthyError`,及 `sdk/lifecycle.py` 对应 `__all__` 项
+- 删 `application/async_timeout.py` 的 `terminate_tasks` + `AsyncRuntimeUnhealthyError`（旧 `sdk/lifecycle.py` 已随 SDK v3 删除）
 - 删 `domain/scheduler.py` 的 `SchedulerState.all_done`、`application/_scheduler_constants.py` 的 `MAX_FORCED_CLEANUP_TIMEOUT`
 - 删 `application/autosave.py` 的 `pending_write_futures` 空 compat 属性(若本 lane 一起做)
 - 删幽灵 `opencollab/harness/`(只剩 pyc)+ `opencollab/container.id`、`container.name` 运行时残留,并把后两者加进 `.gitignore`
@@ -95,8 +95,10 @@
 
 ### Lane S4c · 边界 / SDK
 深层证据:`pattern-catalog.md` §3.8。
-- **slim**:**删 `sdk/` 的 7 个 0-ref shim 模块**(`agents`/`config`/`environments`/`lifecycle`/`persistence`/`repository`/`tracing`,-140)——先 `grep -rn` 确认全仓库 + **外部 eval 包没 import 子路径**(gate!);在 `test_sdk_boundaries` 加"退休 shim 须消失"断言。
-- **docstring**:`sdk/__init__.py` 一句"`SDK_API_VERSION` 是 `test_sdk_api.py` 锁的兼容契约"。`ports`/`container`/fitness 测试已干净,报告点名即可。
+- **已完成（SDK 0.4）**:请求 DTO 图和旧 capability/shim 模块已删除；根 API 收为
+  `OpenCollab` / `RunResult` / `RunError` / `workflow`，兼容性统一跟随 package SemVer。
+- **fitness gate**:`test_sdk_api` 锁四名 facade，`test_sdk_boundaries` 禁止 SDK 直接依赖
+  concrete adapters/domain/eval；外部 OpenCollab-Eval 升级前仍须单独迁移验证。
 **解锁**:报告 §8(边界为何可 fork)。
 
 ### 未来 lane 候选（本次 S1 讨论产出，超出行为保持瘦身范畴，另起 lane）
@@ -107,7 +109,10 @@
 - **F2 · AUTOSAVING 折为 infra**:autosave 的**机制**已是 infra(EventBus 订阅 `step_end` 做 freeze-then-flush),但 `AUTOSAVING` 仍是一个 FSM 状态(单出边→PRECHECK)。可考虑把它折进转移、省 1 个状态(10→9)。**但**它精确标记「一个**有产出的** step 收尾」(spawn 挂起路径 `EXECUTING_TOOLS→AWAITING_EVENTS` 刻意跳过它,不 emit step_end),且是两条入边(正常工具 / 空转重试)的 DRY 汇合点 + restore 的干净落点(快照 phase 是恢复路标)。**倾向保留**:OC 立论是"checkpoint everything / 让不变量可见",一个**显式**的持久化 checkpoint 比散在转移里的隐式副作用更贴合哲学。收益(-1 状态)小、动到 restore 语义风险实。仅在"能显著简化且证得行为保持"时再动。
 
 - **F3 · workflow OutputContract Strategy(本次 S2 workflow 讨论产出,2026-07-15)**。诊断:`workflow.py` 的两套"强制交付"栈(findings-commit + structured-commit)是**同一模式的两个实例**——「跑 agent → 强制并 harvest 一个指定形状的已提交产出」,今天各自重造了 forcing/retry/harvest。抽成 `OutputContract` **Strategy**(`FindingsContract` / `StructuredContract(schema)`),封 `{注入哪个工具, 怎么强制, 怎么 harvest}`;base `agent(contract=None)`=纯文本,`agent(..., contract=X)` 走成形。**合并①③**:同时让 structured 补轮**复用 S1 的 wind-down/steering forcing**(同一 session 续一轮 arm 强制 tool_choice)——`steering.build_steering_block` 已有 `has_structured_output→structured_override` 分支——**删掉现在的第二 session + `_carry_exploration` shallow-copy hack**(`workflow.py:1024-1125`)。**非 posthook**:OC 现有 hooks 子系统是 observe-only/per-tool,产不出返回值也强制不了一轮,别overload该词汇。**前置**:S2 机械剥成 2 mixin + S1 的 forcing actuator 已就位。**代价**:新增 Strategy 抽象(protocol+2 contract)+ 改行为(structured 同-session 补轮)→ **必须先对齐+补网**。仅当"改动小收益大"才做。
-- **F4 · regime/SDK 对称(同上讨论产出)**。recon 发现真不对称:**workflow 有一等 SDK 作者面**(`WorkflowContext`/`@workflow`/`Registry`/`discover_workflows`/`WorkflowRunRequest…` 全在 `sdk/__all__`),**team regime 零 SDK 面**(无 `Team`/`Scheduler`/`Topology`,只内部驱动);且 `sdk/workflows.py` 把 **`format_findings_report`(SWE-bench eval 助手)re-export 成 SDK API** → 应用特定的 eval 关切泄漏到 SDK 边界。做:(a)workflow-core 收干净成 `Scheduler` 的**对等 regime peer**(两者都 = 驱动 `session.run_loop()` 的 Strategy,catalog §3.3);(b)把 eval-defense 公开面(`format_findings_report`/`draft_findings`)移出 core workflow SDK → 单独 `sdk/findings`(或 eval)模块;(c)**可选**给 team 补对称 SDK 作者面(更大,另议)。**前置**:F3 / S2(workflow-core 已瘦)。**代价**:动 SDK 边界(`test_sdk_api` 契约)+ 新模块 → 谨慎。**解锁**:报告 §4(两 regime 作为真 peer)更干净。
+- **F4 · regime/SDK 对称（SDK 0.4 已完成）**。`OpenCollab.agent/team/workflow`
+  现在是一等对称入口并共用 `RunResult`；workflow 作者面移到
+  `opencollab.workflows`，SDK 不再 re-export SWE-bench/eval helper。具体类型组装只在
+  `bootstrap/programmatic.py`，facade 不再成为第二 composition root。
 
 ### Phase 3 · 写报告 prose
 读 `docs/pattern-catalog.md`(§5=9 章 outline,§2=headline,§3=每章证据 file:line,§6=诚实○)+ 记忆 `project_adp_tech_report`。**framing 务必沿用**:两种控制模式(team / dynamic-workflow,single agent=team-of-one),**不说"三种"**;论点=operationalization + eval-integrity。用**新覆盖 12●/6◐/3○**(取代旧 9/8/4)。在分支 `docs/agentic-design-patterns-report`(`6b894c1`)续写。**跳过 Eval 成绩章**(等新数据)。英文 / arXiv 风格。可一章一会话,或一次写完。

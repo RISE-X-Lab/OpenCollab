@@ -21,7 +21,10 @@ from opencollab.bootstrap._workflow_runtime_cleanup import (
     _sticky_tracer_failure,
 )
 from opencollab.bootstrap._workflow_runtime_session import _resolve_spec_fn, build_workflow_context
-from opencollab.bootstrap._workflow_runtime_state import DEFAULT_WORKFLOW_CLEANUP_TIMEOUT_SECONDS
+from opencollab.bootstrap._workflow_runtime_state import (
+    DEFAULT_WORKFLOW_CLEANUP_TIMEOUT_SECONDS,
+    WorkflowRuntimeResult,
+)
 from opencollab.bootstrap.session_factory import ORCHESTRATION_FILENAME
 
 
@@ -47,11 +50,21 @@ async def run_workflow(
     source_root: str | None = None,
     deadline_monotonic: float | None = None,
     deadline_margin_seconds: float = 120.0,
+    return_details: bool = False,
 ) -> Any:
     """Run one workflow and return only after cleanup and evidence persistence."""
     cleanup_timeout = _positive_cleanup_timeout(cleanup_timeout)
     fn = _resolve_spec_fn(spec_or_fn)
-    name = spec_or_fn.name if isinstance(spec_or_fn, WorkflowSpec) else getattr(fn, "__name__", "workflow")
+    metadata = (
+        spec_or_fn
+        if isinstance(spec_or_fn, WorkflowSpec)
+        else getattr(fn, "__workflow_spec__", None)
+    )
+    name = (
+        metadata.name
+        if isinstance(metadata, WorkflowSpec)
+        else getattr(fn, "__name__", "workflow")
+    )
     owns_tracer = tracer is None and save_dir is not None and trace
     if owns_tracer:
         tracer = Tracer(run_id=name, output_dir=save_dir, filename=ORCHESTRATION_FILENAME)
@@ -162,4 +175,11 @@ async def run_workflow(
         raise failure from manifest_error
     if tracer_failure is not None:
         raise RuntimeError("technical workflow trace failed: orchestration evidence is incomplete") from tracer_failure
+    if return_details:
+        return WorkflowRuntimeResult(
+            output=result,
+            name=name,
+            tokens=ctx.budget.spent(),
+            sessions=len(ctx.sessions),
+        )
     return result
