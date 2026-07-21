@@ -87,11 +87,12 @@ Treat other package paths as internal. An `artifacts` directory, when supplied,
 must be new or empty because each run claims it for executable evidence.
 
 For a visual architecture walkthrough, open the
-[SDK 0.4 cutaway](../docs/sdk-v3-explainer.html).
+[SDK 0.4 research architecture](../docs/sdk-v3-explainer.html).
 
 Evaluation runners and benchmark-specific workflows live in the companion
-OpenCollab-Eval repository. SDK 0.4 is an intentional alpha break, so external
-consumers must migrate from the removed v2 request DTOs before upgrading.
+OpenCollab-Eval repository. This keeps topology research in `team(...)` and
+`workflow(...)`, while an external harness defines ablations and Bootstrap
+binds each treatment through the Clean Architecture ports.
 
 ## Architecture
 
