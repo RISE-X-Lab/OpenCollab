@@ -5,29 +5,28 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#eaf1f2">
-  <title>OpenCollab SDK 0.4 — 四个名字，一套运行语义</title>
+  <title>OpenCollab SDK 0.4 — 拓扑研究与消融实验的干净入口</title>
   <meta
     name="description"
-    content="OpenCollab SDK 0.4 架构剖面：公共 API 如何从 37 个导出收敛为 4 个名字，同时保留完整的清理、超时与证据语义。"
+    content="OpenCollab 当前版本的研究架构：同一 Session 内核上的 Team 与 Workflow 两种控制拓扑，以及 Harness 如何通过 Clean Architecture 做单变量消融。"
   >
   <style>
     :root {
       --mist: #eaf1f2;
-      --porcelain: #f8fbfa;
+      --paper: #f8fbfa;
       --ink: #142c3b;
-      --ink-soft: #36505d;
+      --ink-soft: #49616d;
       --cobalt: #3157e8;
-      --cobalt-deep: #1f3ca9;
+      --cobalt-deep: #203caa;
       --coral: #ef6a4c;
       --mint: #8ec9b8;
-      --mint-pale: #d8eee7;
+      --mint-pale: #d9eee8;
       --line: rgba(20, 44, 59, 0.18);
       --line-strong: rgba(20, 44, 59, 0.34);
-      --shadow: 0 28px 80px rgba(20, 44, 59, 0.13);
-      --display: "Arial Narrow", "Aptos Narrow", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --display: "DIN Condensed", "Arial Narrow", "Aptos Narrow", "PingFang SC", "Microsoft YaHei", sans-serif;
       --body: "Source Han Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
       --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-      --page: min(1240px, calc(100vw - 48px));
+      --page: min(1220px, calc(100vw - 48px));
     }
 
     * {
@@ -44,7 +43,7 @@
       background: var(--mist);
       font-family: var(--body);
       font-size: 16px;
-      line-height: 1.68;
+      line-height: 1.7;
       text-rendering: optimizeLegibility;
       -webkit-font-smoothing: antialiased;
     }
@@ -55,7 +54,7 @@
       z-index: -2;
       content: "";
       background:
-        radial-gradient(circle at 9% 4%, rgba(142, 201, 184, 0.24), transparent 28%),
+        radial-gradient(circle at 8% 6%, rgba(142, 201, 184, 0.25), transparent 28%),
         radial-gradient(circle at 92% 18%, rgba(49, 87, 232, 0.10), transparent 30%),
         var(--mist);
     }
@@ -79,8 +78,8 @@
       top: 12px;
       left: 12px;
       z-index: 100;
-      padding: 10px 14px;
-      color: var(--porcelain);
+      padding: 9px 13px;
+      color: var(--paper);
       background: var(--ink);
       transform: translateY(-160%);
       transition: transform 160ms ease;
@@ -102,25 +101,25 @@
       inset: 0;
       z-index: -1;
       content: "";
-      opacity: 0.7;
+      opacity: 0.68;
       background-image:
-        linear-gradient(rgba(20, 44, 59, 0.055) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(20, 44, 59, 0.055) 1px, transparent 1px);
+        linear-gradient(rgba(20, 44, 59, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(20, 44, 59, 0.05) 1px, transparent 1px);
       background-size: 24px 24px;
-      mask-image: linear-gradient(to bottom, black 0%, rgba(0, 0, 0, 0.85) 72%, transparent 100%);
+      mask-image: linear-gradient(to bottom, black 0%, rgba(0, 0, 0, 0.8) 76%, transparent 100%);
     }
 
     .masthead {
       width: var(--page);
+      min-height: 74px;
       margin: 0 auto;
-      min-height: 76px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 24px;
+      gap: 22px;
       border-bottom: 1px solid var(--line-strong);
       font-family: var(--mono);
-      font-size: 12px;
+      font-size: 11px;
       letter-spacing: 0.08em;
       text-transform: uppercase;
     }
@@ -137,7 +136,7 @@
       aspect-ratio: 1;
       display: grid;
       place-items: center;
-      color: var(--porcelain);
+      color: var(--paper);
       background: var(--ink);
       clip-path: polygon(0 0, 72% 0, 100% 28%, 100% 100%, 28% 100%, 0 72%);
     }
@@ -149,14 +148,14 @@
       color: var(--ink-soft);
     }
 
-    .ci-status {
+    .status {
       display: inline-flex;
       align-items: center;
       gap: 8px;
       white-space: nowrap;
     }
 
-    .ci-status::before {
+    .status::before {
       width: 8px;
       height: 8px;
       content: "";
@@ -173,16 +172,11 @@
     .hero-layout {
       width: var(--page);
       margin: 0 auto;
-      padding: clamp(54px, 8vh, 100px) 0 72px;
+      padding: clamp(58px, 8vh, 96px) 0 76px;
       display: grid;
-      grid-template-columns: minmax(330px, 0.8fr) minmax(560px, 1.2fr);
+      grid-template-columns: minmax(340px, 0.78fr) minmax(580px, 1.22fr);
       align-items: center;
-      gap: clamp(42px, 6vw, 96px);
-    }
-
-    .hero-copy {
-      position: relative;
-      z-index: 2;
+      gap: clamp(44px, 6vw, 92px);
     }
 
     .eyebrow,
@@ -190,7 +184,7 @@
     .micro-label {
       margin: 0;
       font-family: var(--mono);
-      font-size: 11px;
+      font-size: 10px;
       font-weight: 700;
       letter-spacing: 0.13em;
       line-height: 1.4;
@@ -222,7 +216,7 @@
       max-width: 650px;
       margin: 24px 0 28px;
       font-family: var(--display);
-      font-size: clamp(54px, 7.3vw, 108px);
+      font-size: clamp(58px, 7.2vw, 104px);
       font-weight: 760;
       letter-spacing: -0.065em;
       line-height: 0.91;
@@ -232,500 +226,322 @@
       display: block;
     }
 
-    h1 .thesis-accent {
-      position: relative;
-      width: fit-content;
+    h1 .accent {
       color: var(--cobalt);
     }
 
-    h1 .thesis-accent::after {
-      position: absolute;
-      right: -0.18em;
-      bottom: 0.08em;
-      width: 0.16em;
-      height: 0.16em;
-      content: "";
-      background: var(--coral);
-      border-radius: 50%;
-    }
-
     .hero-lede {
-      max-width: 580px;
+      max-width: 590px;
       margin: 0;
       color: var(--ink-soft);
       font-size: clamp(17px, 1.4vw, 20px);
-      line-height: 1.75;
+      line-height: 1.78;
     }
 
-    .api-signature {
-      margin: 34px 0 0;
-      padding: 0;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      list-style: none;
+    .research-equation {
+      margin-top: 32px;
+      padding: 16px 18px;
+      color: var(--paper);
+      background: var(--ink);
+      border-left: 5px solid var(--coral);
+      font: 11px/1.7 var(--mono);
     }
 
-    .api-signature li {
-      padding: 8px 11px;
-      color: var(--ink);
-      background: rgba(248, 251, 250, 0.66);
-      border: 1px solid var(--line-strong);
-      font-family: var(--mono);
-      font-size: 12px;
-      line-height: 1;
-      box-shadow: 3px 3px 0 rgba(20, 44, 59, 0.08);
+    .research-equation strong {
+      color: var(--mint);
+      font-weight: 700;
     }
 
     .hero-note {
-      margin-top: 34px;
-      padding-left: 16px;
+      margin: 18px 0 0;
       color: var(--ink-soft);
-      border-left: 3px solid var(--coral);
-      font-size: 13px;
+      font-size: 12px;
     }
 
-    .machine {
-      position: relative;
-      margin: 0;
+    .bench {
       min-width: 0;
-      filter: drop-shadow(0 30px 50px rgba(20, 44, 59, 0.12));
+      margin: 0;
+      filter: drop-shadow(0 28px 54px rgba(20, 44, 59, 0.13));
     }
 
-    .machine-shell {
-      position: relative;
+    .bench-shell {
       padding: 18px;
-      background: rgba(248, 251, 250, 0.76);
+      background: rgba(248, 251, 250, 0.78);
       border: 1px solid var(--line-strong);
-      backdrop-filter: blur(16px);
-      clip-path: polygon(0 0, calc(100% - 30px) 0, 100% 30px, 100% 100%, 30px 100%, 0 calc(100% - 30px));
+      backdrop-filter: blur(14px);
+      clip-path: polygon(0 0, calc(100% - 28px) 0, 100% 28px, 100% 100%, 28px 100%, 0 calc(100% - 28px));
     }
 
-    .machine-shell::before,
-    .machine-shell::after {
-      position: absolute;
-      z-index: 4;
-      width: 34px;
-      height: 34px;
-      pointer-events: none;
-      content: "";
-    }
-
-    .machine-shell::before {
-      top: 0;
-      right: 0;
-      border-top: 1px solid var(--line-strong);
-      border-right: 1px solid var(--line-strong);
-    }
-
-    .machine-shell::after {
-      bottom: 0;
-      left: 0;
-      border-bottom: 1px solid var(--line-strong);
-      border-left: 1px solid var(--line-strong);
-    }
-
-    .machine-toolbar {
+    .bench-toolbar {
       min-height: 42px;
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
-      gap: 20px;
+      gap: 16px;
       font-family: var(--mono);
     }
 
-    .machine-title {
+    .bench-title {
       display: grid;
       gap: 3px;
     }
 
-    .machine-title strong {
+    .bench-title strong {
       font-size: 12px;
-      letter-spacing: 0.1em;
+      letter-spacing: 0.09em;
     }
 
-    .machine-title span {
+    .bench-title span {
       color: var(--ink-soft);
-      font-size: 10px;
+      font-size: 9px;
     }
 
-    .view-switch {
+    .focus-switch {
       display: inline-grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: repeat(3, 1fr);
       padding: 3px;
       background: var(--mint-pale);
       border: 1px solid rgba(20, 44, 59, 0.2);
     }
 
-    .view-switch button {
-      min-width: 66px;
-      padding: 7px 10px;
+    .focus-switch button {
+      min-width: 58px;
+      padding: 7px 9px;
       color: var(--ink-soft);
       background: transparent;
       border: 0;
-      font: 700 10px/1 var(--mono);
-      letter-spacing: 0.08em;
+      font: 700 9px/1 var(--mono);
+      letter-spacing: 0.05em;
       cursor: pointer;
     }
 
-    .view-switch button[aria-pressed="true"] {
-      color: var(--porcelain);
+    .focus-switch button[aria-pressed="true"] {
+      color: var(--paper);
       background: var(--ink);
     }
 
-    .machine-stage {
+    .bench-stage {
       position: relative;
       min-height: 610px;
-      padding: 28px 28px 22px;
+      padding: 28px 24px 22px;
       overflow: hidden;
-      display: grid;
-      grid-template-rows: auto 42px auto 58px auto 48px auto;
-      align-items: center;
       background:
-        linear-gradient(90deg, transparent 49.85%, rgba(20, 44, 59, 0.08) 50%, transparent 50.15%),
         linear-gradient(rgba(20, 44, 59, 0.035) 1px, transparent 1px),
         linear-gradient(90deg, rgba(20, 44, 59, 0.035) 1px, transparent 1px),
-        rgba(234, 241, 242, 0.64);
-      background-size: auto, 18px 18px, 18px 18px, auto;
+        rgba(234, 241, 242, 0.67);
+      background-size: 18px 18px, 18px 18px, auto;
       border: 1px solid var(--line);
     }
 
-    .surface-panel {
-      position: relative;
-      z-index: 3;
-      padding: 17px;
-      background: var(--porcelain);
-      border: 2px solid var(--cobalt);
-      box-shadow: 8px 8px 0 rgba(49, 87, 232, 0.10);
-      transition: transform 420ms cubic-bezier(0.2, 0.75, 0.2, 1), box-shadow 420ms ease;
-    }
-
-    .panel-label {
-      margin-bottom: 12px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      color: var(--cobalt-deep);
-      font-family: var(--mono);
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.11em;
-      line-height: 1.2;
-      text-transform: uppercase;
-    }
-
-    .panel-label span:last-child {
-      color: var(--ink-soft);
-      font-weight: 500;
-      letter-spacing: 0;
-      text-transform: none;
-    }
-
-    .port-row {
+    .regime-row {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 8px;
-    }
-
-    .api-port {
-      position: relative;
-      min-height: 48px;
-      padding: 11px 7px;
-      display: grid;
-      place-items: center;
-      color: var(--porcelain);
-      background: var(--cobalt);
-      font-family: var(--mono);
-      font-size: clamp(9px, 0.8vw, 11px);
-      font-weight: 700;
-      text-align: center;
-      overflow-wrap: anywhere;
-    }
-
-    .api-port::after {
-      position: absolute;
-      bottom: -7px;
-      left: 50%;
-      width: 10px;
-      height: 10px;
-      content: "";
-      background: var(--porcelain);
-      border: 2px solid var(--cobalt);
-      border-radius: 50%;
-      transform: translateX(-50%);
-    }
-
-    .machine-internals {
-      display: contents;
-    }
-
-    .trace-trunk,
-    .trace-fan,
-    .trace-inward {
-      position: relative;
-      min-height: 100%;
-      transition: opacity 320ms ease, filter 320ms ease, transform 420ms ease;
-    }
-
-    .trace-trunk::before,
-    .trace-inward::before {
-      position: absolute;
-      top: 0;
-      bottom: 0;
-      left: 50%;
-      width: 2px;
-      content: "";
-      background: var(--coral);
-      transform: translateX(-50%) scaleY(0);
-      transform-origin: top;
-      animation: grow-line 700ms 500ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
-    }
-
-    .trace-inward::before {
-      background: var(--mint);
-      animation-delay: 1.25s;
-    }
-
-    .trace-trunk::after,
-    .trace-inward::after {
-      position: absolute;
-      bottom: 2px;
-      left: 50%;
-      width: 7px;
-      height: 7px;
-      content: "";
-      background: var(--coral);
-      border-radius: 50%;
-      transform: translate(-50%, 50%);
-    }
-
-    .trace-inward::after {
-      background: var(--mint);
-    }
-
-    .core-panel {
-      position: relative;
-      z-index: 2;
-      width: min(320px, 72%);
-      margin: 0 auto;
-      padding: 16px 20px;
-      color: var(--porcelain);
-      background: var(--ink);
-      border: 1px solid var(--ink);
-      text-align: center;
-      box-shadow: 8px 8px 0 rgba(239, 106, 76, 0.17);
-      transition: opacity 320ms ease, filter 320ms ease, transform 420ms ease;
-    }
-
-    .core-panel strong,
-    .runtime-card strong,
-    .foundation-card strong {
-      display: block;
-      font-family: var(--mono);
-      font-size: 12px;
-      letter-spacing: -0.02em;
-    }
-
-    .core-panel span,
-    .runtime-card span,
-    .foundation-card span {
-      display: block;
-      margin-top: 4px;
-      color: rgba(248, 251, 250, 0.72);
-      font-size: 10px;
-      line-height: 1.35;
-    }
-
-    .trace-fan::before {
-      position: absolute;
-      top: 0;
-      left: 16.7%;
-      width: 66.6%;
-      height: 32px;
-      content: "";
-      border-right: 2px solid var(--coral);
-      border-bottom: 2px solid var(--coral);
-      border-left: 2px solid var(--coral);
-      transform: scaleX(0);
-      transform-origin: center;
-      animation: grow-fan 700ms 880ms cubic-bezier(0.4, 0, 0.2, 1) forwards;
-    }
-
-    .trace-fan::after {
-      position: absolute;
-      top: 0;
-      left: 50%;
-      width: 2px;
-      height: 32px;
-      content: "";
-      background: var(--coral);
-      transform: translateX(-50%) scaleY(0);
-      transform-origin: top;
-      animation: grow-line 500ms 880ms ease forwards;
-    }
-
-    .runtime-row {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 10px;
-      transition: opacity 320ms ease, filter 320ms ease, transform 420ms ease;
-    }
-
-    .runtime-card {
-      min-height: 75px;
-      padding: 14px 10px;
-      display: grid;
-      align-content: center;
-      color: var(--porcelain);
-      background: var(--cobalt-deep);
-      border-top: 4px solid var(--coral);
-      text-align: center;
-    }
-
-    .foundation-stack {
-      display: grid;
-      grid-template-columns: 1.1fr 0.9fr;
-      gap: 10px;
-      transition: opacity 320ms ease, filter 320ms ease, transform 420ms ease;
-    }
-
-    .foundation-card {
-      min-height: 58px;
-      padding: 12px 14px;
-      display: grid;
-      align-content: center;
-      background: var(--mint-pale);
-      border: 1px solid rgba(20, 44, 59, 0.25);
-    }
-
-    .foundation-card span {
-      color: var(--ink-soft);
-    }
-
-    .adapter-rack {
-      position: absolute;
-      top: 232px;
-      right: -1px;
-      z-index: 3;
-      width: 108px;
-      padding: 12px 10px;
-      color: var(--ink);
-      background: var(--coral);
-      border-left: 5px solid var(--porcelain);
-      font-family: var(--mono);
-      transition: opacity 320ms ease, filter 320ms ease, transform 420ms ease;
-    }
-
-    .adapter-rack strong {
-      display: block;
-      margin-bottom: 7px;
-      color: var(--ink);
-      font-size: 10px;
-      letter-spacing: 0.08em;
-    }
-
-    .adapter-rack span {
-      display: block;
-      padding: 3px 0;
-      color: rgba(20, 44, 59, 0.82);
-      font-size: 9px;
-      border-top: 1px solid rgba(20, 44, 59, 0.18);
-    }
-
-    .machine[data-view="surface"] .surface-panel {
-      transform: translateY(178px) scale(1.03);
-      box-shadow: 12px 12px 0 rgba(49, 87, 232, 0.13);
-    }
-
-    .machine[data-view="surface"] .trace-trunk,
-    .machine[data-view="surface"] .trace-fan,
-    .machine[data-view="surface"] .trace-inward,
-    .machine[data-view="surface"] .core-panel,
-    .machine[data-view="surface"] .runtime-row,
-    .machine[data-view="surface"] .foundation-stack,
-    .machine[data-view="surface"] .adapter-rack {
-      opacity: 0.1;
-      filter: blur(5px);
-      transform: scale(0.96);
-    }
-
-    .machine-caption {
-      margin: 13px 4px 0;
-      display: flex;
-      justify-content: space-between;
+      grid-template-columns: 1fr 1fr;
       gap: 20px;
-      color: var(--ink-soft);
-      font-family: var(--mono);
-      font-size: 10px;
-      line-height: 1.5;
     }
 
-    .machine-caption strong {
-      color: var(--ink);
-    }
-
-    main {
-      overflow: clip;
-    }
-
-    .section-shell {
+    .regime-card {
       position: relative;
-      width: var(--page);
-      margin: 0 auto;
-      padding: clamp(84px, 11vw, 154px) 0;
+      min-height: 270px;
+      padding: 18px;
+      background: var(--paper);
+      border: 2px solid var(--cobalt);
+      transition: opacity 260ms ease, filter 260ms ease, transform 320ms ease;
     }
 
-    .section-shell + .section-shell {
-      border-top: 1px solid var(--line-strong);
+    .regime-card.workflow {
+      border-color: var(--coral);
     }
 
-    .section-rail {
-      position: absolute;
-      top: clamp(84px, 11vw, 154px);
-      left: -38px;
-      color: var(--ink-soft);
+    .regime-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
       font-family: var(--mono);
+    }
+
+    .regime-head strong {
+      font-size: 14px;
+    }
+
+    .regime-head span {
+      color: var(--ink-soft);
+      font-size: 9px;
+      text-align: right;
+    }
+
+    .graph {
+      position: relative;
+      height: 148px;
+      margin-top: 20px;
+    }
+
+    .graph-line {
+      position: absolute;
+      height: 2px;
+      background: var(--cobalt);
+      transform-origin: left center;
+    }
+
+    .workflow .graph-line {
+      background: var(--coral);
+    }
+
+    .team .line-a { top: 70px; left: 50%; width: 38%; transform: rotate(-31deg); }
+    .team .line-b { top: 72px; left: 50%; width: 38%; transform: rotate(31deg); }
+    .team .line-c { top: 73px; left: 15%; width: 69%; }
+    .workflow .line-a { top: 72px; left: 12%; width: 26%; }
+    .workflow .line-b { top: 72px; left: 38%; width: 25%; transform: rotate(-26deg); }
+    .workflow .line-c { top: 72px; left: 38%; width: 25%; transform: rotate(26deg); }
+    .workflow .line-d { top: 43px; left: 63%; width: 25%; transform: rotate(26deg); }
+    .workflow .line-e { top: 101px; left: 63%; width: 25%; transform: rotate(-26deg); }
+
+    .graph-node {
+      position: absolute;
+      z-index: 2;
+      min-width: 58px;
+      padding: 8px 7px;
+      color: var(--paper);
+      background: var(--cobalt-deep);
+      border: 4px solid var(--paper);
+      font: 700 9px/1 var(--mono);
+      text-align: center;
+      box-shadow: 0 0 0 1px var(--cobalt);
+    }
+
+    .workflow .graph-node {
+      color: var(--ink);
+      background: var(--coral);
+      box-shadow: 0 0 0 1px var(--coral);
+    }
+
+    .team .node-a { top: 52px; left: 50%; transform: translateX(-50%); }
+    .team .node-b { top: 2px; left: 3%; }
+    .team .node-c { right: 3%; bottom: 2px; }
+    .team .node-d { bottom: 2px; left: 3%; }
+    .workflow .node-a { top: 52px; left: 0; }
+    .workflow .node-b { top: 52px; left: 34%; }
+    .workflow .node-c { top: 2px; left: 61%; }
+    .workflow .node-d { right: 0; bottom: 2px; }
+
+    .core-connector {
+      position: relative;
+      height: 58px;
+    }
+
+    .core-connector::before,
+    .core-connector::after {
+      position: absolute;
+      top: 0;
+      width: 2px;
+      height: 38px;
+      content: "";
+      background: var(--ink);
+    }
+
+    .core-connector::before {
+      left: 25%;
+      transform: rotate(-22deg);
+      transform-origin: top;
+    }
+
+    .core-connector::after {
+      right: 25%;
+      transform: rotate(22deg);
+      transform-origin: top;
+    }
+
+    .shared-core {
+      position: relative;
+      width: min(360px, 76%);
+      margin: -18px auto 0;
+      padding: 18px 22px;
+      color: var(--paper);
+      background: var(--ink);
+      border-left: 6px solid var(--mint);
+      text-align: center;
+      box-shadow: 10px 10px 0 rgba(142, 201, 184, 0.26);
+    }
+
+    .shared-core strong {
+      display: block;
+      font: 700 13px/1.2 var(--mono);
+    }
+
+    .shared-core span {
+      display: block;
+      margin-top: 7px;
+      color: rgba(248, 251, 250, 0.68);
       font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.14em;
-      writing-mode: vertical-rl;
-      transform: rotate(180deg);
     }
 
-    .section-heading {
-      margin-bottom: clamp(44px, 6vw, 78px);
+    .baseline-line {
+      position: relative;
+      width: min(440px, 86%);
+      margin: 32px auto 0;
       display: grid;
-      grid-template-columns: minmax(280px, 0.8fr) minmax(320px, 1.2fr);
-      gap: 70px;
-      align-items: end;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 12px;
+      color: var(--ink-soft);
+      font: 700 9px/1 var(--mono);
+      letter-spacing: 0.06em;
     }
 
-    .section-kicker {
+    .baseline-line::before {
+      height: 1px;
+      grid-column: 2;
+      grid-row: 1;
+      content: "";
+      background: var(--line-strong);
+    }
+
+    .baseline-line span:first-child {
+      grid-column: 1;
+      grid-row: 1;
+    }
+
+    .baseline-line span:last-child {
+      grid-column: 3;
+      grid-row: 1;
       color: var(--cobalt-deep);
     }
 
-    h2 {
-      max-width: 780px;
-      margin: 12px 0 0;
-      font-family: var(--display);
-      font-size: clamp(40px, 5.4vw, 76px);
-      font-weight: 760;
-      letter-spacing: -0.055em;
-      line-height: 0.98;
+    .port-sockets {
+      margin-top: 28px;
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 6px;
     }
 
-    .section-intro {
-      max-width: 630px;
-      margin: 0;
+    .port-sockets span {
+      padding: 8px 4px;
       color: var(--ink-soft);
-      font-size: clamp(16px, 1.4vw, 19px);
+      background: var(--mint-pale);
+      border-top: 3px solid var(--mint);
+      font: 700 8px/1 var(--mono);
+      text-align: center;
+    }
+
+    .bench[data-focus="team"] .regime-card.workflow,
+    .bench[data-focus="workflow"] .regime-card.team {
+      opacity: 0.16;
+      filter: grayscale(1) blur(2px);
+      transform: scale(0.97);
+    }
+
+    .bench-caption {
+      margin: 12px 4px 0;
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      color: var(--ink-soft);
+      font: 9px/1.5 var(--mono);
     }
 
     .thesis-band {
-      width: 100%;
-      padding: clamp(60px, 8vw, 108px) max(24px, calc((100vw - min(1240px, calc(100vw - 48px))) / 2));
-      color: var(--porcelain);
+      padding: clamp(62px, 8vw, 108px) max(24px, calc((100vw - min(1220px, calc(100vw - 48px))) / 2));
+      color: var(--paper);
       background: var(--ink);
       display: grid;
       grid-template-columns: auto minmax(0, 1fr);
@@ -734,17 +550,16 @@
     }
 
     .thesis-index {
-      font-family: var(--mono);
-      font-size: 11px;
+      font: 700 10px/1 var(--mono);
       letter-spacing: 0.12em;
       writing-mode: vertical-rl;
     }
 
     .thesis-band blockquote {
-      max-width: 1100px;
+      max-width: 1080px;
       margin: 0;
       font-family: var(--display);
-      font-size: clamp(35px, 5vw, 72px);
+      font-size: clamp(36px, 5vw, 70px);
       font-weight: 680;
       letter-spacing: -0.045em;
       line-height: 1.08;
@@ -755,195 +570,409 @@
       font-style: normal;
     }
 
-    .metric-grid {
+    .section-shell {
+      position: relative;
+      width: var(--page);
+      margin: 0 auto;
+      padding: clamp(86px, 11vw, 150px) 0;
+    }
+
+    .section-shell + .section-shell {
+      border-top: 1px solid var(--line-strong);
+    }
+
+    .section-rail {
+      position: absolute;
+      top: clamp(86px, 11vw, 150px);
+      left: -38px;
+      color: var(--ink-soft);
+      font: 700 9px/1 var(--mono);
+      letter-spacing: 0.14em;
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+    }
+
+    .section-heading {
+      margin-bottom: clamp(44px, 6vw, 74px);
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: minmax(300px, 0.82fr) minmax(330px, 1.18fr);
+      gap: 72px;
+      align-items: end;
+    }
+
+    .section-kicker {
+      color: var(--cobalt-deep);
+    }
+
+    h2 {
+      max-width: 760px;
+      margin: 12px 0 0;
+      font-family: var(--display);
+      font-size: clamp(42px, 5.4vw, 74px);
+      font-weight: 760;
+      letter-spacing: -0.055em;
+      line-height: 0.98;
+    }
+
+    .section-intro {
+      max-width: 640px;
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: clamp(16px, 1.4vw, 19px);
+    }
+
+    .regime-detail-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
       gap: 16px;
     }
 
-    .metric-card {
-      position: relative;
-      min-height: 290px;
-      padding: 26px;
-      overflow: hidden;
-      display: grid;
-      grid-template-rows: auto 1fr auto;
+    .regime-detail {
+      padding: 28px;
       background: rgba(248, 251, 250, 0.76);
       border: 1px solid var(--line-strong);
       box-shadow: 8px 8px 0 rgba(20, 44, 59, 0.06);
     }
 
-    .metric-value {
-      align-self: center;
+    .regime-detail.team-detail {
+      border-top: 5px solid var(--cobalt);
+    }
+
+    .regime-detail.workflow-detail {
+      border-top: 5px solid var(--coral);
+    }
+
+    .detail-title {
+      margin-bottom: 28px;
       display: flex;
-      align-items: baseline;
-      gap: 12px;
-      font-family: var(--display);
-      font-size: clamp(64px, 8vw, 108px);
-      font-weight: 780;
-      letter-spacing: -0.07em;
-      line-height: 0.9;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
     }
 
-    .metric-value del {
-      color: var(--ink-soft);
-      font-size: 0.42em;
-      font-weight: 500;
-      text-decoration-color: var(--coral);
-      text-decoration-thickness: 3px;
-    }
-
-    .metric-value .arrow {
-      color: var(--coral);
-      font-family: var(--mono);
-      font-size: 0.3em;
-      letter-spacing: 0;
-    }
-
-    .metric-copy {
-      position: relative;
-      z-index: 1;
-      max-width: 290px;
+    .detail-title h3 {
       margin: 0;
+      font-family: var(--display);
+      font-size: 38px;
+      letter-spacing: -0.04em;
+      line-height: 1;
+    }
+
+    .detail-title span {
+      max-width: 150px;
+      color: var(--ink-soft);
+      font: 9px/1.45 var(--mono);
+      text-align: right;
+    }
+
+    .property-list {
+      margin: 0;
+      padding: 0;
+      display: grid;
+      gap: 15px;
+      list-style: none;
+    }
+
+    .property-list li {
+      display: grid;
+      grid-template-columns: 126px 1fr;
+      gap: 18px;
+      align-items: baseline;
       color: var(--ink-soft);
       font-size: 14px;
     }
 
-    .layer-map {
+    .property-list strong {
+      color: var(--ink);
+      font: 700 10px/1.4 var(--mono);
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .shared-invariants {
+      margin-top: 16px;
+      padding: 22px 26px;
+      display: grid;
+      grid-template-columns: 1.1fr repeat(5, auto);
+      align-items: center;
+      gap: 18px;
+      color: var(--paper);
+      background: var(--ink);
+      font-family: var(--mono);
+    }
+
+    .shared-invariants strong {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+    }
+
+    .shared-invariants span {
+      color: rgba(248, 251, 250, 0.67);
+      font-size: 9px;
+      white-space: nowrap;
+    }
+
+    .ablation-layout {
+      display: grid;
+      grid-template-columns: minmax(390px, 0.9fr) minmax(460px, 1.1fr);
+      gap: clamp(38px, 6vw, 82px);
+      align-items: start;
+    }
+
+    .clean-stack {
+      position: sticky;
+      top: 24px;
       display: grid;
       gap: 10px;
     }
 
-    .layer-row {
-      min-height: 112px;
-      padding: 20px 24px;
+    .stack-layer {
+      min-height: 86px;
+      padding: 18px 22px;
       display: grid;
-      grid-template-columns: 210px 1fr 1fr;
+      grid-template-columns: 138px 1fr;
       align-items: center;
-      gap: 30px;
-      background: rgba(248, 251, 250, 0.72);
-      border: 1px solid var(--line);
-      transition: transform 180ms ease, border-color 180ms ease;
+      gap: 18px;
+      background: rgba(248, 251, 250, 0.78);
+      border: 1px solid var(--line-strong);
     }
 
-    .layer-row:hover {
-      border-color: var(--cobalt);
-      transform: translateX(6px);
+    .stack-layer.harness {
+      color: var(--paper);
+      background: var(--cobalt-deep);
+      border-color: var(--cobalt-deep);
     }
 
-    .layer-row:nth-child(3) {
-      color: var(--porcelain);
+    .stack-layer.ports {
+      background: var(--mint-pale);
+      border-color: var(--mint);
+    }
+
+    .stack-layer.domain {
+      color: var(--paper);
       background: var(--ink);
+      border-color: var(--ink);
     }
 
-    .layer-name {
-      font-family: var(--mono);
-      font-size: 13px;
-      font-weight: 700;
+    .stack-layer strong {
+      font: 700 11px/1.3 var(--mono);
+      letter-spacing: 0.05em;
     }
 
-    .layer-name small {
-      display: block;
-      margin-top: 6px;
-      color: var(--ink-soft);
-      font-size: 10px;
-      font-weight: 500;
-    }
-
-    .layer-row:nth-child(3) .layer-name small,
-    .layer-row:nth-child(3) .layer-duty,
-    .layer-row:nth-child(3) .layer-limit {
-      color: rgba(248, 251, 250, 0.67);
-    }
-
-    .layer-duty,
-    .layer-limit {
+    .stack-layer p {
       margin: 0;
       color: var(--ink-soft);
-      font-size: 14px;
+      font-size: 13px;
     }
 
-    .layer-duty::before,
-    .layer-limit::before {
-      display: block;
-      margin-bottom: 5px;
-      font: 700 9px/1 var(--mono);
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
+    .stack-layer.harness p,
+    .stack-layer.domain p {
+      color: rgba(248, 251, 250, 0.68);
     }
 
-    .layer-duty::before {
-      color: var(--cobalt);
-      content: "OWNS";
-    }
-
-    .layer-limit::before {
-      color: var(--coral);
-      content: "DOES NOT OWN";
-    }
-
-    .lifecycle-track {
-      position: relative;
+    .dependency-arrow {
+      height: 22px;
       display: grid;
-      grid-template-columns: repeat(7, minmax(0, 1fr));
+      place-items: center;
+      color: var(--coral);
+      font: 700 16px/1 var(--mono);
+    }
+
+    .ablation-copy {
+      display: grid;
+      gap: 16px;
+    }
+
+    .ablation-rule {
+      padding: 22px 24px;
+      color: var(--paper);
+      background: var(--ink);
+      border-left: 6px solid var(--coral);
+      font: 12px/1.8 var(--mono);
+    }
+
+    .ablation-rule strong {
+      color: var(--mint);
+    }
+
+    .port-table {
+      display: grid;
       gap: 8px;
     }
 
-    .lifecycle-track::before {
-      position: absolute;
-      top: 33px;
-      right: 7%;
-      left: 7%;
-      height: 2px;
-      content: "";
-      background: linear-gradient(90deg, var(--cobalt), var(--coral) 50%, var(--mint));
+    .port-row {
+      min-height: 76px;
+      padding: 14px 18px;
+      display: grid;
+      grid-template-columns: 148px 1fr;
+      align-items: center;
+      gap: 18px;
+      background: rgba(248, 251, 250, 0.74);
+      border: 1px solid var(--line);
     }
 
-    .life-step {
-      position: relative;
-      z-index: 1;
-      min-height: 218px;
-      padding: 0 12px 18px;
-      background: linear-gradient(to bottom, transparent 0 66px, rgba(248, 251, 250, 0.72) 66px);
-      border: 1px solid transparent;
-      border-bottom-color: var(--line-strong);
+    .port-row code {
+      color: var(--cobalt-deep);
+      font: 700 11px/1.3 var(--mono);
     }
 
-    .life-node {
-      width: 66px;
-      height: 66px;
-      margin: 0 auto 20px;
+    .port-row p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 13px;
+    }
+
+    .sdk-layout {
+      display: grid;
+      grid-template-columns: minmax(420px, 1.05fr) minmax(380px, 0.95fr);
+      gap: clamp(38px, 6vw, 84px);
+      align-items: center;
+    }
+
+    .sdk-console {
+      padding: 26px;
+      color: var(--paper);
+      background: var(--ink);
+      border-top: 5px solid var(--mint);
+      box-shadow: 12px 12px 0 rgba(142, 201, 184, 0.3);
+    }
+
+    .console-head {
+      margin-bottom: 20px;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      font-family: var(--mono);
+    }
+
+    .console-head strong {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+    }
+
+    .console-head span {
+      color: rgba(248, 251, 250, 0.55);
+      font-size: 9px;
+    }
+
+    pre {
+      margin: 0;
+      overflow-x: auto;
+      font: 11px/1.78 var(--mono);
+      tab-size: 2;
+    }
+
+    .tok-type { color: #a9c7ff; }
+    .tok-key { color: #8ec9b8; }
+    .tok-string { color: #ff9e86; }
+    .tok-call { color: #d8e483; }
+    .tok-comment { color: #8396a0; }
+
+    .sdk-reason {
+      display: grid;
+      gap: 11px;
+    }
+
+    .reason-card {
+      min-height: 94px;
+      padding: 17px 20px;
+      display: grid;
+      grid-template-columns: 46px 1fr;
+      align-items: center;
+      gap: 16px;
+      background: rgba(248, 251, 250, 0.76);
+      border: 1px solid var(--line-strong);
+    }
+
+    .reason-mark {
+      width: 42px;
+      height: 42px;
       display: grid;
       place-items: center;
-      color: var(--porcelain);
-      background: var(--ink);
-      border: 8px solid var(--mist);
-      border-radius: 50%;
-      font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 700;
+      color: var(--paper);
+      background: var(--cobalt);
+      font: 700 10px/1 var(--mono);
     }
 
-    .life-step:nth-child(3) .life-node,
-    .life-step:nth-child(4) .life-node {
+    .reason-card:nth-child(2) .reason-mark {
       color: var(--ink);
       background: var(--coral);
     }
 
-    .life-step:nth-child(n+5) .life-node {
+    .reason-card:nth-child(3) .reason-mark {
       color: var(--ink);
       background: var(--mint);
     }
 
-    .life-step h3 {
-      margin: 0 0 8px;
+    .reason-card strong {
+      display: block;
       font-family: var(--mono);
       font-size: 12px;
-      letter-spacing: -0.02em;
+    }
+
+    .reason-card p {
+      margin: 4px 0 0;
+      color: var(--ink-soft);
+      font-size: 13px;
+    }
+
+    .experiment-track {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+    }
+
+    .experiment-track::before {
+      position: absolute;
+      top: 29px;
+      right: 8%;
+      left: 8%;
+      height: 2px;
+      content: "";
+      background: linear-gradient(90deg, var(--cobalt), var(--coral), var(--mint));
+    }
+
+    .experiment-step {
+      position: relative;
+      z-index: 1;
+      min-height: 218px;
+      padding: 0 14px 18px;
+      background: linear-gradient(to bottom, transparent 0 58px, rgba(248, 251, 250, 0.74) 58px);
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    .step-node {
+      width: 58px;
+      height: 58px;
+      margin: 0 auto 19px;
+      display: grid;
+      place-items: center;
+      color: var(--paper);
+      background: var(--ink);
+      border: 7px solid var(--mist);
+      border-radius: 50%;
+      font: 700 10px/1 var(--mono);
+    }
+
+    .experiment-step:nth-child(2) .step-node,
+    .experiment-step:nth-child(3) .step-node {
+      color: var(--ink);
+      background: var(--coral);
+    }
+
+    .experiment-step:nth-child(n+4) .step-node {
+      color: var(--ink);
+      background: var(--mint);
+    }
+
+    .experiment-step h3 {
+      margin: 0 0 8px;
+      font: 700 11px/1.3 var(--mono);
       text-align: center;
     }
 
-    .life-step p {
+    .experiment-step p {
       margin: 0;
       color: var(--ink-soft);
       font-size: 12px;
@@ -951,231 +980,33 @@
       text-align: center;
     }
 
-    .semantics-layout {
-      display: grid;
-      grid-template-columns: minmax(300px, 0.9fr) minmax(420px, 1.1fr);
-      gap: clamp(34px, 6vw, 88px);
-      align-items: center;
-    }
-
-    .result-object {
-      position: relative;
-      padding: 26px;
-      color: var(--porcelain);
-      background: var(--ink);
-      box-shadow: 14px 14px 0 var(--mint);
-      clip-path: polygon(0 0, calc(100% - 22px) 0, 100% 22px, 100% 100%, 0 100%);
-    }
-
-    .result-object::before {
-      display: block;
-      margin-bottom: 17px;
-      color: var(--mint);
-      content: "UNIFIED OUTCOME";
-      font: 700 10px/1 var(--mono);
-      letter-spacing: 0.12em;
-    }
-
-    pre {
-      margin: 0;
-      overflow-x: auto;
-      font: 12px/1.75 var(--mono);
-      tab-size: 2;
-    }
-
-    .tok-type { color: #a8c7ff; }
-    .tok-key { color: #8ec9b8; }
-    .tok-string { color: #ff9f87; }
-    .tok-comment { color: #8396a0; }
-    .tok-call { color: #d8e483; }
-
-    .state-network {
-      position: relative;
-      display: grid;
-      gap: 11px;
-    }
-
-    .state-card {
-      position: relative;
-      min-height: 88px;
-      padding: 16px 20px 16px 72px;
-      display: grid;
-      align-content: center;
-      background: rgba(248, 251, 250, 0.76);
-      border: 1px solid var(--line-strong);
-    }
-
-    .state-card::before {
-      position: absolute;
-      top: 50%;
-      left: 24px;
-      width: 22px;
-      height: 22px;
-      content: "";
-      background: var(--mint);
-      border-radius: 50%;
-      transform: translateY(-50%);
-      box-shadow: 0 0 0 6px rgba(142, 201, 184, 0.2);
-    }
-
-    .state-card.stopped::before {
-      background: var(--cobalt);
-      box-shadow: 0 0 0 6px rgba(49, 87, 232, 0.13);
-    }
-
-    .state-card.failed::before,
-    .state-card.infrastructure::before {
-      background: var(--coral);
-      box-shadow: 0 0 0 6px rgba(239, 106, 76, 0.14);
-    }
-
-    .state-card.infrastructure {
-      margin-top: 12px;
-      background: rgba(239, 106, 76, 0.09);
-      border-color: var(--coral);
-    }
-
-    .state-card.infrastructure::after {
-      position: absolute;
-      top: -17px;
-      left: 33px;
-      width: 1px;
-      height: 16px;
-      content: "";
-      background: var(--coral);
-    }
-
-    .state-card strong {
-      font-family: var(--mono);
-      font-size: 13px;
-    }
-
-    .state-card span {
-      margin-top: 4px;
-      color: var(--ink-soft);
-      font-size: 13px;
-    }
-
-    .migration-grid {
-      display: grid;
-      grid-template-columns: 1.15fr 0.85fr;
-      gap: 16px;
-      align-items: stretch;
-    }
-
-    .code-panel {
-      position: relative;
-      min-width: 0;
-      padding: 24px;
-      overflow: hidden;
-      color: var(--porcelain);
-      background: #1d3544;
-      border-top: 4px solid var(--ink-soft);
-    }
-
-    .code-panel.after {
-      background: var(--ink);
-      border-top-color: var(--mint);
-      box-shadow: 10px 10px 0 rgba(142, 201, 184, 0.35);
-    }
-
-    .code-panel header {
-      margin-bottom: 20px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      font-family: var(--mono);
-    }
-
-    .code-panel header strong {
-      font-size: 12px;
-      letter-spacing: 0.08em;
-    }
-
-    .code-panel header span {
-      color: rgba(248, 251, 250, 0.58);
-      font-size: 10px;
-    }
-
-    .honesty-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-    }
-
-    .ledger {
-      padding: 28px;
-      background: rgba(248, 251, 250, 0.72);
-      border: 1px solid var(--line-strong);
-    }
-
-    .ledger h3 {
-      margin: 0 0 22px;
-      font-family: var(--display);
-      font-size: 32px;
-      letter-spacing: -0.04em;
-    }
-
-    .ledger.keep h3 {
-      color: #2c765f;
-    }
-
-    .ledger.cut h3 {
-      color: var(--coral);
-    }
-
-    .ledger ul {
-      margin: 0;
-      padding: 0;
-      display: grid;
-      gap: 13px;
-      list-style: none;
-    }
-
-    .ledger li {
-      position: relative;
-      padding-left: 24px;
-      color: var(--ink-soft);
-      font-size: 14px;
-    }
-
-    .ledger li::before {
-      position: absolute;
-      top: 0.67em;
-      left: 0;
-      width: 10px;
-      height: 2px;
-      content: "";
-      background: currentColor;
-    }
-
-    .verification-strip {
-      margin-top: 16px;
-      padding: 20px 24px;
-      display: grid;
-      grid-template-columns: 1.1fr repeat(4, auto);
-      align-items: center;
-      gap: 22px;
-      color: var(--porcelain);
+    .closing-note {
+      margin-top: 52px;
+      padding: 28px 30px;
+      color: var(--paper);
       background: var(--cobalt-deep);
-      font-family: var(--mono);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 30px;
     }
 
-    .verification-strip strong {
-      font-size: 12px;
-      letter-spacing: 0.08em;
+    .closing-note strong {
+      font-family: var(--display);
+      font-size: clamp(28px, 3.5vw, 44px);
+      letter-spacing: -0.04em;
+      line-height: 1.08;
     }
 
-    .verification-strip span {
-      color: rgba(248, 251, 250, 0.75);
-      font-size: 10px;
-      white-space: nowrap;
+    .closing-note span {
+      color: rgba(248, 251, 250, 0.68);
+      font: 9px/1.6 var(--mono);
+      text-align: right;
     }
 
     .page-footer {
-      padding: 64px 24px 52px;
-      color: var(--porcelain);
+      padding: 62px 24px 48px;
+      color: var(--paper);
       background: var(--ink);
     }
 
@@ -1185,14 +1016,14 @@
       display: grid;
       grid-template-columns: 1fr auto;
       align-items: end;
-      gap: 36px;
+      gap: 34px;
     }
 
     .footer-title {
-      max-width: 850px;
+      max-width: 900px;
       margin: 0;
       font-family: var(--display);
-      font-size: clamp(36px, 5vw, 70px);
+      font-size: clamp(38px, 5vw, 68px);
       font-weight: 720;
       letter-spacing: -0.05em;
       line-height: 1;
@@ -1206,7 +1037,7 @@
       padding: 13px 16px;
       color: var(--ink);
       background: var(--mint);
-      font: 700 11px/1 var(--mono);
+      font: 700 10px/1 var(--mono);
       letter-spacing: 0.08em;
       text-decoration: none;
       white-space: nowrap;
@@ -1220,23 +1051,14 @@
 
     .footer-meta {
       width: var(--page);
-      margin: 40px auto 0;
+      margin: 38px auto 0;
       padding-top: 18px;
       display: flex;
       justify-content: space-between;
       gap: 24px;
-      color: rgba(248, 251, 250, 0.56);
-      border-top: 1px solid rgba(248, 251, 250, 0.18);
-      font-family: var(--mono);
-      font-size: 10px;
-    }
-
-    @keyframes grow-line {
-      to { transform: translateX(-50%) scaleY(1); }
-    }
-
-    @keyframes grow-fan {
-      to { transform: scaleX(1); }
+      color: rgba(248, 251, 250, 0.54);
+      border-top: 1px solid rgba(248, 251, 250, 0.17);
+      font: 9px/1.5 var(--mono);
     }
 
     @keyframes hero-enter {
@@ -1255,11 +1077,11 @@
       animation: hero-enter 650ms cubic-bezier(0.2, 0.75, 0.2, 1) forwards;
     }
 
-    .hero-copy > :nth-child(1) { animation-delay: 80ms; }
-    .hero-copy > :nth-child(2) { animation-delay: 150ms; }
-    .hero-copy > :nth-child(3) { animation-delay: 230ms; }
-    .hero-copy > :nth-child(4) { animation-delay: 310ms; }
-    .hero-copy > :nth-child(5) { animation-delay: 390ms; }
+    .hero-copy > :nth-child(1) { animation-delay: 70ms; }
+    .hero-copy > :nth-child(2) { animation-delay: 140ms; }
+    .hero-copy > :nth-child(3) { animation-delay: 220ms; }
+    .hero-copy > :nth-child(4) { animation-delay: 300ms; }
+    .hero-copy > :nth-child(5) { animation-delay: 380ms; }
 
     @media (max-width: 1080px) {
       :root {
@@ -1271,11 +1093,11 @@
       }
 
       .hero-copy {
-        max-width: 780px;
+        max-width: 800px;
       }
 
-      .machine {
-        width: min(760px, 100%);
+      .bench {
+        width: min(780px, 100%);
         margin: 0 auto;
       }
 
@@ -1283,25 +1105,25 @@
         display: none;
       }
 
-      .lifecycle-track {
-        grid-template-columns: repeat(4, 1fr);
-        gap: 18px 8px;
-      }
-
-      .lifecycle-track::before {
-        display: none;
-      }
-
-      .life-step {
-        border: 1px solid var(--line);
-      }
-
-      .verification-strip {
+      .shared-invariants {
         grid-template-columns: 1fr 1fr 1fr;
       }
 
-      .verification-strip strong {
+      .shared-invariants strong {
         grid-column: 1 / -1;
+      }
+
+      .experiment-track {
+        grid-template-columns: repeat(3, 1fr);
+        gap: 18px 8px;
+      }
+
+      .experiment-track::before {
+        display: none;
+      }
+
+      .experiment-step {
+        border: 1px solid var(--line);
       }
     }
 
@@ -1314,12 +1136,12 @@
         min-height: 66px;
       }
 
-      .mast-meta > span:not(.ci-status) {
+      .mast-meta > span:not(.status) {
         display: none;
       }
 
-      .ci-status {
-        font-size: 9px;
+      .status {
+        font-size: 8px;
       }
 
       .hero-layout {
@@ -1327,69 +1149,68 @@
       }
 
       h1 {
-        font-size: clamp(52px, 16vw, 82px);
+        font-size: clamp(54px, 16vw, 82px);
       }
 
-      .machine-shell {
+      .bench-shell {
         padding: 10px;
       }
 
-      .machine-toolbar {
-        padding: 5px 4px 10px;
+      .bench-toolbar {
+        padding: 5px 4px 11px;
+        display: grid;
+        gap: 10px;
       }
 
-      .machine-title span {
-        display: none;
+      .focus-switch {
+        width: 100%;
       }
 
-      .machine-stage {
-        min-height: 690px;
-        padding: 20px 14px;
-        grid-template-rows: auto 42px auto 52px auto 42px auto;
+      .focus-switch button {
+        min-width: 0;
       }
 
-      .port-row {
-        grid-template-columns: 1fr 1fr;
+      .bench-stage {
+        min-height: 850px;
+        padding: 18px 12px;
       }
 
-      .api-port {
-        font-size: 9px;
+      .regime-row,
+      .regime-detail-grid,
+      .ablation-layout,
+      .sdk-layout {
+        grid-template-columns: 1fr;
       }
 
-      .core-panel {
-        width: 88%;
+      .regime-card {
+        min-height: 238px;
       }
 
-      .runtime-row {
-        gap: 5px;
+      .graph {
+        height: 120px;
       }
 
-      .runtime-card {
-        padding: 12px 4px;
+      .core-connector {
+        height: 42px;
       }
 
-      .runtime-card strong {
-        font-size: 9px;
+      .core-connector::before {
+        left: 32%;
       }
 
-      .runtime-card span {
-        display: none;
+      .core-connector::after {
+        right: 32%;
       }
 
-      .adapter-rack {
-        top: 314px;
-        width: 86px;
+      .port-sockets {
+        grid-template-columns: repeat(3, 1fr);
       }
 
-      .machine[data-view="surface"] .surface-panel {
-        transform: translateY(210px) scale(1.02);
-      }
-
-      .machine-caption {
+      .bench-caption {
         display: block;
       }
 
-      .machine-caption span:last-child {
+      .bench-caption span:last-child {
         display: block;
         margin-top: 4px;
       }
@@ -1407,52 +1228,40 @@
         gap: 24px;
       }
 
-      .metric-grid,
-      .semantics-layout,
-      .migration-grid,
-      .honesty-grid {
+      .property-list li {
         grid-template-columns: 1fr;
+        gap: 4px;
       }
 
-      .metric-card {
-        min-height: 230px;
-      }
-
-      .layer-row {
-        grid-template-columns: 1fr;
-        gap: 14px;
-      }
-
-      .layer-duty,
-      .layer-limit {
-        padding-top: 12px;
-        border-top: 1px solid var(--line);
-      }
-
-      .layer-row:nth-child(3) .layer-duty,
-      .layer-row:nth-child(3) .layer-limit {
-        border-top-color: rgba(248, 251, 250, 0.16);
-      }
-
-      .lifecycle-track {
+      .shared-invariants {
         grid-template-columns: 1fr 1fr;
       }
 
-      .life-step {
-        min-height: 200px;
+      .clean-stack {
+        position: static;
       }
 
-      .verification-strip {
+      .stack-layer {
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+
+      .port-row {
+        grid-template-columns: 1fr;
+        gap: 5px;
+      }
+
+      .experiment-track {
         grid-template-columns: 1fr 1fr;
-        gap: 13px;
       }
 
-      .verification-strip span {
-        white-space: normal;
-      }
-
+      .closing-note,
       .footer-inner {
         grid-template-columns: 1fr;
+      }
+
+      .closing-note span {
+        text-align: left;
       }
 
       .footer-link {
@@ -1465,24 +1274,29 @@
       }
     }
 
-    @media (max-width: 420px) {
-      .mast-meta .ci-status {
+    @media (max-width: 440px) {
+      .mast-meta .status {
         display: none;
       }
 
-      .view-switch button {
-        min-width: 54px;
+      .bench-stage {
+        min-height: 860px;
       }
 
-      .machine-stage {
-        min-height: 700px;
+      .graph-node {
+        min-width: 50px;
+        font-size: 8px;
       }
 
-      .lifecycle-track {
+      .shared-core {
+        width: 92%;
+      }
+
+      .experiment-track {
         grid-template-columns: 1fr;
       }
 
-      .life-step {
+      .experiment-step {
         min-height: auto;
         padding: 16px;
         display: grid;
@@ -1491,24 +1305,16 @@
         align-items: center;
       }
 
-      .life-node {
+      .step-node {
         width: 54px;
         height: 54px;
         margin: 0;
       }
 
-      .life-step h3,
-      .life-step p {
+      .experiment-step h3,
+      .experiment-step p {
         grid-column: 2;
         text-align: left;
-      }
-
-      .life-step h3 {
-        align-self: end;
-      }
-
-      .life-step p {
-        align-self: start;
       }
     }
 
@@ -1539,11 +1345,11 @@
     <nav class="masthead" aria-label="页面信息">
       <div class="brand">
         <span class="brand-mark" aria-hidden="true">OC</span>
-        <span>OpenCollab / SDK Cutaway</span>
+        <span>OpenCollab / Research Architecture</span>
       </div>
       <div class="mast-meta">
-        <span>Package 0.4.0</span>
-        <span class="ci-status">All checks green</span>
+        <span>SDK 0.4</span>
+        <span class="status">All checks green</span>
         <a
           class="pr-link"
           href="https://github.com/YihongDong/OpenCollab/pull/26"
@@ -1555,395 +1361,359 @@
 
     <div class="hero-layout">
       <div class="hero-copy">
-        <p class="eyebrow">SDK 0.4 / architecture thesis</p>
+        <p class="eyebrow">Topology × Ablation × Clean Architecture</p>
         <h1>
-          <span>门面只有</span>
-          <span class="thesis-accent">四个名字</span>
-          <span>机器仍然完整</span>
+          <span>同一内核</span>
+          <span class="accent">两种拓扑</span>
+          <span>一张干净实验台</span>
         </h1>
         <p class="hero-lede">
-          OpenCollab 把调用者必须记住的表面，从请求 DTO 图收敛成一个客户端；
-          超时、清理、持久化与证据校验没有被删掉，而是回到了唯一正确的位置：bootstrap。
+          Team 与 Workflow 研究不同的协作控制方式；Harness 通过 Ports 替换单一变量做消融。
+          SDK 不承载这些研究复杂度，它只提供稳定的启动与观测入口。
         </p>
-        <ul class="api-signature" aria-label="四个公共导出">
-          <li>OpenCollab</li>
-          <li>RunResult</li>
-          <li>RunError</li>
-          <li>workflow</li>
-        </ul>
-        <p class="hero-note">收窄认知入口，而不是安全边界。右侧可切换“表层 / 剖面”。</p>
+        <div class="research-equation" aria-label="研究架构公式">
+          <strong>CONTROL</strong> = agent baseline · team topology · workflow topology<br>
+          <strong>TREATMENT</strong> = one replaceable Port / Adapter<br>
+          <strong>OBSERVATION</strong> = RunResult + trajectory + artifacts
+        </div>
+        <p class="hero-note">右侧实验台可聚焦 Team 或 Workflow，观察它们如何落到同一个 Session 内核。</p>
       </div>
 
-      <figure class="machine" data-view="cutaway" aria-labelledby="machine-heading">
-        <div class="machine-shell">
-          <div class="machine-toolbar">
-            <div class="machine-title">
-              <strong id="machine-heading">SDK X-RAY / OC-04</strong>
-              <span>public aperture → composition root → hardened runtimes</span>
+      <figure class="bench" data-focus="both" aria-labelledby="bench-heading">
+        <div class="bench-shell">
+          <div class="bench-toolbar">
+            <div class="bench-title">
+              <strong id="bench-heading">CONTROL REGIME BENCH / OC-04</strong>
+              <span>same process primitive · different orchestration topology</span>
             </div>
-            <div class="view-switch" role="group" aria-label="架构视图">
-              <button type="button" data-machine-view="surface" aria-pressed="false">表层</button>
-              <button type="button" data-machine-view="cutaway" aria-pressed="true">剖面</button>
+            <div class="focus-switch" role="group" aria-label="聚焦控制模式">
+              <button type="button" data-focus="team" aria-pressed="false">TEAM</button>
+              <button type="button" data-focus="both" aria-pressed="true">BOTH</button>
+              <button type="button" data-focus="workflow" aria-pressed="false">WORKFLOW</button>
             </div>
           </div>
 
-          <div class="machine-stage">
-            <div class="surface-panel">
-              <div class="panel-label">
-                <span>Public surface</span>
-                <span>lazy loaded · SemVer</span>
-              </div>
-              <div class="port-row">
-                <span class="api-port">OpenCollab</span>
-                <span class="api-port">RunResult</span>
-                <span class="api-port">RunError</span>
-                <span class="api-port">workflow</span>
-              </div>
+          <div class="bench-stage">
+            <div class="regime-row">
+              <article class="regime-card team">
+                <div class="regime-head">
+                  <strong>TEAM</strong>
+                  <span>LLM-supervised<br>event-driven</span>
+                </div>
+                <div class="graph" aria-label="Team 动态角色拓扑示意图">
+                  <span class="graph-line line-a"></span>
+                  <span class="graph-line line-b"></span>
+                  <span class="graph-line line-c"></span>
+                  <span class="graph-node node-a">LEAD</span>
+                  <span class="graph-node node-b">ANALYST</span>
+                  <span class="graph-node node-c">REVIEWER</span>
+                  <span class="graph-node node-d">CODER</span>
+                </div>
+              </article>
+
+              <article class="regime-card workflow">
+                <div class="regime-head">
+                  <strong>WORKFLOW</strong>
+                  <span>code-driven<br>deterministic</span>
+                </div>
+                <div class="graph" aria-label="Workflow 程序化控制拓扑示意图">
+                  <span class="graph-line line-a"></span>
+                  <span class="graph-line line-b"></span>
+                  <span class="graph-line line-c"></span>
+                  <span class="graph-line line-d"></span>
+                  <span class="graph-line line-e"></span>
+                  <span class="graph-node node-a">PHASE</span>
+                  <span class="graph-node node-b">FAN-OUT</span>
+                  <span class="graph-node node-c">MERGE</span>
+                  <span class="graph-node node-d">VERIFY</span>
+                </div>
+              </article>
             </div>
 
-            <div class="machine-internals">
-              <div class="trace-trunk" aria-hidden="true"></div>
+            <div class="core-connector" aria-hidden="true"></div>
 
-              <div class="core-panel">
-                <strong>bootstrap/programmatic.py</strong>
-                <span>concrete assembly · ownership · evidence</span>
-              </div>
+            <div class="shared-core">
+              <strong>Session · run_loop() · FSM</strong>
+              <span>the identical process primitive beneath both regimes</span>
+            </div>
 
-              <div class="trace-fan" aria-hidden="true"></div>
+            <div class="baseline-line">
+              <span>CONTROL BASELINE</span>
+              <span>agent()</span>
+            </div>
 
-              <div class="runtime-row">
-                <div class="runtime-card">
-                  <strong>agent_runtime</strong>
-                  <span>one agent</span>
-                </div>
-                <div class="runtime-card">
-                  <strong>Scheduler</strong>
-                  <span>one team</span>
-                </div>
-                <div class="runtime-card">
-                  <strong>workflow_runtime</strong>
-                  <span>one flow</span>
-                </div>
-              </div>
-
-              <div class="trace-inward" aria-hidden="true"></div>
-
-              <div class="foundation-stack">
-                <div class="foundation-card">
-                  <strong>application</strong>
-                  <span>use cases · ports · scheduling</span>
-                </div>
-                <div class="foundation-card">
-                  <strong>domain</strong>
-                  <span>FSM · value objects</span>
-                </div>
-              </div>
-
-              <aside class="adapter-rack" aria-label="由 bootstrap 组装的适配器">
-                <strong>ADAPTER RACK</strong>
-                <span>LLM</span>
-                <span>TOOLS</span>
-                <span>ENV</span>
-                <span>TRACE</span>
-                <span>STORE</span>
-              </aside>
+            <div class="port-sockets" aria-label="可替换端口">
+              <span>LLM</span>
+              <span>TOOLS</span>
+              <span>ENV</span>
+              <span>SHAPER</span>
+              <span>TRACE</span>
+              <span>STORE</span>
             </div>
           </div>
         </div>
-        <figcaption class="machine-caption">
-          <span><strong>依赖方向：</strong>adapters → application → domain</span>
-          <span>SDK 只委托 bootstrap，不直接 import concrete adapters/domain</span>
+        <figcaption class="bench-caption">
+          <span>Team 研究涌现式协作图；Workflow 研究程序化控制图</span>
+          <span>共享内核让差异可以归因于 control regime</span>
         </figcaption>
       </figure>
     </div>
   </header>
 
   <main id="main">
-    <section class="thesis-band" aria-label="重构原则">
-      <div class="thesis-index">DESIGN PRINCIPLE / 01</div>
+    <section class="thesis-band" aria-label="架构原则">
+      <div class="thesis-index">RESEARCH PRINCIPLE / 01</div>
       <blockquote>
-        精简的是调用者必须记住的东西，<em>不是清理、超时与证据。</em>
+        让 topology 研究者改变控制图，<em>而不是重写 Agent 内核。</em>
       </blockquote>
     </section>
 
-    <section class="section-shell" id="why">
-      <span class="section-rail" aria-hidden="true">CONTRACT APERTURE</span>
+    <section class="section-shell" id="topology">
+      <span class="section-rail" aria-hidden="true">TWO CONTROL REGIMES</span>
       <div class="section-heading">
         <div>
-          <p class="section-kicker">Why this refactor</p>
-          <h2>把认知入口收窄</h2>
+          <p class="section-kicker">Topology research</p>
+          <h2>同一进程，两种控制方式</h2>
         </div>
         <p class="section-intro">
-          v2 的问题不是功能不够，而是每次调用都要求用户先理解配置、预算、请求和结果四层对象。
-          0.4 保留能力，删除仪式。
+          两种模式都驱动相同的 <code>session.run_loop()</code>。研究者可以把注意力放在
+          “谁决定下一条边、图如何展开”，而不是模型调用、工具执行和状态机差异。
         </p>
       </div>
 
-      <div class="metric-grid">
-        <article class="metric-card">
-          <p class="micro-label">Top-level exports</p>
-          <div class="metric-value"><del>37</del><span class="arrow">→</span><span>4</span></div>
-          <p class="metric-copy">日常入口只剩客户端、结果、错误和装饰器；高级协议按需导入。</p>
+      <div class="regime-detail-grid">
+        <article class="regime-detail team-detail">
+          <div class="detail-title">
+            <h3>Team</h3>
+            <span>emergent collaboration topology</span>
+          </div>
+          <ul class="property-list">
+            <li><strong>Graph</strong><span>角色之间允许 spawn / message 的有向权限图。</span></li>
+            <li><strong>Controller</strong><span>LLM-supervised Scheduler 根据运行中状态决定委派与通信。</span></li>
+            <li><strong>Dynamics</strong><span>SessionTable、父子关系、pending events 与消息 inbox 随执行展开。</span></li>
+            <li><strong>Research</strong><span>星型、层级、角色约束、通信边和动态分工如何影响结果。</span></li>
+          </ul>
         </article>
-        <article class="metric-card">
-          <p class="micro-label">Frozen DTO fields</p>
-          <div class="metric-value"><del>63</del><span class="arrow">→</span><span>7</span></div>
-          <p class="metric-copy">Agent、Team、Workflow 共用一个 RunResult，不再各有一套结果语法。</p>
+
+        <article class="regime-detail workflow-detail">
+          <div class="detail-title">
+            <h3>Workflow</h3>
+            <span>programmed control topology</span>
+          </div>
+          <ul class="property-list">
+            <li><strong>Graph</strong><span>由 Python 函数显式表达 phase、fan-out、pipeline、merge 与 verify。</span></li>
+            <li><strong>Controller</strong><span>WorkflowContext 按作者写下的控制流驱动一次性 Agent Session。</span></li>
+            <li><strong>Dynamics</strong><span>并发、顺序、预算分配与结束条件可复现、可检查。</span></li>
+            <li><strong>Research</strong><span>固定协议、并发结构与验证位置如何改变效率和可靠性。</span></li>
+          </ul>
         </article>
-        <article class="metric-card">
-          <p class="micro-label">First-class regimes</p>
-          <div class="metric-value"><del>2</del><span class="arrow">→</span><span>3</span></div>
-          <p class="metric-copy">Team 不再是内部特例；agent、team、workflow 成为对称的一等入口。</p>
-        </article>
+      </div>
+
+      <div class="shared-invariants" aria-label="两种模式共享的内核变量">
+        <strong>HELD CONSTANT</strong>
+        <span>Session FSM</span>
+        <span>Tool execution</span>
+        <span>Budget semantics</span>
+        <span>Environment safety</span>
+        <span>Evidence lifecycle</span>
       </div>
     </section>
 
-    <section class="section-shell" id="ownership">
-      <span class="section-rail" aria-hidden="true">OWNERSHIP MAP</span>
+    <section class="section-shell" id="ablation">
+      <span class="section-rail" aria-hidden="true">CLEAN ABLATION</span>
       <div class="section-heading">
         <div>
-          <p class="section-kicker">Architecture</p>
-          <h2>每层只知道它该知道的</h2>
+          <p class="section-kicker">Harness research</p>
+          <h2>替换一个 Port，保持核心不动</h2>
         </div>
         <p class="section-intro">
-          关键变化不是把旧 Runtime 换个名字，而是取消 SDK 内部的第二套组装逻辑。
-          具体类型只在 bootstrap 相遇。
+          Harness 位于系统外层，定义实验条件并请求 Bootstrap 装配。依赖只向内指向
+          application/domain，因此一次消融应替换一个 Adapter，而不是在核心逻辑里插条件分支。
         </p>
       </div>
 
-      <div class="layer-map" role="list" aria-label="各层职责">
-        <article class="layer-row" role="listitem">
-          <div class="layer-name">opencollab/__init__.py<small>lazy public aperture</small></div>
-          <p class="layer-duty">惰性暴露四个公共名字，保持根包冷启动轻量。</p>
-          <p class="layer-limit">不解析配置，不加载 LLM，不组装运行时。</p>
-        </article>
-        <article class="layer-row" role="listitem">
-          <div class="layer-name">sdk/client.py<small>thin stateful facade</small></div>
-          <p class="layer-duty">构造时解析一次配置；校验普通参数；把调用委托出去。</p>
-          <p class="layer-limit">不 import concrete adapter，不管理 Session 生命周期。</p>
-        </article>
-        <article class="layer-row" role="listitem">
-          <div class="layer-name">bootstrap/programmatic.py<small>single composition root</small></div>
-          <p class="layer-duty">组装 Agent、Environment、Tracer、Scheduler；确认资源所有权。</p>
-          <p class="layer-limit">不创造第二套业务状态机，不复制 application 规则。</p>
-        </article>
-        <article class="layer-row" role="listitem">
-          <div class="layer-name">hardened runtimes<small>agent · team · workflow</small></div>
-          <p class="layer-duty">执行、取消、清理、持久化，并返回真实 token/session 指标。</p>
-          <p class="layer-limit">不向调用者泄漏三套不同的结果模型。</p>
-        </article>
-        <article class="layer-row" role="listitem">
-          <div class="layer-name">application → domain<small>inward dependency</small></div>
-          <p class="layer-duty">用例、端口、调度和纯 FSM 保持独立可测。</p>
-          <p class="layer-limit">不知道 CLI、SDK、LLM provider 或文件系统实现。</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="section-shell" id="lifecycle">
-      <span class="section-rail" aria-hidden="true">OWNED LIFECYCLE</span>
-      <div class="section-heading">
-        <div>
-          <p class="section-kicker">Execution path</p>
-          <h2>小门面，硬生命周期</h2>
-        </div>
-        <p class="section-intro">
-          这七步是真实的先后顺序。只有在工作静默、证据可信后，调用方才拿到 RunResult。
-        </p>
-      </div>
-
-      <div class="lifecycle-track" aria-label="一次运行的七个步骤">
-        <article class="life-step">
-          <div class="life-node">01</div>
-          <h3>VALIDATE</h3>
-          <p>校验 prompt、budget、timeout、路径和 workflow 输入。</p>
-        </article>
-        <article class="life-step">
-          <div class="life-node">02</div>
-          <h3>RESOLVE</h3>
-          <p>复用中央配置，并解析 coding/read 工具预设。</p>
-        </article>
-        <article class="life-step">
-          <div class="life-node">03</div>
-          <h3>CLAIM</h3>
-          <p>原子写入 .opencollab-run，拒绝证据目录复用。</p>
-        </article>
-        <article class="life-step">
-          <div class="life-node">04</div>
-          <h3>COMPOSE</h3>
-          <p>bootstrap 组装具体环境、工具、追踪与执行者。</p>
-        </article>
-        <article class="life-step">
-          <div class="life-node">05</div>
-          <h3>EXECUTE</h3>
-          <p>进入已有 hardened runtime，不另造执行循环。</p>
-        </article>
-        <article class="life-step">
-          <div class="life-node">06</div>
-          <h3>QUIESCE</h3>
-          <p>有界取消、撤销副作用、等待清理和保存任务结束。</p>
-        </article>
-        <article class="life-step">
-          <div class="life-node">07</div>
-          <h3>VERIFY</h3>
-          <p>验证 claim、transcript 或 manifest，再生成结果。</p>
-        </article>
-      </div>
-    </section>
-
-    <section class="section-shell" id="semantics">
-      <span class="section-rail" aria-hidden="true">OUTCOME SEMANTICS</span>
-      <div class="section-heading">
-        <div>
-          <p class="section-kicker">One result model</p>
-          <h2>执行失败，不等于基础设施失真</h2>
-        </div>
-        <p class="section-intro">
-          可描述的运行结局返回 RunResult；无法证明资源已经收干净、证据已经落盘时，才抛 RunError。
-        </p>
-      </div>
-
-      <div class="semantics-layout">
-        <div class="result-object" aria-label="RunResult 字段">
-<pre><span class="tok-type">RunResult</span>(
-  <span class="tok-key">output</span>=...,
-  <span class="tok-key">status</span>=<span class="tok-string">"completed | stopped | failed"</span>,
-  <span class="tok-key">reason</span>=...,
-  <span class="tok-key">tokens</span>=...,
-  <span class="tok-key">artifacts</span>=...,
-  <span class="tok-key">error</span>=...,
-  <span class="tok-key">metrics</span>=...,
-)</pre>
+      <div class="ablation-layout">
+        <div class="clean-stack" aria-label="Clean Architecture 消融栈">
+          <div class="stack-layer harness">
+            <strong>EXTERNAL HARNESS</strong>
+            <p>定义 treatment、样本、seed、预算与评价口径。</p>
+          </div>
+          <div class="dependency-arrow" aria-hidden="true">↓ request condition</div>
+          <div class="stack-layer">
+            <strong>BOOTSTRAP + ADAPTERS</strong>
+            <p>Composition root 把选定的 LLM、Tool、Environment 等实现绑定到端口。</p>
+          </div>
+          <div class="dependency-arrow" aria-hidden="true">↓ implement</div>
+          <div class="stack-layer ports">
+            <strong>APPLICATION PORTS</strong>
+            <p>稳定的结构契约；实验替换发生在这里，不向内泄漏实现。</p>
+          </div>
+          <div class="dependency-arrow" aria-hidden="true">↓ use</div>
+          <div class="stack-layer">
+            <strong>APPLICATION</strong>
+            <p>Session use cases、Scheduler、WorkflowContext 与预算规则。</p>
+          </div>
+          <div class="dependency-arrow" aria-hidden="true">↓ protect</div>
+          <div class="stack-layer domain">
+            <strong>DOMAIN</strong>
+            <p>纯 Session FSM、Topology 和 value objects；不感知实验设施。</p>
+          </div>
         </div>
 
-        <div class="state-network">
-          <div class="state-card completed">
-            <strong>completed</strong>
-            <span>正常完成；output 可用，result.ok 为 true。</span>
+        <div class="ablation-copy">
+          <div class="ablation-rule">
+            <strong>ABLATION RULE</strong><br>
+            effect = outcome(adapter B) − outcome(adapter A)<br>
+            while task · core · regime · budget · evidence policy stay fixed
           </div>
-          <div class="state-card stopped">
-            <strong>stopped</strong>
-            <span>超时或预算停止，但终止与清理已得到证明。</span>
-          </div>
-          <div class="state-card failed">
-            <strong>failed</strong>
-            <span>模型、workflow 或 team 执行失败；错误作为结果证据保留。</span>
-          </div>
-          <div class="state-card infrastructure">
-            <strong>RunError</strong>
-            <span>任务未静默、清理失败或证据不完整；拒绝返回“可信结果”。</span>
+
+          <div class="port-table" aria-label="常见消融变量与端口">
+            <div class="port-row">
+              <code>LLMPort</code>
+              <p>替换模型或 provider；保持 Session runner、工具和预算规则不动。</p>
+            </div>
+            <div class="port-row">
+              <code>ShaperPort</code>
+              <p>比较上下文压缩策略；保留完整持久化历史和执行语义。</p>
+            </div>
+            <div class="port-row">
+              <code>ToolPort</code>
+              <p>增删工具能力或改变实现；Tool execution use case 保持一致。</p>
+            </div>
+            <div class="port-row">
+              <code>EnvironmentPort</code>
+              <p>切换本地、容器或隔离环境；路径与副作用契约不变。</p>
+            </div>
+            <div class="port-row">
+              <code>TracePort / SessionStorePort</code>
+              <p>改变观测和持久化设施，而不让测量机制进入 domain。</p>
+            </div>
+            <div class="port-row">
+              <code>WorktreePoolPort</code>
+              <p>消融协作隔离策略；Scheduler 仍通过同一资源接口工作。</p>
+            </div>
           </div>
         </div>
       </div>
     </section>
 
-    <section class="section-shell" id="migration">
-      <span class="section-rail" aria-hidden="true">CALL-SITE MIGRATION</span>
+    <section class="section-shell" id="sdk">
+      <span class="section-rail" aria-hidden="true">THIN SDK CONTROL PLANE</span>
       <div class="section-heading">
         <div>
-          <p class="section-kicker">Before / after</p>
-          <h2>从组装请求，到表达意图</h2>
+          <p class="section-kicker">Why the SDK is small</p>
+          <h2>SDK 是控制面，不是研究对象</h2>
         </div>
         <p class="section-intro">
-          配置在 OpenCollab 构造时解析一次；每次调用只说这次要做什么、花多少预算、证据放哪里。
+          Topology 的复杂度属于 Team / Workflow；消融的复杂度属于 Harness / Ports。
+          SDK 只需稳定表达“运行哪种 regime”并返回同一种观测结果。
         </p>
       </div>
 
-      <div class="migration-grid">
-        <article class="code-panel before">
-          <header>
-            <strong>SDK v2 / request graph</strong>
-            <span>removed in 0.4</span>
-          </header>
-<pre><span class="tok-key">request</span> = <span class="tok-call">AgentRunRequest</span>(
-  prompt=<span class="tok-string">"检查仓库是否可发布"</span>,
-  config=<span class="tok-call">RuntimeConfig</span>(
-    model=<span class="tok-string">"..."</span>,
-    provider=<span class="tok-string">"..."</span>,
-    api_key=<span class="tok-string">"..."</span>,
-  ),
-  budget=<span class="tok-call">AgentRunBudget</span>(
-    max_tokens=<span class="tok-string">100_000</span>,
-    max_steps=<span class="tok-string">20</span>,
-  ),
-  tools=<span class="tok-call">coding_toolset</span>(),
-  workspace=<span class="tok-string">"."</span>,
-)
-
-<span class="tok-key">result</span> = <span class="tok-key">await</span> <span class="tok-call">OpenCollabRuntime</span>()\
-  .run_agent(request)</pre>
-        </article>
-
-        <article class="code-panel after">
-          <header>
-            <strong>SDK 0.4 / plain intent</strong>
-            <span>one client · one result</span>
-          </header>
+      <div class="sdk-layout">
+        <div class="sdk-console">
+          <div class="console-head">
+            <strong>ONE TASK / THREE CONTROL CONDITIONS</strong>
+            <span>same observation envelope</span>
+          </div>
 <pre><span class="tok-key">from</span> opencollab <span class="tok-key">import</span> OpenCollab
+<span class="tok-key">from</span> study <span class="tok-key">import</span> protocol
 
 <span class="tok-key">oc</span> = <span class="tok-call">OpenCollab</span>(<span class="tok-string">"."</span>)
+<span class="tok-key">task</span> = <span class="tok-string">"修复目标缺陷并验证"</span>
 
-<span class="tok-key">result</span> = <span class="tok-key">await</span> oc.agent(
-  <span class="tok-string">"检查仓库是否可发布"</span>,
-  budget=<span class="tok-string">100_000</span>,
-  artifacts=<span class="tok-string">"artifacts/release"</span>,
+<span class="tok-comment"># 单进程控制基线</span>
+<span class="tok-key">baseline</span> = <span class="tok-key">await</span> oc.agent(task)
+
+<span class="tok-comment"># LLM-supervised 动态拓扑</span>
+<span class="tok-key">emergent</span> = <span class="tok-key">await</span> oc.team(
+  task,
+  config=<span class="tok-string">"configs/team.yaml"</span>,
 )
 
-<span class="tok-call">print</span>(
-  result.<span class="tok-call">raise_for_status</span>().output
+<span class="tok-comment"># code-driven 程序化拓扑</span>
+<span class="tok-key">programmed</span> = <span class="tok-key">await</span> oc.workflow(
+  protocol,
+  {<span class="tok-string">"task"</span>: task},
 )</pre>
-        </article>
+        </div>
+
+        <div class="sdk-reason">
+          <article class="reason-card">
+            <div class="reason-mark">IN</div>
+            <div>
+              <strong>三个 regime 入口</strong>
+              <p>agent 是控制基线；team 与 workflow 是两种研究拓扑。</p>
+            </div>
+          </article>
+          <article class="reason-card">
+            <div class="reason-mark">OUT</div>
+            <div>
+              <strong>一个 RunResult</strong>
+              <p>统一 output、status、tokens、metrics、artifacts，方便 Harness 比较。</p>
+            </div>
+          </article>
+          <article class="reason-card">
+            <div class="reason-mark">DI</div>
+            <div>
+              <strong>实验注入留在 Bootstrap</strong>
+              <p>SDK 不 re-export Scheduler、Session 或所有 Ports，研究自由留在内部边界。</p>
+            </div>
+          </article>
+        </div>
       </div>
     </section>
 
-    <section class="section-shell" id="tradeoffs">
-      <span class="section-rail" aria-hidden="true">HONEST TRADE-OFFS</span>
+    <section class="section-shell" id="method">
+      <span class="section-rail" aria-hidden="true">EXPERIMENT METHOD</span>
       <div class="section-heading">
         <div>
-          <p class="section-kicker">Deliberate boundaries</p>
-          <h2>保留什么，也明确不保留什么</h2>
+          <p class="section-kicker">Research workflow</p>
+          <h2>从问题到可归因结果</h2>
         </div>
         <p class="section-intro">
-          小 SDK 最怕以兼容为名重新长回两套表面。0.4 是 alpha 阶段的一次有意断代。
+          架构的最终价值不是“看起来分层”，而是让实验问题能对应到一个明确、可替换的位置。
         </p>
       </div>
 
-      <div class="honesty-grid">
-        <article class="ledger keep">
-          <h3>继续守住</h3>
-          <ul>
-            <li>中央配置解析与凭据优先级</li>
-            <li>有界取消、环境 revoke / abort / cleanup</li>
-            <li>Agent transcript、Team manifest 与 Workflow evidence</li>
-            <li>调用方自有 Environment 的清晰所有权</li>
-            <li>application → domain 的向内依赖</li>
-          </ul>
+      <div class="experiment-track" aria-label="五步实验流程">
+        <article class="experiment-step">
+          <div class="step-node">01</div>
+          <h3>CHOOSE REGIME</h3>
+          <p>固定 agent、team 或 workflow 控制条件。</p>
         </article>
-        <article class="ledger cut">
-          <h3>有意切掉</h3>
-          <ul>
-            <li>OpenCollabRuntime 与请求/预算 DTO 图</li>
-            <li>独立 SDK_API_VERSION；统一跟随 package SemVer</li>
-            <li>七个旧 sdk.* capability / compatibility 模块</li>
-            <li>Team 自定义 Environment：暂不模糊 scheduler/worktree 所有权</li>
-            <li>假装外部 OpenCollab-Eval 已迁移；升级前必须单独验证</li>
-          </ul>
+        <article class="experiment-step">
+          <div class="step-node">02</div>
+          <h3>SELECT TREATMENT</h3>
+          <p>只选择一个 Port / Adapter 作为消融变量。</p>
+        </article>
+        <article class="experiment-step">
+          <div class="step-node">03</div>
+          <h3>HOLD CORE</h3>
+          <p>固定 task、Session FSM、预算与证据策略。</p>
+        </article>
+        <article class="experiment-step">
+          <div class="step-node">04</div>
+          <h3>RUN HARNESS</h3>
+          <p>Harness 请求 Bootstrap 装配并批量运行实验条件。</p>
+        </article>
+        <article class="experiment-step">
+          <div class="step-node">05</div>
+          <h3>COMPARE EVIDENCE</h3>
+          <p>比较统一结果、trajectory、tokens 与 artifacts。</p>
         </article>
       </div>
 
-      <div class="verification-strip" aria-label="验证结果">
-        <strong>VERIFIED / PR #26</strong>
-        <span>1363 tests</span>
-        <span>Python 3.10–3.12</span>
-        <span>macOS path integrity</span>
-        <span>wheel install probe</span>
+      <div class="closing-note">
+        <strong>研究复杂度留在正确的层，SDK 才能保持简单。</strong>
+        <span>topology → regimes<br>ablation → ports<br>invocation → SDK</span>
       </div>
     </section>
   </main>
 
   <footer class="page-footer">
     <div class="footer-inner">
-      <p class="footer-title">四个名字在门口，<span>完整机器在里面。</span></p>
+      <p class="footer-title">改变拓扑，替换变量，<span>不要污染内核。</span></p>
       <a
         class="footer-link"
         href="https://github.com/YihongDong/OpenCollab/pull/26"
@@ -1952,27 +1722,27 @@
       >REVIEW PR #26 ↗</a>
     </div>
     <div class="footer-meta">
-      <span>OpenCollab SDK 0.4 architecture cutaway</span>
-      <span>refactor/slim-sdk-v3 · PR #26</span>
+      <span>OpenCollab SDK 0.4 · research architecture</span>
+      <span>Team / Workflow / Clean Ablation</span>
     </div>
   </footer>
 
   <script>
-    const machine = document.querySelector(".machine");
-    const viewButtons = document.querySelectorAll("[data-machine-view]");
+    const bench = document.querySelector(".bench");
+    const focusButtons = document.querySelectorAll(".focus-switch button[data-focus]");
 
-    function setMachineView(view) {
-      machine.dataset.view = view;
-      viewButtons.forEach((button) => {
+    function setFocus(focus) {
+      bench.dataset.focus = focus;
+      focusButtons.forEach((button) => {
         button.setAttribute(
           "aria-pressed",
-          String(button.dataset.machineView === view)
+          String(button.dataset.focus === focus)
         );
       });
     }
 
-    viewButtons.forEach((button) => {
-      button.addEventListener("click", () => setMachineView(button.dataset.machineView));
+    focusButtons.forEach((button) => {
+      button.addEventListener("click", () => setFocus(button.dataset.focus));
     });
   </script>
 </body>
