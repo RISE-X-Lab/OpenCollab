@@ -5,17 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#eaf1f2">
-  <title>OpenCollab SDK 0.4 — 拓扑研究与消融实验的干净入口</title>
+  <title>OpenCollab SDK 0.4 — 两种研究视角，一个干净入口</title>
   <meta
     name="description"
-    content="OpenCollab 当前版本的研究架构：同一 Session 内核上的 Team 与 Workflow 两种控制拓扑，以及 Harness 如何通过 Clean Architecture 做单变量消融。"
+    content="OpenCollab 当前版本的研究架构：Topology 研究 Team 与 Workflow，Harness 通过 Clean Architecture 做单变量消融，二者共享一个紧凑 SDK。"
   >
   <style>
     :root {
       --mist: #eaf1f2;
       --paper: #f8fbfa;
       --ink: #142c3b;
-      --ink-soft: #49616d;
+      --ink-soft: #4d6571;
       --cobalt: #3157e8;
       --cobalt-deep: #203caa;
       --coral: #ef6a4c;
@@ -26,7 +26,7 @@
       --display: "DIN Condensed", "Arial Narrow", "Aptos Narrow", "PingFang SC", "Microsoft YaHei", sans-serif;
       --body: "Source Han Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
       --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-      --page: min(1220px, calc(100vw - 48px));
+      --page: min(1180px, calc(100vw - 48px));
     }
 
     * {
@@ -43,7 +43,7 @@
       background: var(--mist);
       font-family: var(--body);
       font-size: 16px;
-      line-height: 1.7;
+      line-height: 1.68;
       text-rendering: optimizeLegibility;
       -webkit-font-smoothing: antialiased;
     }
@@ -54,18 +54,13 @@
       z-index: -2;
       content: "";
       background:
-        radial-gradient(circle at 8% 6%, rgba(142, 201, 184, 0.25), transparent 28%),
-        radial-gradient(circle at 92% 18%, rgba(49, 87, 232, 0.10), transparent 30%),
+        radial-gradient(circle at 7% 3%, rgba(142, 201, 184, 0.28), transparent 27%),
+        radial-gradient(circle at 94% 22%, rgba(49, 87, 232, 0.10), transparent 30%),
         var(--mist);
     }
 
     a {
       color: inherit;
-    }
-
-    button,
-    a {
-      -webkit-tap-highlight-color: transparent;
     }
 
     :focus-visible {
@@ -91,7 +86,7 @@
 
     .hero {
       position: relative;
-      min-height: 100svh;
+      min-height: 94svh;
       overflow: hidden;
       border-bottom: 1px solid var(--line-strong);
     }
@@ -101,26 +96,25 @@
       inset: 0;
       z-index: -1;
       content: "";
-      opacity: 0.68;
+      opacity: 0.64;
       background-image:
         linear-gradient(rgba(20, 44, 59, 0.05) 1px, transparent 1px),
         linear-gradient(90deg, rgba(20, 44, 59, 0.05) 1px, transparent 1px);
       background-size: 24px 24px;
-      mask-image: linear-gradient(to bottom, black 0%, rgba(0, 0, 0, 0.8) 76%, transparent 100%);
+      mask-image: linear-gradient(to bottom, black 0%, rgba(0, 0, 0, 0.76) 76%, transparent 100%);
     }
 
-    .masthead {
+    .topbar {
       width: var(--page);
-      min-height: 74px;
+      min-height: 72px;
       margin: 0 auto;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 22px;
+      gap: 24px;
       border-bottom: 1px solid var(--line-strong);
-      font-family: var(--mono);
-      font-size: 11px;
-      letter-spacing: 0.08em;
+      font: 700 10px/1.4 var(--mono);
+      letter-spacing: 0.09em;
       text-transform: uppercase;
     }
 
@@ -128,11 +122,11 @@
       display: inline-flex;
       align-items: center;
       gap: 12px;
-      font-weight: 700;
+      white-space: nowrap;
     }
 
     .brand-mark {
-      width: 28px;
+      width: 29px;
       aspect-ratio: 1;
       display: grid;
       place-items: center;
@@ -141,11 +135,21 @@
       clip-path: polygon(0 0, 72% 0, 100% 28%, 100% 100%, 28% 100%, 0 72%);
     }
 
-    .mast-meta {
+    .nav-links {
       display: flex;
       align-items: center;
-      gap: 18px;
+      gap: 20px;
       color: var(--ink-soft);
+    }
+
+    .nav-links a {
+      text-decoration: none;
+    }
+
+    .nav-links a:hover {
+      color: var(--cobalt-deep);
+      text-decoration: underline;
+      text-underline-offset: 5px;
     }
 
     .status {
@@ -156,38 +160,29 @@
     }
 
     .status::before {
-      width: 8px;
-      height: 8px;
+      width: 7px;
+      height: 7px;
       content: "";
       background: #3d8b72;
       border-radius: 50%;
       box-shadow: 0 0 0 4px rgba(61, 139, 114, 0.13);
     }
 
-    .pr-link {
-      text-decoration-thickness: 1px;
-      text-underline-offset: 4px;
-    }
-
-    .hero-layout {
+    .hero-grid {
       width: var(--page);
       margin: 0 auto;
-      padding: clamp(58px, 8vh, 96px) 0 76px;
+      padding: clamp(58px, 8vh, 92px) 0 76px;
       display: grid;
-      grid-template-columns: minmax(340px, 0.78fr) minmax(580px, 1.22fr);
+      grid-template-columns: minmax(330px, 0.78fr) minmax(590px, 1.22fr);
       align-items: center;
-      gap: clamp(44px, 6vw, 92px);
+      gap: clamp(44px, 6vw, 88px);
     }
 
     .eyebrow,
-    .section-kicker,
-    .micro-label {
+    .section-kicker {
       margin: 0;
-      font-family: var(--mono);
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.13em;
-      line-height: 1.4;
+      font: 700 10px/1.4 var(--mono);
+      letter-spacing: 0.14em;
       text-transform: uppercase;
     }
 
@@ -216,7 +211,7 @@
       max-width: 650px;
       margin: 24px 0 28px;
       font-family: var(--display);
-      font-size: clamp(58px, 7.2vw, 104px);
+      font-size: clamp(61px, 7.2vw, 104px);
       font-weight: 760;
       letter-spacing: -0.065em;
       line-height: 0.91;
@@ -231,840 +226,885 @@
     }
 
     .hero-lede {
-      max-width: 590px;
+      max-width: 560px;
       margin: 0;
       color: var(--ink-soft);
-      font-size: clamp(17px, 1.4vw, 20px);
-      line-height: 1.78;
+      font-size: clamp(17px, 1.35vw, 20px);
+      line-height: 1.76;
     }
 
-    .research-equation {
-      margin-top: 32px;
-      padding: 16px 18px;
+    .hero-thesis {
+      margin-top: 30px;
+      padding: 14px 16px;
       color: var(--paper);
       background: var(--ink);
       border-left: 5px solid var(--coral);
       font: 11px/1.7 var(--mono);
     }
 
-    .research-equation strong {
+    .hero-thesis strong {
       color: var(--mint);
-      font-weight: 700;
     }
 
-    .hero-note {
-      margin: 18px 0 0;
-      color: var(--ink-soft);
-      font-size: 12px;
-    }
-
-    .bench {
-      min-width: 0;
+    .lens-board {
       margin: 0;
-      filter: drop-shadow(0 28px 54px rgba(20, 44, 59, 0.13));
-    }
-
-    .bench-shell {
       padding: 18px;
-      background: rgba(248, 251, 250, 0.78);
+      background: rgba(248, 251, 250, 0.82);
       border: 1px solid var(--line-strong);
+      box-shadow: 0 30px 70px rgba(20, 44, 59, 0.14);
       backdrop-filter: blur(14px);
       clip-path: polygon(0 0, calc(100% - 28px) 0, 100% 28px, 100% 100%, 28px 100%, 0 calc(100% - 28px));
     }
 
-    .bench-toolbar {
-      min-height: 42px;
+    .board-head {
+      padding: 4px 4px 15px;
       display: flex;
-      align-items: flex-start;
+      align-items: end;
       justify-content: space-between;
-      gap: 16px;
+      gap: 20px;
+      border-bottom: 1px solid var(--line-strong);
       font-family: var(--mono);
     }
 
-    .bench-title {
-      display: grid;
-      gap: 3px;
+    .board-head strong {
+      font-size: 11px;
+      letter-spacing: 0.1em;
     }
 
-    .bench-title strong {
-      font-size: 12px;
-      letter-spacing: 0.09em;
-    }
-
-    .bench-title span {
+    .board-head span {
       color: var(--ink-soft);
       font-size: 9px;
     }
 
-    .focus-switch {
-      display: inline-grid;
-      grid-template-columns: repeat(3, 1fr);
-      padding: 3px;
-      background: var(--mint-pale);
-      border: 1px solid rgba(20, 44, 59, 0.2);
-    }
-
-    .focus-switch button {
-      min-width: 58px;
-      padding: 7px 9px;
-      color: var(--ink-soft);
-      background: transparent;
-      border: 0;
-      font: 700 9px/1 var(--mono);
-      letter-spacing: 0.05em;
-      cursor: pointer;
-    }
-
-    .focus-switch button[aria-pressed="true"] {
-      color: var(--paper);
-      background: var(--ink);
-    }
-
-    .bench-stage {
-      position: relative;
-      min-height: 610px;
-      padding: 28px 24px 22px;
-      overflow: hidden;
-      background:
-        linear-gradient(rgba(20, 44, 59, 0.035) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(20, 44, 59, 0.035) 1px, transparent 1px),
-        rgba(234, 241, 242, 0.67);
-      background-size: 18px 18px, 18px 18px, auto;
-      border: 1px solid var(--line);
-    }
-
-    .regime-row {
+    .lens-grid {
+      padding: 18px 0 14px;
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 20px;
-    }
-
-    .regime-card {
-      position: relative;
-      min-height: 270px;
-      padding: 18px;
-      background: var(--paper);
-      border: 2px solid var(--cobalt);
-      transition: opacity 260ms ease, filter 260ms ease, transform 320ms ease;
-    }
-
-    .regime-card.workflow {
-      border-color: var(--coral);
-    }
-
-    .regime-head {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
       gap: 12px;
-      font-family: var(--mono);
     }
 
-    .regime-head strong {
-      font-size: 14px;
-    }
-
-    .regime-head span {
-      color: var(--ink-soft);
-      font-size: 9px;
-      text-align: right;
-    }
-
-    .graph {
+    .lens-card {
       position: relative;
-      height: 148px;
-      margin-top: 20px;
+      min-width: 0;
+      min-height: 318px;
+      padding: 20px;
+      overflow: hidden;
+      background: rgba(49, 87, 232, 0.07);
+      border: 1px solid rgba(49, 87, 232, 0.38);
     }
 
-    .graph-line {
+    .lens-card::after {
       position: absolute;
-      height: 2px;
-      background: var(--cobalt);
-      transform-origin: left center;
-    }
-
-    .workflow .graph-line {
-      background: var(--coral);
-    }
-
-    .team .line-a { top: 70px; left: 50%; width: 38%; transform: rotate(-31deg); }
-    .team .line-b { top: 72px; left: 50%; width: 38%; transform: rotate(31deg); }
-    .team .line-c { top: 73px; left: 15%; width: 69%; }
-    .workflow .line-a { top: 72px; left: 12%; width: 26%; }
-    .workflow .line-b { top: 72px; left: 38%; width: 25%; transform: rotate(-26deg); }
-    .workflow .line-c { top: 72px; left: 38%; width: 25%; transform: rotate(26deg); }
-    .workflow .line-d { top: 43px; left: 63%; width: 25%; transform: rotate(26deg); }
-    .workflow .line-e { top: 101px; left: 63%; width: 25%; transform: rotate(-26deg); }
-
-    .graph-node {
-      position: absolute;
-      z-index: 2;
-      min-width: 58px;
-      padding: 8px 7px;
-      color: var(--paper);
-      background: var(--cobalt-deep);
-      border: 4px solid var(--paper);
-      font: 700 9px/1 var(--mono);
-      text-align: center;
-      box-shadow: 0 0 0 1px var(--cobalt);
-    }
-
-    .workflow .graph-node {
-      color: var(--ink);
-      background: var(--coral);
-      box-shadow: 0 0 0 1px var(--coral);
-    }
-
-    .team .node-a { top: 52px; left: 50%; transform: translateX(-50%); }
-    .team .node-b { top: 2px; left: 3%; }
-    .team .node-c { right: 3%; bottom: 2px; }
-    .team .node-d { bottom: 2px; left: 3%; }
-    .workflow .node-a { top: 52px; left: 0; }
-    .workflow .node-b { top: 52px; left: 34%; }
-    .workflow .node-c { top: 2px; left: 61%; }
-    .workflow .node-d { right: 0; bottom: 2px; }
-
-    .core-connector {
-      position: relative;
-      height: 58px;
-    }
-
-    .core-connector::before,
-    .core-connector::after {
-      position: absolute;
-      top: 0;
-      width: 2px;
-      height: 38px;
+      top: -44px;
+      right: -44px;
+      width: 150px;
+      aspect-ratio: 1;
       content: "";
-      background: var(--ink);
+      border: 1px solid rgba(49, 87, 232, 0.24);
+      border-radius: 50%;
+      box-shadow:
+        0 0 0 20px rgba(49, 87, 232, 0.04),
+        0 0 0 42px rgba(49, 87, 232, 0.03);
     }
 
-    .core-connector::before {
-      left: 25%;
-      transform: rotate(-22deg);
-      transform-origin: top;
-    }
-
-    .core-connector::after {
-      right: 25%;
-      transform: rotate(22deg);
-      transform-origin: top;
-    }
-
-    .shared-core {
-      position: relative;
-      width: min(360px, 76%);
-      margin: -18px auto 0;
-      padding: 18px 22px;
+    .lens-card.harness {
       color: var(--paper);
       background: var(--ink);
-      border-left: 6px solid var(--mint);
-      text-align: center;
-      box-shadow: 10px 10px 0 rgba(142, 201, 184, 0.26);
+      border-color: var(--ink);
     }
 
-    .shared-core strong {
-      display: block;
-      font: 700 13px/1.2 var(--mono);
+    .lens-card.harness::after {
+      border-color: rgba(142, 201, 184, 0.34);
+      box-shadow:
+        0 0 0 20px rgba(142, 201, 184, 0.06),
+        0 0 0 42px rgba(142, 201, 184, 0.04);
     }
 
-    .shared-core span {
-      display: block;
-      margin-top: 7px;
-      color: rgba(248, 251, 250, 0.68);
-      font-size: 10px;
-    }
-
-    .baseline-line {
+    .lens-index {
       position: relative;
-      width: min(440px, 86%);
-      margin: 32px auto 0;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--cobalt-deep);
+      font: 700 9px/1 var(--mono);
+      letter-spacing: 0.12em;
+    }
+
+    .harness .lens-index {
+      color: var(--mint);
+    }
+
+    .lens-index b {
+      width: 32px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      color: var(--paper);
+      background: var(--cobalt);
+      font-size: 12px;
+    }
+
+    .harness .lens-index b {
+      color: var(--ink);
+      background: var(--mint);
+    }
+
+    .lens-card h2 {
+      position: relative;
+      z-index: 1;
+      margin: 28px 0 8px;
+      font-family: var(--display);
+      font-size: clamp(31px, 3.1vw, 46px);
+      letter-spacing: -0.035em;
+      line-height: 0.98;
+    }
+
+    .lens-question {
+      position: relative;
+      z-index: 1;
+      min-height: 50px;
+      margin: 0 0 22px;
+      color: var(--ink-soft);
+      font-size: 13px;
+    }
+
+    .harness .lens-question {
+      color: rgba(248, 251, 250, 0.68);
+    }
+
+    .lens-facts {
+      position: relative;
+      z-index: 1;
+      margin: 0;
+    }
+
+    .lens-facts div {
+      padding: 10px 0;
+      display: grid;
+      grid-template-columns: 58px 1fr;
+      gap: 10px;
+      border-top: 1px solid rgba(20, 44, 59, 0.17);
+    }
+
+    .harness .lens-facts div {
+      border-color: rgba(248, 251, 250, 0.14);
+    }
+
+    .lens-facts dt {
+      color: var(--cobalt-deep);
+      font: 700 8px/1.5 var(--mono);
+      letter-spacing: 0.1em;
+    }
+
+    .harness .lens-facts dt {
+      color: var(--mint);
+    }
+
+    .lens-facts dd {
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .common-plane {
+      padding: 14px 16px;
       display: grid;
       grid-template-columns: auto 1fr auto;
       align-items: center;
-      gap: 12px;
-      color: var(--ink-soft);
-      font: 700 9px/1 var(--mono);
-      letter-spacing: 0.06em;
+      gap: 14px;
+      color: var(--paper);
+      background: var(--cobalt);
+      font-family: var(--mono);
     }
 
-    .baseline-line::before {
-      height: 1px;
-      grid-column: 2;
-      grid-row: 1;
-      content: "";
-      background: var(--line-strong);
+    .common-plane span,
+    .common-plane small {
+      font-size: 8px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
     }
 
-    .baseline-line span:first-child {
-      grid-column: 1;
-      grid-row: 1;
-    }
-
-    .baseline-line span:last-child {
-      grid-column: 3;
-      grid-row: 1;
-      color: var(--cobalt-deep);
-    }
-
-    .port-sockets {
-      margin-top: 28px;
-      display: grid;
-      grid-template-columns: repeat(6, 1fr);
-      gap: 6px;
-    }
-
-    .port-sockets span {
-      padding: 8px 4px;
-      color: var(--ink-soft);
-      background: var(--mint-pale);
-      border-top: 3px solid var(--mint);
-      font: 700 8px/1 var(--mono);
+    .common-plane strong {
+      font-size: 12px;
       text-align: center;
     }
 
-    .bench[data-focus="team"] .regime-card.workflow,
-    .bench[data-focus="workflow"] .regime-card.team {
-      opacity: 0.16;
-      filter: grayscale(1) blur(2px);
-      transform: scale(0.97);
+    .common-plane small {
+      color: rgba(248, 251, 250, 0.72);
+      text-align: right;
     }
 
-    .bench-caption {
-      margin: 12px 4px 0;
+    .board-caption {
+      margin: 11px 3px 0;
       display: flex;
       justify-content: space-between;
-      gap: 18px;
+      gap: 16px;
       color: var(--ink-soft);
       font: 9px/1.5 var(--mono);
     }
 
-    .thesis-band {
-      padding: clamp(62px, 8vw, 108px) max(24px, calc((100vw - min(1220px, calc(100vw - 48px))) / 2));
+    .view-index {
       color: var(--paper);
       background: var(--ink);
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr);
-      gap: clamp(28px, 5vw, 72px);
-      align-items: start;
     }
 
-    .thesis-index {
-      font: 700 10px/1 var(--mono);
-      letter-spacing: 0.12em;
-      writing-mode: vertical-rl;
-    }
-
-    .thesis-band blockquote {
-      max-width: 1080px;
-      margin: 0;
-      font-family: var(--display);
-      font-size: clamp(36px, 5vw, 70px);
-      font-weight: 680;
-      letter-spacing: -0.045em;
-      line-height: 1.08;
-    }
-
-    .thesis-band em {
-      color: var(--mint);
-      font-style: normal;
-    }
-
-    .section-shell {
-      position: relative;
+    .view-index-inner {
       width: var(--page);
       margin: 0 auto;
-      padding: clamp(86px, 11vw, 150px) 0;
-    }
-
-    .section-shell + .section-shell {
-      border-top: 1px solid var(--line-strong);
-    }
-
-    .section-rail {
-      position: absolute;
-      top: clamp(86px, 11vw, 150px);
-      left: -38px;
-      color: var(--ink-soft);
-      font: 700 9px/1 var(--mono);
-      letter-spacing: 0.14em;
-      writing-mode: vertical-rl;
-      transform: rotate(180deg);
-    }
-
-    .section-heading {
-      margin-bottom: clamp(44px, 6vw, 74px);
       display: grid;
-      grid-template-columns: minmax(300px, 0.82fr) minmax(330px, 1.18fr);
-      gap: 72px;
-      align-items: end;
+      grid-template-columns: 0.7fr 1fr 1fr;
+    }
+
+    .index-thesis,
+    .index-item {
+      min-height: 154px;
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      border-right: 1px solid rgba(248, 251, 250, 0.16);
+    }
+
+    .index-thesis {
+      padding-left: 0;
+    }
+
+    .index-item:last-child {
+      padding-right: 0;
+      border-right: 0;
+    }
+
+    .index-thesis span,
+    .index-item span {
+      color: var(--mint);
+      font: 700 9px/1 var(--mono);
+      letter-spacing: 0.12em;
+    }
+
+    .index-thesis strong {
+      max-width: 240px;
+      font-family: var(--display);
+      font-size: 29px;
+      letter-spacing: -0.025em;
+      line-height: 1.02;
+    }
+
+    .index-item strong {
+      font-size: 17px;
+    }
+
+    .index-item p {
+      margin: 5px 0 0;
+      color: rgba(248, 251, 250, 0.63);
+      font-size: 12px;
+    }
+
+    .research-section {
+      width: var(--page);
+      margin: 0 auto;
+      padding: clamp(84px, 10vw, 136px) 0;
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 110px minmax(340px, 1fr) minmax(280px, 0.7fr);
+      align-items: start;
+      gap: 28px;
+    }
+
+    .view-badge {
+      width: 76px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      color: var(--paper);
+      background: var(--cobalt);
+      font: 700 23px/1 var(--mono);
+      clip-path: polygon(0 0, 72% 0, 100% 28%, 100% 100%, 28% 100%, 0 72%);
+    }
+
+    .harness-section .view-badge {
+      color: var(--ink);
+      background: var(--mint);
     }
 
     .section-kicker {
       color: var(--cobalt-deep);
     }
 
-    h2 {
-      max-width: 760px;
-      margin: 12px 0 0;
+    .section-title h2 {
+      max-width: 680px;
+      margin: 13px 0 0;
       font-family: var(--display);
-      font-size: clamp(42px, 5.4vw, 74px);
-      font-weight: 760;
-      letter-spacing: -0.055em;
-      line-height: 0.98;
+      font-size: clamp(45px, 5.6vw, 78px);
+      letter-spacing: -0.052em;
+      line-height: 0.96;
     }
 
     .section-intro {
-      max-width: 640px;
-      margin: 0;
+      margin: 27px 0 0;
       color: var(--ink-soft);
-      font-size: clamp(16px, 1.4vw, 19px);
+      font-size: 15px;
+      line-height: 1.78;
     }
 
-    .regime-detail-grid {
+    .scope-bar {
+      margin-top: 42px;
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 16px;
-    }
-
-    .regime-detail {
-      padding: 28px;
-      background: rgba(248, 251, 250, 0.76);
+      grid-template-columns: repeat(3, 1fr);
       border: 1px solid var(--line-strong);
-      box-shadow: 8px 8px 0 rgba(20, 44, 59, 0.06);
+      background: rgba(248, 251, 250, 0.48);
     }
 
-    .regime-detail.team-detail {
-      border-top: 5px solid var(--cobalt);
+    .scope-item {
+      min-width: 0;
+      padding: 17px 19px;
+      border-right: 1px solid var(--line);
     }
 
-    .regime-detail.workflow-detail {
-      border-top: 5px solid var(--coral);
+    .scope-item:last-child {
+      border-right: 0;
     }
 
-    .detail-title {
-      margin-bottom: 28px;
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 18px;
+    .scope-item span {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--cobalt-deep);
+      font: 700 8px/1.4 var(--mono);
+      letter-spacing: 0.12em;
     }
 
-    .detail-title h3 {
-      margin: 0;
-      font-family: var(--display);
-      font-size: 38px;
-      letter-spacing: -0.04em;
-      line-height: 1;
-    }
-
-    .detail-title span {
-      max-width: 150px;
-      color: var(--ink-soft);
-      font: 9px/1.45 var(--mono);
-      text-align: right;
-    }
-
-    .property-list {
-      margin: 0;
-      padding: 0;
-      display: grid;
-      gap: 15px;
-      list-style: none;
-    }
-
-    .property-list li {
-      display: grid;
-      grid-template-columns: 126px 1fr;
-      gap: 18px;
-      align-items: baseline;
-      color: var(--ink-soft);
+    .scope-item strong {
       font-size: 14px;
     }
 
-    .property-list strong {
-      color: var(--ink);
-      font: 700 10px/1.4 var(--mono);
-      letter-spacing: 0.05em;
+    .scope-item:first-child {
+      color: var(--paper);
+      background: var(--cobalt);
+    }
+
+    .scope-item:first-child span {
+      color: var(--mint-pale);
+    }
+
+    .table-wrap {
+      margin-top: 18px;
+      overflow-x: auto;
+      border: 1px solid var(--line-strong);
+      background: var(--paper);
+      box-shadow: 12px 12px 0 rgba(20, 44, 59, 0.06);
+    }
+
+    .regime-table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .regime-table th,
+    .regime-table td {
+      padding: 18px 20px;
+      vertical-align: top;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+    }
+
+    .regime-table tr > :last-child {
+      border-right: 0;
+    }
+
+    .regime-table tbody tr:last-child > * {
+      border-bottom: 0;
+    }
+
+    .regime-table thead th {
+      color: var(--paper);
+      background: var(--ink);
+    }
+
+    .regime-table thead th:first-child {
+      width: 22%;
+      color: rgba(248, 251, 250, 0.56);
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.1em;
+    }
+
+    .regime-table thead th:nth-child(2) {
+      background: var(--cobalt);
+    }
+
+    .regime-name {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .regime-name strong {
+      font-family: var(--display);
+      font-size: 30px;
+      letter-spacing: -0.025em;
+    }
+
+    .regime-name span {
+      color: rgba(248, 251, 250, 0.66);
+      font: 8px/1.4 var(--mono);
+      text-align: right;
+      letter-spacing: 0.08em;
+    }
+
+    .regime-table tbody th {
+      color: var(--cobalt-deep);
+      background: rgba(217, 238, 232, 0.42);
+      font: 700 9px/1.5 var(--mono);
+      letter-spacing: 0.1em;
       text-transform: uppercase;
     }
 
-    .shared-invariants {
-      margin-top: 16px;
-      padding: 22px 26px;
-      display: grid;
-      grid-template-columns: 1.1fr repeat(5, auto);
-      align-items: center;
-      gap: 18px;
-      color: var(--paper);
-      background: var(--ink);
-      font-family: var(--mono);
-    }
-
-    .shared-invariants strong {
-      font-size: 11px;
-      letter-spacing: 0.08em;
-    }
-
-    .shared-invariants span {
-      color: rgba(248, 251, 250, 0.67);
-      font-size: 9px;
-      white-space: nowrap;
-    }
-
-    .ablation-layout {
-      display: grid;
-      grid-template-columns: minmax(390px, 0.9fr) minmax(460px, 1.1fr);
-      gap: clamp(38px, 6vw, 82px);
-      align-items: start;
-    }
-
-    .clean-stack {
-      position: sticky;
-      top: 24px;
-      display: grid;
-      gap: 10px;
-    }
-
-    .stack-layer {
-      min-height: 86px;
-      padding: 18px 22px;
-      display: grid;
-      grid-template-columns: 138px 1fr;
-      align-items: center;
-      gap: 18px;
-      background: rgba(248, 251, 250, 0.78);
-      border: 1px solid var(--line-strong);
-    }
-
-    .stack-layer.harness {
-      color: var(--paper);
-      background: var(--cobalt-deep);
-      border-color: var(--cobalt-deep);
-    }
-
-    .stack-layer.ports {
-      background: var(--mint-pale);
-      border-color: var(--mint);
-    }
-
-    .stack-layer.domain {
-      color: var(--paper);
-      background: var(--ink);
-      border-color: var(--ink);
-    }
-
-    .stack-layer strong {
-      font: 700 11px/1.3 var(--mono);
-      letter-spacing: 0.05em;
-    }
-
-    .stack-layer p {
-      margin: 0;
+    .regime-table td {
       color: var(--ink-soft);
       font-size: 13px;
+      line-height: 1.62;
     }
 
-    .stack-layer.harness p,
-    .stack-layer.domain p {
-      color: rgba(248, 251, 250, 0.68);
+    .regime-table td strong {
+      display: block;
+      margin-bottom: 3px;
+      color: var(--ink);
+      font-size: 14px;
     }
 
-    .dependency-arrow {
-      height: 22px;
+    .shared-core {
+      margin-top: 18px;
+      padding: 18px 20px;
       display: grid;
-      place-items: center;
-      color: var(--coral);
-      font: 700 16px/1 var(--mono);
-    }
-
-    .ablation-copy {
-      display: grid;
-      gap: 16px;
-    }
-
-    .ablation-rule {
-      padding: 22px 24px;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 24px;
       color: var(--paper);
       background: var(--ink);
-      border-left: 6px solid var(--coral);
-      font: 12px/1.8 var(--mono);
     }
 
-    .ablation-rule strong {
+    .shared-core > strong {
       color: var(--mint);
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.12em;
     }
 
-    .port-table {
-      display: grid;
+    .core-items {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
       gap: 8px;
     }
 
-    .port-row {
-      min-height: 76px;
-      padding: 14px 18px;
+    .core-items span {
+      padding: 7px 9px;
+      border: 1px solid rgba(248, 251, 250, 0.2);
+      font: 9px/1 var(--mono);
+    }
+
+    .axis-switch {
+      width: var(--page);
+      margin: 0 auto;
       display: grid;
-      grid-template-columns: 148px 1fr;
-      align-items: center;
-      gap: 18px;
-      background: rgba(248, 251, 250, 0.74);
-      border: 1px solid var(--line);
+      grid-template-columns: 110px 1fr 1fr;
+      align-items: stretch;
+      color: var(--paper);
+      background: var(--cobalt);
+      box-shadow: 14px 14px 0 rgba(239, 106, 76, 0.20);
     }
 
-    .port-row code {
-      color: var(--cobalt-deep);
-      font: 700 11px/1.3 var(--mono);
+    .axis-mark {
+      display: grid;
+      place-items: center;
+      color: var(--ink);
+      background: var(--coral);
+      font: 700 18px/1 var(--mono);
     }
 
-    .port-row p {
+    .axis-switch strong,
+    .axis-switch p {
       margin: 0;
-      color: var(--ink-soft);
+      padding: 24px 28px;
+    }
+
+    .axis-switch strong {
+      align-self: center;
+      font-family: var(--display);
+      font-size: 30px;
+      letter-spacing: -0.025em;
+      line-height: 1;
+    }
+
+    .axis-switch p {
+      color: rgba(248, 251, 250, 0.77);
+      border-left: 1px solid rgba(248, 251, 250, 0.20);
       font-size: 13px;
     }
 
-    .sdk-layout {
+    .harness-section {
+      padding-top: clamp(88px, 10vw, 132px);
+    }
+
+    .harness-grid {
+      margin-top: 18px;
       display: grid;
-      grid-template-columns: minmax(420px, 1.05fr) minmax(380px, 0.95fr);
-      gap: clamp(38px, 6vw, 84px);
-      align-items: center;
+      grid-template-columns: minmax(390px, 0.88fr) minmax(500px, 1.12fr);
+      gap: 18px;
+      align-items: start;
     }
 
-    .sdk-console {
-      padding: 26px;
-      color: var(--paper);
-      background: var(--ink);
-      border-top: 5px solid var(--mint);
-      box-shadow: 12px 12px 0 rgba(142, 201, 184, 0.3);
+    .assembly-path,
+    .port-panel {
+      border: 1px solid var(--line-strong);
+      background: var(--paper);
     }
 
-    .console-head {
-      margin-bottom: 20px;
+    .panel-head {
+      padding: 15px 18px;
       display: flex;
       justify-content: space-between;
       gap: 16px;
-      font-family: var(--mono);
+      color: var(--paper);
+      background: var(--ink);
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.1em;
     }
 
-    .console-head strong {
-      font-size: 11px;
-      letter-spacing: 0.08em;
+    .panel-head span {
+      color: rgba(248, 251, 250, 0.58);
+      font-weight: 400;
+      text-align: right;
     }
 
-    .console-head span {
-      color: rgba(248, 251, 250, 0.55);
-      font-size: 9px;
+    .path-step {
+      position: relative;
+      padding: 19px 18px 19px 76px;
+      min-height: 92px;
+      border-bottom: 1px solid var(--line);
     }
 
-    pre {
-      margin: 0;
-      overflow-x: auto;
-      font: 11px/1.78 var(--mono);
-      tab-size: 2;
+    .path-step:last-child {
+      border-bottom: 0;
     }
 
-    .tok-type { color: #a9c7ff; }
-    .tok-key { color: #8ec9b8; }
-    .tok-string { color: #ff9e86; }
-    .tok-call { color: #d8e483; }
-    .tok-comment { color: #8396a0; }
-
-    .sdk-reason {
-      display: grid;
-      gap: 11px;
-    }
-
-    .reason-card {
-      min-height: 94px;
-      padding: 17px 20px;
-      display: grid;
-      grid-template-columns: 46px 1fr;
-      align-items: center;
-      gap: 16px;
-      background: rgba(248, 251, 250, 0.76);
-      border: 1px solid var(--line-strong);
-    }
-
-    .reason-mark {
-      width: 42px;
-      height: 42px;
+    .path-step::before {
+      position: absolute;
+      top: 18px;
+      left: 18px;
+      width: 38px;
+      aspect-ratio: 1;
       display: grid;
       place-items: center;
+      content: attr(data-step);
       color: var(--paper);
       background: var(--cobalt);
       font: 700 10px/1 var(--mono);
     }
 
-    .reason-card:nth-child(2) .reason-mark {
-      color: var(--ink);
-      background: var(--coral);
+    .path-step:not(:last-child)::after {
+      position: absolute;
+      bottom: -8px;
+      left: 35px;
+      z-index: 2;
+      width: 14px;
+      height: 14px;
+      content: "";
+      background: var(--paper);
+      border-right: 1px solid var(--line-strong);
+      border-bottom: 1px solid var(--line-strong);
+      transform: rotate(45deg);
     }
 
-    .reason-card:nth-child(3) .reason-mark {
-      color: var(--ink);
-      background: var(--mint);
-    }
-
-    .reason-card strong {
+    .path-step strong {
       display: block;
-      font-family: var(--mono);
+      margin-bottom: 4px;
+      font-size: 14px;
+    }
+
+    .path-step p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .ablation-equation {
+      padding: 20px;
+      color: var(--paper);
+      background: var(--cobalt);
+      border-bottom: 1px solid var(--line-strong);
+      font: 11px/1.75 var(--mono);
+    }
+
+    .ablation-equation strong {
+      color: var(--mint-pale);
       font-size: 12px;
     }
 
-    .reason-card p {
-      margin: 4px 0 0;
+    .port-list {
+      margin: 0;
+    }
+
+    .port-row {
+      padding: 13px 18px;
+      display: grid;
+      grid-template-columns: minmax(170px, 0.72fr) 1fr;
+      gap: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .port-row:last-child {
+      border-bottom: 0;
+    }
+
+    .port-row dt {
+      color: var(--cobalt-deep);
+      font: 700 10px/1.5 var(--mono);
+    }
+
+    .port-row dd {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+
+    .clean-note {
+      margin-top: 18px;
+      padding: 18px 20px;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 18px;
+      align-items: center;
+      background: var(--mint-pale);
+      border-left: 5px solid var(--mint);
+    }
+
+    .clean-note strong {
+      color: var(--cobalt-deep);
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.1em;
+    }
+
+    .clean-note p {
+      margin: 0;
       color: var(--ink-soft);
       font-size: 13px;
     }
 
-    .experiment-track {
-      position: relative;
-      display: grid;
-      grid-template-columns: repeat(5, 1fr);
-      gap: 10px;
-    }
-
-    .experiment-track::before {
-      position: absolute;
-      top: 29px;
-      right: 8%;
-      left: 8%;
-      height: 2px;
-      content: "";
-      background: linear-gradient(90deg, var(--cobalt), var(--coral), var(--mint));
-    }
-
-    .experiment-step {
-      position: relative;
-      z-index: 1;
-      min-height: 218px;
-      padding: 0 14px 18px;
-      background: linear-gradient(to bottom, transparent 0 58px, rgba(248, 251, 250, 0.74) 58px);
-      border-bottom: 1px solid var(--line-strong);
-    }
-
-    .step-node {
-      width: 58px;
-      height: 58px;
-      margin: 0 auto 19px;
-      display: grid;
-      place-items: center;
+    .sdk-section {
       color: var(--paper);
       background: var(--ink);
-      border: 7px solid var(--mist);
-      border-radius: 50%;
-      font: 700 10px/1 var(--mono);
     }
 
-    .experiment-step:nth-child(2) .step-node,
-    .experiment-step:nth-child(3) .step-node {
+    .sdk-inner {
+      width: var(--page);
+      margin: 0 auto;
+      padding: clamp(88px, 10vw, 132px) 0;
+    }
+
+    .sdk-head {
+      display: grid;
+      grid-template-columns: 110px minmax(370px, 1fr) minmax(280px, 0.65fr);
+      gap: 28px;
+      align-items: start;
+    }
+
+    .sdk-head .view-badge {
       color: var(--ink);
       background: var(--coral);
     }
 
-    .experiment-step:nth-child(n+4) .step-node {
+    .sdk-head .section-kicker {
+      color: var(--mint);
+    }
+
+    .sdk-head h2 {
+      margin: 13px 0 0;
+      font-family: var(--display);
+      font-size: clamp(45px, 5.6vw, 78px);
+      letter-spacing: -0.052em;
+      line-height: 0.96;
+    }
+
+    .sdk-head .section-intro {
+      color: rgba(248, 251, 250, 0.65);
+    }
+
+    .sdk-grid {
+      margin-top: 44px;
+      display: grid;
+      grid-template-columns: minmax(570px, 1.25fr) minmax(310px, 0.75fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .sdk-console {
+      overflow: hidden;
+      background: #0d202c;
+      border: 1px solid rgba(248, 251, 250, 0.24);
+      box-shadow: 12px 12px 0 rgba(49, 87, 232, 0.45);
+    }
+
+    .console-head {
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      color: var(--paper);
+      background: var(--cobalt);
+      font-family: var(--mono);
+    }
+
+    .console-head strong {
+      font-size: 10px;
+      letter-spacing: 0.11em;
+    }
+
+    .console-head span {
+      color: rgba(248, 251, 250, 0.69);
+      font-size: 9px;
+    }
+
+    pre {
+      margin: 0;
+      padding: clamp(22px, 3vw, 34px);
+      overflow-x: auto;
+      color: #d8e7ec;
+      font: 12px/1.85 var(--mono);
+      tab-size: 2;
+    }
+
+    .tok-key { color: #8ec9b8; }
+    .tok-string { color: #ff9e86; }
+    .tok-call { color: #d8e483; }
+    .tok-comment { color: #8396a0; }
+
+    .ownership {
+      display: grid;
+      grid-template-rows: repeat(3, 1fr);
+      border: 1px solid rgba(248, 251, 250, 0.24);
+    }
+
+    .ownership-item {
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 82px 1fr;
+      gap: 16px;
+      align-items: start;
+      border-bottom: 1px solid rgba(248, 251, 250, 0.16);
+    }
+
+    .ownership-item:last-child {
+      border-bottom: 0;
+    }
+
+    .ownership-item span {
+      color: var(--mint);
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.1em;
+    }
+
+    .ownership-item:nth-child(3) span {
+      color: var(--coral);
+    }
+
+    .ownership-item strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 14px;
+    }
+
+    .ownership-item p {
+      margin: 0;
+      color: rgba(248, 251, 250, 0.62);
+      font-size: 12px;
+      line-height: 1.62;
+    }
+
+    .public-surface {
+      margin-top: 18px;
+      padding: 18px 20px;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 24px;
       color: var(--ink);
       background: var(--mint);
     }
 
-    .experiment-step h3 {
-      margin: 0 0 8px;
-      font: 700 11px/1.3 var(--mono);
-      text-align: center;
+    .public-surface strong {
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.11em;
     }
 
-    .experiment-step p {
-      margin: 0;
-      color: var(--ink-soft);
-      font-size: 12px;
-      line-height: 1.55;
-      text-align: center;
+    .surface-names {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
     }
 
-    .closing-note {
-      margin-top: 52px;
-      padding: 28px 30px;
+    .surface-names code {
+      padding: 7px 9px;
       color: var(--paper);
-      background: var(--cobalt-deep);
-      display: grid;
-      grid-template-columns: 1fr auto;
-      align-items: center;
-      gap: 30px;
-    }
-
-    .closing-note strong {
-      font-family: var(--display);
-      font-size: clamp(28px, 3.5vw, 44px);
-      letter-spacing: -0.04em;
-      line-height: 1.08;
-    }
-
-    .closing-note span {
-      color: rgba(248, 251, 250, 0.68);
-      font: 9px/1.6 var(--mono);
-      text-align: right;
+      background: var(--ink);
+      font: 10px/1 var(--mono);
     }
 
     .page-footer {
-      padding: 62px 24px 48px;
       color: var(--paper);
-      background: var(--ink);
+      background: #0d202c;
+      border-top: 1px solid rgba(248, 251, 250, 0.15);
     }
 
     .footer-inner {
       width: var(--page);
       margin: 0 auto;
-      display: grid;
-      grid-template-columns: 1fr auto;
-      align-items: end;
-      gap: 34px;
+      padding: 34px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
     }
 
-    .footer-title {
-      max-width: 900px;
+    .footer-inner p {
       margin: 0;
       font-family: var(--display);
-      font-size: clamp(38px, 5vw, 68px);
-      font-weight: 720;
-      letter-spacing: -0.05em;
-      line-height: 1;
+      font-size: clamp(26px, 3vw, 40px);
+      font-weight: 700;
+      letter-spacing: -0.03em;
     }
 
-    .footer-title span {
+    .footer-inner p span {
       color: var(--mint);
     }
 
-    .footer-link {
-      padding: 13px 16px;
+    .footer-inner a {
+      padding: 12px 15px;
       color: var(--ink);
-      background: var(--mint);
-      font: 700 10px/1 var(--mono);
-      letter-spacing: 0.08em;
+      background: var(--coral);
+      font: 700 9px/1 var(--mono);
+      letter-spacing: 0.09em;
       text-decoration: none;
       white-space: nowrap;
       transition: transform 160ms ease, box-shadow 160ms ease;
     }
 
-    .footer-link:hover {
-      transform: translate(-4px, -4px);
-      box-shadow: 6px 6px 0 var(--coral);
+    .footer-inner a:hover {
+      transform: translate(-3px, -3px);
+      box-shadow: 5px 5px 0 var(--mint);
     }
 
-    .footer-meta {
-      width: var(--page);
-      margin: 38px auto 0;
-      padding-top: 18px;
-      display: flex;
-      justify-content: space-between;
-      gap: 24px;
-      color: rgba(248, 251, 250, 0.54);
-      border-top: 1px solid rgba(248, 251, 250, 0.17);
-      font: 9px/1.5 var(--mono);
-    }
-
-    @keyframes hero-enter {
+    @keyframes enter-up {
       from {
         opacity: 0;
-        transform: translateY(18px);
+        transform: translateY(16px);
       }
       to {
         opacity: 1;
@@ -1074,56 +1114,69 @@
 
     .hero-copy > * {
       opacity: 0;
-      animation: hero-enter 650ms cubic-bezier(0.2, 0.75, 0.2, 1) forwards;
+      animation: enter-up 620ms cubic-bezier(0.2, 0.75, 0.2, 1) forwards;
     }
 
-    .hero-copy > :nth-child(1) { animation-delay: 70ms; }
-    .hero-copy > :nth-child(2) { animation-delay: 140ms; }
-    .hero-copy > :nth-child(3) { animation-delay: 220ms; }
-    .hero-copy > :nth-child(4) { animation-delay: 300ms; }
-    .hero-copy > :nth-child(5) { animation-delay: 380ms; }
+    .hero-copy > :nth-child(1) { animation-delay: 60ms; }
+    .hero-copy > :nth-child(2) { animation-delay: 130ms; }
+    .hero-copy > :nth-child(3) { animation-delay: 210ms; }
+    .hero-copy > :nth-child(4) { animation-delay: 290ms; }
 
-    @media (max-width: 1080px) {
+    .lens-board {
+      opacity: 0;
+      animation: enter-up 700ms 180ms cubic-bezier(0.2, 0.75, 0.2, 1) forwards;
+    }
+
+    @media (max-width: 1040px) {
       :root {
-        --page: min(940px, calc(100vw - 40px));
+        --page: min(920px, calc(100vw - 40px));
       }
 
-      .hero-layout {
+      .hero-grid {
         grid-template-columns: 1fr;
       }
 
       .hero-copy {
-        max-width: 800px;
+        max-width: 760px;
       }
 
-      .bench {
-        width: min(780px, 100%);
+      .lens-board {
+        width: min(820px, 100%);
         margin: 0 auto;
       }
 
-      .section-rail {
-        display: none;
+      .section-head,
+      .sdk-head {
+        grid-template-columns: 90px 1fr;
       }
 
-      .shared-invariants {
-        grid-template-columns: 1fr 1fr 1fr;
+      .section-intro {
+        grid-column: 2;
+        margin-top: 0;
       }
 
-      .shared-invariants strong {
-        grid-column: 1 / -1;
+      .harness-grid,
+      .sdk-grid {
+        grid-template-columns: 1fr;
       }
 
-      .experiment-track {
+      .assembly-path {
+        position: static;
+      }
+
+      .ownership {
         grid-template-columns: repeat(3, 1fr);
-        gap: 18px 8px;
+        grid-template-rows: 1fr;
       }
 
-      .experiment-track::before {
-        display: none;
+      .ownership-item {
+        grid-template-columns: 1fr;
+        border-right: 1px solid rgba(248, 251, 250, 0.16);
+        border-bottom: 0;
       }
 
-      .experiment-step {
-        border: 1px solid var(--line);
+      .ownership-item:last-child {
+        border-right: 0;
       }
     }
 
@@ -1132,189 +1185,159 @@
         --page: calc(100vw - 28px);
       }
 
-      .masthead {
-        min-height: 66px;
+      .topbar {
+        min-height: 64px;
       }
 
-      .mast-meta > span:not(.status) {
+      .nav-links a {
         display: none;
       }
 
-      .status {
-        font-size: 8px;
-      }
-
-      .hero-layout {
+      .hero-grid {
         padding-top: 48px;
       }
 
       h1 {
-        font-size: clamp(54px, 16vw, 82px);
+        font-size: clamp(56px, 16vw, 82px);
       }
 
-      .bench-shell {
-        padding: 10px;
-      }
-
-      .bench-toolbar {
-        padding: 5px 4px 11px;
-        display: grid;
-        gap: 10px;
-      }
-
-      .focus-switch {
-        width: 100%;
-      }
-
-      .focus-switch button {
-        min-width: 0;
-      }
-
-      .bench-stage {
-        min-height: 850px;
-        padding: 18px 12px;
-      }
-
-      .regime-row,
-      .regime-detail-grid,
-      .ablation-layout,
-      .sdk-layout {
+      .lens-grid,
+      .view-index-inner {
         grid-template-columns: 1fr;
       }
 
-      .regime-card {
-        min-height: 238px;
+      .lens-card {
+        min-height: auto;
       }
 
-      .graph {
-        height: 120px;
+      .index-thesis,
+      .index-item {
+        min-height: 124px;
+        padding: 22px 0;
+        border-right: 0;
+        border-bottom: 1px solid rgba(248, 251, 250, 0.16);
       }
 
-      .core-connector {
-        height: 42px;
+      .index-item:last-child {
+        border-bottom: 0;
       }
 
-      .core-connector::before {
-        left: 32%;
+      .section-head,
+      .sdk-head {
+        grid-template-columns: 64px 1fr;
+        gap: 18px;
       }
 
-      .core-connector::after {
-        right: 32%;
+      .view-badge {
+        width: 58px;
+        font-size: 17px;
       }
 
-      .port-sockets {
-        grid-template-columns: repeat(3, 1fr);
+      .section-intro {
+        grid-column: 1 / -1;
       }
 
-      .bench-caption {
-        display: block;
-      }
-
-      .bench-caption span:last-child {
-        display: block;
-        margin-top: 4px;
-      }
-
-      .thesis-band {
+      .scope-bar {
         grid-template-columns: 1fr;
       }
 
-      .thesis-index {
-        writing-mode: initial;
+      .scope-item {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
       }
 
-      .section-heading {
+      .scope-item:last-child {
+        border-bottom: 0;
+      }
+
+      .shared-core,
+      .public-surface {
         grid-template-columns: 1fr;
-        gap: 24px;
       }
 
-      .property-list li {
-        grid-template-columns: 1fr;
-        gap: 4px;
+      .core-items,
+      .surface-names {
+        justify-content: flex-start;
       }
 
-      .shared-invariants {
-        grid-template-columns: 1fr 1fr;
+      .axis-switch {
+        grid-template-columns: 64px 1fr;
       }
 
-      .clean-stack {
-        position: static;
-      }
-
-      .stack-layer {
-        grid-template-columns: 1fr;
-        gap: 8px;
+      .axis-switch p {
+        grid-column: 1 / -1;
+        border-top: 1px solid rgba(248, 251, 250, 0.20);
+        border-left: 0;
       }
 
       .port-row {
         grid-template-columns: 1fr;
-        gap: 5px;
+        gap: 4px;
       }
 
-      .experiment-track {
-        grid-template-columns: 1fr 1fr;
+      .clean-note {
+        grid-template-columns: 1fr;
+        gap: 8px;
       }
 
-      .closing-note,
-      .footer-inner {
+      .ownership {
         grid-template-columns: 1fr;
       }
 
-      .closing-note span {
+      .ownership-item {
+        grid-template-columns: 76px 1fr;
+        border-right: 0;
+        border-bottom: 1px solid rgba(248, 251, 250, 0.16);
+      }
+
+      .console-head,
+      .common-plane {
+        align-items: start;
+        grid-template-columns: 1fr;
+      }
+
+      .console-head {
+        display: grid;
+      }
+
+      .common-plane strong,
+      .common-plane small {
         text-align: left;
       }
 
-      .footer-link {
-        width: fit-content;
+      pre {
+        font-size: 10.5px;
       }
 
-      .footer-meta {
+      .footer-inner {
+        align-items: flex-start;
         flex-direction: column;
-        gap: 7px;
       }
     }
 
-    @media (max-width: 440px) {
-      .mast-meta .status {
-        display: none;
+    @media (max-width: 430px) {
+      .board-head {
+        align-items: start;
+        flex-direction: column;
+        gap: 4px;
       }
 
-      .bench-stage {
-        min-height: 860px;
+      .lens-card {
+        padding: 17px;
       }
 
-      .graph-node {
-        min-width: 50px;
-        font-size: 8px;
+      .section-title h2,
+      .sdk-head h2 {
+        font-size: 43px;
       }
 
-      .shared-core {
-        width: 92%;
+      .axis-switch strong,
+      .axis-switch p {
+        padding: 20px;
       }
 
-      .experiment-track {
-        grid-template-columns: 1fr;
-      }
-
-      .experiment-step {
-        min-height: auto;
-        padding: 16px;
-        display: grid;
-        grid-template-columns: 58px 1fr;
-        gap: 12px;
-        align-items: center;
-      }
-
-      .step-node {
-        width: 54px;
-        height: 54px;
-        margin: 0;
-      }
-
-      .experiment-step h3,
-      .experiment-step p {
-        grid-column: 2;
-        text-align: left;
+      .path-step {
+        padding-right: 15px;
       }
     }
 
@@ -1332,7 +1355,8 @@
         transition-duration: 0.01ms !important;
       }
 
-      .hero-copy > * {
+      .hero-copy > *,
+      .lens-board {
         opacity: 1;
       }
     }
@@ -1342,287 +1366,340 @@
   <a class="skip-link" href="#main">跳到正文</a>
 
   <header class="hero" id="top">
-    <nav class="masthead" aria-label="页面信息">
-      <div class="brand">
+    <nav class="topbar" aria-label="页面导航">
+      <a class="brand" href="#top">
         <span class="brand-mark" aria-hidden="true">OC</span>
-        <span>OpenCollab / Research Architecture</span>
-      </div>
-      <div class="mast-meta">
-        <span>SDK 0.4</span>
-        <span class="status">All checks green</span>
-        <a
-          class="pr-link"
-          href="https://github.com/YihongDong/OpenCollab/pull/26"
-          target="_blank"
-          rel="noreferrer"
-        >PR #26 ↗</a>
+        <span>OpenCollab / Research SDK</span>
+      </a>
+      <div class="nav-links">
+        <a href="#topology">View A · Topology</a>
+        <a href="#harness">View B · Harness</a>
+        <a href="#sdk">SDK</a>
+        <span class="status">PR #26 green</span>
       </div>
     </nav>
 
-    <div class="hero-layout">
+    <div class="hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow">Topology × Ablation × Clean Architecture</p>
+        <p class="eyebrow">Two research views / one shared surface</p>
         <h1>
-          <span>同一内核</span>
-          <span class="accent">两种拓扑</span>
-          <span>一张干净实验台</span>
+          <span>两种研究视角</span>
+          <span class="accent">一个干净入口</span>
         </h1>
         <p class="hero-lede">
-          Team 与 Workflow 研究不同的协作控制方式；Harness 通过 Ports 替换单一变量做消融。
-          SDK 不承载这些研究复杂度，它只提供稳定的启动与观测入口。
+          Topology 研究“协作如何组织”；Harness 研究“哪个变量改变结果”。
+          两者改变系统的不同维度，却共享同一套运行语义与观测结果。
         </p>
-        <div class="research-equation" aria-label="研究架构公式">
-          <strong>CONTROL</strong> = agent baseline · team topology · workflow topology<br>
-          <strong>TREATMENT</strong> = one replaceable Port / Adapter<br>
-          <strong>OBSERVATION</strong> = RunResult + trajectory + artifacts
+        <div class="hero-thesis">
+          <strong>SEPARATE THE QUESTIONS</strong><br>
+          topology → choose a control graph<br>
+          harness → replace one implementation
         </div>
-        <p class="hero-note">右侧实验台可聚焦 Team 或 Workflow，观察它们如何落到同一个 Session 内核。</p>
       </div>
 
-      <figure class="bench" data-focus="both" aria-labelledby="bench-heading">
-        <div class="bench-shell">
-          <div class="bench-toolbar">
-            <div class="bench-title">
-              <strong id="bench-heading">CONTROL REGIME BENCH / OC-04</strong>
-              <span>same process primitive · different orchestration topology</span>
-            </div>
-            <div class="focus-switch" role="group" aria-label="聚焦控制模式">
-              <button type="button" data-focus="team" aria-pressed="false">TEAM</button>
-              <button type="button" data-focus="both" aria-pressed="true">BOTH</button>
-              <button type="button" data-focus="workflow" aria-pressed="false">WORKFLOW</button>
-            </div>
-          </div>
-
-          <div class="bench-stage">
-            <div class="regime-row">
-              <article class="regime-card team">
-                <div class="regime-head">
-                  <strong>TEAM</strong>
-                  <span>LLM-supervised<br>event-driven</span>
-                </div>
-                <div class="graph" aria-label="Team 动态角色拓扑示意图">
-                  <span class="graph-line line-a"></span>
-                  <span class="graph-line line-b"></span>
-                  <span class="graph-line line-c"></span>
-                  <span class="graph-node node-a">LEAD</span>
-                  <span class="graph-node node-b">ANALYST</span>
-                  <span class="graph-node node-c">REVIEWER</span>
-                  <span class="graph-node node-d">CODER</span>
-                </div>
-              </article>
-
-              <article class="regime-card workflow">
-                <div class="regime-head">
-                  <strong>WORKFLOW</strong>
-                  <span>code-driven<br>deterministic</span>
-                </div>
-                <div class="graph" aria-label="Workflow 程序化控制拓扑示意图">
-                  <span class="graph-line line-a"></span>
-                  <span class="graph-line line-b"></span>
-                  <span class="graph-line line-c"></span>
-                  <span class="graph-line line-d"></span>
-                  <span class="graph-line line-e"></span>
-                  <span class="graph-node node-a">PHASE</span>
-                  <span class="graph-node node-b">FAN-OUT</span>
-                  <span class="graph-node node-c">MERGE</span>
-                  <span class="graph-node node-d">VERIFY</span>
-                </div>
-              </article>
-            </div>
-
-            <div class="core-connector" aria-hidden="true"></div>
-
-            <div class="shared-core">
-              <strong>Session · run_loop() · FSM</strong>
-              <span>the identical process primitive beneath both regimes</span>
-            </div>
-
-            <div class="baseline-line">
-              <span>CONTROL BASELINE</span>
-              <span>agent()</span>
-            </div>
-
-            <div class="port-sockets" aria-label="可替换端口">
-              <span>LLM</span>
-              <span>TOOLS</span>
-              <span>ENV</span>
-              <span>SHAPER</span>
-              <span>TRACE</span>
-              <span>STORE</span>
-            </div>
-          </div>
+      <figure class="lens-board" aria-labelledby="board-title">
+        <div class="board-head">
+          <strong id="board-title">RESEARCH LENS BOARD / OC-04</strong>
+          <span>orthogonal questions · shared runtime</span>
         </div>
-        <figcaption class="bench-caption">
-          <span>Team 研究涌现式协作图；Workflow 研究程序化控制图</span>
-          <span>共享内核让差异可以归因于 control regime</span>
+
+        <div class="lens-grid">
+          <article class="lens-card">
+            <div class="lens-index">
+              <span>VIEW A</span>
+              <b aria-hidden="true">T</b>
+            </div>
+            <h2>Topology</h2>
+            <p class="lens-question">协作控制图应该怎样组织？</p>
+            <dl class="lens-facts">
+              <div>
+                <dt>CHANGE</dt>
+                <dd>Team ↔ Workflow</dd>
+              </div>
+              <div>
+                <dt>HOLD</dt>
+                <dd>Session process primitive</dd>
+              </div>
+              <div>
+                <dt>FOCUS</dt>
+                <dd>角色、边、阶段与并发结构</dd>
+              </div>
+            </dl>
+          </article>
+
+          <article class="lens-card harness">
+            <div class="lens-index">
+              <span>VIEW B</span>
+              <b aria-hidden="true">H</b>
+            </div>
+            <h2>Harness</h2>
+            <p class="lens-question">一个实现变量是否真正影响结果？</p>
+            <dl class="lens-facts">
+              <div>
+                <dt>CHANGE</dt>
+                <dd>one Adapter via one Port</dd>
+              </div>
+              <div>
+                <dt>HOLD</dt>
+                <dd>chosen regime + core semantics</dd>
+              </div>
+              <div>
+                <dt>FOCUS</dt>
+                <dd>模型、工具、环境与上下文策略</dd>
+              </div>
+            </dl>
+          </article>
+        </div>
+
+        <div class="common-plane">
+          <span>CONVERGE</span>
+          <strong>OpenCollab → RunResult</strong>
+          <small>same client · same observation</small>
+        </div>
+        <figcaption class="board-caption">
+          <span>先分清研究问题，再决定替换什么</span>
+          <span>SDK 只承接两者的交集</span>
         </figcaption>
       </figure>
     </div>
   </header>
 
   <main id="main">
-    <section class="thesis-band" aria-label="架构原则">
-      <div class="thesis-index">RESEARCH PRINCIPLE / 01</div>
-      <blockquote>
-        让 topology 研究者改变控制图，<em>而不是重写 Agent 内核。</em>
-      </blockquote>
+    <section class="view-index" aria-label="两种研究视角概览">
+      <div class="view-index-inner">
+        <div class="index-thesis">
+          <span>READING ORDER</span>
+          <strong>两个视角，不是一条流水线</strong>
+        </div>
+        <div class="index-item">
+          <span>VIEW A / TOPOLOGY</span>
+          <div>
+            <strong>比较控制方式</strong>
+            <p>研究 Team 与 Workflow，不改 Agent 内核。</p>
+          </div>
+        </div>
+        <div class="index-item">
+          <span>VIEW B / HARNESS</span>
+          <div>
+            <strong>比较实现变量</strong>
+            <p>固定已选模式，通过 Port 替换一个 Adapter。</p>
+          </div>
+        </div>
+      </div>
     </section>
 
-    <section class="section-shell" id="topology">
-      <span class="section-rail" aria-hidden="true">TWO CONTROL REGIMES</span>
-      <div class="section-heading">
-        <div>
-          <p class="section-kicker">Topology research</p>
-          <h2>同一进程，两种控制方式</h2>
+    <section class="research-section" id="topology">
+      <div class="section-head">
+        <div class="view-badge" aria-hidden="true">A</div>
+        <div class="section-title">
+          <p class="section-kicker">View A · Topology research</p>
+          <h2>固定内核，比较控制图</h2>
         </div>
         <p class="section-intro">
-          两种模式都驱动相同的 <code>session.run_loop()</code>。研究者可以把注意力放在
-          “谁决定下一条边、图如何展开”，而不是模型调用、工具执行和状态机差异。
+          Team 与 Workflow 都驱动同一个 <code>session.run_loop()</code>。
+          研究对象只是“谁决定下一条边，以及图如何展开”。
         </p>
       </div>
 
-      <div class="regime-detail-grid">
-        <article class="regime-detail team-detail">
-          <div class="detail-title">
-            <h3>Team</h3>
-            <span>emergent collaboration topology</span>
-          </div>
-          <ul class="property-list">
-            <li><strong>Graph</strong><span>角色之间允许 spawn / message 的有向权限图。</span></li>
-            <li><strong>Controller</strong><span>LLM-supervised Scheduler 根据运行中状态决定委派与通信。</span></li>
-            <li><strong>Dynamics</strong><span>SessionTable、父子关系、pending events 与消息 inbox 随执行展开。</span></li>
-            <li><strong>Research</strong><span>星型、层级、角色约束、通信边和动态分工如何影响结果。</span></li>
-          </ul>
-        </article>
-
-        <article class="regime-detail workflow-detail">
-          <div class="detail-title">
-            <h3>Workflow</h3>
-            <span>programmed control topology</span>
-          </div>
-          <ul class="property-list">
-            <li><strong>Graph</strong><span>由 Python 函数显式表达 phase、fan-out、pipeline、merge 与 verify。</span></li>
-            <li><strong>Controller</strong><span>WorkflowContext 按作者写下的控制流驱动一次性 Agent Session。</span></li>
-            <li><strong>Dynamics</strong><span>并发、顺序、预算分配与结束条件可复现、可检查。</span></li>
-            <li><strong>Research</strong><span>固定协议、并发结构与验证位置如何改变效率和可靠性。</span></li>
-          </ul>
-        </article>
+      <div class="scope-bar" aria-label="Topology 研究变量">
+        <div class="scope-item">
+          <span>CHANGE</span>
+          <strong>Team ↔ Workflow</strong>
+        </div>
+        <div class="scope-item">
+          <span>HOLD</span>
+          <strong>Session runner + FSM</strong>
+        </div>
+        <div class="scope-item">
+          <span>OBSERVE</span>
+          <strong>Result + trajectory + artifacts</strong>
+        </div>
       </div>
 
-      <div class="shared-invariants" aria-label="两种模式共享的内核变量">
+      <div class="table-wrap" tabindex="0" aria-label="Team 与 Workflow 结构化对比，可横向滚动">
+        <table class="regime-table">
+          <thead>
+            <tr>
+              <th scope="col">CONTROL REGIME</th>
+              <th scope="col">
+                <div class="regime-name">
+                  <strong>Team</strong>
+                  <span>LLM-supervised<br>event-driven</span>
+                </div>
+              </th>
+              <th scope="col">
+                <div class="regime-name">
+                  <strong>Workflow</strong>
+                  <span>code-driven<br>deterministic</span>
+                </div>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Controller</th>
+              <td><strong>Scheduler + LLM</strong>运行中决定委派、通信与下一步动作。</td>
+              <td><strong>Python + WorkflowContext</strong>按作者写下的控制流驱动 Agent Session。</td>
+            </tr>
+            <tr>
+              <th scope="row">Graph</th>
+              <td><strong>动态角色图</strong>spawn / message 权限图随执行产生实例与消息。</td>
+              <td><strong>显式控制图</strong>phase、fan-out、merge 与 verify 由代码表达。</td>
+            </tr>
+            <tr>
+              <th scope="row">Tune</th>
+              <td>角色、边、委派深度、通信约束。</td>
+              <td>阶段、顺序、并发、预算分配、验证位置。</td>
+            </tr>
+            <tr>
+              <th scope="row">Best question</th>
+              <td>涌现式分工与通信结构如何影响结果？</td>
+              <td>可复现实验协议与并行结构如何影响结果？</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="shared-core">
         <strong>HELD CONSTANT</strong>
-        <span>Session FSM</span>
-        <span>Tool execution</span>
-        <span>Budget semantics</span>
-        <span>Environment safety</span>
-        <span>Evidence lifecycle</span>
-      </div>
-    </section>
-
-    <section class="section-shell" id="ablation">
-      <span class="section-rail" aria-hidden="true">CLEAN ABLATION</span>
-      <div class="section-heading">
-        <div>
-          <p class="section-kicker">Harness research</p>
-          <h2>替换一个 Port，保持核心不动</h2>
-        </div>
-        <p class="section-intro">
-          Harness 位于系统外层，定义实验条件并请求 Bootstrap 装配。依赖只向内指向
-          application/domain，因此一次消融应替换一个 Adapter，而不是在核心逻辑里插条件分支。
-        </p>
-      </div>
-
-      <div class="ablation-layout">
-        <div class="clean-stack" aria-label="Clean Architecture 消融栈">
-          <div class="stack-layer harness">
-            <strong>EXTERNAL HARNESS</strong>
-            <p>定义 treatment、样本、seed、预算与评价口径。</p>
-          </div>
-          <div class="dependency-arrow" aria-hidden="true">↓ request condition</div>
-          <div class="stack-layer">
-            <strong>BOOTSTRAP + ADAPTERS</strong>
-            <p>Composition root 把选定的 LLM、Tool、Environment 等实现绑定到端口。</p>
-          </div>
-          <div class="dependency-arrow" aria-hidden="true">↓ implement</div>
-          <div class="stack-layer ports">
-            <strong>APPLICATION PORTS</strong>
-            <p>稳定的结构契约；实验替换发生在这里，不向内泄漏实现。</p>
-          </div>
-          <div class="dependency-arrow" aria-hidden="true">↓ use</div>
-          <div class="stack-layer">
-            <strong>APPLICATION</strong>
-            <p>Session use cases、Scheduler、WorkflowContext 与预算规则。</p>
-          </div>
-          <div class="dependency-arrow" aria-hidden="true">↓ protect</div>
-          <div class="stack-layer domain">
-            <strong>DOMAIN</strong>
-            <p>纯 Session FSM、Topology 和 value objects；不感知实验设施。</p>
-          </div>
-        </div>
-
-        <div class="ablation-copy">
-          <div class="ablation-rule">
-            <strong>ABLATION RULE</strong><br>
-            effect = outcome(adapter B) − outcome(adapter A)<br>
-            while task · core · regime · budget · evidence policy stay fixed
-          </div>
-
-          <div class="port-table" aria-label="常见消融变量与端口">
-            <div class="port-row">
-              <code>LLMPort</code>
-              <p>替换模型或 provider；保持 Session runner、工具和预算规则不动。</p>
-            </div>
-            <div class="port-row">
-              <code>ShaperPort</code>
-              <p>比较上下文压缩策略；保留完整持久化历史和执行语义。</p>
-            </div>
-            <div class="port-row">
-              <code>ToolPort</code>
-              <p>增删工具能力或改变实现；Tool execution use case 保持一致。</p>
-            </div>
-            <div class="port-row">
-              <code>EnvironmentPort</code>
-              <p>切换本地、容器或隔离环境；路径与副作用契约不变。</p>
-            </div>
-            <div class="port-row">
-              <code>TracePort / SessionStorePort</code>
-              <p>改变观测和持久化设施，而不让测量机制进入 domain。</p>
-            </div>
-            <div class="port-row">
-              <code>WorktreePoolPort</code>
-              <p>消融协作隔离策略；Scheduler 仍通过同一资源接口工作。</p>
-            </div>
-          </div>
+        <div class="core-items">
+          <span>Session FSM</span>
+          <span>run_loop()</span>
+          <span>Tool execution</span>
+          <span>Budget semantics</span>
+          <span>Evidence lifecycle</span>
         </div>
       </div>
     </section>
 
-    <section class="section-shell" id="sdk">
-      <span class="section-rail" aria-hidden="true">THIN SDK CONTROL PLANE</span>
-      <div class="section-heading">
-        <div>
-          <p class="section-kicker">Why the SDK is small</p>
-          <h2>SDK 是控制面，不是研究对象</h2>
+    <aside class="axis-switch" aria-label="从 Topology 视角切换到 Harness 视角">
+      <div class="axis-mark" aria-hidden="true">A→B</div>
+      <strong>切换视角，不延续变量</strong>
+      <p>
+        View A 到这里已经回答“用哪种控制图”。进入 View B 后先冻结这个选择，
+        再研究某个基础设施实现带来的净效应。
+      </p>
+    </aside>
+
+    <section class="research-section harness-section" id="harness">
+      <div class="section-head">
+        <div class="view-badge" aria-hidden="true">B</div>
+        <div class="section-title">
+          <p class="section-kicker">View B · Harness research</p>
+          <h2>固定模式，替换一个实现</h2>
         </div>
         <p class="section-intro">
-          Topology 的复杂度属于 Team / Workflow；消融的复杂度属于 Harness / Ports。
-          SDK 只需稳定表达“运行哪种 regime”并返回同一种观测结果。
+          Harness 定义实验条件，Bootstrap 装配具体 Adapter。
+          Application 只依赖 Port，Domain 不感知实验设施。
         </p>
       </div>
 
-      <div class="sdk-layout">
-        <div class="sdk-console">
-          <div class="console-head">
-            <strong>ONE TASK / THREE CONTROL CONDITIONS</strong>
-            <span>same observation envelope</span>
+      <div class="scope-bar" aria-label="Harness 消融变量">
+        <div class="scope-item">
+          <span>CHANGE</span>
+          <strong>one Adapter via one Port</strong>
+        </div>
+        <div class="scope-item">
+          <span>HOLD</span>
+          <strong>chosen regime + task + budget</strong>
+        </div>
+        <div class="scope-item">
+          <span>OBSERVE</span>
+          <strong>the same evidence envelope</strong>
+        </div>
+      </div>
+
+      <div class="harness-grid">
+        <div class="assembly-path">
+          <div class="panel-head">
+            <strong>CLEAN ASSEMBLY PATH</strong>
+            <span>dependencies point inward</span>
           </div>
-<pre><span class="tok-key">from</span> opencollab <span class="tok-key">import</span> OpenCollab
+          <div class="path-step" data-step="01">
+            <strong>External Harness</strong>
+            <p>定义 treatment A/B、样本、预算与评价口径。</p>
+          </div>
+          <div class="path-step" data-step="02">
+            <strong>Bootstrap + Adapters</strong>
+            <p>Composition root 选择具体实现，并把它绑定到稳定端口。</p>
+          </div>
+          <div class="path-step" data-step="03">
+            <strong>Application Ports</strong>
+            <p>提供结构契约，让 use case 无需知道 provider 或运行环境。</p>
+          </div>
+          <div class="path-step" data-step="04">
+            <strong>Application + Domain</strong>
+            <p>Session 语义、控制模式与状态机在两组实验中保持一致。</p>
+          </div>
+        </div>
+
+        <div class="port-panel">
+          <div class="panel-head">
+            <strong>ABLATION MAP</strong>
+            <span>one row per experiment</span>
+          </div>
+          <div class="ablation-equation">
+            <strong>effect = outcome(adapter B) − outcome(adapter A)</strong><br>
+            fixed: task · regime · core · budget · evidence policy
+          </div>
+          <dl class="port-list">
+            <div class="port-row">
+              <dt>LLMPort</dt>
+              <dd>模型或 provider</dd>
+            </div>
+            <div class="port-row">
+              <dt>ShaperPort</dt>
+              <dd>上下文组织与压缩策略</dd>
+            </div>
+            <div class="port-row">
+              <dt>ToolPort / EnvironmentPort</dt>
+              <dd>能力集合与执行边界</dd>
+            </div>
+            <div class="port-row">
+              <dt>TracePort / SessionStorePort</dt>
+              <dd>观测与持久化设施</dd>
+            </div>
+            <div class="port-row">
+              <dt>WorktreePoolPort</dt>
+              <dd>协作隔离策略</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+
+      <div class="clean-note">
+        <strong>WHY CLEAN ARCHITECTURE</strong>
+        <p>它在这里不是目录装饰，而是实验隔离机制：替换外层实现，不让 treatment 污染核心。</p>
+      </div>
+    </section>
+
+    <section class="sdk-section" id="sdk">
+      <div class="sdk-inner">
+        <div class="sdk-head">
+          <div class="view-badge" aria-hidden="true">∩</div>
+          <div class="section-title">
+            <p class="section-kicker">Shared boundary · SDK design</p>
+            <h2>两个视角，到这里汇合</h2>
+          </div>
+          <p class="section-intro">
+            SDK 不承载拓扑算法，也不承载消融装配。
+            它只选择运行条件，并把结果装进同一种观测信封。
+          </p>
+        </div>
+
+        <div class="sdk-grid">
+          <div class="sdk-console">
+            <div class="console-head">
+              <strong>ONE TASK / THREE CONTROL CONDITIONS</strong>
+              <span>same observation envelope</span>
+            </div>
+<pre aria-label="OpenCollab SDK 三种控制条件示例"><span class="tok-key">from</span> opencollab <span class="tok-key">import</span> OpenCollab
 <span class="tok-key">from</span> study <span class="tok-key">import</span> protocol
 
 <span class="tok-key">oc</span> = <span class="tok-call">OpenCollab</span>(<span class="tok-string">"."</span>)
 <span class="tok-key">task</span> = <span class="tok-string">"修复目标缺陷并验证"</span>
 
-<span class="tok-comment"># 单进程控制基线</span>
+<span class="tok-comment"># 单 Agent 控制基线</span>
 <span class="tok-key">baseline</span> = <span class="tok-key">await</span> oc.agent(task)
 
 <span class="tok-comment"># LLM-supervised 动态拓扑</span>
@@ -1636,114 +1713,55 @@
   protocol,
   {<span class="tok-string">"task"</span>: task},
 )</pre>
+          </div>
+
+          <div class="ownership" aria-label="研究复杂度归属">
+            <div class="ownership-item">
+              <span>TOPOLOGY</span>
+              <div>
+                <strong>拥有控制图</strong>
+                <p>Team 与 Workflow 承载角色、边、阶段和并发结构。</p>
+              </div>
+            </div>
+            <div class="ownership-item">
+              <span>HARNESS</span>
+              <div>
+                <strong>拥有实验矩阵</strong>
+                <p>Harness、Bootstrap 与 Ports 承载 treatment 的定义和装配。</p>
+              </div>
+            </div>
+            <div class="ownership-item">
+              <span>SDK</span>
+              <div>
+                <strong>只拥有运行与观测</strong>
+                <p>选择 agent / team / workflow，统一返回 RunResult。</p>
+              </div>
+            </div>
+          </div>
         </div>
 
-        <div class="sdk-reason">
-          <article class="reason-card">
-            <div class="reason-mark">IN</div>
-            <div>
-              <strong>三个 regime 入口</strong>
-              <p>agent 是控制基线；team 与 workflow 是两种研究拓扑。</p>
-            </div>
-          </article>
-          <article class="reason-card">
-            <div class="reason-mark">OUT</div>
-            <div>
-              <strong>一个 RunResult</strong>
-              <p>统一 output、status、tokens、metrics、artifacts，方便 Harness 比较。</p>
-            </div>
-          </article>
-          <article class="reason-card">
-            <div class="reason-mark">DI</div>
-            <div>
-              <strong>实验注入留在 Bootstrap</strong>
-              <p>SDK 不 re-export Scheduler、Session 或所有 Ports，研究自由留在内部边界。</p>
-            </div>
-          </article>
+        <div class="public-surface">
+          <strong>COMPLETE EVERYDAY SURFACE</strong>
+          <div class="surface-names">
+            <code>OpenCollab</code>
+            <code>RunResult</code>
+            <code>RunError</code>
+            <code>workflow</code>
+          </div>
         </div>
-      </div>
-    </section>
-
-    <section class="section-shell" id="method">
-      <span class="section-rail" aria-hidden="true">EXPERIMENT METHOD</span>
-      <div class="section-heading">
-        <div>
-          <p class="section-kicker">Research workflow</p>
-          <h2>从问题到可归因结果</h2>
-        </div>
-        <p class="section-intro">
-          架构的最终价值不是“看起来分层”，而是让实验问题能对应到一个明确、可替换的位置。
-        </p>
-      </div>
-
-      <div class="experiment-track" aria-label="五步实验流程">
-        <article class="experiment-step">
-          <div class="step-node">01</div>
-          <h3>CHOOSE REGIME</h3>
-          <p>固定 agent、team 或 workflow 控制条件。</p>
-        </article>
-        <article class="experiment-step">
-          <div class="step-node">02</div>
-          <h3>SELECT TREATMENT</h3>
-          <p>只选择一个 Port / Adapter 作为消融变量。</p>
-        </article>
-        <article class="experiment-step">
-          <div class="step-node">03</div>
-          <h3>HOLD CORE</h3>
-          <p>固定 task、Session FSM、预算与证据策略。</p>
-        </article>
-        <article class="experiment-step">
-          <div class="step-node">04</div>
-          <h3>RUN HARNESS</h3>
-          <p>Harness 请求 Bootstrap 装配并批量运行实验条件。</p>
-        </article>
-        <article class="experiment-step">
-          <div class="step-node">05</div>
-          <h3>COMPARE EVIDENCE</h3>
-          <p>比较统一结果、trajectory、tokens 与 artifacts。</p>
-        </article>
-      </div>
-
-      <div class="closing-note">
-        <strong>研究复杂度留在正确的层，SDK 才能保持简单。</strong>
-        <span>topology → regimes<br>ablation → ports<br>invocation → SDK</span>
       </div>
     </section>
   </main>
 
   <footer class="page-footer">
     <div class="footer-inner">
-      <p class="footer-title">改变拓扑，替换变量，<span>不要污染内核。</span></p>
+      <p>复杂度有归属，<span>SDK 才能简单。</span></p>
       <a
-        class="footer-link"
         href="https://github.com/YihongDong/OpenCollab/pull/26"
         target="_blank"
         rel="noreferrer"
       >REVIEW PR #26 ↗</a>
     </div>
-    <div class="footer-meta">
-      <span>OpenCollab SDK 0.4 · research architecture</span>
-      <span>Team / Workflow / Clean Ablation</span>
-    </div>
   </footer>
-
-  <script>
-    const bench = document.querySelector(".bench");
-    const focusButtons = document.querySelectorAll(".focus-switch button[data-focus]");
-
-    function setFocus(focus) {
-      bench.dataset.focus = focus;
-      focusButtons.forEach((button) => {
-        button.setAttribute(
-          "aria-pressed",
-          String(button.dataset.focus === focus)
-        );
-      });
-    }
-
-    focusButtons.forEach((button) => {
-      button.addEventListener("click", () => setFocus(button.dataset.focus));
-    });
-  </script>
 </body>
 </html>
