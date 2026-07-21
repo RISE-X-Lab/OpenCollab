@@ -5,10 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#eaf1f2">
-  <title>OpenCollab SDK 0.4 — 两种研究视角，一个干净入口</title>
+  <title>OpenCollab SDK 0.4 — 研究 Topology，就用这个小 SDK</title>
   <meta
     name="description"
-    content="OpenCollab 当前版本的研究架构：Topology 研究 Team 与 Workflow，Harness 通过 Clean Architecture 做单变量消融，二者共享一个紧凑 SDK。"
+    content="OpenCollab 当前版本的研究入口：Topology 研究直接使用紧凑 SDK，Harness 消融通过 Clean Architecture 的 Bootstrap、Ports 与 Adapters 完成。"
   >
   <style>
     :root {
@@ -588,8 +588,15 @@
       color: var(--mint-pale);
     }
 
+    .subsection-label {
+      margin: 52px 0 0;
+      color: var(--cobalt-deep);
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.12em;
+    }
+
     .table-wrap {
-      margin-top: 18px;
+      margin-top: 12px;
       overflow-x: auto;
       border: 1px solid var(--line-strong);
       background: var(--paper);
@@ -896,45 +903,6 @@
       font-size: 13px;
     }
 
-    .sdk-section {
-      color: var(--paper);
-      background: var(--ink);
-    }
-
-    .sdk-inner {
-      width: var(--page);
-      margin: 0 auto;
-      padding: clamp(88px, 10vw, 132px) 0;
-    }
-
-    .sdk-head {
-      display: grid;
-      grid-template-columns: 110px minmax(370px, 1fr) minmax(280px, 0.65fr);
-      gap: 28px;
-      align-items: start;
-    }
-
-    .sdk-head .view-badge {
-      color: var(--ink);
-      background: var(--coral);
-    }
-
-    .sdk-head .section-kicker {
-      color: var(--mint);
-    }
-
-    .sdk-head h2 {
-      margin: 13px 0 0;
-      font-family: var(--display);
-      font-size: clamp(45px, 5.6vw, 78px);
-      letter-spacing: -0.052em;
-      line-height: 0.96;
-    }
-
-    .sdk-head .section-intro {
-      color: rgba(248, 251, 250, 0.65);
-    }
-
     .sdk-grid {
       margin-top: 44px;
       display: grid;
@@ -988,6 +956,8 @@
     .ownership {
       display: grid;
       grid-template-rows: repeat(3, 1fr);
+      color: var(--paper);
+      background: var(--ink);
       border: 1px solid rgba(248, 251, 250, 0.24);
     }
 
@@ -1145,8 +1115,7 @@
         margin: 0 auto;
       }
 
-      .section-head,
-      .sdk-head {
+      .section-head {
         grid-template-columns: 90px 1fr;
       }
 
@@ -1222,8 +1191,7 @@
         border-bottom: 0;
       }
 
-      .section-head,
-      .sdk-head {
+      .section-head {
         grid-template-columns: 64px 1fr;
         gap: 18px;
       }
@@ -1326,8 +1294,7 @@
         padding: 17px;
       }
 
-      .section-title h2,
-      .sdk-head h2 {
+      .section-title h2 {
         font-size: 43px;
       }
 
@@ -1372,28 +1339,28 @@
         <span>OpenCollab / Research SDK</span>
       </a>
       <div class="nav-links">
-        <a href="#topology">View A · Topology</a>
-        <a href="#harness">View B · Harness</a>
-        <a href="#sdk">SDK</a>
+        <a href="#topology">Topology · SDK</a>
+        <a href="#harness">Harness · Clean Architecture</a>
         <span class="status">PR #26 green</span>
       </div>
     </nav>
 
     <div class="hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow">Two research views / one shared surface</p>
+        <p class="eyebrow">Choose the surface by research question</p>
         <h1>
-          <span>两种研究视角</span>
-          <span class="accent">一个干净入口</span>
+          <span>研究 Topology</span>
+          <span class="accent">就用这个小 SDK</span>
         </h1>
         <p class="hero-lede">
-          Topology 研究“协作如何组织”；Harness 研究“哪个变量改变结果”。
-          两者改变系统的不同维度，却共享同一套运行语义与观测结果。
+          用 <code>agent</code> 建立基线，用 <code>team</code> 与 <code>workflow</code>
+          研究协作控制图。若问题变成模型、工具或环境的消融，就进入 Clean Architecture，
+          而不是继续扩张 SDK。
         </p>
         <div class="hero-thesis">
-          <strong>SEPARATE THE QUESTIONS</strong><br>
-          topology → choose a control graph<br>
-          harness → replace one implementation
+          <strong>CHOOSE THE RIGHT ENTRY</strong><br>
+          topology → OpenCollab SDK<br>
+          harness → Bootstrap + Ports + Adapters
         </div>
       </div>
 
@@ -1413,16 +1380,16 @@
             <p class="lens-question">协作控制图应该怎样组织？</p>
             <dl class="lens-facts">
               <div>
-                <dt>CHANGE</dt>
-                <dd>Team ↔ Workflow</dd>
+                <dt>ENTRY</dt>
+                <dd>OpenCollab SDK</dd>
               </div>
               <div>
-                <dt>HOLD</dt>
-                <dd>Session process primitive</dd>
+                <dt>CHOOSE</dt>
+                <dd>agent · team · workflow</dd>
               </div>
               <div>
-                <dt>FOCUS</dt>
-                <dd>角色、边、阶段与并发结构</dd>
+                <dt>RETURN</dt>
+                <dd>one RunResult envelope</dd>
               </div>
             </dl>
           </article>
@@ -1436,29 +1403,29 @@
             <p class="lens-question">一个实现变量是否真正影响结果？</p>
             <dl class="lens-facts">
               <div>
+                <dt>ENTRY</dt>
+                <dd>Clean Architecture</dd>
+              </div>
+              <div>
                 <dt>CHANGE</dt>
                 <dd>one Adapter via one Port</dd>
               </div>
               <div>
-                <dt>HOLD</dt>
-                <dd>chosen regime + core semantics</dd>
-              </div>
-              <div>
-                <dt>FOCUS</dt>
-                <dd>模型、工具、环境与上下文策略</dd>
+                <dt>COMPOSE</dt>
+                <dd>Bootstrap binds treatment</dd>
               </div>
             </dl>
           </article>
         </div>
 
         <div class="common-plane">
-          <span>CONVERGE</span>
-          <strong>OpenCollab → RunResult</strong>
-          <small>same client · same observation</small>
+          <span>SHARED CORE</span>
+          <strong>Session · Application · Domain</strong>
+          <small>same semantics · different entry</small>
         </div>
         <figcaption class="board-caption">
-          <span>先分清研究问题，再决定替换什么</span>
-          <span>SDK 只承接两者的交集</span>
+          <span>研究对象决定入口</span>
+          <span>SDK 不需要覆盖 Harness 的实验装配</span>
         </figcaption>
       </figure>
     </div>
@@ -1468,21 +1435,21 @@
     <section class="view-index" aria-label="两种研究视角概览">
       <div class="view-index-inner">
         <div class="index-thesis">
-          <span>READING ORDER</span>
-          <strong>两个视角，不是一条流水线</strong>
+          <span>ONE DECISION</span>
+          <strong>先问：我在研究什么？</strong>
         </div>
         <div class="index-item">
-          <span>VIEW A / TOPOLOGY</span>
+          <span>TOPOLOGY → SDK</span>
           <div>
-            <strong>比较控制方式</strong>
-            <p>研究 Team 与 Workflow，不改 Agent 内核。</p>
+            <strong>直接运行控制条件</strong>
+            <p>agent 基线，team 动态拓扑，workflow 程序化拓扑。</p>
           </div>
         </div>
         <div class="index-item">
-          <span>VIEW B / HARNESS</span>
+          <span>HARNESS → CLEAN ARCHITECTURE</span>
           <div>
-            <strong>比较实现变量</strong>
-            <p>固定已选模式，通过 Port 替换一个 Adapter。</p>
+            <strong>隔离基础设施变量</strong>
+            <p>固定控制模式，通过 Port 替换一个 Adapter。</p>
           </div>
         </div>
       </div>
@@ -1492,29 +1459,94 @@
       <div class="section-head">
         <div class="view-badge" aria-hidden="true">A</div>
         <div class="section-title">
-          <p class="section-kicker">View A · Topology research</p>
-          <h2>固定内核，比较控制图</h2>
+          <p class="section-kicker">Topology research · SDK entry</p>
+          <h2>三种条件，一个调用面</h2>
         </div>
         <p class="section-intro">
-          Team 与 Workflow 都驱动同一个 <code>session.run_loop()</code>。
-          研究对象只是“谁决定下一条边，以及图如何展开”。
+          构造一次 <code>OpenCollab</code>，再选择基线、动态 Team 或程序化 Workflow。
+          三种运行都返回 <code>RunResult</code>。
         </p>
       </div>
 
       <div class="scope-bar" aria-label="Topology 研究变量">
         <div class="scope-item">
           <span>CHANGE</span>
-          <strong>Team ↔ Workflow</strong>
+          <strong>agent · team · workflow</strong>
         </div>
         <div class="scope-item">
           <span>HOLD</span>
           <strong>Session runner + FSM</strong>
         </div>
         <div class="scope-item">
-          <span>OBSERVE</span>
-          <strong>Result + trajectory + artifacts</strong>
+          <span>RETURN</span>
+          <strong>one RunResult envelope</strong>
         </div>
       </div>
+
+      <div class="sdk-grid">
+        <div class="sdk-console">
+          <div class="console-head">
+            <strong>ONE TASK / THREE CONTROL CONDITIONS</strong>
+            <span>same observation envelope</span>
+          </div>
+<pre aria-label="OpenCollab SDK 三种控制条件示例"><span class="tok-key">from</span> opencollab <span class="tok-key">import</span> OpenCollab, workflow
+
+<span class="tok-comment"># Workflow 由研究者直接定义</span>
+<span class="tok-key">@workflow</span>
+<span class="tok-key">async def</span> <span class="tok-call">protocol</span>(ctx, inputs):
+  draft = <span class="tok-key">await</span> ctx.agent(<span class="tok-string">f"实现：{inputs['task']}"</span>)
+  <span class="tok-key">return await</span> ctx.agent(<span class="tok-string">f"审查并修正：{draft}"</span>)
+
+<span class="tok-key">oc</span> = <span class="tok-call">OpenCollab</span>(<span class="tok-string">"."</span>)
+<span class="tok-key">task</span> = <span class="tok-string">"修复目标缺陷并验证"</span>
+
+<span class="tok-key">baseline</span> = <span class="tok-key">await</span> oc.agent(task)
+<span class="tok-key">emergent</span> = <span class="tok-key">await</span> oc.team(
+  task, config=<span class="tok-string">"configs/team.yaml"</span>
+)
+<span class="tok-key">programmed</span> = <span class="tok-key">await</span> oc.workflow(
+  protocol, {<span class="tok-string">"task"</span>: task}
+)
+
+<span class="tok-comment"># baseline / emergent / programmed 都是 RunResult</span></pre>
+        </div>
+
+        <div class="ownership" aria-label="SDK 易用性">
+          <div class="ownership-item">
+            <span>INIT</span>
+            <div>
+              <strong>构造一次</strong>
+              <p><code>OpenCollab(".")</code> 集中解析 workspace 与配置。</p>
+            </div>
+          </div>
+          <div class="ownership-item">
+            <span>SELECT</span>
+            <div>
+              <strong>方法就是实验条件</strong>
+              <p><code>agent</code> / <code>team</code> / <code>workflow</code> 直接表达控制条件。</p>
+            </div>
+          </div>
+          <div class="ownership-item">
+            <span>OBSERVE</span>
+            <div>
+              <strong>统一结果</strong>
+              <p>output、status、tokens、metrics 与 artifacts 都在 <code>RunResult</code>。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="public-surface">
+        <strong>COMPLETE EVERYDAY SURFACE</strong>
+        <div class="surface-names">
+          <code>OpenCollab</code>
+          <code>RunResult</code>
+          <code>RunError</code>
+          <code>workflow</code>
+        </div>
+      </div>
+
+      <p class="subsection-label">TWO TOPOLOGY REGIMES / SAME SESSION PRIMITIVE</p>
 
       <div class="table-wrap" tabindex="0" aria-label="Team 与 Workflow 结构化对比，可横向滚动">
         <table class="regime-table">
@@ -1574,10 +1606,10 @@
 
     <aside class="axis-switch" aria-label="从 Topology 视角切换到 Harness 视角">
       <div class="axis-mark" aria-hidden="true">A→B</div>
-      <strong>切换视角，不延续变量</strong>
+      <strong>研究问题变了，就换入口</strong>
       <p>
-        View A 到这里已经回答“用哪种控制图”。进入 View B 后先冻结这个选择，
-        再研究某个基础设施实现带来的净效应。
+        要消融模型、工具、环境或上下文策略时，不给 SDK 继续加参数；
+        固定上面的控制条件，转入 Bootstrap / Ports / Adapters。
       </p>
     </aside>
 
@@ -1585,8 +1617,8 @@
       <div class="section-head">
         <div class="view-badge" aria-hidden="true">B</div>
         <div class="section-title">
-          <p class="section-kicker">View B · Harness research</p>
-          <h2>固定模式，替换一个实现</h2>
+          <p class="section-kicker">Harness research · Clean Architecture entry</p>
+          <h2>固定模式，隔离一个变量</h2>
         </div>
         <p class="section-intro">
           Harness 定义实验条件，Bootstrap 装配具体 Adapter。
@@ -1668,94 +1700,15 @@
       </div>
 
       <div class="clean-note">
-        <strong>WHY CLEAN ARCHITECTURE</strong>
-        <p>它在这里不是目录装饰，而是实验隔离机制：替换外层实现，不让 treatment 污染核心。</p>
-      </div>
-    </section>
-
-    <section class="sdk-section" id="sdk">
-      <div class="sdk-inner">
-        <div class="sdk-head">
-          <div class="view-badge" aria-hidden="true">∩</div>
-          <div class="section-title">
-            <p class="section-kicker">Shared boundary · SDK design</p>
-            <h2>两个视角，到这里汇合</h2>
-          </div>
-          <p class="section-intro">
-            SDK 不承载拓扑算法，也不承载消融装配。
-            它只选择运行条件，并把结果装进同一种观测信封。
-          </p>
-        </div>
-
-        <div class="sdk-grid">
-          <div class="sdk-console">
-            <div class="console-head">
-              <strong>ONE TASK / THREE CONTROL CONDITIONS</strong>
-              <span>same observation envelope</span>
-            </div>
-<pre aria-label="OpenCollab SDK 三种控制条件示例"><span class="tok-key">from</span> opencollab <span class="tok-key">import</span> OpenCollab
-<span class="tok-key">from</span> study <span class="tok-key">import</span> protocol
-
-<span class="tok-key">oc</span> = <span class="tok-call">OpenCollab</span>(<span class="tok-string">"."</span>)
-<span class="tok-key">task</span> = <span class="tok-string">"修复目标缺陷并验证"</span>
-
-<span class="tok-comment"># 单 Agent 控制基线</span>
-<span class="tok-key">baseline</span> = <span class="tok-key">await</span> oc.agent(task)
-
-<span class="tok-comment"># LLM-supervised 动态拓扑</span>
-<span class="tok-key">emergent</span> = <span class="tok-key">await</span> oc.team(
-  task,
-  config=<span class="tok-string">"configs/team.yaml"</span>,
-)
-
-<span class="tok-comment"># code-driven 程序化拓扑</span>
-<span class="tok-key">programmed</span> = <span class="tok-key">await</span> oc.workflow(
-  protocol,
-  {<span class="tok-string">"task"</span>: task},
-)</pre>
-          </div>
-
-          <div class="ownership" aria-label="研究复杂度归属">
-            <div class="ownership-item">
-              <span>TOPOLOGY</span>
-              <div>
-                <strong>拥有控制图</strong>
-                <p>Team 与 Workflow 承载角色、边、阶段和并发结构。</p>
-              </div>
-            </div>
-            <div class="ownership-item">
-              <span>HARNESS</span>
-              <div>
-                <strong>拥有实验矩阵</strong>
-                <p>Harness、Bootstrap 与 Ports 承载 treatment 的定义和装配。</p>
-              </div>
-            </div>
-            <div class="ownership-item">
-              <span>SDK</span>
-              <div>
-                <strong>只拥有运行与观测</strong>
-                <p>选择 agent / team / workflow，统一返回 RunResult。</p>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="public-surface">
-          <strong>COMPLETE EVERYDAY SURFACE</strong>
-          <div class="surface-names">
-            <code>OpenCollab</code>
-            <code>RunResult</code>
-            <code>RunError</code>
-            <code>workflow</code>
-          </div>
-        </div>
+        <strong>BOUNDARY RULE</strong>
+        <p>Topology 通过 SDK 选择控制图；Harness 通过 Port 替换实现。两类研究都不污染核心。</p>
       </div>
     </section>
   </main>
 
   <footer class="page-footer">
     <div class="footer-inner">
-      <p>复杂度有归属，<span>SDK 才能简单。</span></p>
+      <p>Topology 用 SDK，<span>Harness 用 Ports。</span></p>
       <a
         href="https://github.com/YihongDong/OpenCollab/pull/26"
         target="_blank"
