@@ -57,50 +57,42 @@ Useful flags:
 
 ## Python SDK
 
-`opencollab.sdk` is the versioned integration boundary. Its
-`SDK_API_VERSION` is independent of the package release version. SDK v2 covers
-single-agent runs, workflow runs, execution environments, and curated coding
-tools.
+The package root is the complete everyday API: one stateful client, one result
+type, one error, and the workflow decorator. Compatibility follows package
+SemVer.
 
 ```python
 import asyncio
-import os
 
-from opencollab.sdk import (
-    AgentRunBudget,
-    AgentRunRequest,
-    OpenCollabRuntime,
-    RuntimeConfig,
-    coding_toolset,
-)
+from opencollab import OpenCollab
 
 
 async def main() -> None:
-    request = AgentRunRequest(
-        prompt="Inspect this repository and report its release readiness.",
-        config=RuntimeConfig(
-            model=os.environ["OPENCOLLAB_MODEL"],
-            provider=os.environ.get("OPENCOLLAB_PROVIDER", "openai"),
-            api_key=os.environ.get("OPENCOLLAB_API_KEY"),
-            base_url=os.environ.get("OPENCOLLAB_BASE_URL"),
-        ),
-        budget=AgentRunBudget(max_tokens=100_000, max_steps=20),
-        tools=coding_toolset(),
-        workspace=".",
+    oc = OpenCollab(".")  # resolves configs/.env and environment variables once
+    result = await oc.agent(
+        "Inspect this repository and report its release readiness.",
+        budget=100_000,
+        artifacts="artifacts/release-readiness",
     )
-    result = await OpenCollabRuntime().run_agent(request)
-    print(result.output)
+    print(result.raise_for_status().output)
 
 
 asyncio.run(main())
 ```
 
-Import public names from `opencollab.sdk` or its documented capability modules.
-Treat other package paths as internal. An `artifact_dir`, when supplied, must
-be new or empty because each SDK run claims it for executable evidence.
+The same client exposes `agent(...)`, `team(...)`, and `workflow(...)`; all
+return `RunResult`. Import optional authoring contracts from
+`opencollab.tools`, `opencollab.environments`, and `opencollab.workflows`.
+Treat other package paths as internal. An `artifacts` directory, when supplied,
+must be new or empty because each run claims it for executable evidence.
+
+For a visual architecture walkthrough, open the
+[SDK 0.4 research architecture](../docs/sdk-v3-explainer.html).
 
 Evaluation runners and benchmark-specific workflows live in the companion
-OpenCollab-Eval repository and consume this SDK boundary.
+OpenCollab-Eval repository. This keeps topology research in `team(...)` and
+`workflow(...)`, while an external harness defines ablations and Bootstrap
+binds each treatment through the Clean Architecture ports.
 
 ## Architecture
 

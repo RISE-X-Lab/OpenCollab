@@ -11,6 +11,7 @@ Pure application layer: stdlib only (no domain, no adapters).
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -34,28 +35,31 @@ class WorkflowSpec:
 
 
 def workflow(
+    fn: WorkflowFn | None = None,
     *,
-    name: str,
-    description: str,
+    name: str | None = None,
+    description: str | None = None,
     phases: Sequence[str] | None = None,
-) -> Callable[[WorkflowFn], WorkflowFn]:
-    """Decorator that tags an async function as a workflow.
+) -> Callable[[WorkflowFn], WorkflowFn] | WorkflowFn:
+    """Tag an async function as a workflow, with optional metadata.
 
     Attaches a frozen :class:`WorkflowSpec` as ``fn.__workflow_spec__`` and
-    returns the function unchanged so it remains directly callable.
+    returns the function unchanged so it remains directly callable. Both
+    ``@workflow`` and ``@workflow(name=..., description=...)`` are supported.
     """
 
-    def decorator(fn: WorkflowFn) -> WorkflowFn:
+    def decorator(target: WorkflowFn) -> WorkflowFn:
+        doc = inspect.getdoc(target)
         spec = WorkflowSpec(
-            name=name,
-            description=description,
-            fn=fn,
+            name=name or target.__name__,
+            description=description or (doc.splitlines()[0] if doc else target.__name__),
+            fn=target,
             phases=tuple(phases or ()),
         )
-        fn.__workflow_spec__ = spec  # type: ignore[attr-defined]
-        return fn
+        target.__workflow_spec__ = spec  # type: ignore[attr-defined]
+        return target
 
-    return decorator
+    return decorator(fn) if fn is not None else decorator
 
 
 class Registry:

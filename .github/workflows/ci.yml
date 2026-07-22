@@ -187,7 +187,9 @@ jobs:
           package_path = Path(opencollab.__file__).resolve()
           assert package_path.is_relative_to(Path(sys.prefix).resolve()), package_path
           assert opencollab.__version__ == metadata.version("opencollab")
-          assert sdk.SDK_API_VERSION == 2
+          assert opencollab.__all__ == ["OpenCollab", "RunError", "RunResult", "workflow"]
+          assert sdk.__all__ == opencollab.__all__
+          assert sdk.OpenCollab is opencollab.OpenCollab
           package_root = resources.files("opencollab.bootstrap")
           for prompt_name in ("lead.md", "role.md"):
               prompt = package_root.joinpath("prompts", prompt_name)

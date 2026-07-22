@@ -1,0 +1,1720 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#eaf1f2">
+  <title>OpenCollab SDK 0.4 — 研究 Topology，就用这个小 SDK</title>
+  <meta
+    name="description"
+    content="OpenCollab 当前版本的研究入口：Topology 研究直接使用紧凑 SDK，Harness 消融通过 Clean Architecture 的 Bootstrap、Ports 与 Adapters 完成。"
+  >
+  <style>
+    :root {
+      --mist: #eaf1f2;
+      --paper: #f8fbfa;
+      --ink: #142c3b;
+      --ink-soft: #4d6571;
+      --cobalt: #3157e8;
+      --cobalt-deep: #203caa;
+      --coral: #ef6a4c;
+      --mint: #8ec9b8;
+      --mint-pale: #d9eee8;
+      --line: rgba(20, 44, 59, 0.18);
+      --line-strong: rgba(20, 44, 59, 0.34);
+      --display: "DIN Condensed", "Arial Narrow", "Aptos Narrow", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --body: "Source Han Sans SC", "Noto Sans CJK SC", "PingFang SC", "Microsoft YaHei", sans-serif;
+      --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      --page: min(1180px, calc(100vw - 48px));
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--mist);
+      font-family: var(--body);
+      font-size: 16px;
+      line-height: 1.68;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    body::before {
+      position: fixed;
+      inset: 0;
+      z-index: -2;
+      content: "";
+      background:
+        radial-gradient(circle at 7% 3%, rgba(142, 201, 184, 0.28), transparent 27%),
+        radial-gradient(circle at 94% 22%, rgba(49, 87, 232, 0.10), transparent 30%),
+        var(--mist);
+    }
+
+    a {
+      color: inherit;
+    }
+
+    :focus-visible {
+      outline: 3px solid var(--coral);
+      outline-offset: 4px;
+    }
+
+    .skip-link {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 100;
+      padding: 9px 13px;
+      color: var(--paper);
+      background: var(--ink);
+      transform: translateY(-160%);
+      transition: transform 160ms ease;
+    }
+
+    .skip-link:focus {
+      transform: translateY(0);
+    }
+
+    .hero {
+      position: relative;
+      min-height: 94svh;
+      overflow: hidden;
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    .hero::before {
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      content: "";
+      opacity: 0.64;
+      background-image:
+        linear-gradient(rgba(20, 44, 59, 0.05) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(20, 44, 59, 0.05) 1px, transparent 1px);
+      background-size: 24px 24px;
+      mask-image: linear-gradient(to bottom, black 0%, rgba(0, 0, 0, 0.76) 76%, transparent 100%);
+    }
+
+    .topbar {
+      width: var(--page);
+      min-height: 72px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      border-bottom: 1px solid var(--line-strong);
+      font: 700 10px/1.4 var(--mono);
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+    }
+
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      white-space: nowrap;
+    }
+
+    .brand-mark {
+      width: 29px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      color: var(--paper);
+      background: var(--ink);
+      clip-path: polygon(0 0, 72% 0, 100% 28%, 100% 100%, 28% 100%, 0 72%);
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      color: var(--ink-soft);
+    }
+
+    .nav-links a {
+      text-decoration: none;
+    }
+
+    .nav-links a:hover {
+      color: var(--cobalt-deep);
+      text-decoration: underline;
+      text-underline-offset: 5px;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .status::before {
+      width: 7px;
+      height: 7px;
+      content: "";
+      background: #3d8b72;
+      border-radius: 50%;
+      box-shadow: 0 0 0 4px rgba(61, 139, 114, 0.13);
+    }
+
+    .hero-grid {
+      width: var(--page);
+      margin: 0 auto;
+      padding: clamp(58px, 8vh, 92px) 0 76px;
+      display: grid;
+      grid-template-columns: minmax(330px, 0.78fr) minmax(590px, 1.22fr);
+      align-items: center;
+      gap: clamp(44px, 6vw, 88px);
+    }
+
+    .eyebrow,
+    .section-kicker {
+      margin: 0;
+      font: 700 10px/1.4 var(--mono);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: var(--cobalt-deep);
+    }
+
+    .eyebrow::before {
+      width: 38px;
+      height: 2px;
+      content: "";
+      background: var(--cobalt);
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      text-wrap: pretty;
+    }
+
+    h1 {
+      max-width: 650px;
+      margin: 24px 0 28px;
+      font-family: var(--display);
+      font-size: clamp(61px, 7.2vw, 104px);
+      font-weight: 760;
+      letter-spacing: -0.065em;
+      line-height: 0.91;
+    }
+
+    h1 span {
+      display: block;
+    }
+
+    h1 .accent {
+      color: var(--cobalt);
+    }
+
+    .hero-lede {
+      max-width: 560px;
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: clamp(17px, 1.35vw, 20px);
+      line-height: 1.76;
+    }
+
+    .hero-thesis {
+      margin-top: 30px;
+      padding: 14px 16px;
+      color: var(--paper);
+      background: var(--ink);
+      border-left: 5px solid var(--coral);
+      font: 11px/1.7 var(--mono);
+    }
+
+    .hero-thesis strong {
+      color: var(--mint);
+    }
+
+    .lens-board {
+      margin: 0;
+      padding: 18px;
+      background: rgba(248, 251, 250, 0.82);
+      border: 1px solid var(--line-strong);
+      box-shadow: 0 30px 70px rgba(20, 44, 59, 0.14);
+      backdrop-filter: blur(14px);
+      clip-path: polygon(0 0, calc(100% - 28px) 0, 100% 28px, 100% 100%, 28px 100%, 0 calc(100% - 28px));
+    }
+
+    .board-head {
+      padding: 4px 4px 15px;
+      display: flex;
+      align-items: end;
+      justify-content: space-between;
+      gap: 20px;
+      border-bottom: 1px solid var(--line-strong);
+      font-family: var(--mono);
+    }
+
+    .board-head strong {
+      font-size: 11px;
+      letter-spacing: 0.1em;
+    }
+
+    .board-head span {
+      color: var(--ink-soft);
+      font-size: 9px;
+    }
+
+    .lens-grid {
+      padding: 18px 0 14px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .lens-card {
+      position: relative;
+      min-width: 0;
+      min-height: 318px;
+      padding: 20px;
+      overflow: hidden;
+      background: rgba(49, 87, 232, 0.07);
+      border: 1px solid rgba(49, 87, 232, 0.38);
+    }
+
+    .lens-card::after {
+      position: absolute;
+      top: -44px;
+      right: -44px;
+      width: 150px;
+      aspect-ratio: 1;
+      content: "";
+      border: 1px solid rgba(49, 87, 232, 0.24);
+      border-radius: 50%;
+      box-shadow:
+        0 0 0 20px rgba(49, 87, 232, 0.04),
+        0 0 0 42px rgba(49, 87, 232, 0.03);
+    }
+
+    .lens-card.harness {
+      color: var(--paper);
+      background: var(--ink);
+      border-color: var(--ink);
+    }
+
+    .lens-card.harness::after {
+      border-color: rgba(142, 201, 184, 0.34);
+      box-shadow:
+        0 0 0 20px rgba(142, 201, 184, 0.06),
+        0 0 0 42px rgba(142, 201, 184, 0.04);
+    }
+
+    .lens-index {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--cobalt-deep);
+      font: 700 9px/1 var(--mono);
+      letter-spacing: 0.12em;
+    }
+
+    .harness .lens-index {
+      color: var(--mint);
+    }
+
+    .lens-index b {
+      width: 32px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      color: var(--paper);
+      background: var(--cobalt);
+      font-size: 12px;
+    }
+
+    .harness .lens-index b {
+      color: var(--ink);
+      background: var(--mint);
+    }
+
+    .lens-card h2 {
+      position: relative;
+      z-index: 1;
+      margin: 28px 0 8px;
+      font-family: var(--display);
+      font-size: clamp(31px, 3.1vw, 46px);
+      letter-spacing: -0.035em;
+      line-height: 0.98;
+    }
+
+    .lens-question {
+      position: relative;
+      z-index: 1;
+      min-height: 50px;
+      margin: 0 0 22px;
+      color: var(--ink-soft);
+      font-size: 13px;
+    }
+
+    .harness .lens-question {
+      color: rgba(248, 251, 250, 0.68);
+    }
+
+    .lens-facts {
+      position: relative;
+      z-index: 1;
+      margin: 0;
+    }
+
+    .lens-facts div {
+      padding: 10px 0;
+      display: grid;
+      grid-template-columns: 58px 1fr;
+      gap: 10px;
+      border-top: 1px solid rgba(20, 44, 59, 0.17);
+    }
+
+    .harness .lens-facts div {
+      border-color: rgba(248, 251, 250, 0.14);
+    }
+
+    .lens-facts dt {
+      color: var(--cobalt-deep);
+      font: 700 8px/1.5 var(--mono);
+      letter-spacing: 0.1em;
+    }
+
+    .harness .lens-facts dt {
+      color: var(--mint);
+    }
+
+    .lens-facts dd {
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .common-plane {
+      padding: 14px 16px;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 14px;
+      color: var(--paper);
+      background: var(--cobalt);
+      font-family: var(--mono);
+    }
+
+    .common-plane span,
+    .common-plane small {
+      font-size: 8px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .common-plane strong {
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .common-plane small {
+      color: rgba(248, 251, 250, 0.72);
+      text-align: right;
+    }
+
+    .board-caption {
+      margin: 11px 3px 0;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      color: var(--ink-soft);
+      font: 9px/1.5 var(--mono);
+    }
+
+    .view-index {
+      color: var(--paper);
+      background: var(--ink);
+    }
+
+    .view-index-inner {
+      width: var(--page);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 0.7fr 1fr 1fr;
+    }
+
+    .index-thesis,
+    .index-item {
+      min-height: 154px;
+      padding: 28px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      border-right: 1px solid rgba(248, 251, 250, 0.16);
+    }
+
+    .index-thesis {
+      padding-left: 0;
+    }
+
+    .index-item:last-child {
+      padding-right: 0;
+      border-right: 0;
+    }
+
+    .index-thesis span,
+    .index-item span {
+      color: var(--mint);
+      font: 700 9px/1 var(--mono);
+      letter-spacing: 0.12em;
+    }
+
+    .index-thesis strong {
+      max-width: 240px;
+      font-family: var(--display);
+      font-size: 29px;
+      letter-spacing: -0.025em;
+      line-height: 1.02;
+    }
+
+    .index-item strong {
+      font-size: 17px;
+    }
+
+    .index-item p {
+      margin: 5px 0 0;
+      color: rgba(248, 251, 250, 0.63);
+      font-size: 12px;
+    }
+
+    .research-section {
+      width: var(--page);
+      margin: 0 auto;
+      padding: clamp(84px, 10vw, 136px) 0;
+    }
+
+    .section-head {
+      display: grid;
+      grid-template-columns: 110px minmax(340px, 1fr) minmax(280px, 0.7fr);
+      align-items: start;
+      gap: 28px;
+    }
+
+    .view-badge {
+      width: 76px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      color: var(--paper);
+      background: var(--cobalt);
+      font: 700 23px/1 var(--mono);
+      clip-path: polygon(0 0, 72% 0, 100% 28%, 100% 100%, 28% 100%, 0 72%);
+    }
+
+    .harness-section .view-badge {
+      color: var(--ink);
+      background: var(--mint);
+    }
+
+    .section-kicker {
+      color: var(--cobalt-deep);
+    }
+
+    .section-title h2 {
+      max-width: 680px;
+      margin: 13px 0 0;
+      font-family: var(--display);
+      font-size: clamp(45px, 5.6vw, 78px);
+      letter-spacing: -0.052em;
+      line-height: 0.96;
+    }
+
+    .section-intro {
+      margin: 27px 0 0;
+      color: var(--ink-soft);
+      font-size: 15px;
+      line-height: 1.78;
+    }
+
+    .scope-bar {
+      margin-top: 42px;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border: 1px solid var(--line-strong);
+      background: rgba(248, 251, 250, 0.48);
+    }
+
+    .scope-item {
+      min-width: 0;
+      padding: 17px 19px;
+      border-right: 1px solid var(--line);
+    }
+
+    .scope-item:last-child {
+      border-right: 0;
+    }
+
+    .scope-item span {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--cobalt-deep);
+      font: 700 8px/1.4 var(--mono);
+      letter-spacing: 0.12em;
+    }
+
+    .scope-item strong {
+      font-size: 14px;
+    }
+
+    .scope-item:first-child {
+      color: var(--paper);
+      background: var(--cobalt);
+    }
+
+    .scope-item:first-child span {
+      color: var(--mint-pale);
+    }
+
+    .subsection-label {
+      margin: 52px 0 0;
+      color: var(--cobalt-deep);
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.12em;
+    }
+
+    .table-wrap {
+      margin-top: 12px;
+      overflow-x: auto;
+      border: 1px solid var(--line-strong);
+      background: var(--paper);
+      box-shadow: 12px 12px 0 rgba(20, 44, 59, 0.06);
+    }
+
+    .regime-table {
+      width: 100%;
+      min-width: 760px;
+      border-collapse: collapse;
+      table-layout: fixed;
+    }
+
+    .regime-table th,
+    .regime-table td {
+      padding: 18px 20px;
+      vertical-align: top;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+    }
+
+    .regime-table tr > :last-child {
+      border-right: 0;
+    }
+
+    .regime-table tbody tr:last-child > * {
+      border-bottom: 0;
+    }
+
+    .regime-table thead th {
+      color: var(--paper);
+      background: var(--ink);
+    }
+
+    .regime-table thead th:first-child {
+      width: 22%;
+      color: rgba(248, 251, 250, 0.56);
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.1em;
+    }
+
+    .regime-table thead th:nth-child(2) {
+      background: var(--cobalt);
+    }
+
+    .regime-name {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .regime-name strong {
+      font-family: var(--display);
+      font-size: 30px;
+      letter-spacing: -0.025em;
+    }
+
+    .regime-name span {
+      color: rgba(248, 251, 250, 0.66);
+      font: 8px/1.4 var(--mono);
+      text-align: right;
+      letter-spacing: 0.08em;
+    }
+
+    .regime-table tbody th {
+      color: var(--cobalt-deep);
+      background: rgba(217, 238, 232, 0.42);
+      font: 700 9px/1.5 var(--mono);
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .regime-table td {
+      color: var(--ink-soft);
+      font-size: 13px;
+      line-height: 1.62;
+    }
+
+    .regime-table td strong {
+      display: block;
+      margin-bottom: 3px;
+      color: var(--ink);
+      font-size: 14px;
+    }
+
+    .shared-core {
+      margin-top: 18px;
+      padding: 18px 20px;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 24px;
+      color: var(--paper);
+      background: var(--ink);
+    }
+
+    .shared-core > strong {
+      color: var(--mint);
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.12em;
+    }
+
+    .core-items {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .core-items span {
+      padding: 7px 9px;
+      border: 1px solid rgba(248, 251, 250, 0.2);
+      font: 9px/1 var(--mono);
+    }
+
+    .axis-switch {
+      width: var(--page);
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 110px 1fr 1fr;
+      align-items: stretch;
+      color: var(--paper);
+      background: var(--cobalt);
+      box-shadow: 14px 14px 0 rgba(239, 106, 76, 0.20);
+    }
+
+    .axis-mark {
+      display: grid;
+      place-items: center;
+      color: var(--ink);
+      background: var(--coral);
+      font: 700 18px/1 var(--mono);
+    }
+
+    .axis-switch strong,
+    .axis-switch p {
+      margin: 0;
+      padding: 24px 28px;
+    }
+
+    .axis-switch strong {
+      align-self: center;
+      font-family: var(--display);
+      font-size: 30px;
+      letter-spacing: -0.025em;
+      line-height: 1;
+    }
+
+    .axis-switch p {
+      color: rgba(248, 251, 250, 0.77);
+      border-left: 1px solid rgba(248, 251, 250, 0.20);
+      font-size: 13px;
+    }
+
+    .harness-section {
+      padding-top: clamp(88px, 10vw, 132px);
+    }
+
+    .harness-grid {
+      margin-top: 18px;
+      display: grid;
+      grid-template-columns: minmax(390px, 0.88fr) minmax(500px, 1.12fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .assembly-path,
+    .port-panel {
+      border: 1px solid var(--line-strong);
+      background: var(--paper);
+    }
+
+    .panel-head {
+      padding: 15px 18px;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      color: var(--paper);
+      background: var(--ink);
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.1em;
+    }
+
+    .panel-head span {
+      color: rgba(248, 251, 250, 0.58);
+      font-weight: 400;
+      text-align: right;
+    }
+
+    .path-step {
+      position: relative;
+      padding: 19px 18px 19px 76px;
+      min-height: 92px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .path-step:last-child {
+      border-bottom: 0;
+    }
+
+    .path-step::before {
+      position: absolute;
+      top: 18px;
+      left: 18px;
+      width: 38px;
+      aspect-ratio: 1;
+      display: grid;
+      place-items: center;
+      content: attr(data-step);
+      color: var(--paper);
+      background: var(--cobalt);
+      font: 700 10px/1 var(--mono);
+    }
+
+    .path-step:not(:last-child)::after {
+      position: absolute;
+      bottom: -8px;
+      left: 35px;
+      z-index: 2;
+      width: 14px;
+      height: 14px;
+      content: "";
+      background: var(--paper);
+      border-right: 1px solid var(--line-strong);
+      border-bottom: 1px solid var(--line-strong);
+      transform: rotate(45deg);
+    }
+
+    .path-step strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 14px;
+    }
+
+    .path-step p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    .ablation-equation {
+      padding: 20px;
+      color: var(--paper);
+      background: var(--cobalt);
+      border-bottom: 1px solid var(--line-strong);
+      font: 11px/1.75 var(--mono);
+    }
+
+    .ablation-equation strong {
+      color: var(--mint-pale);
+      font-size: 12px;
+    }
+
+    .port-list {
+      margin: 0;
+    }
+
+    .port-row {
+      padding: 13px 18px;
+      display: grid;
+      grid-template-columns: minmax(170px, 0.72fr) 1fr;
+      gap: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .port-row:last-child {
+      border-bottom: 0;
+    }
+
+    .port-row dt {
+      color: var(--cobalt-deep);
+      font: 700 10px/1.5 var(--mono);
+    }
+
+    .port-row dd {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 12px;
+    }
+
+    .clean-note {
+      margin-top: 18px;
+      padding: 18px 20px;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 18px;
+      align-items: center;
+      background: var(--mint-pale);
+      border-left: 5px solid var(--mint);
+    }
+
+    .clean-note strong {
+      color: var(--cobalt-deep);
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.1em;
+    }
+
+    .clean-note p {
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 13px;
+    }
+
+    .sdk-grid {
+      margin-top: 44px;
+      display: grid;
+      grid-template-columns: minmax(570px, 1.25fr) minmax(310px, 0.75fr);
+      gap: 18px;
+      align-items: stretch;
+    }
+
+    .sdk-console {
+      overflow: hidden;
+      background: #0d202c;
+      border: 1px solid rgba(248, 251, 250, 0.24);
+      box-shadow: 12px 12px 0 rgba(49, 87, 232, 0.45);
+    }
+
+    .console-head {
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      color: var(--paper);
+      background: var(--cobalt);
+      font-family: var(--mono);
+    }
+
+    .console-head strong {
+      font-size: 10px;
+      letter-spacing: 0.11em;
+    }
+
+    .console-head span {
+      color: rgba(248, 251, 250, 0.69);
+      font-size: 9px;
+    }
+
+    pre {
+      margin: 0;
+      padding: clamp(22px, 3vw, 34px);
+      overflow-x: auto;
+      color: #d8e7ec;
+      font: 12px/1.85 var(--mono);
+      tab-size: 2;
+    }
+
+    .tok-key { color: #8ec9b8; }
+    .tok-string { color: #ff9e86; }
+    .tok-call { color: #d8e483; }
+    .tok-comment { color: #8396a0; }
+
+    .ownership {
+      display: grid;
+      grid-template-rows: repeat(3, 1fr);
+      color: var(--paper);
+      background: var(--ink);
+      border: 1px solid rgba(248, 251, 250, 0.24);
+    }
+
+    .ownership-item {
+      padding: 20px;
+      display: grid;
+      grid-template-columns: 82px 1fr;
+      gap: 16px;
+      align-items: start;
+      border-bottom: 1px solid rgba(248, 251, 250, 0.16);
+    }
+
+    .ownership-item:last-child {
+      border-bottom: 0;
+    }
+
+    .ownership-item span {
+      color: var(--mint);
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.1em;
+    }
+
+    .ownership-item:nth-child(3) span {
+      color: var(--coral);
+    }
+
+    .ownership-item strong {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 14px;
+    }
+
+    .ownership-item p {
+      margin: 0;
+      color: rgba(248, 251, 250, 0.62);
+      font-size: 12px;
+      line-height: 1.62;
+    }
+
+    .public-surface {
+      margin-top: 18px;
+      padding: 18px 20px;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: center;
+      gap: 24px;
+      color: var(--ink);
+      background: var(--mint);
+    }
+
+    .public-surface strong {
+      font: 700 9px/1.4 var(--mono);
+      letter-spacing: 0.11em;
+    }
+
+    .surface-names {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    .surface-names code {
+      padding: 7px 9px;
+      color: var(--paper);
+      background: var(--ink);
+      font: 10px/1 var(--mono);
+    }
+
+    .page-footer {
+      color: var(--paper);
+      background: #0d202c;
+      border-top: 1px solid rgba(248, 251, 250, 0.15);
+    }
+
+    .footer-inner {
+      width: var(--page);
+      margin: 0 auto;
+      padding: 34px 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+
+    .footer-inner p {
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(26px, 3vw, 40px);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+    }
+
+    .footer-inner p span {
+      color: var(--mint);
+    }
+
+    .footer-inner a {
+      padding: 12px 15px;
+      color: var(--ink);
+      background: var(--coral);
+      font: 700 9px/1 var(--mono);
+      letter-spacing: 0.09em;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: transform 160ms ease, box-shadow 160ms ease;
+    }
+
+    .footer-inner a:hover {
+      transform: translate(-3px, -3px);
+      box-shadow: 5px 5px 0 var(--mint);
+    }
+
+    @keyframes enter-up {
+      from {
+        opacity: 0;
+        transform: translateY(16px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .hero-copy > * {
+      opacity: 0;
+      animation: enter-up 620ms cubic-bezier(0.2, 0.75, 0.2, 1) forwards;
+    }
+
+    .hero-copy > :nth-child(1) { animation-delay: 60ms; }
+    .hero-copy > :nth-child(2) { animation-delay: 130ms; }
+    .hero-copy > :nth-child(3) { animation-delay: 210ms; }
+    .hero-copy > :nth-child(4) { animation-delay: 290ms; }
+
+    .lens-board {
+      opacity: 0;
+      animation: enter-up 700ms 180ms cubic-bezier(0.2, 0.75, 0.2, 1) forwards;
+    }
+
+    @media (max-width: 1040px) {
+      :root {
+        --page: min(920px, calc(100vw - 40px));
+      }
+
+      .hero-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .hero-copy {
+        max-width: 760px;
+      }
+
+      .lens-board {
+        width: min(820px, 100%);
+        margin: 0 auto;
+      }
+
+      .section-head {
+        grid-template-columns: 90px 1fr;
+      }
+
+      .section-intro {
+        grid-column: 2;
+        margin-top: 0;
+      }
+
+      .harness-grid,
+      .sdk-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .assembly-path {
+        position: static;
+      }
+
+      .ownership {
+        grid-template-columns: repeat(3, 1fr);
+        grid-template-rows: 1fr;
+      }
+
+      .ownership-item {
+        grid-template-columns: 1fr;
+        border-right: 1px solid rgba(248, 251, 250, 0.16);
+        border-bottom: 0;
+      }
+
+      .ownership-item:last-child {
+        border-right: 0;
+      }
+    }
+
+    @media (max-width: 760px) {
+      :root {
+        --page: calc(100vw - 28px);
+      }
+
+      .topbar {
+        min-height: 64px;
+      }
+
+      .nav-links a {
+        display: none;
+      }
+
+      .hero-grid {
+        padding-top: 48px;
+      }
+
+      h1 {
+        font-size: clamp(56px, 16vw, 82px);
+      }
+
+      .lens-grid,
+      .view-index-inner {
+        grid-template-columns: 1fr;
+      }
+
+      .lens-card {
+        min-height: auto;
+      }
+
+      .index-thesis,
+      .index-item {
+        min-height: 124px;
+        padding: 22px 0;
+        border-right: 0;
+        border-bottom: 1px solid rgba(248, 251, 250, 0.16);
+      }
+
+      .index-item:last-child {
+        border-bottom: 0;
+      }
+
+      .section-head {
+        grid-template-columns: 64px 1fr;
+        gap: 18px;
+      }
+
+      .view-badge {
+        width: 58px;
+        font-size: 17px;
+      }
+
+      .section-intro {
+        grid-column: 1 / -1;
+      }
+
+      .scope-bar {
+        grid-template-columns: 1fr;
+      }
+
+      .scope-item {
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .scope-item:last-child {
+        border-bottom: 0;
+      }
+
+      .shared-core,
+      .public-surface {
+        grid-template-columns: 1fr;
+      }
+
+      .core-items,
+      .surface-names {
+        justify-content: flex-start;
+      }
+
+      .axis-switch {
+        grid-template-columns: 64px 1fr;
+      }
+
+      .axis-switch p {
+        grid-column: 1 / -1;
+        border-top: 1px solid rgba(248, 251, 250, 0.20);
+        border-left: 0;
+      }
+
+      .port-row {
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }
+
+      .clean-note {
+        grid-template-columns: 1fr;
+        gap: 8px;
+      }
+
+      .ownership {
+        grid-template-columns: 1fr;
+      }
+
+      .ownership-item {
+        grid-template-columns: 76px 1fr;
+        border-right: 0;
+        border-bottom: 1px solid rgba(248, 251, 250, 0.16);
+      }
+
+      .console-head,
+      .common-plane {
+        align-items: start;
+        grid-template-columns: 1fr;
+      }
+
+      .console-head {
+        display: grid;
+      }
+
+      .common-plane strong,
+      .common-plane small {
+        text-align: left;
+      }
+
+      pre {
+        font-size: 10.5px;
+      }
+
+      .footer-inner {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+    }
+
+    @media (max-width: 430px) {
+      .board-head {
+        align-items: start;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .lens-card {
+        padding: 17px;
+      }
+
+      .section-title h2 {
+        font-size: 43px;
+      }
+
+      .axis-switch strong,
+      .axis-switch p {
+        padding: 20px;
+      }
+
+      .path-step {
+        padding-right: 15px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html {
+        scroll-behavior: auto;
+      }
+
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-delay: 0ms !important;
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+
+      .hero-copy > *,
+      .lens-board {
+        opacity: 1;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到正文</a>
+
+  <header class="hero" id="top">
+    <nav class="topbar" aria-label="页面导航">
+      <a class="brand" href="#top">
+        <span class="brand-mark" aria-hidden="true">OC</span>
+        <span>OpenCollab / Research SDK</span>
+      </a>
+      <div class="nav-links">
+        <a href="#topology">Topology · SDK</a>
+        <a href="#harness">Harness · Clean Architecture</a>
+        <span class="status">PR #26 green</span>
+      </div>
+    </nav>
+
+    <div class="hero-grid">
+      <div class="hero-copy">
+        <p class="eyebrow">Choose the surface by research question</p>
+        <h1>
+          <span>研究 Topology</span>
+          <span class="accent">就用这个小 SDK</span>
+        </h1>
+        <p class="hero-lede">
+          用 <code>agent</code> 建立基线，用 <code>team</code> 与 <code>workflow</code>
+          研究协作控制图。若问题变成模型、工具或环境的消融，就进入 Clean Architecture，
+          而不是继续扩张 SDK。
+        </p>
+        <div class="hero-thesis">
+          <strong>CHOOSE THE RIGHT ENTRY</strong><br>
+          topology → OpenCollab SDK<br>
+          harness → Bootstrap + Ports + Adapters
+        </div>
+      </div>
+
+      <figure class="lens-board" aria-labelledby="board-title">
+        <div class="board-head">
+          <strong id="board-title">RESEARCH LENS BOARD / OC-04</strong>
+          <span>orthogonal questions · shared runtime</span>
+        </div>
+
+        <div class="lens-grid">
+          <article class="lens-card">
+            <div class="lens-index">
+              <span>VIEW A</span>
+              <b aria-hidden="true">T</b>
+            </div>
+            <h2>Topology</h2>
+            <p class="lens-question">协作控制图应该怎样组织？</p>
+            <dl class="lens-facts">
+              <div>
+                <dt>ENTRY</dt>
+                <dd>OpenCollab SDK</dd>
+              </div>
+              <div>
+                <dt>CHOOSE</dt>
+                <dd>agent · team · workflow</dd>
+              </div>
+              <div>
+                <dt>RETURN</dt>
+                <dd>one RunResult envelope</dd>
+              </div>
+            </dl>
+          </article>
+
+          <article class="lens-card harness">
+            <div class="lens-index">
+              <span>VIEW B</span>
+              <b aria-hidden="true">H</b>
+            </div>
+            <h2>Harness</h2>
+            <p class="lens-question">一个实现变量是否真正影响结果？</p>
+            <dl class="lens-facts">
+              <div>
+                <dt>ENTRY</dt>
+                <dd>Clean Architecture</dd>
+              </div>
+              <div>
+                <dt>CHANGE</dt>
+                <dd>one Adapter via one Port</dd>
+              </div>
+              <div>
+                <dt>COMPOSE</dt>
+                <dd>Bootstrap binds treatment</dd>
+              </div>
+            </dl>
+          </article>
+        </div>
+
+        <div class="common-plane">
+          <span>SHARED CORE</span>
+          <strong>Session · Application · Domain</strong>
+          <small>same semantics · different entry</small>
+        </div>
+        <figcaption class="board-caption">
+          <span>研究对象决定入口</span>
+          <span>SDK 不需要覆盖 Harness 的实验装配</span>
+        </figcaption>
+      </figure>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="view-index" aria-label="两种研究视角概览">
+      <div class="view-index-inner">
+        <div class="index-thesis">
+          <span>ONE DECISION</span>
+          <strong>先问：我在研究什么？</strong>
+        </div>
+        <div class="index-item">
+          <span>TOPOLOGY → SDK</span>
+          <div>
+            <strong>直接运行控制条件</strong>
+            <p>agent 基线，team 动态拓扑，workflow 程序化拓扑。</p>
+          </div>
+        </div>
+        <div class="index-item">
+          <span>HARNESS → CLEAN ARCHITECTURE</span>
+          <div>
+            <strong>隔离基础设施变量</strong>
+            <p>固定控制模式，通过 Port 替换一个 Adapter。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="research-section" id="topology">
+      <div class="section-head">
+        <div class="view-badge" aria-hidden="true">A</div>
+        <div class="section-title">
+          <p class="section-kicker">Topology research · SDK entry</p>
+          <h2>三种条件，一个调用面</h2>
+        </div>
+        <p class="section-intro">
+          构造一次 <code>OpenCollab</code>，再选择基线、动态 Team 或程序化 Workflow。
+          三种运行都返回 <code>RunResult</code>。
+        </p>
+      </div>
+
+      <div class="scope-bar" aria-label="Topology 研究变量">
+        <div class="scope-item">
+          <span>CHANGE</span>
+          <strong>agent · team · workflow</strong>
+        </div>
+        <div class="scope-item">
+          <span>HOLD</span>
+          <strong>Session runner + FSM</strong>
+        </div>
+        <div class="scope-item">
+          <span>RETURN</span>
+          <strong>one RunResult envelope</strong>
+        </div>
+      </div>
+
+      <div class="sdk-grid">
+        <div class="sdk-console">
+          <div class="console-head">
+            <strong>ONE TASK / THREE CONTROL CONDITIONS</strong>
+            <span>same observation envelope</span>
+          </div>
+<pre aria-label="OpenCollab SDK 三种控制条件示例"><span class="tok-key">from</span> opencollab <span class="tok-key">import</span> OpenCollab, workflow
+
+<span class="tok-comment"># Workflow 由研究者直接定义</span>
+<span class="tok-key">@workflow</span>
+<span class="tok-key">async def</span> <span class="tok-call">protocol</span>(ctx, inputs):
+  draft = <span class="tok-key">await</span> ctx.agent(<span class="tok-string">f"实现：{inputs['task']}"</span>)
+  <span class="tok-key">return await</span> ctx.agent(<span class="tok-string">f"审查并修正：{draft}"</span>)
+
+<span class="tok-key">oc</span> = <span class="tok-call">OpenCollab</span>(<span class="tok-string">"."</span>)
+<span class="tok-key">task</span> = <span class="tok-string">"修复目标缺陷并验证"</span>
+
+<span class="tok-key">baseline</span> = <span class="tok-key">await</span> oc.agent(task)
+<span class="tok-key">emergent</span> = <span class="tok-key">await</span> oc.team(
+  task, config=<span class="tok-string">"configs/team.yaml"</span>
+)
+<span class="tok-key">programmed</span> = <span class="tok-key">await</span> oc.workflow(
+  protocol, {<span class="tok-string">"task"</span>: task}
+)
+
+<span class="tok-comment"># baseline / emergent / programmed 都是 RunResult</span></pre>
+        </div>
+
+        <div class="ownership" aria-label="SDK 易用性">
+          <div class="ownership-item">
+            <span>INIT</span>
+            <div>
+              <strong>构造一次</strong>
+              <p><code>OpenCollab(".")</code> 集中解析 workspace 与配置。</p>
+            </div>
+          </div>
+          <div class="ownership-item">
+            <span>SELECT</span>
+            <div>
+              <strong>方法就是实验条件</strong>
+              <p><code>agent</code> / <code>team</code> / <code>workflow</code> 直接表达控制条件。</p>
+            </div>
+          </div>
+          <div class="ownership-item">
+            <span>OBSERVE</span>
+            <div>
+              <strong>统一结果</strong>
+              <p>output、status、tokens、metrics 与 artifacts 都在 <code>RunResult</code>。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="public-surface">
+        <strong>COMPLETE EVERYDAY SURFACE</strong>
+        <div class="surface-names">
+          <code>OpenCollab</code>
+          <code>RunResult</code>
+          <code>RunError</code>
+          <code>workflow</code>
+        </div>
+      </div>
+
+      <p class="subsection-label">TWO TOPOLOGY REGIMES / SAME SESSION PRIMITIVE</p>
+
+      <div class="table-wrap" tabindex="0" aria-label="Team 与 Workflow 结构化对比，可横向滚动">
+        <table class="regime-table">
+          <thead>
+            <tr>
+              <th scope="col">CONTROL REGIME</th>
+              <th scope="col">
+                <div class="regime-name">
+                  <strong>Team</strong>
+                  <span>LLM-supervised<br>event-driven</span>
+                </div>
+              </th>
+              <th scope="col">
+                <div class="regime-name">
+                  <strong>Workflow</strong>
+                  <span>code-driven<br>deterministic</span>
+                </div>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th scope="row">Controller</th>
+              <td><strong>Scheduler + LLM</strong>运行中决定委派、通信与下一步动作。</td>
+              <td><strong>Python + WorkflowContext</strong>按作者写下的控制流驱动 Agent Session。</td>
+            </tr>
+            <tr>
+              <th scope="row">Graph</th>
+              <td><strong>动态角色图</strong>spawn / message 权限图随执行产生实例与消息。</td>
+              <td><strong>显式控制图</strong>phase、fan-out、merge 与 verify 由代码表达。</td>
+            </tr>
+            <tr>
+              <th scope="row">Tune</th>
+              <td>角色、边、委派深度、通信约束。</td>
+              <td>阶段、顺序、并发、预算分配、验证位置。</td>
+            </tr>
+            <tr>
+              <th scope="row">Best question</th>
+              <td>涌现式分工与通信结构如何影响结果？</td>
+              <td>可复现实验协议与并行结构如何影响结果？</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="shared-core">
+        <strong>HELD CONSTANT</strong>
+        <div class="core-items">
+          <span>Session FSM</span>
+          <span>run_loop()</span>
+          <span>Tool execution</span>
+          <span>Budget semantics</span>
+          <span>Evidence lifecycle</span>
+        </div>
+      </div>
+    </section>
+
+    <aside class="axis-switch" aria-label="从 Topology 视角切换到 Harness 视角">
+      <div class="axis-mark" aria-hidden="true">A→B</div>
+      <strong>研究问题变了，就换入口</strong>
+      <p>
+        要消融模型、工具、环境或上下文策略时，不给 SDK 继续加参数；
+        固定上面的控制条件，转入 Bootstrap / Ports / Adapters。
+      </p>
+    </aside>
+
+    <section class="research-section harness-section" id="harness">
+      <div class="section-head">
+        <div class="view-badge" aria-hidden="true">B</div>
+        <div class="section-title">
+          <p class="section-kicker">Harness research · Clean Architecture entry</p>
+          <h2>固定模式，隔离一个变量</h2>
+        </div>
+        <p class="section-intro">
+          Harness 定义实验条件，Bootstrap 装配具体 Adapter。
+          Application 只依赖 Port，Domain 不感知实验设施。
+        </p>
+      </div>
+
+      <div class="scope-bar" aria-label="Harness 消融变量">
+        <div class="scope-item">
+          <span>CHANGE</span>
+          <strong>one Adapter via one Port</strong>
+        </div>
+        <div class="scope-item">
+          <span>HOLD</span>
+          <strong>chosen regime + task + budget</strong>
+        </div>
+        <div class="scope-item">
+          <span>OBSERVE</span>
+          <strong>the same evidence envelope</strong>
+        </div>
+      </div>
+
+      <div class="harness-grid">
+        <div class="assembly-path">
+          <div class="panel-head">
+            <strong>CLEAN ASSEMBLY PATH</strong>
+            <span>dependencies point inward</span>
+          </div>
+          <div class="path-step" data-step="01">
+            <strong>External Harness</strong>
+            <p>定义 treatment A/B、样本、预算与评价口径。</p>
+          </div>
+          <div class="path-step" data-step="02">
+            <strong>Bootstrap + Adapters</strong>
+            <p>Composition root 选择具体实现，并把它绑定到稳定端口。</p>
+          </div>
+          <div class="path-step" data-step="03">
+            <strong>Application Ports</strong>
+            <p>提供结构契约，让 use case 无需知道 provider 或运行环境。</p>
+          </div>
+          <div class="path-step" data-step="04">
+            <strong>Application + Domain</strong>
+            <p>Session 语义、控制模式与状态机在两组实验中保持一致。</p>
+          </div>
+        </div>
+
+        <div class="port-panel">
+          <div class="panel-head">
+            <strong>ABLATION MAP</strong>
+            <span>one row per experiment</span>
+          </div>
+          <div class="ablation-equation">
+            <strong>effect = outcome(adapter B) − outcome(adapter A)</strong><br>
+            fixed: task · regime · core · budget · evidence policy
+          </div>
+          <dl class="port-list">
+            <div class="port-row">
+              <dt>LLMPort</dt>
+              <dd>模型或 provider</dd>
+            </div>
+            <div class="port-row">
+              <dt>ShaperPort</dt>
+              <dd>上下文组织与压缩策略</dd>
+            </div>
+            <div class="port-row">
+              <dt>ToolPort / EnvironmentPort</dt>
+              <dd>能力集合与执行边界</dd>
+            </div>
+            <div class="port-row">
+              <dt>TracePort / SessionStorePort</dt>
+              <dd>观测与持久化设施</dd>
+            </div>
+            <div class="port-row">
+              <dt>WorktreePoolPort</dt>
+              <dd>协作隔离策略</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+
+      <div class="clean-note">
+        <strong>BOUNDARY RULE</strong>
+        <p>Topology 通过 SDK 选择控制图；Harness 通过 Port 替换实现。两类研究都不污染核心。</p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="page-footer">
+    <div class="footer-inner">
+      <p>Topology 用 SDK，<span>Harness 用 Ports。</span></p>
+      <a
+        href="https://github.com/YihongDong/OpenCollab/pull/26"
+        target="_blank"
+        rel="noreferrer"
+      >REVIEW PR #26 ↗</a>
+    </div>
+  </footer>
+</body>
+</html>

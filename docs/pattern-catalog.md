@@ -55,7 +55,7 @@ The six the report leads with, in spine order.
 3. **Deterministic harness-grounded Reflection + eval-integrity** (P4+P19 ●, beyond-book). `run_tests` refuses GREEN without parser-backed positive proof that the *named* test executed and passed (`run_tests.py:537-566`, `_target_has_pass_proof:513-534`); unsupported runners are RED before execution because "a bare exit code is forgeable." Paired with the softer LLM critic (`ReviewVerdict` last-line-only parse). Certify the *state* of a green claim; never trust an adversary-forgeable signal.
 4. **Deterministic evidence ledger, capture-cannot-fail** (P19 ●, beyond-book). `record_evidence_signal` folds each tool result into a novelty sensor + a harness-authored `{tool,target,outcome,snippet}` card built purely from the tool-result envelope with zero model in the loop (`domain/session.py:427-481`). A dead scout is salvaged from what it provably touched; novelty is keyed on hashes so a re-read at a shifted range scores zero gain — the "no progress" signal is ungameable.
 5. **Context engineering: typed layered plan + lazy-degradation shaping** (P8+P16 ●, beyond-book). The prompt is an ordered tuple of tagged `ContextSource` value objects assembled generically over position (`domain/context.py:71-151`) — "new context = register a source." A Chain-of-Responsibility of shapers projects a bounded view over a *copy* while `state.messages`/the transcript keep everything (`shaping/__init__.py`, `pipeline.py`) — the eval-integrity thesis in miniature. The always-on eager clear stubs name the exact slice already read to defeat re-read thrash (`eager.py:47-199`).
-6. **Fork-ability discipline: hexagonal ports + test-frozen SDK Facade + fitness functions** (●, beyond-book). 21 structural Protocol ports invert every dependency (`ports.py`); one composition root is the only place `LLMClient` is built (`container.py`); a versioned SDK Facade is frozen by an executable field-order/signature contract (`test_sdk_api.py`); and the dependency rule is a green CI check (`test_*_boundaries.py`). The edge is nailed so the interior refactors freely.
+6. **Fork-ability discipline: hexagonal ports + compact SDK Facade + fitness functions** (●, beyond-book). 21 structural Protocol ports invert every dependency (`ports.py`); bootstrap owns concrete assembly (`container.py`, `programmatic.py`); a four-name SemVer SDK Facade is frozen by an executable export/signature contract (`test_sdk_api.py`); and the dependency rule is a green CI check (`test_*_boundaries.py`). The edge is nailed so the interior refactors freely.
 
 ---
 
@@ -131,7 +131,7 @@ Format: **exhibit** `file:line` — SW pattern *(state)* · ADP *(coverage)* · 
 
 - ★ **21 hexagonal Protocol ports** `ports.py:14-443` — Ports & Adapters / Dependency Inversion *(clean)* · P5+P13+P8+P18 *(●)*. Adapters conform by shape (no inheritance); `test_*_boundaries.py` enforce it at CI. Two ports encode eval-integrity policy in their contract (`WorkingTreeProbe`: unknown-not-block; `AskUserPort`: presence-means-reachable).
 - ★ **Composition root** `container.py:204-301` — Composition Root / DI + Abstract Factory *(clean)* · P7+P16+P8 *(◐)*. The only place `LLMClient` is instantiated; a PEP 562 `__getattr__` breaks the factory import cycle; factory ports let the scheduler spawn fully-wired sessions without importing `Session`.
-- ★ **Test-frozen SDK Facade** `sdk/__init__.py:5-79`; `sdk/runtime.py:53-299`; `test_sdk_api.py:18-169` — Facade + Value Object DTOs + Adapter *(latent-tension)* · P10 *(◐)*. A versioned surface locked by export set + field order + signature; `OpenCollabRuntime` keeps a tamper-evident run-evidence ledger. Operationalizes MCP's *intent* (a stable versioned boundary), not the wire standard. *7 zero-referenced shim modules slated for deletion so surface == contract.*
+- ★ **Compact SDK Facade** `sdk/client.py`; `sdk/result.py`; `bootstrap/programmatic.py`; `test_sdk_api.py` — Facade + Value Object + Composition Root *(clean)* · P10 *(◐)*. Four root names expose three symmetric regimes and one result model; optional contracts live in three tiny capability modules. Package SemVer is the sole compatibility version, while tamper-evident lifecycle evidence remains bootstrap-owned.
 - ★ **Architecture fitness functions** `test_application_boundaries.py`; `test_domain_boundaries.py`; `test_sdk_boundaries.py` — Test-as-Specification *(clean)* · P18+P19 *(◐)*. The dependency rule is an executable test (inner may not import outer; SDK may not import eval/harness; retired shims stay deleted) — "stays fork-able" is a green check, not a hope.
 
 ---
@@ -148,10 +148,10 @@ The classic patterns OC leans on. **make-explicit** = a docstring / rename / ext
 | Command | `tool_execution.py:254-443`; `autosave.py`; `session_run.py:525-544` | clean | — |
 | Chain-of-Responsibility / Pipeline | `session_run.py:786-839`; `shaping/pipeline.py`; `openai_provider.py:156-210` | make-explicit | Docstring `precheck()` as a guard chain (each guard halts-via-`_stop_precheck` or passes) |
 | Memento | `session.py:119-133`; `pending.py:39-104`; `autosave.py` | clean | — |
-| Value Object | `scheduler.py:86-124`; `context.py:71-96`; `llm/types.py:15-40`; `sdk/models.py` | make-explicit | Extract the ~14 enforcement fields off `SessionState` into a `TurnEnforcementState` VO |
+| Value Object | `scheduler.py:86-124`; `context.py:71-96`; `llm/types.py:15-40`; `sdk/result.py` | make-explicit | Extract the ~14 enforcement fields off `SessionState` into a `TurnEnforcementState` VO |
 | Builder | `context_builder.py:103-210`; `scheduler_factory.py` | clean | — |
 | Adapter / Anti-Corruption Layer | `llm/client.py:33-152`; `openai_provider.py:77-141`; `storage.py:95-115` | clean | — |
-| Facade | `llm/client.py:33-152`; `sdk/__init__.py:5-79` | make-explicit | Note `SDK_API_VERSION` is the contract `test_sdk_api.py` enforces; delete 7 dead shims |
+| Facade | `llm/client.py:33-152`; `sdk/client.py`; `sdk/__init__.py` | clean | Four root exports; package SemVer and `test_sdk_api.py` define the contract |
 | Observer / Pub-Sub | `event_bus.py:20-85`; autosave + trace + hooks | clean | — |
 | Mediator | `scheduler_messaging.py:28-92`; `event_bus.py` | clean | — |
 | Registry / Identity-Map + Abstract Factory | `scheduler.py:86-124`; `tool_registry.py`; `ports.py:193-257` | clean | — |
@@ -202,7 +202,7 @@ All actions are docstring / rename / extract-existing-duplication **only** — n
 - **S2 (scheduler/workflow):** one-line module docstring on each scheduler ("one of two Strategies driving `session.run_loop()`"); docstring `precheck()` as a guard chain; rename `_reservation`/`_turn_budget` to one "lease" term; extract the five open-coded workflow runners into one `_run_tracked_session(...)` Template Method.
 - **S3 (context/shaping):** delete the 2 inert shaper rungs so the ladder is a clean 5-rung chain; delete the lazy-loader scaffold so long-term-memory/RAG reads as an honest gap; docstring `LAYER_PRIORITY` (only `PIN_FLOOR` is load-bearing today).
 - **S4 (domain VO — the headline before/after):** extract the ~14 enforcement fields off `SessionState` into a `TurnEnforcementState` value object (pure regrouping, no new behavior) — makes "enforcement off == byte-for-byte reference" *structural*. Interim: group the fields under `=== per-turn ===` / `=== session-lifetime ===` banners.
-- **SDK (any stage):** delete the 7 zero-referenced shim modules + assert their absence in `test_sdk_boundaries`; one line in `sdk/__init__.py` noting `SDK_API_VERSION` is the contract.
+- **SDK (completed in 0.4):** the request DTO graph and obsolete submodules are deleted; `test_sdk_api.py` locks the four-name facade and `test_sdk_boundaries.py` keeps concrete adapters and eval policy out.
 - **Already clean — name in prose, touch no code:** the FSM table, `pending.py`, `_UserTurnCheckpoint`, the six-step tool loop, `event_bus.py`, `ports.py`, `container.py`, `test_*_boundaries.py`.
 
 ---

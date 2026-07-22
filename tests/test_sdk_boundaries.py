@@ -1,4 +1,4 @@
-"""Dependency and surface gates for the public SDK."""
+"""Dependency and surface gates for the compact public API."""
 
 from __future__ import annotations
 
@@ -20,47 +20,69 @@ def _imports(path: Path) -> tuple[str, ...]:
     return tuple(names)
 
 
-def test_sdk_does_not_depend_on_evaluation_implementations() -> None:
+def test_public_api_delegates_to_bootstrap_without_concrete_imports() -> None:
+    public_files = [
+        *_PACKAGE_ROOT.joinpath("sdk").glob("*.py"),
+        _PACKAGE_ROOT / "tools.py",
+        _PACKAGE_ROOT / "environments.py",
+        _PACKAGE_ROOT / "workflows.py",
+    ]
     offenders = [
         f"{path.name}: {imported}"
-        for path in sorted((_PACKAGE_ROOT / "sdk").glob("*.py"))
+        for path in sorted(public_files)
         for imported in _imports(path)
-        if imported.startswith("opencollab.harness")
-        or imported == "opencollab_eval"
-        or imported.startswith("opencollab_eval.")
-        or imported == "swebench"
-        or imported.startswith("swebench.")
+        if imported.startswith("opencollab.adapters")
+        or imported.startswith("opencollab.domain")
     ]
     assert offenders == []
 
 
-def test_retired_sdk_compatibility_modules_are_absent() -> None:
+def test_public_api_does_not_depend_on_evaluation_implementations() -> None:
+    public_files = [
+        *_PACKAGE_ROOT.joinpath("sdk").glob("*.py"),
+        _PACKAGE_ROOT / "tools.py",
+        _PACKAGE_ROOT / "environments.py",
+        _PACKAGE_ROOT / "workflows.py",
+    ]
+    forbidden = ("opencollab.harness", "opencollab_eval", "swebench")
+    offenders = [
+        f"{path.name}: {imported}"
+        for path in sorted(public_files)
+        for imported in _imports(path)
+        if imported.startswith(forbidden)
+    ]
+    assert offenders == []
+
+
+def test_v2_request_dto_modules_stay_deleted() -> None:
     sdk_root = _PACKAGE_ROOT / "sdk"
-    assert not (sdk_root / "eval_compat.py").exists()
-    assert not (sdk_root / "experimental.py").exists()
-    # The zero-consumer capability shims retired in Lane S4c. The versioned SDK
-    # surface is the top-level facade (locked by test_sdk_api), not these
-    # submodule re-exports; they must stay deleted so surface == contract.
-    for retired in (
+    retired = {
         "agents",
         "config",
+        "environment",
         "environments",
+        "errors",
+        "eval_compat",
+        "experimental",
         "lifecycle",
+        "models",
         "persistence",
         "repository",
+        "runtime",
+        "tools",
         "tracing",
-    ):
-        assert not (sdk_root / f"{retired}.py").exists(), retired
+        "usage",
+        "workflows",
+    }
+    assert not {path.stem for path in sdk_root.glob("*.py")} & retired
 
 
-def test_sdk_capability_modules_export_only_public_names() -> None:
+def test_public_modules_export_only_documented_names() -> None:
+    import opencollab.environments as environments
     import opencollab.sdk as sdk
+    import opencollab.tools as tools
+    import opencollab.workflows as workflows
 
-    sdk_root = _PACKAGE_ROOT / "sdk"
-    for path in sorted(sdk_root.glob("*.py")):
-        if path.name == "__init__.py":
-            module = sdk
-        else:
-            module = __import__(f"opencollab.sdk.{path.stem}", fromlist=["__all__"])
-        exports = getattr(module, "__all__", ())
-        assert all(not name.startswith("_") for name in exports), path.name
+    for module in (sdk, tools, environments, workflows):
+        assert module.__all__
+        assert all(not name.startswith("_") for name in module.__all__)

@@ -12,6 +12,15 @@ if TYPE_CHECKING:
 
 
 class EnvironmentPort(Protocol):
+    workspace: str
+
+    @property
+    def revoked(self) -> bool:
+        ...
+
+    def revoke(self) -> None:
+        ...
+
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> Any:
         ...
 
@@ -35,6 +44,9 @@ class EnvironmentPort(Protocol):
 
     async def abort(self) -> None:
         """Revoke future side effects and stop owned environment resources."""
+        ...
+
+    async def cleanup(self) -> None:
         ...
 
 
