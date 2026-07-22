@@ -4,6 +4,9 @@ openclaw/
 opencode/
 self-collaboration_paper_tex/
 .env
+.env.*
+!.env.example
+!configs/.env.example
 configs/.env
 configs/team.yaml
 .opencollab/
@@ -12,12 +15,38 @@ logs/
 logs
 __pycache__/
 *.pyc
+.pytest_cache/
+.coverage
+htmlcov/
 .DS_Store
 .understand-anything/
 tmp/
 output/
+dist/
+build/
+*.egg-info/
 mydocs/
 opencollab/mydocs/
+
+# Editor backups and rejected patches
+*.bak
+*.orig
+*.rej
+*~
+
+# Local credentials and private keys
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+credentials*.json
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
 
 # Local OpenCollab runtime artifacts
 workflow_logs/

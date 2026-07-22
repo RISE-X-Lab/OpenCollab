@@ -86,13 +86,46 @@ return `RunResult`. Import optional authoring contracts from
 Treat other package paths as internal. An `artifacts` directory, when supplied,
 must be new or empty because each run claims it for executable evidence.
 
+### Workflow authoring
+
+A workflow is a plain async Python function tagged with `@workflow`. Create
+`workflows/implement_and_review.py`:
+
+```python
+from typing import Any
+
+from opencollab import workflow
+from opencollab.workflows import WorkflowContext
+
+
+@workflow(name="implement-and-review")
+async def implement_and_review(
+    ctx: WorkflowContext,
+    inputs: dict[str, Any],
+) -> str | dict[str, Any] | None:
+    draft = await ctx.agent(f"Implement and verify: {inputs['task']}")
+    return await ctx.agent(f"Review the implementation and fix gaps:\n{draft}")
+```
+
+OpenCollab discovers top-level `*.py` modules in `workflows/` by default. Run
+the decorated function through the CLI:
+
+```bash
+uv run opencollab workflow run implement-and-review \
+  --args '{"task": "Add a regression test for the target bug."}'
+```
+
+Set `OPENCOLLAB_WORKFLOWS_DIR` to use another directory. The same decorated
+function can be passed directly to `await OpenCollab(".").workflow(...)` when
+embedding OpenCollab in Python.
+
 For a visual architecture walkthrough, open the
 [SDK 0.4 research architecture](../docs/sdk-v3-explainer.html).
 
-Evaluation runners and benchmark-specific workflows live in the companion
-OpenCollab-Eval repository. This keeps topology research in `team(...)` and
-`workflow(...)`, while an external harness defines ablations and Bootstrap
-binds each treatment through the Clean Architecture ports.
+Evaluation runners and benchmark-specific workflows intentionally live outside
+the framework package. Topology research uses `team(...)` and `workflow(...)`;
+external harnesses define ablations while Bootstrap binds each treatment
+through the Clean Architecture ports.
 
 ## Architecture
 

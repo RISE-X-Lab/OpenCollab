@@ -22,17 +22,17 @@ roles:
       You are agent 0, the primary developer. You do the work directly and can
       spawn specialist agents to parallelize when it helps.
 
-      
+
 
   analyst:
     tools: [bash, file_read, grep]
     prompt: |
-      You are an Analyst agent. 
+      You are an Analyst agent.
 
   coder:
     tools: [bash, file_read, file_write, apply_patch, run_tests, grep, message_agent]
     prompt: |
-      You are a Coder agent. 
+      You are a Coder agent.
 
   reviewer:
     tools: [bash, file_read, run_tests, git_diff, grep]

@@ -123,6 +123,20 @@ async def test_attached_name_binds_once_and_executes_by_full_id(monkeypatch) -> 
     assert all(call[0][1] != "rm" for call in fake.calls)
 
 
+async def test_attached_binding_ignores_nonpositive_dropped_output_metadata(monkeypatch) -> None:
+    fake = FakeDocker(
+        lambda command, _kwargs: _result(
+            stdout=f"{CONTAINER_ID}\t/swe-task\ttrue\n".encode(),
+            stdout_dropped=-1,
+        )
+    )
+    _patch(monkeypatch, fake)
+
+    env = DockerEnvironment(container_id="swe-task")
+
+    assert await env.setup() == CONTAINER_ID
+
+
 async def test_attached_binding_rejects_identity_mismatch(monkeypatch) -> None:
     fake = FakeDocker(
         lambda command, _kwargs: _result(stdout=f"{CONTAINER_ID}\t/other\ttrue\n".encode())

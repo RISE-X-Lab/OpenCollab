@@ -5,22 +5,32 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - name: Sync dependencies
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
       - name: Lint (whole repo)
         run: uv run ruff check .
       - name: Test
@@ -31,9 +41,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
           enable-cache: true
@@ -78,7 +90,7 @@ jobs:
           test "${#sdists[@]}" -eq 1
           test "${#wheels[@]}" -eq 1
           uv run --isolated --no-project --python 3.12 python - \
-            "${sdists[0]}" "${wheels[0]}" pyproject.toml LICENSE \
+            "${sdists[0]}" "${wheels[0]}" pyproject.toml \
             opencollab/bootstrap/prompts/lead.md \
             opencollab/bootstrap/prompts/role.md <<'PY'
           from __future__ import annotations
@@ -94,10 +106,13 @@ jobs:
           sdist_path = Path(sys.argv[1])
           wheel_path = Path(sys.argv[2])
           project = tomllib.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))["project"]
-          expected_license = Path(sys.argv[4]).read_bytes()
+          expected_license_files = {
+              Path(path).name: Path(path).read_bytes()
+              for path in project["license-files"]
+          }
           expected_prompts = {
               Path(path).name: Path(path).read_bytes()
-              for path in sys.argv[5:]
+              for path in sys.argv[4:]
           }
 
           def check_metadata(raw: bytes, *, artifact: str) -> None:
@@ -116,11 +131,12 @@ jobs:
 
           with tarfile.open(sdist_path, "r:gz") as archive:
               names = archive.getnames()
-              licenses = matching_names(names, "LICENSE")
-              assert len(licenses) == 1, ("sdist licenses", licenses)
-              extracted_license = archive.extractfile(licenses[0])
-              assert extracted_license is not None
-              assert extracted_license.read() == expected_license
+              for basename, expected in expected_license_files.items():
+                  licenses = matching_names(names, basename)
+                  assert len(licenses) == 1, ("sdist license file", basename, licenses)
+                  extracted_license = archive.extractfile(licenses[0])
+                  assert extracted_license is not None
+                  assert extracted_license.read() == expected
               package_info = [name for name in names if name.endswith("/PKG-INFO")]
               assert len(package_info) == 1, ("sdist PKG-INFO", package_info)
               extracted_metadata = archive.extractfile(package_info[0])
@@ -140,9 +156,10 @@ jobs:
 
           with zipfile.ZipFile(wheel_path) as archive:
               names = archive.namelist()
-              licenses = matching_names(names, "LICENSE")
-              assert len(licenses) == 1, ("wheel licenses", licenses)
-              assert archive.read(licenses[0]) == expected_license
+              for basename, expected in expected_license_files.items():
+                  licenses = matching_names(names, basename)
+                  assert len(licenses) == 1, ("wheel license file", basename, licenses)
+                  assert archive.read(licenses[0]) == expected
               metadata_names = [name for name in names if name.endswith(".dist-info/METADATA")]
               assert len(metadata_names) == 1, ("wheel METADATA", metadata_names)
               check_metadata(archive.read(metadata_names[0]), artifact="wheel")
@@ -240,14 +257,16 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
           enable-cache: true
       - name: Sync dependencies
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
       - name: Execute the macOS path-integrity proof
         run: |
           uv run pytest -q -p no:cacheprovider --junitxml="$RUNNER_TEMP/h68.xml" \

@@ -332,7 +332,7 @@ async def run_workflow(
     trace: bool,
     environment: Any | None = None,
 ) -> ProgrammaticResult:
-    """Run one dynamic workflow and return its live metrics directly."""
+    """Run one workflow and return its live metrics directly."""
     _claim_artifacts(artifacts)
     owned_environment = environment is None
     resolved_environment = environment or LocalEnvironment(workspace)

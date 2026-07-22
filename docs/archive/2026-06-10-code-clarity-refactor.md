@@ -1,6 +1,8 @@
 # Plan: Code Clarity & Modularity Refactor
 
-**Status:** Implemented (2026-06-10) on `refactor/small-but-beautiful` — all phases including optional 3d; `RuntimeLimits` param-grouping skipped (would ripple through `build_session`'s many callers)
+**Status:** Implemented on 2026-06-10 — all phases including optional 3d;
+`RuntimeLimits` param-grouping skipped (would ripple through `build_session`'s
+many callers)
 **Goal:** Make the *internals* of the code files clean and clear — smaller files,
 shorter functions, one responsibility per module, fewer magic numbers, better
 names and docstrings — **without changing behavior or the public API**.

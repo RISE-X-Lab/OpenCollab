@@ -1,5 +1,9 @@
 # The OpenCollab Budget System
 
+> **Historical design record.** This document describes the implementation at
+> commit `58a29a8` and is not a maintained API reference. Verify behavior
+> against the current code and tests before relying on individual details.
+
 Reference for how OpenCollab meters, divides, and enforces a **token budget**
 across an agent session and a team of spawned agents, and how that budget
 relates to (but is distinct from) the model **context window**.

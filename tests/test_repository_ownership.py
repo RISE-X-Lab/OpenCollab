@@ -77,6 +77,14 @@ def _imports(path: Path) -> tuple[str, ...]:
     return tuple(imports)
 
 
+def _visible_python_files(root: Path) -> list[Path]:
+    return [
+        path
+        for path in sorted(root.rglob("*.py"))
+        if not any(part.startswith(".") for part in path.relative_to(root).parts)
+    ]
+
+
 def test_evaluation_implementation_is_owned_by_companion_package() -> None:
     for directory in (
         _REPO_ROOT / "opencollab" / "harness",
@@ -123,7 +131,7 @@ def test_framework_and_tests_do_not_import_companion_implementations() -> None:
     offenders = [
         f"{path.relative_to(_REPO_ROOT)}: {module}"
         for root in (_PACKAGE, _TESTS)
-        for path in sorted(root.rglob("*.py"))
+        for path in _visible_python_files(root)
         for module in _imports(path)
         if module in forbidden or module.startswith(tuple(f"{name}." for name in forbidden))
     ]
@@ -135,6 +143,7 @@ def test_framework_scripts_contain_no_evaluation_entrypoints() -> None:
     assert sorted(path.name for path in scripts.iterdir() if path.is_file() and not path.name.startswith(".")) == [
         "README.md",
         "check_dashscope.py",
+        "generate_brand_assets.py",
         "start_opencollab.sh",
     ]
 

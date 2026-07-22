@@ -11,6 +11,10 @@ context: a "skill" is a packaged unit of INSTRUCTIONS (name + description + body
   ContextLoader / resolver / relevance-ranker / DURING_EXECUTION seam required.
 ---
 
+> **Historical proposal.** The repository now contains a working skill system.
+> This document records the earlier design process and is not the current API
+> or implementation reference.
+
 # Design: Skill Interface for OpenCollab
 
 ## 0. Grounding — what's already true in the code

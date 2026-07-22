@@ -233,7 +233,7 @@ SchedulerDomain --> SessionDomain : SCB holds SessionState
 SessionDomain --> DomainEvents
 ToolDomain --> DomainEvents
 CompactionDomain --> SessionDomain
-  
+
 ' ============================================================
 ' Notes
 ' ============================================================

@@ -1,7 +1,9 @@
 # Closed-Loop Steering Layer — Design
 
+> **Historical proposal.** This document captures the design discussion on the
+> date below. It is not a maintained description of current runtime behavior.
+
 **Date:** 2026-06-23
-**Branch:** feat/analyst-solve-workflow
 **Status:** design (approved to design; implementation scope TBD)
 
 ## Problem

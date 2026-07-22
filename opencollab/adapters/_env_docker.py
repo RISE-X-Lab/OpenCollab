@@ -154,7 +154,11 @@ class DockerEnvironment(Environment):
                 "--",
                 reference,
             )
-            if inspected.returncode != 0 or inspected.stdout_dropped_bytes or inspected.stderr_dropped_bytes:
+            if (
+                inspected.returncode != 0
+                or inspected.stdout_dropped_bytes > 0
+                or inspected.stderr_dropped_bytes > 0
+            ):
                 raise RuntimeError("Could not inspect attached Docker container")
             fields = inspected.stdout.decode("utf-8", errors="strict").strip().split("\t")
             if len(fields) != 3 or not _FULL_ID_RE.fullmatch(fields[0]) or fields[2] != "true":

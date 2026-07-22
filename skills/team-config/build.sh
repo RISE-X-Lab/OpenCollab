@@ -22,7 +22,7 @@ if [ ! -f "$SRC" ]; then
   echo "build.sh: team file not found: $SRC" >&2
   exit 1
 fi
-for part in blueprint.head.html blueprint.body.html blueprint.foot.html vendor/js-yaml.min.js; do
+for part in blueprint.head.html blueprint.body.html blueprint.foot.html vendor/js-yaml.min.js vendor/js-yaml.LICENSE; do
   if [ ! -f "$HERE/$part" ]; then
     echo "build.sh: missing template part: $HERE/$part" >&2
     exit 1
@@ -46,6 +46,9 @@ mkdir -p "$(dirname "$OUT")" 2>/dev/null || true
   cat "$HERE/blueprint.head.html"
   guard "$SRC"
   cat "$HERE/blueprint.body.html"
+  printf '%s\n' '<!-- js-yaml license notice'
+  cat "$HERE/vendor/js-yaml.LICENSE"
+  printf '%s\n' '-->'
   cat "$HERE/vendor/js-yaml.min.js"
   cat "$HERE/blueprint.foot.html"
 } > "$OUT" || { echo "build.sh: cannot write output: $OUT" >&2; exit 1; }

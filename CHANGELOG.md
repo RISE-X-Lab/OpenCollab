@@ -16,10 +16,11 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - Adopted the Mulan Permissive Software License v2 (`MulanPSL-2.0`) for OpenCollab.
 - Flattened the Python project layout so the repository root owns build metadata, tests, and the canonical license
   while public `opencollab.*` import paths remain unchanged.
-- Prepared the public SDK distribution for release with a package-version consistency gate, typed-package metadata,
-  bundled license text, and a minimal integration example.
-- Moved benchmark runtime configuration to OpenCollab-Eval and historical experiment records to the external documentation workspace.
-- Added versioned SDK capability modules for external runtimes while keeping benchmark policy outside the framework package.
+- Prepared the public SDK distribution for release with a package-version
+  consistency gate, standards-based license metadata, bundled notices, and a
+  minimal integration example.
+- Removed benchmark-specific runtime policy from the framework package; external
+  harness integrations now target the compact SDK and Clean Architecture ports.
 - Raised the package version to 0.4.0 for the incompatible compact SDK boundary.
 
 ### Removed
@@ -29,7 +30,7 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [0.1.0] - 2026-07-03
 
-First public release of OpenCollab — run LLM coding agents three ways (a single
+Initial tagged version of OpenCollab — run LLM coding agents three ways (a single
 interactive agent, an autonomous team, or a deterministic workflow) behind a
 clean architecture where everything but the model sits behind swappable ports.
 
@@ -47,5 +48,5 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/YihongDong/OpenCollab/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/YihongDong/OpenCollab/releases/tag/v0.1.0
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.1.0

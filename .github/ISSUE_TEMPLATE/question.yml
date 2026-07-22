@@ -1,0 +1,26 @@
+name: Question or support
+description: Ask how to configure, extend, or use OpenCollab
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before asking, check the README and configuration guide. Do not include
+        API keys, credentials, private repository content, or sensitive logs.
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Explain what you are trying to accomplish and where you are blocked.
+    validations:
+      required: true
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Include relevant commands, configuration shape, and sanitized output.
+  - type: input
+    id: version
+    attributes:
+      label: OpenCollab version or commit
+      placeholder: e.g. 0.4.0 or a git SHA
