@@ -25,7 +25,7 @@
   <picture>
     <source srcset="assets/oc-hero-dark.svg" media="(prefers-color-scheme: dark)">
     <source srcset="assets/oc-hero-light.svg" media="(prefers-color-scheme: light)">
-    <img src="assets/oc-hero-light.svg" alt="OpenCollab Team and Dynamic Workflow modes" width="1200">
+    <img src="assets/oc-hero-light.svg" alt="OpenCollab Team and Workflow modes" width="1200">
   </picture>
 </p>
 
@@ -34,7 +34,7 @@ The same agent runtime supports two explicit forms of collaboration:
 | Mode | Command | What it is |
 | --- | --- | --- |
 | **Team** | `opencollab --workspace .` | A lead plans the work and spawns specialists that collaborate until the task is done. The agents decide the division of labor. |
-| **Dynamic Workflow** | `opencollab workflow run NAME` | Python defines the control flow—fan-out, pipelines, loops, and verification gates—while agents complete each step. |
+| **Workflow** | `opencollab workflow run NAME` | Python defines the control flow—fan-out, pipelines, loops, and verification gates—while agents complete each step. |
 
 OpenCollab keeps the model, context, tools, orchestration, and execution
 environment separable so experiments can change one component at a time.

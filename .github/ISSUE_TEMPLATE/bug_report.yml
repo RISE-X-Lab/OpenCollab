@@ -31,7 +31,7 @@ body:
       label: Orchestration mode
       options:
         - Team
-        - Dynamic Workflow
+        - Workflow
         - Other / not sure
     validations:
       required: true
