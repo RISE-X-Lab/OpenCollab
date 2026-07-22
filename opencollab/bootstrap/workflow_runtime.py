@@ -26,6 +26,7 @@ from opencollab.bootstrap._workflow_runtime_session import (
 from opencollab.bootstrap._workflow_runtime_state import (
     DEFAULT_WORKFLOW_CLEANUP_TIMEOUT_SECONDS,
     WORKFLOW_AGENT_PROMPT,
+    WorkflowRuntimeResult,
 )
 from opencollab.bootstrap.agent_runtime import revoke_and_abort_environment
 from opencollab.bootstrap.session_factory import build_session
@@ -64,6 +65,7 @@ async def run_workflow(
     source_root: str | None = None,
     deadline_monotonic: float | None = None,
     deadline_margin_seconds: float = 120.0,
+    return_details: bool = False,
 ) -> Any:
     """Run through one owned lifecycle with an optional wall-clock deadline."""
     token = _WORKFLOW_ENV_OVERRIDE.set(env)
@@ -84,6 +86,7 @@ async def run_workflow(
             source_root=source_root,
             deadline_monotonic=deadline_monotonic,
             deadline_margin_seconds=deadline_margin_seconds,
+            return_details=return_details,
         )
     )
     stop_task: asyncio.Task[tuple[bool, bool]] | None = None
@@ -174,6 +177,7 @@ __all__ = [
     "WORKFLOW_AGENT_PROMPT",
     "WorkflowDeadlineExceeded",
     "WorkflowLifecycleError",
+    "WorkflowRuntimeResult",
     "WorkflowSessionFactory",
     "build_session",
     "build_workflow_context",
