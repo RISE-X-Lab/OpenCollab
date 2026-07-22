@@ -1,5 +1,9 @@
 # Context: Assembly, Injection & Shaping — the runtime lifecycle
 
+> **Historical architecture note.** This chapter records the post-S3 design at
+> the time of writing. Branch and `file:line` references may have drifted; use
+> current tests and source for executable behavior.
+
 > **What.** How a session's context is *built once*, *injected once*, and then
 > *re-shaped on every LLM call* — the full runtime path from "where does the goal
 > come from" to "what the model actually sees this turn".
@@ -10,7 +14,7 @@
 > **Status.** Grounded in code, post-Lane-S3 (5 context layers, 5 shaper rungs).
 > Supersedes the *runtime-flow* portions of `2026-06-24-prompt-architecture.md`,
 > which still describes the pre-S3 lazy-loader / 7-layer model. `file:line`
-> refs are current as of branch `refactor/slim-s3-context`.
+> refs describe the post-S3 implementation at the time of writing.
 
 ---
 
