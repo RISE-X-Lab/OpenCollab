@@ -405,21 +405,28 @@ def resolve_team_file(workspace: str | None = None) -> Path | None:
     return None
 
 
-def load_team_config(workspace: str | None = None) -> TeamConfig:
-    """Load the team file from the resolved path, or the lead-only default."""
-    for path in _candidate_team_paths(workspace):
+def load_team_config(
+    workspace: str | None = None,
+    *,
+    path: str | os.PathLike[str] | None = None,
+) -> TeamConfig:
+    """Load an explicit team file, the resolved workspace file, or the default."""
+    candidates = [Path(path)] if path is not None else _candidate_team_paths(workspace)
+    for candidate in candidates:
         try:
-            inspected = path.lstat()
+            inspected = candidate.lstat()
         except FileNotFoundError:
+            if path is not None:
+                raise ValueError(f"team config does not exist: {candidate}") from None
             continue
         if not stat.S_ISREG(inspected.st_mode):
-            raise ValueError(f"team config is not a regular file: {path}")
+            raise ValueError(f"team config is not a regular file: {candidate}")
         try:
-            text = read_regular_text(path, max_bytes=MAX_TEAM_CONFIG_BYTES)
+            text = read_regular_text(candidate, max_bytes=MAX_TEAM_CONFIG_BYTES)
         except (OSError, UnicodeDecodeError, ValueError) as exc:
-            raise ValueError(f"team config cannot be read safely: {path}") from exc
+            raise ValueError(f"team config cannot be read safely: {candidate}") from exc
         data = yaml.safe_load(text)
-        return _build_team_config(data, Path(os.path.abspath(path)).parent)
+        return _build_team_config(data, Path(os.path.abspath(candidate)).parent)
     return default_team_config()
 
 

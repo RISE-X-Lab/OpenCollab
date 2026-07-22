@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "opencollab"
-version = "0.3.0"
+version = "0.4.0"
 description = "Minimal multi-agent software development framework — first principles, context isolation, tool-based delegation."
 readme = "README.md"
 requires-python = ">=3.10"
