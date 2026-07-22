@@ -129,6 +129,39 @@ def test_build_scheduler_writes_structured_lead_file_and_manifest(tmp_path):
     assert "started_at" in manifest and "run_id" in manifest
 
 
+def test_build_scheduler_accepts_explicit_team_file_and_run_directory(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    team_file = tmp_path / "custom-team.yaml"
+    team_file.write_text(
+        """
+roles:
+  captain:
+    prompt: Lead this run.
+    tools: []
+entry: captain
+topology: {}
+""".strip(),
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "artifacts"
+
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    scheduler = build_scheduler(
+        ctx,
+        use_worktrees=False,
+        interactive=False,
+        team_config_path=team_file,
+        save_dir=run_dir,
+    )
+
+    assert scheduler.lead_session.agent.name == "captain"
+    assert os.path.dirname(scheduler.lead_session.auto_save_path) == str(run_dir)
+    with open(run_dir / "team.json") as handle:
+        manifest = json.load(handle)
+    assert manifest["team_file"] == str(team_file.resolve())
+
+
 def test_build_runtime_context_resolves_workspace_and_tracer(tmp_path, monkeypatch):
     workspace = tmp_path / "ws"
     workspace.mkdir()

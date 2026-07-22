@@ -155,13 +155,15 @@ concatenation into a single goal string happens in an **external harness**
 (the prediction-generation workflow package).
 
 That goal string crosses into OpenCollab through the **SDK boundary**, in one of
-two request shapes:
+two plain calls:
 
-- `WorkflowRunRequest.inputs: Mapping[str, Any]` (`sdk/models.py:189`) → the
-  external workflow function reads `inputs[...]` and drives the OC
-  scheduler/team (`sdk/runtime.py:73`).
-- `AgentRunRequest.prompt: str` (`sdk/models.py:238`) →
-  `_run_bootstrap_agent(prompt=…)` for the single-agent path (`sdk/runtime.py:163`).
+- `OpenCollab.workflow(flow, inputs)` → the external workflow function reads
+  `inputs[...]` and drives the workflow regime (`sdk/client.py`).
+- `OpenCollab.agent(prompt)` → the single-agent bootstrap lifecycle
+  (`bootstrap/programmatic.py`).
+
+`OpenCollab.team(prompt)` is the symmetric scheduler-regime entry. The facade
+only validates arguments and delegates; concrete assembly remains in bootstrap.
 
 By the time it reaches OC it is **just a string**; OC knows nothing of SWE-bench
 fields. Its fate inside OC — and whether it is pinned — is decided by *which
@@ -311,9 +313,8 @@ pipeline `:173`. `bootstrap/session_factory.py`: repo map `:318`, spawn seed
 `:347`/`:369`, lead (no seed) `:392`. `application/session.py`: `messages`
 property `:131`, `add_user_message` `:188`.
 
-**SDK boundary** — `sdk/models.py`: `WorkflowRunRequest.inputs` `:189`,
-`AgentRunRequest.prompt` `:238`. `sdk/runtime.py`: `run_workflow` `:73`,
-`run_agent` / `_run_bootstrap_agent(prompt=)` `:163`.
+**SDK boundary** — `sdk/client.py`: `OpenCollab.agent`, `team`, and `workflow`.
+`bootstrap/programmatic.py`: shared composition and lifecycle evidence.
 
 **Per-turn loop** — `application/session_run.py`: `run_loop` `:286`, `call_llm`
 `:913`, steering `:939`/`:955`/`:964`, `shape` `:960`, `_complete` `:976`,
