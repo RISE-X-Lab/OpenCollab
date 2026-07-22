@@ -57,35 +57,14 @@ Point `configs/.env` at an OpenAI-compatible or Anthropic endpoint. The command
 starts Team mode with the checked-in example topology. Never commit real API
 keys.
 
-Define repeatable control flow directly in Python:
+For repeatable pipelines, author a Python workflow and run it by name:
 
-```python
-import asyncio
-from typing import Any
-
-from opencollab import OpenCollab, workflow
-from opencollab.workflows import WorkflowContext
-
-
-@workflow(name="implement-and-review")
-async def implement_and_review(
-    ctx: WorkflowContext,
-    inputs: dict[str, Any],
-) -> str | dict[str, Any] | None:
-    draft = await ctx.agent(f"Implement and verify: {inputs['task']}")
-    return await ctx.agent(f"Review the implementation and fix gaps:\n{draft}")
-
-
-async def main() -> None:
-    result = await OpenCollab(".").workflow(
-        implement_and_review,
-        {"task": "Add a regression test for the target bug."},
-    )
-    print(result.raise_for_status().output)
-
-
-asyncio.run(main())
+```bash
+uv run opencollab workflow run NAME --args '{"task": "..."}'
 ```
+
+See [Workflow authoring](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md#workflow-authoring)
+for a complete module.
 
 ## Learn more
 
