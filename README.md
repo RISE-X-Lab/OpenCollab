@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/RISE-X-Lab/OpenCollab/main/assets/banner-dark.svg" alt="OpenCollab mark and wordmark" width="600">
+  <img src="assets/banner-dark.svg" alt="OpenCollab mark and wordmark" width="600">
 </p>
 
 <h1 align="center">OpenCollab</h1>
@@ -16,21 +16,16 @@
 </p>
 
 <p align="center">
-  OpenCollab is an open research platform for organizing coding agents that
-  read, edit, and verify real repositories.
-</p>
-
-<p align="center">
-  <i>Inspired by <a href="https://arxiv.org/abs/2304.07590" title="Self-collaboration Code Generation via ChatGPT — Dong, Jiang, Jin, Li (2023)"><b>Self-Collaboration</b></a>.</i>
+  OpenCollab is inspired by <a href="https://arxiv.org/abs/2304.07590" title="Self-collaboration Code Generation via ChatGPT — Dong, Jiang, Jin, Li (2023)"><b>Self-Collaboration</b></a>.
 </p>
 
 ## What you can run
 
 <p align="center">
   <picture>
-    <source srcset="https://raw.githubusercontent.com/RISE-X-Lab/OpenCollab/main/assets/oc-hero-dark.svg" media="(prefers-color-scheme: dark)">
-    <source srcset="https://raw.githubusercontent.com/RISE-X-Lab/OpenCollab/main/assets/oc-hero-light.svg" media="(prefers-color-scheme: light)">
-    <img src="https://raw.githubusercontent.com/RISE-X-Lab/OpenCollab/main/assets/oc-hero-light.svg" alt="OpenCollab Team and Dynamic Workflow modes" width="1200">
+    <source srcset="assets/oc-hero-dark.svg" media="(prefers-color-scheme: dark)">
+    <source srcset="assets/oc-hero-light.svg" media="(prefers-color-scheme: light)">
+    <img src="assets/oc-hero-light.svg" alt="OpenCollab Team and Dynamic Workflow modes" width="1200">
   </picture>
 </p>
 
