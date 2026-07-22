@@ -339,5 +339,3 @@ def test_t2_off_path_never_synthesizes():
     assert result == "plain report"
     assert len(factory.builds) == 1
     assert not any(s["step_type"] == "dead_scout_synthesis" for s in tracer.steps)
-
-
