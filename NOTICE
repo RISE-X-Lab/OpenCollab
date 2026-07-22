@@ -1,0 +1,53 @@
+OpenCollab Notices
+
+Project licensing
+-----------------
+
+The current OpenCollab distribution declares the Mulan Permissive Software
+License, Version 2 (MulanPSL-2.0). The canonical license terms are in LICENSE.
+
+Copyright notices recorded in the repository history include:
+
+Copyright (c) 2026 Yihong Dong and OpenCollab contributors
+Copyright (c) 2026 Yihong Dong, Zhenhua Xu, Kai Gong, and OpenCollab contributors
+
+These notices preserve attribution found in earlier license files. They do not
+determine or transfer ownership of individual contributions.
+
+Historical MIT provenance
+-------------------------
+
+The OpenCollab v0.1.0 tag contains a root LICENSE under the MIT License. The
+repository's root LICENSE changed from MIT to MulanPSL-2.0 in commit
+9967ca26f79bfb1e2e9e9f66f9de71e1ff87bbea. Rights already granted for earlier
+revisions are not withdrawn. The historical MIT notice and terms are preserved
+below for code derived from those revisions.
+
+MIT License
+
+Copyright (c) 2026 Yihong Dong and OpenCollab contributors
+Copyright (c) 2026 Yihong Dong, Zhenhua Xu, Kai Gong, and OpenCollab contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+Third-party software
+--------------------
+
+Third-party components and their license texts are listed in
+THIRD_PARTY_NOTICES.md.

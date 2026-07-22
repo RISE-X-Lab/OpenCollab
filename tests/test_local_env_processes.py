@@ -57,6 +57,33 @@ async def test_local_exec_bounds_output(tmp_path, monkeypatch) -> None:
     assert result.stdout_dropped_bytes == 69
 
 
+@pytest.mark.parametrize(
+    ("payload", "limit", "expected_stdout", "expected_dropped"),
+    [
+        (b"ok", 4, b"ok", 0),
+        (b"four", 4, b"four", 0),
+        (b"abcdef", 4, b"abcd", 2),
+    ],
+    ids=("below-limit", "exact-limit", "over-limit"),
+)
+async def test_process_output_limit_counts_only_unretained_bytes(
+    payload: bytes,
+    limit: int,
+    expected_stdout: bytes,
+    expected_dropped: int,
+) -> None:
+    result = await run_process(
+        (sys.executable, "-c", f"import os; os.write(1, {payload!r})"),
+        shell=False,
+        timeout=5,
+        output_limit=limit,
+    )
+
+    assert result.stdout == expected_stdout
+    assert result.stdout_dropped_bytes == expected_dropped
+    assert result.to_exec_result().stdout_truncated is (expected_dropped > 0)
+
+
 async def test_local_timeout_kills_descendant_before_it_mutates_workspace(tmp_path) -> None:
     ready = tmp_path / "ready"
     sentinel = tmp_path / "late-write"
