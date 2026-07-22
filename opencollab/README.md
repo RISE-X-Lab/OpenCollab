@@ -89,10 +89,10 @@ must be new or empty because each run claims it for executable evidence.
 For a visual architecture walkthrough, open the
 [SDK 0.4 research architecture](../docs/sdk-v3-explainer.html).
 
-Evaluation runners and benchmark-specific workflows live in the companion
-OpenCollab-Eval repository. This keeps topology research in `team(...)` and
-`workflow(...)`, while an external harness defines ablations and Bootstrap
-binds each treatment through the Clean Architecture ports.
+Evaluation runners and benchmark-specific workflows intentionally live outside
+the framework package. Topology research uses `team(...)` and `workflow(...)`;
+external harnesses define ablations while Bootstrap binds each treatment
+through the Clean Architecture ports.
 
 ## Architecture
 

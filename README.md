@@ -1,12 +1,14 @@
 <p align="center">
-  <img src="assets/banner-dark.svg" alt="OpenCollab" width="600">
+  <img src="https://raw.githubusercontent.com/RISE-X-Lab/OpenCollab/main/assets/banner-dark.svg" alt="OpenCollab mark and wordmark" width="600">
 </p>
 
+<h1 align="center">OpenCollab</h1>
+
 <p align="center">
-  <a href="https://github.com/YihongDong/OpenCollab/actions/workflows/ci.yml"><img src="https://github.com/YihongDong/OpenCollab/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg" alt="License: MulanPSL-2.0"></a>
-  <img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg" alt="Python 3.10 | 3.11 | 3.12">
-  <a href="assets/README.md"><img src="https://img.shields.io/badge/brand-assets-7C3AED.svg" alt="Brand assets"></a>
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml"><img src="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg" alt="License: MulanPSL-2.0"></a>
+  <img src="https://img.shields.io/badge/python-3.10--3.14-blue.svg" alt="Python 3.10 through 3.14">
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/assets/README.md"><img src="https://img.shields.io/badge/brand-assets-7C3AED.svg" alt="Brand assets"></a>
 </p>
 
 <p align="center">
@@ -26,9 +28,9 @@
 
 <p align="center">
   <picture>
-    <source srcset="assets/oc-hero-dark.svg" media="(prefers-color-scheme: dark)">
-    <source srcset="assets/oc-hero-light.svg" media="(prefers-color-scheme: light)">
-    <img src="assets/oc-hero-light.svg" alt="OpenCollab Team and Dynamic Workflow modes" width="1200">
+    <source srcset="https://raw.githubusercontent.com/RISE-X-Lab/OpenCollab/main/assets/oc-hero-dark.svg" media="(prefers-color-scheme: dark)">
+    <source srcset="https://raw.githubusercontent.com/RISE-X-Lab/OpenCollab/main/assets/oc-hero-light.svg" media="(prefers-color-scheme: light)">
+    <img src="https://raw.githubusercontent.com/RISE-X-Lab/OpenCollab/main/assets/oc-hero-light.svg" alt="OpenCollab Team and Dynamic Workflow modes" width="1200">
   </picture>
 </p>
 
@@ -45,26 +47,58 @@ environment separable so experiments can change one component at a time.
 ## Quick start
 
 ```bash
+uv sync --locked
 cp configs/.env.example configs/.env   # then set OPENCOLLAB_API_KEY
-scripts/start_opencollab.sh
+cp configs/team.example.yaml configs/team.yaml
+uv run opencollab --workspace .
 ```
 
-Point `configs/.env` at an OpenAI-compatible or Anthropic endpoint. To run a
-configured team, also copy `configs/team.example.yaml` to `configs/team.yaml`.
-Never commit real API keys.
+Point `configs/.env` at an OpenAI-compatible or Anthropic endpoint. The command
+starts Team mode with the checked-in example topology. Never commit real API
+keys.
+
+Define repeatable control flow directly in Python:
+
+```python
+import asyncio
+from typing import Any
+
+from opencollab import OpenCollab, workflow
+from opencollab.workflows import WorkflowContext
+
+
+@workflow(name="implement-and-review")
+async def implement_and_review(
+    ctx: WorkflowContext,
+    inputs: dict[str, Any],
+) -> str | dict[str, Any] | None:
+    draft = await ctx.agent(f"Implement and verify: {inputs['task']}")
+    return await ctx.agent(f"Review the implementation and fix gaps:\n{draft}")
+
+
+async def main() -> None:
+    result = await OpenCollab(".").workflow(
+        implement_and_review,
+        {"task": "Add a regression test for the target bug."},
+    )
+    print(result.raise_for_status().output)
+
+
+asyncio.run(main())
+```
 
 ## Learn more
 
 | You want… | Read |
 | --- | --- |
-| Installation, CLI, SDK, architecture, and runtime details | [`opencollab/README.md`](opencollab/README.md) |
-| Model, provider, and team configuration | [`configs/README.md`](configs/README.md) |
-| On-demand agent skills | [`skills/README.md`](skills/README.md) |
-| Launchers and provider diagnostics | [`scripts/README.md`](scripts/README.md) |
-| Contribution and development checks | [`CONTRIBUTING.md`](CONTRIBUTING.md) |
-| Design records and research notes | [`docs/`](docs/) |
+| Installation, CLI, SDK, architecture, and runtime details | [Package guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md) |
+| Model, provider, and team configuration | [Configuration guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/configs/README.md) |
+| On-demand agent skills | [Skills guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/skills/README.md) |
+| Launchers and provider diagnostics | [Scripts guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/scripts/README.md) |
+| Contribution and development checks | [Contributing](https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md) |
+| Design records and research notes | [Documentation index](https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/README.md) |
 
 ## License
 
-OpenCollab is licensed under the [Mulan Permissive Software License v2](LICENSE)
+OpenCollab is licensed under the [Mulan Permissive Software License v2](https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE)
 (`MulanPSL-2.0`).
