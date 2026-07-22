@@ -9,6 +9,7 @@ template can never drift out of the schema it teaches.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -21,6 +22,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_DIR = REPO_ROOT / "skills" / "team-config"
 BUILD_SH = SKILL_DIR / "build.sh"
 TEMPLATE = SKILL_DIR / "template.team.yaml"
+JS_YAML = SKILL_DIR / "vendor/js-yaml.min.js"
+JS_YAML_LICENSE = SKILL_DIR / "vendor/js-yaml.LICENSE"
+
+# Exact files from the upstream js-yaml 4.1.1 tag.
+_JS_YAML_DIST_SHA256 = "0de3dec92d20eab9e0b46a5d928cd45ec025d73e348ddf458dbfb01da00cb473"
+_JS_YAML_LICENSE_SHA256 = "a07bc24468b9654ce76a547d47a2db282d07733b715db4c73a98bd63961f9550"
 
 _ISLAND = re.compile(
     r'<script id="team-src" type="text/yaml">\n(.*?)\n</script>', re.S
@@ -55,8 +62,19 @@ def test_skill_files_present() -> None:
         "blueprint.body.html",
         "blueprint.foot.html",
         "vendor/js-yaml.min.js",
+        "vendor/js-yaml.LICENSE",
     ):
         assert (SKILL_DIR / name).is_file(), f"missing skill file: {name}"
+
+
+def test_vendored_js_yaml_is_patched_and_keeps_upstream_license() -> None:
+    source = JS_YAML.read_bytes()
+    license_text = JS_YAML_LICENSE.read_bytes()
+
+    assert source.startswith(b"/*! js-yaml 4.1.1 ")
+    assert hashlib.sha256(source).hexdigest() == _JS_YAML_DIST_SHA256
+    assert b'"__proto__"===t?Object.defineProperty' in source
+    assert hashlib.sha256(license_text).hexdigest() == _JS_YAML_LICENSE_SHA256
 
 
 def test_build_produces_self_contained_blueprint(tmp_path: Path) -> None:
@@ -68,7 +86,8 @@ def test_build_produces_self_contained_blueprint(tmp_path: Path) -> None:
     # exactly three script closes: yaml island, vendored js-yaml, renderer.
     assert html.count("</script>") == 3
     # self-contained: the parser is inlined, and nothing is fetched over the wire.
-    assert "js-yaml 4.1.0" in html
+    assert "js-yaml 4.1.1" in html
+    assert JS_YAML_LICENSE.read_text(encoding="utf-8") in html
     assert "OpenCollab Team Blueprint" in html
     # no external subresource loads (the SVG xmlns URI is a constant, not a fetch).
     assert 'src="http' not in html

@@ -1,5 +1,9 @@
 # OpenCollab Prompt Fragments — workflow path, compaction & steering
 
+> **Historical architecture note.** The concepts remain useful, but branch and
+> `file:line` references below may have drifted. Current public behavior is
+> defined by the package API, tests, and maintained README files.
+
 > **What.** The LLM-facing prompt fragments that are *not* covered by the context
 > lifecycle chapter: the one-shot **workflow** agent path, **structured-output**
 > enforcement, the **compaction summarizer** prompt, the per-turn **steering**
@@ -13,7 +17,7 @@
 >
 > **Status.** Original 2026-06-24; **revised 2026-07-16** and slimmed to the
 > sections above after Lane S3. Grounded in code; `file:line` current as of
-> branch `refactor/slim-s3-context`.
+> the post-S3 implementation at the time of writing.
 
 ---
 

@@ -5,12 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "opencollab"
 version = "0.4.0"
-description = "Minimal multi-agent software development framework — first principles, context isolation, tool-based delegation."
+description = "Minimal multi-agent software development framework for explicit team and workflow orchestration."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MulanPSL-2.0"
-license-files = ["LICENSE"]
-authors = [{ name = "Yihong Dong", email = "dongyh@stu.pku.edu.cn" }]
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "OpenCollab contributors" }]
+maintainers = [{ name = "RISE-X-Lab" }]
 keywords = ["llm", "agent", "multi-agent", "coding-agent", "software-engineering"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -21,6 +22,8 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
 dependencies = [
@@ -41,9 +44,9 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.5"]
 opencollab = "opencollab.adapters.cli.main:app"
 
 [project.urls]
-Homepage = "https://github.com/YihongDong/OpenCollab"
-Repository = "https://github.com/YihongDong/OpenCollab"
-Issues = "https://github.com/YihongDong/OpenCollab/issues"
+Homepage = "https://github.com/RISE-X-Lab/OpenCollab"
+Repository = "https://github.com/RISE-X-Lab/OpenCollab"
+Issues = "https://github.com/RISE-X-Lab/OpenCollab/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["opencollab"]
