@@ -7,7 +7,10 @@ from collections.abc import Sequence
 from typing import Any
 
 from opencollab.adapters.env import LocalEnvironment
-from opencollab.adapters.llm.types import DEFAULT_MAX_OUTPUT_TOKENS
+from opencollab.adapters.llm.types import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    model_capabilities,
+)
 from opencollab.adapters.working_tree import EnvWorkingTreeProbe
 from opencollab.application.ports import EventPublisherPort, TracePort
 from opencollab.application.workflow import WorkflowContext
@@ -108,8 +111,8 @@ class WorkflowSessionFactory:
         thinking: bool | None = None,
     ) -> Any:
         use_thinking = self._thinking if thinking is None else thinking
-        # K2.7 falls back to K2.6 when any workflow role disables thinking.
-        if self._model == "kimi-for-coding" and self._thinking:
+        capabilities = model_capabilities(self._model)
+        if self._thinking and not capabilities.honors_workflow_thinking_override:
             use_thinking = True
         agent = Agent(
             name="workflow_agent",

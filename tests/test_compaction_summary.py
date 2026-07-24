@@ -57,7 +57,7 @@ def test_summarizer_sends_the_segment_plus_prompt():
     s(SEGMENT)
     request = record[0]
     assert request[:2] == SEGMENT
-    assert "detailed summary" in request[-1]["content"]
+    assert "continuation record" in request[-1]["content"]
 
 
 def test_summarizer_appends_transcript_pointer_when_configured():
