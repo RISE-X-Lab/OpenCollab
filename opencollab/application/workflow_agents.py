@@ -73,6 +73,7 @@ class WorkflowAgentsMixin:
                 thinking=thinking,
             )
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
+            self._record_agent_failure(label, exc)
             await self.log(f"agent build failed ({label or 'agent'}): {exc}")
             return None
 
@@ -91,6 +92,7 @@ class WorkflowAgentsMixin:
         except CallerTimeoutError:
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
+            self._record_agent_failure(label, exc)
             await self.log(f"agent failed ({label or 'agent'}): {exc}")
 
         # Harvest is the backstop even on a timeout/exception: whatever the scout

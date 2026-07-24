@@ -376,6 +376,7 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
         "step_type": "llm_call",
         "payload": {
             "model": "fake-model",
+            "thinking": False,
             "finish_reason": "tool_calls",
             "content": "need tool",
             "tool_calls": [{"id": "call-1", "name": "fake_tool", "arguments": '{"value": 1}'}],
@@ -838,6 +839,32 @@ def test_llm_trace_records_reasoning_when_present():
 
     llm_calls = [s for s in tracer.steps if s["step_type"] == "llm_call"]
     assert llm_calls[0]["payload"]["reasoning"] == "step-by-step thoughts"
+
+
+def test_llm_trace_records_effective_thinking_mode():
+    agent = FakeAgent()
+    agent.thinking = True
+    tracer = FakeTracer()
+    runner = build_runner(agent=agent, tracer=tracer)
+
+    run(runner.run_loop())
+
+    llm_calls = [s for s in tracer.steps if s["step_type"] == "llm_call"]
+    assert llm_calls[0]["payload"]["thinking"] is True
+
+
+def test_reasoning_is_preserved_in_assistant_tool_call_history():
+    state = SessionState(messages=_convo())
+    response = llm_response(
+        tool_calls=[tool_call()],
+        reasoning="I need to inspect the file first.",
+    )
+    runner = build_runner(state=state)
+
+    runner.append_assistant_message(response)
+
+    assert state.messages[-1]["reasoning_content"] == "I need to inspect the file first."
+    assert state.messages[-1]["tool_calls"] == response.tool_calls
 
 
 def test_llm_trace_omits_reasoning_when_absent():

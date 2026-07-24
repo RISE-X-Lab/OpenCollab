@@ -208,6 +208,105 @@ async def test_agent_error_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_agent_error_records_safe_provider_failure_fields():
+    class ProviderFailure(RuntimeError):
+        status_code = 403
+        body = {
+            "error": {
+                "message": "sensitive upstream detail",
+                "type": "access_terminated_error",
+            }
+        }
+
+    class ProviderFailureSession(FakeSession):
+        async def run_loop(self, cancel_event=None):
+            raise ProviderFailure("must not be copied into the structured record")
+
+    ctx = WorkflowContext(FakeFactory([ProviderFailureSession()]))
+
+    assert await ctx.agent("do it", label="solver") is None
+    assert ctx.agent_failures == (
+        {
+            "label": "solver",
+            "exception_type": "ProviderFailure",
+            "status_code": 403,
+            "provider_error_type": "access_terminated_error",
+        },
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {},
+        {"enforcement_strength": ENFORCEMENT_ON},
+        {"schema": {"type": "object", "properties": {}}},
+    ),
+)
+async def test_agent_build_errors_are_recorded_for_every_public_path(kwargs):
+    class ProviderFailure(RuntimeError):
+        status_code = 403
+        body = {"error": {"type": "access_terminated_error"}}
+
+    class FailingFactory:
+        def build_workflow_session(self, **build_kwargs):
+            raise ProviderFailure("private provider message")
+
+    ctx = WorkflowContext(FailingFactory())
+
+    assert await ctx.agent("do it", label="solver", **kwargs) is None
+    assert ctx.agent_failures[0]["provider_error_type"] == "access_terminated_error"
+    assert "message" not in ctx.agent_failures[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs",
+    (
+        {"enforcement_strength": ENFORCEMENT_ON},
+        {"schema": {"type": "object", "properties": {}}},
+    ),
+)
+async def test_specialized_agent_run_errors_record_safe_provider_fields(kwargs):
+    class ProviderFailure(RuntimeError):
+        status_code = 403
+        body = {"error": {"type": "access_terminated_error"}}
+
+    class ProviderFailureSession(FakeSession):
+        async def run_loop(self, cancel_event=None):
+            raise ProviderFailure("private provider message")
+
+    ctx = WorkflowContext(FakeFactory([ProviderFailureSession()]))
+
+    await ctx.agent("do it", label="solver", **kwargs)
+    assert ctx.agent_failures[0]["status_code"] == 403
+    assert ctx.agent_failures[0]["provider_error_type"] == "access_terminated_error"
+
+
+@pytest.mark.asyncio
+async def test_structured_retry_build_error_records_safe_provider_fields():
+    class ProviderFailure(RuntimeError):
+        status_code = 403
+        body = {"error": {"type": "access_terminated_error"}}
+
+    class RetryFailureFactory(FakeFactory):
+        def build_workflow_session(self, **kwargs):
+            if self._idx:
+                raise ProviderFailure("private provider message")
+            return super().build_workflow_session(**kwargs)
+
+    ctx = WorkflowContext(RetryFailureFactory([FakeSession(reply="prose")]))
+
+    assert await ctx.agent(
+        "do it",
+        label="solver",
+        schema={"type": "object", "properties": {}},
+    ) is None
+    assert ctx.agent_failures[0]["provider_error_type"] == "access_terminated_error"
+
+
+@pytest.mark.asyncio
 async def test_agent_forwards_tools_and_isolation():
     session = FakeSession()
     factory = FakeFactory([session])

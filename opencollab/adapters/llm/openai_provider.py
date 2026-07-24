@@ -44,8 +44,11 @@ def _build_request_kwargs(
         kwargs["max_tokens"] = int(max_output_tokens)
     if tools:
         kwargs["tools"] = tools
-        # Default "auto"; a caller may force "required" (forced-write step).
-        kwargs["tool_choice"] = tool_choice or "auto"
+        choice = tool_choice or "auto"
+        # Kimi Code rejects forced choices; downstream artifact gates validate auto results.
+        if model == "kimi-for-coding" and (choice == "required" or isinstance(choice, dict)):
+            choice = "auto"
+        kwargs["tool_choice"] = choice
     # Thinking passthrough: when on, the provider-specific reasoning params ride
     # along as ``extra_body`` (a valid OpenAI SDK create() kwarg) — for DashScope
     # compatible mode this is ``{"enable_thinking": True}``. When off, nothing is
@@ -65,7 +68,14 @@ def _normalize_request_messages(messages: list[dict]) -> list[dict]:
         item = {
             key: value
             for key, value in message.items()
-            if key in {"role", "content", "tool_calls", "tool_call_id", "name"}
+            if key in {
+                "role",
+                "content",
+                "reasoning_content",
+                "tool_calls",
+                "tool_call_id",
+                "name",
+            }
         }
         if item.get("content") is None:
             item["content"] = ""

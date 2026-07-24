@@ -140,6 +140,30 @@ async def test_built_context_injects_sampling_and_output_limits(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_kimi_global_thinking_applies_to_fast_structured_roles(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    ctx = workflow_runtime.build_workflow_context(
+        cfg=_cfg(model="kimi-for-coding", provider="openai", thinking=True)
+    )
+
+    await ctx.agent("solve", thinking=False)
+
+    assert calls[0]["agent"].thinking is True
+
+
+@pytest.mark.asyncio
+async def test_other_models_can_disable_thinking_for_fast_roles(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    ctx = workflow_runtime.build_workflow_context(
+        cfg=_cfg(model="another-thinking-model", provider="openai", thinking=True)
+    )
+
+    await ctx.agent("solve", thinking=False)
+
+    assert calls[0]["agent"].thinking is False
+
+
+@pytest.mark.asyncio
 async def test_built_context_threads_caller_tools(monkeypatch):
     calls = _patch_build_session(monkeypatch)
     ctx = workflow_runtime.build_workflow_context(cfg=_cfg())
