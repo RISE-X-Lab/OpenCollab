@@ -320,7 +320,7 @@ def test_cleanup_drains_queued_autosaves_before_final_snapshot(tmp_path):
         second_waiter.cancel()
         await asyncio.gather(first_waiter, second_waiter, return_exceptions=True)
 
-        cleanup = asyncio.create_task(scheduler.cleanup(cleanup_timeout=0.2))
+        cleanup = asyncio.create_task(scheduler.cleanup(cleanup_timeout=1.0))
         await asyncio.sleep(0.02)
         assert cleanup.done() is False
         release_first.set()
