@@ -1,7 +1,8 @@
-# OpenCollab Package
+# OpenCollab Python Package
 
-This directory contains the installable Python package and the `opencollab`
-CLI.
+This guide documents the installed package and the framework internals behind
+the concise [project homepage](../README.md). Run repository commands from the
+repository root unless noted otherwise.
 
 ## Install
 
@@ -11,130 +12,195 @@ directory listing, callable `fcntl.flock`, and an atomic no-clobber rename:
 `renameat2(RENAME_NOREPLACE)` on Linux or `renameatx_np(RENAME_EXCL)` on macOS
 10.12 and newer. Missing primitives produce an explicit capability error.
 
-From the repository root with `uv`:
+Install the project and development dependencies with `uv`:
 
 ```bash
-uv venv opencollab/.venv
-uv pip install --python opencollab/.venv/bin/python -e opencollab
+uv sync --extra dev
 ```
 
-Or with `pip`:
+Or create a conventional virtual environment with `pip`:
 
 ```bash
-python3 -m venv opencollab/.venv
-opencollab/.venv/bin/pip install -e opencollab
-```
-
-From inside this package directory:
-
-```bash
-pip install -e .
+python3 -m venv .venv
+.venv/bin/pip install -e .
 ```
 
 ## Commands
 
-The repository launcher is the preferred entrypoint during local development:
+The repository launcher is the preferred entry point during development:
 
 ```bash
 scripts/start_opencollab.sh
 ```
 
-It uses `opencollab/.venv`, checks `configs/.env`, and starts the interactive
-agent (agent 0, the *lead*). There is no separate "team" subcommand: the same
-run becomes a multi-agent team when a `configs/team.yaml` is present.
+It uses `.venv`, checks `configs/.env`, and starts agent 0, the lead. There is
+no separate `team` subcommand: the same run becomes a configured multi-agent
+team when `configs/team.yaml` is present.
 
-Direct CLI commands are also available after installation. Activate the venv or
-call the installed binary directly:
+After installation, invoke the CLI directly:
 
 ```bash
-opencollab/.venv/bin/opencollab --workspace .                       # interactive agent / team
-opencollab/.venv/bin/opencollab workflow run NAME --args '{"goal": "..."}' --dir path/to/workflows
+.venv/bin/opencollab --workspace .
+OPENCOLLAB_WORKFLOWS_DIR=path/to/workflows \
+  .venv/bin/opencollab workflow run NAME --args '{"goal": "..."}'
 ```
 
-Useful flags: `--trace` records a trajectory (every LLM call and tool exec);
-`--no-worktrees` disables per-child git-worktree isolation; `--yolo`
-auto-approves risky commands.
+A workflow directory contains caller-authored Python modules tagged with
+`@workflow`. `OPENCOLLAB_WORKFLOWS_DIR` applies to both `workflow list` and
+`workflow run`.
 
-## External integrations
+Useful flags:
 
-Evaluation runners and benchmark-specific workflows live in the companion
-OpenCollab-Eval repository. Integrations depend on `opencollab.sdk`; OpenCollab
-can evolve its internal layers without forcing evaluation code to track private
-module paths.
+- `--trace` records every LLM call and tool execution.
+- `--no-worktrees` disables per-child git-worktree isolation.
+- `--yolo` auto-approves risky commands.
+
+## Python SDK
+
+The package root is the complete everyday API: one stateful client, one result
+type, one error, and the workflow decorator. Compatibility follows package
+SemVer.
+
+```python
+import asyncio
+
+from opencollab import OpenCollab
+
+
+async def main() -> None:
+    oc = OpenCollab(".")  # resolves configs/.env and environment variables once
+    result = await oc.agent(
+        "Inspect this repository and report its release readiness.",
+        budget=100_000,
+        artifacts="artifacts/release-readiness",
+    )
+    print(result.raise_for_status().output)
+
+
+asyncio.run(main())
+```
+
+The same client exposes `agent(...)`, `team(...)`, and `workflow(...)`; all
+return `RunResult`. Import optional authoring contracts from
+`opencollab.tools`, `opencollab.environments`, and `opencollab.workflows`.
+Treat other package paths as internal. An `artifacts` directory, when supplied,
+must be new or empty because each run claims it for executable evidence.
+
+### Workflow authoring
+
+A workflow is a plain async Python function tagged with `@workflow`. Create
+`workflows/implement_and_review.py`:
+
+```python
+from typing import Any
+
+from opencollab import workflow
+from opencollab.workflows import WorkflowContext
+
+
+@workflow(name="implement-and-review")
+async def implement_and_review(
+    ctx: WorkflowContext,
+    inputs: dict[str, Any],
+) -> str | dict[str, Any] | None:
+    draft = await ctx.agent(f"Implement and verify: {inputs['task']}")
+    return await ctx.agent(f"Review the implementation and fix gaps:\n{draft}")
+```
+
+OpenCollab discovers top-level `*.py` modules in `workflows/` by default. Run
+the decorated function through the CLI:
+
+```bash
+uv run opencollab workflow run implement-and-review \
+  --args '{"task": "Add a regression test for the target bug."}'
+```
+
+Set `OPENCOLLAB_WORKFLOWS_DIR` to use another directory. The same decorated
+function can be passed directly to `await OpenCollab(".").workflow(...)` when
+embedding OpenCollab in Python.
+
+For a visual architecture walkthrough, open the
+[SDK 0.4 research architecture](../docs/sdk-v3-explainer.html).
+
+Evaluation runners and benchmark-specific workflows intentionally live outside
+the framework package. Topology research uses `team(...)` and `workflow(...)`;
+external harnesses define ablations while Bootstrap binds each treatment
+through the Clean Architecture ports.
 
 ## Architecture
 
-OpenCollab follows a strict clean architecture: dependencies point inward only,
+OpenCollab follows strict clean architecture: dependencies point inward only,
 `adapters → application → domain`.
 
-- `opencollab/domain/` — pure value objects and the session FSM. Stdlib only,
-  no I/O.
-- `opencollab/application/` — use cases, the scheduler, messaging, and the port
-  Protocols (`opencollab/application/ports.py`). Imports `domain` + stdlib only.
-- `opencollab/adapters/` — concrete implementations: `cli/`, `tui/`, `llm/`,
-  `tools/`, environments, tracing, and the session store.
-- `opencollab/bootstrap/` — the composition root; the only layer that knows
-  concrete types.
-- `opencollab/sdk/` — the versioned integration boundary for external packages.
-- `tests/` — characterization and regression tests, including the import-
-  direction guards `test_domain_boundaries.py` and
-  `test_application_boundaries.py`.
+- `domain/` contains pure value objects and the session state machine. It uses
+  the standard library and performs no I/O.
+- `application/` contains use cases, scheduling, messaging, and the Protocol
+  ports in `application/ports.py`.
+- `adapters/` contains the CLI, TUI, LLM providers, tools, environments,
+  tracing, and persistence implementations.
+- `bootstrap/` is the composition root and the only layer that wires concrete
+  types together.
+- `sdk/` is the versioned integration surface for external packages.
 
-The dependency direction is enforced, not documented: an inward→outward import
-turns the boundary tests red. Every outward capability is a Protocol *port* in
-`application/ports.py`; only `bootstrap/` knows concrete types, so swapping an
-LLM, environment, or tool library is a new adapter plus one line of wiring. The
-`domain`/`application` core imports no LLM and does no I/O, so its suite runs
-without network access.
+Boundary tests enforce the dependency direction. An outer capability needed by
+the application becomes a port; its concrete implementation is wired in
+`bootstrap/`. This keeps the domain and application testable without network or
+filesystem access.
 
 ## How it works
 
-Two core abstractions, then five swappable components behind ports.
+### Validated agent sessions
 
-**A single agent is a *validated state machine*** (`domain/session.py`). Edges
-that aren't in the transition table raise instead of silently passing, and every
-way a turn can stop early is a *named terminal state* — `DONE`,
-`BUDGET_EXCEEDED`, `STEP_LIMIT_EXCEEDED`, `CONTEXT_OVERFLOW`, `CANCELLED`,
-`ERROR` — so an unhandled failure can never masquerade as a clean finish.
+A single agent is a validated state machine in `domain/session.py`. Invalid
+edges raise instead of silently passing. Every early stop is one of three
+named terminal states: `DONE` (a final answer), `ERROR` (an unhandled fault),
+and `STOPPED`-a single graceful-stop terminal whose `reason` records whether
+the halt was a budget, step, loop, or context overflow.
 
-**A team is modeled on OS process concurrency.** The session table is the
-process table, `spawn` is `fork`, budget is reserved *before* the first `await`
-(so a batch of children can't overspend the pool), and agents suspend and wake
-on a cooperative scheduler. Each spawned child works in its own git worktree (so
-siblings can't clobber each other's edits) and its diff is appended to its result
-for the parent on completion.
+### Cooperative teams
 
-The components you'd most likely swap, each behind a port:
+A team follows an OS-process-inspired model: the session table is the process
+table, `spawn` resembles `fork`, and agents suspend and wake through a
+cooperative scheduler. Budget is reserved before the first `await`, preventing
+a concurrent child batch from overspending the shared pool. Each child can work
+in an isolated git worktree, and its diff returns to the parent with its result.
 
-| Component | What it does |
-|-----------|--------------|
-| **Context manager** | Context is an editable bundle of *sources* (identity / team / task / …), not one string. A deterministic shaping pipeline projects a bounded view at each model call — shed low-priority sources, clear stale tool output, snip old turns — while the persisted transcript stays lossless. |
-| **Tool manager** | A name-keyed registry (`name → factory`) with a stateless executor and loop detection. Adding a tool is subclassing `Tool` plus one factory line; the executor is tool-agnostic. |
-| **LLM provider** | A façade behind `LLMPort`, one module per provider, so each provider's quirks (e.g. recovering markup-leaked tool calls, estimating missing usage) stay isolated. The OpenAI-compatible path is the default; a native Anthropic path (`provider=anthropic`) also exists. |
-| **Workflow engine** | Point the CLI or SDK at a directory containing `@workflow`-tagged Python modules. `ctx.agent / parallel / pipeline` give Python-guaranteed control flow over one-shot agent sessions. |
-| **Skill store** | On-demand instruction sets the model loads by name through one generic `use_skill` tool (opt-in per role) — extend an agent's know-how without adding any tools. Drop a `SKILL.md` under `../skills/` and it's auto-catalogued. |
+### Swappable components
+
+| Component | Responsibility |
+| --- | --- |
+| **Context manager** | Builds a bounded view from prioritized context sources while keeping the persisted transcript lossless. |
+| **Tool manager** | Provides a name-keyed registry, stateless execution, safety checks, and loop detection. |
+| **LLM provider** | Isolates OpenAI-compatible and native Anthropic behavior behind `LLMPort`. |
+| **Workflow engine** | Gives Python explicit control over agent fan-out, pipelines, phases, and verification. |
+| **Skill store** | Loads named instruction sets on demand through the generic `use_skill` tool. |
 
 ## Status
 
-**Proven:** the core invariants (state-machine edges, budget reservation,
-context shaping, import boundaries) pinned by the fast test suite.
+The test suite pins core invariants such as session transitions, budget
+reservation, context shaping, and import boundaries.
 
-**In progress / honest gaps:** the port-level *ablations* this architecture was
-built to make cheap (hold the model fixed, swap one component, measure the delta)
-have not been run yet; a workflow-vs-team A/B is open; prompt caching isn't
-wired; the session FSM doesn't yet persist budget/phase across restarts. See
-`../docs/` for the design docs and a candid three-day review.
+Open research gaps remain: port-level ablations have not yet been run,
+workflow-versus-team comparisons are incomplete, prompt caching is not wired,
+and the session state machine does not yet persist budget and phase across
+restarts. See [`../docs/`](../docs/) for design records and research notes.
 
-## Making Changes
+## Development
 
-1. Locate the module by listing or grepping the layer directories above — the
-   layout is small and the names are descriptive.
-2. Respect the dependency direction `adapters → application → domain`. Ports
-   live in `opencollab/application/ports.py`; only `bootstrap/` knows concrete
-   types.
-3. Tests live in `tests/`. Run them from this package directory.
-4. If your change moves or renames modules, update the affected README in the
-   same commit.
+Respect the dependency direction and keep public names re-exported when modules
+move. From the repository root, run:
 
-An archived module-by-module map and dependency graph (a snapshot, not kept in
-sync) lives under `../docs/archive/repomap/`.
+```bash
+uv run ruff check .
+uv run pytest -q
+```
+
+See [`../CONTRIBUTING.md`](../CONTRIBUTING.md) for contributor guidance and
+[`../CLAUDE.md`](../CLAUDE.md) for repository-specific architecture notes. The
+archived module map under [`../docs/archive/repomap/`](../docs/archive/repomap/)
+is a historical snapshot rather than a maintained source of truth.
+
+## License
+
+OpenCollab is licensed under the
+[Mulan Permissive Software License v2](../LICENSE) (`MulanPSL-2.0`).

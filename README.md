@@ -1,74 +1,78 @@
 <p align="center">
-  <img src="assets/banner-dark.svg" alt="OpenCollab" width="600">
+  <img src="assets/banner-dark.svg" alt="OpenCollab mark and wordmark" width="600">
 </p>
 
+<h1 align="center">OpenCollab</h1>
+
 <p align="center">
-  <a href="https://github.com/YihongDong/OpenCollab/actions/workflows/ci.yml"><img src="https://github.com/YihongDong/OpenCollab/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  <img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue.svg" alt="Python 3.10 | 3.11 | 3.12">
-  <a href="assets/README.md"><img src="https://img.shields.io/badge/brand-assets-7C3AED.svg" alt="Brand assets"></a>
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml"><img src="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg" alt="License: MulanPSL-2.0"></a>
+  <img src="https://img.shields.io/badge/python-3.10--3.14-blue.svg" alt="Python 3.10 through 3.14">
+  <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/assets/README.md"><img src="https://img.shields.io/badge/brand-assets-7C3AED.svg" alt="Brand assets"></a>
 </p>
 
 <p align="center">
   <b>An Operating Theory of Organized Intelligence.</b>
 </p>
 
-<!-- <p align="center">
-  Turn LLMs into a coordinated software-engineering team — one that reads,
-  edits, and tests a real repository.
-</p> -->
-
 <p align="center">
-  <i>OpenCollab is Inspired by <a href="https://arxiv.org/abs/2304.07590" title="Self-collaboration Code Generation via ChatGPT — Dong, Jiang, Jin, Li (2023)"><b>Self-Collaboration</b></a> </i>
+  OpenCollab is inspired by <a href="https://arxiv.org/abs/2304.07590" title="Self-collaboration Code Generation via ChatGPT — Dong, Jiang, Jin, Li (2023)"><b>Self-Collaboration</b></a>.
 </p>
 
-<!-- Logo & brand assets live in assets/ — see assets/README.md for the brand guide. -->
 ## What you can run
 
 <p align="center">
   <picture>
     <source srcset="assets/oc-hero-dark.svg" media="(prefers-color-scheme: dark)">
     <source srcset="assets/oc-hero-light.svg" media="(prefers-color-scheme: light)">
-    <img src="assets/oc-hero-light.svg" alt="OpenCollab" width="1200">
+    <img src="assets/oc-hero-light.svg" alt="OpenCollab Team and Workflow modes" width="1200">
   </picture>
 </p>
 
-<!-- OpenCollab turns an LLM into a software engineer that reads, edits, and tests a
-real repository. It's built to separate what the *model* contributes from what
-the *scaffolding* (context, tools, orchestration) contributes — so everything
-but the model sits behind swappable ports. -->
-
-
-Two ways to run the same agents:
+The same agent runtime supports two explicit forms of collaboration:
 
 | Mode | Command | What it is |
-|------|---------|------------|
-| **Team** | _(coming soon)_ | An autonomous multi-agent team: a lead plans the work and spawns specialists — coder, reviewer, tester — that collaborate until it's done. The LLM decides who does what; a single agent is just a team of one. |
-| **Dynamic Workflow** | _(coming soon)_ | Deterministic orchestration: you script the control flow in Python — fan-out, loops, verification gates — and the LLM fills in each step. The structure is yours, not the model's to choose. |
+| --- | --- | --- |
+| **Team** | `opencollab --workspace .` | A lead plans the work and spawns specialists that collaborate until the task is done. The agents decide the division of labor. |
+| **Workflow** | `opencollab workflow run NAME` | Python defines the control flow—fan-out, pipelines, loops, and verification gates—while agents complete each step. |
 
-> Commands land with the CLI — for now, start from **Quick start** below.
+OpenCollab keeps the model, context, tools, orchestration, and execution
+environment separable so experiments can change one component at a time.
 
 ## Quick start
 
 ```bash
+uv sync --locked
 cp configs/.env.example configs/.env   # then set OPENCOLLAB_API_KEY
-scripts/start_opencollab.sh            # bootstraps the venv, then starts the agent
+cp configs/team.example.yaml configs/team.yaml
+uv run opencollab --workspace .
 ```
 
-Point `configs/.env` at any OpenAI-compatible (or Anthropic) endpoint. To run as
-a team, also `cp configs/team.example.yaml configs/team.yaml`. **Never commit
-real API keys.**
+Point `configs/.env` at an OpenAI-compatible or Anthropic endpoint. The command
+starts Team mode with the checked-in example topology. Never commit real API
+keys.
 
-<!-- ## Learn more
+For repeatable pipelines, author a Python workflow and run it by name:
+
+```bash
+uv run opencollab workflow run NAME --args '{"task": "..."}'
+```
+
+See [Workflow authoring](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md#workflow-authoring)
+for a complete module.
+
+## Learn more
 
 | You want… | Read |
-|-----------|------|
-| The architecture & design principles (start here) | [`CLAUDE.md`](CLAUDE.md) |
-| Install, CLI, and how it works in depth | [`opencollab/README.md`](opencollab/README.md) |
-| Configuration (model, team, sampling) | [`configs/README.md`](configs/README.md) |
-| SDK integrations | [`opencollab/opencollab/sdk/`](opencollab/opencollab/sdk/) |
-| Skills (on-demand instruction sets) | [`skills/README.md`](skills/README.md) |
-| Design docs & reviews | [`docs/`](docs/) | -->
+| --- | --- |
+| Installation, CLI, SDK, architecture, and runtime details | [Package guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md) |
+| Model, provider, and team configuration | [Configuration guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/configs/README.md) |
+| On-demand agent skills | [Skills guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/skills/README.md) |
+| Launchers and provider diagnostics | [Scripts guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/scripts/README.md) |
+| Contribution and development checks | [Contributing](https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md) |
+| Design records and research notes | [Documentation index](https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/README.md) |
 
-Contributing: see [`CLAUDE.md`](CLAUDE.md). Conventional commits; `refactor:`
-commits stay behavior-preserving.
+## License
+
+OpenCollab is licensed under the [Mulan Permissive Software License v2](https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE)
+(`MulanPSL-2.0`).
