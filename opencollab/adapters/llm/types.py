@@ -96,6 +96,10 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gemini": 1_000_000,
 }
 
+_EXACT_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "kimi-for-coding": 262_144,
+}
+
 # Conservative default output reservation when a model is recognised.
 DEFAULT_MAX_OUTPUT_TOKENS = DEFAULT_MAX_TOKENS_PER_STEP
 
@@ -105,6 +109,8 @@ def model_context_window(model: str | None) -> int | None:
     if not model:
         return None
     lowered = model.lower()
+    if lowered in _EXACT_MODEL_CONTEXT_WINDOWS:
+        return _EXACT_MODEL_CONTEXT_WINDOWS[lowered]
     for key, window in MODEL_CONTEXT_WINDOWS.items():
         if key in lowered:
             return window

@@ -108,6 +108,9 @@ class WorkflowSessionFactory:
         thinking: bool | None = None,
     ) -> Any:
         use_thinking = self._thinking if thinking is None else thinking
+        # K2.7 falls back to K2.6 when any workflow role disables thinking.
+        if self._model == "kimi-for-coding" and self._thinking:
+            use_thinking = True
         agent = Agent(
             name="workflow_agent",
             system_prompt=WORKFLOW_AGENT_PROMPT,
