@@ -2,6 +2,8 @@ name: Hygiene
 
 on:
   pull_request:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -17,35 +19,22 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Block oversized new files and modules
+      - name: Check files added by the pull request
+        if: github.event_name == 'pull_request'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          set -u
-          max_bytes=512000     # 500 KB — large binaries/artifacts belong in release assets, not git
-          max_py_lines=800     # keep modules focused (matches the coding-style cap)
-          added=$(git diff --diff-filter=A --name-only "$BASE_SHA" "$HEAD_SHA")
-          if [ -z "$added" ]; then echo "No newly added files."; exit 0; fi
-          fail=0
-          while IFS= read -r f; do
-            [ -n "$f" ] && [ -f "$f" ] || continue
-            bytes=$(wc -c < "$f" | tr -d ' ')
-            if [ "$bytes" -gt "$max_bytes" ]; then
-              echo "::error file=$f::New file is ${bytes} bytes (> ${max_bytes}). Large binaries/artifacts (PDFs, images, datasets) don't belong in git history — use release assets or an external store."
-              fail=1
-            fi
-            case "$f" in
-              *.py)
-                lines=$(wc -l < "$f" | tr -d ' ')
-                if [ "$lines" -gt "$max_py_lines" ]; then
-                  echo "::error file=$f::New Python module is ${lines} lines (> ${max_py_lines}). Split it into focused modules."
-                  fail=1
-                fi
-                ;;
-            esac
-          done < <(printf '%s\n' "$added")
-          exit "$fail"
+          set -euo pipefail
+          python3 scripts/check_added_files.py "$BASE_SHA" "$HEAD_SHA"
+      - name: Check the complete main tree
+        if: github.event_name == 'push'
+        env:
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          EMPTY_TREE="$(git hash-object -t tree /dev/null)"
+          python3 scripts/check_added_files.py "$EMPTY_TREE" "$HEAD_SHA" --require-files

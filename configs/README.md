@@ -46,6 +46,19 @@ OPENCOLLAB_LLM_TIMEOUT=600
 For DashScope-compatible mode, `DASHSCOPE_API_KEY` is also accepted and is
 preferred over generic API-key variables for DashScope base URLs.
 
+## Model capability metadata
+
+Compatibility differences are recorded in
+`opencollab.adapters.llm.types.model_capabilities` and consumed by the provider
+and workflow adapters. Generic runtime code does not branch on product names.
+
+| Exact model id | Context window | Forced tool choice | Per-role thinking override |
+| --- | ---: | --- | --- |
+| `kimi-for-coding` | 262,144 | Falls back to `auto` | Keeps global thinking enabled |
+
+Models without an exact entry use provider-neutral defaults and the
+best-effort context-window families in the same module.
+
 ## Sampling
 
 `OPENCOLLAB_TEMPERATURE` sets the LLM sampling temperature for every agent.
