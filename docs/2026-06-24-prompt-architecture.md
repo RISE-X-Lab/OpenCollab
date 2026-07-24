@@ -83,27 +83,25 @@ prose — hence the imperative wording rather than relying on the API alone.
 
 The `AutoCompactShaper` (rung B, **default-off**; see lifecycle §6) is the only
 place a model is asked to *summarize* history. When active, it hands the droppable
-span to a summarizer invoked with the 9-section `BASE_COMPACT_PROMPT`
-(`application/compaction_prompt.py:47`):
+span to a summarizer invoked with OpenCollab's `BASE_COMPACT_PROMPT`
+(`application/compaction_prompt.py`):
 
 ```
-1 Primary Request & Intent    2 Key Technical Concepts     3 Files & Code Sections
-4 Errors & fixes              5 Problem Solving             6 All user messages   ◄ anti-drift
-7 Pending Tasks               8 Current Work                9 Optional Next Step  ◄ verbatim quotes
+Goal                       User directions              Completed work
+Technical state            Decisions and constraints    Failures and diagnostics
+Remaining work             Immediate next action
 ```
 
-Two sections are deliberate anti-drift guards: **§6 "All user messages"** preserves
-every human/teammate turn (feedback and changing intent survive summarization), and
-**§9 "Optional Next Step"** demands *verbatim quotes* from the most recent exchange
-so the resumed session picks up exactly where it left off.
+Two fields guard continuity. **User directions** preserves every human or
+teammate instruction in order and makes later corrections supersede earlier
+ones. **Immediate next action** anchors the handoff to the latest unfinished
+request.
 
-The instruction is wrapped by `NO_TOOLS_PREAMBLE` (`:26`) / `NO_TOOLS_TRAILER`
-(`:34`) — *"Respond with TEXT ONLY. Do NOT call any tools."* — assembled by
-`get_compact_prompt` (`:84`). The model replies
-`<analysis>…</analysis><summary>…</summary>`; `format_compact_summary` (`:92`)
-strips the scratchpad and unwraps the summary, falling back to a bounded raw
-excerpt if the block is missing. `build_summary_request` (`:152`) and
-`build_continuation_message` (`:121`) frame the request/response around it.
+The instruction is wrapped by `NO_TOOLS_PREAMBLE` and `NO_TOOLS_TRAILER`, then
+assembled by `get_compact_prompt`. The model returns one `<summary>` block.
+`format_compact_summary` unwraps it and accepts legacy `<analysis>` prefixes so
+stored sessions remain readable. `build_summary_request` and
+`build_continuation_message` frame the request and response.
 
 > This is the very prompt shape that produces the `[Context auto-compacted …]`
 > markers — and the session summaries the harness itself emits between context
@@ -178,11 +176,11 @@ error.
 | `_STRUCTURED_RETRY` / retry | `application/workflow_structured.py` | 38 / 214 |
 | `_named_tool_choice` | `application/workflow_structured.py` | 45 |
 | `structured_output` tool name | `application/structured_output.py` | 26 |
-| `NO_TOOLS_PREAMBLE` / `NO_TOOLS_TRAILER` | `application/compaction_prompt.py` | 26 / 34 |
-| `BASE_COMPACT_PROMPT` (9 sections) | `application/compaction_prompt.py` | 47 |
-| `get_compact_prompt` | `application/compaction_prompt.py` | 84 |
-| `format_compact_summary` | `application/compaction_prompt.py` | 92 |
-| `build_continuation_message` / `build_summary_request` | `application/compaction_prompt.py` | 121 / 152 |
+| `NO_TOOLS_PREAMBLE` / `NO_TOOLS_TRAILER` | `application/compaction_prompt.py` | current definitions |
+| `BASE_COMPACT_PROMPT` (8 fields) | `application/compaction_prompt.py` | current definition |
+| `get_compact_prompt` | `application/compaction_prompt.py` | current definition |
+| `format_compact_summary` | `application/compaction_prompt.py` | current definition |
+| `build_continuation_message` / `build_summary_request` | `application/compaction_prompt.py` | current definitions |
 | `READS_NUDGE_SOFT` / `READS_NUDGE_HARD` | `application/steering.py` | 18 / 19 |
 | `build_steering_block` / status line | `application/steering.py` | 22 / 51 |
 | hard / soft / structured nudge | `application/steering.py` | 56 / 63 / 70 |

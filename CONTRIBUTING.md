@@ -69,7 +69,23 @@ Optionally mirror these locally: `pip install pre-commit && pre-commit install`.
   `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
 - `refactor:` commits must stay behavior-preserving.
 - Keep pull requests focused; describe what changed and how you verified it.
-- All public-facing text (code, comments, docs, commit messages) should be in English.
+- Keep code, comments, and tracked documentation in English.
+- Write commit summaries, pull request titles, pull request descriptions, and
+  review replies in Chinese while retaining the English Conventional Commit type.
+
+## Contribution license
+
+By submitting a contribution, you represent that you have the legal right to
+provide it and that it does not knowingly include material you cannot license.
+You license the contribution to the project under the
+[Mulan Permissive Software License v2](LICENSE), the same license that applies
+to the repository. OpenCollab currently uses this inbound-equals-outbound rule
+without requiring a Developer Certificate of Origin sign-off.
+
+Secret-baseline updates use a dedicated, baseline-only pull request. A
+maintainer applies the `security-baseline-update` label after reviewing every
+entry. The security workflow rejects a baseline change mixed with source or
+documentation changes.
 
 ## Reporting issues
 

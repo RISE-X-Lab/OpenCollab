@@ -3,7 +3,7 @@
 ``AutoCompactShaper`` (``application/shaping.py``) is the heaviest reactive
 history layer. It is default-off until a ``SummarizerPort`` —
 ``Callable[[list[dict]], str]`` — is injected. This module provides that
-callable, backed by the 9-section compaction prompt
+callable, backed by OpenCollab's structured handoff protocol
 (``application/compaction_prompt.py``).
 
 The one friction it has to absorb: ``ShaperPort.shape`` is **sync**, but

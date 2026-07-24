@@ -73,7 +73,7 @@ Loaded content persists with `_ctx`. **ON_DEMAND project: replay persisted, do n
 
 ## 8. Shed-vs-compact ordering (open, data-driven)
 
-Keep shed **before** the recency layers but make it a **two-phase** shed: a conservative first bite (memory + truly-stale only, small headroom), recency layers next (tool-clear, snip), an aggressive second shed (project too) last — rather than reordering wholesale. Moving shed entirely after recency would let stale memory crowd out reconstructible-but-bulky tool output, contradicting the loss model. Ship single-phase first; settle the two-phase reorder with a SWE-bench A/B vs the 61.7% baseline.
+Keep shed **before** the recency layers but make it a **two-phase** shed: a conservative first bite (memory + truly-stale only, small headroom), recency layers next (tool-clear, snip), an aggressive second shed (project too) last — rather than reordering wholesale. Moving shed entirely after recency would let stale memory crowd out reconstructible-but-bulky tool output, contradicting the loss model. Ship single-phase first; settle the two-phase reorder with a controlled benchmark whose dataset, model, configuration, and raw results are published together.
 
 ## 9. Test plan
 

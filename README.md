@@ -2,8 +2,6 @@
   <img src="assets/banner-dark.svg" alt="OpenCollab mark and wordmark" width="600">
 </p>
 
-<h1 align="center">OpenCollab</h1>
-
 <p align="center">
   <a href="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml"><img src="https://github.com/RISE-X-Lab/OpenCollab/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg" alt="License: MulanPSL-2.0"></a>

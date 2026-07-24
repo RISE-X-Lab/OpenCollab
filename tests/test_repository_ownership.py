@@ -142,7 +142,10 @@ def test_framework_scripts_contain_no_evaluation_entrypoints() -> None:
     scripts = _REPO_ROOT / "scripts"
     assert sorted(path.name for path in scripts.iterdir() if path.is_file() and not path.name.startswith(".")) == [
         "README.md",
+        "check_added_files.py",
+        "check_conventional_title.py",
         "check_dashscope.py",
+        "check_secret_history.py",
         "generate_brand_assets.py",
         "start_opencollab.sh",
     ]

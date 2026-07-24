@@ -615,12 +615,14 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         cancel_event: asyncio.Event | None = None,
     ) -> str:
         """Add one user turn and run it within a shared absolute deadline."""
+        add_timeout = self._remaining_timeout(deadline)
         await self._run_with_timeout(
             session.add_user_message(prompt),
-            self._remaining_timeout(deadline),
+            add_timeout,
         )
+        run_timeout = self._remaining_timeout(deadline)
         run_loop = session.run_loop() if cancel_event is None else session.run_loop(cancel_event)
-        return await self._run_with_timeout(run_loop, self._remaining_timeout(deadline))
+        return await self._run_with_timeout(run_loop, run_timeout)
 
     def _session_budget(self) -> int:
         lease = self._active_budget_lease.get()

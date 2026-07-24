@@ -121,7 +121,7 @@ if command -v d2 >/dev/null 2>&1; then
   d2 --sketch=false --pad 28 "$OUT/<name>.d2" "$OUT/<name>.svg"
 else
   echo "d2 not installed — .d2 saved at $OUT/<name>.d2."
-  echo "Install: curl -fsSL https://d2lang.com/install.sh | sh  (or paste into https://play.d2lang.com)."
+  echo "Install with a maintained package manager such as 'brew install d2', or use https://play.d2lang.com."
 fi
 ```
 - Never pass `--watch` (starts a blocking server). Sequence diagrams use a fixed
