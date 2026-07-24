@@ -134,6 +134,7 @@ class WorkflowStructuredMixin:
                 thinking=False,
             )
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
+            self._record_agent_failure(label, exc)
             await self.log(f"structured agent build failed ({label or 'agent'}): {exc}")
             return None
 
@@ -152,6 +153,7 @@ class WorkflowStructuredMixin:
             await self.log(f"structured agent timed out ({label or 'agent'}) after {timeout}s")
             return None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
+            self._record_agent_failure(label, exc)
             await self.log(f"structured agent failed ({label or 'agent'}): {exc}")
             return None
 
@@ -224,6 +226,7 @@ class WorkflowStructuredMixin:
                 thinking=False,
             )
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
+            self._record_agent_failure(label, exc)
             await self.log(f"structured retry build failed ({label or 'agent'}): {exc}")
             return None
 
@@ -240,6 +243,7 @@ class WorkflowStructuredMixin:
             await self.log(f"structured retry timed out ({label or 'agent'}) after {timeout}s")
             return None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
+            self._record_agent_failure(label, exc)
             await self.log(f"structured retry failed ({label or 'agent'}): {exc}")
             return None
         return capture_tool.captured if _schema_satisfied(capture_tool.captured, schema) else None
