@@ -188,6 +188,7 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         self._pending_cleanup_tasks: set[asyncio.Task[Any]] = set()
         self._active_call_tasks: set[asyncio.Task[Any]] = set()
         self._active_session_tasks: set[asyncio.Task[Any]] = set()
+        self._agent_failures: list[dict[str, Any]] = []
         self._tree_probe = tree_probe
         # Absolute path of the repo the sessions edit/read (the workspace passed to
         # ``run_workflow``). Read-only metadata for workflows that need to run a
@@ -242,6 +243,36 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         step counts across all sessions a workflow produced.
         """
         return tuple(self._sessions)
+
+    @property
+    def agent_failures(self) -> tuple[dict[str, Any], ...]:
+        """Safe structured summaries for child-agent exceptions."""
+        return tuple(dict(failure) for failure in self._agent_failures)
+
+    def _record_agent_failure(self, label: str | None, exc: Exception) -> None:
+        status_code = getattr(exc, "status_code", None)
+        if isinstance(status_code, bool) or not isinstance(status_code, int):
+            response = getattr(exc, "response", None)
+            status_code = getattr(response, "status_code", None)
+        if isinstance(status_code, bool) or not isinstance(status_code, int):
+            status_code = None
+        body = getattr(exc, "body", None)
+        error = body.get("error") if isinstance(body, dict) else None
+        if not isinstance(error, dict):
+            error = body if isinstance(body, dict) else {}
+        error_type = error.get("type")
+        if not isinstance(error_type, str) or not error_type or len(error_type) > 128:
+            error_type = None
+        elif any(not (char.isalnum() or char in "._-") for char in error_type):
+            error_type = None
+        self._agent_failures.append(
+            {
+                "label": str(label or "agent")[:240],
+                "exception_type": type(exc).__name__[:128],
+                "status_code": status_code,
+                "provider_error_type": error_type,
+            }
+        )
 
     async def wait_for_pending_cleanup(self) -> None:
         """Wait until every context-owned call and session task is quiescent.
@@ -553,6 +584,7 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
                 thinking=thinking,
             )
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
+            self._record_agent_failure(label, exc)
             await self.log(f"agent build failed ({label or 'agent'}): {exc}")
             return None
 
@@ -570,6 +602,7 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
             return None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
+            self._record_agent_failure(label, exc)
             await self.log(f"agent failed ({label or 'agent'}): {exc}")
             return None
 
