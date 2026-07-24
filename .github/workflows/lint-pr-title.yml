@@ -1,8 +1,10 @@
-name: PR Title
+name: Conventional Title
 
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
 
 permissions:
   contents: read
@@ -16,15 +18,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Enforce Conventional Commits in the PR title
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the pull request title
+        if: github.event_name == 'pull_request'
         env:
-          # Read via env (never interpolate ${{ }} into the shell) to avoid injection.
           TITLE: ${{ github.event.pull_request.title }}
         run: |
-          echo "PR title: $TITLE"
-          if printf '%s' "$TITLE" | grep -Eq '^(feat|fix|refactor|docs|test|chore|perf|ci|build|style|revert)(\([a-z0-9._/ -]+\))?!?: .+'; then
-            echo "OK: title follows Conventional Commits."
-          else
-            echo "::error::PR title must follow Conventional Commits — e.g. 'feat: add X', 'fix(tui): handle Y', 'chore!: drop Z'. Squash-merge uses the PR title as the commit subject, so it becomes the message on main."
-            exit 1
-          fi
+          set -euo pipefail
+          python3 scripts/check_conventional_title.py --title "$TITLE"
+      - name: Check the pushed commit title
+        if: github.event_name == 'push'
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check_conventional_title.py --commit "$COMMIT_SHA"

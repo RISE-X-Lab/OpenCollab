@@ -21,7 +21,7 @@ from opencollab.adapters.llm.providers import (
     required_env_key,
     warn_provider_near_miss,
 )
-from opencollab.adapters.llm.types import estimate_messages_tokens
+from opencollab.adapters.llm.types import estimate_messages_tokens, model_capabilities
 
 
 @pytest.mark.parametrize("provider", ["anthropic", "Anthropic", "  ANTHROPIC  "])
@@ -312,6 +312,22 @@ def test_openai_other_model_keeps_named_tool_choice():
     )
 
     assert kwargs["tool_choice"] == choice
+
+
+def test_exact_model_capabilities_centralize_provider_compatibility():
+    capabilities = model_capabilities("kimi-for-coding")
+
+    assert capabilities.context_window == 262_144
+    assert capabilities.supports_forced_tool_choice is False
+    assert capabilities.honors_workflow_thinking_override is False
+
+
+def test_unknown_model_capabilities_use_neutral_defaults():
+    capabilities = model_capabilities("unknown-model")
+
+    assert capabilities.context_window is None
+    assert capabilities.supports_forced_tool_choice is True
+    assert capabilities.honors_workflow_thinking_override is True
 
 
 # ---------------------------------------------------------------------------

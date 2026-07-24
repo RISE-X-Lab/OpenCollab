@@ -125,7 +125,7 @@ def _build_summarizer(
 ) -> ReadTimeSummarizer:
     """Build the read-time summarizer that powers ``AutoCompactShaper``.
 
-    Read-time path owns compaction (Option B): wire the 9-section summary
+    Read-time path owns compaction (Option B): wire the structured handoff
     prompt into the otherwise-dormant AutoCompactShaper via a sync bridge over
     the async LLM. We build a fresh client *inside* the summarizer coroutine so
     its async HTTP client never crosses event loops; an injected ``llm`` is
@@ -156,8 +156,8 @@ def _build_default_shaper(
     Cheapest/lowest-loss first: per-tool-result budget bounds any one result;
     the reactive history layers then bound the *total* view once it crosses the
     trigger — clear old tool *content* in place (lowest loss) → snip whole old
-    tool turns → auto-compact (summarize the remaining old span via the ported
-    prompt). All read-time over a copy; transcript stays full for lossless
+    tool turns → auto-compact (summarize the remaining old span via the
+    OpenCollab handoff prompt). All read-time over a copy; transcript stays full for lossless
     resume.
     """
     # Trigger/target scale to the active model's real context window, degrading

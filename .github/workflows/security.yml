@@ -19,6 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
@@ -26,11 +27,25 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - name: Reject secrets outside the audited baseline
-        shell: bash
-        run: |
+        if: github.event_name == 'push'
+        run: |  # pragma: allowlist secret
+          python3 scripts/check_secret_history.py \
+            --trusted-tree "${{ github.sha }}" \
+            --scanner-command "uvx --from detect-secrets==1.5.0 detect-secrets-hook"
+      - name: Scan every proposed commit against the trusted base baseline
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ALLOW_BASELINE_UPDATE: ${{ contains(github.event.pull_request.labels.*.name, 'security-baseline-update') }}
+        run: |  # pragma: allowlist secret
           set -euo pipefail
-          mapfile -d '' tracked_files < <(git ls-files -z)
-          uvx --from detect-secrets==1.5.0 detect-secrets-hook \
-            --no-verify \
-            --baseline .secrets.baseline \
-            "${tracked_files[@]}"
+          baseline_args=()
+          if [ "$ALLOW_BASELINE_UPDATE" = "true" ]; then
+            baseline_args+=(--allow-baseline-change)
+          fi
+          python3 scripts/check_secret_history.py \
+            "$BASE_SHA" \
+            "$HEAD_SHA" \
+            --scanner-command "uvx --from detect-secrets==1.5.0 detect-secrets-hook" \
+            "${baseline_args[@]}"

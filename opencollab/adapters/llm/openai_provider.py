@@ -16,6 +16,7 @@ from opencollab.adapters.llm.types import (
     Usage,
     estimate_messages_tokens,
     estimate_tokens,
+    model_capabilities,
     rescue_empty_turn,
 )
 
@@ -45,8 +46,10 @@ def _build_request_kwargs(
     if tools:
         kwargs["tools"] = tools
         choice = tool_choice or "auto"
-        # Kimi Code rejects forced choices; downstream artifact gates validate auto results.
-        if model == "kimi-for-coding" and (choice == "required" or isinstance(choice, dict)):
+        capabilities = model_capabilities(model)
+        if not capabilities.supports_forced_tool_choice and (
+            choice == "required" or isinstance(choice, dict)
+        ):
             choice = "auto"
         kwargs["tool_choice"] = choice
     # Thinking passthrough: when on, the provider-specific reasoning params ride

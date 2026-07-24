@@ -78,6 +78,16 @@ def rescue_empty_turn(
 # Model context windows
 # ---------------------------------------------------------------------------
 
+
+@dataclass(frozen=True)
+class ModelCapabilities:
+    """Provider-facing behavior known for one exact model identifier."""
+
+    context_window: int | None = None
+    supports_forced_tool_choice: bool = True
+    honors_workflow_thinking_override: bool = True
+
+
 # Best-effort context-window sizes (tokens), keyed by a substring of the model
 # id. Used to derive history-compaction triggers (see
 # ``shaping.history_trigger_target``); an unrecognised model returns ``None`` and
@@ -96,25 +106,34 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gemini": 1_000_000,
 }
 
-_EXACT_MODEL_CONTEXT_WINDOWS: dict[str, int] = {
-    "kimi-for-coding": 262_144,
+_EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "kimi-for-coding": ModelCapabilities(
+        context_window=262_144,
+        supports_forced_tool_choice=False,
+        honors_workflow_thinking_override=False,
+    ),
 }
 
 # Conservative default output reservation when a model is recognised.
 DEFAULT_MAX_OUTPUT_TOKENS = DEFAULT_MAX_TOKENS_PER_STEP
 
 
-def model_context_window(model: str | None) -> int | None:
-    """The known context window for ``model``, or ``None`` if unrecognised."""
+def model_capabilities(model: str | None) -> ModelCapabilities:
+    """Return exact capability metadata plus a best-effort context window."""
     if not model:
-        return None
+        return ModelCapabilities()
     lowered = model.lower()
-    if lowered in _EXACT_MODEL_CONTEXT_WINDOWS:
-        return _EXACT_MODEL_CONTEXT_WINDOWS[lowered]
+    if lowered in _EXACT_MODEL_CAPABILITIES:
+        return _EXACT_MODEL_CAPABILITIES[lowered]
     for key, window in MODEL_CONTEXT_WINDOWS.items():
         if key in lowered:
-            return window
-    return None
+            return ModelCapabilities(context_window=window)
+    return ModelCapabilities()
+
+
+def model_context_window(model: str | None) -> int | None:
+    """The known context window for ``model``, or ``None`` if unrecognised."""
+    return model_capabilities(model).context_window
 
 
 # ---------------------------------------------------------------------------

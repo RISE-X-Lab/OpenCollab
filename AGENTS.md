@@ -36,10 +36,12 @@ concrete type in `bootstrap/`. When splitting a module, keep its public names re
 
 ## Commits & pull requests
 
-- **Conventional Commits**, in **English**: `feat` `fix` `refactor` `docs` `test`
-  `chore` `perf` `ci` `build` `style` `revert`. e.g. `feat: add X`, `fix(tui): handle Y`.
+- **Conventional Commits** with an English type and a Chinese summary: `feat`
+  `fix` `refactor` `docs` `test` `chore` `perf` `ci` `build` `style` `revert`.
 - **The PR title must itself be a valid Conventional Commit** — merges are squashed, so
   the PR title becomes the commit subject on `main`.
+- Commit messages, PR titles, PR descriptions, migration notes, and GitHub
+  review replies use Chinese.
 - **One focused change per PR.** Don't bundle unrelated work.
 - `refactor:` must be behavior-preserving.
 - Feature branches are squash-merged, so keep review churn out of `main` — don't rely on
@@ -55,8 +57,9 @@ concrete type in `bootstrap/`. When splitting a module, keep its public names re
 
 ## Conventions that keep the repo clean
 
-- **English everywhere public-facing** — code, comments, docs, commit messages, PR text.
-  This repo ships to a public/OSS audience; no Chinese in tracked files.
+- **English in tracked public files** — code, comments, and documentation stay
+  in English. Git metadata and GitHub collaboration text follow the Chinese
+  convention above.
 - **No hardcoded infrastructure.** Never bake a hostname, NFS path, username, private
   model name, or personal env-file path in as a default. Read them from env/CLI and
   fail fast if unset. (These leak topology and are useless to an external clone.)

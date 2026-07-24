@@ -23,9 +23,9 @@ DEFAULT_HISTORY_KEEP_RECENT_GROUPS = 4
 # turns) have no ``_ctx`` and are governed by the recency-based layers instead.
 PIN_FLOOR = 70
 
-# Window-derived trigger math (ref: context-compaction-py effective_context_window).
-# effective = context_window - output_reserve; trigger = effective - buffer; the
-# layers then compact down to ``trigger * HISTORY_TARGET_RATIO`` (anti-thrash).
+# Window-derived trigger math. The effective input budget reserves room for the
+# next output; the trigger also keeps a safety buffer. Compaction targets a
+# lower ratio so the next turn does not immediately compact again.
 DEFAULT_OUTPUT_RESERVE_TOKENS = 20_000  # held back for the summary/answer response
 DEFAULT_COMPACT_BUFFER_TOKENS = 13_000  # safety margin below the effective window
 HISTORY_TARGET_RATIO = 0.75

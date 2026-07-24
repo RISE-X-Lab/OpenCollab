@@ -23,5 +23,6 @@ uv run pytest -q && uv run ruff check .
 - [ ] Lint passes (`ruff check`)
 - [ ] No inward → outward imports (adapters → application → domain preserved)
 - [ ] Public names kept re-exported when a module was split
-- [ ] Conventional-commit title; public-facing text in English
+- [ ] Conventional-commit title with a Chinese summary
+- [ ] Code, comments, and tracked documentation are in English
 - [ ] No secrets committed
