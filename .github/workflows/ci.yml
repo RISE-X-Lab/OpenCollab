@@ -5,47 +5,268 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.10", "3.11", "3.12"]
-    defaults:
-      run:
-        working-directory: opencollab
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - name: Sync dependencies
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
       - name: Lint (whole repo)
-        working-directory: .
-        run: uv run --project opencollab ruff check .
+        run: uv run ruff check .
       - name: Test
         run: uv run pytest -q
+
+  distribution:
+    name: Distribution artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Build wheel from source distribution
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifact_root="$RUNNER_TEMP/opencollab-dist"
+          mkdir -p "$artifact_root/sdist" "$artifact_root/wheel"
+          uv build --sdist --no-sources --out-dir "$artifact_root/sdist"
+          sdists=("$artifact_root"/sdist/*.tar.gz)
+          if [ "${#sdists[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one sdist, found ${#sdists[@]}."
+            exit 1
+          fi
+          uv build --wheel --no-sources "${sdists[0]}" --out-dir "$artifact_root/wheel"
+          wheels=("$artifact_root"/wheel/*.whl)
+          if [ "${#wheels[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one wheel, found ${#wheels[@]}."
+            exit 1
+          fi
+      - name: Validate artifact metadata and README rendering
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifact_root="$RUNNER_TEMP/opencollab-dist"
+          sdists=("$artifact_root"/sdist/*.tar.gz)
+          wheels=("$artifact_root"/wheel/*.whl)
+          test "${#sdists[@]}" -eq 1
+          test "${#wheels[@]}" -eq 1
+          uvx --from twine==6.2.0 twine check "${sdists[0]}" "${wheels[0]}"
+      - name: Inspect artifact contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifact_root="$RUNNER_TEMP/opencollab-dist"
+          sdists=("$artifact_root"/sdist/*.tar.gz)
+          wheels=("$artifact_root"/wheel/*.whl)
+          test "${#sdists[@]}" -eq 1
+          test "${#wheels[@]}" -eq 1
+          uv run --isolated --no-project --python 3.12 python - \
+            "${sdists[0]}" "${wheels[0]}" pyproject.toml \
+            opencollab/bootstrap/prompts/lead.md \
+            opencollab/bootstrap/prompts/role.md <<'PY'
+          from __future__ import annotations
+
+          import sys
+          import tarfile
+          import tomllib
+          import zipfile
+          from email.parser import BytesParser
+          from email.policy import default
+          from pathlib import Path, PurePosixPath
+
+          sdist_path = Path(sys.argv[1])
+          wheel_path = Path(sys.argv[2])
+          project = tomllib.loads(Path(sys.argv[3]).read_text(encoding="utf-8"))["project"]
+          expected_license_files = {
+              Path(path).name: Path(path).read_bytes()
+              for path in project["license-files"]
+          }
+          expected_prompts = {
+              Path(path).name: Path(path).read_bytes()
+              for path in sys.argv[4:]
+          }
+
+          def check_metadata(raw: bytes, *, artifact: str) -> None:
+              metadata = BytesParser(policy=default).parsebytes(raw)
+              assert metadata["Name"] == project["name"], (artifact, metadata["Name"])
+              assert metadata["Version"] == project["version"], (artifact, metadata["Version"])
+              assert metadata["License-Expression"] == project["license"], (
+                  artifact,
+                  metadata["License-Expression"],
+              )
+              classifiers = metadata.get_all("Classifier", [])
+              assert "Typing :: Typed" not in classifiers, (artifact, classifiers)
+
+          def matching_names(names: list[str], basename: str) -> list[str]:
+              return [name for name in names if PurePosixPath(name).name == basename]
+
+          with tarfile.open(sdist_path, "r:gz") as archive:
+              names = archive.getnames()
+              for basename, expected in expected_license_files.items():
+                  licenses = matching_names(names, basename)
+                  assert len(licenses) == 1, ("sdist license file", basename, licenses)
+                  extracted_license = archive.extractfile(licenses[0])
+                  assert extracted_license is not None
+                  assert extracted_license.read() == expected
+              package_info = [name for name in names if name.endswith("/PKG-INFO")]
+              assert len(package_info) == 1, ("sdist PKG-INFO", package_info)
+              extracted_metadata = archive.extractfile(package_info[0])
+              assert extracted_metadata is not None
+              check_metadata(extracted_metadata.read(), artifact="sdist")
+              assert not matching_names(names, "py.typed"), "sdist contains py.typed"
+              for prompt_name, expected in expected_prompts.items():
+                  prompts = [
+                      name
+                      for name in names
+                      if name.endswith(f"/opencollab/bootstrap/prompts/{prompt_name}")
+                  ]
+                  assert len(prompts) == 1, ("sdist prompt", prompt_name, prompts)
+                  extracted_prompt = archive.extractfile(prompts[0])
+                  assert extracted_prompt is not None
+                  assert extracted_prompt.read() == expected
+
+          with zipfile.ZipFile(wheel_path) as archive:
+              names = archive.namelist()
+              for basename, expected in expected_license_files.items():
+                  licenses = matching_names(names, basename)
+                  assert len(licenses) == 1, ("wheel license file", basename, licenses)
+                  assert archive.read(licenses[0]) == expected
+              metadata_names = [name for name in names if name.endswith(".dist-info/METADATA")]
+              assert len(metadata_names) == 1, ("wheel METADATA", metadata_names)
+              check_metadata(archive.read(metadata_names[0]), artifact="wheel")
+              assert not matching_names(names, "py.typed"), "wheel contains py.typed"
+              for prompt_name, expected in expected_prompts.items():
+                  prompt_path = f"opencollab/bootstrap/prompts/{prompt_name}"
+                  assert names.count(prompt_path) == 1, ("wheel prompt", prompt_path)
+                  assert archive.read(prompt_path) == expected
+
+          print("Artifact contents and metadata are valid.")
+          PY
+      - name: Install and probe the wheel outside the checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          artifact_root="$RUNNER_TEMP/opencollab-dist"
+          install_root="$RUNNER_TEMP/opencollab-install"
+          probe_root="$RUNNER_TEMP/opencollab-probe"
+          wheels=("$artifact_root"/wheel/*.whl)
+          test "${#wheels[@]}" -eq 1
+          uv venv --no-project --python 3.12 "$install_root"
+          uv pip install --python "$install_root/bin/python" --link-mode copy "${wheels[0]}"
+          mkdir -p "$probe_root/workflows"
+          cd "$probe_root"
+          "$install_root/bin/python" - <<'PY'
+          from __future__ import annotations
+
+          import importlib.metadata as metadata
+          import importlib.resources as resources
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          import opencollab
+          import opencollab.sdk as sdk
+          from opencollab.adapters.cli.main import app
+          from typer.main import get_command
+
+          package_path = Path(opencollab.__file__).resolve()
+          assert package_path.is_relative_to(Path(sys.prefix).resolve()), package_path
+          assert opencollab.__version__ == metadata.version("opencollab")
+          assert opencollab.__all__ == ["OpenCollab", "RunError", "RunResult", "workflow"]
+          assert sdk.__all__ == opencollab.__all__
+          assert sdk.OpenCollab is opencollab.OpenCollab
+          package_root = resources.files("opencollab.bootstrap")
+          for prompt_name in ("lead.md", "role.md"):
+              prompt = package_root.joinpath("prompts", prompt_name)
+              assert prompt.is_file(), prompt
+              assert prompt.read_text(encoding="utf-8").strip(), prompt
+          installed_metadata = metadata.metadata("opencollab")
+          assert installed_metadata["License-Expression"] == "MulanPSL-2.0"
+          assert "Typing :: Typed" not in installed_metadata.get_all("Classifier", [])
+
+          cli = Path(sys.executable).with_name("opencollab")
+
+          def run_cli(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+              completed = subprocess.run(
+                  [str(cli), *args],
+                  cwd=Path.cwd(),
+                  env=env,
+                  capture_output=True,
+                  text=True,
+                  timeout=30,
+                  check=False,
+              )
+              assert completed.returncode == 0, (args, completed.stdout, completed.stderr)
+              return completed
+
+          for help_args in (("--help",), ("workflow", "--help"), ("workflow", "run", "--help")):
+              run_cli(*help_args)
+
+          root_command = get_command(app)
+          root_options = {option for parameter in root_command.params for option in parameter.opts}
+          assert "--workspace" in root_options
+          assert "workflow" in root_command.commands
+          workflow_command = root_command.commands["workflow"]
+          assert {"list", "run"}.issubset(workflow_command.commands)
+          run_command = workflow_command.commands["run"]
+          run_options = {option for parameter in run_command.params for option in parameter.opts}
+          assert "--args" in run_options
+
+          workflow_env = dict(os.environ)
+          workflow_env["OPENCOLLAB_WORKFLOWS_DIR"] = str(Path.cwd() / "workflows")
+          workflow_list = run_cli("workflow", "list", env=workflow_env)
+          plain_workflow_list = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", workflow_list.stdout)
+          assert "No workflows found." in plain_workflow_list, workflow_list.stdout
+          print("Installed package and SDK probes passed.")
+          PY
 
   macos-integrity:
     name: macOS path integrity
     runs-on: macos-latest
     timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: opencollab
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.12"
           enable-cache: true
       - name: Sync dependencies
-        run: uv sync --extra dev
+        run: uv sync --locked --extra dev
       - name: Execute the macOS path-integrity proof
         run: |
           uv run pytest -q -p no:cacheprovider --junitxml="$RUNNER_TEMP/h68.xml" \

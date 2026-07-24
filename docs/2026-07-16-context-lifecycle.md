@@ -1,5 +1,9 @@
 # Context: Assembly, Injection & Shaping — the runtime lifecycle
 
+> **Historical architecture note.** This chapter records the post-S3 design at
+> the time of writing. Branch and `file:line` references may have drifted; use
+> current tests and source for executable behavior.
+
 > **What.** How a session's context is *built once*, *injected once*, and then
 > *re-shaped on every LLM call* — the full runtime path from "where does the goal
 > come from" to "what the model actually sees this turn".
@@ -10,7 +14,7 @@
 > **Status.** Grounded in code, post-Lane-S3 (5 context layers, 5 shaper rungs).
 > Supersedes the *runtime-flow* portions of `2026-06-24-prompt-architecture.md`,
 > which still describes the pre-S3 lazy-loader / 7-layer model. `file:line`
-> refs are current as of branch `refactor/slim-s3-context`.
+> refs describe the post-S3 implementation at the time of writing.
 
 ---
 
@@ -155,13 +159,15 @@ concatenation into a single goal string happens in an **external harness**
 (the prediction-generation workflow package).
 
 That goal string crosses into OpenCollab through the **SDK boundary**, in one of
-two request shapes:
+two plain calls:
 
-- `WorkflowRunRequest.inputs: Mapping[str, Any]` (`sdk/models.py:189`) → the
-  external workflow function reads `inputs[...]` and drives the OC
-  scheduler/team (`sdk/runtime.py:73`).
-- `AgentRunRequest.prompt: str` (`sdk/models.py:238`) →
-  `_run_bootstrap_agent(prompt=…)` for the single-agent path (`sdk/runtime.py:163`).
+- `OpenCollab.workflow(flow, inputs)` → the external workflow function reads
+  `inputs[...]` and drives the workflow regime (`sdk/client.py`).
+- `OpenCollab.agent(prompt)` → the single-agent bootstrap lifecycle
+  (`bootstrap/programmatic.py`).
+
+`OpenCollab.team(prompt)` is the symmetric scheduler-regime entry. The facade
+only validates arguments and delegates; concrete assembly remains in bootstrap.
 
 By the time it reaches OC it is **just a string**; OC knows nothing of SWE-bench
 fields. Its fate inside OC — and whether it is pinned — is decided by *which
@@ -311,9 +317,8 @@ pipeline `:173`. `bootstrap/session_factory.py`: repo map `:318`, spawn seed
 `:347`/`:369`, lead (no seed) `:392`. `application/session.py`: `messages`
 property `:131`, `add_user_message` `:188`.
 
-**SDK boundary** — `sdk/models.py`: `WorkflowRunRequest.inputs` `:189`,
-`AgentRunRequest.prompt` `:238`. `sdk/runtime.py`: `run_workflow` `:73`,
-`run_agent` / `_run_bootstrap_agent(prompt=)` `:163`.
+**SDK boundary** — `sdk/client.py`: `OpenCollab.agent`, `team`, and `workflow`.
+`bootstrap/programmatic.py`: shared composition and lifecycle evidence.
 
 **Per-turn loop** — `application/session_run.py`: `run_loop` `:286`, `call_llm`
 `:913`, steering `:939`/`:955`/`:964`, `shape` `:960`, `_complete` `:976`,

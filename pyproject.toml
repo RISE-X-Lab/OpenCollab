@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "opencollab"
+version = "0.4.0"
+description = "Minimal multi-agent software development framework for explicit team and workflow orchestration."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MulanPSL-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]
+authors = [{ name = "OpenCollab contributors" }]
+maintainers = [{ name = "RISE-X-Lab" }]
+keywords = ["llm", "agent", "multi-agent", "coding-agent", "software-engineering"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+]
+dependencies = [
+    "openai>=1.30",
+    "anthropic>=0.40",
+    "typer>=0.12",
+    "rich>=13.0",
+    "prompt-toolkit>=3.0",
+    "filelock>=3.15",
+    "pydantic>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.5"]
+
+[project.scripts]
+opencollab = "opencollab.adapters.cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/RISE-X-Lab/OpenCollab"
+Repository = "https://github.com/RISE-X-Lab/OpenCollab"
+Issues = "https://github.com/RISE-X-Lab/OpenCollab/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["opencollab"]
+
+# Ruff configuration lives in the repo-root ruff.toml, so a single config governs
+# the whole repository tree.
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["."]
+testpaths = ["tests"]
+norecursedirs = [".git", ".venv", "__pycache__"]

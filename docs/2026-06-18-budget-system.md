@@ -1,5 +1,9 @@
 # The OpenCollab Budget System
 
+> **Historical design record.** This document describes the implementation at
+> commit `58a29a8` and is not a maintained API reference. Verify behavior
+> against the current code and tests before relying on individual details.
+
 Reference for how OpenCollab meters, divides, and enforces a **token budget**
 across an agent session and a team of spawned agents, and how that budget
 relates to (but is distinct from) the model **context window**.
@@ -20,7 +24,7 @@ consume before it must stop?"* It is a cost/effort ceiling, deliberately
 graceful (see §5), not a hard kill switch.
 
 Two distinct counters live on `SessionState`
-(`opencollab/opencollab/domain/session.py`):
+(`opencollab/domain/session.py`):
 
 | Field | Meaning | Used for |
 |-------|---------|----------|
@@ -43,17 +47,17 @@ Keeping these separate is intentional: `used_tokens` is *spend over time*,
 ## 2. Accounting — where tokens are counted
 
 There is exactly **one** increment site:
-`SessionRunUseCase.run_llm_call` (`opencollab/opencollab/application/session_run.py`)
+`SessionRunUseCase.run_llm_call` (`opencollab/application/session_run.py`)
 calls `self.state.add_used_tokens(response.usage.total_tokens)` once per LLM
 call, and `self.state.set_context_tokens(response.usage.input_tokens)`.
 
 `Usage.total_tokens = input_tokens + output_tokens`
-(`opencollab/opencollab/adapters/llm/types.py`). The tokens come from the real
+(`opencollab/adapters/llm/types.py`). The tokens come from the real
 provider `usage` object, not an estimate — except as a defensive fallback (§6).
 
 Scope is **per session**: each `SessionState` has its own `used_tokens`. The
 scheduler also exposes a team **aggregate** (`Scheduler.used_tokens` →
-`SessionTable.total_used_tokens`, `opencollab/opencollab/domain/scheduler.py`),
+`SessionTable.total_used_tokens`, `opencollab/domain/scheduler.py`),
 which is what the aggregate ceiling (§5) enforces.
 
 ---
@@ -61,9 +65,9 @@ which is what the aggregate ceiling (§5) enforces.
 ## 3. The limit — defaults and override chain
 
 1. **Config default `1_000_000`** — `Settings.budget`
-   (`opencollab/opencollab/bootstrap/config.py`), env var `OPENCOLLAB_BUDGET`
+   (`opencollab/bootstrap/config.py`), env var `OPENCOLLAB_BUDGET`
    (default `"1000000"`).
-2. **CLI `--budget`** (`opencollab/opencollab/adapters/cli/main.py`) — default
+2. **CLI `--budget`** (`opencollab/adapters/cli/main.py`) — default
    `None`.
 3. **The interactive/team bump:** when `--budget` is *not* passed, agent 0 can
    spawn a whole team, so the CLI raises the effective budget:
@@ -71,14 +75,14 @@ which is what the aggregate ceiling (§5) enforces.
    an interactive/team run is 1M.** An explicit
    `--budget N` is respected verbatim.
 4. The resolved value is handed to the scheduler as `max_budget_tokens`
-   (`opencollab/opencollab/bootstrap/scheduler_factory.py`).
+   (`opencollab/bootstrap/scheduler_factory.py`).
 
 Defaults differ by entry point (only the resolved value at the composition root
 matters in practice): `Scheduler` and `SessionRunUseCase` both default to
 `1_000_000`. The workflow engine uses its own model: unbounded sessions get
 `UNBOUNDED_SESSION_BUDGET = 1_000_000` and the pool is genuinely shared, raising
 `WorkflowBudgetExceeded` at the run boundary
-(`opencollab/opencollab/application/workflow.py`).
+(`opencollab/application/workflow.py`).
 
 ---
 
@@ -88,7 +92,7 @@ When the Lead (aid 0) spawns children they do **not** share one live pool;
 each child gets its own per-session cap, carved out so the **sum of all grants
 can never exceed the global pool**. This is the *reserve-at-allocation* model.
 
-Two pure domain functions (`opencollab/opencollab/domain/scheduler.py`):
+Two pure domain functions (`opencollab/domain/scheduler.py`):
 
 ```python
 def lead_reserve(total):       # headroom the Lead keeps for its own turns
@@ -98,14 +102,14 @@ def split_budget(total, allocated):   # what the next child gets
     return max(10_000, total - allocated)   # the unallocated remainder, floored
 ```
 
-The scheduler (`opencollab/opencollab/application/scheduler.py`) tracks a running
+The scheduler (`opencollab/application/scheduler.py`) tracks a running
 `_allocated_tokens`:
 
 - At Lead registration it is **seeded with `lead_reserve(total)`**, so the first
   child is granted `total - total//4` (e.g. 750k of a 1M pool).
 - `_reserve_child_budget(aid)` grants `split_budget(total, _allocated_tokens)`
   and books it **synchronously, before the first `await`** in `spawn`
-  (`opencollab/opencollab/application/scheduler_lifecycle.py`) — so a *batched or
+  (`opencollab/application/scheduler_lifecycle.py`) — so a *batched or
   concurrent* set of spawns each see the *updated* allocation and cannot all
   draw against an empty pool.
 - `_release_child_budget(aid)` reclaims a child's grant when it reaches a
@@ -129,7 +133,7 @@ pool.
 ## 5. Enforcement — graceful, never a hard cut
 
 Enforcement lives in `SessionRunUseCase.precheck`
-(`opencollab/opencollab/application/session_run.py`), which runs **between
+(`opencollab/application/session_run.py`), which runs **between
 steps**, at a clean boundary — *after* the previous step fully finished and
 *before* the next LLM call. Two budget guards fire there:
 
@@ -137,7 +141,7 @@ steps**, at a clean boundary — *after* the previous step fully finished and
 2. **Aggregate team ceiling** (defense-in-depth) — `team_budget_exhausted()`,
    an injected callable derived from `Scheduler.budget_exhausted`
    (`aggregate used >= global cap`, exposed via `SchedulerPort.budget_exhausted`
-   in `opencollab/opencollab/application/ports.py`). This stops a session even
+   in `opencollab/application/ports.py`). This stops a session even
    when it is under its own cap, so fan-out can't collectively blow the pool.
 
 On either, the guard **appends a visible system message**, emits a
@@ -170,7 +174,7 @@ is bounded, not unbounded.
 ## 6. Token-accounting fidelity
 
 The meter is only as honest as the `usage` it reads. Two provider-level fixes
-keep it accurate (`opencollab/opencollab/adapters/llm/`):
+keep it accurate (`opencollab/adapters/llm/`):
 
 - **Anthropic prompt-cache tokens** (`anthropic_provider.py::_parse_usage`).
   When caching is active the API splits input into `input_tokens` (uncached),
@@ -207,7 +211,7 @@ window. That is handled by a separate machinery.
 ### 7a. Reactive compaction (proactive)
 
 History is trimmed before each call by a reactive compaction chain
-(`opencollab/opencollab/application/shaping/`). It no-ops until an estimate
+(`opencollab/application/shaping/`). It no-ops until an estimate
 crosses a trigger, then degrades progressively. The trigger is window-derived
 (`history_trigger_target`, `shaping/pipeline.py`):
 
@@ -296,14 +300,14 @@ three-layer net (commit `58a29a8`) prevents that from crashing the session:
 
 | Concern | File |
 |---------|------|
-| Meter + counters | `opencollab/opencollab/domain/session.py` (`used_tokens`, `context_tokens`) |
-| Accumulate + enforce | `opencollab/opencollab/application/session_run.py` (`run_llm_call`, `precheck`, `call_llm`) |
-| Token shape | `opencollab/opencollab/adapters/llm/types.py` (`Usage`) |
-| Provider usage parsing | `opencollab/opencollab/adapters/llm/{anthropic,openai}_provider.py` (`_parse_usage`) |
-| Overflow classifier / retry | `opencollab/opencollab/adapters/llm/{errors,retry}.py` |
-| Budget division | `opencollab/opencollab/domain/scheduler.py` (`split_budget`, `lead_reserve`) |
-| Allocation bookkeeping | `opencollab/opencollab/application/{scheduler,scheduler_lifecycle}.py` |
-| Aggregate ceiling port | `opencollab/opencollab/application/ports.py` (`SchedulerPort.budget_exhausted`) |
-| Limit resolution | `opencollab/opencollab/bootstrap/config.py`, `opencollab/opencollab/adapters/cli/main.py` |
-| Compaction / window | `opencollab/opencollab/application/shaping/{pipeline,reactive}.py` |
-| Workflow budget | `opencollab/opencollab/application/workflow.py` |
+| Meter + counters | `opencollab/domain/session.py` (`used_tokens`, `context_tokens`) |
+| Accumulate + enforce | `opencollab/application/session_run.py` (`run_llm_call`, `precheck`, `call_llm`) |
+| Token shape | `opencollab/adapters/llm/types.py` (`Usage`) |
+| Provider usage parsing | `opencollab/adapters/llm/{anthropic,openai}_provider.py` (`_parse_usage`) |
+| Overflow classifier / retry | `opencollab/adapters/llm/{errors,retry}.py` |
+| Budget division | `opencollab/domain/scheduler.py` (`split_budget`, `lead_reserve`) |
+| Allocation bookkeeping | `opencollab/application/{scheduler,scheduler_lifecycle}.py` |
+| Aggregate ceiling port | `opencollab/application/ports.py` (`SchedulerPort.budget_exhausted`) |
+| Limit resolution | `opencollab/bootstrap/config.py`, `opencollab/adapters/cli/main.py` |
+| Compaction / window | `opencollab/application/shaping/{pipeline,reactive}.py` |
+| Workflow budget | `opencollab/application/workflow.py` |
