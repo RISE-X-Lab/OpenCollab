@@ -1,9 +1,14 @@
 # ruff: noqa: E501 — wrapping prompt lines would alter the model instruction.
-"""OpenCollab's independently authored conversation handoff protocol.
+"""Claude Code-derived conversation compaction prompt and OpenCollab adapters.
 
-The protocol preserves the facts needed to continue a long-running task while
-keeping the implementation provider-neutral. The module contains only strings,
-a compatibility parser, and OpenAI-style message ``dict`` builders.
+The prompt follows a third-party technical description of the nine-section
+conversation compaction prompt distributed with Anthropic Claude Code.
+Anthropic's product repository, license, and legal terms are recorded
+separately from that technical reference because the product repository does
+not publish the corresponding core prompt source file.
+
+Claude Code is a product of Anthropic PBC. OpenCollab is not affiliated with
+or endorsed by Anthropic.
 """
 
 from __future__ import annotations
@@ -11,57 +16,67 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# The summarizer receives the full segment, so it can produce the handoff
-# without external reads or side effects.
-NO_TOOLS_PREAMBLE = """Create a continuation record using plain text only. Do not invoke tools.
+CLAUDE_CODE_REPOSITORY_URL = "https://github.com/anthropics/claude-code"
+CLAUDE_CODE_LICENSE_URL = "https://github.com/anthropics/claude-code/blob/main/LICENSE.md"
+CLAUDE_CODE_TERMS_URL = "https://code.claude.com/docs/en/legal-and-compliance"
+CLAUDE_CODE_COMPACTION_REFERENCE_URL = "https://y-agent.github.io/inside-claude-code/04-context-compaction.html"
 
-Use only the conversation already provided. Return exactly one <summary> block.
+# The summarizer receives the full segment, so it can produce the summary
+# without external reads or side effects.
+NO_TOOLS_PREAMBLE = """CRITICAL: Respond with TEXT ONLY. Do NOT call any tools.
+
+- You already have all the context you need in the conversation above.
+- Tool calls will be REJECTED and will waste your only turn.
+- Your entire response must be plain text: an <analysis> block followed by a <summary> block.
 
 """
 
-NO_TOOLS_TRAILER = "\n\nReturn the completed <summary> block and nothing else."
+NO_TOOLS_TRAILER = "\n\nREMINDER: text only — do NOT call any tools."
 
-BASE_COMPACT_PROMPT = """Prepare a continuation record for another agent that must resume this task without repeating completed work.
+_ANALYSIS_INSTRUCTION = """Before providing your final summary, wrap your analysis in <analysis> tags to organize your thoughts. In your analysis:
 
-Use the following headings inside the <summary> block:
+1. Chronologically analyze each message. For each section identify:
+   - The user's (or teammate's) explicit requests and intents
+   - Your approach to addressing them
+   - Key decisions, technical concepts and code patterns
+   - Specific details: file names, full code snippets, function signatures, file edits
+   - Errors you ran into and how you fixed them
+   - Specific feedback, especially when told to do something differently.
+2. Double-check for technical accuracy and completeness."""
 
-Goal
-User directions
-Completed work
-Technical state
-Decisions and constraints
-Failures and diagnostics
-Remaining work
-Immediate next action
+BASE_COMPACT_PROMPT = f"""Your task is to create a detailed summary of the conversation so far, paying close attention to the explicit requests and your previous actions.
+This summary should be thorough in capturing technical details, code patterns, and architectural decisions essential for continuing work without losing context.
 
-Record concrete facts rather than commentary. Preserve file paths, symbols, commands, error messages, identifiers, test results, and unresolved choices when they affect the next action. Under User directions, retain every user or teammate instruction in chronological order and make later corrections visibly supersede earlier ones. Under Completed work, distinguish verified outcomes from attempted work. Under Immediate next action, quote the latest unfinished request exactly enough to prevent a change of task.
+{_ANALYSIS_INSTRUCTION}
 
-Use this form:
+Your summary should include the following sections:
+
+1. Primary Request and Intent: Capture all of the explicit requests and intents in detail.
+2. Key Technical Concepts: List all important technical concepts, technologies, and frameworks discussed.
+3. Files and Code Sections: Enumerate specific files and code sections examined, modified, or created. Include full code snippets where applicable and why each file matters.
+4. Errors and fixes: List all errors you ran into and how you fixed them, plus any feedback received.
+5. Problem Solving: Document problems solved and ongoing troubleshooting.
+6. All user messages: List ALL user and teammate messages that are not tool results. These are critical for understanding feedback and changing intent.
+7. Pending Tasks: Outline any pending tasks you have explicitly been asked to work on.
+8. Current Work: Describe precisely what was being worked on immediately before this summary, with file names and code snippets.
+9. Optional Next Step: List the next step, DIRECTLY in line with the most recent explicit request. Include verbatim quotes from the most recent conversation showing exactly where you left off, to avoid drift.
+
+Structure your output as:
+
+<analysis>
+[Your thought process]
+</analysis>
 
 <summary>
-Goal
-...
-
-User directions
-...
-
-Completed work
-...
-
-Technical state
-...
-
-Decisions and constraints
-...
-
-Failures and diagnostics
-...
-
-Remaining work
-...
-
-Immediate next action
-...
+1. Primary Request and Intent:
+2. Key Technical Concepts:
+3. Files and Code Sections:
+4. Errors and fixes:
+5. Problem Solving:
+6. All user messages:
+7. Pending Tasks:
+8. Current Work:
+9. Optional Next Step:
 </summary>
 """
 
@@ -125,7 +140,7 @@ def build_continuation_message(
         )
     if suppress_followups:
         body += (
-            "\n\nAct on Immediate next action now. Preserve outstanding "
+            "\n\nAct on the latest unfinished or next-action item now. Preserve outstanding "
             "constraints, avoid repeating completed steps, and respond to the "
             "active task directly without describing the handoff."
         )
@@ -147,6 +162,10 @@ def build_summary_request(
 
 
 __all__ = [
+    "CLAUDE_CODE_REPOSITORY_URL",
+    "CLAUDE_CODE_LICENSE_URL",
+    "CLAUDE_CODE_TERMS_URL",
+    "CLAUDE_CODE_COMPACTION_REFERENCE_URL",
     "NO_TOOLS_PREAMBLE",
     "NO_TOOLS_TRAILER",
     "BASE_COMPACT_PROMPT",
