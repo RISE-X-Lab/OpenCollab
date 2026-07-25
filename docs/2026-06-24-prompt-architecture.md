@@ -87,20 +87,26 @@ span to a summarizer invoked with OpenCollab's `BASE_COMPACT_PROMPT`
 (`application/compaction_prompt.py`):
 
 ```
-Goal                       User directions              Completed work
-Technical state            Decisions and constraints    Failures and diagnostics
-Remaining work             Immediate next action
+1. Primary Request and Intent       6. All user messages
+2. Key Technical Concepts           7. Pending Tasks
+3. Files and Code Sections          8. Current Work
+4. Errors and fixes                 9. Optional Next Step
+5. Problem Solving
 ```
 
-Two fields guard continuity. **User directions** preserves every human or
-teammate instruction in order and makes later corrections supersede earlier
-ones. **Immediate next action** anchors the handoff to the latest unfinished
-request.
+This nine-section structure and its instruction semantics follow a third-party
+technical description of the conversation compaction prompt distributed with
+Anthropic Claude Code. The official product repository, official terms, and
+third-party technical reference are identified separately in
+`application/compaction_prompt.py` and `THIRD_PARTY_NOTICES.md`. **All user
+messages** preserves human and teammate directions, while **Optional Next
+Step** anchors the handoff to the latest unfinished request with a verbatim
+quote.
 
 The instruction is wrapped by `NO_TOOLS_PREAMBLE` and `NO_TOOLS_TRAILER`, then
-assembled by `get_compact_prompt`. The model returns one `<summary>` block.
-`format_compact_summary` unwraps it and accepts legacy `<analysis>` prefixes so
-stored sessions remain readable. `build_summary_request` and
+assembled by `get_compact_prompt`. The model returns an `<analysis>` scratchpad
+followed by a `<summary>` block. `format_compact_summary` removes the scratchpad
+and unwraps the summary. `build_summary_request` and
 `build_continuation_message` frame the request and response.
 
 > This is the very prompt shape that produces the `[Context auto-compacted …]`
@@ -177,7 +183,7 @@ error.
 | `_named_tool_choice` | `application/workflow_structured.py` | 45 |
 | `structured_output` tool name | `application/structured_output.py` | 26 |
 | `NO_TOOLS_PREAMBLE` / `NO_TOOLS_TRAILER` | `application/compaction_prompt.py` | current definitions |
-| `BASE_COMPACT_PROMPT` (8 fields) | `application/compaction_prompt.py` | current definition |
+| `BASE_COMPACT_PROMPT` (9 sections) | `application/compaction_prompt.py` | current definition |
 | `get_compact_prompt` | `application/compaction_prompt.py` | current definition |
 | `format_compact_summary` | `application/compaction_prompt.py` | current definition |
 | `build_continuation_message` / `build_summary_request` | `application/compaction_prompt.py` | current definitions |

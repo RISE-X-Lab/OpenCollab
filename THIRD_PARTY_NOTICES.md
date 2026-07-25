@@ -3,6 +3,23 @@
 OpenCollab includes the following third-party software. Each component remains
 subject to its own license terms.
 
+## Claude Code conversation compaction prompt
+
+- Upstream product: https://github.com/anthropics/claude-code
+- Upstream license notice:
+  https://github.com/anthropics/claude-code/blob/main/LICENSE.md
+- Legal terms: https://code.claude.com/docs/en/legal-and-compliance
+- Public description of the nine-section prompt:
+  https://y-agent.github.io/inside-claude-code/04-context-compaction.html
+- Adapted file: `opencollab/application/compaction_prompt.py`
+
+The prompt follows the nine-section structure and instruction semantics
+described by the third-party technical reference above for Anthropic Claude
+Code. The official product repository does not publish the corresponding core
+prompt source file. Claude Code is copyright Anthropic PBC and is subject to
+Anthropic's applicable terms. This notice records provenance and does not
+replace those terms or grant redistribution rights.
+
 ## js-yaml 4.1.1
 
 - Upstream: https://github.com/nodeca/js-yaml/tree/4.1.1
