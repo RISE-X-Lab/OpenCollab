@@ -157,7 +157,7 @@ def _build_default_shaper(
     the reactive history layers then bound the *total* view once it crosses the
     trigger — clear old tool *content* in place (lowest loss) → snip whole old
     tool turns → auto-compact (summarize the remaining old span via the
-    OpenCollab handoff prompt). All read-time over a copy; transcript stays full for lossless
+    Claude Code-derived compaction prompt). All read-time over a copy; transcript stays full for lossless
     resume.
     """
     # Trigger/target scale to the active model's real context window, degrading
