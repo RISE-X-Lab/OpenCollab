@@ -7,9 +7,13 @@ import asyncio
 import pytest
 from workflow_runtime_test_support import (
     _cfg,
+    _FakeSession,
     _InjectedEnvironment,
 )
 
+from opencollab.bootstrap import (
+    _workflow_runtime_session as workflow_session,
+)
 from opencollab.bootstrap import (
     workflow_runtime,
 )
@@ -108,3 +112,49 @@ async def test_bootstrap_preserves_inner_timeout(monkeypatch):
             deadline_monotonic=asyncio.get_running_loop().time() + 1,
         )
     assert captured.value is inner
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_deadline_preserves_finalized_session_metrics(
+    monkeypatch,
+    tmp_path,
+):
+    session_finished = asyncio.Event()
+
+    async def wait_after_session(owner, *, timeout):
+        await asyncio.wait_for(session_finished.wait(), timeout=1)
+        return set(), {owner}
+
+    monkeypatch.setattr(workflow_runtime, "_wait_for_owner", wait_after_session)
+
+    def fake_build_session(*, agent, **_kwargs):
+        session = _FakeSession(agent, agent.tools)
+        session.used_tokens = 8
+        session.step_count = 4
+        session.markup_recovered = 2
+        return session
+
+    monkeypatch.setattr(workflow_session, "build_session", fake_build_session)
+
+    async def one_then_block(ctx, _args):
+        await ctx.agent("one")
+        session_finished.set()
+        await asyncio.Event().wait()
+
+    with pytest.raises(workflow_runtime.WorkflowDeadlineExceeded) as caught:
+        await workflow_runtime.run_workflow(
+            one_then_block,
+            {},
+            cfg=_cfg(),
+            workspace=str(tmp_path),
+            deadline_monotonic=asyncio.get_running_loop().time() + 10,
+            cleanup_timeout=0.2,
+            return_details=True,
+        )
+
+    details = caught.value.result
+    assert details is not None
+    assert details.tokens == 8
+    assert details.sessions == 1
+    assert details.steps == 4
+    assert details.markup_recovered == 2
