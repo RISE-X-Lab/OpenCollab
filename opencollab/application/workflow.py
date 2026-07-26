@@ -235,6 +235,24 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
             await self.log(f"source_changed probe failed: {exc}")
             return None
 
+    async def diff(self) -> str | None:
+        """Return the current working-tree diff when a probe is available."""
+        if self._tree_probe is None:
+            return None
+        try:
+            return await self._tree_probe.diff()
+        except Exception as exc:  # noqa: BLE001 — inspection must never abort the run
+            await self.log(f"diff probe failed: {exc}")
+            return None
+
+    def tokens_spent(self) -> int:
+        """Return live token usage across workflow sessions."""
+        return self.budget.spent()
+
+    def tokens_remaining(self) -> float:
+        """Return unspent and unreserved workflow tokens."""
+        return self.budget.remaining()
+
     @property
     def sessions(self) -> Sequence[Any]:
         """Read-only view of every session created so far (newest last).
