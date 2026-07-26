@@ -31,6 +31,7 @@ class AgentRuntimeResult:
     terminal_reason: str | None
     tokens_spent: int
     step_count: int
+    markup_recovered: int
     cleanup_quiesced: bool
     persistence_errors: tuple[str, ...]
 
@@ -134,6 +135,7 @@ def _result(
         terminal_reason=session.state.terminal_reason,
         tokens_spent=session.used_tokens,
         step_count=session.step_count,
+        markup_recovered=int(getattr(session, "markup_recovered", 0)),
         cleanup_quiesced=cleanup_quiesced,
         persistence_errors=tuple(str(error) for error in session.persistence_errors),
     )

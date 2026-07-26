@@ -117,6 +117,7 @@ def build_tools_for_role(
     scheduler: SchedulerPort | None = None,
     skill_store: SkillStorePort | None = None,
     interactive: bool = False,
+    allow_file_creation: bool = True,
     tool_limits: dict[str, dict[str, int]] | None = None,
 ) -> list[Tool]:
     """Resolve tool names to Tool instances.
@@ -144,6 +145,7 @@ def build_tools_for_role(
                     STATELESS_TOOL_FACTORIES[name],
                     limits,
                     headless=not interactive,
+                    allow_file_creation=allow_file_creation,
                 )
             )
         elif name in SCHEDULER_TOOL_FACTORIES:
@@ -172,6 +174,7 @@ def _instantiate(
     limits: dict[str, dict[str, int]],
     *,
     headless: bool,
+    allow_file_creation: bool,
 ) -> Tool:
     """Build a stateless tool, applying any configured limit kwargs."""
     kwargs: dict[str, object] = dict(limits.get(name, {}))
@@ -183,6 +186,8 @@ def _instantiate(
             allow_extra_args=False,
             require_process_isolation=True,
         )
+    if name == "file_write":
+        kwargs["allow_create"] = allow_file_creation
     try:
         return factory(**kwargs)
     except TypeError as e:
