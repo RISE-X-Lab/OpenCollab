@@ -171,6 +171,15 @@ def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
     assert not hasattr(environments, "DockerEnvironment")
 
 
+def test_public_environment_contract_exposes_workspace_mapping_metadata() -> None:
+    assert {
+        "workspace",
+        "host_workspace",
+        "source_workspace",
+        "local_filesystem",
+    } <= set(Environment.__annotations__)
+
+
 def test_environment_factories_preserve_caller_owned_lifecycle(tmp_path: Path) -> None:
     local = local_environment(tmp_path)
     worktree = worktree_environment(tmp_path)

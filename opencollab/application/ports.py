@@ -13,6 +13,9 @@ if TYPE_CHECKING:
 
 class EnvironmentPort(Protocol):
     workspace: str
+    host_workspace: str | None
+    source_workspace: str | None
+    local_filesystem: bool
 
     @property
     def revoked(self) -> bool:
