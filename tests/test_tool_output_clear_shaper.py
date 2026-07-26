@@ -148,8 +148,9 @@ def test_model_context_window_lookup_matches_by_substring():
     assert model_context_window("gpt-4o-mini") == 128_000
     assert model_context_window("deepseek-chat") == 64_000
     assert model_context_window("glm-5.2") == 400_000
+    assert model_context_window("k3") == 1_048_576
     assert model_context_window("kimi-for-coding") == 262_144
-    for near_miss in ("kimi-k2.6", "kimi-k2.70", "kimi-for-coding-preview"):
+    for near_miss in ("k3-256k", "kimi-k3", "kimi-k2.6", "kimi-k2.70", "kimi-for-coding-preview"):
         assert model_context_window(near_miss) is None
     assert model_context_window("some-unknown-model") is None
     assert model_context_window(None) is None
