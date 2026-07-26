@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, Protocol
 
 from opencollab.application.workflow_registry import workflow
+from opencollab.tools import Tool
 
 
 class WorkflowContext(Protocol):
@@ -19,9 +20,21 @@ class WorkflowContext(Protocol):
         *,
         schema: dict[str, Any] | None = None,
         label: str | None = None,
-        tools: Sequence[Any] | None = None,
+        tools: Sequence[Tool] | None = None,
         budget: int | None = None,
+        timeout: float | None = None,
+        tool_choice: str | None = None,
+        thinking: bool | None = None,
+        over_budget_ok: bool = False,
     ) -> str | dict[str, Any] | None: ...
+
+    async def draft_findings(
+        self,
+        prompt: str,
+        *,
+        label: str | None = None,
+        budget: int | None = None,
+    ) -> dict[str, Any] | None: ...
 
     async def parallel(
         self,
@@ -36,6 +49,12 @@ class WorkflowContext(Protocol):
         self,
         exclude_paths: Sequence[str] = (),
     ) -> bool | None: ...
+
+    async def diff(self) -> str | None: ...
+
+    def tokens_spent(self) -> int: ...
+
+    def tokens_remaining(self) -> float: ...
 
     def seconds_left(self) -> float: ...
 

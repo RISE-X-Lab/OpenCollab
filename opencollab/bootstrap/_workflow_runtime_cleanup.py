@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import TracePort
@@ -186,17 +186,25 @@ def _persist_workflow_manifest(
     tracer_failure: BaseException | None,
     tracer_write_error: str | None,
     tracer_dropped_steps: int,
+    status: Literal["completed", "stopped", "failed"],
+    reason: str | None,
+    failure_type: str | None,
+    evidence_complete: bool,
 ) -> Exception | None:
-    manifest = _workflow_manifest_payload(
-        name=name,
-        args=args,
-        ctx=ctx,
-        tracer=tracer,
-        tracer_failure=tracer_failure,
-        tracer_write_error=tracer_write_error,
-        tracer_dropped_steps=tracer_dropped_steps,
-    )
     try:
+        manifest = _workflow_manifest_payload(
+            name=name,
+            args=args,
+            ctx=ctx,
+            tracer=tracer,
+            tracer_failure=tracer_failure,
+            tracer_write_error=tracer_write_error,
+            tracer_dropped_steps=tracer_dropped_steps,
+            status=status,
+            reason=reason,
+            failure_type=failure_type,
+            evidence_complete=evidence_complete,
+        )
         _write_workflow_manifest(
             save_dir,
             name=name,
@@ -206,6 +214,10 @@ def _persist_workflow_manifest(
             tracer_failure=tracer_failure,
             tracer_write_error=tracer_write_error,
             tracer_dropped_steps=tracer_dropped_steps,
+            status=status,
+            reason=reason,
+            failure_type=failure_type,
+            evidence_complete=evidence_complete,
             manifest=manifest,
         )
     except Exception as exc:

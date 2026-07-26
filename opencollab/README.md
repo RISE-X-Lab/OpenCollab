@@ -86,6 +86,64 @@ return `RunResult`. Import optional authoring contracts from
 Treat other package paths as internal. An `artifacts` directory, when supplied,
 must be new or empty because each run claims it for executable evidence.
 
+`OpenCollab.configuration` is a read-only snapshot of effective model,
+provider, budget, timeout, sampling, output-token, and thinking settings.
+`thinking_params` is deep-copied so callers cannot mutate client state. API keys
+and base URLs are excluded. `base_url_sha256` provides a stable endpoint
+fingerprint without exposing credentials embedded in a URL. Agent runs accept
+`max_steps` and `cleanup_timeout`; the older `steps` spelling remains a supported
+alias.
+Workflow runs accept `max_steps`, `system_prompt`, and `cleanup_timeout`.
+Completed, stopped, and failed workflow results report aggregate session,
+step, token, and markup-recovery metrics. Sanitized child-provider failures are
+available through `RunResult.agent_failures`.
+
+Built-in tools can be composed without importing concrete adapters:
+
+```python
+from opencollab.tools import builtin_tools
+
+tools = builtin_tools(
+    "file_read",
+    "file_write",
+    "run_tests",
+    allow_file_creation=False,
+)
+```
+
+The helper returns fresh tools in caller order. Headless shell and test tools
+require process-isolated environments, test-runner overrides stay disabled,
+and limits for unselected tools are rejected. The `run_tests` instance satisfies
+the public `VerificationTool` protocol. Its read-only `verified_targets`
+property contains exact requested targets whose latest parser-backed verdict
+was green.
+
+Environment composition uses the same narrow public module:
+
+```python
+from opencollab.environments import (
+    docker_environment,
+    local_environment,
+    worktree_environment,
+)
+
+host = local_environment(".")
+isolated_source = worktree_environment(".")
+container = docker_environment("python:3.11-slim", isolated_source)
+```
+
+These factories construct caller-owned environments without eagerly setting
+them up. Every public environment supports `await environment.setup()`. Docker
+environments additionally accept `mount_dir`; host and worktree environments
+reject that argument. The caller retains setup, mount, and cleanup timing.
+Concrete adapter classes stay behind the bootstrap boundary.
+
+Run metrics separate OpenCollab-owned session quiescence from environment
+quiescence. `session_quiesced` proves that session and persistence work has
+finished. For a caller-owned environment, `environment_quiesced`,
+`cleanup_quiesced`, and `execution_quiesced` remain `None` until the caller
+performs and verifies its own environment cleanup.
+
 ### Workflow authoring
 
 A workflow is a plain async Python function tagged with `@workflow`. Create
@@ -103,8 +161,16 @@ async def implement_and_review(
     ctx: WorkflowContext,
     inputs: dict[str, Any],
 ) -> str | dict[str, Any] | None:
-    draft = await ctx.agent(f"Implement and verify: {inputs['task']}")
-    return await ctx.agent(f"Review the implementation and fix gaps:\n{draft}")
+    draft = await ctx.agent(
+        f"Implement and verify: {inputs['task']}",
+        tools=inputs.get("tools"),
+        timeout=900,
+    )
+    await ctx.log(f"Tokens spent: {ctx.tokens_spent()}")
+    diff = await ctx.diff()
+    return await ctx.agent(
+        f"Review the implementation and fix gaps:\n{draft}\n\nDiff:\n{diff or ''}"
+    )
 ```
 
 OpenCollab discovers top-level `*.py` modules in `workflows/` by default. Run

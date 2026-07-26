@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import math
 import os
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from opencollab.bootstrap.config import build_config
@@ -38,6 +41,13 @@ def _positive_timeout(value: object, name: str) -> float | None:
     return parsed
 
 
+def _required_positive_timeout(value: object, name: str) -> float:
+    parsed = _positive_timeout(value, name)
+    if parsed is None:
+        raise ValueError(f"{name} must be a positive finite number")
+    return parsed
+
+
 def _non_empty(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip() or "\x00" in value:
         raise ValueError(f"{name} must be non-empty text")
@@ -54,6 +64,15 @@ def _path(value: str | os.PathLike[str] | None, name: str) -> Path | None:
 
 
 def _public_result(result: ProgrammaticResult) -> RunResult[Any]:
+    agent_failures = tuple(
+        {
+            "label": item.get("label"),
+            "exception_type": item.get("exception_type"),
+            "status_code": item.get("status_code"),
+            "provider_error_type": item.get("provider_error_type"),
+        }
+        for item in result.agent_failures
+    )
     return RunResult(
         output=result.output,
         status=result.status,
@@ -62,6 +81,7 @@ def _public_result(result: ProgrammaticResult) -> RunResult[Any]:
         artifacts=result.artifacts,
         error=result.error,
         metrics=dict(result.metrics),
+        agent_failures=agent_failures,
     )
 
 
@@ -104,14 +124,43 @@ class OpenCollab:
         self._config = build_config(self._workspace, overrides=overrides).model_dump()
         self._environment = environment
 
+    @property
+    def configuration(self) -> Mapping[str, Any]:
+        """Return read-only non-secret metadata with isolated nested values."""
+        public_keys = (
+            "model",
+            "provider",
+            "budget",
+            "llm_timeout",
+            "temperature",
+            "top_p",
+            "max_output_tokens",
+            "thinking",
+            "thinking_params",
+        )
+        public = {
+            key: copy.deepcopy(self._config[key])
+            for key in public_keys
+            if key in self._config
+        }
+        base_url = self._config.get("base_url")
+        public["base_url_sha256"] = (
+            hashlib.sha256(base_url.encode("utf-8")).hexdigest()
+            if isinstance(base_url, str) and base_url
+            else None
+        )
+        return MappingProxyType(public)
+
     async def agent(
         self,
         prompt: str,
         *,
         tools: str | Sequence[Any] | None = "coding",
         budget: int | None = None,
-        steps: int = 100,
+        max_steps: int | None = None,
+        steps: int | None = None,
         timeout: float | None = None,
+        cleanup_timeout: float = 2.0,
         artifacts: str | os.PathLike[str] | None = None,
         trace: bool = True,
         name: str = "agent",
@@ -125,6 +174,16 @@ class OpenCollab:
             _non_empty(system_prompt, "system_prompt")
         if not isinstance(trace, bool):
             raise ValueError("trace must be a boolean")
+        if max_steps is not None and steps is not None:
+            raise ValueError("max_steps and steps cannot both be set")
+        resolved_max_steps = (
+            100
+            if max_steps is None and steps is None
+            else _positive_int(
+                max_steps if max_steps is not None else steps,
+                "max_steps" if max_steps is not None else "steps",
+            )
+        )
         try:
             result = await run_agent(
                 prompt=prompt,
@@ -135,8 +194,12 @@ class OpenCollab:
                     self._config["budget"] if budget is None else budget,
                     "budget",
                 ),
-                max_steps=_positive_int(steps, "steps"),
+                max_steps=resolved_max_steps,
                 timeout=_positive_timeout(timeout, "timeout"),
+                cleanup_timeout=_required_positive_timeout(
+                    cleanup_timeout,
+                    "cleanup_timeout",
+                ),
                 artifacts=_path(artifacts, "artifacts"),
                 trace=trace,
                 environment=self._environment,
@@ -193,6 +256,9 @@ class OpenCollab:
         budget: int | None = None,
         concurrency: int = 4,
         timeout: float | None = None,
+        max_steps: int = 100,
+        system_prompt: str | None = None,
+        cleanup_timeout: float = 2.0,
         artifacts: str | os.PathLike[str] | None = None,
         trace: bool = True,
     ) -> RunResult[Any]:
@@ -204,6 +270,8 @@ class OpenCollab:
         normalized_inputs = dict(inputs or {})
         if any(not isinstance(key, str) for key in normalized_inputs):
             raise ValueError("workflow input keys must be strings")
+        if system_prompt is not None:
+            _non_empty(system_prompt, "system_prompt")
         if not isinstance(trace, bool):
             raise ValueError("trace must be a boolean")
         try:
@@ -219,6 +287,12 @@ class OpenCollab:
                 ),
                 max_concurrency=_positive_int(concurrency, "concurrency"),
                 timeout=_positive_timeout(timeout, "timeout"),
+                max_steps=_positive_int(max_steps, "max_steps"),
+                system_prompt=system_prompt,
+                cleanup_timeout=_required_positive_timeout(
+                    cleanup_timeout,
+                    "cleanup_timeout",
+                ),
                 artifacts=_path(artifacts, "artifacts"),
                 trace=trace,
                 environment=self._environment,

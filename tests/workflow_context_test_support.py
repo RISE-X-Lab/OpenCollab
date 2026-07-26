@@ -202,4 +202,6 @@ class FakeProbe:
         return self._changed
 
     async def diff(self) -> str:
+        if self._boom:
+            raise RuntimeError("git unavailable")
         return "diff"

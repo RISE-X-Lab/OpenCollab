@@ -52,6 +52,8 @@ class WorkflowSessionFactory:
         tracer: TracePort | None = None,
         event_sink: EventPublisherPort | None = None,
         llm_timeout: float = 600.0,
+        max_steps: int = 100,
+        system_prompt: str = WORKFLOW_AGENT_PROMPT,
         temperature: float = DEFAULT_TEMPERATURE,
         top_p: float | None = DEFAULT_TOP_P,
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
@@ -68,6 +70,8 @@ class WorkflowSessionFactory:
         self._tracer = tracer
         self._event_sink = event_sink
         self._llm_timeout = llm_timeout
+        self._max_steps = max_steps
+        self._system_prompt = system_prompt
         self._temperature = temperature
         self._top_p = top_p
         self._max_output_tokens = max_output_tokens
@@ -116,7 +120,7 @@ class WorkflowSessionFactory:
             use_thinking = True
         agent = Agent(
             name="workflow_agent",
-            system_prompt=WORKFLOW_AGENT_PROMPT,
+            system_prompt=self._system_prompt,
             tools=list(tools or []),
             model=self._model,
             provider=self._provider,
@@ -135,6 +139,7 @@ class WorkflowSessionFactory:
             env=env,
             tracer=self._tracer,
             max_budget_tokens=budget,
+            max_steps=self._max_steps,
             event_sink=self._event_sink,
             llm_timeout=self._llm_timeout,
             auto_save_path=self._next_save_path(label),
@@ -149,6 +154,8 @@ def build_workflow_context(
     event_sink: EventPublisherPort | None = None,
     budget: int | None = None,
     max_concurrency: int = 4,
+    max_steps: int = 100,
+    system_prompt: str = WORKFLOW_AGENT_PROMPT,
     save_dir: str | None = None,
     env: Any | None = None,
     source_root: str | None = None,
@@ -176,6 +183,8 @@ def build_workflow_context(
         tracer=tracer,
         event_sink=event_sink,
         llm_timeout=float(cfg.get("llm_timeout", 600.0)),
+        max_steps=max_steps,
+        system_prompt=system_prompt,
         temperature=float(cfg.get("temperature", DEFAULT_TEMPERATURE)),
         top_p=cfg.get("top_p", DEFAULT_TOP_P),
         max_output_tokens=int(cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)),

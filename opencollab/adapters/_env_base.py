@@ -39,6 +39,13 @@ class Environment:
         if self._aborted:
             raise RuntimeError("Execution environment has been aborted.")
 
+    async def setup(self, mount_dir: str | None = None) -> str:
+        """Prepare the environment and return its ready workspace identity."""
+        self._ensure_active()
+        if mount_dir is not None:
+            raise ValueError("mount_dir is supported only by container environments")
+        return self.workspace
+
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         raise NotImplementedError
 

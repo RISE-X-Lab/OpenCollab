@@ -16,7 +16,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from opencollab.adapters.env import DockerWorkspaceEnvironment, LocalEnvironment
+from opencollab.adapters.env import (
+    DockerEnvironment,
+    DockerWorkspaceEnvironment,
+    LocalEnvironment,
+    WorktreeEnvironment,
+)
 from opencollab.adapters.safe_files import (
     create_regular_bytes_atomic,
     ensure_directory_no_symlinks,
@@ -38,6 +43,7 @@ from opencollab.bootstrap.runtime_context import build_runtime_context
 from opencollab.bootstrap.scheduler_factory import build_scheduler
 from opencollab.bootstrap.tool_registry import build_tools_for_role
 from opencollab.bootstrap.workflow_runtime import (
+    WORKFLOW_AGENT_PROMPT,
     WorkflowDeadlineExceeded,
     WorkflowLifecycleError,
     WorkflowRuntimeResult,
@@ -83,7 +89,8 @@ class ProgrammaticResult:
     tokens: int | None
     artifacts: Path | None
     error: BaseException | None = None
-    metrics: dict[str, int] = field(default_factory=dict)
+    metrics: dict[str, Any] = field(default_factory=dict)
+    agent_failures: tuple[dict[str, Any], ...] = ()
 
 
 def resolve_tools(value: str | Sequence[Any] | None) -> tuple[Any, ...]:
@@ -135,6 +142,29 @@ def attach_container(
         repo_root=workspace,
         command_prefix=command_prefix,
         timeout_returncode=timeout_returncode,
+    )
+
+
+def local_environment(workspace: str | os.PathLike[str]) -> EnvironmentPort:
+    """Create a host environment rooted at an existing workspace."""
+    return LocalEnvironment(os.fspath(workspace))
+
+
+def worktree_environment(
+    source_workspace: str | os.PathLike[str],
+) -> EnvironmentPort:
+    """Create an uninitialized isolated worktree owned by the caller."""
+    return WorktreeEnvironment(os.fspath(source_workspace))
+
+
+def docker_environment(
+    image: str,
+    backing_environment: EnvironmentPort | None = None,
+) -> EnvironmentPort:
+    """Create an uninitialized image-backed Docker environment."""
+    return DockerEnvironment(
+        image=image,
+        backing_environment=backing_environment,
     )
 
 
@@ -220,6 +250,29 @@ def _agent_status(
     return "completed", None
 
 
+def _quiescence_metrics(
+    *,
+    session_quiesced: bool,
+    environment_owned: bool,
+    environment_cleanup_quiesced: bool | None,
+    environment_quiesced: bool | None,
+) -> dict[str, bool | None]:
+    if not session_quiesced or environment_quiesced is False:
+        aggregate: bool | None = False
+    elif environment_quiesced is True:
+        aggregate = True
+    else:
+        aggregate = None
+    return {
+        "session_quiesced": session_quiesced,
+        "environment_owned": environment_owned,
+        "environment_cleanup_quiesced": environment_cleanup_quiesced,
+        "environment_quiesced": environment_quiesced,
+        "cleanup_quiesced": aggregate,
+        "execution_quiesced": aggregate,
+    }
+
+
 async def run_agent(
     *,
     prompt: str,
@@ -229,6 +282,7 @@ async def run_agent(
     max_tokens: int,
     max_steps: int,
     timeout: float | None,
+    cleanup_timeout: float,
     artifacts: Path | None,
     trace: bool,
     environment: Any | None = None,
@@ -273,7 +327,7 @@ async def run_agent(
                 max_tokens=max_tokens,
                 max_steps=max_steps,
                 timeout_seconds=timeout,
-                cleanup_timeout_seconds=DEFAULT_CLEANUP_TIMEOUT_SECONDS,
+                cleanup_timeout_seconds=cleanup_timeout,
                 transcript_path=(
                     None if transcript_path is None else str(transcript_path)
                 ),
@@ -286,6 +340,12 @@ async def run_agent(
             raise ProgrammaticLifecycleError(str(exc)) from exc
         _require_agent_evidence(internal, artifacts, transcript_path, tracer)
         status, reason = _agent_status(internal)
+        quiescence = _quiescence_metrics(
+            session_quiesced=internal.cleanup_quiesced,
+            environment_owned=owned_environment,
+            environment_cleanup_quiesced=internal.environment_cleanup_quiesced,
+            environment_quiesced=internal.environment_quiesced,
+        )
         return ProgrammaticResult(
             output=internal.output,
             status=status,
@@ -293,7 +353,14 @@ async def run_agent(
             tokens=internal.tokens_spent,
             artifacts=artifacts,
             error=internal.error,
-            metrics={"steps": internal.step_count},
+            metrics={
+                "steps": internal.step_count,
+                "outcome": internal.outcome,
+                "phase": internal.phase,
+                "terminal_reason": internal.terminal_reason,
+                "markup_recovered": internal.markup_recovered,
+                **quiescence,
+            },
         )
     except BaseException as exc:
         primary_failure = exc
@@ -319,6 +386,29 @@ def _environment_paths(environment: Any, workspace: str) -> tuple[str, str]:
     return str(workdir), str(source_root)
 
 
+def _workflow_metrics(
+    details: WorkflowRuntimeResult | None,
+    *,
+    environment_owned: bool,
+    environment_cleanup_quiesced: bool | None,
+    environment_quiesced: bool | None,
+) -> dict[str, Any]:
+    metrics = {
+        "steps": 0 if details is None else details.steps,
+        "sessions": 0 if details is None else details.sessions,
+        "markup_recovered": 0 if details is None else details.markup_recovered,
+    }
+    metrics.update(
+        _quiescence_metrics(
+            session_quiesced=details is not None,
+            environment_owned=environment_owned,
+            environment_cleanup_quiesced=environment_cleanup_quiesced,
+            environment_quiesced=environment_quiesced,
+        )
+    )
+    return metrics
+
+
 async def run_workflow(
     *,
     workflow: Any,
@@ -328,6 +418,9 @@ async def run_workflow(
     max_tokens: int | None,
     max_concurrency: int,
     timeout: float | None,
+    max_steps: int,
+    system_prompt: str | None,
+    cleanup_timeout: float,
     artifacts: Path | None,
     trace: bool,
     environment: Any | None = None,
@@ -346,6 +439,8 @@ async def run_workflow(
     stopped_error: BaseException | None = None
     failed_error: BaseException | None = None
     bootstrap_stopped_environment = False
+    environment_cleanup_quiesced: bool | None = None
+    environment_quiesced: bool | None = None
     try:
         try:
             details = await _run_workflow(
@@ -358,9 +453,11 @@ async def run_workflow(
                 save_dir=None if artifacts is None else str(artifacts),
                 trace=trace,
                 env=resolved_environment,
-                cleanup_timeout=DEFAULT_CLEANUP_TIMEOUT_SECONDS,
+                cleanup_timeout=cleanup_timeout,
                 source_root=source_root,
                 deadline_monotonic=deadline,
+                max_steps=max_steps,
+                system_prompt=system_prompt or WORKFLOW_AGENT_PROMPT,
                 return_details=True,
             )
         except WorkflowDeadlineExceeded as exc:
@@ -371,7 +468,15 @@ async def run_workflow(
         except asyncio.CancelledError:
             bootstrap_stopped_environment = True
             raise
-        except Exception as exc:  # workflow code/provider failures are outcomes
+        except Exception as exc:
+            runtime_result = getattr(exc, "runtime_result", None)
+            if (
+                runtime_result is None
+                or not runtime_result.evidence_complete
+            ):
+                raise ProgrammaticLifecycleError(
+                    "workflow runtime failed without finalized execution evidence"
+                ) from exc
             failed_error = exc
     finally:
         if owned_environment and not bootstrap_stopped_environment:
@@ -379,7 +484,7 @@ async def run_workflow(
                 run_environment_hook(
                     resolved_environment,
                     "cleanup",
-                    timeout=DEFAULT_CLEANUP_TIMEOUT_SECONDS,
+                    timeout=cleanup_timeout,
                 ),
                 propagate_cancellation=True,
             )
@@ -387,37 +492,66 @@ async def run_workflow(
                 raise ProgrammaticLifecycleError(
                     "workflow-owned environment cleanup failed"
                 )
+            environment_cleanup_quiesced = True
+            environment_quiesced = True
 
     _verify_artifact_claim(artifacts)
     if stopped_error is not None:
+        details = stopped_error.result
+        metrics = _workflow_metrics(
+            details,
+            environment_owned=owned_environment,
+            environment_cleanup_quiesced=(
+                True if owned_environment else environment_cleanup_quiesced
+            ),
+            environment_quiesced=(
+                True if owned_environment else environment_quiesced
+            ),
+        )
         return ProgrammaticResult(
             output=None,
             status="stopped",
             reason="timeout",
-            tokens=None,
+            tokens=0 if details is None else details.tokens,
             artifacts=artifacts,
             error=stopped_error,
+            metrics=metrics,
+            agent_failures=() if details is None else details.agent_failures,
         )
     if failed_error is not None:
+        details = getattr(failed_error, "runtime_result", None)
         return ProgrammaticResult(
             output=None,
             status="failed",
             reason=str(failed_error) or type(failed_error).__name__,
-            tokens=None,
+            tokens=None if details is None else details.tokens,
             artifacts=artifacts,
             error=failed_error,
+            metrics=_workflow_metrics(
+                details,
+                environment_owned=owned_environment,
+                environment_cleanup_quiesced=environment_cleanup_quiesced,
+                environment_quiesced=environment_quiesced,
+            ),
+            agent_failures=() if details is None else details.agent_failures,
         )
     if details is None:
         raise ProgrammaticLifecycleError("workflow completed without a result")
     output = details.output
-    budget_stopped = isinstance(output, dict) and output.get("status") == "budget_exceeded"
+    budget_stopped = details.stop_reason == "budget_exceeded"
     return ProgrammaticResult(
         output=output,
         status="stopped" if budget_stopped else "completed",
         reason="budget_exceeded" if budget_stopped else None,
         tokens=details.tokens,
         artifacts=artifacts,
-        metrics={"sessions": details.sessions},
+        metrics=_workflow_metrics(
+            details,
+            environment_owned=owned_environment,
+            environment_cleanup_quiesced=environment_cleanup_quiesced,
+            environment_quiesced=environment_quiesced,
+        ),
+        agent_failures=details.agent_failures,
     )
 
 
@@ -557,8 +691,11 @@ __all__ = [
     "ProgrammaticLifecycleError",
     "ProgrammaticResult",
     "attach_container",
+    "docker_environment",
+    "local_environment",
     "resolve_tools",
     "run_agent",
     "run_team",
     "run_workflow",
+    "worktree_environment",
 ]

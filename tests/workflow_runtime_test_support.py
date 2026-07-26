@@ -28,6 +28,8 @@ class _FakeSession:
         self.agent = agent
         self.tools = tools
         self.used_tokens = 0
+        self.step_count = 0
+        self.markup_recovered = 0
         self.prompt: str | None = None
 
     async def add_user_message(self, content: str) -> None:

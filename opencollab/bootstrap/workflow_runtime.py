@@ -43,9 +43,26 @@ _OWNER_CLEANUP_GRACE_PHASES = 4
 class WorkflowDeadlineExceeded(TimeoutError):
     """The caller-owned workflow wall-clock deadline expired."""
 
+    def __init__(
+        self,
+        message: str,
+        *,
+        result: WorkflowRuntimeResult | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.result = result
+
 
 class WorkflowLifecycleError(RuntimeError):
     """Workflow-owned work failed to reach a terminal state."""
+
+
+async def _wait_for_owner(
+    owner: asyncio.Task[Any],
+    *,
+    timeout: float,
+) -> tuple[set[asyncio.Task[Any]], set[asyncio.Task[Any]]]:
+    return await asyncio.wait({owner}, timeout=timeout)
 
 
 async def run_workflow(
@@ -58,6 +75,8 @@ async def run_workflow(
     event_sink: EventPublisherPort | None = None,
     budget: int | None = None,
     max_concurrency: int = 4,
+    max_steps: int = 100,
+    system_prompt: str = WORKFLOW_AGENT_PROMPT,
     save_dir: str | None = None,
     trace: bool = True,
     env: Any | None = None,
@@ -69,26 +88,40 @@ async def run_workflow(
 ) -> Any:
     """Run through one owned lifecycle with an optional wall-clock deadline."""
     token = _WORKFLOW_ENV_OVERRIDE.set(env)
-    owner = asyncio.create_task(
-        _run_workflow_with_integrity(
-            spec_or_fn,
-            args,
-            cfg=cfg,
-            workspace=workspace,
-            tracer=tracer,
-            event_sink=event_sink,
-            budget=budget,
-            max_concurrency=max_concurrency,
-            save_dir=save_dir,
-            trace=trace,
-            cleanup_timeout=cleanup_timeout,
-            env=env,
-            source_root=source_root,
-            deadline_monotonic=deadline_monotonic,
-            deadline_margin_seconds=deadline_margin_seconds,
-            return_details=return_details,
-        )
-    )
+    cancelled_result: WorkflowRuntimeResult | None = None
+    cancelled_notes: tuple[str, ...] = ()
+
+    async def run_owner() -> Any:
+        nonlocal cancelled_result, cancelled_notes
+        try:
+            return await _run_workflow_with_integrity(
+                spec_or_fn,
+                args,
+                cfg=cfg,
+                workspace=workspace,
+                tracer=tracer,
+                event_sink=event_sink,
+                budget=budget,
+                max_concurrency=max_concurrency,
+                max_steps=max_steps,
+                system_prompt=system_prompt,
+                save_dir=save_dir,
+                trace=trace,
+                cleanup_timeout=cleanup_timeout,
+                env=env,
+                source_root=source_root,
+                deadline_monotonic=deadline_monotonic,
+                deadline_margin_seconds=deadline_margin_seconds,
+                return_details=return_details,
+            )
+        except asyncio.CancelledError as cancellation:
+            attached = getattr(cancellation, "runtime_result", None)
+            if isinstance(attached, WorkflowRuntimeResult):
+                cancelled_result = attached
+            cancelled_notes = tuple(getattr(cancellation, "__notes__", ()))
+            raise
+
+    owner = asyncio.create_task(run_owner())
     stop_task: asyncio.Task[tuple[bool, bool]] | None = None
 
     async def stop_owned(cancellation: asyncio.CancelledError) -> tuple[bool, bool]:
@@ -127,7 +160,7 @@ async def run_workflow(
         if deadline_monotonic is None:
             return await asyncio.shield(owner)
         remaining = max(0.0, deadline_monotonic - asyncio.get_running_loop().time())
-        done, pending = await asyncio.wait({owner}, timeout=remaining)
+        done, pending = await _wait_for_owner(owner, timeout=remaining)
         if not pending:
             return owner.result()
         deadline_cancellation = asyncio.CancelledError(
@@ -139,10 +172,16 @@ async def run_workflow(
         )
         if not aborted or not terminated:
             raise WorkflowLifecycleError("timed-out workflow did not reach a quiescent terminal state")
+        deadline_result = cancelled_result
         try:
-            owner.result()
+            late_result = owner.result()
+            if isinstance(late_result, WorkflowRuntimeResult):
+                deadline_result = late_result
         except asyncio.CancelledError as inner:
-            notes = tuple(getattr(inner, "__notes__", ()))
+            attached = getattr(inner, "runtime_result", None)
+            if deadline_result is None and isinstance(attached, WorkflowRuntimeResult):
+                deadline_result = attached
+            notes = cancelled_notes or tuple(getattr(inner, "__notes__", ()))
             if notes:
                 failure = WorkflowLifecycleError(
                     "timed-out workflow reported a cleanup or persistence failure"
@@ -154,7 +193,10 @@ async def run_workflow(
             raise WorkflowLifecycleError(
                 "timed-out workflow failed while reaching its terminal state"
             ) from inner
-        raise WorkflowDeadlineExceeded("workflow wall-clock deadline expired")
+        raise WorkflowDeadlineExceeded(
+            "workflow wall-clock deadline expired",
+            result=deadline_result,
+        )
     except asyncio.CancelledError as cancellation:
         await stop_once(cancellation, propagate_cancellation=False)
         if owner.done():

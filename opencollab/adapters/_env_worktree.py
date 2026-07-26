@@ -52,8 +52,10 @@ class WorktreeEnvironment(Environment):
         )
         return result.to_exec_result()
 
-    async def setup(self) -> str:
+    async def setup(self, mount_dir: str | None = None) -> str:
         self._ensure_active()
+        if mount_dir is not None:
+            raise ValueError("mount_dir is supported only by container environments")
         if self._local_env is not None:
             return self.workspace
         probe = await self._git("rev-parse", "--git-dir")

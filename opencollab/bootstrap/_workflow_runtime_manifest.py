@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
-from typing import Any
+from typing import Any, Literal
 
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.ports import TracePort
@@ -21,6 +21,10 @@ def _workflow_manifest_payload(
     tracer_failure: BaseException | None,
     tracer_write_error: str | None,
     tracer_dropped_steps: int,
+    status: Literal["completed", "stopped", "failed"],
+    reason: str | None,
+    failure_type: str | None,
+    evidence_complete: bool,
 ) -> dict[str, Any]:
     """Freeze all event-loop-owned values used by the workflow manifest."""
     return copy.deepcopy(
@@ -30,6 +34,10 @@ def _workflow_manifest_payload(
             "sessions": len(ctx.sessions),
             "tokens_spent": ctx.budget.spent(),
             "budget_total": ctx.budget.total,
+            "status": status,
+            "reason": reason,
+            "failure_type": failure_type,
+            "evidence_complete": evidence_complete,
             "trace_enabled": tracer is not None,
             "tracer_write_error": tracer_write_error,
             "tracer_dropped_steps": tracer_dropped_steps,
@@ -50,6 +58,10 @@ def _write_workflow_manifest(
     tracer_failure: BaseException | None,
     tracer_write_error: str | None,
     tracer_dropped_steps: int,
+    status: Literal["completed", "stopped", "failed"],
+    reason: str | None,
+    failure_type: str | None,
+    evidence_complete: bool,
     manifest: dict[str, Any] | None = None,
 ) -> None:
     """Write ``<save_dir>/workflow.json`` summarising the run.
@@ -66,5 +78,9 @@ def _write_workflow_manifest(
             tracer_failure=tracer_failure,
             tracer_write_error=tracer_write_error,
             tracer_dropped_steps=tracer_dropped_steps,
+            status=status,
+            reason=reason,
+            failure_type=failure_type,
+            evidence_complete=evidence_complete,
         )
     SessionStore().save_manifest(os.path.join(save_dir, WORKFLOW_MANIFEST_FILENAME), manifest)

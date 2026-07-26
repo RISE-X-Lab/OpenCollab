@@ -8,6 +8,7 @@ import pytest
 from workflow_context_test_support import (
     FakeFactory,
     FakeProbe,
+    FakeSession,
     RecordingSink,
 )
 
@@ -92,3 +93,36 @@ async def test_source_changed_swallows_probe_error_to_none():
     # A flaky git call must never abort the run: probe error -> None.
     ctx = WorkflowContext(FakeFactory([]), tree_probe=FakeProbe(boom=True))
     assert await ctx.source_changed(["t/test_x.py"]) is None
+
+
+@pytest.mark.asyncio
+async def test_diff_reports_probe_output_or_unknown() -> None:
+    assert await WorkflowContext(FakeFactory([])).diff() is None
+    assert (
+        await WorkflowContext(
+            FakeFactory([]),
+            tree_probe=FakeProbe(),
+        ).diff()
+        == "diff"
+    )
+    assert (
+        await WorkflowContext(
+            FakeFactory([]),
+            tree_probe=FakeProbe(boom=True),
+        ).diff()
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_token_observation_reports_live_session_usage() -> None:
+    ctx = WorkflowContext(
+        FakeFactory([FakeSession(tokens=12)]),
+        budget_total=100,
+    )
+
+    assert ctx.tokens_spent() == 0
+    assert ctx.tokens_remaining() == 100
+    await ctx.agent("measure usage")
+    assert ctx.tokens_spent() == 12
+    assert ctx.tokens_remaining() == 88

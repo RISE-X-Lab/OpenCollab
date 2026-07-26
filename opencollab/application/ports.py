@@ -13,12 +13,19 @@ if TYPE_CHECKING:
 
 class EnvironmentPort(Protocol):
     workspace: str
+    host_workspace: str | None
+    source_workspace: str | None
+    local_filesystem: bool
 
     @property
     def revoked(self) -> bool:
         ...
 
     def revoke(self) -> None:
+        ...
+
+    async def setup(self, mount_dir: str | None = None) -> str:
+        """Prepare the environment and return its ready workspace identity."""
         ...
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> Any:

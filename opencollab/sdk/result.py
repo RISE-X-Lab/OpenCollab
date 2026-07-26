@@ -27,7 +27,8 @@ class RunResult(Generic[T]):
     tokens: int | None = None
     artifacts: Path | None = None
     error: BaseException | None = field(default=None, repr=False, compare=False)
-    metrics: dict[str, int] = field(default_factory=dict)
+    metrics: dict[str, Any] = field(default_factory=dict)
+    agent_failures: tuple[dict[str, Any], ...] = ()
 
     @property
     def ok(self) -> bool:

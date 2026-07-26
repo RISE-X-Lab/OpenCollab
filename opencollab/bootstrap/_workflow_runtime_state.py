@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 WORKFLOW_AGENT_PROMPT = (
     "You are an autonomous agent invoked as one step of a larger workflow. "
@@ -24,3 +24,8 @@ class WorkflowRuntimeResult:
     name: str
     tokens: int
     sessions: int
+    steps: int
+    markup_recovered: int
+    agent_failures: tuple[dict[str, Any], ...]
+    stop_reason: Literal["budget_exceeded"] | None = None
+    evidence_complete: bool = True
