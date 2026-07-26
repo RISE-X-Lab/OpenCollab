@@ -108,6 +108,8 @@ async def test_agent_runtime_returns_metrics_after_final_save(monkeypatch) -> No
     assert result.tokens_spent == 7
     assert result.step_count == 2
     assert result.cleanup_quiesced
+    assert result.environment_cleanup_quiesced is True
+    assert result.environment_quiesced is True
     assert environment.cleanup_calls == 1
 
 
@@ -127,6 +129,8 @@ async def test_agent_runtime_returns_quiescent_execution_failure(monkeypatch) ->
     assert result.outcome == "failed"
     assert isinstance(result.error, RuntimeError)
     assert result.phase == "error"
+    assert result.environment_cleanup_quiesced is None
+    assert result.environment_quiesced is None
 
 
 async def test_agent_runtime_timeout_revokes_aborts_and_quiesces(monkeypatch) -> None:
