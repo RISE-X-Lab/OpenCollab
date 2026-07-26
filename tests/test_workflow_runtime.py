@@ -67,6 +67,25 @@ async def test_built_context_injects_sampling_and_output_limits(monkeypatch):
     assert agent.top_p == 1.0
     assert agent.max_tokens_per_step == 32_768
 
+
+@pytest.mark.asyncio
+async def test_built_context_threads_session_limits_and_system_prompt(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    ctx = workflow_runtime.build_workflow_context(
+        cfg=_cfg(),
+        max_steps=60,
+        system_prompt="Evaluation system prompt",
+    )
+
+    await ctx.agent("first")
+    await ctx.agent("second")
+
+    assert [call["max_steps"] for call in calls] == [60, 60]
+    assert [call["agent"].system_prompt for call in calls] == [
+        "Evaluation system prompt",
+        "Evaluation system prompt",
+    ]
+
 @pytest.mark.asyncio
 async def test_kimi_global_thinking_applies_to_fast_structured_roles(monkeypatch):
     calls = _patch_build_session(monkeypatch)
@@ -115,6 +134,42 @@ async def test_run_workflow_invokes_fn_with_context_and_args(monkeypatch):
     assert result == {"echo": 42}
     assert isinstance(seen["ctx"], WorkflowContext)
     assert seen["args"] == {"x": 42}
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_aggregates_session_metrics(monkeypatch):
+    from workflow_runtime_test_support import _FakeSession
+
+    values = ((5, 2, 1), (7, 3, 2))
+
+    def fake_build_session(*, agent, **_kwargs):
+        session = _FakeSession(agent, agent.tools)
+        session.used_tokens, session.step_count, session.markup_recovered = values[
+            fake_build_session.calls
+        ]
+        fake_build_session.calls += 1
+        return session
+
+    fake_build_session.calls = 0
+    monkeypatch.setattr(workflow_session, "build_session", fake_build_session)
+
+    async def fn(ctx, _args):
+        await ctx.agent("first")
+        await ctx.agent("second")
+        return "done"
+
+    details = await workflow_runtime.run_workflow(
+        fn,
+        {},
+        cfg=_cfg(),
+        return_details=True,
+    )
+
+    assert details.output == "done"
+    assert details.tokens == 12
+    assert details.sessions == 2
+    assert details.steps == 5
+    assert details.markup_recovered == 3
 
 @pytest.mark.asyncio
 async def test_run_workflow_accepts_a_workflow_spec(monkeypatch):

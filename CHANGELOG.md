@@ -7,10 +7,28 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- Added immutable non-secret effective configuration metadata, public stateless
+  tool composition, and caller-owned Local, Worktree, and image-backed Docker
+  environment factories for external integrations. Configuration metadata
+  includes deep-copied thinking parameters and a SHA-256 endpoint fingerprint
+  without exposing the base URL.
+- Expanded the public workflow-authoring contract with the supported agent
+  controls, draft findings, working-tree diff access, and live token
+  observation.
+- Added public agent and workflow step limits, cleanup deadlines, workflow
+  system prompts, aggregate session metrics, and sanitized child-agent failure
+  summaries.
+- Added the narrow `VerificationTool` contract for reading parser-verified test
+  targets without importing a concrete test adapter.
+
 ### Changed
 - Replaced the request-heavy SDK v2 surface with the compact `OpenCollab` facade:
   `agent`, `team`, and `workflow` now share one `RunResult`, central configuration,
   and bootstrap-owned lifecycle wiring.
+- Workflow budget stops now use an explicit runtime reason rather than
+  interpreting caller output, and timeout or execution failures retain finalized
+  session metrics when lifecycle evidence is complete.
 - Reduced the everyday Python API to four root exports and moved optional tool,
   environment, and workflow-authoring contracts into small capability modules.
 - Adopted the Mulan Permissive Software License v2 (`MulanPSL-2.0`) for OpenCollab.
