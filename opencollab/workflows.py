@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
 from opencollab.application.workflow_registry import workflow
 from opencollab.tools import Tool
@@ -26,9 +26,6 @@ class WorkflowContext(Protocol):
         tool_choice: str | None = None,
         thinking: bool | None = None,
         over_budget_ok: bool = False,
-        enforcement_strength: Literal["off", "needs-enforcement"] = "off",
-        commit_reserve: int = 25_000,
-        harvest_fallback: str | None = None,
     ) -> str | dict[str, Any] | None: ...
 
     async def draft_findings(

@@ -10,7 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from opencollab import OpenCollab, RunError, workflow
+from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.application.workflow import WorkflowBudgetExceeded
 from opencollab.bootstrap import (
     _workflow_runtime_execution as workflow_execution,
 )
@@ -34,9 +36,7 @@ async def test_agent_uses_real_hardened_runtime_and_persists_evidence(
     tmp_path: Path,
 ) -> None:
     artifacts = tmp_path / "agent-run"
-    result = await OpenCollab(
-        tmp_path, model="model", provider="openai"
-    ).agent(
+    result = await OpenCollab(tmp_path, model="model", provider="openai").agent(
         "finish once",
         tools=(),
         llm=ReplyLLM(),
@@ -112,9 +112,39 @@ def _completed_agent_metrics() -> dict[str, object]:
         "phase": "done",
         "terminal_reason": "completed",
         "markup_recovered": 0,
+        "session_quiesced": True,
+        "environment_owned": True,
+        "environment_cleanup_quiesced": True,
+        "environment_quiesced": True,
         "cleanup_quiesced": True,
         "execution_quiesced": True,
     }
+
+
+async def test_agent_does_not_claim_caller_owned_environment_quiescence(
+    tmp_path: Path,
+) -> None:
+    environment = LocalEnvironment(str(tmp_path))
+    result = await OpenCollab(
+        tmp_path,
+        model="model",
+        provider="openai",
+        environment=environment,
+    ).agent(
+        "finish once",
+        tools=(),
+        llm=ReplyLLM(),
+        trace=False,
+    )
+
+    assert result.status == "completed"
+    assert result.metrics["session_quiesced"] is True
+    assert result.metrics["environment_owned"] is False
+    assert result.metrics["environment_cleanup_quiesced"] is None
+    assert result.metrics["environment_quiesced"] is None
+    assert result.metrics["cleanup_quiesced"] is None
+    assert result.metrics["execution_quiesced"] is None
+    assert environment.revoked is False
 
 
 async def test_agent_validates_controls_before_delegating(
@@ -270,11 +300,20 @@ async def test_workflow_uses_real_runtime_and_returns_live_metrics(
         "steps": 0,
         "sessions": 0,
         "markup_recovered": 0,
+        "session_quiesced": True,
+        "environment_owned": True,
+        "environment_cleanup_quiesced": True,
+        "environment_quiesced": True,
+        "cleanup_quiesced": True,
         "execution_quiesced": True,
     }
     manifest = json.loads((artifacts / "workflow.json").read_text())
     assert manifest["workflow"] == "echo-flow"
     assert manifest["args"] == {"value": 3}
+    assert manifest["status"] == "completed"
+    assert manifest["reason"] is None
+    assert manifest["failure_type"] is None
+    assert manifest["evidence_complete"] is True
 
 
 async def test_workflow_execution_failure_is_a_result(tmp_path: Path) -> None:
@@ -282,12 +321,22 @@ async def test_workflow_execution_failure_is_a_result(tmp_path: Path) -> None:
     async def broken(_ctx, _inputs):
         raise ValueError("bad workflow")
 
-    result = await OpenCollab(tmp_path).workflow(broken, trace=False)
+    artifacts = tmp_path / "failed-workflow"
+    result = await OpenCollab(tmp_path).workflow(
+        broken,
+        artifacts=artifacts,
+        trace=False,
+    )
     assert result.status == "failed"
     assert result.reason == "bad workflow"
     assert result.tokens == 0
     assert result.metrics["execution_quiesced"] is True
     assert isinstance(result.error, ValueError)
+    manifest = json.loads((artifacts / "workflow.json").read_text())
+    assert manifest["status"] == "failed"
+    assert manifest["reason"] == "workflow_exception"
+    assert manifest["failure_type"] == "ValueError"
+    assert manifest["evidence_complete"] is True
     with pytest.raises(RunError, match="bad workflow"):
         result.raise_for_status()
 
@@ -297,9 +346,11 @@ async def test_workflow_timeout_is_a_stopped_result(tmp_path: Path) -> None:
     async def blocked(_ctx, _inputs):
         await asyncio.Event().wait()
 
+    artifacts = tmp_path / "timed-out-workflow"
     result = await OpenCollab(tmp_path).workflow(
         blocked,
         timeout=0.01,
+        artifacts=artifacts,
         trace=False,
     )
     assert result.status == "stopped"
@@ -309,9 +360,41 @@ async def test_workflow_timeout_is_a_stopped_result(tmp_path: Path) -> None:
         "steps": 0,
         "sessions": 0,
         "markup_recovered": 0,
+        "session_quiesced": True,
+        "environment_owned": True,
+        "environment_cleanup_quiesced": True,
+        "environment_quiesced": True,
+        "cleanup_quiesced": True,
         "execution_quiesced": True,
     }
     assert isinstance(result.error, TimeoutError)
+    manifest = json.loads((artifacts / "workflow.json").read_text())
+    assert manifest["status"] == "stopped"
+    assert manifest["reason"] == "cancelled"
+    assert manifest["failure_type"] == "CancelledError"
+    assert manifest["evidence_complete"] is True
+
+
+async def test_workflow_budget_stop_persists_terminal_manifest(
+    tmp_path: Path,
+) -> None:
+    async def exhausted(_ctx, _inputs):
+        raise WorkflowBudgetExceeded("budget exhausted")
+
+    artifacts = tmp_path / "budget-workflow"
+    result = await OpenCollab(tmp_path).workflow(
+        exhausted,
+        artifacts=artifacts,
+        trace=False,
+    )
+
+    assert result.status == "stopped"
+    assert result.reason == "budget_exceeded"
+    manifest = json.loads((artifacts / "workflow.json").read_text())
+    assert manifest["status"] == "stopped"
+    assert manifest["reason"] == "budget_exceeded"
+    assert manifest["failure_type"] is None
+    assert manifest["evidence_complete"] is True
 
 
 async def test_user_workflow_status_payload_does_not_fake_a_budget_stop(
@@ -326,6 +409,29 @@ async def test_user_workflow_status_payload_does_not_fake_a_budget_stop(
     assert result.status == "completed"
     assert result.reason is None
     assert result.output == {"status": "budget_exceeded", "source": "user"}
+
+
+async def test_workflow_does_not_claim_caller_owned_environment_quiescence(
+    tmp_path: Path,
+) -> None:
+    environment = LocalEnvironment(str(tmp_path))
+
+    async def plain(_ctx, _inputs):
+        return "done"
+
+    result = await OpenCollab(tmp_path, environment=environment).workflow(
+        plain,
+        trace=False,
+    )
+
+    assert result.status == "completed"
+    assert result.metrics["session_quiesced"] is True
+    assert result.metrics["environment_owned"] is False
+    assert result.metrics["environment_cleanup_quiesced"] is None
+    assert result.metrics["environment_quiesced"] is None
+    assert result.metrics["cleanup_quiesced"] is None
+    assert result.metrics["execution_quiesced"] is None
+    assert environment.revoked is False
 
 
 async def test_lifecycle_failure_raises_the_single_public_error(
@@ -358,6 +464,7 @@ async def test_real_workflow_technical_failures_raise_public_error(
 
     artifacts = tmp_path / failure_point
     if failure_point == "cleanup":
+
         async def fail_cleanup(*_args, **_kwargs):
             raise RuntimeError("cleanup evidence failed")
 

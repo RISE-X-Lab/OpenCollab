@@ -33,6 +33,8 @@ class AgentRuntimeResult:
     step_count: int
     markup_recovered: int
     cleanup_quiesced: bool
+    environment_cleanup_quiesced: bool | None
+    environment_quiesced: bool | None
     persistence_errors: tuple[str, ...]
 
 
@@ -126,6 +128,7 @@ def _result(
     outcome: Literal["completed", "timed_out", "failed"],
     error: Exception | None,
     cleanup_quiesced: bool,
+    cleanup_environment: bool,
 ) -> AgentRuntimeResult:
     return AgentRuntimeResult(
         output=output,
@@ -137,6 +140,8 @@ def _result(
         step_count=session.step_count,
         markup_recovered=int(getattr(session, "markup_recovered", 0)),
         cleanup_quiesced=cleanup_quiesced,
+        environment_cleanup_quiesced=True if cleanup_environment else None,
+        environment_quiesced=True if cleanup_environment else None,
         persistence_errors=tuple(str(error) for error in session.persistence_errors),
     )
 
@@ -216,6 +221,7 @@ async def run_agent(
                 outcome="timed_out",
                 error=TimeoutError(f"agent exceeded {timeout_seconds:g} seconds"),
                 cleanup_quiesced=True,
+                cleanup_environment=cleanup_environment,
             )
         try:
             output = owner.result()
@@ -229,6 +235,7 @@ async def run_agent(
                 outcome="failed",
                 error=exc,
                 cleanup_quiesced=True,
+                cleanup_environment=cleanup_environment,
             )
         finalized = await finalize_once()
         if not finalized:
@@ -239,6 +246,7 @@ async def run_agent(
             outcome="completed",
             error=None,
             cleanup_quiesced=True,
+            cleanup_environment=cleanup_environment,
         )
     except asyncio.CancelledError:
         await stop_once(propagate_cancellation=False)
