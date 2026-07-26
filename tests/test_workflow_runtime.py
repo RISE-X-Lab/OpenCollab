@@ -87,10 +87,11 @@ async def test_built_context_threads_session_limits_and_system_prompt(monkeypatc
     ]
 
 @pytest.mark.asyncio
-async def test_kimi_global_thinking_applies_to_fast_structured_roles(monkeypatch):
+@pytest.mark.parametrize("model", ["k3", "kimi-for-coding"])
+async def test_kimi_global_thinking_applies_to_fast_structured_roles(monkeypatch, model):
     calls = _patch_build_session(monkeypatch)
     ctx = workflow_runtime.build_workflow_context(
-        cfg=_cfg(model="kimi-for-coding", provider="openai", thinking=True)
+        cfg=_cfg(model=model, provider="openai", thinking=True)
     )
 
     await ctx.agent("solve", thinking=False)
