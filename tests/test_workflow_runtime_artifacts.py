@@ -257,6 +257,7 @@ async def test_run_workflow_projects_sticky_trace_failure_and_fails_closed(
     assert manifest["tracer_write_error"] == FailingTracer.write_error
     assert manifest["tracer_dropped_steps"] == 3
     assert "trajectory write failed" in manifest["tracer_failure"]
+    assert manifest["evidence_complete"] is False
 
 @pytest.mark.asyncio
 async def test_run_workflow_trace_close_failure_does_not_mask_workflow_error(
@@ -333,6 +334,7 @@ async def test_run_workflow_fails_closed_when_custom_tracer_diagnostics_raise(
     assert manifest["tracer_write_error"] is None
     assert manifest["tracer_dropped_steps"] == 0
     assert "diagnostics could not be inspected" in manifest["tracer_failure"]
+    assert manifest["evidence_complete"] is False
 
 @pytest.mark.asyncio
 async def test_run_workflow_trace_false_skips_orchestration(monkeypatch, tmp_path):

@@ -178,6 +178,14 @@ def test_public_environment_contract_exposes_workspace_mapping_metadata() -> Non
         "source_workspace",
         "local_filesystem",
     } <= set(Environment.__annotations__)
+    assert callable(getattr(Environment, "setup"))
+
+
+def test_public_workflow_context_keeps_research_strategy_private() -> None:
+    parameters = inspect.signature(WorkflowContext.agent).parameters
+    assert "enforcement_strength" not in parameters
+    assert "commit_reserve" not in parameters
+    assert "harvest_fallback" not in parameters
 
 
 def test_environment_factories_preserve_caller_owned_lifecycle(tmp_path: Path) -> None:
@@ -192,6 +200,17 @@ def test_environment_factories_preserve_caller_owned_lifecycle(tmp_path: Path) -
     assert not local.revoked
     assert not worktree.revoked
     assert not container.revoked
+
+
+async def test_public_environment_setup_has_one_shared_contract(tmp_path: Path) -> None:
+    local = local_environment(tmp_path)
+    worktree = worktree_environment(tmp_path)
+
+    assert await local.setup() == str(tmp_path.resolve())
+    with pytest.raises(ValueError, match="mount_dir"):
+        await local.setup(str(tmp_path))
+    with pytest.raises(ValueError, match="mount_dir"):
+        await worktree.setup(str(tmp_path))
 
 
 def test_attach_container_validates_non_owning_workspace() -> None:

@@ -250,6 +250,29 @@ def _agent_status(
     return "completed", None
 
 
+def _quiescence_metrics(
+    *,
+    session_quiesced: bool,
+    environment_owned: bool,
+    environment_cleanup_quiesced: bool | None,
+    environment_quiesced: bool | None,
+) -> dict[str, bool | None]:
+    if not session_quiesced or environment_quiesced is False:
+        aggregate: bool | None = False
+    elif environment_quiesced is True:
+        aggregate = True
+    else:
+        aggregate = None
+    return {
+        "session_quiesced": session_quiesced,
+        "environment_owned": environment_owned,
+        "environment_cleanup_quiesced": environment_cleanup_quiesced,
+        "environment_quiesced": environment_quiesced,
+        "cleanup_quiesced": aggregate,
+        "execution_quiesced": aggregate,
+    }
+
+
 async def run_agent(
     *,
     prompt: str,
@@ -317,6 +340,12 @@ async def run_agent(
             raise ProgrammaticLifecycleError(str(exc)) from exc
         _require_agent_evidence(internal, artifacts, transcript_path, tracer)
         status, reason = _agent_status(internal)
+        quiescence = _quiescence_metrics(
+            session_quiesced=internal.cleanup_quiesced,
+            environment_owned=owned_environment,
+            environment_cleanup_quiesced=internal.environment_cleanup_quiesced,
+            environment_quiesced=internal.environment_quiesced,
+        )
         return ProgrammaticResult(
             output=internal.output,
             status=status,
@@ -330,8 +359,7 @@ async def run_agent(
                 "phase": internal.phase,
                 "terminal_reason": internal.terminal_reason,
                 "markup_recovered": internal.markup_recovered,
-                "cleanup_quiesced": True,
-                "execution_quiesced": True,
+                **quiescence,
             },
         )
     except BaseException as exc:
@@ -358,13 +386,27 @@ def _environment_paths(environment: Any, workspace: str) -> tuple[str, str]:
     return str(workdir), str(source_root)
 
 
-def _workflow_metrics(details: WorkflowRuntimeResult | None) -> dict[str, Any]:
-    return {
+def _workflow_metrics(
+    details: WorkflowRuntimeResult | None,
+    *,
+    environment_owned: bool,
+    environment_cleanup_quiesced: bool | None,
+    environment_quiesced: bool | None,
+) -> dict[str, Any]:
+    metrics = {
         "steps": 0 if details is None else details.steps,
         "sessions": 0 if details is None else details.sessions,
         "markup_recovered": 0 if details is None else details.markup_recovered,
-        "execution_quiesced": details is not None,
     }
+    metrics.update(
+        _quiescence_metrics(
+            session_quiesced=details is not None,
+            environment_owned=environment_owned,
+            environment_cleanup_quiesced=environment_cleanup_quiesced,
+            environment_quiesced=environment_quiesced,
+        )
+    )
+    return metrics
 
 
 async def run_workflow(
@@ -397,6 +439,8 @@ async def run_workflow(
     stopped_error: BaseException | None = None
     failed_error: BaseException | None = None
     bootstrap_stopped_environment = False
+    environment_cleanup_quiesced: bool | None = None
+    environment_quiesced: bool | None = None
     try:
         try:
             details = await _run_workflow(
@@ -448,12 +492,22 @@ async def run_workflow(
                 raise ProgrammaticLifecycleError(
                     "workflow-owned environment cleanup failed"
                 )
+            environment_cleanup_quiesced = True
+            environment_quiesced = True
 
     _verify_artifact_claim(artifacts)
     if stopped_error is not None:
         details = stopped_error.result
-        metrics = _workflow_metrics(details)
-        metrics["execution_quiesced"] = True
+        metrics = _workflow_metrics(
+            details,
+            environment_owned=owned_environment,
+            environment_cleanup_quiesced=(
+                True if owned_environment else environment_cleanup_quiesced
+            ),
+            environment_quiesced=(
+                True if owned_environment else environment_quiesced
+            ),
+        )
         return ProgrammaticResult(
             output=None,
             status="stopped",
@@ -473,7 +527,12 @@ async def run_workflow(
             tokens=None if details is None else details.tokens,
             artifacts=artifacts,
             error=failed_error,
-            metrics=_workflow_metrics(details),
+            metrics=_workflow_metrics(
+                details,
+                environment_owned=owned_environment,
+                environment_cleanup_quiesced=environment_cleanup_quiesced,
+                environment_quiesced=environment_quiesced,
+            ),
             agent_failures=() if details is None else details.agent_failures,
         )
     if details is None:
@@ -486,7 +545,12 @@ async def run_workflow(
         reason="budget_exceeded" if budget_stopped else None,
         tokens=details.tokens,
         artifacts=artifacts,
-        metrics=_workflow_metrics(details),
+        metrics=_workflow_metrics(
+            details,
+            environment_owned=owned_environment,
+            environment_cleanup_quiesced=environment_cleanup_quiesced,
+            environment_quiesced=environment_quiesced,
+        ),
         agent_failures=details.agent_failures,
     )
 

@@ -165,13 +165,33 @@ async def run_workflow(
         note_prefix="workflow trace also failed",
     )
 
+    if cancellation is not None:
+        terminal_status: Literal["completed", "stopped", "failed"] = "stopped"
+        terminal_reason = "cancelled"
+        failure_type = type(cancellation).__name__
+    elif workflow_failure is not None:
+        terminal_status = "failed"
+        terminal_reason = "workflow_exception"
+        failure_type = type(workflow_failure).__name__
+    elif stop_reason is not None:
+        terminal_status = "stopped"
+        terminal_reason = stop_reason
+        failure_type = None
+    else:
+        terminal_status = "completed"
+        terminal_reason = None
+        failure_type = None
+    requested_manifest = save_dir is not None
+    pre_manifest_evidence_complete = (
+        cleanup_failure is None
+        and cleanup_succeeded
+        and tracer_failure is None
+    )
     manifest_error = None
     if (
-        save_dir is not None
+        requested_manifest
         and cleanup_failure is None
         and cleanup_succeeded
-        and workflow_failure is None
-        and cancellation is None
     ):
         manifest_error = _persist_workflow_manifest(
             save_dir,
@@ -182,14 +202,22 @@ async def run_workflow(
             tracer_failure=tracer_failure,
             tracer_write_error=tracer_write_error,
             tracer_dropped_steps=tracer_dropped_steps,
+            status=terminal_status,
+            reason=terminal_reason,
+            failure_type=failure_type,
+            evidence_complete=pre_manifest_evidence_complete,
         )
 
+    evidence_complete = (
+        pre_manifest_evidence_complete
+        and (not requested_manifest or manifest_error is None)
+    )
     runtime_result = _runtime_result(
         ctx,
         output=result,
         name=name,
         stop_reason=stop_reason,
-        evidence_complete=tracer_failure is None,
+        evidence_complete=evidence_complete,
     )
     _attach_runtime_result(cancellation, runtime_result)
     _attach_runtime_result(workflow_failure, runtime_result)

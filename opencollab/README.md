@@ -133,8 +133,16 @@ container = docker_environment("python:3.11-slim", isolated_source)
 ```
 
 These factories construct caller-owned environments without eagerly setting
-them up. The caller retains setup, mount, and cleanup timing. Concrete adapter
-classes stay behind the bootstrap boundary.
+them up. Every public environment supports `await environment.setup()`. Docker
+environments additionally accept `mount_dir`; host and worktree environments
+reject that argument. The caller retains setup, mount, and cleanup timing.
+Concrete adapter classes stay behind the bootstrap boundary.
+
+Run metrics separate OpenCollab-owned session quiescence from environment
+quiescence. `session_quiesced` proves that session and persistence work has
+finished. For a caller-owned environment, `environment_quiesced`,
+`cleanup_quiesced`, and `execution_quiesced` remain `None` until the caller
+performs and verifies its own environment cleanup.
 
 ### Workflow authoring
 

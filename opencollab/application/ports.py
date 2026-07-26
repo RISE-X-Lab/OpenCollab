@@ -24,6 +24,10 @@ class EnvironmentPort(Protocol):
     def revoke(self) -> None:
         ...
 
+    async def setup(self, mount_dir: str | None = None) -> str:
+        """Prepare the environment and return its ready workspace identity."""
+        ...
+
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> Any:
         ...
 
