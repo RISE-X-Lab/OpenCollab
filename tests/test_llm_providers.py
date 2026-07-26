@@ -273,9 +273,10 @@ def test_openai_tool_choice_required_is_passed_through():
         (False, {"type": "function", "function": {"name": "structured_output"}}),
     ],
 )
-def test_openai_kimi_uses_auto_for_unsupported_forced_tool_choice(thinking, tool_choice):
+@pytest.mark.parametrize("model", ["k3", "kimi-for-coding"])
+def test_openai_kimi_uses_auto_for_unsupported_forced_tool_choice(thinking, tool_choice, model):
     kwargs = build_openai_kwargs(
-        "kimi-for-coding",
+        model,
         [{"role": "user", "content": "write the final patch"}],
         [{"type": "function", "function": {"name": "write_file", "parameters": {}}}],
         1.0,
@@ -314,10 +315,14 @@ def test_openai_other_model_keeps_named_tool_choice():
     assert kwargs["tool_choice"] == choice
 
 
-def test_exact_model_capabilities_centralize_provider_compatibility():
-    capabilities = model_capabilities("kimi-for-coding")
+@pytest.mark.parametrize(
+    ("model", "context_window"),
+    [("k3", 1_048_576), ("kimi-for-coding", 262_144)],
+)
+def test_exact_model_capabilities_centralize_provider_compatibility(model, context_window):
+    capabilities = model_capabilities(model)
 
-    assert capabilities.context_window == 262_144
+    assert capabilities.context_window == context_window
     assert capabilities.supports_forced_tool_choice is False
     assert capabilities.honors_workflow_thinking_override is False
 
