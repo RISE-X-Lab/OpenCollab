@@ -107,6 +107,11 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "k3": ModelCapabilities(
+        context_window=1_048_576,
+        supports_forced_tool_choice=False,
+        honors_workflow_thinking_override=False,
+    ),
     "kimi-for-coding": ModelCapabilities(
         context_window=262_144,
         supports_forced_tool_choice=False,
