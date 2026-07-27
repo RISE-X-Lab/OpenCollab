@@ -59,14 +59,33 @@ uv run opencollab workflow run NAME --args '{"task": "..."}'
 See [Workflow authoring](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md#workflow-authoring)
 for a complete module.
 
-## Learn more
+## Evaluate with OpenCollab-Eval
 
-For benchmark execution and reporting, use
-the [OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme),
-which contains installation, command, and official-evaluation instructions.
+[OpenCollab-Eval](https://github.com/RISE-X-Lab/OpenCollab-Eval) is a
+separate application built on OpenCollab's public Python API. It gives
+OpenCollab a real downstream user, so changes to agents, teams, workflows,
+tools, and environments can be exercised outside this repository.
+
+OpenCollab-Eval runs agents on software-engineering benchmarks. It creates an
+isolated workspace for each task, records the Solver's patch, runs the official
+tests against that patch, and keeps the commands and reports needed to inspect
+the result. It currently supports SWE-bench Pro-Lite and also provides a
+generic task runner for other evaluation workloads.
+
+Datasets, Docker integration, benchmark adapters, and experiment reports live
+in OpenCollab-Eval. Keeping them there lets this repository stay focused on
+agent collaboration while OpenCollab-Eval handles experiment operation and
+result checking.
+
+[Run an evaluation](https://github.com/RISE-X-Lab/OpenCollab-Eval#supported-environment)
+· [See how results are checked](https://github.com/RISE-X-Lab/OpenCollab-Eval/blob/main/docs/evaluation-integrity.md)
+· [Read the repository boundary](https://github.com/RISE-X-Lab/OpenCollab-Eval/blob/main/MIGRATION.md)
+
+## Learn more
 
 | You want… | Read |
 | --- | --- |
+| Benchmark execution and verified reports | [OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme) |
 | Installation, CLI, SDK, architecture, and runtime details | [Package guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md) |
 | Model, provider, and team configuration | [Configuration guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/configs/README.md) |
 | On-demand agent skills | [Skills guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/skills/README.md) |
