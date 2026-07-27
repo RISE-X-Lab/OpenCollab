@@ -61,6 +61,10 @@ for a complete module.
 
 ## Learn more
 
+For benchmark execution and reporting, use
+the [OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme),
+which contains installation, command, and official-evaluation instructions.
+
 | You want… | Read |
 | --- | --- |
 | Installation, CLI, SDK, architecture, and runtime details | [Package guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md) |

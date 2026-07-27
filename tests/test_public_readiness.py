@@ -59,8 +59,12 @@ def _public_text_files() -> list[Path]:
 
 def test_public_text_is_english_and_uses_canonical_project_names() -> None:
     stale_owner = "Yihong" + "Dong/OpenCollab"
-    unpublished_eval = "OpenCollab" + "-Eval"
-    forbidden = (stale_owner, unpublished_eval)
+    eval_name = "OpenCollab" + "-Eval"
+    forbidden = (
+        stale_owner,
+        f"KaiEureka/{eval_name}",
+        f"YihongDong/{eval_name}",
+    )
     findings: list[str] = []
 
     for path in _public_text_files():
@@ -74,6 +78,14 @@ def test_public_text_is_english_and_uses_canonical_project_names() -> None:
                     findings.append(f"{relative}:{line_number}: stale public name {value!r}")
 
     assert not findings, "\n".join(findings)
+
+
+def test_readme_points_to_the_canonical_evaluation_guide() -> None:
+    readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    eval_name = "OpenCollab" + "-Eval"
+    canonical = f"https://github.com/RISE-X-Lab/{eval_name}#readme"
+
+    assert f"[{eval_name} README]({canonical})" in readme
 
 
 def test_distribution_metadata_points_to_the_canonical_repository() -> None:
