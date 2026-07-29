@@ -342,6 +342,19 @@ def test_llm_trace_records_effective_thinking_mode():
     llm_calls = [s for s in tracer.steps if s["step_type"] == "llm_call"]
     assert llm_calls[0]["payload"]["thinking"] is True
 
+
+def test_llm_trace_records_verified_provider_model():
+    response = llm_response(content="answer")
+    response.provider_model = "gpt-verified"
+    tracer = FakeTracer()
+    runner = build_runner(llm=FakeLLM([response]), tracer=tracer)
+
+    run(runner.run_loop())
+
+    llm_calls = [step for step in tracer.steps if step["step_type"] == "llm_call"]
+    assert llm_calls[0]["payload"]["provider_model"] == "gpt-verified"
+
+
 def test_reasoning_is_preserved_in_assistant_tool_call_history():
     state = SessionState(messages=_convo())
     response = llm_response(

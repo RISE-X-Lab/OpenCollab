@@ -298,6 +298,7 @@ async def run_agent(
         tools=list(resolved_tools),
         model=config["model"],
         provider=config["provider"],
+        wire_protocol=config.get("wire_protocol", "chat_completions"),
         api_key=config.get("api_key"),
         base_url=config.get("base_url"),
         max_tokens_per_step=config.get("max_output_tokens", 8_192),
@@ -305,6 +306,10 @@ async def run_agent(
         top_p=config.get("top_p"),
         thinking=config.get("thinking", False),
         thinking_params=dict(config.get("thinking_params") or {}),
+        reasoning_effort=config.get("reasoning_effort"),
+        llm_connect_timeout=float(config.get("llm_connect_timeout", 30.0)),
+        llm_first_event_timeout=float(config.get("llm_first_event_timeout", 180.0)),
+        llm_stream_idle_timeout=float(config.get("llm_stream_idle_timeout", 180.0)),
     )
     _claim_artifacts(artifacts)
     owned_environment = environment is None

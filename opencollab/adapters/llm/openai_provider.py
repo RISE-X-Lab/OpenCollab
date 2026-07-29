@@ -18,6 +18,7 @@ from opencollab.adapters.llm.types import (
     estimate_tokens,
     model_capabilities,
     rescue_empty_turn,
+    usage_to_dict,
 )
 
 
@@ -238,7 +239,7 @@ def _parse_usage(resp: Any, request_messages: list[dict], message: Any) -> Usage
     would double-count. The additive cache fix applies only to Anthropic.
     """
     usage = getattr(resp, "usage", None)
-    raw_usage = _usage_to_dict(usage)
+    raw_usage = usage_to_dict(usage)
     input_tokens = _usage_int(raw_usage, "prompt_tokens")
     output_tokens = _usage_int(raw_usage, "completion_tokens")
     prompt_details = raw_usage.get("prompt_tokens_details") or {}
@@ -272,37 +273,6 @@ def _usage_int(source: Any, key: str) -> int:
     except (TypeError, ValueError, OverflowError):
         return 0
     return max(0, parsed)
-
-
-def _usage_to_dict(value: Any) -> dict[str, Any]:
-    plain = _usage_to_plain(value)
-    return plain if isinstance(plain, dict) else {}
-
-
-def _usage_to_plain(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, dict):
-        return {str(k): _usage_to_plain(v) for k, v in value.items() if v is not None}
-    if isinstance(value, (list, tuple)):
-        return [_usage_to_plain(v) for v in value]
-    if hasattr(value, "model_dump"):
-        try:
-            return _usage_to_plain(value.model_dump(exclude_none=True))
-        except TypeError:
-            return _usage_to_plain(value.model_dump())
-    if hasattr(value, "dict"):
-        try:
-            return _usage_to_plain(value.dict(exclude_none=True))
-        except TypeError:
-            return _usage_to_plain(value.dict())
-    if hasattr(value, "__dict__"):
-        return {
-            str(k): _usage_to_plain(v)
-            for k, v in vars(value).items()
-            if not k.startswith("_") and v is not None
-        }
-    return str(value)
 
 
 def _estimate_output_tokens(message: Any) -> int:

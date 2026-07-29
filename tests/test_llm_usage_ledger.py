@@ -9,7 +9,7 @@ import pytest
 from opencollab.adapters.llm import client as client_module
 from opencollab.adapters.llm import usage_ledger as ledger
 from opencollab.adapters.llm.client import LLMClient
-from opencollab.adapters.llm.types import Usage
+from opencollab.adapters.llm.types import LLMResponse, Usage
 from opencollab.adapters.llm.usage_ledger import (
     append_usage_record,
     build_usage_record,
@@ -253,3 +253,31 @@ def test_llm_client_records_error_with_redaction(tmp_path, monkeypatch):
     assert "[redacted]" in rows[0]["error"]["message"]
     assert "very secret prompt" not in record_text
     assert "local-secret-token" not in record_text
+
+
+def test_unknown_responses_cache_usage_remains_unknown():
+    usage = Usage(
+        input_tokens=1000,
+        output_tokens=50,
+        cache_read_tokens=None,
+        cache_creation_tokens=None,
+        reasoning_tokens=None,
+    )
+
+    record = build_usage_record(
+        provider="openai",
+        model="gpt-5.6-sol",
+        wire_protocol="responses",
+        reasoning_effort="xhigh",
+        base_url="https://example.invalid/v1",
+        latency_s=1,
+        status="success",
+        response=LLMResponse(usage=usage),
+    )
+
+    assert record["wire_protocol"] == "responses"
+    assert record["reasoning_effort"] == "xhigh"
+    assert record["usage"]["cached_input_tokens"] is None
+    assert record["usage"]["uncached_input_tokens"] is None
+    assert record["usage"]["reasoning_tokens"] is None
+    assert record["usage"]["cost_usd"] is None

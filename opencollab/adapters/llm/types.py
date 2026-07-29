@@ -24,8 +24,9 @@ class Usage:
 
     input_tokens: int = 0
     output_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_creation_tokens: int = 0
+    cache_read_tokens: int | None = 0
+    cache_creation_tokens: int | None = 0
+    reasoning_tokens: int | None = None
     estimated: bool = False
     raw_usage: dict[str, Any] = field(default_factory=dict)
     # Observability counter: 1 when this completion leaked kimi tool-call markup
@@ -52,6 +53,41 @@ class LLMResponse:
     # ``thinking`` blocks), kept for trajectory observability. ``None`` when the
     # provider/turn produced no thinking.
     reasoning: str | None = None
+    provider_items: list[dict[str, Any]] = field(default_factory=list)
+    provider_model: str | None = None
+
+
+def to_plain_data(value: Any) -> Any:
+    """Convert SDK model objects into JSON-compatible Python values."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): to_plain_data(v) for k, v in value.items() if v is not None}
+    if isinstance(value, (list, tuple)):
+        return [to_plain_data(v) for v in value]
+    if hasattr(value, "model_dump"):
+        try:
+            return to_plain_data(value.model_dump(exclude_none=True))
+        except TypeError:
+            return to_plain_data(value.model_dump())
+    if hasattr(value, "dict"):
+        try:
+            return to_plain_data(value.dict(exclude_none=True))
+        except TypeError:
+            return to_plain_data(value.dict())
+    if hasattr(value, "__dict__"):
+        return {
+            str(k): to_plain_data(v)
+            for k, v in vars(value).items()
+            if not k.startswith("_") and v is not None
+        }
+    return str(value)
+
+
+def usage_to_dict(value: Any) -> dict[str, Any]:
+    """Return one provider usage object as a plain mapping."""
+    plain = to_plain_data(value)
+    return plain if isinstance(plain, dict) else {}
 
 
 def rescue_empty_turn(
