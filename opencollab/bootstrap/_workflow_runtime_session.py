@@ -46,6 +46,7 @@ class WorkflowSessionFactory:
         *,
         model: str,
         provider: str,
+        wire_protocol: str = "chat_completions",
         api_key: str | None,
         base_url: str | None,
         workspace: str | None = None,
@@ -59,11 +60,16 @@ class WorkflowSessionFactory:
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
         thinking: bool = DEFAULT_THINKING,
         thinking_params: dict | None = None,
+        reasoning_effort: str | None = None,
+        llm_connect_timeout: float = 30.0,
+        llm_first_event_timeout: float = 180.0,
+        llm_stream_idle_timeout: float = 180.0,
         save_dir: str | None = None,
         env: Any | None = None,
     ) -> None:
         self._model = model
         self._provider = provider
+        self._wire_protocol = wire_protocol
         self._api_key = api_key
         self._base_url = base_url
         self._workspace = workspace
@@ -77,6 +83,10 @@ class WorkflowSessionFactory:
         self._max_output_tokens = max_output_tokens
         self._thinking = thinking
         self._thinking_params = thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
+        self._reasoning_effort = reasoning_effort
+        self._llm_connect_timeout = llm_connect_timeout
+        self._llm_first_event_timeout = llm_first_event_timeout
+        self._llm_stream_idle_timeout = llm_stream_idle_timeout
         # Run folder where each one-shot session's transcript is autosaved. When
         # set, every ``build_workflow_session`` gets its own ``<seq>_<role>.json``
         # so the AutoSaveSubscriber (wired by ``build_session`` once an
@@ -124,6 +134,7 @@ class WorkflowSessionFactory:
             tools=list(tools or []),
             model=self._model,
             provider=self._provider,
+            wire_protocol=self._wire_protocol,
             api_key=self._api_key,
             base_url=self._base_url,
             temperature=self._temperature,
@@ -131,6 +142,10 @@ class WorkflowSessionFactory:
             max_tokens_per_step=self._max_output_tokens,
             thinking=use_thinking,
             thinking_params=self._thinking_params,
+            reasoning_effort=self._reasoning_effort,
+            llm_connect_timeout=self._llm_connect_timeout,
+            llm_first_event_timeout=self._llm_first_event_timeout,
+            llm_stream_idle_timeout=self._llm_stream_idle_timeout,
             tool_choice=tool_choice,
         )
         env = self._env or (LocalEnvironment(self._workspace) if self._workspace else LocalEnvironment())
@@ -177,6 +192,7 @@ def build_workflow_context(
     factory = WorkflowSessionFactory(
         model=cfg["model"],
         provider=cfg["provider"],
+        wire_protocol=cfg.get("wire_protocol", "chat_completions"),
         api_key=cfg.get("api_key"),
         base_url=cfg.get("base_url"),
         workspace=workspace,
@@ -190,6 +206,10 @@ def build_workflow_context(
         max_output_tokens=int(cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)),
         thinking=bool(cfg.get("thinking", DEFAULT_THINKING)),
         thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
+        reasoning_effort=cfg.get("reasoning_effort"),
+        llm_connect_timeout=float(cfg.get("llm_connect_timeout", 30.0)),
+        llm_first_event_timeout=float(cfg.get("llm_first_event_timeout", 180.0)),
+        llm_stream_idle_timeout=float(cfg.get("llm_stream_idle_timeout", 180.0)),
         save_dir=save_dir,
         env=environment,
     )

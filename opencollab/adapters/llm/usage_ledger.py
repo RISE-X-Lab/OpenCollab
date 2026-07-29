@@ -78,10 +78,14 @@ def pricing_for_model(model: str | None) -> dict[str, float | str]:
     }
 
 
-def usage_cost_usd(usage: Usage, model: str | None) -> float:
+def usage_cost_usd(usage: Usage, model: str | None) -> float | None:
     pricing = pricing_for_model(model)
-    cached = max(int(getattr(usage, "cache_read_tokens", 0) or 0), 0)
-    cache_creation = max(int(getattr(usage, "cache_creation_tokens", 0) or 0), 0)
+    raw_cached = getattr(usage, "cache_read_tokens", 0)
+    raw_cache_creation = getattr(usage, "cache_creation_tokens", 0)
+    if raw_cached is None or raw_cache_creation is None:
+        return None
+    cached = max(int(raw_cached), 0)
+    cache_creation = max(int(raw_cache_creation), 0)
     uncached_input = max(int(usage.input_tokens or 0) - cached - cache_creation, 0)
     input_price = float(pricing["input_usd_per_mtok"])
     cached_price = float(pricing["cached_input_usd_per_mtok"])
@@ -144,14 +148,23 @@ def _redact_secret_assignment(match: re.Match[str]) -> str:
 
 
 def _usage_payload(usage: Usage, model: str | None) -> dict[str, Any]:
-    cached = max(int(getattr(usage, "cache_read_tokens", 0) or 0), 0)
-    cache_creation = max(int(getattr(usage, "cache_creation_tokens", 0) or 0), 0)
+    raw_cached = getattr(usage, "cache_read_tokens", 0)
+    raw_cache_creation = getattr(usage, "cache_creation_tokens", 0)
+    cached = None if raw_cached is None else max(int(raw_cached), 0)
+    cache_creation = (
+        None if raw_cache_creation is None else max(int(raw_cache_creation), 0)
+    )
     input_tokens = int(usage.input_tokens or 0)
     payload: dict[str, Any] = {
         "input_tokens": input_tokens,
-        "uncached_input_tokens": max(input_tokens - cached - cache_creation, 0),
+        "uncached_input_tokens": (
+            max(input_tokens - cached - cache_creation, 0)
+            if cached is not None and cache_creation is not None
+            else None
+        ),
         "cached_input_tokens": cached,
         "cache_creation_tokens": cache_creation,
+        "reasoning_tokens": getattr(usage, "reasoning_tokens", None),
         "output_tokens": int(usage.output_tokens or 0),
         "total_tokens": int(usage.total_tokens or 0),
         "estimated": bool(getattr(usage, "estimated", False)),
@@ -168,6 +181,8 @@ def build_usage_record(
     *,
     provider: str | None,
     model: str | None,
+    wire_protocol: str | None = None,
+    reasoning_effort: str | None = None,
     base_url: str | None,
     latency_s: float,
     status: str,
@@ -182,6 +197,8 @@ def build_usage_record(
         "status": status,
         "provider": provider,
         "model": model,
+        "wire_protocol": wire_protocol,
+        "reasoning_effort": reasoning_effort,
         "latency_s": round(latency_s, 4),
         "pid": os.getpid(),
         "cwd": os.getcwd(),
@@ -217,6 +234,8 @@ def record_api_usage(
     *,
     provider: str | None,
     model: str | None,
+    wire_protocol: str | None = None,
+    reasoning_effort: str | None = None,
     base_url: str | None,
     latency_s: float,
     status: str,
@@ -228,6 +247,8 @@ def record_api_usage(
             build_usage_record(
                 provider=provider,
                 model=model,
+                wire_protocol=wire_protocol,
+                reasoning_effort=reasoning_effort,
                 base_url=base_url,
                 latency_s=latency_s,
                 status=status,

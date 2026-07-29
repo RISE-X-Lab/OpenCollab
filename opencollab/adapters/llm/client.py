@@ -12,7 +12,13 @@ import openai
 
 from opencollab.adapters.llm.anthropic_provider import complete_anthropic
 from opencollab.adapters.llm.openai_provider import complete_openai
-from opencollab.adapters.llm.providers import is_anthropic, warn_provider_near_miss
+from opencollab.adapters.llm.providers import (
+    RESPONSES,
+    is_anthropic,
+    normalize_wire_protocol,
+    warn_provider_near_miss,
+)
+from opencollab.adapters.llm.responses_provider import complete_responses
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
 
@@ -44,16 +50,25 @@ class LLMClient:
         api_key: str | None = None,
         base_url: str | None = None,
         provider: str = "openai",
+        wire_protocol: str = "chat_completions",
         max_retries: int = 3,
         request_timeout: float = 600.0,
+        connect_timeout: float = 30.0,
+        first_event_timeout: float = 180.0,
+        stream_idle_timeout: float = 180.0,
     ):
         self.model = model
         self.provider = provider
         self.max_retries = max(0, max_retries)
         self.request_timeout = request_timeout
+        self.wire_protocol = normalize_wire_protocol(wire_protocol)
+        self.first_event_timeout = first_event_timeout
+        self.stream_idle_timeout = stream_idle_timeout
 
         warn_provider_near_miss(provider)
         if is_anthropic(provider):
+            if self.wire_protocol == RESPONSES:
+                raise ValueError("Responses wire protocol requires an OpenAI-compatible provider")
             import anthropic
 
             self.base_url = base_url or os.environ.get("ANTHROPIC_BASE_URL")
@@ -70,13 +85,19 @@ class LLMClient:
             self._openai = openai.AsyncOpenAI(
                 api_key=api_key or os.environ.get("OPENAI_API_KEY"),
                 base_url=self.base_url,
-                timeout=request_timeout,
+                timeout=openai.Timeout(request_timeout, connect=connect_timeout),
             )
             self._anthropic = None
 
     def context_window(self) -> int | None:
         """The model's context window in tokens, or ``None`` if unknown."""
         return model_context_window(self.model)
+
+    async def close(self) -> None:
+        """Close the provider SDK client owned by this facade."""
+        client = self._anthropic or self._openai
+        if client is not None:
+            await client.close()
 
     async def complete(
         self,
@@ -85,6 +106,7 @@ class LLMClient:
         temperature: float = 0.0,
         thinking: bool = False,
         thinking_params: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
         tool_choice: Any = None,
         top_p: float | None = None,
         max_output_tokens: int | None = None,
@@ -117,6 +139,22 @@ class LLMClient:
                     top_p=top_p,
                     max_output_tokens=max_output_tokens,
                 )
+            elif self.wire_protocol == RESPONSES:
+                response = await complete_responses(
+                    self._openai,
+                    self.model,
+                    messages,
+                    tools,
+                    temperature,
+                    self.max_retries,
+                    tool_choice=tool_choice,
+                    top_p=top_p,
+                    max_output_tokens=max_output_tokens,
+                    reasoning_effort=reasoning_effort,
+                    first_event_timeout=self.first_event_timeout,
+                    stream_idle_timeout=self.stream_idle_timeout,
+                    round_timeout=self.request_timeout,
+                )
             else:
                 response = await complete_openai(
                     self._openai,
@@ -134,6 +172,8 @@ class LLMClient:
             await _record_api_usage_async(
                 provider=self.provider,
                 model=self.model,
+                wire_protocol=self.wire_protocol,
+                reasoning_effort=reasoning_effort,
                 base_url=self.base_url,
                 latency_s=time.monotonic() - start,
                 status="success",
@@ -144,6 +184,8 @@ class LLMClient:
             await _record_api_usage_async(
                 provider=self.provider,
                 model=self.model,
+                wire_protocol=self.wire_protocol,
+                reasoning_effort=reasoning_effort,
                 base_url=self.base_url,
                 latency_s=time.monotonic() - start,
                 status="error",
