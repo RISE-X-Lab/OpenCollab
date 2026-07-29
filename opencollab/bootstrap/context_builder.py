@@ -65,6 +65,11 @@ class SpawnConfig:
     # ``ContextBuilder.build_agent``). Defaulted (OFF) so the field stays optional.
     thinking: bool = DEFAULT_THINKING
     thinking_params: dict = field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
+    wire_protocol: str = "chat_completions"
+    reasoning_effort: str | None = None
+    llm_connect_timeout: float = 30.0
+    llm_first_event_timeout: float = 180.0
+    llm_stream_idle_timeout: float = 180.0
 
 
 class ContextBuilder:
@@ -210,6 +215,7 @@ class ContextBuilder:
             tools=tools,
             model=role.model or cfg.model,
             provider=cfg.provider,
+            wire_protocol=cfg.wire_protocol,
             api_key=cfg.api_key,
             base_url=cfg.base_url,
             temperature=temperature,
@@ -217,6 +223,10 @@ class ContextBuilder:
             max_tokens_per_step=cfg.max_output_tokens,
             thinking=thinking,
             thinking_params=thinking_params,
+            reasoning_effort=cfg.reasoning_effort,
+            llm_connect_timeout=cfg.llm_connect_timeout,
+            llm_first_event_timeout=cfg.llm_first_event_timeout,
+            llm_stream_idle_timeout=cfg.llm_stream_idle_timeout,
         )
 
     def _team_section(self, role_name: str, role: RoleConfig) -> str:

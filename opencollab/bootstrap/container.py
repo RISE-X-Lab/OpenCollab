@@ -112,7 +112,11 @@ def _resolve_llm(agent: Agent, llm: LLMPort | None, llm_timeout: float) -> LLMPo
         api_key=agent.api_key,
         base_url=agent.base_url,
         provider=agent.provider,
+        wire_protocol=getattr(agent, "wire_protocol", "chat_completions"),
         request_timeout=llm_timeout,
+        connect_timeout=getattr(agent, "llm_connect_timeout", 30.0),
+        first_event_timeout=getattr(agent, "llm_first_event_timeout", 180.0),
+        stream_idle_timeout=getattr(agent, "llm_stream_idle_timeout", 180.0),
     )
 
 
@@ -131,9 +135,14 @@ def _build_summarizer(
     its async HTTP client never crosses event loops; an injected ``llm`` is
     reused as-is.
     """
+    reasoning_effort = getattr(agent, "reasoning_effort", None)
     if llm is not None:
         async def _summary_complete(request: list[dict[str, Any]]) -> Any:
-            return await resolved_llm.complete(request, temperature=0.0)
+            return await resolved_llm.complete(
+                request,
+                temperature=0.0,
+                reasoning_effort=reasoning_effort,
+            )
     else:
         async def _summary_complete(request: list[dict[str, Any]]) -> Any:
             client = LLMClient(
@@ -141,9 +150,17 @@ def _build_summarizer(
                 api_key=agent.api_key,
                 base_url=agent.base_url,
                 provider=agent.provider,
+                wire_protocol=getattr(agent, "wire_protocol", "chat_completions"),
                 request_timeout=llm_timeout,
+                connect_timeout=getattr(agent, "llm_connect_timeout", 30.0),
+                first_event_timeout=getattr(agent, "llm_first_event_timeout", 180.0),
+                stream_idle_timeout=getattr(agent, "llm_stream_idle_timeout", 180.0),
             )
-            return await client.complete(request, temperature=0.0)
+            return await client.complete(
+                request,
+                temperature=0.0,
+                reasoning_effort=reasoning_effort,
+            )
 
     return ReadTimeSummarizer(_summary_complete, transcript_path=auto_save_path)
 

@@ -8,6 +8,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Added an explicit OpenAI Responses wire protocol with typed streaming,
+  locally replayed reasoning and function items, exact tool-call binding,
+  configurable reasoning effort, separate stream timeouts, and complete usage
+  evidence.
 - Added immutable non-secret effective configuration metadata, public stateless
   tool composition, and caller-owned Local, Worktree, and image-backed Docker
   environment factories for external integrations. Configuration metadata

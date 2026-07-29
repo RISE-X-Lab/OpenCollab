@@ -6,6 +6,8 @@ import asyncio
 from types import SimpleNamespace
 
 from opencollab.application.compaction_summary import ReadTimeSummarizer, run_coro_blocking
+from opencollab.bootstrap import container
+from opencollab.domain.agent import Agent
 
 SEGMENT = [
     {"role": "user", "content": "build the thing"},
@@ -85,3 +87,39 @@ def test_summarizer_fallback_is_bounded_and_never_empty():
     s = _summarizer(RuntimeError("boom"))
     out = s(big)
     assert 0 < len(out) <= 4_010  # fallback_chars budget (+ role prefix slack)
+
+
+def test_runtime_summarizer_preserves_reasoning_effort_for_injected_llm():
+    class RecordingLLM:
+        kwargs = None
+
+        async def complete(self, _request, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(content="<summary>ok</summary>")
+
+    llm = RecordingLLM()
+    agent = Agent(name="lead", system_prompt="solve", reasoning_effort="xhigh")
+    summarizer = container._build_summarizer(agent, llm, llm, 600, None)
+
+    assert summarizer(SEGMENT) == "Summary:\nok"
+    assert llm.kwargs["reasoning_effort"] == "xhigh"
+
+
+def test_runtime_summarizer_preserves_reasoning_effort_for_owned_client(monkeypatch):
+    class RecordingClient:
+        kwargs = None
+
+        def __init__(self, **_kwargs):
+            pass
+
+        async def complete(self, _request, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(content="<summary>ok</summary>")
+
+    client = RecordingClient()
+    monkeypatch.setattr(container, "LLMClient", lambda **_kwargs: client)
+    agent = Agent(name="lead", system_prompt="solve", reasoning_effort="high")
+    summarizer = container._build_summarizer(agent, None, client, 600, None)
+
+    assert summarizer(SEGMENT) == "Summary:\nok"
+    assert client.kwargs["reasoning_effort"] == "high"

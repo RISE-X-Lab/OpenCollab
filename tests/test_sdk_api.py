@@ -24,7 +24,7 @@ from opencollab.workflows import WorkflowContext
 
 def test_root_and_sdk_export_one_small_surface() -> None:
     expected = ["OpenCollab", "RunError", "RunResult", "workflow"]
-    assert opencollab.__version__ == "0.4.0"
+    assert opencollab.__version__ == "0.4.1"
     assert opencollab.__all__ == expected
     assert sdk.__all__ == expected
     assert all(getattr(opencollab, name) is getattr(sdk, name) for name in expected)
@@ -290,6 +290,11 @@ def test_client_exposes_immutable_non_secret_configuration(tmp_path: Path) -> No
             "top_p": 0.8,
             "max_output_tokens": 4096,
             "thinking": True,
+            "wire_protocol": "responses",
+            "reasoning_effort": "high",
+            "llm_connect_timeout": 11,
+            "llm_first_event_timeout": 222,
+            "llm_stream_idle_timeout": 77,
             "thinking_params": {
                 "thinking": {
                     "type": "enabled",
@@ -305,6 +310,11 @@ def test_client_exposes_immutable_non_secret_configuration(tmp_path: Path) -> No
     assert client.configuration["top_p"] == 0.8
     assert client.configuration["max_output_tokens"] == 4096
     assert client.configuration["thinking"] is True
+    assert client.configuration["wire_protocol"] == "responses"
+    assert client.configuration["reasoning_effort"] == "high"
+    assert client.configuration["llm_connect_timeout"] == 11
+    assert client.configuration["llm_first_event_timeout"] == 222
+    assert client.configuration["llm_stream_idle_timeout"] == 77
     assert client.configuration["thinking_params"] == {
         "thinking": {
             "type": "enabled",
