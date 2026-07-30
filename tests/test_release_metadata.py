@@ -10,8 +10,8 @@ import opencollab
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PACKAGE_ROOT = _REPO_ROOT / "opencollab"
 _COPYRIGHT_NOTICE = b"Copyright (c) 2026 Yihong Dong, Zhenhua Xu, Kai Gong, and OpenCollab contributors\n"
-# Canonical body from SPDX license-list-data v3.28.0, text/MulanPSL-2.0.txt.
 _MULAN_PSL_2_SHA256 = "eb7a1d713eb919b146787629e22e4c975cb701f529a65d4d7e0fcd417558bf1c"
+# Canonical body from SPDX license-list-data v3.28.0, text/MulanPSL-2.0.txt.
 
 
 def test_release_metadata_keeps_versions_aligned_and_includes_license() -> None:
