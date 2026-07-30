@@ -117,9 +117,21 @@ def test_runtime_summarizer_preserves_reasoning_effort_for_owned_client(monkeypa
             return SimpleNamespace(content="<summary>ok</summary>")
 
     client = RecordingClient()
-    monkeypatch.setattr(container, "LLMClient", lambda **_kwargs: client)
-    agent = Agent(name="lead", system_prompt="solve", reasoning_effort="high")
+    created = {}
+
+    def build_client(**kwargs):
+        created.update(kwargs)
+        return client
+
+    monkeypatch.setattr(container, "LLMClient", build_client)
+    agent = Agent(
+        name="lead",
+        system_prompt="solve",
+        reasoning_effort="high",
+        llm_max_retries=17,
+    )
     summarizer = container._build_summarizer(agent, None, client, 600, None)
 
     assert summarizer(SEGMENT) == "Summary:\nok"
+    assert created["max_retries"] == 17
     assert client.kwargs["reasoning_effort"] == "high"

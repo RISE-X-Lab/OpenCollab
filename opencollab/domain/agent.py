@@ -35,6 +35,7 @@ class Agent:
         thinking_params: Extra request params sent when ``thinking`` is on
             (e.g. ``{"enable_thinking": True}`` for DashScope compatible mode).
         reasoning_effort: Responses API reasoning effort such as ``medium``.
+        llm_max_retries: Number of transient provider failures retried per turn.
         tool_choice: Optional override for the provider ``tool_choice`` (e.g.
             ``"required"`` to force a tool call). ``None`` keeps the provider
             default ("auto") — every ordinary agent leaves this unset.
@@ -54,6 +55,7 @@ class Agent:
     thinking: bool = False
     thinking_params: dict = field(default_factory=dict)
     reasoning_effort: str | None = None
+    llm_max_retries: int = 3
     llm_connect_timeout: float = 30.0
     llm_first_event_timeout: float = 180.0
     llm_stream_idle_timeout: float = 180.0

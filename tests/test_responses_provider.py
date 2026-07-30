@@ -174,6 +174,28 @@ async def test_stream_rejects_missing_completion_and_unknown_events():
 
 
 @pytest.mark.asyncio
+async def test_stream_failure_after_first_event_is_never_reissued():
+    calls = 0
+
+    class Responses:
+        async def create(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return FakeStream([ns(type="response.created")])
+
+    with pytest.raises(ResponsesProtocolError, match="before response.completed"):
+        await complete_responses(
+            ns(responses=Responses()),
+            "gpt-fake",
+            [{"role": "user", "content": "work"}],
+            None,
+            1.0,
+            100,
+        )
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "response,match",
     [

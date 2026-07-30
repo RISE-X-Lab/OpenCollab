@@ -139,6 +139,7 @@ class OpenCollab:
             "thinking",
             "thinking_params",
             "reasoning_effort",
+            "llm_max_retries",
             "llm_connect_timeout",
             "llm_first_event_timeout",
             "llm_stream_idle_timeout",
