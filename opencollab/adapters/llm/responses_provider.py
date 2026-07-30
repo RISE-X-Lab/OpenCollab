@@ -21,6 +21,7 @@ from opencollab.adapters.llm.types import (
 
 _OUTPUT_ITEM_TYPES = frozenset({"message", "reasoning", "function_call"})
 _PASSIVE_EVENT_TYPES = frozenset({
+    "keepalive",
     "response.created",
     "response.in_progress",
     "response.queued",

@@ -120,6 +120,26 @@ async def test_stream_text_uses_output_item_done_when_completed_output_is_empty(
 
 
 @pytest.mark.asyncio
+async def test_stream_keepalive_refreshes_idle_timeout():
+    item = message_item("OK")
+    stream = FakeStream(
+        [
+            ns(type="response.created"),
+            ns(type="keepalive"),
+            ns(type="response.output_item.done", output_index=0, item=item),
+            ns(type="response.completed", response=completed_response()),
+        ],
+        delays=[0, 0.015, 0.015, 0],
+    )
+
+    state = await _consume_stream(stream, 1, 0.02)
+    parsed = _parse_stream(state, [{"role": "user", "content": "Reply OK"}], "gpt-fake")
+
+    assert parsed.content == "OK"
+    assert stream.closed is True
+
+
+@pytest.mark.asyncio
 async def test_stream_aggregates_multiple_tool_calls_and_validates_arguments():
     first = function_item("call_1", "read_file", '{"path":"a.py"}')
     second = function_item("call_2", "read_file", '{"path":"b.py"}')

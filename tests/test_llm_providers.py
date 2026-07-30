@@ -464,6 +464,53 @@ def test_llm_client_forwards_anthropic_base_url(monkeypatch):
     assert captured["timeout"] == 12.0
 
 
+def test_llm_client_forwards_configured_openai_user_agent(monkeypatch):
+    captured = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setenv("OPENCOLLAB_LLM_USER_AGENT", "compatible-client/1.2.3")
+    monkeypatch.setattr("opencollab.adapters.llm.client.openai.AsyncOpenAI", FakeAsyncOpenAI)
+
+    from opencollab.adapters.llm.client import LLMClient
+
+    LLMClient(provider="openai", model="model", api_key="k")
+
+    assert captured["default_headers"] == {"User-Agent": "compatible-client/1.2.3"}
+
+
+def test_llm_client_keeps_openai_default_user_agent_when_unconfigured(monkeypatch):
+    captured = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.delenv("OPENCOLLAB_LLM_USER_AGENT", raising=False)
+    monkeypatch.setattr("opencollab.adapters.llm.client.openai.AsyncOpenAI", FakeAsyncOpenAI)
+
+    from opencollab.adapters.llm.client import LLMClient
+
+    LLMClient(provider="openai", model="model", api_key="k")
+
+    assert captured["default_headers"] is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["bad\nheader", "bad\x7fheader", "\u5ba2\u6237\u7aef/1", "x" * 257],
+)
+def test_llm_client_rejects_unsafe_openai_user_agent(monkeypatch, value):
+    monkeypatch.setenv("OPENCOLLAB_LLM_USER_AGENT", value)
+
+    from opencollab.adapters.llm.client import LLMClient
+
+    with pytest.raises(ValueError, match="OPENCOLLAB_LLM_USER_AGENT"):
+        LLMClient(provider="openai", model="model", api_key="k")
+
+
 def test_openai_estimates_output_from_tool_calls_when_no_content():
     """Output estimate falls back to tool-call args when content is empty."""
     tool_call = SimpleNamespace(

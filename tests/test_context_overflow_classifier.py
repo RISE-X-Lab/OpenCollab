@@ -194,6 +194,8 @@ def test_response_non_retryable_status_overrides_transient_wording():
         "Connection reset by peer",
         "Connection refused",
         "Server disconnected without sending a response",
+        "Our service encountered an error. You can retry your request.",
+        "The service is busy. Please try again later.",
     ],
 )
 def test_relay_upstream_failures_without_status_attribute_are_retryable(message):
@@ -205,6 +207,9 @@ def test_relay_upstream_failures_without_status_attribute_are_retryable(message)
     [
         "Error code: 400 - invalid request",
         "Error code: 400 - upstream_request_failed",
+        "Error code: 400 - please try again later",
+        "HTTP 400 Bad Request: please try again later",
+        "HTTP/1.1 403 overloaded",
         "Error code: 403 - rate limit",
         "Status code 401: timeout",
     ],

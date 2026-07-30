@@ -22,6 +22,8 @@ RETRYABLE_MESSAGE_FRAGMENTS = (
     "timeout",
     "temporarily unavailable",
     "overloaded",
+    "please try again later",
+    "retry your request",
     "upstream_request_failed",
     "upstream request failed",
     "connection error",
@@ -30,7 +32,7 @@ RETRYABLE_MESSAGE_FRAGMENTS = (
     "server disconnected",
 )
 _STATUS_IN_MESSAGE = re.compile(
-    r"\b(?:error|status)(?:\s+code)?\s*[:=]?\s*(\d{3})\b",
+    r"\b(?:(?:error|status)(?:\s+code)?|http(?:/\d(?:\.\d)?)?)\s*[:=]?\s*(\d{3})\b",
     re.IGNORECASE,
 )
 

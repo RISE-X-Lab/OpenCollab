@@ -23,6 +23,19 @@ from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
 
 _ledger_lock = threading.Lock()
+_USER_AGENT_ENV = "OPENCOLLAB_LLM_USER_AGENT"
+_MAX_USER_AGENT_BYTES = 256
+
+
+def _configured_user_agent() -> str | None:
+    value = os.environ.get(_USER_AGENT_ENV, "").strip()
+    if not value:
+        return None
+    if len(value.encode("utf-8")) > _MAX_USER_AGENT_BYTES:
+        raise ValueError(f"{_USER_AGENT_ENV} must be at most {_MAX_USER_AGENT_BYTES} bytes")
+    if any(not 32 <= ord(char) <= 126 for char in value):
+        raise ValueError(f"{_USER_AGENT_ENV} must contain printable ASCII only")
+    return value
 
 
 async def _record_api_usage_async(**kwargs: Any) -> None:
@@ -82,10 +95,13 @@ class LLMClient:
             self._openai = None
         else:
             self.base_url = base_url or os.environ.get("OPENAI_BASE_URL")
+            user_agent = _configured_user_agent()
+            default_headers = {"User-Agent": user_agent} if user_agent else None
             self._openai = openai.AsyncOpenAI(
                 api_key=api_key or os.environ.get("OPENAI_API_KEY"),
                 base_url=self.base_url,
                 timeout=openai.Timeout(request_timeout, connect=connect_timeout),
+                default_headers=default_headers,
             )
             self._anthropic = None
 
