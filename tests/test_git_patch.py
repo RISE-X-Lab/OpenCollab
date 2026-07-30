@@ -35,10 +35,16 @@ def _repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _extract(repo: Path, *, exclude_paths: tuple[str, ...] = ()) -> subprocess.CompletedProcess[str]:
+def _extract(
+    repo: Path,
+    *,
+    exclude_paths: tuple[str, ...] = (),
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         guarded_staged_diff_command(exclude_paths=exclude_paths),
         cwd=repo,
+        env=env,
         shell=True,
         text=True,
         stdout=subprocess.PIPE,
@@ -109,7 +115,7 @@ def test_patch_rejects_non_regular_repository_attributes(tmp_path):
     assert "not a regular file" in result.stderr
 
 
-def test_patch_rejects_active_repository_exclude_rules(tmp_path):
+def test_patch_does_not_let_repository_exclude_rules_hide_candidates(tmp_path):
     repo = _repo(tmp_path)
     (repo / "payload.txt").write_text("candidate\n", encoding="utf-8")
     info_exclude = repo / ".git" / "info" / "exclude"
@@ -117,8 +123,8 @@ def test_patch_rejects_active_repository_exclude_rules(tmp_path):
 
     result = _extract(repo)
 
-    assert result.returncode == 125
-    assert "info/exclude" in result.stderr
+    assert result.returncode == 0, result.stderr
+    assert "payload.txt" in result.stdout
 
 
 def test_patch_allows_comment_only_repository_exclude_file(tmp_path):
@@ -131,6 +137,18 @@ def test_patch_allows_comment_only_repository_exclude_file(tmp_path):
 
     assert result.returncode == 0, result.stderr
     assert "payload.txt" in result.stdout
+
+
+def test_patch_marks_controlled_workspace_safe_without_global_config(tmp_path):
+    repo = _repo(tmp_path)
+    (repo / "tracked.txt").write_text("new\n", encoding="utf-8")
+    env = os.environ.copy()
+    env["GIT_TEST_ASSUME_DIFFERENT_OWNER"] = "1"
+
+    result = _extract(repo, env=env)
+
+    assert result.returncode == 0, result.stderr
+    assert "tracked.txt" in result.stdout
 
 
 def test_patch_rejects_worktree_scoped_sparse_checkout(tmp_path):
