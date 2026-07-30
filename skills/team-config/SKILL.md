@@ -40,11 +40,10 @@ renderer glue), and the HTML template parts. Read `template.team.yaml` first.
 
 ## 3. Author configs/team.yaml
 Seed `configs/team.yaml` from the template ONLY if it doesn't exist yet — **never
-clobber a team.yaml you didn't write** (a user may keep a hand-authored team there;
-OpenCollab auto-loads `configs/team.yaml` as the default team). If it already
-exists, read it and edit it in place; or, to preserve the user's current team,
-write your new one to a fresh name like `configs/team.<name>.yaml` and tell them
-to pass it via `--team-file`.
+clobber a team.yaml you didn't write**. OpenCollab never auto-loads a team file;
+the user must select it with `--team-config PATH` or `OPENCOLLAB_TEAM_FILE`. If
+the target already exists, read it and edit it in place; or, to preserve the
+user's current team, write a fresh name like `configs/team.<name>.yaml`.
 ```sh
 mkdir -p "$ROOT/configs"
 [ -e "$ROOT/configs/team.yaml" ] || cp "$SKILL/template.team.yaml" "$ROOT/configs/team.yaml"
@@ -89,5 +88,6 @@ re-read their YAML and notes, apply the requested topology/role changes to
 they're happy.
 
 ## 6. Report
-Return: the `configs/team.yaml` path, the blueprint HTML path, the role count +
-entry, and any validation errors still open (or "valid"). Keep it to a few lines.
+Return: the team YAML path, the exact `opencollab --team-config PATH` command, the
+blueprint HTML path, the role count + entry, and any validation errors still
+open (or "valid"). Keep it to a few lines.

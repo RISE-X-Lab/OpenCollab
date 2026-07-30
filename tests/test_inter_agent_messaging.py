@@ -50,6 +50,21 @@ class PersistingFakeSession(FakeSession):
             json.dump(obj, f)
 
 
+class RespondingFakeSession(FakeSession):
+    """Fake that records a complete user/assistant turn in SessionState."""
+
+    async def add_user_message(self, content: str) -> None:
+        self.added.append(content)
+        self.state.append_message({"role": "user", "content": content})
+        self.state.reset_for_user_turn()
+
+    async def run_loop(self) -> str:
+        result = self._results.pop(0) if self._results else ""
+        self.state.append_message({"role": "assistant", "content": result})
+        self.state.mark_done()
+        return result
+
+
 class FakeFactory:
     def __init__(self, teammate):
         self._teammate = teammate
@@ -80,6 +95,19 @@ def _scheduler_events(events):
     return [e for e in events if isinstance(e, SchedulerEvent)]
 
 
+def _register_child(scheduler, session, *, aid: int = 1) -> None:
+    session.state.aid = aid
+    scheduler.table.add(
+        SessionControlBlock(
+            aid=aid,
+            parent_aid=0,
+            agent=session.agent,
+            state=session.state,
+        )
+    )
+    scheduler._sessions[aid] = session
+
+
 async def _wait_agent_idle(scheduler, aid: int) -> None:
     for _ in range(5):
         task = scheduler._tasks.get(aid)
@@ -88,6 +116,63 @@ async def _wait_agent_idle(scheduler, aid: int) -> None:
         await task
         if scheduler._tasks.get(aid) is task and not scheduler._message_inbox.get(aid):
             return
+
+
+def test_run_turn_routes_raw_user_message_to_selected_child():
+    teammate = RespondingFakeSession(["direct answer"], role="coder")
+    teammate.state.mark_done()
+    topology = Topology(edges={"lead": frozenset()})
+    scheduler, _ = _build_scheduler(teammate, topology=topology)
+    _register_child(scheduler, teammate)
+
+    result = run(scheduler.run_turn(1, "message from the user"))
+
+    assert result == "direct answer"
+    assert teammate.added == ["message from the user"]
+    assert "<teammate-message" not in teammate.added[0]
+    assert scheduler._sessions[0].added == []
+    assert scheduler.table.get(1).result == "direct answer"
+
+
+def test_run_turn_rejects_unknown_or_non_addressable_aid():
+    scheduler, _ = _build_scheduler(FakeSession([], role="coder"))
+
+    with pytest.raises(ValueError, match="no agent with aid 7"):
+        run(scheduler.run_turn(7, "hello"))
+    with pytest.raises(ValueError, match="non-negative integer"):
+        run(scheduler.run_turn(-1, "hello"))
+
+
+def test_run_turn_rejects_busy_target_without_mutating_history():
+    teammate = RespondingFakeSession(["unused"], role="coder")
+    teammate.state.mark_done()
+    scheduler, _ = _build_scheduler(teammate)
+    _register_child(scheduler, teammate)
+
+    async def scenario():
+        blocker = asyncio.Event()
+        task = asyncio.create_task(blocker.wait())
+        scheduler._tasks[1] = task
+        try:
+            with pytest.raises(RuntimeError, match="agent is still running"):
+                await scheduler.run_turn(1, "must not append")
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+    run(scenario())
+
+    assert teammate.added == []
+
+
+def test_agent_step_count_reads_selected_session():
+    teammate = FakeSession([], role="coder")
+    teammate.state.set_step_count(7)
+    scheduler, _ = _build_scheduler(teammate)
+    _register_child(scheduler, teammate)
+
+    assert scheduler.agent_step_count(1) == 7
 
 
 def test_send_message_queues_xml_and_returns_ack():
@@ -314,7 +399,7 @@ def test_add_user_message_failure_rolls_back_partial_state_and_restores_budget()
 def test_run_lead_add_user_message_failure_rolls_back_turn_and_restores_lease():
     """A-path (lead, aid=0) twin of the message-path rollback net above.
 
-    ``_run_exclusive`` reserves a fresh lead turn lease, checkpoints, then calls
+    ``_run_turn_exclusive`` reserves a fresh lead turn lease, checkpoints, then calls
     ``add_user_message``. If that raises, the same checkpoint -> try ->
     except-restore -> finally-pop transaction must leave the lead turn
     byte-identical and the lease released-then-restored — the exact contract
