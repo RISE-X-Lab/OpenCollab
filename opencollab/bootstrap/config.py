@@ -19,7 +19,7 @@ Supported variables:
     OPENCOLLAB_THINKING_PARAMS — JSON object of extra request params sent when
                             thinking is on (default {"enable_thinking": true})
     OPENCOLLAB_LLM_TIMEOUT — provider request timeout in seconds
-    OPENCOLLAB_FILTER_MESSAGES — TUI: show only the selected agent's stream (bool)
+    OPENCOLLAB_FILTER_MESSAGES — deprecated TUI compatibility setting (bool)
     OPENCOLLAB_CONFIG_FILE — explicit path to an env file
 """
 

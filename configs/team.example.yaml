@@ -1,7 +1,8 @@
 # Example OpenCollab team definition.
 #
-# Copy this to `configs/team.yaml` (in your workspace or cwd), or point
-# OPENCOLLAB_TEAM_FILE at it, to replace the built-in lead-only default.
+# Copy this to `configs/team.yaml`, then pass `--team-config configs/team.yaml`
+# (or point OPENCOLLAB_TEAM_FILE at it) to replace the built-in lead-only default.
+# OpenCollab does not discover team files by filename.
 #
 # Each role declares its system prompt (inline `prompt:` or `prompt_file:`),
 # an optional `model:` override (defaults to OPENCOLLAB_MODEL), an optional
