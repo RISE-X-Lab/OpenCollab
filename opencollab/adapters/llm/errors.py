@@ -1,4 +1,4 @@
-"""Provider-error classification for context-window overflow.
+"""Shared provider errors and context-window overflow classification.
 
 A context overflow is the one 400/BadRequest the run loop must treat specially:
 it is *not* transient (retrying the same prompt is futile — see ``retry.py``,
@@ -14,6 +14,11 @@ silently force-compacted.
 """
 
 from __future__ import annotations
+
+
+class TransientEmptyOutputError(RuntimeError):
+    """A provider completed a request without usable model output."""
+
 
 # Status codes a context overflow takes. Anthropic and OpenAI-compatible
 # providers both surface it as an HTTP 400 (BadRequest).
