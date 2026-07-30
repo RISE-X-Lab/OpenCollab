@@ -24,6 +24,10 @@ RETRYABLE_MESSAGE_FRAGMENTS = (
     "overloaded",
     "upstream_request_failed",
     "upstream request failed",
+    "connection error",
+    "connection reset",
+    "connection refused",
+    "server disconnected",
 )
 _STATUS_IN_MESSAGE = re.compile(
     r"\b(?:error|status)(?:\s+code)?\s*[:=]?\s*(\d{3})\b",

@@ -190,6 +190,10 @@ def test_response_non_retryable_status_overrides_transient_wording():
         "Error code: 502 - {'error': 'upstream_request_failed'}",
         "Responses stream failed: upstream_request_failed",
         "upstream request failed before completion",
+        "Connection error.",
+        "Connection reset by peer",
+        "Connection refused",
+        "Server disconnected without sending a response",
     ],
 )
 def test_relay_upstream_failures_without_status_attribute_are_retryable(message):
