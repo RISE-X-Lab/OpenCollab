@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import math
 import random
+import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -15,7 +16,19 @@ from opencollab.adapters.llm.errors import TransientEmptyOutputError, is_context
 RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
 
 # Error-message fragments that signal a transient failure when no status is set.
-RETRYABLE_MESSAGE_FRAGMENTS = ("rate limit", "429", "timeout", "temporarily unavailable", "overloaded")
+RETRYABLE_MESSAGE_FRAGMENTS = (
+    "rate limit",
+    "429",
+    "timeout",
+    "temporarily unavailable",
+    "overloaded",
+    "upstream_request_failed",
+    "upstream request failed",
+)
+_STATUS_IN_MESSAGE = re.compile(
+    r"\b(?:error|status)(?:\s+code)?\s*[:=]?\s*(\d{3})\b",
+    re.IGNORECASE,
+)
 
 # Small random jitter (seconds) added to each backoff to reduce thundering herd.
 RETRY_JITTER_MAX_SECONDS = 0.25
@@ -60,17 +73,22 @@ def is_retryable_error(error: Exception) -> bool:
     if is_context_overflow_error(error):
         return False
 
-    status = getattr(error, "status_code", None)
-    if status in RETRYABLE_STATUS_CODES:
-        return True
-
     response = getattr(error, "response", None)
-    if response is not None:
-        resp_status = getattr(response, "status_code", None)
-        if resp_status in RETRYABLE_STATUS_CODES:
-            return True
+    for value in (
+        getattr(error, "status_code", None),
+        getattr(response, "status_code", None) if response is not None else None,
+    ):
+        try:
+            status = int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if 100 <= status <= 599:
+            return status in RETRYABLE_STATUS_CODES
 
     msg = str(error).lower()
+    status_match = _STATUS_IN_MESSAGE.search(msg)
+    if status_match:
+        return int(status_match.group(1)) in RETRYABLE_STATUS_CODES
     return any(k in msg for k in RETRYABLE_MESSAGE_FRAGMENTS)
 
 
