@@ -14,6 +14,15 @@ from rich.segment import Segment
 from rich.text import Text
 
 from opencollab.adapters.tui.brand_motion import MARK_HEX, PulseDot
+from opencollab.adapters.tui.theme import (
+    BRAND_VIOLET,
+    ERROR,
+    MUTED,
+    PRIMARY,
+    SUBTLE,
+    SUCCESS,
+    WARNING,
+)
 from opencollab.application.scheduler_types import roster_display_state
 
 
@@ -33,44 +42,35 @@ class _LineViewport:
 class _RendererDisplayMixin:
     """Builds Rich renderables from the TUI's current state."""
 
-    # ── Calm-HUD palette: one accent (cyan) + a two-tier grey hierarchy. ──
-    # State lives in color; every value is an explicit, non-"white" style so
-    # the per-glyph chrome walk in the tests passes.
-    _STYLE_MUTED = "grey46"        # chrome: markers, dividers, separators, args
-    _STYLE_SUBTLE = "grey58"       # secondary text: stats numbers, session path
-    _STYLE_ACCENT = "cyan"         # the one identity hue: brand, in-flight, messages
-    _STYLE_SUCCESS = "green3"      # outcome only: finished / received / idle
-    _STYLE_WARNING = "gold3"       # outcome only: loop / budget / cancelled / running
-    _STYLE_ERROR = "red3"          # outcome only: failed / error
-    _STYLE_HEADING = "bold cyan"   # section headings ("Running"), banner wordmark
-    _STYLE_KEY = "grey58"          # banner key column ("model", "cwd", …)
+    # Neutral terminal chrome with one sparse OC-violet focus color. Warning and
+    # error hues are reserved for exceptional outcomes, not ordinary activity.
+    _STYLE_MUTED = MUTED
+    _STYLE_SUBTLE = SUBTLE
+    _STYLE_ACCENT = BRAND_VIOLET
+    _STYLE_SUCCESS = SUCCESS
+    _STYLE_WARNING = WARNING
+    _STYLE_ERROR = ERROR
+    _STYLE_HEADING = f"bold {PRIMARY}"
+    _STYLE_KEY = SUBTLE
 
     # Bold marker glyphs for activity lines — a marker reads louder than its sentence.
-    _MARK_START = ("▸ ", "cyan")          # work begun (in-flight, cyan)
-    _MARK_DONE = ("▪ ", "bold green3")    # finished / received
-    _MARK_FAIL = ("✗ ", "bold red3")      # failed / error
-    _MARK_WARN = ("⊘ ", "bold gold3")     # cancelled
-    _MARK_MSG = ("⇄ ", "bold cyan")       # inter-agent message
-    _MARK_DOT = ("· ", "grey46")          # neutral default / resumed
+    _MARK_START = ("▸ ", BRAND_VIOLET)
+    _MARK_DONE = ("▪ ", SUCCESS)
+    _MARK_FAIL = ("✗ ", f"bold {ERROR}")
+    _MARK_WARN = ("⊘ ", WARNING)
+    _MARK_MSG = ("⇄ ", BRAND_VIOLET)
+    _MARK_DOT = ("· ", MUTED)
 
     # State → color for team chips + toolbar parity. "available" = configured
     # but un-spawned: it recedes to muted grey so empty slots don't draw a glance.
     _STATE_STYLES = {
-        "running": _STYLE_WARNING,
+        "running": _STYLE_SUBTLE,
         "idle": _STYLE_SUCCESS,
         "available": _STYLE_MUTED,
         "failed": _STYLE_ERROR,
-        "stopped": _STYLE_WARNING,
+        "stopped": _STYLE_MUTED,
+        "cancelled": _STYLE_MUTED,
     }
-
-    def _agent_label(self, aid: int) -> str:
-        return "Lead" if aid == 0 else f"A{aid}"
-
-    def _is_visible(self, aid: int) -> bool:
-        """Whether an agent's session stream should render under the filter."""
-        if not self._filter_messages:
-            return True
-        return aid == self._selected_aid
 
     # Argument keys to preview, in priority order; ``command`` reads as code.
     _PREVIEW_KEYS = ("command", "task", "path", "file_path")
@@ -116,32 +116,64 @@ class _RendererDisplayMixin:
         ]
 
     def _build_team_panel(self) -> Any | None:
-        """Compact team roster, or None when no team exists."""
+        """One-line bottom status roster, or None when no team exists."""
         entries = self._team_entries()
         if not entries:
             return None
-        chips: list[tuple[str, str]] = []
-        for aid, role, state in entries:
-            style = self._STATE_STYLES.get(state, self._STYLE_MUTED)
-            focused = self._filter_messages and aid == self._selected_aid
-            if chips:
-                chips.append(("  ", self._STYLE_MUTED))
-            if focused and aid is not None:
-                chips.append(("▶ ", self._STYLE_ACCENT))  # explicit accent glyph
-            if aid is None:
-                chips.append((f"{role} ", self._STYLE_HEADING))
-            elif aid == 0:
-                chips.append(("Lead ", self._STYLE_HEADING))
-            else:
-                chips.append((f"A{aid} ", self._STYLE_HEADING))
-                chips.append((f"{role} ", self._STYLE_MUTED))
-            chips.append((f"[{state}]", style))
-        header = (
-            f"Team (showing {self._agent_label(self._selected_aid)}): "
-            if self._filter_messages
-            else "Team: "
+        entries = sorted(
+            (entry for entry in entries if isinstance(entry[0], int)),
+            key=lambda entry: entry[0],
+        ) + [entry for entry in entries if entry[0] is None]
+
+        def is_selected(entry: tuple[int | None, str, str]) -> bool:
+            aid, _role, _state = entry
+            return aid == self._selected_aid
+
+        selected_position = next(
+            (position for position, entry in enumerate(entries, 1) if is_selected(entry)),
+            1,
         )
-        return Text.assemble((header, self._STYLE_HEADING), *chips)
+
+        def build_line(*, compact: bool) -> Text:
+            line = Text(no_wrap=True, overflow="ellipsis")
+            line.append("AGENTS", style=self._STYLE_HEADING)
+            line.append(
+                f"  {selected_position}/{len(entries)}",
+                style=self._STYLE_MUTED,
+            )
+            for aid, role, state in entries:
+                style = self._STATE_STYLES.get(state, self._STYLE_MUTED)
+                focused = is_selected((aid, role, state))
+                line.append("  ", style=self._STYLE_MUTED)
+                if focused:
+                    line.append("◆ ", style=self._STYLE_ACCENT)
+                if aid is None:
+                    line.append(role, style=self._STYLE_MUTED)
+                    if not compact:
+                        line.append(f" {state}", style=style)
+                elif aid == 0:
+                    label_style = self._STYLE_HEADING if focused else self._STYLE_SUBTLE
+                    line.append(self._agent_label(aid), style=label_style)
+                    if not compact or focused:
+                        line.append(f" {state}", style=style)
+                else:
+                    label_style = self._STYLE_HEADING if focused else self._STYLE_SUBTLE
+                    line.append(f"A{aid}", style=label_style)
+                    if not compact:
+                        line.append(f" {role}", style=self._STYLE_MUTED)
+                    if not compact or focused:
+                        line.append(f" {state}", style=style)
+            if len(entries) > 1 and not compact:
+                line.append("  ⇧Tab/Tab", style=self._STYLE_MUTED)
+            if self._holding_for_exit and not compact:
+                line.append("  q close", style=self._STYLE_MUTED)
+            return line
+
+        line = build_line(compact=False)
+        if line.cell_len > self.console.width:
+            line = build_line(compact=True)
+        line.truncate(max(1, self.console.width), overflow="ellipsis")
+        return line
 
     def _new_thinking_bar(self, label: str) -> PulseDot:
         """A labeled waiting indicator: a gently pulsing brand dot + ``label`` +
@@ -160,6 +192,19 @@ class _RendererDisplayMixin:
         grid.add_column(no_wrap=True)   # narrow ◆ gutter (top-aligned by default)
         grid.add_column(ratio=1)        # markdown body
         grid.add_row(Text("◆", style=MARK_HEX), body)
+        return grid
+
+    def _user_block(self, content: str) -> Any:
+        """Render one user message inside the same redrawable transcript."""
+        from rich.table import Table
+
+        grid = Table.grid(padding=(0, 1))
+        grid.add_column(no_wrap=True)
+        grid.add_column(ratio=1)
+        grid.add_row(
+            Text("❯", style=self._STYLE_ACCENT),
+            Text(content, style=self._STYLE_SUBTLE),
+        )
         return grid
 
     def _build_display(self) -> Any:
@@ -231,19 +276,34 @@ class _RendererDisplayMixin:
             return display
         return _LineViewport(lines[-max_height:])
 
-    def _build_settled_display(self) -> Any | None:
-        """The persistent transcript committed to scrollback when a turn ends.
+    def _build_settled_display(self, *, aid: int = 0) -> Any | None:
+        """Build one settled turn for an explicit scrollback handoff.
 
-        Only the conversation — assistant text + tool/activity lines — is kept.
-        The live-only HUD (running spinner, transient status, team roster) is
-        dropped so the settled view stays focused on the reply; the team remains
-        visible in the prompt's bottom toolbar. Returns ``None`` when the turn
-        produced nothing worth persisting.
+        Interactive mode keeps this material in the redrawable history viewport;
+        one-shot mode uses this slice so it still leaves a normal terminal result.
+        Live-only chrome (spinner, transient status, roster) is excluded.
         """
-        if self._current_text:
-            self._flush_current_text_to_timeline()
-        if not self._timeline_blocks:
+        state = self._state_for(aid)
+        if state.current_text:
+            self._flush_current_text_to_timeline(state)
+        return self._build_history_display(state, start=state.turn_history_start)
+
+    def _build_history_display(self, state: Any, *, start: int = 0) -> Any | None:
+        """Build the requested slice of one agent's history without live chrome."""
+        blocks = list(state.history_blocks[start:])
+        if state.current_text:
+            blocks.append(self._assistant_block(Markdown(state.current_text)))
+        if not blocks:
             return None
         from rich.console import Group
 
-        return Group(*self._timeline_blocks)
+        return Group(*blocks)
+
+    def render_selected_history(self) -> str:
+        """Render the selected agent's complete history for Prompt Toolkit."""
+        display = self._build_history_display(self._selected_state)
+        if display is None:
+            return ""
+        with self.console.capture() as capture:
+            self.console.print(display, end="")
+        return capture.get().rstrip("\n")

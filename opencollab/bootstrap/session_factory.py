@@ -305,6 +305,7 @@ class DefaultSessionFactory:
         lead_workspace: str | None = None,
         interactive: bool = False,
         save_dir: str | None = None,
+        allow_unisolated_child_tests: bool = False,
     ):
         self._cfg = cfg
         self._team = team_cfg or default_team_config()
@@ -321,6 +322,7 @@ class DefaultSessionFactory:
         )
         self._lead_workspace = lead_workspace
         self._interactive = interactive
+        self._allow_unisolated_child_tests = allow_unisolated_child_tests
         # Run folder where every agent's transcript is persisted. When set,
         # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
         self._save_dir = save_dir
@@ -346,7 +348,11 @@ class DefaultSessionFactory:
         )
         plan = self._context_builder.build_plan(role, task=task, context=context)
         agent = self._context_builder.build_agent(
-            role, scheduler=scheduler, interactive=False, plan=plan
+            role,
+            scheduler=scheduler,
+            interactive=False,
+            allow_unisolated_tests=self._allow_unisolated_child_tests,
+            plan=plan,
         )
         auto_save_path = (
             agent_save_path(self._save_dir, aid, role)

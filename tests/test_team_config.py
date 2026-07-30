@@ -16,6 +16,7 @@ from opencollab.bootstrap.team_config import (
     TeamConfig,
     default_team_config,
     load_team_config,
+    resolve_team_file,
 )
 from opencollab.domain.team import Topology
 
@@ -71,6 +72,64 @@ def test_default_team_is_lead_only_with_allow_all(monkeypatch):
     assert cfg.roles["lead"].tools == list(LEAD_TOOL_NAMES)
     assert cfg.topology.allow_all is True
     assert cfg.topology.allows("lead", "any-custom-role")
+
+
+def test_load_team_ignores_conventional_workspace_file(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENCOLLAB_TEAM_FILE", raising=False)
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / "team.yaml").write_text(
+        "roles:\n  custom:\n    prompt: Custom team.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    cfg = load_team_config(str(tmp_path))
+
+    assert set(cfg.roles) == {"lead"}
+    assert cfg.entry == "lead"
+    assert resolve_team_file(str(tmp_path)) is None
+
+
+def test_load_team_accepts_explicit_path_without_environment(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENCOLLAB_TEAM_FILE", raising=False)
+    config = tmp_path / "custom-team.yaml"
+    config.write_text(
+        "roles:\n  captain:\n    prompt: Lead explicitly.\n",
+        encoding="utf-8",
+    )
+
+    cfg = load_team_config(str(tmp_path), path=config)
+
+    assert set(cfg.roles) == {"captain"}
+    assert cfg.entry == "captain"
+
+
+def test_explicit_path_takes_precedence_over_environment(tmp_path, monkeypatch):
+    environment_config = tmp_path / "environment-team.yaml"
+    environment_config.write_text(
+        "roles:\n  environment:\n    prompt: Environment team.\n",
+        encoding="utf-8",
+    )
+    argument_config = tmp_path / "argument-team.yaml"
+    argument_config.write_text(
+        "roles:\n  argument:\n    prompt: Argument team.\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(environment_config))
+
+    cfg = load_team_config(str(tmp_path), path=argument_config)
+
+    assert set(cfg.roles) == {"argument"}
+    assert cfg.entry == "argument"
+
+
+def test_load_team_rejects_missing_explicit_environment_path(tmp_path, monkeypatch):
+    missing = tmp_path / "missing-team.yaml"
+    monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(missing))
+
+    with pytest.raises(ValueError, match="team config does not exist"):
+        load_team_config(str(tmp_path))
 
 
 def test_load_team_roundtrip_roles_and_topology(tmp_path, monkeypatch):
