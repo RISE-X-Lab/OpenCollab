@@ -117,6 +117,7 @@ def build_tools_for_role(
     scheduler: SchedulerPort | None = None,
     skill_store: SkillStorePort | None = None,
     interactive: bool = False,
+    allow_unisolated_tests: bool = False,
     allow_file_creation: bool = True,
     tool_limits: dict[str, dict[str, int]] | None = None,
 ) -> list[Tool]:
@@ -145,6 +146,7 @@ def build_tools_for_role(
                     STATELESS_TOOL_FACTORIES[name],
                     limits,
                     headless=not interactive,
+                    allow_unisolated_tests=allow_unisolated_tests,
                     allow_file_creation=allow_file_creation,
                 )
             )
@@ -174,6 +176,7 @@ def _instantiate(
     limits: dict[str, dict[str, int]],
     *,
     headless: bool,
+    allow_unisolated_tests: bool,
     allow_file_creation: bool,
 ) -> Tool:
     """Build a stateless tool, applying any configured limit kwargs."""
@@ -184,7 +187,7 @@ def _instantiate(
         kwargs.update(
             allow_runner_override=False,
             allow_extra_args=False,
-            require_process_isolation=True,
+            require_process_isolation=not allow_unisolated_tests,
         )
     if name == "file_write":
         kwargs["allow_create"] = allow_file_creation

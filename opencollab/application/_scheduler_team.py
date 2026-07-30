@@ -82,6 +82,13 @@ class SchedulerTeamMixin:
         ]
         return live + available
 
+    def agent_step_count(self, aid: int) -> int:
+        """Return the cumulative step count for one registered agent."""
+        session = self._sessions.get(aid)
+        if session is None or self.table.get(aid) is None:
+            raise ValueError(f"No agent with aid {aid}.")
+        return int(getattr(session, "step_count", session.state.step_count))
+
     async def _append_worktree_diff(self, env: EnvironmentPort, result: str) -> str:
         """If env is a worktree, append its diff to the result."""
         if not isinstance(env, DiffCapablePort):

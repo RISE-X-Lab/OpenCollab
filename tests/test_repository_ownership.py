@@ -146,6 +146,7 @@ def test_framework_scripts_contain_no_evaluation_entrypoints() -> None:
         "check_conventional_title.py",
         "check_dashscope.py",
         "check_secret_history.py",
+        "demo_team_issue.sh",
         "generate_brand_assets.py",
         "start_opencollab.sh",
     ]

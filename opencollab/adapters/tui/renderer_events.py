@@ -34,153 +34,215 @@ class _RendererEventsMixin:
 
     def _handle_session_event(self, event: Any) -> None:
         etype = event.type
-        aid = event.data.get("aid", -1)
-        agent_label = "Lead" if aid == 0 else f"A{aid}"
+        aid = self._event_aid(event.data.get("aid", -1))
+        state = self._state_for(aid)
+        agent_label = self._agent_label(aid)
 
         if etype == "text_delta":
-            if not self._is_visible(aid):
-                return
-            self._clear_thinking_status()
+            self._clear_thinking_status(state)
             content = event.data.get("content", "")
-            self._current_text += content
+            state.current_text += content
+            state.history_revision += 1
             self._refresh()
 
         elif etype == "tool_start":
-            self._clear_thinking_status()
+            self._clear_thinking_status(state)
             tool = event.data.get("tool", "?")
             role = event.data.get("role", "")
             args = event.data.get("args", {})
             if not role and tool == "spawn_agent" and isinstance(args, dict):
                 role = str(args.get("role", ""))
             label = f"{agent_label}:{tool}"
-            self._active_tools[label] = event.data
+            state.active_tools[label] = event.data
             preview = self._args_preview(event.data)
             self._append_activity(
                 (f"{label} started", self._STYLE_ACCENT),
                 (preview, self._STYLE_MUTED),
                 marker=self._MARK_START,
+                state=state,
             )
             if tool == "spawn_agent" and role:
-                self._emit_status(Text(f"{agent_label} spawned {role}", style=self._STYLE_ACCENT))
+                self._emit_status(
+                    Text(f"{agent_label} spawned {role}", style=self._STYLE_ACCENT),
+                    state=state,
+                )
             self._refresh()
 
         elif etype == "tool_end":
             tool = event.data.get("tool", "?")
             label = f"{agent_label}:{tool}"
-            self._active_tools.pop(label, None)
+            state.active_tools.pop(label, None)
             latency = event.data.get("latency", 0.0)
             self._append_activity(
                 (f"{label} finished", self._STYLE_SUCCESS),
                 (f" ({latency:.1f}s)", self._STYLE_MUTED),
                 marker=self._MARK_DONE,
+                state=state,
             )
             self._refresh()
 
         elif etype == "step_start":
-            self._step = event.data.get("step", 0)
-            self._clear_thinking_status()
+            state.step = event.data.get("step", 0)
+            self._clear_thinking_status(state)
             # Drive the live view with the animated pulsing dot. A fresh bar
             # resets the elapsed counter for this step; it keeps flowing on Live's
             # refresh even while the model is silent, so it never looks frozen.
-            self._thinking = self._new_thinking_bar(f"{agent_label} thinking… · step {self._step}")
+            state.thinking = self._new_thinking_bar(
+                f"{agent_label} thinking… · step {state.step}"
+            )
             self._refresh()
 
         elif etype == "loop_detected":
             tool = event.data.get("tool", "?")
             count = event.data.get("count", 0)
             self._emit_status(
-                Text(f"Loop detected: {tool} called {count}x with same args", style=self._STYLE_WARNING)
+                Text(f"Loop detected: {tool} called {count}x with same args", style=self._STYLE_WARNING),
+                state=state,
             )
 
         elif etype == "budget_warning":
-            self._emit_status(Text("Token budget running low", style=self._STYLE_WARNING))
+            self._emit_status(
+                Text("Token budget running low", style=self._STYLE_WARNING),
+                state=state,
+            )
 
         elif etype == "error":
             reason = event.data.get("reason", "unknown")
-            self._emit_status(Text(f"Error: {reason}", style=self._STYLE_ERROR))
+            self._emit_status(
+                Text(f"Error: {reason}", style=self._STYLE_ERROR),
+                state=state,
+                preserve=True,
+            )
 
     def _handle_scheduler_event(self, event: SchedulerEvent) -> None:
         etype = event.type
-        aid = event.data.get("aid", -1)
+        aid = self._event_aid(event.data.get("aid", -1))
         role = event.data.get("role", "")
-        agent_label = f"A{aid}" if aid != 0 else "Lead"
+        agent_label = self._agent_label(aid)
 
         if etype == "agent_spawned":
-            self._clear_thinking_status()
+            state = self._state_for(aid)
+            self._clear_thinking_status(state)
             self._roster[aid] = {"role": role or "agent", "state": "running"}
             # aid 0 is the lead/turn itself, not a spawned teammate — no chrome.
             if aid != 0:
                 label = f"{agent_label}:spawn"
-                self._active_tools[label] = dict(event.data)
-                self._append_activity((f"{label} started", self._STYLE_ACCENT), marker=self._MARK_START)
+                state.active_tools[label] = dict(event.data)
+                self._append_activity(
+                    (f"{label} started", self._STYLE_ACCENT),
+                    marker=self._MARK_START,
+                    state=state,
+                )
                 if role:
-                    self._emit_status(Text(f"Agent {agent_label} ({role}) spawned", style=self._STYLE_ACCENT))
+                    self._emit_status(
+                        Text(f"Agent {agent_label} ({role}) spawned", style=self._STYLE_ACCENT),
+                        state=state,
+                    )
             self._refresh()
 
         elif etype == "agent_resumed":
+            state = self._state_for(aid)
             # A parent that suspended on delegated work has been re-activated.
             self._mark_roster(aid, role, "running")
-            self._append_activity((f"{agent_label} resumed", self._STYLE_ACCENT), marker=self._MARK_START)
+            self._append_activity(
+                (f"{agent_label} resumed", self._STYLE_ACCENT),
+                marker=self._MARK_START,
+                state=state,
+            )
             self._refresh()
 
         elif etype == "agent_completed":
+            state = self._state_for(aid)
             label = f"{agent_label}:spawn"
-            self._active_tools.pop(label, None)
+            completed_spawn = label in state.active_tools
+            state.active_tools.pop(label, None)
             self._mark_roster(aid, role, "idle")
             latency = event.data.get("latency", 0.0)
             # The lead (aid 0) finishing IS the turn boundary — the stats footer
             # already marks it. Skip the teammate-style "finished"/"completed"
             # chrome so a solo turn isn't buried under its own lifecycle noise.
             if aid != 0:
+                activity = f"{label} finished" if completed_spawn else f"{agent_label} completed"
                 self._append_activity(
-                    (f"{label} finished", self._STYLE_SUCCESS),
+                    (activity, self._STYLE_SUCCESS),
                     (f" ({latency:.1f}s)", self._STYLE_MUTED),
                     marker=self._MARK_DONE,
+                    state=state,
                 )
                 if role:
                     self._emit_status(
-                        Text(f"Agent {agent_label} ({role}) completed ({latency:.1f}s)", style=self._STYLE_SUCCESS)
+                        Text(
+                            f"Agent {agent_label} ({role}) completed ({latency:.1f}s)",
+                            style=self._STYLE_SUCCESS,
+                        ),
+                        state=state,
                     )
             self._refresh()
 
         elif etype == "agent_failed":
+            state = self._state_for(aid)
             label = f"{agent_label}:spawn"
-            self._active_tools.pop(label, None)
+            failed_spawn = label in state.active_tools
+            state.active_tools.pop(label, None)
             self._mark_roster(aid, role, "failed")
             error = event.data.get("error", "unknown")
+            activity = f"{label} failed" if failed_spawn else f"{agent_label} failed"
             self._append_activity(
-                (f"{label} failed", self._STYLE_ERROR),
+                (activity, self._STYLE_ERROR),
                 (f": {error}", self._STYLE_MUTED),
                 marker=self._MARK_FAIL,
+                state=state,
             )
             self._refresh()
 
         elif etype == "agent_cancelled":
+            state = self._state_for(aid)
             label = f"{agent_label}:spawn"
-            self._active_tools.pop(label, None)
+            cancelled_spawn = label in state.active_tools
+            state.active_tools.pop(label, None)
             self._mark_roster(aid, role, "cancelled")
-            self._append_activity((f"{label} cancelled", self._STYLE_WARNING), marker=self._MARK_WARN)
+            activity = f"{label} cancelled" if cancelled_spawn else f"{agent_label} cancelled"
+            self._append_activity(
+                (activity, self._STYLE_WARNING),
+                marker=self._MARK_WARN,
+                state=state,
+            )
             self._refresh()
 
         elif etype == "agent_message_sent":
             from_aid = event.data.get("from_aid", -1)
             to_aid = event.data.get("to_aid", -1)
-            self._append_activity((f"A{from_aid} → A{to_aid} message", self._STYLE_ACCENT), marker=self._MARK_MSG)
+            state = self._state_for(self._event_aid(from_aid))
+            self._append_activity(
+                (f"A{from_aid} → A{to_aid} message", self._STYLE_ACCENT),
+                marker=self._MARK_MSG,
+                state=state,
+            )
             self._refresh()
 
         elif etype == "agent_message_delivered":
             to_aid = event.data.get("to_aid", -1)
-            self._append_activity((f"A{to_aid} received message", self._STYLE_SUCCESS), marker=self._MARK_DONE)
+            state = self._state_for(self._event_aid(to_aid))
+            self._append_activity(
+                (f"A{to_aid} received message", self._STYLE_SUCCESS),
+                marker=self._MARK_DONE,
+                state=state,
+            )
             self._refresh()
 
         elif etype == "review_started":
-            self._clear_thinking_status()
-            self._active_tools["review_loop"] = dict(event.data)
-            self._append_activity(("review_loop started", self._STYLE_ACCENT), marker=self._MARK_START)
+            state = self._state_for(0)
+            self._clear_thinking_status(state)
+            state.active_tools["review_loop"] = dict(event.data)
+            self._append_activity(
+                ("review_loop started", self._STYLE_ACCENT),
+                marker=self._MARK_START,
+                state=state,
+            )
             self._refresh()
 
         elif etype == "review_completed":
-            self._active_tools.pop("review_loop", None)
+            self._state_for(0).active_tools.pop("review_loop", None)
             self._refresh()
 
     def _mark_roster(self, aid: int, role: str, state: str) -> None:
@@ -189,40 +251,62 @@ class _RendererEventsMixin:
         if role:
             entry["role"] = role
 
-    def _emit_status(self, message: Text | str) -> None:
+    def _emit_status(
+        self,
+        message: Text | str,
+        *,
+        state: Any | None = None,
+        preserve: bool = False,
+    ) -> None:
         """Route status lines to Live when active; print directly otherwise."""
         status = message if isinstance(message, Text) else Text.from_markup(message)
+        target = state or self._selected_state
+        if preserve:
+            self._flush_current_text_to_timeline(target)
+            target.history_blocks.append(status)
+            target.history_revision += 1
         if self._live or self._live_paused:
-            self._status_lines.append(status)
+            target.status_lines.append(status)
             self._refresh()
             return
         self.console.print(status)
 
     def _append_activity(
-        self, *segments: tuple[str, str], marker: tuple[str, str] | None = None
+        self,
+        *segments: tuple[str, str],
+        marker: tuple[str, str] | None = None,
+        state: Any | None = None,
     ) -> None:
         """Insert one activity line; ``marker`` is the leading geometric glyph
         (defaults to the neutral dot)."""
-        self._flush_current_text_to_timeline()
+        target = state or self._selected_state
+        self._flush_current_text_to_timeline(target)
         styled_segments: list[tuple[str, str]] = [marker or self._MARK_DOT]
         styled_segments.extend((text, style) for text, style in segments if text)
         line = Text.assemble(*styled_segments)
-        self._timeline_blocks.append(line)
+        target.history_blocks.append(line)
+        target.timeline_blocks.append(line)
+        target.history_revision += 1
         # Keep recent timeline blocks bounded.
-        overflow = len(self._timeline_blocks) - MAX_TIMELINE_BLOCKS
+        overflow = len(target.timeline_blocks) - MAX_TIMELINE_BLOCKS
         if overflow > 0:
-            self._timeline_blocks = self._timeline_blocks[overflow:]
+            target.timeline_blocks = target.timeline_blocks[overflow:]
 
-    def _flush_current_text_to_timeline(self) -> None:
+    def _flush_current_text_to_timeline(self, state: Any | None = None) -> None:
         """Commit accumulated assistant text so later events appear in-order."""
-        if not self._current_text:
+        target = state or self._selected_state
+        if not target.current_text:
             return
-        self._timeline_blocks.append(self._assistant_block(Markdown(self._current_text)))
-        self._current_text = ""
+        block = self._assistant_block(Markdown(target.current_text))
+        target.history_blocks.append(block)
+        target.timeline_blocks.append(block)
+        target.current_text = ""
+        target.history_revision += 1
 
-    def _clear_thinking_status(self) -> None:
+    def _clear_thinking_status(self, state: Any | None = None) -> None:
         """Drop the transient LLM-wait indicator before fresher progress shows."""
-        self._thinking = None
-        self._status_lines = [
-            s for s in self._status_lines if "thinking" not in s.plain.lower()
+        target = state or self._selected_state
+        target.thinking = None
+        target.status_lines = [
+            s for s in target.status_lines if "thinking" not in s.plain.lower()
         ]

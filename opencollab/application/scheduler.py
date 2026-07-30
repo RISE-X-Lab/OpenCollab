@@ -63,7 +63,7 @@ class Scheduler(
     Design:
     - SessionTable holds all SCBs (pure data, no I/O)
     - spawn() creates a new SCB and schedules it for execution
-    - run() drives the main loop, waiting for all agents to complete
+    - run_turn() addresses one agent and waits for all agents to complete
     - Results are injected into parent sessions as system messages
 
     One of two Strategies driving ``session.run_loop()``: this event-driven,

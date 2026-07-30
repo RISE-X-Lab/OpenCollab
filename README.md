@@ -31,7 +31,7 @@ The same agent runtime supports two explicit forms of collaboration:
 
 | Mode | Command | What it is |
 | --- | --- | --- |
-| **Team** | `opencollab --workspace .` | A lead plans the work and spawns specialists that collaborate until the task is done. The agents decide the division of labor. |
+| **Team** | `opencollab [--team-config FILE] --workspace .` | A lead plans the work and spawns specialists that collaborate until the task is done. The agents decide the division of labor. |
 | **Workflow** | `opencollab workflow run NAME` | Python defines the control flow—fan-out, pipelines, loops, and verification gates—while agents complete each step. |
 
 OpenCollab keeps the model, context, tools, orchestration, and execution
@@ -42,13 +42,18 @@ environment separable so experiments can change one component at a time.
 ```bash
 uv sync --locked
 cp configs/.env.example configs/.env   # then set OPENCOLLAB_API_KEY
-cp configs/team.example.yaml configs/team.yaml
 uv run opencollab --workspace .
 ```
 
 Point `configs/.env` at an OpenAI-compatible or Anthropic endpoint. The command
-starts Team mode with the checked-in example topology. Never commit real API
-keys.
+starts with the built-in single `lead`, which may spawn ad-hoc specialists.
+Never commit real API keys. To use declared roles and a fixed topology, select a
+team file explicitly:
+
+```bash
+cp configs/team.example.yaml configs/team.yaml
+uv run opencollab --team-config configs/team.yaml --workspace .
+```
 
 For repeatable pipelines, author a Python workflow and run it by name:
 

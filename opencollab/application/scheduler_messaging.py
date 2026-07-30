@@ -95,9 +95,9 @@ class MessagingMixin:
     ) -> None:
         """Append ``message`` as a user turn under a rollback transaction.
 
-        The single transaction shared by the lead run loop (``_run_exclusive``,
-        aid 0) and the message-inbox drain (``_drain_message_inbox_locked``, any
-        aid). The caller has already reserved the turn lease and captured
+        The single transaction shared by the external user-turn loop
+        (``_run_turn_exclusive``) and the message-inbox drain
+        (``_drain_message_inbox_locked``). The caller has already reserved the turn lease and captured
         ``prior_lease``; this owns only the atomic part: mark the delivery task,
         snapshot the turn, try the append, and on ANY failure roll the turn back
         byte-identical (``restore_user_turn``) and release-then-restore the lease

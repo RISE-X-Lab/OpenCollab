@@ -1,14 +1,14 @@
 """Brand-motion primitive for the TUI: a single, gently pulsing brand dot.
 
 A small, self-contained (stdlib + Rich) renderable — one ``●`` that *breathes*
-(its brightness eases up and down) in a soft brand violet. The frame is a pure
+(its brightness eases up and down) in the OC brand violet. The frame is a pure
 function of *elapsed seconds*, computed at render time from ``time.monotonic()``.
 Because ``rich.live.Live`` re-renders on its own timer, dropping one of these
 into the live view animates it for free — no extra thread, loop, or ``sleep``,
 and it keeps pulsing even when no new events arrive (which is what fixes the old
 "frozen" LLM-wait line).
 
-Kept deliberately calm: one soft-violet dot with a low-contrast breathe — not a
+Kept deliberately calm: one violet dot with a low-contrast breathe — not a
 saturated, multi-colour sweep — so it sits quietly inside the TUI's calm HUD.
 """
 
@@ -20,12 +20,14 @@ from collections.abc import Callable
 
 from rich.text import Text
 
-# Soft brand violet — a light tint of the logo's #7C3AED, so the dot reads as
-# "brand" without the heavy, saturated colour. Used for the pulsing dot and the
-# static ◆ marker alike.
-DOT_COLOR = (159, 122, 234)  # #9F7AEA
+from opencollab.adapters.tui.theme import BRAND_VIOLET, BRAND_VIOLET_RGB
+
+# The canonical OC violet is used on one small moving mark only. Keeping the
+# surrounding chrome neutral makes the exact brand color read without taking
+# over the viewport.
+DOT_COLOR = BRAND_VIOLET_RGB
 DOT_GLYPH = "●"              # ● U+25CF
-MARK_HEX = "#9F7AEA"         # the static ◆ reply / banner marker — same soft violet
+MARK_HEX = BRAND_VIOLET       # the static ◆ reply / banner marker — same violet
 
 # Breathing model — a slow, smooth brightness pulse (a calm breathe, not a blink).
 PULSE_PERIOD = 1.4     # seconds per full breath (dim → bright → dim)
@@ -41,7 +43,7 @@ def _shade(color: RGB, k: float) -> RGB:
 
 
 def _hex(color: RGB) -> str:
-    """Rich-style truecolor hex (e.g. ``#9F7AEA``) for a Text segment style."""
+    """Rich-style truecolor hex (e.g. ``#7C3AED``) for a Text segment style."""
     return "#{:02X}{:02X}{:02X}".format(*color)
 
 
@@ -57,7 +59,7 @@ def pulse_brightness(elapsed: float) -> float:
 
 
 def dot_color(elapsed: float) -> RGB:
-    """Soft-violet dot colour at ``elapsed`` seconds (its brightness breathes)."""
+    """OC-violet dot colour at ``elapsed`` seconds (its brightness breathes)."""
     return _shade(DOT_COLOR, pulse_brightness(elapsed))
 
 

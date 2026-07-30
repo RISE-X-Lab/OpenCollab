@@ -14,6 +14,8 @@ Split by concern (``self`` is unchanged — mixins run on the one TUI instance):
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass, field
 from typing import Any
 
 from rich.console import Console
@@ -22,8 +24,32 @@ from rich.panel import Panel
 from rich.text import Text
 
 from opencollab.adapters.tui.brand_motion import MARK_HEX, PulseDot
+from opencollab.adapters.tui.keyboard import TabKeyNavigator
 from opencollab.adapters.tui.renderer_display import _RendererDisplayMixin
 from opencollab.adapters.tui.renderer_events import _RendererEventsMixin
+
+
+@dataclass
+class _AgentRenderState:
+    """Mutable live-render state owned by one scheduler agent."""
+
+    current_text: str = ""
+    active_tools: dict[str, dict] = field(default_factory=dict)
+    status_lines: list[Text] = field(default_factory=list)
+    history_blocks: list[Any] = field(default_factory=list)
+    timeline_blocks: list[Any] = field(default_factory=list)
+    turn_history_start: int = 0
+    history_revision: int = 0
+    step: int = 0
+    thinking: PulseDot | None = None
+
+
+@dataclass(frozen=True)
+class _AgentFocusTarget:
+    """One keyboard-selectable live agent."""
+
+    aid: int
+    role: str
 
 
 class TUI(_RendererEventsMixin, _RendererDisplayMixin):
@@ -38,37 +64,207 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
 
     def __init__(self, console: Console | None = None, *, filter_messages: bool = False):
         self.console = console or Console()
-        self._current_text = ""
-        self._active_tools: dict[str, dict] = {}
-        self._status_lines: list[Text] = []
-        self._timeline_blocks: list[Any] = []
+        self._agent_states: dict[int, _AgentRenderState] = {}
         # aid -> {"role": str, "state": str} for the live team roster panel.
         self._roster: dict[int, dict] = {}
-        self._step = 0
         # Brand motion (single pulsing dot). ``_motion`` is the shared,
-        # seconds-less tool-execution spinner; ``_thinking`` is the live LLM-wait
-        # indicator (labeled + a seconds counter), (re)created each step so the
-        # counter resets. Both animate purely from Live's periodic re-render — no
-        # extra thread, loop, or sleep.
+        # seconds-less tool-execution spinner. Each agent owns its own LLM-wait
+        # indicator so hidden streams remain intact while another agent is selected.
         self._motion = PulseDot(muted_style=self._STYLE_MUTED, show_seconds=False)
-        self._thinking: PulseDot | None = None
         self._live: Live | None = None
         self._live_paused = False
-        # When filtering is on, only the selected agent's text stream is shown.
-        # Tool/status events stay visible for every agent so background work
-        # does not look frozen while a teammate is running.
-        # Defaults to the Lead (aid 0).
+        # Retained as a compatibility input while the renderer moves to one
+        # lossless per-agent view. It must never control event collection.
         self._filter_messages = filter_messages
         self._selected_aid = 0
+        self._state_for(0)
         # Optional callable returning the full team roster (live agents +
         # configured "available" roles). When set, the team panel renders from
         # it so the roster stays visible during a turn, not only after a spawn.
         self._team_provider: Any | None = None
+        self._keyboard_controller: Any | None = TabKeyNavigator(
+            self.select_previous_agent,
+            self.select_next_agent,
+        )
+        self._keyboard_resume_pending = False
+        self._holding_for_exit = False
+
+    def _state_for(self, aid: int) -> _AgentRenderState:
+        """Return one agent's render state, creating it on first observation."""
+        return self._agent_states.setdefault(aid, _AgentRenderState())
+
+    def _event_aid(self, aid: Any) -> int:
+        """Normalize legacy events without an aid to agent 0, independent of focus."""
+        return aid if isinstance(aid, int) and aid >= 0 else 0
+
+    def _agent_label(self, aid: int) -> str:
+        """Return the stable display label for an agent.
+
+        Child agents keep compact ``A<n>`` labels. Agent 0 uses its configured
+        entry role, while the built-in team naturally remains ``Lead``.
+        """
+        if aid != 0:
+            return f"A{aid}"
+        role = next(
+            (role for entry_aid, role, _state in self._team_entries() if entry_aid == 0),
+            "lead",
+        )
+        label = str(role).strip().replace("_", " ").replace("-", " ")
+        return label.title() or "Lead"
+
+    @property
+    def _selected_state(self) -> _AgentRenderState:
+        return self._state_for(self._selected_aid)
+
+    # Compatibility accessors keep the display mixin and narrow external tests
+    # focused on the selected agent while all event data remains separately held.
+    @property
+    def _current_text(self) -> str:
+        return self._selected_state.current_text
+
+    @_current_text.setter
+    def _current_text(self, value: str) -> None:
+        state = self._selected_state
+        if state.current_text != value:
+            state.current_text = value
+            state.history_revision += 1
+
+    @property
+    def _active_tools(self) -> dict[str, dict]:
+        return self._selected_state.active_tools
+
+    @_active_tools.setter
+    def _active_tools(self, value: dict[str, dict]) -> None:
+        self._selected_state.active_tools = value
+
+    @property
+    def _status_lines(self) -> list[Text]:
+        return self._selected_state.status_lines
+
+    @_status_lines.setter
+    def _status_lines(self, value: list[Text]) -> None:
+        self._selected_state.status_lines = value
+
+    @property
+    def _timeline_blocks(self) -> list[Any]:
+        return self._selected_state.timeline_blocks
+
+    @_timeline_blocks.setter
+    def _timeline_blocks(self, value: list[Any]) -> None:
+        self._selected_state.timeline_blocks = value
+        self._selected_state.history_blocks = list(value)
+        self._selected_state.history_revision += 1
+
+    @property
+    def _step(self) -> int:
+        return self._selected_state.step
+
+    @_step.setter
+    def _step(self, value: int) -> None:
+        self._selected_state.step = value
+
+    @property
+    def _thinking(self) -> PulseDot | None:
+        return self._selected_state.thinking
+
+    @_thinking.setter
+    def _thinking(self, value: PulseDot | None) -> None:
+        self._selected_state.thinking = value
 
     def set_team_provider(self, provider: Any) -> None:
         """Supply a callable returning the full team roster so the live display
         shows the team continuously (matching the prompt's bottom toolbar)."""
         self._team_provider = provider
+
+    def set_keyboard_controller(self, controller: Any) -> None:
+        """Attach the turn-scoped Tab-key controller used by the CLI."""
+        self._keyboard_controller = controller
+
+    @property
+    def selected_aid(self) -> int:
+        return self._selected_aid
+
+    @property
+    def selected_role(self) -> str | None:
+        """Compatibility view: configured-only roles are not input targets."""
+        return None
+
+    @property
+    def selected_history_cache_key(self) -> tuple[int, int, int]:
+        """Stable Prompt Toolkit cache key for the current history rendering."""
+        state = self._selected_state
+        return self._selected_aid, state.history_revision, self.console.width
+
+    def _focus_targets(self) -> list[_AgentFocusTarget]:
+        """Return live agents in stable aid order.
+
+        Configured-but-unspawned roles remain visible in the roster, but without
+        an aid they cannot own history or receive user input.
+        """
+        live_roles: dict[int, str] = {}
+
+        for aid, role, _state in self._team_entries():
+            role = str(role)
+            if isinstance(aid, int) and aid >= 0:
+                live_roles.setdefault(aid, role)
+
+        for aid in self._agent_states:
+            fallback_role = "lead" if aid == 0 else "agent"
+            role = str(self._roster.get(aid, {}).get("role", fallback_role))
+            live_roles.setdefault(aid, role)
+
+        return [
+            _AgentFocusTarget(aid=aid, role=live_roles[aid])
+            for aid in sorted(live_roles)
+        ]
+
+    def _focus_is_selected(self, target: _AgentFocusTarget) -> bool:
+        return self._selected_aid == target.aid
+
+    def _select_focus(self, target: _AgentFocusTarget) -> int:
+        changed = not self._focus_is_selected(target)
+        self._selected_aid = target.aid
+        if changed:
+            self._refresh()
+        return self._selected_aid
+
+    def select_agent(self, aid: int) -> int:
+        """Select an existing agent and return the resulting aid."""
+        target = next(
+            (candidate for candidate in self._focus_targets() if candidate.aid == aid),
+            None,
+        )
+        return self._selected_aid if target is None else self._select_focus(target)
+
+    def select_relative_agent(self, offset: int) -> int:
+        """Move through live team members with wraparound."""
+        targets = self._focus_targets()
+        if not targets:
+            return self._selected_aid
+        index = next(
+            (
+                position
+                for position, target in enumerate(targets)
+                if self._focus_is_selected(target)
+            ),
+            0,
+        )
+        return self._select_focus(targets[(index + offset) % len(targets)])
+
+    def select_previous_agent(self) -> int:
+        return self.select_relative_agent(-1)
+
+    def select_next_agent(self) -> int:
+        return self.select_relative_agent(1)
+
+    def record_user_message(self, aid: int, content: str) -> None:
+        """Add one user turn to the target's redrawable transcript."""
+        state = self._state_for(aid)
+        self._flush_current_text_to_timeline(state)
+        block = self._user_block(content)
+        state.history_blocks.append(block)
+        state.timeline_blocks.append(block)
+        state.history_revision += 1
 
     def _refresh(self) -> None:
         """Re-render the current state."""
@@ -81,7 +277,8 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         # The turn begins by waiting on the model — show the animated wait bar so
         # first-token latency doesn't read as frozen. step_start refines it with
         # the step counter; text/tool progress clears it.
-        self._thinking = self._new_thinking_bar("Thinking…")
+        label = self._agent_label(self._selected_aid)
+        self._selected_state.thinking = self._new_thinking_bar(f"{label} thinking…")
         self._live = Live(
             self._build_live_display(),
             console=self.console,
@@ -90,11 +287,42 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
             vertical_overflow="crop",
         )
         self._live.start()
+        if self._keyboard_controller is not None:
+            self._keyboard_controller.start()
+
+    async def hold_live(self) -> bool:
+        """Keep a completed TTY Live view open until the user presses ``q``.
+
+        Returns ``False`` when no interactive keyboard controller is active, so
+        redirected and other non-TTY one-shot runs never wait for input.
+        """
+        controller = self._keyboard_controller
+        set_quit_callback = getattr(controller, "set_quit_callback", None)
+        if (
+            self._live is None
+            or controller is None
+            or not getattr(controller, "active", False)
+            or not callable(set_quit_callback)
+        ):
+            return False
+
+        released = asyncio.Event()
+        set_quit_callback(released.set)
+        self._holding_for_exit = True
+        try:
+            self._refresh()
+            await released.wait()
+            return True
+        finally:
+            set_quit_callback(None)
+            self._holding_for_exit = False
 
     def suspend_live(self) -> bool:
         """Temporarily stop Live updates while preserving render state."""
         if not self._live or self._live_paused:
             return False
+        if self._keyboard_controller is not None:
+            self._keyboard_resume_pending = self._keyboard_controller.stop()
         self._live.stop()
         self._live = None
         self._live_paused = True
@@ -113,24 +341,38 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         )
         self._live_paused = False
         self._live.start()
+        if self._keyboard_resume_pending and self._keyboard_controller is not None:
+            self._keyboard_controller.start()
+        self._keyboard_resume_pending = False
 
-    def stop_live(self) -> None:
-        """Stop the live HUD and commit the turn's transcript to scrollback.
+    def stop_live(self, *, persist: bool = False, aid: int | None = None) -> None:
+        """Stop the live HUD while retaining every agent transcript in memory.
 
-        The live frame is transient, so stopping erases the in-turn HUD (running
-        spinner, transient status, team roster). Only the conversation transcript
-        — assistant text + tool/activity lines — is reprinted so it persists,
-        keeping the settled view focused on the reply (the team stays visible in
-        the prompt's bottom toolbar)."""
+        Interactive transcripts stay inside the redrawable Prompt Toolkit view so
+        Tab can replace them cleanly. One-shot callers opt into ``persist`` to
+        print the target's settled turn to ordinary terminal scrollback.
+        """
+        set_quit_callback = getattr(self._keyboard_controller, "set_quit_callback", None)
+        if callable(set_quit_callback):
+            set_quit_callback(None)
+        self._holding_for_exit = False
+        if self._keyboard_controller is not None:
+            self._keyboard_controller.stop()
+        self._keyboard_resume_pending = False
+        settled = None
         if self._live:
-            settled = self._build_settled_display()
+            if persist:
+                settled = self._build_settled_display(
+                    aid=self._selected_aid if aid is None else aid
+                )
             self._live.stop()
             self._live = None
-            if settled is not None:
-                self.console.print(settled)
+        if settled is not None:
+            self.console.print(settled)
         self._live_paused = False
-        self._status_lines.clear()
-        self._current_text = ""
+        for state in self._agent_states.values():
+            self._flush_current_text_to_timeline(state)
+            state.status_lines.clear()
 
     def print_welcome(
         self,
@@ -139,6 +381,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         provider: str | None = None,
         workspace: str | None = None,
         budget: int | None = None,
+        interactive: bool = True,
     ) -> None:
         """Compact 'Calm HUD' banner: wordmark + tagline, then an optional
         aligned key/value metadata line. All fields are optional so a bare
@@ -153,10 +396,12 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
             ("OpenCollab", self._STYLE_HEADING),
             ("  multi-agent dev", self._STYLE_MUTED),
         )
-        tagline = Text(
-            "Type a message · Ctrl+C interrupts · 'exit' quits",
-            style=self._STYLE_MUTED,
+        tagline_text = (
+            "Type a message · Ctrl+C interrupts · 'exit' quits"
+            if interactive
+            else "Running issue · Ctrl+C interrupts"
         )
+        tagline = Text(tagline_text, style=self._STYLE_MUTED)
 
         fields: list[tuple[str, str]] = []
         if provider or model:
@@ -178,11 +423,11 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
                     meta.append("   ", style=self._STYLE_MUTED)  # 3-space gutter
                 meta.append(f"{key} ", style=self._STYLE_KEY)
                 meta.append(val, style=self._STYLE_SUBTLE)
-            body += [Rule(style=self._STYLE_ACCENT), meta]
+            body += [Rule(style=self._STYLE_MUTED), meta]
 
         self.console.print(Panel.fit(
             Group(*body),
-            border_style=self._STYLE_ACCENT,
+            border_style=self._STYLE_MUTED,
             padding=(0, 2),
         ))
 
@@ -203,11 +448,13 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         self.console.print(Rule(style=self._STYLE_MUTED))
 
     def reset(self) -> None:
-        """Reset state for next turn."""
-        self._current_text = ""
-        self._timeline_blocks.clear()
-        self._active_tools.clear()
-        self._status_lines.clear()
-        self._roster.clear()
-        self._step = 0
-        self._thinking = None
+        """Reset live chrome for the next turn while retaining agent history."""
+        for state in self._agent_states.values():
+            self._flush_current_text_to_timeline(state)
+            state.active_tools.clear()
+            state.status_lines.clear()
+            state.timeline_blocks.clear()
+            state.turn_history_start = len(state.history_blocks)
+            state.step = 0
+            state.thinking = None
+        self._state_for(0)

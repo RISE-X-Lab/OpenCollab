@@ -33,14 +33,15 @@ The repository launcher is the preferred entry point during development:
 scripts/start_opencollab.sh
 ```
 
-It uses `.venv`, checks `configs/.env`, and starts agent 0, the lead. There is
-no separate `team` subcommand: the same run becomes a configured multi-agent
-team when `configs/team.yaml` is present.
+It uses `.venv`, checks `configs/.env`, and starts agent 0 with the built-in
+lead-only configuration. There is no separate `team` subcommand: pass
+`--team-config PATH` to select a declared multi-agent team explicitly.
 
 After installation, invoke the CLI directly:
 
 ```bash
 .venv/bin/opencollab --workspace .
+.venv/bin/opencollab --team-config configs/team.yaml --workspace .
 OPENCOLLAB_WORKFLOWS_DIR=path/to/workflows \
   .venv/bin/opencollab workflow run NAME --args '{"goal": "..."}'
 ```
@@ -53,6 +54,7 @@ Useful flags:
 
 - `--trace` records every LLM call and tool execution.
 - `--no-worktrees` disables per-child git-worktree isolation.
+- `--team-config PATH` selects a team YAML file instead of the built-in lead.
 - `--yolo` auto-approves risky commands.
 
 ## Python SDK
@@ -85,6 +87,8 @@ return `RunResult`. Import optional authoring contracts from
 `opencollab.tools`, `opencollab.environments`, and `opencollab.workflows`.
 Treat other package paths as internal. An `artifacts` directory, when supplied,
 must be new or empty because each run claims it for executable evidence.
+`team(...)` uses the built-in lead-only configuration unless its `config=`
+argument names a team YAML file.
 
 `OpenCollab.configuration` is a read-only snapshot of effective model,
 provider, budget, timeout, sampling, output-token, and thinking settings.

@@ -21,12 +21,13 @@ def _plain_and_fragments(toolbar):
     return plain, fragments
 
 
-def test_team_toolbar_displays_idle_lead_in_green():
+def test_team_toolbar_displays_idle_lead_as_selected():
     toolbar = format_team_toolbar([{"aid": 0, "phase": "idle", "busy": False}])
     plain, fragments = _plain_and_fragments(toolbar)
 
-    assert plain == "Team: Lead(idle)"
-    assert ("fg:ansigreen", "idle") in fragments
+    assert plain == "AGENTS  1/1  ◆ Lead idle"
+    assert ("fg:#7C3AED", "◆ ") in fragments
+    assert ("fg:#94A3B8", "idle") in fragments
     for style, text in fragments:
         if text.strip():
             assert style
@@ -37,8 +38,8 @@ def test_team_toolbar_escapes_role_text():
     toolbar = format_team_toolbar([{"aid": 2, "role": "dev<ops>", "phase": "running"}])
     plain, fragments = _plain_and_fragments(toolbar)
 
-    assert plain == "Team: A2 dev<ops>(running)"
-    assert ("fg:ansiyellow", "running") in fragments
+    assert plain == "AGENTS  1/1  A2 dev<ops> running"
+    assert ("fg:#94A3B8", "running") in fragments
 
 
 def test_team_toolbar_displays_completed_non_busy_agent_as_idle():
@@ -47,7 +48,7 @@ def test_team_toolbar_displays_completed_non_busy_agent_as_idle():
     )
     plain, _ = _plain_and_fragments(toolbar)
 
-    assert plain == "Team: A1 coder(idle)"
+    assert plain == "AGENTS  1/1  A1 coder idle"
 
 
 def test_team_toolbar_displays_busy_agent_as_running():
@@ -56,8 +57,39 @@ def test_team_toolbar_displays_busy_agent_as_running():
     )
     plain, fragments = _plain_and_fragments(toolbar)
 
-    assert plain == "Team: A1 coder(running)"
-    assert ("fg:ansiyellow", "running") in fragments
+    assert plain == "AGENTS  1/1  A1 coder running"
+    assert ("fg:#94A3B8", "running") in fragments
+
+
+def test_team_toolbar_keeps_fixed_order_and_moves_only_focus_marker():
+    toolbar = format_team_toolbar(
+        [
+            {"aid": 0, "role": "lead", "phase": "done", "busy": False},
+            {"aid": 3, "role": "coder", "phase": "executing_tools", "busy": True},
+        ],
+        selected_aid=3,
+    )
+    plain, _ = _plain_and_fragments(toolbar)
+
+    assert plain == "AGENTS  2/2  Lead idle  ◆ A3 coder running"
+
+
+def test_team_toolbar_does_not_select_configured_available_role():
+    toolbar = format_team_toolbar(
+        [
+            {"aid": 0, "role": "lead", "phase": "done", "busy": False},
+            {"aid": None, "role": "analyst", "phase": "available", "busy": False},
+            {"aid": None, "role": "coder", "phase": "available", "busy": False},
+        ],
+        selected_aid=0,
+    )
+    plain, fragments = _plain_and_fragments(toolbar)
+
+    assert plain == (
+        "AGENTS  1/3  ◆ Lead idle  analyst available  coder available"
+    )
+    assert plain.count("◆") == 1
+    assert ("fg:#7C3AED", "◆ ") in fragments
 
 
 @pytest.mark.parametrize("command", ["exit", "quit", "/exit", "/quit", "QUIT"])

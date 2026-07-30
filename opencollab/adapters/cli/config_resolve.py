@@ -35,8 +35,8 @@ def resolve_config(workspace: str, model: str | None, provider: str | None,
     from opencollab.bootstrap.config import build_config
 
     # ``build_config`` returns a validated ``OpenCollabConfig`` (budget is
-    # ``int`` with ``ge=1``; filter_messages is ``bool``), so ``model_dump``
-    # already yields correctly-typed values — no re-coercion needed here.
+    # ``int`` with ``ge=1``), so ``model_dump`` already yields correctly-typed
+    # values. ``filter_messages`` remains threaded as a compatibility input.
     cfg = build_config(
         workspace,
         overrides={
