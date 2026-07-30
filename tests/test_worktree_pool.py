@@ -120,6 +120,21 @@ async def test_git_worktree_rejects_truncated_patch_evidence(tmp_path) -> None:
     await env.cleanup()
 
 
+async def test_git_worktree_reports_returncode_when_diff_has_no_stderr(tmp_path) -> None:
+    source = _repo(tmp_path / "repo")
+    env = WorktreeEnvironment(str(source), branch_name="opencollab-test-empty-error")
+    await env.setup()
+
+    async def failed_exec(*_args, **_kwargs):
+        return ExecResult(128, "", "")
+
+    assert env._local_env is not None
+    env._local_env.exec_cmd = failed_exec
+    with pytest.raises(RuntimeError, match="git exited with status 128"):
+        await env.get_diff()
+    await env.cleanup()
+
+
 async def test_existing_branch_is_preserved_when_setup_fails(tmp_path) -> None:
     source = _repo(tmp_path / "repo")
     branch = "existing"
