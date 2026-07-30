@@ -10,7 +10,7 @@ from scripts.check_conventional_title import validate_title
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO_ROOT / "scripts" / "check_conventional_title.py"
-_CLEAN_SNAPSHOT = "chore: \u5efa\u7acb\u5e72\u51c0\u53d1\u5e03\u5feb\u7167"
+_CLEAN_SNAPSHOT = "chore: establish a clean release snapshot"
 
 
 def _git(repository: Path, *args: str) -> str:
@@ -47,13 +47,15 @@ def _run(repository: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 def test_title_accepts_repository_convention():
     assert validate_title(_CLEAN_SNAPSHOT) is None
-    assert validate_title("fix(runtime)!: \u4fee\u590d\u4f1a\u8bdd\u7ec8\u6001") is None
+    assert validate_title("fix(runtime)!: preserve the session terminal state") is None
 
 
-def test_title_rejects_invalid_type_english_summary_and_multiple_lines():
-    assert validate_title("change: \u66f4\u65b0") == "title must follow Conventional Commits"
-    assert validate_title("fix: repair runtime") == "title summary must contain Chinese text"
-    assert validate_title("fix: \u4fee\u590d\nsecond line") == "title must be a single line"
+def test_title_rejects_invalid_type_non_english_summary_and_multiple_lines():
+    assert validate_title("change: update runtime") == "title must follow Conventional Commits"
+    assert validate_title("fix: \u4fee\u590d\u8fd0\u884c\u65f6") == "title summary must use English text"
+    assert validate_title("fix: repair \u8fd0\u884c\u65f6") == "title summary must use English text"
+    assert validate_title("fix: 123") == "title summary must use English text"
+    assert validate_title("fix: repair runtime\nsecond line") == "title must be a single line"
 
 
 def test_commit_mode_reads_the_subject_from_git(tmp_path):

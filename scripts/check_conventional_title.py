@@ -12,7 +12,7 @@ _TITLE = re.compile(
     r"^(feat|fix|refactor|docs|test|chore|perf|ci|build|style|revert)"
     r"(\([a-z0-9._/ -]+\))?!?: .+$"
 )
-_CHINESE = re.compile(r"[\u3400-\u9fff]")
+_ENGLISH_SUMMARY = re.compile(r"(?=.*[A-Za-z])[ -~]+")
 
 
 def validate_title(title: str) -> str | None:
@@ -21,8 +21,9 @@ def validate_title(title: str) -> str | None:
         return "title must be a single line"
     if not _TITLE.fullmatch(title):
         return "title must follow Conventional Commits"
-    if not _CHINESE.search(title):
-        return "title summary must contain Chinese text"
+    summary = title.split(": ", 1)[1]
+    if not _ENGLISH_SUMMARY.fullmatch(summary):
+        return "title summary must use English text"
     return None
 
 
