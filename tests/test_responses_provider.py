@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from opencollab.adapters.llm.responses_provider import (
+    ResponsesEmptyOutputError,
     ResponsesProtocolError,
     _build_request_kwargs,
     _consume_stream,
@@ -230,6 +231,78 @@ async def test_transient_stream_failure_reissues_without_replaying_partial_items
     assert first_stream_closed is True
     assert result.content == "recovered"
     assert result.tool_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [True, False])
+async def test_completed_empty_output_retries_entire_request(monkeypatch, stream):
+    calls = 0
+
+    async def skip_delay(_seconds):
+        return None
+
+    monkeypatch.setattr("opencollab.adapters.llm.retry.asyncio.sleep", skip_delay)
+
+    class Responses:
+        async def create(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                if not stream:
+                    return completed_response()
+                return FakeStream([
+                    ns(type="response.completed", response=completed_response()),
+                ])
+            item = message_item("recovered")
+            if not stream:
+                return completed_response(output=[item])
+            return FakeStream([
+                ns(type="response.output_item.done", output_index=0, item=item),
+                ns(type="response.completed", response=completed_response(output=[item])),
+            ])
+
+    result = await complete_responses(
+        ns(responses=Responses()),
+        "gpt-fake",
+        [{"role": "user", "content": "work"}],
+        None,
+        1.0,
+        1,
+        stream=stream,
+    )
+
+    assert calls == 2
+    assert result.content == "recovered"
+
+
+@pytest.mark.asyncio
+async def test_completed_empty_output_exhausts_retry_budget(monkeypatch):
+    calls = 0
+
+    async def skip_delay(_seconds):
+        return None
+
+    monkeypatch.setattr("opencollab.adapters.llm.retry.asyncio.sleep", skip_delay)
+
+    class Responses:
+        async def create(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            return FakeStream([
+                ns(type="response.completed", response=completed_response()),
+            ])
+
+    with pytest.raises(ResponsesEmptyOutputError, match="no message or function call"):
+        await complete_responses(
+            ns(responses=Responses()),
+            "gpt-fake",
+            [{"role": "user", "content": "work"}],
+            None,
+            1.0,
+            2,
+        )
+
+    assert calls == 3
 
 
 @pytest.mark.asyncio

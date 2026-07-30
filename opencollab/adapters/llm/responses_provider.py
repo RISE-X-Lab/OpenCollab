@@ -7,6 +7,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from opencollab.adapters.llm.errors import TransientEmptyOutputError
 from opencollab.adapters.llm.retry import with_retry
 from opencollab.adapters.llm.types import (
     LLMResponse,
@@ -42,6 +43,10 @@ _PASSIVE_EVENT_TYPES = frozenset({
 
 class ResponsesProtocolError(RuntimeError):
     """The Responses endpoint returned an incomplete or invalid event sequence."""
+
+
+class ResponsesEmptyOutputError(ResponsesProtocolError, TransientEmptyOutputError):
+    """A completed Responses request contained no usable assistant output."""
 
 
 @dataclass
@@ -488,7 +493,9 @@ def _parse_stream(
             })
     content = rescue_empty_turn(content, tool_calls, reasoning)
     if not content and not tool_calls:
-        raise ResponsesProtocolError("response.completed contained no message or function call")
+        raise ResponsesEmptyOutputError(
+            "response.completed contained no message or function call"
+        )
     return LLMResponse(
         content=content,
         tool_calls=tool_calls,
@@ -549,25 +556,26 @@ async def complete_responses(
     async def run() -> LLMResponse:
         if not stream:
             kwargs["stream"] = False
-            response = await with_retry(
-                lambda: client.responses.create(**kwargs),
-                max_retries=max_retries,
-            )
-            return parse_responses_response(response, messages, expected_model=model)
-        async def consume_once() -> _StreamState:
+            async def request_once() -> LLMResponse:
+                response = await client.responses.create(**kwargs)
+                return parse_responses_response(response, messages, expected_model=model)
+
+            return await with_retry(request_once, max_retries=max_retries)
+
+        async def consume_once() -> LLMResponse:
             event_stream = await client.responses.create(**kwargs)
-            return await _consume_stream(
+            state = await _consume_stream(
                 event_stream,
                 first_event_timeout,
                 stream_idle_timeout,
                 model,
             )
+            return _parse_stream(state, messages, model)
 
-        state = await with_retry(
+        return await with_retry(
             consume_once,
             max_retries=max_retries,
         )
-        return _parse_stream(state, messages, model)
 
     try:
         if round_timeout is None:
