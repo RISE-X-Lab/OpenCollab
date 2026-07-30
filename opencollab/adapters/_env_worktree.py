@@ -156,7 +156,8 @@ class WorktreeEnvironment(Environment):
         if result.stdout_truncated or result.stderr_truncated:
             raise RuntimeError("worktree diff exceeded capture limit")
         if result.returncode != 0:
-            raise RuntimeError(f"worktree diff extraction failed: {result.stderr.strip()}")
+            detail = result.stderr.strip() or f"git exited with status {result.returncode}"
+            raise RuntimeError(f"worktree diff extraction failed: {detail}")
         return result.stdout
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
