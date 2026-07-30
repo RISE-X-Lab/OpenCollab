@@ -21,6 +21,7 @@ Supported variables:
                             thinking is on (default {"enable_thinking": true})
     OPENCOLLAB_LLM_TIMEOUT — provider request timeout in seconds
     OPENCOLLAB_REASONING_EFFORT — Responses reasoning effort
+    OPENCOLLAB_LLM_MAX_RETRIES — transient provider retries per model turn
     OPENCOLLAB_LLM_CONNECT_TIMEOUT — provider connection timeout in seconds
     OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT — Responses first-event timeout
     OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT — Responses stream-idle timeout
@@ -130,6 +131,7 @@ class OpenCollabConfig(BaseModel):
     thinking: bool = Field(default=DEFAULT_THINKING)
     thinking_params: dict[str, Any] = Field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
     reasoning_effort: str | None = None
+    llm_max_retries: int = Field(default=3, ge=0)
     llm_timeout: float = Field(default=600.0, gt=0, allow_inf_nan=False)
     llm_connect_timeout: float = Field(default=30.0, gt=0, allow_inf_nan=False)
     llm_first_event_timeout: float = Field(default=180.0, gt=0, allow_inf_nan=False)
@@ -402,6 +404,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         "thinking": resolve("OPENCOLLAB_THINKING", default=str(DEFAULT_THINKING)),
         "thinking_params": resolve("OPENCOLLAB_THINKING_PARAMS"),
         "reasoning_effort": resolve("OPENCOLLAB_REASONING_EFFORT"),
+        "llm_max_retries": resolve("OPENCOLLAB_LLM_MAX_RETRIES", default="3"),
         "llm_timeout": resolve("OPENCOLLAB_LLM_TIMEOUT", default="600"),
         "llm_connect_timeout": resolve("OPENCOLLAB_LLM_CONNECT_TIMEOUT", default="30"),
         "llm_first_event_timeout": resolve(

@@ -13,8 +13,15 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
+import pytest
+
+from opencollab.adapters.llm import retry as retry_module
 from opencollab.adapters.llm.errors import is_context_overflow_error
-from opencollab.adapters.llm.retry import extract_retry_after_seconds, is_retryable_error
+from opencollab.adapters.llm.retry import (
+    extract_retry_after_seconds,
+    is_retryable_error,
+    with_retry,
+)
 
 
 class FakeProviderError(Exception):
@@ -187,3 +194,26 @@ def test_retry_after_accepts_standard_http_date():
     Error.response.headers["Retry-After"] = format_datetime(now + timedelta(seconds=45))
 
     assert extract_retry_after_seconds(Error(), now=now) == 45.0
+
+
+@pytest.mark.asyncio
+async def test_retry_backoff_caps_long_provider_outages(monkeypatch):
+    attempts = 0
+    delays = []
+
+    async def fail_until_recovered():
+        nonlocal attempts
+        attempts += 1
+        if attempts < 10:
+            raise FakeProviderError("overloaded", status_code=502)
+        return "ok"
+
+    async def record_sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(retry_module.asyncio, "sleep", record_sleep)
+    monkeypatch.setattr(retry_module.random, "uniform", lambda _low, _high: 0.0)
+
+    assert await with_retry(fail_until_recovered, max_retries=20) == "ok"
+    assert attempts == 10
+    assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0]
