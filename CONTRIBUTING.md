@@ -65,13 +65,12 @@ Optionally mirror these locally: `pip install pre-commit && pre-commit install`.
 
 ## Commits & pull requests
 
-- Use [Conventional Commits](https://www.conventionalcommits.org/): `feat`, `fix`,
-  `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
+- Use [Conventional Commits](https://www.conventionalcommits.org/) in English:
+  `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
 - `refactor:` commits must stay behavior-preserving.
 - Keep pull requests focused; describe what changed and how you verified it.
-- Keep code, comments, and tracked documentation in English.
-- Write commit summaries, pull request titles, pull request descriptions, and
-  review replies in Chinese while retaining the English Conventional Commit type.
+- Keep code, comments, tracked documentation, commit summaries, pull request
+  titles, pull request descriptions, and review replies in English.
 
 ## Contribution license
 
