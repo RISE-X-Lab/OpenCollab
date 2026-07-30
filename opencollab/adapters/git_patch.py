@@ -19,7 +19,9 @@ def guarded_staged_diff_command(
         "GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null "
         "GIT_EXTERNAL_DIFF= GIT_NO_REPLACE_OBJECTS=1"
     )
-    git_command = f"{git_env} git -c core.filemode=true"
+    git_command = (
+        f'{git_env} git -c safe.directory="$PWD" -c core.filemode=true'
+    )
     git_index_command = f'GIT_INDEX_FILE="$idx" {git_command}'
     resets = ""
     for path in exclude_paths:
@@ -30,11 +32,11 @@ def guarded_staged_diff_command(
             )
     unsafe_config_guard = (
         "config_scopes=--local; "
-        f'if [ "$({git_env} git config --local --includes --type=bool '
+        f'if [ "$({git_command} config --local --includes --type=bool '
         '--get extensions.worktreeConfig 2>/dev/null)" = true ]; then '
         'config_scopes="$config_scopes --worktree"; fi; '
         "for config_scope in $config_scopes; do "
-        f"unsafe_config=$({git_env} git config \"$config_scope\" --includes --name-only --get-regexp "
+        f"unsafe_config=$({git_command} config \"$config_scope\" --includes --name-only --get-regexp "
         "'^(diff\\..*\\.(command|textconv)|filter\\..*|"
         "diff\\.ignoresubmodules|"
         "core\\.(attributesfile|excludesfile|fsmonitor|sparsecheckout|sparsecheckoutcone|worktree))$' "
@@ -42,18 +44,18 @@ def guarded_staged_diff_command(
         'config_rc=$?; if [ "$config_rc" -eq 0 ]; then '
         "echo \"unsafe repository Git configuration: $unsafe_config\" >&2; exit 125; "
         'elif [ "$config_rc" -ne 1 ]; then exit "$config_rc"; fi; done; '
-        f'info_attributes=$({git_env} git rev-parse --git-path info/attributes) || exit 125; '
+        f'info_attributes=$({git_command} rev-parse --git-path info/attributes) || exit 125; '
         'if [ -L "$info_attributes" ] || { [ -e "$info_attributes" ] && [ ! -f "$info_attributes" ]; }; then '
         "echo 'repository-local info/attributes is not a regular file' >&2; exit 125; fi; "
         'if [ -s "$info_attributes" ]; then '
         "echo 'repository-local info/attributes can alter patch evidence' >&2; exit 125; fi; "
-        f'info_exclude=$({git_env} git rev-parse --git-path info/exclude) || exit 125; '
-        'if [ -L "$info_exclude" ] || { [ -e "$info_exclude" ] && [ ! -f "$info_exclude" ]; }; then '
-        "echo 'repository-local info/exclude is not a regular file' >&2; exit 125; fi; "
-        'if [ -f "$info_exclude" ] && '
-        "awk 'NF && substr($0, 1, 1) != \"#\" { found=1; exit } END { exit found ? 0 : 1 }' "
-        '"$info_exclude"; then '
-        "echo 'repository-local info/exclude can hide patch evidence' >&2; exit 125; fi; "
+    )
+    stage_untracked = (
+        f'{git_index_command} ls-files --others --exclude-per-directory=.gitignore '
+        '-z > "$untracked" && '
+        'if [ -s "$untracked" ]; then '
+        f'{git_index_command} add -f --pathspec-from-file="$untracked" '
+        '--pathspec-file-nul; fi && '
     )
     reserved_guard = (
         f'if {git_index_command} diff --no-ext-diff --no-textconv --cached --quiet '
@@ -68,10 +70,13 @@ def guarded_staged_diff_command(
         'else exit "$reserved_rc"; fi; fi; '
     )
     return (
-        'idx=$(mktemp) || exit 125; trap \'rm -f -- "$idx"\' EXIT; '
+        'idx=$(mktemp) || exit 125; '
+        'untracked=$(mktemp) || { rm -f -- "$idx"; exit 125; }; '
+        'trap \'rm -f -- "$idx" "$untracked"\' EXIT; '
         f"{unsafe_config_guard}"
         f"{git_index_command} read-tree {shlex.quote(base_revision)} && "
-        f'{git_index_command} add -A && '
+        f'{git_index_command} add -u && '
+        f"{stage_untracked}"
         f"{resets}"
         f"{reserved_guard}"
         f'{git_index_command} diff --no-ext-diff --no-textconv --cached --binary '
