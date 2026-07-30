@@ -9,7 +9,8 @@ import opencollab
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _PACKAGE_ROOT = _REPO_ROOT / "opencollab"
-# SPDX license-list-data v3.28.0, text/MulanPSL-2.0.txt.
+_COPYRIGHT_NOTICE = b"Copyright (c) 2026 Yihong Dong, Zhenhua Xu, Kai Gong, and OpenCollab contributors\n"
+# Canonical body from SPDX license-list-data v3.28.0, text/MulanPSL-2.0.txt.
 _MULAN_PSL_2_SHA256 = "eb7a1d713eb919b146787629e22e4c975cb701f529a65d4d7e0fcd417558bf1c"
 
 
@@ -21,7 +22,9 @@ def test_release_metadata_keeps_versions_aligned_and_includes_license() -> None:
     assert f'version = "{opencollab.__version__}"' in pyproject
     assert 'license = "MulanPSL-2.0"' in pyproject
     assert 'license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]' in pyproject
-    assert hashlib.sha256(license_bytes).hexdigest() == _MULAN_PSL_2_SHA256
+    assert license_bytes.startswith(_COPYRIGHT_NOTICE)
+    license_body = license_bytes.removeprefix(_COPYRIGHT_NOTICE)
+    assert hashlib.sha256(license_body).hexdigest() == _MULAN_PSL_2_SHA256
     assert not (_PACKAGE_ROOT / "LICENSE").exists()
 
 
