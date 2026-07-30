@@ -174,25 +174,62 @@ async def test_stream_rejects_missing_completion_and_unknown_events():
 
 
 @pytest.mark.asyncio
-async def test_stream_failure_after_first_event_is_never_reissued():
+async def test_transient_stream_failure_reissues_without_replaying_partial_items():
     calls = 0
+    first_stream_closed = False
+
+    class TransientError(Exception):
+        status_code = 502
+
+    class BrokenStream:
+        def __init__(self):
+            self.index = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self.index == 0:
+                self.index += 1
+                return ns(
+                    type="response.output_item.done",
+                    output_index=0,
+                    item=function_item("abandoned", "write_file", '{"path":"old"}'),
+                )
+            raise TransientError("upstream stream failed")
+
+        async def close(self):
+            nonlocal first_stream_closed
+            first_stream_closed = True
 
     class Responses:
         async def create(self, **_kwargs):
             nonlocal calls
             calls += 1
-            return FakeStream([ns(type="response.created")])
+            if calls == 1:
+                return BrokenStream()
+            item = message_item("recovered")
+            return FakeStream([
+                ns(type="response.output_item.done", output_index=0, item=item),
+                ns(
+                    type="response.completed",
+                    response=completed_response(output=[item]),
+                ),
+            ])
 
-    with pytest.raises(ResponsesProtocolError, match="before response.completed"):
-        await complete_responses(
-            ns(responses=Responses()),
-            "gpt-fake",
-            [{"role": "user", "content": "work"}],
-            None,
-            1.0,
-            100,
-        )
-    assert calls == 1
+    result = await complete_responses(
+        ns(responses=Responses()),
+        "gpt-fake",
+        [{"role": "user", "content": "work"}],
+        None,
+        1.0,
+        1,
+    )
+
+    assert calls == 2
+    assert first_stream_closed is True
+    assert result.content == "recovered"
+    assert result.tool_calls == []
 
 
 @pytest.mark.asyncio

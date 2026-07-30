@@ -554,15 +554,18 @@ async def complete_responses(
                 max_retries=max_retries,
             )
             return parse_responses_response(response, messages, expected_model=model)
-        event_stream = await with_retry(
-            lambda: client.responses.create(**kwargs),
+        async def consume_once() -> _StreamState:
+            event_stream = await client.responses.create(**kwargs)
+            return await _consume_stream(
+                event_stream,
+                first_event_timeout,
+                stream_idle_timeout,
+                model,
+            )
+
+        state = await with_retry(
+            consume_once,
             max_retries=max_retries,
-        )
-        state = await _consume_stream(
-            event_stream,
-            first_event_timeout,
-            stream_idle_timeout,
-            model,
         )
         return _parse_stream(state, messages, model)
 
