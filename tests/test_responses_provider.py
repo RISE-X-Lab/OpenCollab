@@ -423,6 +423,68 @@ async def test_stream_has_distinct_first_event_and_idle_timeouts():
 
 
 @pytest.mark.asyncio
+async def test_first_event_timeout_includes_waiting_for_response_headers():
+    create_cancelled = False
+
+    class Responses:
+        async def create(self, **_kwargs):
+            nonlocal create_cancelled
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                create_cancelled = True
+                raise
+
+    with pytest.raises(ResponsesProtocolError, match="first-event timeout"):
+        await complete_responses(
+            ns(responses=Responses()),
+            "model",
+            [{"role": "user", "content": "wait"}],
+            None,
+            0,
+            0,
+            first_event_timeout=0.001,
+            stream_idle_timeout=1,
+            round_timeout=1,
+        )
+
+    assert create_cancelled is True
+
+
+@pytest.mark.asyncio
+async def test_response_header_timeout_retries_the_same_request():
+    calls = 0
+
+    class Responses:
+        async def create(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                await asyncio.sleep(10)
+            item = message_item("OK")
+            return FakeStream([
+                ns(type="response.created"),
+                ns(type="response.output_item.done", output_index=0, item=item),
+                ns(type="response.completed", response=completed_response(output=[item])),
+            ])
+
+    result = await complete_responses(
+        ns(responses=Responses()),
+        "gpt-fake",
+        [{"role": "user", "content": "wait"}],
+        None,
+        0,
+        1,
+        first_event_timeout=0.001,
+        stream_idle_timeout=1,
+        round_timeout=2,
+    )
+
+    assert calls == 2
+    assert result.content == "OK"
+
+
+@pytest.mark.asyncio
 async def test_round_deadline_cancels_and_closes_stream():
     stream = FakeStream([ns(type="response.created")], delays=[10])
 

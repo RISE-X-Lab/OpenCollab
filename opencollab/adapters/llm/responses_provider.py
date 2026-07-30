@@ -396,6 +396,43 @@ async def _consume_stream(
     return state
 
 
+async def _create_and_consume_stream(
+    client: Any,
+    kwargs: dict[str, Any],
+    first_event_timeout: float,
+    idle_timeout: float,
+    expected_model: str,
+) -> _StreamState:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + first_event_timeout
+    try:
+        event_stream = await asyncio.wait_for(
+            client.responses.create(**kwargs),
+            timeout=first_event_timeout,
+        )
+    except asyncio.TimeoutError as exc:
+        raise ResponsesProtocolError(
+            f"Responses first-event timeout after {first_event_timeout:g}s"
+        ) from exc
+
+    remaining = deadline - loop.time()
+    if remaining <= 0:
+        close = getattr(event_stream, "close", None)
+        if close is not None:
+            result = close()
+            if asyncio.iscoroutine(result):
+                await result
+        raise ResponsesProtocolError(
+            f"Responses first-event timeout after {first_event_timeout:g}s"
+        )
+    return await _consume_stream(
+        event_stream,
+        remaining,
+        idle_timeout,
+        expected_model,
+    )
+
+
 def _output_text(item: dict[str, Any]) -> str:
     if item.get("type") != "message":
         return ""
@@ -564,9 +601,9 @@ async def complete_responses(
             return await with_retry(request_once, max_retries=max_retries)
 
         async def consume_once() -> LLMResponse:
-            event_stream = await client.responses.create(**kwargs)
-            state = await _consume_stream(
-                event_stream,
+            state = await _create_and_consume_stream(
+                client,
+                kwargs,
                 first_event_timeout,
                 stream_idle_timeout,
                 model,
