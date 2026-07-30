@@ -20,6 +20,7 @@ RETRYABLE_MESSAGE_FRAGMENTS = ("rate limit", "429", "timeout", "temporarily unav
 # Small random jitter (seconds) added to each backoff to reduce thundering herd.
 RETRY_JITTER_MAX_SECONDS = 0.25
 MAX_RETRY_AFTER_SECONDS = 300.0
+MAX_EXPONENTIAL_RETRY_DELAY_SECONDS = 60.0
 
 
 async def with_retry(call_factory, max_retries: int) -> Any:
@@ -36,7 +37,11 @@ async def with_retry(call_factory, max_retries: int) -> Any:
                 raise
 
             retry_after = extract_retry_after_seconds(e)
-            base = retry_after if retry_after is not None else (2 ** attempt)
+            base = (
+                retry_after
+                if retry_after is not None
+                else min(2.0 ** min(attempt, 16), MAX_EXPONENTIAL_RETRY_DELAY_SECONDS)
+            )
             delay = max(0.0, base + random.uniform(0.0, RETRY_JITTER_MAX_SECONDS))
             await asyncio.sleep(delay)
             attempt += 1
