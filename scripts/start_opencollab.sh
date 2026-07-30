@@ -24,6 +24,7 @@ by default.
 Examples:
   scripts/start_opencollab.sh
   scripts/start_opencollab.sh --trace
+  scripts/start_opencollab.sh --team-config configs/team.yaml
   scripts/start_opencollab.sh --yolo --no-worktrees
 
 Configuration:
