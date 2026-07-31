@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 import typer
 from asyncio_test_support import assert_cancel_reason
+from click import unstyle
 from typer.testing import CliRunner
 
 import opencollab.adapters.cli.main as cli_main
@@ -185,10 +186,10 @@ def test_cli_forwards_explicit_team_config(monkeypatch, tmp_path):
 
 
 def test_cli_hold_requires_one_shot_prompt():
-    result = CliRunner().invoke(cli_main.app, ["--hold"])
+    result = CliRunner().invoke(cli_main.app, ["--hold"], color=True)
 
     assert result.exit_code == 2
-    assert "--hold requires --prompt or --prompt-file" in result.output
+    assert "--hold requires --prompt or --prompt-file" in unstyle(result.output)
 
 
 @pytest.mark.asyncio
