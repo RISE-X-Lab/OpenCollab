@@ -3,7 +3,6 @@ import os
 
 import pytest
 
-from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.bootstrap import (
     build_runtime_context,
@@ -164,6 +163,8 @@ topology: {}
 
 
 def test_build_scheduler_can_explicitly_allow_unisolated_child_tests(tmp_path):
+    from opencollab.adapters._env_local import LocalEnvironment
+
     workspace = tmp_path / "ws"
     workspace.mkdir()
     team_file = tmp_path / "team.yaml"
