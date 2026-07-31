@@ -16,10 +16,12 @@ _MULAN_PSL_2_SHA256 = "eb7a1d713eb919b146787629e22e4c975cb701f529a65d4d7e0fcd417
 
 def test_release_metadata_keeps_versions_aligned_and_includes_license() -> None:
     pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    changelog = (_REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     license_bytes = (_REPO_ROOT / "LICENSE").read_bytes()
 
     assert opencollab.__version__
     assert f'version = "{opencollab.__version__}"' in pyproject
+    assert f"## [{opencollab.__version__}]" in changelog
     assert 'license = "MulanPSL-2.0"' in pyproject
     assert 'license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]' in pyproject
     assert license_bytes.startswith(_COPYRIGHT_NOTICE)

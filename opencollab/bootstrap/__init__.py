@@ -1,4 +1,4 @@
-"""Composition layer — CLI/eval wiring without touching core or domain internals."""
+"""Composition layer for CLI and SDK wiring around application and domain code."""
 
 from opencollab.bootstrap.agent_runtime import (
     AgentRuntimeLifecycleError,

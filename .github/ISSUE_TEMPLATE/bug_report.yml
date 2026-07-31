@@ -62,4 +62,4 @@ body:
     id: version
     attributes:
       label: OpenCollab version / commit
-      placeholder: e.g. 0.1.0 or a git SHA
+      placeholder: e.g. 0.4.1 or a git SHA

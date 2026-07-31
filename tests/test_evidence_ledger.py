@@ -1,4 +1,4 @@
-"""STEP 2 — harness-authored evidence ledger + transcript-only dead-scout synthesizer.
+"""Runtime-authored evidence ledger and transcript-only dead-scout synthesizer.
 
 Two load-bearing tests plus their helpers:
 
