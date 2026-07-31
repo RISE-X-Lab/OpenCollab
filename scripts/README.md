@@ -2,9 +2,12 @@
 
 This directory contains OpenCollab framework launchers and provider diagnostics.
 Benchmark generation, evaluation, reporting, and remote execution commands are
-owned by an external evaluation harness rather than this framework package.
+owned by [OpenCollab-Eval](https://github.com/RISE-X-Lab/OpenCollab-Eval)
+rather than this framework package.
 
-`start_opencollab.sh` prepares the local environment and starts the framework.
+Use `uv run opencollab` as the standard development entry point.
+`start_opencollab.sh` remains a compatibility launcher for callers that need
+its physical-path handling.
 `check_dashscope.py` performs an explicit provider connectivity check using the
 caller's configuration.
 

@@ -2,8 +2,9 @@
 
 A **skill** is an on-demand *instruction set* — a packaged unit of procedural
 knowledge an agent can pull into its context when the task calls for it. A skill is
-**not** a tool: it carries no code and registers no function. It is plain instructions
-that the model loads by name.
+**not** a tool and registers no runtime function. Its `SKILL.md` contains the
+instructions the model loads by name; the package may also include supporting
+templates, scripts, or assets that those instructions use through existing tools.
 
 How it works at runtime:
 
@@ -24,12 +25,13 @@ One `use_skill` tool serves every skill — adding skills never adds tools.
 
 ### 1. Create the file
 
-Each skill is one directory holding a `SKILL.md`:
+Each skill is one directory holding a `SKILL.md` and optional supporting files:
 
 ```
 skills/
 └── <skill-name>/
-    └── SKILL.md
+    ├── SKILL.md
+    └── scripts/ or templates/ (optional)
 ```
 
 `SKILL.md` is YAML frontmatter (delimited by `---`) followed by the instruction body:
