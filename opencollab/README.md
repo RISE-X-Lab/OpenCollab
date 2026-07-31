@@ -27,23 +27,25 @@ python3 -m venv .venv
 
 ## Commands
 
-The repository launcher is the preferred entry point during development:
+The registered CLI is the preferred entry point during development:
 
 ```bash
-scripts/start_opencollab.sh
+uv run opencollab --workspace .
 ```
 
-It uses `.venv`, checks `configs/.env`, and starts agent 0 with the built-in
-lead-only configuration. There is no separate `team` subcommand: pass
-`--team-config PATH` to select a declared multi-agent team explicitly.
+It runs the current checkout in the project environment, resolves
+`configs/.env`, and starts agent 0 with the built-in lead-only configuration.
+There is no separate `team` subcommand: pass `--team-config PATH` to select a
+declared multi-agent team explicitly. `scripts/start_opencollab.sh` remains a
+compatibility launcher for environments that need its physical-path handling.
 
-After installation, invoke the CLI directly:
+After installation, invoke the CLI directly from the active environment:
 
 ```bash
-.venv/bin/opencollab --workspace .
-.venv/bin/opencollab --team-config configs/team.yaml --workspace .
+opencollab --workspace .
+opencollab --team-config configs/team.yaml --workspace .
 OPENCOLLAB_WORKFLOWS_DIR=path/to/workflows \
-  .venv/bin/opencollab workflow run NAME --args '{"goal": "..."}'
+  opencollab workflow run NAME --args '{"goal": "..."}'
 ```
 
 A workflow directory contains caller-authored Python modules tagged with
@@ -189,8 +191,13 @@ Set `OPENCOLLAB_WORKFLOWS_DIR` to use another directory. The same decorated
 function can be passed directly to `await OpenCollab(".").workflow(...)` when
 embedding OpenCollab in Python.
 
+Evidence-preserving workflows can call `ctx.draft_findings(...)` to capture a
+structured cite-or-abstain draft before exploration. OpenCollab owns this
+generic capture primitive; benchmark-specific prompts, policies, datasets, and
+runners remain in OpenCollab-Eval.
+
 For a visual architecture walkthrough, open the
-[SDK 0.4 research architecture](../docs/sdk-v3-explainer.html).
+[SDK 0.4 research architecture](../docs/sdk-0.4-explainer.html).
 
 Evaluation runners and benchmark-specific workflows intentionally live outside
 the framework package. Topology research uses `team(...)` and `workflow(...)`;

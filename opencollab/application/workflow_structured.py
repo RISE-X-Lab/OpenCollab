@@ -6,7 +6,7 @@ genuinely empty — one corrective pass restricted to the capture tool with a
 named-function ``tool_choice``. ``WorkflowStructuredMixin`` is mixed into
 ``WorkflowContext`` (it reaches the engine — ``_factory`` / ``_run_session_turn``
 / ``_capped_session_budget`` / ``log`` — via ``self``); ``_named_tool_choice``
-also serves the eval-defense mixin, which imports it from here.
+also serves the evidence-preserving workflow mixin, which imports it from here.
 
 Pure application layer: domain + stdlib imports only.
 """
