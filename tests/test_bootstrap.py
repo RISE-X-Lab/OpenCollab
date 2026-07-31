@@ -162,6 +162,50 @@ topology: {}
     assert manifest["team_file"] == str(team_file.resolve())
 
 
+def test_build_scheduler_can_explicitly_allow_unisolated_child_tests(tmp_path):
+    from opencollab.adapters._env_local import LocalEnvironment
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    team_file = tmp_path / "team.yaml"
+    team_file.write_text(
+        """
+entry: analyst
+roles:
+  analyst:
+    prompt: Analyze.
+    tools: [spawn_agent]
+  tester:
+    prompt: Test.
+    tools: [run_tests]
+topology:
+  analyst: [tester]
+  tester: []
+""".strip(),
+        encoding="utf-8",
+    )
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    scheduler = build_scheduler(
+        ctx,
+        use_worktrees=False,
+        interactive=True,
+        auto_save=False,
+        team_config_path=team_file,
+        allow_unisolated_child_tests=True,
+    )
+
+    child = scheduler._session_factory.build_spawn_session(
+        role="tester",
+        env=LocalEnvironment(str(workspace)),
+        budget=1_000,
+    )
+    run_tests = child.agent.find_tool("run_tests")
+
+    assert run_tests.require_process_isolation is False
+    assert run_tests.allow_runner_override is False
+    assert run_tests.allow_extra_args is False
+
+
 def test_build_runtime_context_resolves_workspace_and_tracer(tmp_path, monkeypatch):
     workspace = tmp_path / "ws"
     workspace.mkdir()

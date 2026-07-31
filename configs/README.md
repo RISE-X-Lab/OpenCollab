@@ -54,8 +54,10 @@ preferred over generic API-key variables for DashScope base URLs.
 Set `OPENCOLLAB_WIRE_PROTOCOL=responses` for a Responses-compatible service.
 The adapter sends system guidance as `instructions`, replays typed output
 items locally, returns tool output with the original `call_id`, and requests
-`store=false`. It does not infer the protocol from a model name and does not
-fall back to Chat Completions after a protocol error.
+`store=false`. Stateless requests include encrypted reasoning content so later
+turns can replay the exact reasoning and tool-call items. The adapter does not
+infer the protocol from a model name and does not fall back to Chat Completions
+after a protocol error.
 
 ```dotenv
 OPENCOLLAB_PROVIDER=openai
@@ -99,10 +101,15 @@ global value; a role override of `0.0` is honored (not treated as "unset").
 
 ## Display
 
-`OPENCOLLAB_FILTER_MESSAGES` toggles per-agent message filtering in the TUI.
-When `false` (the default), every agent's stream is shown. When `true`, only the
-selected agent's stream is displayed — it defaults to the Lead (agent 0), and a
-future `/` picker will let you switch the focused agent at the prompt.
+The TUI retains a separate stream for every agent, starts on the Lead (agent 0),
+and switches focus with Tab/Shift+Tab both during a turn and at the main prompt.
+The prompt redraws the selected agent's complete history collected during the
+current TUI session without changing the current input buffer. The switch order
+includes configured roles marked `available`; their view stays empty until the
+role spawns, then follows the new live agent automatically.
+
+`OPENCOLLAB_FILTER_MESSAGES` remains accepted for compatibility, but no longer
+controls event retention or the selected-agent view. Both values are lossless.
 
 ```dotenv
 OPENCOLLAB_FILTER_MESSAGES=true
@@ -112,21 +119,25 @@ OPENCOLLAB_FILTER_MESSAGES=true
 
 Define a multi-agent team — per-role prompts, model overrides, per-role
 `temperature:` overrides, tool allowlists, and a directed spawn/message
-topology — in `configs/team.yaml`:
+topology — in a YAML file:
 
 ```bash
 cp configs/team.example.yaml configs/team.yaml
+uv run opencollab --team-config configs/team.yaml --workspace .
 ```
 
-OpenCollab resolves the team file in this order:
+OpenCollab never discovers a team file by conventional filename. It selects a
+team only through one of these explicit inputs, in priority order:
 
-1. `OPENCOLLAB_TEAM_FILE=/path/to/team.yaml`
-2. `<workspace>/configs/team.yaml`
-3. `<cwd>/configs/team.yaml`
+1. CLI `--team-config /path/to/team.yaml` or SDK `team(config=...)`
+2. Process environment variable `OPENCOLLAB_TEAM_FILE=/path/to/team.yaml`
+3. The built-in single `lead` configuration
 
-With no team file, the default is a single `lead` agent that may spawn any
-ad-hoc role. See `team.example.yaml` for the schema (lead/analyst/coder/reviewer
-plus a `topology` graph).
+Merely creating `configs/team.yaml` does not activate it. With no explicit team
+file, the built-in `lead` may still spawn any ad-hoc role. See
+`team.example.yaml` for the schema (lead/analyst/coder/reviewer plus a
+`topology` graph). An explicitly selected file that is missing or unsafe fails
+fast instead of falling back to the built-in team.
 
 ## Validation
 

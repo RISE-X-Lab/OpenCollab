@@ -254,6 +254,49 @@ async def test_transient_stream_failure_reissues_without_replaying_partial_items
 
 
 @pytest.mark.asyncio
+async def test_clean_premature_eof_retries_and_discards_partial_items(monkeypatch):
+    calls = 0
+    first = FakeStream([
+        ns(
+            type="response.output_item.done",
+            output_index=0,
+            item=function_item("abandoned", "write_file", '{"path":"old"}'),
+        )
+    ])
+
+    async def skip_delay(_seconds):
+        return None
+
+    monkeypatch.setattr("opencollab.adapters.llm.retry.asyncio.sleep", skip_delay)
+
+    class Responses:
+        async def create(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return first
+            item = message_item("recovered")
+            return FakeStream([
+                ns(type="response.output_item.done", output_index=0, item=item),
+                ns(type="response.completed", response=completed_response(output=[item])),
+            ])
+
+    result = await complete_responses(
+        ns(responses=Responses()),
+        "gpt-fake",
+        [{"role": "user", "content": "work"}],
+        None,
+        1.0,
+        1,
+    )
+
+    assert calls == 2
+    assert first.closed is True
+    assert result.content == "recovered"
+    assert result.tool_calls == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stream", [True, False])
 async def test_completed_empty_output_retries_entire_request(monkeypatch, stream):
     calls = 0
@@ -344,6 +387,71 @@ async def test_stream_rejects_invalid_completed_terminal(response, match):
     ])
     with pytest.raises(ResponsesProtocolError, match=match):
         await _consume_stream(stream, 1, 1, "gpt-fake")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event,match",
+    [
+        (
+            ns(
+                type="response.failed",
+                response=ns(error={"code": "server_error", "message": "upstream failed"}),
+            ),
+            "upstream failed",
+        ),
+        (
+            ns(
+                type="response.incomplete",
+                response=ns(error=None, incomplete_details={"reason": "max_output_tokens"}),
+            ),
+            "max_output_tokens",
+        ),
+    ],
+)
+async def test_terminal_error_events_report_nested_response_details(event, match):
+    with pytest.raises(ResponsesProtocolError, match=match):
+        await _consume_stream(FakeStream([event]), 1, 1, "gpt-fake")
+
+
+@pytest.mark.asyncio
+async def test_typed_transient_error_event_retries_request(monkeypatch):
+    calls = 0
+
+    async def skip_delay(_seconds):
+        return None
+
+    monkeypatch.setattr("opencollab.adapters.llm.retry.asyncio.sleep", skip_delay)
+
+    class Responses:
+        async def create(self, **_kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return FakeStream([
+                    ns(
+                        type="error",
+                        code="server_error",
+                        message="temporary upstream failure",
+                    )
+                ])
+            item = message_item("recovered")
+            return FakeStream([
+                ns(type="response.output_item.done", output_index=0, item=item),
+                ns(type="response.completed", response=completed_response(output=[item])),
+            ])
+
+    result = await complete_responses(
+        ns(responses=Responses()),
+        "gpt-fake",
+        [{"role": "user", "content": "work"}],
+        None,
+        1.0,
+        1,
+    )
+
+    assert calls == 2
+    assert result.content == "recovered"
 
 
 @pytest.mark.asyncio
@@ -616,6 +724,7 @@ def test_request_maps_instructions_tools_reasoning_and_sampling():
     assert kwargs["tools"][0]["name"] == "write_file"
     assert kwargs["tool_choice"] == {"type": "function", "name": "write_file"}
     assert kwargs["reasoning"] == {"effort": "xhigh"}
+    assert kwargs["include"] == ["reasoning.encrypted_content"]
     assert kwargs["store"] is False
     assert kwargs["stream"] is True
     assert kwargs["temperature"] == 1.0

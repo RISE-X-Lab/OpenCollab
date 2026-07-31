@@ -9,6 +9,8 @@ from types import SimpleNamespace
 import pytest
 import typer
 from asyncio_test_support import assert_cancel_reason
+from click import unstyle
+from typer.testing import CliRunner
 
 import opencollab.adapters.cli.main as cli_main
 import opencollab.adapters.tui as tui_mod
@@ -83,12 +85,19 @@ class FakeConsole:
 
 class FakeTUI:
     def __init__(self, *args, **kwargs):
-        return None
+        self.selected_aid = 0
 
     def print_welcome(self, **kwargs):
         return None
 
     def set_team_provider(self, provider):
+        return None
+
+    def select_agent(self, aid):
+        self.selected_aid = aid
+        return aid
+
+    def record_user_message(self, aid, content):
         return None
 
     def reset(self):
@@ -97,7 +106,10 @@ class FakeTUI:
     def start_live(self):
         return None
 
-    def stop_live(self):
+    async def hold_live(self):
+        return False
+
+    def stop_live(self, **kwargs):
         return None
 
     def print_stats(self, *args):
@@ -134,6 +146,83 @@ def config():
     }
 
 
+def test_cli_forwards_explicit_team_config(monkeypatch, tmp_path):
+    captured = {}
+    team_config = tmp_path / "custom-team.yaml"
+    resolved = {
+        **config(),
+        "api_key": "test-key",  # pragma: allowlist secret
+        "base_url": None,
+    }
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_main, "resolve_config", lambda *args: resolved)
+    monkeypatch.setattr(cli_main, "missing_api_key_for", lambda *args: False)
+    monkeypatch.setattr(cli_main, "_run", fake_run)
+    monkeypatch.setattr(
+        cli_main,
+        "run_with_bounded_shutdown",
+        lambda coroutine: asyncio.run(coroutine),
+    )
+
+    result = CliRunner().invoke(
+        cli_main.app,
+        [
+            "--team-config",
+            str(team_config),
+            "--prompt",
+            "do work",
+            "--hold",
+            "--allow-local-child-tests",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["team_config_path"] == str(team_config)
+    assert captured["hold_after_run"] is True
+    assert captured["allow_unisolated_child_tests"] is True
+
+
+def test_cli_hold_requires_one_shot_prompt():
+    result = CliRunner().invoke(cli_main.app, ["--hold"], color=True)
+
+    assert result.exit_code == 2
+    assert "--hold requires --prompt or --prompt-file" in unstyle(result.output)
+
+
+@pytest.mark.asyncio
+async def test_cli_run_passes_team_config_path_to_scheduler(monkeypatch, tmp_path):
+    captured = {}
+    tracer = FakeTracer()
+    install_cli_fakes(monkeypatch, object(), tracer)
+    team_config = tmp_path / "custom-team.yaml"
+
+    def capture_build_scheduler(*args, **kwargs):
+        captured.update(kwargs)
+        raise RuntimeError("stop after capture")
+
+    monkeypatch.setattr(bootstrap, "build_scheduler", capture_build_scheduler)
+
+    with pytest.raises(RuntimeError, match="stop after capture"):
+        await cli_main._run(
+            str(tmp_path),
+            config(),
+            None,
+            True,
+            True,
+            False,
+            team_config_path=str(team_config),
+            one_shot_prompt="do work",
+            allow_unisolated_child_tests=True,
+        )
+
+    assert captured["team_config_path"] == str(team_config)
+    assert captured["allow_unisolated_child_tests"] is True
+    assert tracer.closed is True
+
+
 @pytest.mark.asyncio
 async def test_cli_one_shot_failure_still_cleans_scheduler_and_closes_tracer(
     monkeypatch,
@@ -148,8 +237,12 @@ async def test_cli_one_shot_failure_still_cleans_scheduler_and_closes_tracer(
         def team_roster(self):
             return []
 
-        async def run(self, line):
+        async def run_turn(self, aid, line):
+            assert aid == 0
             raise RuntimeError("scheduler failed")
+
+        def agent_step_count(self, aid):
+            return 0
 
         async def cleanup(self):
             nonlocal cleanup_calls
@@ -157,6 +250,11 @@ async def test_cli_one_shot_failure_still_cleans_scheduler_and_closes_tracer(
 
     tracer = FakeTracer()
     install_cli_fakes(monkeypatch, Scheduler(), tracer)
+
+    async def fail_if_held(self):
+        pytest.fail("failed one-shot runs must not enter hold mode")
+
+    monkeypatch.setattr(FakeTUI, "hold_live", fail_if_held)
 
     with pytest.raises(RuntimeError, match="scheduler failed"):
         await cli_main._run(
@@ -167,9 +265,62 @@ async def test_cli_one_shot_failure_still_cleans_scheduler_and_closes_tracer(
             True,
             False,
             one_shot_prompt="do work",
+            hold_after_run=True,
         )
 
     assert cleanup_calls == 1
+    assert tracer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_cli_successful_one_shot_holds_before_stopping_and_cleanup(
+    monkeypatch,
+    tmp_path,
+):
+    events: list[str] = []
+
+    class Scheduler:
+        used_tokens = 7
+        lead_session = SimpleNamespace(auto_save_path=None, step_count=1)
+
+        def team_roster(self):
+            return []
+
+        async def run_turn(self, aid, line):
+            assert (aid, line) == (0, "do work")
+            events.append("run")
+
+        def agent_step_count(self, aid):
+            assert aid == 0
+            return 1
+
+        async def cleanup(self):
+            events.append("cleanup")
+
+    class LifecycleTUI(FakeTUI):
+        async def hold_live(self):
+            events.append("hold")
+            return True
+
+        def stop_live(self, **kwargs):
+            events.append("stop")
+
+    tracer = FakeTracer()
+    install_cli_fakes(monkeypatch, Scheduler(), tracer)
+    monkeypatch.setattr(tui_mod, "TUI", LifecycleTUI)
+
+    await cli_main._run(
+        str(tmp_path),
+        config(),
+        None,
+        True,
+        True,
+        False,
+        one_shot_prompt="do work",
+        hold_after_run=True,
+    )
+
+    assert events == ["run", "hold", "stop", "cleanup"]
     assert tracer.closed is True
 
 
@@ -189,9 +340,13 @@ async def test_cli_double_cancel_waits_for_cleanup_then_closes_tracer(
         def team_roster(self):
             return []
 
-        async def run(self, line):
+        async def run_turn(self, aid, line):
+            assert aid == 0
             run_started.set()
             await asyncio.Event().wait()
+
+        def agent_step_count(self, aid):
+            return 0
 
         async def cleanup(self):
             cleanup_started.set()
@@ -295,8 +450,12 @@ async def test_cli_trajectory_print_failure_does_not_mask_primary_error(
         def team_roster(self):
             return []
 
-        async def run(self, line):
+        async def run_turn(self, aid, line):
+            assert aid == 0
             raise RuntimeError("primary scheduler failure")
+
+        def agent_step_count(self, aid):
+            return 0
 
         async def cleanup(self):
             return None

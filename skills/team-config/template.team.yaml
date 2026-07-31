@@ -1,4 +1,5 @@
-# OpenCollab team — copy this to configs/team.yaml and fill it in.
+# OpenCollab team — copy this to configs/team.yaml, fill it in, then select it
+# explicitly with `opencollab --team-config configs/team.yaml`.
 # Every field below is documented inline. Delete what you don't need.
 #
 # A team is: a set of ROLES (each an agent with a prompt + tools) and a directed

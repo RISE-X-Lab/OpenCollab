@@ -16,7 +16,11 @@ silently force-compacted.
 from __future__ import annotations
 
 
-class TransientEmptyOutputError(RuntimeError):
+class TransientProviderError(RuntimeError):
+    """A provider failure for which repeating the same request can succeed."""
+
+
+class TransientEmptyOutputError(TransientProviderError):
     """A provider completed a request without usable model output."""
 
 

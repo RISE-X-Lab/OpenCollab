@@ -26,7 +26,7 @@ re-exported.
 uv sync --extra dev             # one-time: create .venv with dev deps
 uv run pytest -q                # tests (keep green)
 uv run ruff check .             # lint the whole repository
-scripts/start_opencollab.sh     # run the app (interactive; a team when configs/team.yaml is present)
+scripts/start_opencollab.sh     # run with the built-in lead; add --team-config PATH for a declared team
 ```
 
 Conventional commits; `refactor:` commits stay behavior-preserving.

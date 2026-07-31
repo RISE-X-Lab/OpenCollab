@@ -25,7 +25,7 @@ Supported variables:
     OPENCOLLAB_LLM_CONNECT_TIMEOUT — provider connection timeout in seconds
     OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT — Responses first-event timeout
     OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT — Responses stream-idle timeout
-    OPENCOLLAB_FILTER_MESSAGES — TUI: show only the selected agent's stream (bool)
+    OPENCOLLAB_FILTER_MESSAGES — deprecated TUI compatibility setting (bool)
     OPENCOLLAB_CONFIG_FILE — explicit path to an env file
 """
 

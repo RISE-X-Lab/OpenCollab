@@ -184,6 +184,7 @@ class ContextBuilder:
         *,
         scheduler: SchedulerPort | None = None,
         interactive: bool = False,
+        allow_unisolated_tests: bool = False,
         plan: ContextPlan | None = None,
     ) -> Agent:
         role = self._team.role_for(role_name)
@@ -194,6 +195,7 @@ class ContextBuilder:
             scheduler=scheduler,
             skill_store=self._skill_store,
             interactive=interactive,
+            allow_unisolated_tests=allow_unisolated_tests,
             tool_limits=self._team.tool_limits,
         )
         cfg = self._cfg

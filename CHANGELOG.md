@@ -27,6 +27,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   targets without importing a concrete test adapter.
 
 ### Changed
+- Team configuration is now explicit: the CLI and SDK use the built-in
+  lead-only team unless a file is selected with `--team-config`, `config=`, or
+  `OPENCOLLAB_TEAM_FILE`; conventional filenames are no longer auto-discovered.
 - Replaced the request-heavy SDK v2 surface with the compact `OpenCollab` facade:
   `agent`, `team`, and `workflow` now share one `RunResult`, central configuration,
   and bootstrap-owned lifecycle wiring.

@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-from opencollab.adapters.llm.errors import TransientEmptyOutputError
+from opencollab.adapters.llm.errors import TransientEmptyOutputError, TransientProviderError
 from opencollab.adapters.llm.retry import with_retry
 from opencollab.adapters.llm.types import (
     LLMResponse,
@@ -48,6 +48,14 @@ class ResponsesProtocolError(RuntimeError):
 
 class ResponsesEmptyOutputError(ResponsesProtocolError, TransientEmptyOutputError):
     """A completed Responses request contained no usable assistant output."""
+
+
+class ResponsesStreamInterruptedError(ResponsesProtocolError, TransientProviderError):
+    """A Responses stream ended without its required terminal event."""
+
+
+class ResponsesTransientEventError(ResponsesProtocolError, TransientProviderError):
+    """A typed Responses error identified a temporary provider failure."""
 
 
 @dataclass
@@ -241,6 +249,7 @@ def _build_request_kwargs(
     kwargs: dict[str, Any] = {
         "model": model,
         "input": input_items,
+        "include": ["reasoning.encrypted_content"],
         "store": False,
         "stream": True,
         "temperature": temperature,
@@ -266,7 +275,9 @@ async def _next_event(iterator: Any, timeout: float, *, stage: str) -> Any:
     except asyncio.TimeoutError as exc:
         raise ResponsesProtocolError(f"Responses {stage} timeout after {timeout:g}s") from exc
     except StopAsyncIteration as exc:
-        raise ResponsesProtocolError("Responses stream ended before response.completed") from exc
+        raise ResponsesStreamInterruptedError(
+            "Responses stream ended before response.completed"
+        ) from exc
 
 
 def _event_type(event: Any) -> str:
@@ -276,10 +287,32 @@ def _event_type(event: Any) -> str:
     return value
 
 
-def _event_error(event: Any) -> str:
+def _event_error_data(event: Any) -> Any:
     error = to_plain_data(getattr(event, "error", None))
+    if error is None and getattr(event, "type", None) == "error":
+        plain_event = to_plain_data(event)
+        if isinstance(plain_event, dict):
+            error = {
+                "code": plain_event.get("code"),
+                "message": plain_event.get("message"),
+            }
+    if error is None:
+        response = getattr(event, "response", None)
+        error = to_plain_data(getattr(response, "error", None))
+        if error is None:
+            error = to_plain_data(getattr(response, "incomplete_details", None))
+    return error
+
+
+def _event_error(event: Any) -> str:
+    error = _event_error_data(event)
     if isinstance(error, dict):
-        return str(error.get("message") or error.get("code") or "unknown Responses error")
+        return str(
+            error.get("message")
+            or error.get("code")
+            or error.get("reason")
+            or "unknown Responses error"
+        )
     return str(error or "unknown Responses error")
 
 
@@ -335,7 +368,12 @@ def _validate_completed_response(response: Any, expected_model: str | None) -> s
 def _handle_event(event: Any, state: _StreamState, expected_model: str | None = None) -> bool:
     event_type = _event_type(event)
     if event_type in {"error", "response.failed", "response.incomplete"}:
-        raise ResponsesProtocolError(_event_error(event))
+        error = _event_error_data(event)
+        message = _event_error(event)
+        code = error.get("code") if isinstance(error, dict) else None
+        if code in {"rate_limit_exceeded", "server_error", "vector_store_timeout"}:
+            raise ResponsesTransientEventError(message)
+        raise ResponsesProtocolError(message)
     if event_type == "response.function_call_arguments.delta":
         index = getattr(event, "output_index", None)
         delta = getattr(event, "delta", None)

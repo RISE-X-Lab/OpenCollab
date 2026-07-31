@@ -46,11 +46,12 @@ def build_scheduler(
     enable_hooks: bool = True,
     team_config_path: str | os.PathLike[str] | None = None,
     save_dir: str | os.PathLike[str] | None = None,
+    allow_unisolated_child_tests: bool = False,
 ) -> Scheduler:
     """Build the Scheduler and let it create agent 0 (the init process).
 
-    Loads the team config (roles/tools/topology) from the workspace, wires
-    dependencies, and hands the scheduler a ``LaunchSpec``;
+    Loads an explicitly selected team config (or the built-in lead-only team),
+    wires dependencies, and hands the scheduler a ``LaunchSpec``;
     ``scheduler.create_init_process`` builds agent 0 (aid=0) through the factory
     and applies the launch spec. ``session_file`` resumes agent 0's history;
     ``auto_save`` writes a structured-JSON transcript per agent
@@ -107,6 +108,7 @@ def build_scheduler(
         lead_workspace=ctx.workspace,
         interactive=interactive,
         save_dir=run_dir,
+        allow_unisolated_child_tests=allow_unisolated_child_tests,
     )
     worktree_pool = WorktreePool(ctx.workspace, use_worktrees=use_worktrees)
 

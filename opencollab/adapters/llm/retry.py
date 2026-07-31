@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
 
-from opencollab.adapters.llm.errors import TransientEmptyOutputError, is_context_overflow_error
+from opencollab.adapters.llm.errors import TransientProviderError, is_context_overflow_error
 
 # HTTP statuses worth retrying: timeouts, conflicts, rate limits, server errors.
 RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
@@ -68,7 +68,7 @@ async def with_retry(call_factory, max_retries: int) -> Any:
 
 def is_retryable_error(error: Exception) -> bool:
     """Whether ``error`` looks transient (retryable status code or message)."""
-    if isinstance(error, TransientEmptyOutputError):
+    if isinstance(error, TransientProviderError):
         return True
 
     # A context overflow is never transient: the identical prompt will overflow

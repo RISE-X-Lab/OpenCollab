@@ -187,6 +187,8 @@ async def test_real_http_stream_replays_reasoning_function_call_and_output():
 
     assert first.tool_calls[0]["id"] == "call_exact"
     assert second.content == "42"
+    assert requests[0]["include"] == ["reasoning.encrypted_content"]
+    assert requests[1]["include"] == ["reasoning.encrypted_content"]
     assert requests[0]["store"] is False
     assert requests[0]["reasoning"] == {"effort": "medium"}
     replay = requests[1]["input"]

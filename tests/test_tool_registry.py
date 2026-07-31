@@ -65,6 +65,19 @@ def test_headless_registry_restricts_command_tools():
     assert run_tests.allow_extra_args is False
 
 
+def test_headless_registry_can_explicitly_allow_only_unisolated_tests():
+    bash, run_tests = build_tools_for_role(
+        ["bash", "run_tests"],
+        interactive=False,
+        allow_unisolated_tests=True,
+    )
+
+    assert bash.require_process_isolation is True
+    assert run_tests.require_process_isolation is False
+    assert run_tests.allow_runner_override is False
+    assert run_tests.allow_extra_args is False
+
+
 def test_interactive_registry_keeps_user_command_controls():
     bash, run_tests = build_tools_for_role(
         ["bash", "run_tests"], interactive=True

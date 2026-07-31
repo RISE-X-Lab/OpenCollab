@@ -4,14 +4,12 @@ A team file declares the agents that make up a collaboration: each role's
 system prompt, optional model override, and the names of the tools it may use,
 plus a directed ``topology`` of which role may spawn/message which other role.
 
-Resolution order (highest priority first):
-    OPENCOLLAB_TEAM_FILE  → explicit path
-    <workspace>/configs/team.yaml
-    <cwd>/configs/team.yaml
-
-When no team file exists, ``default_team_config`` returns a lead-only team with
-a permissive (``allow_all``) topology — the lead can still spawn ad-hoc roles
-that fall back to ``default_role``.
+A team file is loaded only when the caller passes ``path=`` or sets the explicit
+``OPENCOLLAB_TEAM_FILE`` environment variable. Otherwise,
+``default_team_config`` returns a lead-only team with a permissive
+(``allow_all``) topology — the lead can still spawn ad-hoc roles that fall back
+to ``default_role``. Conventional filenames such as ``configs/team.yaml`` are
+never discovered implicitly.
 
 Tool *names* are resolved to concrete Tool instances by ``ContextBuilder`` in
 ``bootstrap.container``; this module only carries the names.
@@ -259,23 +257,14 @@ def _resolve_entry_role(explicit: str | None, roles: dict[str, RoleConfig]) -> s
     return "lead"
 
 
-def _candidate_team_paths(workspace: str | None) -> list[Path]:
+def _configured_team_path(
+    path: str | os.PathLike[str] | None = None,
+) -> Path | None:
+    """Return the explicitly selected team path, if any."""
+    if path is not None:
+        return Path(path)
     explicit = os.environ.get("OPENCOLLAB_TEAM_FILE")
-    if explicit:
-        return [Path(explicit)]
-    bases: list[Path] = []
-    if workspace:
-        bases.append(Path(workspace))
-    bases.append(Path.cwd())
-    paths: list[Path] = []
-    seen: set[str] = set()
-    for base in bases:
-        candidate = base / "configs" / "team.yaml"
-        key = str(candidate.absolute())
-        if key not in seen:
-            paths.append(candidate)
-            seen.add(key)
-    return paths
+    return Path(explicit) if explicit else None
 
 
 def _resolve_prompt(entry: _RoleFileModel, base_dir: Path, role_name: str) -> str:
@@ -394,14 +383,21 @@ def _build_team_config(data: Any, base_dir: Path) -> TeamConfig:
 
 
 def resolve_team_file(workspace: str | None = None) -> Path | None:
-    """Return the team file that ``load_team_config`` would read, or ``None``."""
-    for path in _candidate_team_paths(workspace):
-        try:
-            inspected = path.lstat()
-        except OSError:
-            continue
-        if stat.S_ISREG(inspected.st_mode):
-            return Path(os.path.abspath(path))
+    """Return the explicitly configured environment team file, or ``None``.
+
+    ``workspace`` remains accepted for compatibility but is intentionally not
+    searched for conventional filenames.
+    """
+    del workspace
+    candidate = _configured_team_path()
+    if candidate is None:
+        return None
+    try:
+        inspected = candidate.lstat()
+    except OSError:
+        return None
+    if stat.S_ISREG(inspected.st_mode):
+        return Path(os.path.abspath(candidate))
     return None
 
 
@@ -410,24 +406,28 @@ def load_team_config(
     *,
     path: str | os.PathLike[str] | None = None,
 ) -> TeamConfig:
-    """Load an explicit team file, the resolved workspace file, or the default."""
-    candidates = [Path(path)] if path is not None else _candidate_team_paths(workspace)
-    for candidate in candidates:
-        try:
-            inspected = candidate.lstat()
-        except FileNotFoundError:
-            if path is not None:
-                raise ValueError(f"team config does not exist: {candidate}") from None
-            continue
-        if not stat.S_ISREG(inspected.st_mode):
-            raise ValueError(f"team config is not a regular file: {candidate}")
-        try:
-            text = read_regular_text(candidate, max_bytes=MAX_TEAM_CONFIG_BYTES)
-        except (OSError, UnicodeDecodeError, ValueError) as exc:
-            raise ValueError(f"team config cannot be read safely: {candidate}") from exc
-        data = yaml.safe_load(text)
-        return _build_team_config(data, Path(os.path.abspath(candidate)).parent)
-    return default_team_config()
+    """Load an explicitly selected team file or the built-in lead-only team.
+
+    ``workspace`` remains accepted for compatibility but is intentionally not
+    searched for conventional filenames. An explicit ``path`` takes precedence
+    over ``OPENCOLLAB_TEAM_FILE``.
+    """
+    del workspace
+    candidate = _configured_team_path(path)
+    if candidate is None:
+        return default_team_config()
+    try:
+        inspected = candidate.lstat()
+    except FileNotFoundError:
+        raise ValueError(f"team config does not exist: {candidate}") from None
+    if not stat.S_ISREG(inspected.st_mode):
+        raise ValueError(f"team config is not a regular file: {candidate}")
+    try:
+        text = read_regular_text(candidate, max_bytes=MAX_TEAM_CONFIG_BYTES)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(f"team config cannot be read safely: {candidate}") from exc
+    data = yaml.safe_load(text)
+    return _build_team_config(data, Path(os.path.abspath(candidate)).parent)
 
 
 __all__ = [
