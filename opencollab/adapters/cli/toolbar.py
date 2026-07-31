@@ -63,7 +63,8 @@ def format_team_toolbar(
         if aid is None:
             label = role  # configured role with no live agent yet
         elif aid == 0:
-            label = "Lead"
+            entry_role = str(role).strip().replace("_", " ").replace("-", " ")
+            label = entry_role.title() if entry_role and entry_role != "?" else "Lead"
         else:
             label = f"A{aid} {role}"
         state = roster_display_state(entry)

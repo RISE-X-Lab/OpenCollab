@@ -39,6 +39,27 @@ class _LineViewport:
                 yield Segment.line()
 
 
+class _PinnedFooterViewport:
+    """A live body that reserves the terminal's physical bottom row for status."""
+
+    def __init__(self, body: Any, footer: Any) -> None:
+        self.body = body
+        self.footer = footer
+
+    def __rich_console__(self, console: Console, options: Any) -> Any:
+        max_height = max(1, console.height)
+        body_lines = console.render_lines(self.body, options, pad=False)
+        footer_lines = console.render_lines(self.footer, options, pad=False)
+        if len(footer_lines) >= max_height:
+            lines = footer_lines[-max_height:]
+        else:
+            body_height = max_height - len(footer_lines)
+            visible_body = body_lines[-body_height:] if body_height else []
+            spacer = [[] for _ in range(body_height - len(visible_body))]
+            lines = [*visible_body, *spacer, *footer_lines]
+        yield from _LineViewport(lines).__rich_console__(console, options)
+
+
 class _RendererDisplayMixin:
     """Builds Rich renderables from the TUI's current state."""
 
@@ -207,7 +228,7 @@ class _RendererDisplayMixin:
         )
         return grid
 
-    def _build_display(self) -> Any:
+    def _build_display(self, *, include_team_panel: bool = True) -> Any:
         """Build the Rich renderable for current state."""
         parts = []
 
@@ -255,9 +276,10 @@ class _RendererDisplayMixin:
             parts.append(self._thinking)
             parts.append(Text("", style=""))
 
-        team_panel = self._build_team_panel()
-        if team_panel is not None:
-            parts.append(team_panel)
+        if include_team_panel:
+            team_panel = self._build_team_panel()
+            if team_panel is not None:
+                parts.append(team_panel)
 
         if not parts:
             # Nothing yet — still animate the wait so first-token latency doesn't
@@ -268,13 +290,18 @@ class _RendererDisplayMixin:
         return Group(*parts)
 
     def _build_live_display(self) -> Any:
-        """Build a terminal-height live frame focused on newest output."""
-        display = self._build_display()
+        """Build a live frame with the team status on the terminal's bottom row."""
         max_height = max(1, self.console.height)
-        lines = self.console.render_lines(display, self.console.options, pad=False)
-        if len(lines) <= max_height:
-            return display
-        return _LineViewport(lines[-max_height:])
+        team_panel = self._build_team_panel()
+        if team_panel is None:
+            display = self._build_display()
+            lines = self.console.render_lines(display, self.console.options, pad=False)
+            if len(lines) <= max_height:
+                return display
+            return _LineViewport(lines[-max_height:])
+
+        body = self._build_display(include_team_panel=False)
+        return _PinnedFooterViewport(body, team_panel)
 
     def _build_settled_display(self, *, aid: int = 0) -> Any | None:
         """Build one settled turn for an explicit scrollback handoff.
