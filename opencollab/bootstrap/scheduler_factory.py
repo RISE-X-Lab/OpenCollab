@@ -1,4 +1,4 @@
-"""Scheduler factory — the high-level CLI/eval entry point.
+"""Scheduler factory for the high-level CLI and SDK entry points.
 
 ``build_scheduler`` loads the team config, wires every concrete dependency,
 hands the ``Scheduler`` a ``LaunchSpec`` + ``Topology``, and lets it create
