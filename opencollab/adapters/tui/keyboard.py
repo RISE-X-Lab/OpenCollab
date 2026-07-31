@@ -144,7 +144,10 @@ class TabKeyNavigator:
     @staticmethod
     def _restore_terminal(fd: int, attrs: list) -> None:
         try:
-            termios.tcsetattr(fd, termios.TCSANOW, attrs)
+            # On Darwin, restoring canonical mode with TCSANOW leaves the
+            # kernel-managed PENDIN bit set. This listener owns and discards
+            # turn-scoped input, so flushing it also restores the exact state.
+            termios.tcsetattr(fd, termios.TCSAFLUSH, attrs)
         except (OSError, termios.error):
             pass
 
