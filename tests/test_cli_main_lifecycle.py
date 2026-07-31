@@ -150,7 +150,7 @@ def test_cli_forwards_explicit_team_config(monkeypatch, tmp_path):
     team_config = tmp_path / "custom-team.yaml"
     resolved = {
         **config(),
-        "api_key": "test-key",
+        "api_key": "test-key",  # pragma: allowlist secret
         "base_url": None,
     }
 
