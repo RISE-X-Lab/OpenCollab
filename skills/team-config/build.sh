@@ -46,9 +46,9 @@ mkdir -p "$(dirname "$OUT")" 2>/dev/null || true
   cat "$HERE/blueprint.head.html"
   guard "$SRC"
   cat "$HERE/blueprint.body.html"
-  printf '%s\n' '<!-- js-yaml license notice'
+  printf '%s\n' '/* js-yaml license notice'
   cat "$HERE/vendor/js-yaml.LICENSE"
-  printf '%s\n' '-->'
+  printf '%s\n' '*/'
   cat "$HERE/vendor/js-yaml.min.js"
   cat "$HERE/blueprint.foot.html"
 } > "$OUT" || { echo "build.sh: cannot write output: $OUT" >&2; exit 1; }

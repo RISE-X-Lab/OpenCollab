@@ -32,6 +32,7 @@ _JS_YAML_LICENSE_SHA256 = "a07bc24468b9654ce76a547d47a2db282d07733b715db4c73a98b
 _ISLAND = re.compile(
     r'<script id="team-src" type="text/yaml">\n(.*?)\n</script>', re.S
 )
+_SCRIPT = re.compile(r"<script(?P<attrs>[^>]*)>(?P<body>.*?)</script>", re.S | re.I)
 
 pytestmark = pytest.mark.skipif(
     shutil.which("sh") is None, reason="POSIX sh required to run build.sh"
@@ -88,6 +89,9 @@ def test_build_produces_self_contained_blueprint(tmp_path: Path) -> None:
     # self-contained: the parser is inlined, and nothing is fetched over the wire.
     assert "js-yaml 4.1.1" in html
     assert JS_YAML_LICENSE.read_text(encoding="utf-8") in html
+    assert "/* js-yaml license notice\n" in html
+    assert "\n*/\n/*! js-yaml 4.1.1" in html
+    assert "<!-- js-yaml license notice" not in html
     assert "OpenCollab Team Blueprint" in html
     # no external subresource loads (the SVG xmlns URI is a constant, not a fetch).
     assert 'src="http' not in html
@@ -97,6 +101,34 @@ def test_build_produces_self_contained_blueprint(tmp_path: Path) -> None:
     assert yaml.safe_load(_island_yaml(html)) == yaml.safe_load(
         TEMPLATE.read_text(encoding="utf-8")
     )
+
+
+def test_build_embeds_syntax_valid_javascript(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js required for generated JavaScript syntax check")
+
+    out = tmp_path / "bp.html"
+    proc = _build(TEMPLATE, out)
+    assert proc.returncode == 0, proc.stderr
+    html = out.read_text(encoding="utf-8")
+
+    scripts = [
+        match.group("body")
+        for match in _SCRIPT.finditer(html)
+        if 'type="text/yaml"' not in match.group("attrs")
+    ]
+    assert len(scripts) == 2
+    for index, script in enumerate(scripts, start=1):
+        checked = subprocess.run(
+            [node, "--check", "-"],
+            input=script,
+            capture_output=True,
+            text=True,
+        )
+        assert checked.returncode == 0, (
+            f"generated JavaScript block {index} is invalid:\n{checked.stderr}"
+        )
 
 
 def test_build_neutralizes_script_close(tmp_path: Path) -> None:
