@@ -2,7 +2,7 @@
 
 A schema-capture tool in the same family as ``StructuredOutputTool``: the
 workflow engine injects one into a read-only scout session so the scout's report
-is a *structured artifact* the harness owns, not a fragile last-message-text. It
+is a *structured artifact* the runtime owns, not fragile last-message text. It
 is available to the scout normally (so it CAN commit early — commit-first
 friendly) AND becomes the ONLY tool during the enforcement wind-down, where the
 scout's single protected turn must call it.
@@ -165,7 +165,7 @@ _PARTIAL_SNIPPET_CHARS = 600
 
 
 def format_evidence_ledger(cards: list[dict[str, Any]] | None) -> str:
-    """Render the harness-authored evidence ledger (STEP 2) as compact, labelled
+    """Render the runtime-authored evidence ledger as compact, labelled
     lines: one ``- [outcome] tool target: snippet`` per executed scout tool call.
 
     The ledger is built purely from tool-result envelopes (no model involvement),
@@ -197,7 +197,7 @@ def harvest_findings(
     fact-sheet-seeded structured cite-or-abstain artifact) so a scout that dies or
     strays before refining never loses the fact-sheet anchors; else (3) the scout's
     final assistant text (today's behavior); else (4) a "(partial …)" salvage built
-    from what the scout actually gathered — preferring the harness-authored evidence
+    from what the scout actually gathered — preferring the runtime-authored evidence
     ``ledger`` (STEP 2, classified + targeted) when present, else the raw tool
     results + interim assistant texts in the transcript — so a chopped scout yields
     what it found, never a bare "(scout died)". Returns "" only when there is
@@ -257,7 +257,7 @@ evidence_anchor (a file:line or an exact string) FROM the evidence below. If the
 evidence is too thin to answer the dimension, set insufficient_evidence=true — a \
 valid outcome. Do NOT fabricate findings or anchors for evidence you were not given.
 
-Harness-recorded evidence ledger (what the scout's tool calls returned):
+Runtime-recorded evidence ledger (what the scout's tool calls returned):
 {ledger}
 
 Raw tool results captured during the scout's run:
@@ -284,7 +284,7 @@ def build_dead_scout_synthesis_prompt(
 ) -> str:
     """Seed prompt for the transcript-only dead-scout synthesizer (STEP 2 part b).
 
-    Its ONLY inputs are the harness-authored evidence ledger and the scout's raw
+    Its ONLY inputs are the runtime-authored evidence ledger and the scout's raw
     tool results — never a directive to explore further. The single allowed tool is
     submit_findings (forced + cite-or-abstain), so the salvage cannot fabricate.
     """

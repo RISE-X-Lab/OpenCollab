@@ -34,7 +34,9 @@ class WorkflowContext(Protocol):
         *,
         label: str | None = None,
         budget: int | None = None,
-    ) -> dict[str, Any] | None: ...
+    ) -> dict[str, Any] | None:
+        """Capture a structured evidence draft before exploratory workflow steps."""
+        ...
 
     async def parallel(
         self,

@@ -1,4 +1,4 @@
-"""Eval-defense agent runners for :class:`WorkflowContext`.
+"""Evidence-preserving agent runners for :class:`WorkflowContext`.
 
 The "force a scout to commit findings, salvage it if it dies" concern peeled out
 of ``workflow.py``: a submit_findings capture tool + the runner wind-down brake,
@@ -96,7 +96,7 @@ class WorkflowAgentsMixin:
             await self.log(f"agent failed ({label or 'agent'}): {exc}")
 
         # Harvest is the backstop even on a timeout/exception: whatever the scout
-        # already gathered (captured payload, prose, or the harness-authored
+        # already gathered (captured payload, prose, or the runtime-authored
         # evidence ledger) is salvaged — never a bare "(scout died)".
         ledger = self._scout_ledger(session)
         report = harvest_findings(
@@ -128,7 +128,7 @@ class WorkflowAgentsMixin:
     ) -> str | None:
         """Salvage a dead/empty scout with ONE bounded transcript-only LLM call.
 
-        Its ONLY input is the scout's harness-authored evidence ledger + raw tool
+        Its ONLY input is the scout's runtime-authored evidence ledger + raw tool
         results; its ONLY tool is ``submit_findings`` with a forced (named-function)
         ``tool_choice`` and the cite-or-abstain post-validation — NO exploration
         tools, so the salvage cannot wander or fabricate. Returns the formatted
@@ -261,7 +261,7 @@ class WorkflowAgentsMixin:
 
     @staticmethod
     def _scout_ledger(session: Any) -> list[dict[str, Any]]:
-        """The scout's harness-authored evidence ledger (STEP 2), or [] when a
+        """The scout's runtime-authored evidence ledger, or [] when a
         duck-typed session/state does not carry one."""
         state = getattr(session, "state", None)
         turn = getattr(state, "turn", None)

@@ -12,7 +12,7 @@ composition root is split into focused siblings and re-exported here so
 - ``runtime_context``    — ``RuntimeContext`` + workspace safety policy.
 - ``session_factory``    — ``build_spawn_session`` / ``DefaultSessionFactory`` +
                            run-folder transcript helpers.
-- ``scheduler_factory``  — ``build_scheduler`` (the CLI/eval entry point).
+- ``scheduler_factory``  — ``build_scheduler`` (the CLI and SDK entry point).
 
 ``session_factory`` and ``scheduler_factory`` import back from this module, so
 they are re-exported lazily via module ``__getattr__`` (PEP 562) to keep import

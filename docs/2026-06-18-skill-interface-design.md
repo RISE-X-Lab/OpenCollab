@@ -1,7 +1,7 @@
 ---
 title: Skill interface — design + P0/P1 plan (report only)
 date: 2026-06-18
-status: design / not yet implemented
+status: historical proposal / implemented
 context: a "skill" is a packaged unit of INSTRUCTIONS (name + description + body),
   loaded into an agent's context when relevant — NOT a tool/function. Trigger model
   chosen = model-invoked (like Claude Code's Skill tool): the model reads a catalog
@@ -31,7 +31,7 @@ context: a "skill" is a packaged unit of INSTRUCTIONS (name + description + body
 | Seed → messages | `bootstrap/container.py:92-100` (`_build_initial_state`) | system message + `seed_user_messages` → `SessionState.messages`. |
 | Shed shaper | `application/shaping/reactive.py` (`LowPriorityContextShedShaper`), `shaping/pipeline.py` (`PIN_FLOOR=70`) | Sheds only messages tagged `_ctx.priority < 70`. **Untagged messages (tool work, turns) are never shed.** |
 
-Nothing today knows the word "skill". The tool/port machinery is the substrate; this design adds a producer (`SkillStorePort` + one dispatcher tool + a static catalog source) without touching the deferred-loader work.
+At proposal time, nothing knew the word "skill". The tool/port machinery was the substrate; the implemented design added a producer (`SkillStorePort` + one dispatcher tool + a static catalog source) without touching the deferred-loader work.
 
 ## 1. Why model-invoked + tool-result (the two decisions)
 

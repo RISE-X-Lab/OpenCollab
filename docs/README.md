@@ -6,7 +6,7 @@ API, and architecture boundary.
 
 ## Current documentation
 
-- [`sdk-v3-explainer.html`](sdk-v3-explainer.html) is the visual guide to the
+- [`sdk-0.4-explainer.html`](sdk-0.4-explainer.html) is the visual guide to the
   compact SDK introduced for the 0.4 series.
 - [`../configs/README.md`](../configs/README.md) documents provider, model, and
   team configuration.
