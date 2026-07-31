@@ -509,6 +509,56 @@ def test_agent_status_remains_last_row_when_live_view_is_cropped():
     assert last_row.startswith("AGENTS")
 
 
+def test_agent_status_is_pinned_to_terminal_bottom_when_content_is_short():
+    console = Console(file=StringIO(), width=50, height=6, color_system=None)
+    tui = TUI(console)
+    tui.set_team_provider(lambda: [
+        {"aid": 0, "role": "analyst", "phase": "done", "busy": False},
+        {"aid": 1, "role": "coder", "phase": "done", "busy": False},
+    ])
+    tui._status_lines.append(Text("short body", style="#6B7280"))
+
+    rendered = console.render_lines(tui._build_live_display(), console.options, pad=False)
+    rows = ["".join(segment.text for segment in line) for line in rendered]
+
+    assert len(rows) == console.height
+    assert "short body" in rows
+    assert rows[-1].startswith("AGENTS")
+    assert all(not row.startswith("AGENTS") for row in rows[:-1])
+
+
+def test_agent_status_owns_only_row_in_one_line_terminal():
+    console = Console(file=StringIO(), width=50, height=1, color_system=None)
+    tui = TUI(console)
+    tui.set_team_provider(lambda: [
+        {"aid": 0, "role": "lead", "phase": "done", "busy": False},
+    ])
+    tui._status_lines.append(Text("body is hidden", style="#6B7280"))
+
+    rendered = console.render_lines(tui._build_live_display(), console.options, pad=False)
+    rows = ["".join(segment.text for segment in line) for line in rendered]
+
+    assert len(rows) == 1
+    assert rows[0].startswith("AGENTS")
+
+
+def test_pinned_agent_status_reflows_to_resized_terminal_height():
+    initial_console = Console(file=StringIO(), width=50, height=6, color_system=None)
+    tui = TUI(initial_console)
+    tui.set_team_provider(lambda: [
+        {"aid": 0, "role": "lead", "phase": "done", "busy": False},
+    ])
+    tui._status_lines.append(Text("short body", style="#6B7280"))
+    display = tui._build_live_display()
+
+    resized_console = Console(file=StringIO(), width=50, height=3, color_system=None)
+    rendered = resized_console.render_lines(display, resized_console.options, pad=False)
+    rows = ["".join(segment.text for segment in line) for line in rendered]
+
+    assert len(rows) == resized_console.height
+    assert rows[-1].startswith("AGENTS")
+
+
 def test_reset_clears_live_state_but_preserves_agent_history_and_roster():
     tui = _make_tui()
     tui.event_handler(SchedulerEvent("agent_spawned", {"aid": 1, "parent_aid": 0, "role": "coder"}))

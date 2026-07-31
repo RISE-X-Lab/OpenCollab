@@ -34,6 +34,15 @@ def test_team_toolbar_displays_idle_lead_as_selected():
             assert "white" not in style
 
 
+def test_team_toolbar_uses_configured_entry_role():
+    toolbar = format_team_toolbar([
+        {"aid": 0, "role": "analyst", "phase": "idle", "busy": False},
+    ])
+    plain, _ = _plain_and_fragments(toolbar)
+
+    assert plain == "AGENTS  1/1  ◆ Analyst idle"
+
+
 def test_team_toolbar_escapes_role_text():
     toolbar = format_team_toolbar([{"aid": 2, "role": "dev<ops>", "phase": "running"}])
     plain, fragments = _plain_and_fragments(toolbar)
