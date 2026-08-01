@@ -1,16 +1,14 @@
-"""Shared provider errors and context-window overflow classification.
+"""Shared provider errors and request-size overflow classification.
 
-A context overflow is the one 400/BadRequest the run loop must treat specially:
+A context overflow is a request rejection the run loop must treat specially:
 it is *not* transient (retrying the same prompt is futile — see ``retry.py``,
-which already excludes 400 from the retryable set), and it is *not* a generic
-client error either. The session layer catches it to force a maximal compaction
-pass and retry once, then degrade gracefully if even that overflows.
+which already excludes client errors from the retryable set), and it is *not* a
+generic client error either. The session layer catches it to force a maximal
+compaction pass and retry once, then degrade gracefully if even that overflows.
 
-This classifier is deliberately conservative: a 400 alone is not enough (a
-malformed request, an invalid tool schema, a bad model id all yield 400). We
-require both a 400-shaped status AND a message fragment that names a
-context-length problem, so an unrelated 400 is never misread as an overflow and
-silently force-compacted.
+This classifier is deliberately conservative. A 400 alone is not enough because
+malformed requests, invalid tool schemas, and bad model ids all yield 400. A 413
+is accepted only with the relay's exact ``upstream_request_too_large`` code.
 """
 
 from __future__ import annotations
@@ -24,9 +22,9 @@ class TransientEmptyOutputError(TransientProviderError):
     """A provider completed a request without usable model output."""
 
 
-# Status codes a context overflow takes. Anthropic and OpenAI-compatible
-# providers both surface it as an HTTP 400 (BadRequest).
-_OVERFLOW_STATUS_CODES = frozenset({400})
+_CONTEXT_OVERFLOW_STATUS = 400
+_RELAY_WIRE_OVERFLOW_STATUS = 413
+_RELAY_WIRE_OVERFLOW_CODE = "upstream_request_too_large"
 
 # Lowercased message fragments that name a context-length overflow. Covers the
 # Anthropic ("prompt is too long"), OpenAI ("maximum context length",
@@ -77,16 +75,15 @@ def _error_code_of(error: Exception) -> str:
 def is_context_overflow_error(error: Exception) -> bool:
     """Whether ``error`` is a context-window overflow (prompt too large).
 
-    Conservative by design: True only when the error is 400-shaped *and* either
-    its provider error ``code`` or its message names a context-length problem.
-    A bare 400 with no overflow wording is treated as a generic client error
-    (returns False) so it is never futilely force-compacted.
+    A 400 requires an explicit context-length code or message. A 413 requires
+    the relay's exact wire-size code. Other client errors remain unclassified.
     """
     status = _status_of(error)
-    if status not in _OVERFLOW_STATUS_CODES:
-        return False
-
     code = _error_code_of(error)
+    if status == _RELAY_WIRE_OVERFLOW_STATUS:
+        return code == _RELAY_WIRE_OVERFLOW_CODE
+    if status != _CONTEXT_OVERFLOW_STATUS:
+        return False
     if "context_length_exceeded" in code or "context length" in code:
         return True
 

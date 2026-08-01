@@ -128,6 +128,12 @@ def test_history_trigger_target_scales_with_window():
     assert target_big == int(trigger_big * 0.75)
 
 
+def test_history_trigger_target_uses_configured_output_reserve():
+    trigger, target = history_trigger_target(34_000, output_reserve=8_192)
+    assert trigger == 12_808
+    assert target == 9_606
+
+
 def test_history_trigger_target_defaults_when_window_unknown():
     for unknown in (None, 0, -5):
         assert history_trigger_target(unknown) == (

@@ -70,7 +70,7 @@ from opencollab.bootstrap.tool_registry import (
     COMPACTABLE_TOOL_NAMES,
     build_tools_for_role,
 )
-from opencollab.domain.agent import Agent
+from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP, Agent
 from opencollab.domain.session import SessionState
 
 if TYPE_CHECKING:
@@ -169,7 +169,10 @@ def _build_summarizer(
 
 
 def _build_default_shaper(
-    resolved_llm: LLMPort, summarizer: ReadTimeSummarizer
+    resolved_llm: LLMPort,
+    summarizer: ReadTimeSummarizer,
+    *,
+    max_output_tokens: int,
 ) -> ShaperPort:
     """Assemble the default lazy-degradation shaper pipeline.
 
@@ -183,7 +186,10 @@ def _build_default_shaper(
     # Trigger/target scale to the active model's real context window, degrading
     # to fixed defaults when the model is unrecognised.
     context_window = getattr(resolved_llm, "context_window", lambda: None)()
-    history_trigger, history_target = history_trigger_target(context_window)
+    history_trigger, history_target = history_trigger_target(
+        context_window,
+        output_reserve=max_output_tokens,
+    )
 
     history_kwargs = {
         "estimate_tokens": estimate_messages_tokens,
@@ -280,7 +286,17 @@ def build_session_runtime(
     )
     summarizer = _build_summarizer(agent, llm, resolved_llm, llm_timeout, auto_save_path)
     resolved_shaper: ShaperPort = (
-        shaper if shaper is not None else _build_default_shaper(resolved_llm, summarizer)
+        shaper
+        if shaper is not None
+        else _build_default_shaper(
+            resolved_llm,
+            summarizer,
+            max_output_tokens=getattr(
+                agent,
+                "max_tokens_per_step",
+                DEFAULT_MAX_TOKENS_PER_STEP,
+            ),
+        )
     )
     runner = SessionRunUseCase(
         agent=agent,
