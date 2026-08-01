@@ -58,6 +58,7 @@ class WorkflowSessionFactory:
         temperature: float = DEFAULT_TEMPERATURE,
         top_p: float | None = DEFAULT_TOP_P,
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+        context_window: int | None = None,
         thinking: bool = DEFAULT_THINKING,
         thinking_params: dict | None = None,
         reasoning_effort: str | None = None,
@@ -82,6 +83,7 @@ class WorkflowSessionFactory:
         self._temperature = temperature
         self._top_p = top_p
         self._max_output_tokens = max_output_tokens
+        self._context_window = context_window
         self._thinking = thinking
         self._thinking_params = thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
         self._reasoning_effort = reasoning_effort
@@ -142,6 +144,7 @@ class WorkflowSessionFactory:
             temperature=self._temperature,
             top_p=self._top_p,
             max_tokens_per_step=self._max_output_tokens,
+            context_window=self._context_window,
             thinking=use_thinking,
             thinking_params=self._thinking_params,
             reasoning_effort=self._reasoning_effort,
@@ -207,6 +210,7 @@ def build_workflow_context(
         temperature=float(cfg.get("temperature", DEFAULT_TEMPERATURE)),
         top_p=cfg.get("top_p", DEFAULT_TOP_P),
         max_output_tokens=int(cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)),
+        context_window=cfg.get("context_window"),
         thinking=bool(cfg.get("thinking", DEFAULT_THINKING)),
         thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
         reasoning_effort=cfg.get("reasoning_effort"),

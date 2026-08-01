@@ -128,6 +128,7 @@ class OpenCollabConfig(BaseModel):
     temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0.0, le=2.0)
     top_p: float | None = Field(default=DEFAULT_TOP_P, ge=0.0, le=1.0)
     max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=1)
+    context_window: int | None = Field(default=None, ge=1)
     thinking: bool = Field(default=DEFAULT_THINKING)
     thinking_params: dict[str, Any] = Field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
     reasoning_effort: str | None = None
@@ -168,6 +169,13 @@ class OpenCollabConfig(BaseModel):
     def _reject_boolean_llm_timeout(cls, value: Any) -> Any:
         if isinstance(value, bool):
             raise ValueError("LLM timeouts must be finite positive numbers")
+        return value
+
+    @field_validator("context_window", mode="before")
+    @classmethod
+    def _reject_boolean_context_window(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("context_window must be a positive integer or None")
         return value
 
     @field_validator("thinking_params", mode="before")

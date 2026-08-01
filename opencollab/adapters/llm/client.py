@@ -69,7 +69,14 @@ class LLMClient:
         connect_timeout: float = 30.0,
         first_event_timeout: float = 180.0,
         stream_idle_timeout: float = 180.0,
+        context_window: int | None = None,
     ):
+        if context_window is not None and (
+            isinstance(context_window, bool)
+            or not isinstance(context_window, int)
+            or context_window <= 0
+        ):
+            raise ValueError("context_window must be a positive integer or None")
         self.model = model
         self.provider = provider
         self.max_retries = max(0, max_retries)
@@ -77,6 +84,7 @@ class LLMClient:
         self.wire_protocol = normalize_wire_protocol(wire_protocol)
         self.first_event_timeout = first_event_timeout
         self.stream_idle_timeout = stream_idle_timeout
+        self._context_window = context_window
 
         warn_provider_near_miss(provider)
         if is_anthropic(provider):
@@ -107,7 +115,7 @@ class LLMClient:
 
     def context_window(self) -> int | None:
         """The model's context window in tokens, or ``None`` if unknown."""
-        return model_context_window(self.model)
+        return self._context_window or model_context_window(self.model)
 
     async def close(self) -> None:
         """Close the provider SDK client owned by this facade."""

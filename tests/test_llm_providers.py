@@ -12,6 +12,7 @@ import pytest
 from opencollab.adapters.llm.anthropic_provider import _build_request_kwargs as build_anthropic_kwargs
 from opencollab.adapters.llm.anthropic_provider import _parse_response as parse_anthropic_response
 from opencollab.adapters.llm.anthropic_provider import _parse_usage as parse_anthropic_usage
+from opencollab.adapters.llm.client import LLMClient
 from opencollab.adapters.llm.openai_provider import _build_request_kwargs as build_openai_kwargs
 from opencollab.adapters.llm.openai_provider import _parse_response as parse_openai_response
 from opencollab.adapters.llm.openai_provider import _usage_int as openai_usage_int
@@ -119,10 +120,29 @@ def test_anthropic_treats_none_cache_fields_as_zero():
 # ---------------------------------------------------------------------------
 
 
-def _openai_resp(usage, content="hello world", tool_calls=None):
+def _openai_resp(usage, content="hello world", tool_calls=None, model=None):
     message = SimpleNamespace(content=content, tool_calls=tool_calls)
     choice = SimpleNamespace(message=message, finish_reason="stop")
-    return SimpleNamespace(choices=[choice], usage=usage)
+    return SimpleNamespace(choices=[choice], usage=usage, model=model)
+
+
+def test_openai_response_preserves_provider_model_identity():
+    result = parse_openai_response(
+        _openai_resp(None, model="provider-model"),
+        [{"role": "user", "content": "q"}],
+    )
+    assert result.provider_model == "provider-model"
+
+
+def test_llm_client_accepts_explicit_context_window(monkeypatch):
+    monkeypatch.setattr("openai.AsyncOpenAI", lambda **_kwargs: SimpleNamespace())
+    client = LLMClient(
+        provider="openai",
+        model="unknown-model",
+        api_key="k",
+        context_window=35_500,
+    )
+    assert client.context_window() == 35_500
 
 
 def test_openai_usage_none_yields_nonzero_estimate():
@@ -569,9 +589,18 @@ def test_openai_does_not_harvest_reasoning_on_tool_call_turn():
 # ---------------------------------------------------------------------------
 
 
-def _anthropic_resp(blocks, stop_reason="end_turn"):
+def _anthropic_resp(blocks, stop_reason="end_turn", model=None):
     usage = SimpleNamespace(input_tokens=10, output_tokens=5)
-    return SimpleNamespace(content=blocks, usage=usage, stop_reason=stop_reason)
+    return SimpleNamespace(
+        content=blocks, usage=usage, stop_reason=stop_reason, model=model
+    )
+
+
+def test_anthropic_response_preserves_provider_model_identity():
+    result = parse_anthropic_response(
+        _anthropic_resp([_text_block("ok")], model="provider-model")
+    )
+    assert result.provider_model == "provider-model"
 
 
 def _text_block(text):

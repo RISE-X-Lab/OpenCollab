@@ -136,6 +136,7 @@ class OpenCollab:
             "temperature",
             "top_p",
             "max_output_tokens",
+            "context_window",
             "thinking",
             "thinking_params",
             "reasoning_effort",

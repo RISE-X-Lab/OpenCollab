@@ -156,6 +156,7 @@ def _parse_response(resp: Any) -> LLMResponse:
         usage=_parse_usage(resp.usage),
         finish_reason=resp.stop_reason,
         reasoning=reasoning,
+        provider_model=getattr(resp, "model", None),
     )
 
 

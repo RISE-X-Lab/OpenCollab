@@ -61,6 +61,7 @@ class SpawnConfig:
     temperature: float = DEFAULT_TEMPERATURE
     top_p: float | None = DEFAULT_TOP_P
     max_output_tokens: int = DEFAULT_MAX_TOKENS_PER_STEP
+    context_window: int | None = None
     # Global thinking passthrough; a role may override it (resolved in
     # ``ContextBuilder.build_agent``). Defaulted (OFF) so the field stays optional.
     thinking: bool = DEFAULT_THINKING
@@ -224,6 +225,7 @@ class ContextBuilder:
             temperature=temperature,
             top_p=cfg.top_p,
             max_tokens_per_step=cfg.max_output_tokens,
+            context_window=cfg.context_window,
             thinking=thinking,
             thinking_params=thinking_params,
             reasoning_effort=cfg.reasoning_effort,

@@ -27,6 +27,7 @@ class Agent:
         wire_protocol: Explicit OpenAI wire protocol used by the provider.
         api_key: Override API key for this agent (defaults to env var).
         base_url: Override base URL (for proxies, local models, etc.).
+        context_window: Explicit model context window used by history shaping.
         max_tokens_per_step: Max output tokens per LLM call.
         temperature: Sampling temperature.
         top_p: Nucleus-sampling top_p (``None`` keeps the provider default, so
@@ -49,6 +50,7 @@ class Agent:
     wire_protocol: str = "chat_completions"
     api_key: str | None = None
     base_url: str | None = None
+    context_window: int | None = None
     max_tokens_per_step: int = DEFAULT_MAX_TOKENS_PER_STEP
     temperature: float = 0.0
     top_p: float | None = None

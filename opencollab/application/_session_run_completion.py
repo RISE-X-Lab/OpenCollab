@@ -431,8 +431,7 @@ class _SessionRunCompletionMixin:
                 payload["reasoning"] = reasoning
             payload["thinking"] = bool(getattr(self.agent, "thinking", False))
             wire_protocol = getattr(self.agent, "wire_protocol", "chat_completions")
-            if wire_protocol != "chat_completions":
-                payload["wire_protocol"] = wire_protocol
+            payload["wire_protocol"] = wire_protocol
             reasoning_effort = getattr(self.agent, "reasoning_effort", None)
             if reasoning_effort is not None:
                 payload["reasoning_effort"] = reasoning_effort

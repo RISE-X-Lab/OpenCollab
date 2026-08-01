@@ -118,6 +118,7 @@ def _resolve_llm(agent: Agent, llm: LLMPort | None, llm_timeout: float) -> LLMPo
         connect_timeout=getattr(agent, "llm_connect_timeout", 30.0),
         first_event_timeout=getattr(agent, "llm_first_event_timeout", 180.0),
         stream_idle_timeout=getattr(agent, "llm_stream_idle_timeout", 180.0),
+        context_window=getattr(agent, "context_window", None),
     )
 
 

@@ -91,6 +91,7 @@ def build_scheduler(
             max_output_tokens=cfg.get(
                 "max_output_tokens", DEFAULT_MAX_TOKENS_PER_STEP
             ),
+            context_window=cfg.get("context_window"),
             thinking=cfg.get("thinking", DEFAULT_THINKING),
             thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
             reasoning_effort=cfg.get("reasoning_effort"),

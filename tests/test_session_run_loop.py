@@ -210,6 +210,7 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
         "step_type": "llm_call",
         "payload": {
             "model": "fake-model",
+            "wire_protocol": "chat_completions",
             "thinking": False,
             "finish_reason": "tool_calls",
             "content": "need tool",
@@ -353,6 +354,17 @@ def test_llm_trace_records_verified_provider_model():
 
     llm_calls = [step for step in tracer.steps if step["step_type"] == "llm_call"]
     assert llm_calls[0]["payload"]["provider_model"] == "gpt-verified"
+
+
+def test_llm_trace_records_default_chat_protocol_explicitly():
+    tracer = FakeTracer()
+    runner = build_runner(
+        llm=FakeLLM([llm_response(content="done")]),
+        tracer=tracer,
+    )
+
+    assert run(runner.run_loop()) == "done"
+    assert tracer.steps[0]["payload"]["wire_protocol"] == "chat_completions"
 
 
 def test_reasoning_is_preserved_in_assistant_tool_call_history():

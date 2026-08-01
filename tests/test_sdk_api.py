@@ -289,6 +289,7 @@ def test_client_exposes_immutable_non_secret_configuration(tmp_path: Path) -> No
             "temperature": 0.7,
             "top_p": 0.8,
             "max_output_tokens": 4096,
+            "context_window": 35_500,
             "thinking": True,
             "wire_protocol": "responses",
             "reasoning_effort": "high",
@@ -310,6 +311,7 @@ def test_client_exposes_immutable_non_secret_configuration(tmp_path: Path) -> No
     assert client.configuration["temperature"] == 0.7
     assert client.configuration["top_p"] == 0.8
     assert client.configuration["max_output_tokens"] == 4096
+    assert client.configuration["context_window"] == 35_500
     assert client.configuration["thinking"] is True
     assert client.configuration["wire_protocol"] == "responses"
     assert client.configuration["reasoning_effort"] == "high"

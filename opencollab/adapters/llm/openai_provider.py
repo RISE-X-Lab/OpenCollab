@@ -220,6 +220,7 @@ def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
         usage=usage,
         finish_reason=choice.finish_reason,
         reasoning=reasoning,
+        provider_model=getattr(resp, "model", None),
     )
 
 
