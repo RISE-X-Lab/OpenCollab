@@ -7,6 +7,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-31
+
 ### Added
 - Added an explicit OpenAI Responses wire protocol with typed streaming,
   locally replayed reasoning and function items, exact tool-call binding,
@@ -44,16 +46,24 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - Prepared the public SDK distribution for release with a package-version
   consistency gate, standards-based license metadata, bundled notices, and a
   minimal integration example.
-- Removed benchmark-specific runtime policy from the framework package; external
-  harness integrations now target the compact SDK and Clean Architecture ports.
-- Raised the package version to 0.4.0 for the incompatible compact SDK boundary.
+- Moved benchmark datasets, adapters, runners, and reports out of the framework
+  package. External evaluation packages now compose the compact SDK and Clean
+  Architecture ports, while reusable evidence-capture primitives remain part of
+  workflow authoring.
+- Raised the package version to 0.4.1 for the incompatible compact SDK boundary.
+
+### Fixed
+- Restored the exact terminal state after turn-scoped TUI keyboard navigation on
+  macOS and added the terminal probe to macOS CI.
+- Emitted valid JavaScript comments around the vendored js-yaml license in Team
+  Config HTML blueprints.
 
 ### Removed
 - Removed the SDK v2 request/result DTO graph, its independent API-version integer,
   and the obsolete `sdk.models`, `sdk.runtime`, `sdk.environment`, `sdk.errors`,
   `sdk.tools`, `sdk.usage`, and `sdk.workflows` modules.
 
-## 0.1.0 - 2026-07-03
+## [0.1.0] - 2026-07-03
 
 Initial tagged version of OpenCollab — run LLM coding agents three ways (a single
 interactive agent, an autonomous team, or a deterministic workflow) behind a
@@ -73,4 +83,6 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/commits/main
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.1.0...v0.4.1
+[0.1.0]: https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.1.0

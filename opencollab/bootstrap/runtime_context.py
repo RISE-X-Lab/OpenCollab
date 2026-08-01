@@ -1,6 +1,6 @@
 """Runtime context + workspace safety policy — the pre-session wiring inputs.
 
-``RuntimeContext`` bundles what the CLI/eval entry points resolve before any
+``RuntimeContext`` bundles what the CLI and SDK entry points resolve before any
 session exists (workspace, config overrides, tracer, sinks); the safety-policy
 factory turns an environment into its sandbox interceptor. Re-exported from
 ``bootstrap.container`` so existing import paths keep resolving.
