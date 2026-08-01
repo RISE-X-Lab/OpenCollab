@@ -14,6 +14,7 @@ from workflow_context_test_support import (
 )
 
 import opencollab.application.workflow as workflow_module
+import opencollab.application.workflow_structured as workflow_structured_module
 from opencollab.application.session_run import ENFORCEMENT_ON
 from opencollab.application.workflow import (
     WorkflowContext,
@@ -364,6 +365,36 @@ async def test_structured_agent_timeout_bounds_forced_retry_and_returns_none():
             "properties": {"verdict": {"type": "string"}},
         },
         timeout=0.01,
+    )
+
+    assert result is None
+    assert any("structured retry timed out" in e.message for e in sink.events)
+
+
+@pytest.mark.asyncio
+async def test_structured_retry_has_independent_short_deadline(monkeypatch):
+    first = FakeSession(reply="prose instead of structured output")
+    gate = asyncio.Event()
+    retry = FakeSession(reply="ok", gate=gate)
+    sink = RecordingSink()
+    ctx = WorkflowContext(FakeFactory([first, retry]), event_sink=sink)
+    monkeypatch.setattr(
+        workflow_structured_module,
+        "DEFAULT_STRUCTURED_RETRY_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    result = await asyncio.wait_for(
+        ctx.agent(
+            "needs structured",
+            schema={
+                "type": "object",
+                "required": ["verdict"],
+                "properties": {"verdict": {"type": "string"}},
+            },
+            timeout=10.0,
+        ),
+        timeout=0.5,
     )
 
     assert result is None
