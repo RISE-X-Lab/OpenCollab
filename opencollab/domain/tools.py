@@ -122,6 +122,8 @@ class ToolProcessingResult:
         buffered into the pending table (to keep the whole batch's tool-result
         block contiguous on resume) while their call hashes still record now.
         """
+        if self.write_succeeded:
+            state.turn.recent_call_hashes.clear()
         for call_hash in self.recent_hash_updates:
             state.remember_tool_call_hash(call_hash, max_window=max_window)
 

@@ -179,6 +179,33 @@ def test_mixed_batch_folds_in_reads_counter_for_immediate_reads():
     assert state.phase is SessionPhase.AWAITING_EVENTS
     assert state.turn.reads_since_last_edit == 1  # immediate read counted despite buffering
 
+
+def test_mixed_batch_preserves_hashes_recorded_after_a_successful_write():
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    state.replace_recent_tool_hashes(["before-write"])
+    batch = [
+        tool_call(call_id="w1", name="apply_patch", arguments='{"patch":"change"}'),
+        tool_call(call_id="s1", name="spawn_agent", arguments="{}"),
+    ]
+    llm = FakeLLM(
+        [llm_response(content="mixed", tool_calls=batch, finish_reason="tool_calls")]
+    )
+    te = FakeToolExecutionDeferred(
+        process_result=ToolProcessingResult(
+            messages_to_append=[{"role": "tool", "tool_call_id": "w1", "content": "Done"}],
+            recent_hash_updates=["after-write"],
+            write_succeeded=True,
+        ),
+        deferred_outcomes={"s1": (9, None)},
+    )
+    runner = build_runner(state=state, llm=llm, tool_execution=te)
+
+    run(runner.run_loop())
+
+    assert state.phase is SessionPhase.AWAITING_EVENTS
+    assert state.turn.recent_call_hashes == ["after-write"]
+
+
 def test_deferred_rejected_synchronously_does_not_suspend():
     state = SessionState(messages=[{"role": "system", "content": "sys"}])
     llm = FakeLLM(
