@@ -308,6 +308,22 @@ def test_openai_kimi_uses_auto_for_unsupported_forced_tool_choice(thinking, tool
     assert kwargs["tool_choice"] == "auto"
 
 
+@pytest.mark.parametrize(
+    "tool_choice",
+    ["required", {"type": "function", "function": {"name": "structured_output"}}],
+)
+def test_openai_deepseek_v4_pro_uses_auto_for_unsupported_forced_tool_choice(tool_choice):
+    kwargs = build_openai_kwargs(
+        "deepseek-v4-pro",
+        [{"role": "user", "content": "write the final patch"}],
+        [{"type": "function", "function": {"name": "structured_output", "parameters": {}}}],
+        1.0,
+        tool_choice=tool_choice,
+    )
+
+    assert kwargs["tool_choice"] == "auto"
+
+
 def test_openai_other_thinking_model_keeps_required_tool_choice():
     kwargs = build_openai_kwargs(
         "another-thinking-model",
@@ -345,6 +361,14 @@ def test_exact_model_capabilities_centralize_provider_compatibility(model, conte
     assert capabilities.context_window == context_window
     assert capabilities.supports_forced_tool_choice is False
     assert capabilities.honors_workflow_thinking_override is False
+
+
+def test_deepseek_v4_pro_capabilities_disable_only_forced_tool_choice():
+    capabilities = model_capabilities("deepseek-v4-pro")
+
+    assert capabilities.context_window == 64_000
+    assert capabilities.supports_forced_tool_choice is False
+    assert capabilities.honors_workflow_thinking_override is True
 
 
 def test_unknown_model_capabilities_use_neutral_defaults():
