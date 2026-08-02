@@ -242,6 +242,7 @@ class CapturingSession:
         self.run_count = 0
         self.rounds = 0
         self.cancel_events: list[Any] = []
+        self.messages_read_error: Exception | None = None
         # True once a turn has finished; cleared by add_user_message.
         self._done = False
 
@@ -250,6 +251,8 @@ class CapturingSession:
         # Mirrors the real ``Session.messages`` property (getter -> state.messages,
         # setter -> replace) so the engine can carry first-pass exploration into
         # the corrective session.
+        if self.messages_read_error is not None:
+            raise self.messages_read_error
         return self.state.messages
 
     @messages.setter
@@ -583,9 +586,39 @@ async def test_forced_retry_carries_first_pass_exploration():
         m.get("role") == "user" and "structured_output" in str(m.get("content", ""))
         for m in corrective.messages
     )
+    assert sum(
+        str(m.get("content", "")).count("give me x") for m in corrective.messages
+    ) == 1
+    assert "give me x" not in factory.builds[1]["prompt"]
     # carry-over is an independent list copy: the corrective session's appends
     # did not mutate the first session's history length.
     assert len(factory.sessions[0].messages) == len(exploration) + 1  # +seeded prompt
+
+
+@pytest.mark.asyncio
+async def test_forced_retry_repeats_original_prompt_when_history_is_unreadable():
+    factory = ScriptedFactory(payloads=[_NO_CALL, {"x": 7}])
+    original_build = factory.build_workflow_session
+
+    def build_with_unreadable_prior(**kwargs: Any) -> CapturingSession:
+        session = original_build(**kwargs)
+        if len(factory.sessions) == 1:
+            session.messages_read_error = RuntimeError("unreadable history")
+        return session
+
+    factory.build_workflow_session = build_with_unreadable_prior  # type: ignore[method-assign]
+    ctx = WorkflowContext(factory)
+
+    result = await ctx.agent("complete original task", schema=SCHEMA)
+
+    assert result == {"x": 7}
+    corrective = factory.sessions[1]
+    assert any(
+        m.get("role") == "user"
+        and "complete original task" in str(m.get("content", ""))
+        and "MUST call" in str(m.get("content", ""))
+        for m in corrective.messages
+    )
 
 
 @pytest.mark.asyncio
