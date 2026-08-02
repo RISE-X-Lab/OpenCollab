@@ -482,6 +482,7 @@ def test_llm_client_forwards_anthropic_base_url(monkeypatch):
     assert captured["base_url"] == "http://proxy.local"
     assert captured["api_key"] == "k"
     assert captured["timeout"] == 12.0
+    assert captured["max_retries"] == 0
 
 
 def test_llm_client_forwards_configured_openai_user_agent(monkeypatch):
@@ -499,6 +500,7 @@ def test_llm_client_forwards_configured_openai_user_agent(monkeypatch):
     LLMClient(provider="openai", model="model", api_key="k")
 
     assert captured["default_headers"] == {"User-Agent": "compatible-client/1.2.3"}
+    assert captured["max_retries"] == 0
 
 
 def test_llm_client_keeps_openai_default_user_agent_when_unconfigured(monkeypatch):
