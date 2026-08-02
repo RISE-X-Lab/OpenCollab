@@ -37,6 +37,13 @@ The same agent runtime supports two explicit forms of collaboration:
 OpenCollab keeps the model, context, tools, orchestration, and execution
 environment separable so experiments can change one component at a time.
 
+OpenCollab turns new collaboration ideas into small protocols instead of new
+platforms. [Edict](https://github.com/cft0808/edict) implements the Three
+Departments and Six Ministries as a standalone system with roughly 24,000
+source lines. Our [compact example](examples/three-departments-six-ministries/)
+captures its core review-and-dispatch protocol in 239 lines of team and workflow
+code, or 434 lines including its guide and tests.
+
 ## Quick start
 
 ```bash
