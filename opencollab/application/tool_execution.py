@@ -61,11 +61,11 @@ def _require_positive_finite_timeout(value: Any, *, name: str) -> float:
 # the full args. A model thrashing on one file re-reads it with SHIFTING line
 # ranges (sympy-11400 read ccode.py ~135 times), so each exact-arg hash is unique
 # and the MAX_SIMILAR_CALLS counter never trips. Collapsing these tools to a
-# path-only hash makes the re-reads collide so the loop is caught — at the more
-# lenient MAX_SAME_FILE_READS, since a file is legitimately re-read a handful of
-# times during distill-as-you-read but dozens of times is a stall.
+# path-only hash makes the re-reads collide. The threshold remains above the
+# hard write nudge so a model can finish bounded pagination before the loop
+# brake fires, while still stopping the observed hundred-read stalls early.
 _PATH_NORMALIZED_TOOLS = frozenset({"file_read"})
-MAX_SAME_FILE_READS = 8
+MAX_SAME_FILE_READS = 24
 
 # Read-only vs edit tools, for the reads-without-write steering signal. Reads
 # accumulate ``reads_since_last_edit``; a successful write zeroes it. bash is

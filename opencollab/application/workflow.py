@@ -292,6 +292,29 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
             }
         )
 
+    def _record_agent_stop(self, label: str | None, reason: str) -> None:
+        """Expose a controlled child-session stop as a structured failure."""
+        exception_type = (
+            "ContextOverflow"
+            if reason.startswith("context overflow")
+            else "AgentTimeout"
+            if reason == "timeout"
+            else "SessionStopped"
+        )
+        self._agent_failures.append(
+            {
+                "label": str(label or "agent")[:240],
+                "exception_type": exception_type,
+                "status_code": None,
+                "provider_error_type": None,
+            }
+        )
+
+    @staticmethod
+    def _session_stop_reason(session: Any) -> str | None:
+        reason = getattr(getattr(session, "state", None), "terminal_reason", None)
+        return str(reason) if reason not in (None, "completed") else None
+
     async def wait_for_pending_cleanup(self) -> None:
         """Wait until every context-owned call and session task is quiescent.
 
@@ -615,8 +638,13 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
             # rather than by the outer ``asyncio.wait_for`` wall. Any tool edits
             # already written to disk before the cancel survive in the env, so the
             # patch is still extractable.
-            return await self._run_session_turn(session, prompt, deadline=deadline)
+            result = await self._run_session_turn(session, prompt, deadline=deadline)
+            terminal_reason = self._session_stop_reason(session)
+            if terminal_reason is not None:
+                self._record_agent_stop(label, terminal_reason)
+            return result
         except CallerTimeoutError:
+            self._record_agent_stop(label, "timeout")
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
             return None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet

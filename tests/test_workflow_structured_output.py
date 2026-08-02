@@ -461,6 +461,26 @@ async def test_agent_schema_no_call_at_all_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_agent_schema_records_controlled_session_stops_without_capture():
+    factory = ScriptedFactory(payloads=[_NO_CALL, _NO_CALL])
+    original_build = factory.build_workflow_session
+
+    def build_stopped(**kwargs: Any) -> CapturingSession:
+        session = original_build(**kwargs)
+        session.state.terminal_reason = "context overflow: prompt exceeds model window"
+        return session
+
+    factory.build_workflow_session = build_stopped  # type: ignore[method-assign]
+    ctx = WorkflowContext(factory)
+
+    assert await ctx.agent("give me x", schema=SCHEMA, label="analyst") is None
+    assert [failure["exception_type"] for failure in ctx.agent_failures] == [
+        "ContextOverflow",
+        "ContextOverflow",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_agent_schema_retry_tokens_counted_in_budget():
     # both runs invalid (tokens still spent), 100 tokens per run -> 200 total
     factory = ScriptedFactory(payloads=[{"x": "bad"}, {"x": "bad"}], tokens_each=100)

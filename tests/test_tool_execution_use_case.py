@@ -266,13 +266,14 @@ def test_tool_execution_use_case_catches_same_file_reread_with_shifting_ranges()
     # Regression (sympy-11400): a model thrashed by re-reading ONE file ~135 times
     # with SHIFTING line ranges. Each exact-arg hash was unique, so the
     # MAX_SIMILAR_CALLS=3 counter never tripped. Read tools now key on the PATH
-    # alone, so the re-reads collide and trip at MAX_SAME_FILE_READS (8).
+    # alone, so the re-reads collide after bounded pagination and write steering
+    # have had enough room to work.
     state = SessionState(messages=[])
     use_case, _ = build_use_case(state=state)
-    # Seven prior reads of the same file at DIFFERENT ranges collapse to one
+    # Twenty-three prior reads of the same file at DIFFERENT ranges collapse to one
     # path-only hash (range args are ignored for file_read).
     path_hash = use_case.tool_call_hash("file_read", {"path": "x/ccode.py"})
-    state.replace_recent_tool_hashes([path_hash] * 7)
+    state.replace_recent_tool_hashes([path_hash] * 23)
     call = tool_call(
         name="file_read",
         arguments='{"path": "x/ccode.py", "start": 900, "limit": 50}',
@@ -280,8 +281,32 @@ def test_tool_execution_use_case_catches_same_file_reread_with_shifting_ranges()
 
     result = run(use_case.process([call]))
 
-    assert result.loop_detections == [LoopDetection(tool="file_read", count=8)]
+    assert result.loop_detections == [LoopDetection(tool="file_read", count=24)]
     assert "on the same file" in result.messages_to_append[0]["content"]
+
+
+def test_tool_execution_use_case_allows_long_file_pagination_before_write_nudge():
+    state = SessionState(messages=[])
+    tool = RuntimeNativeTool()
+    tool.name = "file_read"
+    agent = FakeAgent(tools=[tool])
+    use_case, _ = build_use_case(state=state, agent=agent)
+    path_hash = use_case.tool_call_hash("file_read", {"path": "x/component.tsx"})
+    state.replace_recent_tool_hashes([path_hash] * 16)
+
+    result = run(
+        use_case.process(
+            [
+                tool_call(
+                    name="file_read",
+                    arguments='{"path": "x/component.tsx", "offset": 321, "limit": 20}',
+                )
+            ]
+        )
+    )
+
+    assert result.loop_detections == []
+    assert result.messages_to_append[0]["content"] == "runtime result"
 
 
 def test_tool_execution_use_case_allows_a_few_legitimate_rereads():

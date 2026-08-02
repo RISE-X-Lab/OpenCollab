@@ -140,6 +140,7 @@ class WorkflowStructuredMixin:
 
         # Track immediately so tokens count even if a run_loop raises midway.
         self._track_session(session)
+        failures_before = len(self._agent_failures)
         try:
             await self._run_session_turn(
                 session,
@@ -150,6 +151,8 @@ class WorkflowStructuredMixin:
             if _schema_satisfied(capture_tool.captured, schema):
                 return capture_tool.captured
         except CallerTimeoutError:
+            if not _schema_satisfied(capture_tool.captured, schema):
+                self._record_agent_stop(label, "timeout")
             await self.log(f"structured agent timed out ({label or 'agent'}) after {timeout}s")
             return None
         except Exception as exc:  # noqa: BLE001 — partial exploration may still be usable
@@ -164,6 +167,14 @@ class WorkflowStructuredMixin:
                 f"structured agent failed ({label or 'agent'}); "
                 f"attempting forced commit: {exc}"
             )
+
+        terminal_reason = self._session_stop_reason(session)
+        if (
+            terminal_reason is not None
+            and not _schema_satisfied(capture_tool.captured, schema)
+            and len(self._agent_failures) == failures_before
+        ):
+            self._record_agent_stop(label, terminal_reason)
 
         # Corrective pass (only when the capture is genuinely empty above): force
         # the structured commit on a single-tool session pinned to a
@@ -239,6 +250,7 @@ class WorkflowStructuredMixin:
             return None
 
         self._track_session(session)
+        failures_before = len(self._agent_failures)
         try:
             if not self._carry_exploration(prior_session, session):
                 retry_prompt = prompt + "\n\n" + _STRUCTURED_RETRY
@@ -249,12 +261,21 @@ class WorkflowStructuredMixin:
                 cancel_event=capture_done,
             )
         except CallerTimeoutError:
+            if not _schema_satisfied(capture_tool.captured, schema):
+                self._record_agent_stop(label, "timeout")
             await self.log(f"structured retry timed out ({label or 'agent'}) after {timeout}s")
             return None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"structured retry failed ({label or 'agent'}): {exc}")
             return None
+        terminal_reason = self._session_stop_reason(session)
+        if (
+            terminal_reason is not None
+            and not _schema_satisfied(capture_tool.captured, schema)
+            and len(self._agent_failures) == failures_before
+        ):
+            self._record_agent_stop(label, terminal_reason)
         return capture_tool.captured if _schema_satisfied(capture_tool.captured, schema) else None
 
     @staticmethod

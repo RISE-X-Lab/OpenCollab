@@ -81,6 +81,7 @@ class WorkflowAgentsMixin:
         self._configure_session_enforcement(
             session, enforcement_strength, commit_reserve
         )
+        failures_before = len(self._agent_failures)
         text: str | None = None
         try:
             text = await self._run_session_turn(
@@ -90,10 +91,20 @@ class WorkflowAgentsMixin:
                 cancel_event=capture_done,
             )
         except CallerTimeoutError:
+            if submit_tool.captured is None:
+                self._record_agent_stop(label, "timeout")
             await self.log(f"agent timed out ({label or 'agent'}) after {timeout}s")
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"agent failed ({label or 'agent'}): {exc}")
+
+        terminal_reason = self._session_stop_reason(session)
+        if (
+            terminal_reason is not None
+            and submit_tool.captured is None
+            and len(self._agent_failures) == failures_before
+        ):
+            self._record_agent_stop(label, terminal_reason)
 
         # Harvest is the backstop even on a timeout/exception: whatever the scout
         # already gathered (captured payload, prose, or the runtime-authored
