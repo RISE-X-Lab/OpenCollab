@@ -93,6 +93,7 @@ result checking.
 | Benchmark execution and verified reports | [OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme) |
 | Installation, CLI, SDK, architecture, and runtime details | [Package guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md) |
 | Model, provider, and team configuration | [Configuration guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/configs/README.md) |
+| A nine-role institution in one small workflow | [Three Departments and Six Ministries](https://github.com/RISE-X-Lab/OpenCollab/tree/main/examples/three-departments-six-ministries) |
 | On-demand agent skills | [Skills guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/skills/README.md) |
 | Launchers and provider diagnostics | [Scripts guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/scripts/README.md) |
 | Contribution and development checks | [Contributing](https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md) |
