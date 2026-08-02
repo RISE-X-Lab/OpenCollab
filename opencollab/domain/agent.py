@@ -37,6 +37,10 @@ class Agent:
             (e.g. ``{"enable_thinking": True}`` for DashScope compatible mode).
         reasoning_effort: Responses API reasoning effort such as ``medium``.
         llm_max_retries: Number of transient provider failures retried per turn.
+        eager_tool_keep_recent: Optional count of recent reconstructible tool
+            results kept verbatim in each model request.
+        history_keep_recent_groups: Optional count of recent conversation groups
+            protected from reactive history compaction.
         tool_choice: Optional override for the provider ``tool_choice`` (e.g.
             ``"required"`` to force a tool call). ``None`` keeps the provider
             default ("auto") — every ordinary agent leaves this unset.
@@ -58,6 +62,8 @@ class Agent:
     thinking_params: dict = field(default_factory=dict)
     reasoning_effort: str | None = None
     llm_max_retries: int = 3
+    eager_tool_keep_recent: int | None = None
+    history_keep_recent_groups: int | None = None
     llm_connect_timeout: float = 30.0
     llm_first_event_timeout: float = 180.0
     llm_stream_idle_timeout: float = 180.0

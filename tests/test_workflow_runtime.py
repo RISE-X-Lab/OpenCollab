@@ -69,6 +69,30 @@ async def test_built_context_injects_sampling_and_output_limits(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_built_context_injects_eager_tool_retention(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    ctx = workflow_runtime.build_workflow_context(
+        cfg=_cfg(eager_tool_keep_recent=1)
+    )
+
+    await ctx.agent("solve")
+
+    assert calls[0]["agent"].eager_tool_keep_recent == 1
+
+
+@pytest.mark.asyncio
+async def test_built_context_injects_history_group_retention(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    ctx = workflow_runtime.build_workflow_context(
+        cfg=_cfg(history_keep_recent_groups=1)
+    )
+
+    await ctx.agent("solve")
+
+    assert calls[0]["agent"].history_keep_recent_groups == 1
+
+
+@pytest.mark.asyncio
 async def test_built_context_threads_session_limits_and_system_prompt(monkeypatch):
     calls = _patch_build_session(monkeypatch)
     ctx = workflow_runtime.build_workflow_context(

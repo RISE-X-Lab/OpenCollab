@@ -22,6 +22,8 @@ Supported variables:
     OPENCOLLAB_LLM_TIMEOUT — provider request timeout in seconds
     OPENCOLLAB_REASONING_EFFORT — Responses reasoning effort
     OPENCOLLAB_LLM_MAX_RETRIES — transient provider retries per model turn
+    OPENCOLLAB_EAGER_TOOL_KEEP_RECENT — recent reconstructible tool results kept verbatim
+    OPENCOLLAB_HISTORY_KEEP_RECENT_GROUPS — recent groups protected from history compaction
     OPENCOLLAB_LLM_CONNECT_TIMEOUT — provider connection timeout in seconds
     OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT — Responses first-event timeout
     OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT — Responses stream-idle timeout
@@ -133,6 +135,8 @@ class OpenCollabConfig(BaseModel):
     thinking_params: dict[str, Any] = Field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
     reasoning_effort: str | None = None
     llm_max_retries: int = Field(default=3, ge=0)
+    eager_tool_keep_recent: int | None = Field(default=None, ge=1)
+    history_keep_recent_groups: int | None = Field(default=None, ge=1)
     llm_timeout: float = Field(default=600.0, gt=0, allow_inf_nan=False)
     llm_connect_timeout: float = Field(default=30.0, gt=0, allow_inf_nan=False)
     llm_first_event_timeout: float = Field(default=180.0, gt=0, allow_inf_nan=False)
@@ -176,6 +180,13 @@ class OpenCollabConfig(BaseModel):
     def _reject_boolean_context_window(cls, value: Any) -> Any:
         if isinstance(value, bool):
             raise ValueError("context_window must be a positive integer or None")
+        return value
+
+    @field_validator("eager_tool_keep_recent", "history_keep_recent_groups", mode="before")
+    @classmethod
+    def _reject_boolean_eager_tool_keep_recent(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("history retention values must be positive integers or None")
         return value
 
     @field_validator("thinking_params", mode="before")
@@ -413,6 +424,8 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         "thinking_params": resolve("OPENCOLLAB_THINKING_PARAMS"),
         "reasoning_effort": resolve("OPENCOLLAB_REASONING_EFFORT"),
         "llm_max_retries": resolve("OPENCOLLAB_LLM_MAX_RETRIES", default="3"),
+        "eager_tool_keep_recent": resolve("OPENCOLLAB_EAGER_TOOL_KEEP_RECENT"),
+        "history_keep_recent_groups": resolve("OPENCOLLAB_HISTORY_KEEP_RECENT_GROUPS"),
         "llm_timeout": resolve("OPENCOLLAB_LLM_TIMEOUT", default="600"),
         "llm_connect_timeout": resolve("OPENCOLLAB_LLM_CONNECT_TIMEOUT", default="30"),
         "llm_first_event_timeout": resolve(

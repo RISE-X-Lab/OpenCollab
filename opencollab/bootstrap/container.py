@@ -173,6 +173,8 @@ def _build_default_shaper(
     summarizer: ReadTimeSummarizer,
     *,
     max_output_tokens: int,
+    eager_tool_keep_recent: int | None = None,
+    history_keep_recent_groups: int | None = None,
 ) -> ShaperPort:
     """Assemble the default lazy-degradation shaper pipeline.
 
@@ -195,10 +197,23 @@ def _build_default_shaper(
         "estimate_tokens": estimate_messages_tokens,
         "trigger_tokens": history_trigger,
         "target_tokens": history_target,
+        **(
+            {}
+            if history_keep_recent_groups is None
+            else {"keep_recent_groups": history_keep_recent_groups}
+        ),
     }
+    eager_kwargs = (
+        {}
+        if eager_tool_keep_recent is None
+        else {"keep_recent": eager_tool_keep_recent}
+    )
     return ShaperPipeline(
         (
-            EagerToolOutputClearShaper(compactable_tools=COMPACTABLE_TOOL_NAMES),
+            EagerToolOutputClearShaper(
+                compactable_tools=COMPACTABLE_TOOL_NAMES,
+                **eager_kwargs,
+            ),
             PerToolResultBudgetShaper(DEFAULT_TOOL_RESULT_BUDGET),
             ToolOutputClearShaper(compactable_tools=COMPACTABLE_TOOL_NAMES, **history_kwargs),
             OldHistorySnipShaper(**history_kwargs),
@@ -295,6 +310,16 @@ def build_session_runtime(
                 agent,
                 "max_tokens_per_step",
                 DEFAULT_MAX_TOKENS_PER_STEP,
+            ),
+            eager_tool_keep_recent=getattr(
+                agent,
+                "eager_tool_keep_recent",
+                None,
+            ),
+            history_keep_recent_groups=getattr(
+                agent,
+                "history_keep_recent_groups",
+                None,
             ),
         )
     )

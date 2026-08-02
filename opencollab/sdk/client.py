@@ -141,6 +141,8 @@ class OpenCollab:
             "thinking_params",
             "reasoning_effort",
             "llm_max_retries",
+            "eager_tool_keep_recent",
+            "history_keep_recent_groups",
             "llm_connect_timeout",
             "llm_first_event_timeout",
             "llm_stream_idle_timeout",

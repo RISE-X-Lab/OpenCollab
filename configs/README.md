@@ -99,6 +99,27 @@ A team file may override the temperature per role via a `temperature:` field on
 the role (see [Team](#team) below). A role that leaves it unset inherits this
 global value; a role override of `0.0` is honored (not treated as "unset").
 
+## Tool result retention
+
+`OPENCOLLAB_EAGER_TOOL_KEEP_RECENT` limits how many recent reconstructible tool
+results remain verbatim in each model request. Leave it unset for the default
+retention. A smaller positive value helps compatible services with restrictive
+prompt limits. Older results stay in the saved transcript and become compact
+path-aware stubs that the agent can read again when needed.
+
+```dotenv
+OPENCOLLAB_EAGER_TOOL_KEEP_RECENT=2
+```
+
+`OPENCOLLAB_HISTORY_KEEP_RECENT_GROUPS` controls how many recent conversation
+groups remain protected when reactive history compaction activates. The default
+is `4`. A smaller positive value lets constrained compatible services compact
+older tool exchanges sooner while keeping the saved transcript complete.
+
+```dotenv
+OPENCOLLAB_HISTORY_KEEP_RECENT_GROUPS=1
+```
+
 ## Display
 
 The TUI retains a separate stream for every agent, starts on the Lead (agent 0),

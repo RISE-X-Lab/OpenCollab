@@ -69,6 +69,8 @@ class SpawnConfig:
     wire_protocol: str = "chat_completions"
     reasoning_effort: str | None = None
     llm_max_retries: int = 3
+    eager_tool_keep_recent: int | None = None
+    history_keep_recent_groups: int | None = None
     llm_connect_timeout: float = 30.0
     llm_first_event_timeout: float = 180.0
     llm_stream_idle_timeout: float = 180.0
@@ -230,6 +232,8 @@ class ContextBuilder:
             thinking_params=thinking_params,
             reasoning_effort=cfg.reasoning_effort,
             llm_max_retries=cfg.llm_max_retries,
+            eager_tool_keep_recent=cfg.eager_tool_keep_recent,
+            history_keep_recent_groups=cfg.history_keep_recent_groups,
             llm_connect_timeout=cfg.llm_connect_timeout,
             llm_first_event_timeout=cfg.llm_first_event_timeout,
             llm_stream_idle_timeout=cfg.llm_stream_idle_timeout,
