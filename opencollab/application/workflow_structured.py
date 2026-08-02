@@ -152,10 +152,18 @@ class WorkflowStructuredMixin:
         except CallerTimeoutError:
             await self.log(f"structured agent timed out ({label or 'agent'}) after {timeout}s")
             return None
-        except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
+        except Exception as exc:  # noqa: BLE001 — partial exploration may still be usable
             self._record_agent_failure(label, exc)
-            await self.log(f"structured agent failed ({label or 'agent'}): {exc}")
-            return None
+            if _schema_satisfied(capture_tool.captured, schema):
+                await self.log(
+                    f"structured agent failed after capture ({label or 'agent'}); "
+                    f"preserving validated result: {exc}"
+                )
+                return capture_tool.captured
+            await self.log(
+                f"structured agent failed ({label or 'agent'}); "
+                f"attempting forced commit: {exc}"
+            )
 
         # Corrective pass (only when the capture is genuinely empty above): force
         # the structured commit on a single-tool session pinned to a

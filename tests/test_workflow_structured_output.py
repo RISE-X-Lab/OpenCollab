@@ -377,6 +377,67 @@ async def test_agent_schema_retries_once_then_succeeds():
 
 
 @pytest.mark.asyncio
+async def test_agent_schema_provider_failure_still_forces_commit():
+    factory = ScriptedFactory(payloads=[{"x": 9}])
+    original_build = factory.build_workflow_session
+    exploration = {"role": "tool", "content": "evidence from source.py"}
+
+    def build_with_failed_exploration(**kwargs: Any) -> CapturingSession:
+        session = original_build(**kwargs)
+        if len(factory.sessions) == 1:
+            async def fail_after_exploration(cancel_event: Any = None) -> str:
+                session.state.messages.append(exploration)
+                raise RuntimeError("upstream 408")
+
+            session.run_loop = fail_after_exploration  # type: ignore[method-assign]
+        return session
+
+    factory.build_workflow_session = build_with_failed_exploration  # type: ignore[method-assign]
+    ctx = WorkflowContext(factory)
+
+    result = await ctx.agent("give me x", schema=SCHEMA, tools=[object()])
+
+    assert result == {"x": 9}
+    assert len(factory.sessions) == 2
+    assert exploration in factory.sessions[1].messages
+    assert ctx.agent_failures == (
+        {
+            "label": "agent",
+            "exception_type": "RuntimeError",
+            "status_code": None,
+            "provider_error_type": None,
+        },
+    )
+
+
+@pytest.mark.asyncio
+async def test_agent_schema_keeps_capture_when_session_cleanup_fails():
+    factory = ScriptedFactory(payloads=[])
+    original_build = factory.build_workflow_session
+
+    def build_with_failed_cleanup(**kwargs: Any) -> CapturingSession:
+        session = original_build(**kwargs)
+
+        async def capture_then_fail(cancel_event: Any = None) -> str:
+            tool = session._structured_tool()
+            assert tool is not None
+            await tool.execute_with_runtime({"x": 9}, _runtime())
+            raise RuntimeError("post-capture autosave failed")
+
+        session.run_loop = capture_then_fail  # type: ignore[method-assign]
+        return session
+
+    factory.build_workflow_session = build_with_failed_cleanup  # type: ignore[method-assign]
+    ctx = WorkflowContext(factory)
+
+    result = await ctx.agent("give me x", schema=SCHEMA)
+
+    assert result == {"x": 9}
+    assert len(factory.sessions) == 1
+    assert ctx.agent_failures[0]["exception_type"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
 async def test_agent_schema_returns_none_after_failed_retry():
     factory = ScriptedFactory(payloads=[{"x": "bad"}, {"x": "still bad"}])
     ctx = WorkflowContext(factory)
