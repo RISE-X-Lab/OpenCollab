@@ -40,9 +40,9 @@ environment separable so experiments can change one component at a time.
 OpenCollab turns new collaboration ideas into small protocols instead of new
 platforms. [Edict](https://github.com/cft0808/edict) implements the Three
 Departments and Six Ministries as a standalone system with roughly 24,000
-source lines. Our [compact example](examples/three-departments-six-ministries/)
-captures its core review-and-dispatch protocol in 239 lines of team and workflow
-code, or 434 lines including its guide and tests.
+source lines. [Mini Edict](examples/mini-edict/) captures its core
+review-and-dispatch protocol in 239 lines of team and workflow code, packaged
+with its own bilingual guide and tests.
 
 ## Quick start
 
@@ -100,7 +100,7 @@ result checking.
 | Benchmark execution and verified reports | [OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme) |
 | Installation, CLI, SDK, architecture, and runtime details | [Package guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md) |
 | Model, provider, and team configuration | [Configuration guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/configs/README.md) |
-| A nine-role institution in one small workflow | [Three Departments and Six Ministries](https://github.com/RISE-X-Lab/OpenCollab/tree/main/examples/three-departments-six-ministries) |
+| A nine-role institution in one small workflow | [Mini Edict](https://github.com/RISE-X-Lab/OpenCollab/tree/main/examples/mini-edict) |
 | On-demand agent skills | [Skills guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/skills/README.md) |
 | Launchers and provider diagnostics | [Scripts guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/scripts/README.md) |
 | Contribution and development checks | [Contributing](https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md) |

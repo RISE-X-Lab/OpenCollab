@@ -1,9 +1,11 @@
-# Three Departments and Six Ministries
+# Mini Edict
 
-This example turns the Three Departments and Six Ministries into a compact,
-executable governance protocol. It adds one team configuration and one workflow
-file to OpenCollab. The framework continues to provide agent sessions, model
-access, concurrency, budgets, tracing, and persistence.
+[English](README.md) | [Chinese](README.zh-CN.md)
+
+Mini Edict turns the Three Departments and Six Ministries into a compact,
+executable governance protocol. Everything specific to the example lives in
+this directory. OpenCollab provides agent sessions, model access, concurrency,
+budgets, tracing, and persistence.
 
 ```text
 task
@@ -29,7 +31,7 @@ Start OpenCollab with the example's team file.
 
 ```bash
 uv run opencollab \
-  --team-config examples/three-departments-six-ministries/team.yaml \
+  --team-config examples/mini-edict/team.yaml \
   --workspace .
 ```
 
@@ -47,7 +49,7 @@ mode.
 The same institution is available as a hard-gated one-shot workflow.
 
 ```bash
-OPENCOLLAB_WORKFLOWS_DIR=examples/three-departments-six-ministries/workflows \
+OPENCOLLAB_WORKFLOWS_DIR=examples/mini-edict/workflows \
   uv run opencollab workflow run three-departments-six-ministries \
   --concurrency 6 \
   --args '{"task":"Design a six-month open-source community growth plan."}'

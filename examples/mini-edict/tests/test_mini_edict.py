@@ -11,9 +11,11 @@ from opencollab.bootstrap.workflow_runtime import load_workflow_specs
 
 WORKFLOW = (
     Path(__file__).parents[1]
-    / "examples/three-departments-six-ministries/workflows/three_departments_six_ministries.py"
+    / "workflows/three_departments_six_ministries.py"
 )
 TEAM = WORKFLOW.parents[1] / "team.yaml"
+README = WORKFLOW.parents[1] / "README.md"
+README_ZH_CN = WORKFLOW.parents[1] / "README.zh-CN.md"
 
 
 class RecordingContext:
@@ -113,3 +115,13 @@ def test_interactive_court_enters_through_zhongshu() -> None:
     assert team.topology.edges["shangshu"] == frozenset(ministries)
     assert not team.topology.allows("zhongshu", "war")
     assert not team.topology.allows("menxia", "shangshu")
+
+
+def test_example_keeps_its_bilingual_guides_together() -> None:
+    english = README.read_text(encoding="utf-8")
+    chinese = README_ZH_CN.read_text(encoding="utf-8")
+
+    assert "[Chinese](README.zh-CN.md)" in english
+    assert "[English](README.md)" in chinese
+    assert "examples/mini-edict/team.yaml" in english
+    assert "examples/mini-edict/team.yaml" in chinese
