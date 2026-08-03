@@ -272,7 +272,7 @@ def test_failed_edit_gets_one_targeted_read_turn_before_write_gate():
     ]
 
 
-def test_noop_edit_gets_one_targeted_read_turn_before_write_gate():
+def test_noop_edit_stays_behind_write_gate():
     target = "pkg/module.py"
     state = _failed_edit_state(
         json.dumps({
@@ -294,13 +294,12 @@ def test_noop_edit_gets_one_targeted_read_turn_before_write_gate():
     run(runner.call_llm(runner.build_tool_schemas()))
 
     assert [spec["function"]["name"] for spec in llm.calls[0]["tools"]] == [
-        "file_read",
-        "grep",
+        "file_write",
+        "apply_patch",
     ]
-    assert target in llm.calls[0]["messages"][-1]["content"]
 
 
-def test_noop_patch_gets_one_targeted_read_turn_before_write_gate():
+def test_noop_patch_stays_behind_write_gate():
     target = "pkg/module.py"
     state = _failed_edit_state(
         json.dumps({
@@ -322,8 +321,8 @@ def test_noop_patch_gets_one_targeted_read_turn_before_write_gate():
     run(runner.call_llm(runner.build_tool_schemas()))
 
     assert [spec["function"]["name"] for spec in llm.calls[0]["tools"]] == [
-        "file_read",
-        "grep",
+        "file_write",
+        "apply_patch",
     ]
 
 
