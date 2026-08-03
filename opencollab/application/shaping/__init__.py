@@ -56,6 +56,7 @@ from opencollab.application.shaping.pipeline import (
     PIN_FLOOR,
     ShaperPipeline,
     approx_messages_tokens,
+    emergency_shape,
     forced_shape,
     history_trigger_target,
 )
@@ -91,6 +92,7 @@ __all__ = [
     "PIN_FLOOR",
     "SummarizerPort",
     "approx_messages_tokens",
+    "emergency_shape",
     "forced_shape",
     "history_trigger_target",
     "ShaperPipeline",

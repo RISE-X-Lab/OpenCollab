@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -29,6 +31,9 @@ PIN_FLOOR = 70
 DEFAULT_OUTPUT_RESERVE_TOKENS = 20_000  # held back for the summary/answer response
 DEFAULT_COMPACT_BUFFER_TOKENS = 13_000  # safety margin below the effective window
 HISTORY_TARGET_RATIO = 0.75
+
+_EDIT_TOOLS = frozenset({"apply_patch", "file_write"})
+_EDIT_ARGUMENT_KEEP_CHARS = 256
 
 
 def history_trigger_target(
@@ -112,6 +117,74 @@ def forced_shape(
     """
     with _forced_layers(shaper):
         return shaper.shape(messages)
+
+
+def emergency_shape(
+    shaper: ShaperPort, messages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Build the smallest useful retry view after a provider rejects a prompt.
+
+    The ordinary forced layers remove old reconstructible history. The final
+    pass also drops historical reasoning and replaces large, already-executed
+    edit arguments with an auditable digest. Tool results remain verbatim, so a
+    failed edit still tells the model why it failed and can be retried. The
+    persisted session is never mutated.
+    """
+    return _compact_completed_edits(forced_shape(shaper, messages))
+
+
+def _compact_completed_edits(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    answered = {
+        message.get("tool_call_id")
+        for message in messages
+        if message.get("role") == "tool"
+    }
+    changed = False
+    out: list[dict[str, Any]] = []
+    for message in messages:
+        if message.get("role") != "assistant":
+            out.append(message)
+            continue
+        replacement = dict(message)
+        if replacement.pop("reasoning_content", None) is not None:
+            changed = True
+        calls: list[dict[str, Any]] = []
+        calls_changed = False
+        for call in message.get("tool_calls") or ():
+            function = call.get("function", {})
+            arguments = function.get("arguments")
+            if (
+                call.get("id") not in answered
+                or function.get("name") not in _EDIT_TOOLS
+                or not isinstance(arguments, str)
+                or len(arguments) <= _EDIT_ARGUMENT_KEEP_CHARS
+            ):
+                calls.append(call)
+                continue
+            metadata: dict[str, Any] = {
+                "_compacted": "completed edit arguments",
+                "original_chars": len(arguments),
+                "sha256": hashlib.sha256(arguments.encode()).hexdigest(),
+            }
+            try:
+                parsed = json.loads(arguments)
+            except (TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                for key in ("path", "mode"):
+                    value = parsed.get(key)
+                    if isinstance(value, str):
+                        metadata[key] = value
+            compacted = json.dumps(metadata, separators=(",", ":"), sort_keys=True)
+            calls.append({**call, "function": {**function, "arguments": compacted}})
+            calls_changed = True
+        if calls_changed:
+            replacement["tool_calls"] = calls
+            changed = True
+        out.append(replacement)
+    return out if changed else messages
 
 
 class ShaperPipeline:

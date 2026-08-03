@@ -16,7 +16,7 @@ from typing import Any
 # Reads-without-write escalation thresholds: at SOFT we advise a write, at HARD
 # we demand it and force a tool call.
 READS_NUDGE_SOFT = 8
-READS_NUDGE_HARD = 16
+READS_NUDGE_HARD = 12
 
 
 def build_steering_block(
@@ -29,6 +29,7 @@ def build_steering_block(
     has_write: bool,
     has_structured_output: bool,
     structured_override: Any,
+    failed_edit_path: str | None = None,
 ) -> tuple[dict[str, Any], Any | None, str | None]:
     """Build the per-turn steering message + any ``tool_choice`` force.
 
@@ -53,7 +54,15 @@ def build_steering_block(
     override: Any | None = None
     level: str | None = None
     extra = ""
-    if has_write and reads >= READS_NUDGE_HARD:
+    if has_write and reads >= READS_NUDGE_HARD and failed_edit_path:
+        extra = (
+            f" Your previous edit of {failed_edit_path} failed because its content"
+            " anchor was stale. Use file_read or grep on that exact path once,"
+            " then retry the edit immediately."
+        )
+        override = "required"
+        level = "hard"
+    elif has_write and reads >= READS_NUDGE_HARD:
         extra = (
             f" You have read {reads} times without making an edit. STOP reading"
             " — your next action MUST be a file_write or apply_patch edit."

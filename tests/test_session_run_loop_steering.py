@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from session_run_loop_test_support import (
     FakeLLM,
     FakeToolExecution,
@@ -16,12 +18,21 @@ from session_run_loop_test_support import (
     tool_call,
 )
 
-from opencollab.application.steering import READS_NUDGE_HARD, build_steering_block
+from opencollab.application.steering import (
+    READS_NUDGE_HARD,
+    READS_NUDGE_SOFT,
+    build_steering_block,
+)
 from opencollab.domain.session import (
     SessionState,
     TurnEnforcementState,
 )
 from opencollab.domain.tools import ToolProcessingResult
+
+
+def test_write_steering_leaves_room_to_recover_from_a_failed_edit():
+    assert READS_NUDGE_SOFT == 8
+    assert READS_NUDGE_HARD == 12
 
 
 def test_steering_status_line_built_from_budget_and_steps():
@@ -177,6 +188,121 @@ def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
     assert "not allowed during the hard write gate" in tool_messages[0]["content"]
     assert tool_messages[1]["content"] == "patched"
     assert state.turn.reads_since_last_edit == 0
+
+
+def _failed_edit_state(arguments: str, result: str) -> SessionState:
+    return SessionState(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {
+                "role": "assistant",
+                "tool_calls": [tool_call(
+                    call_id="failed-edit",
+                    name="apply_patch",
+                    arguments=arguments,
+                )],
+            },
+            {"role": "tool", "tool_call_id": "failed-edit", "content": result},
+        ],
+        used_tokens=1_000,
+        step_count=3,
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
+    )
+
+
+def test_failed_edit_gets_one_targeted_read_turn_before_write_gate():
+    target = "pkg/module.py"
+    state = _failed_edit_state(
+        json.dumps({"path": target, "mode": "unified_diff", "patch": "bad hunk"}),
+        f"Error applying patch to {target}: hunk did not match",
+    )
+    read_call = tool_call(
+        call_id="recovery-read",
+        name="file_read",
+        arguments=json.dumps({"path": target, "offset": 1, "limit": 20}),
+    )
+    llm = FakeLLM([
+        llm_response(tool_calls=[read_call], finish_reason="tool_calls"),
+        llm_response(content="done"),
+    ])
+    execution = FakeToolExecution(ToolProcessingResult(
+        messages_to_append=[{
+            "role": "tool",
+            "tool_call_id": "recovery-read",
+            "content": "current source",
+        }],
+        reads_executed=1,
+    ))
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        tool_execution=execution,
+        agent=_agent_with_tool_schemas("file_read", "grep", "file_write", "apply_patch"),
+    )
+
+    assert run(runner.run_loop()) == "done"
+    assert execution.calls == [[read_call]]
+    assert [spec["function"]["name"] for spec in llm.calls[0]["tools"]] == [
+        "file_read",
+        "grep",
+    ]
+    assert target in llm.calls[0]["messages"][-1]["content"]
+    assert [spec["function"]["name"] for spec in llm.calls[1]["tools"]] == [
+        "file_write",
+        "apply_patch",
+    ]
+
+
+def test_failed_edit_recovery_blocks_reading_another_path():
+    target = "pkg/module.py"
+    state = _failed_edit_state(
+        json.dumps({"path": target, "mode": "unified_diff", "patch": "bad hunk"}),
+        f"Error applying patch to {target}: hunk did not match",
+    )
+    wrong_read = tool_call(
+        call_id="wrong-read",
+        name="file_read",
+        arguments=json.dumps({"path": "other.py"}),
+    )
+    llm = FakeLLM([
+        llm_response(tool_calls=[wrong_read], finish_reason="tool_calls"),
+        llm_response(content="done"),
+    ])
+    execution = FakeToolExecution()
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        tool_execution=execution,
+        agent=_agent_with_tool_schemas("file_read", "grep", "file_write", "apply_patch"),
+    )
+
+    assert run(runner.run_loop()) == "done"
+    assert execution.calls == []
+    blocked = next(
+        message for message in state.messages
+        if message.get("tool_call_id") == "wrong-read"
+    )
+    assert "failed-edit recovery gate" in blocked["content"]
+
+
+def test_invalid_edit_arguments_do_not_open_recovery_read_gate():
+    state = _failed_edit_state(
+        "not-json",
+        "Error: invalid JSON arguments: not-json",
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas("file_read", "grep", "file_write", "apply_patch"),
+    )
+
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    assert [spec["function"]["name"] for spec in llm.calls[0]["tools"]] == [
+        "file_write",
+        "apply_patch",
+    ]
 
 def test_steering_reaches_provider_and_is_persisted():
     # The steering block is SENT to the model AND persisted to state.messages, so

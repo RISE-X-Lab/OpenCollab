@@ -138,6 +138,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # (None|'soft'|'hard'). Drives _maybe_trace_steering to log only UPWARD
         # crossings, re-arming on a write reset. Never persisted.
         self._last_steering_level: str | None = None
+        self._pending_recovery_path: str | None = None
         # Enforcement wind-down (STEP 0). Off by default: when ``off`` the precheck
         # wind-down branch is never taken, so the FSM is byte-for-byte identical to
         # the pre-enforcement code. ``commit_reserve`` is carved FROM the cap (not
@@ -579,6 +580,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             result.apply_to(self.state)
             self._pending_tool_allowlist = None
             self._pending_tool_gate_label = None
+            self._pending_recovery_path = None
             self.state.transition_to(SessionPhase.AUTOSAVING)
             return
 
@@ -605,6 +607,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
 
         self._pending_tool_allowlist = None
         self._pending_tool_gate_label = None
+        self._pending_recovery_path = None
         if table.is_complete():
             # Nothing is actually outstanding (e.g. all spawns were rejected
             # synchronously) — drain now and autosave instead of suspending on
