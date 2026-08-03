@@ -104,6 +104,7 @@ result checking.
 | On-demand agent skills | [Skills guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/skills/README.md) |
 | Launchers and provider diagnostics | [Scripts guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/scripts/README.md) |
 | Contribution and development checks | [Contributing](https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md) |
+| Maintainer release procedure | [Releasing](https://github.com/RISE-X-Lab/OpenCollab/blob/main/RELEASING.md) |
 | Design records and research notes | [Documentation index](https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/README.md) |
 
 ## License
