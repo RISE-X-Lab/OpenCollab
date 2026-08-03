@@ -1,9 +1,10 @@
 # Skills
 
-A **skill** is an on-demand instruction set stored in `SKILL.md`. The model loads
-it by name when a task matches its description. A skill directory may also hold
-templates, scripts, or assets used through the role's existing tools. All skills
-share the generic `use_skill` tool.
+A **skill** is an on-demand instruction set stored in `SKILL.md`. It adds
+procedural guidance to a role without registering a new runtime function or a
+dedicated tool. A skill directory may contain supporting files used through
+tools the role already has. Enabled roles load skills through the generic
+`use_skill` tool.
 
 At runtime, discovery and loading happen in two steps.
 
@@ -13,9 +14,7 @@ At runtime, discovery and loading happen in two steps.
    `use_skill(name)` tool, which loads that skill's full instruction **body** into the
    conversation.
 
-The same `use_skill` tool serves the full catalog.
-
-> The implementation history is recorded in
+> The design record explains this interface in
 > [`docs/2026-06-18-skill-interface-design.md`](../docs/2026-06-18-skill-interface-design.md).
 
 ---
@@ -76,7 +75,7 @@ that omit it keep their existing tool set and system prompt.
 ### 3. Restart OpenCollab
 
 After restart, the role's system prompt lists the new skill and the model can
-invoke it by name.
+invoke it by name. Adding a skill requires no registration or code change.
 
 ---
 
@@ -86,13 +85,13 @@ invoke it by name.
 | --- | --- |
 | Naming | Use a short kebab-case `name` equal to the directory name. The model must type it exactly. |
 | Description | Write a specific task trigger such as "when you need to …". The model decides whether to load the skill from this field. |
-| Body | Write self-contained instructions that use tools already assigned to the role. |
+| Body | Write self-contained instructions that use tools already assigned to the role. A skill cannot grant additional tools. |
 | Size | The loader caps the body at 8000 characters and the description at 500 characters. It marks a truncated body clearly. |
-| Malformed file | The loader omits a `SKILL.md` with a missing `name`, unclosed frontmatter, or read error. Check the frontmatter and `name` if a skill is absent from the catalog. |
+| Malformed file | The loader skips a `SKILL.md` with a missing `name`, unclosed frontmatter, or read error, while startup continues. Check the frontmatter and `name` if a skill is absent from the catalog. |
 | Unknown name | `use_skill` returns `Unknown skill '<x>'. Available skills: …`. |
 
 ## Where skills are loaded from
 
 The current loader reads the `skills/` directory at the workspace root. In this
-repository, that path is `skills/`. The design record covers possible global and
-project-specific search paths.
+repository, that path is `skills/`. The design record discusses global and
+project-specific search paths that the current loader does not implement.

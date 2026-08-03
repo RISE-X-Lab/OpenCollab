@@ -24,7 +24,7 @@ the run completes, the same keys inspect the final analyst, coder, and tester
 transcripts. Press `q` to close the TUI. The launcher prints and retains the
 temporary workspace path for inspection after the run.
 
-Additional OpenCollab options can be appended as shown below.
+Append additional OpenCollab options to the script command.
 
 ```bash
 ./scripts/demo_team_issue.sh --model your-model

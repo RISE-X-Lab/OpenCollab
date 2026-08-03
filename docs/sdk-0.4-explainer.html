@@ -1569,7 +1569,8 @@
       <strong>Change the entry point when the research question changes</strong>
       <p>
         To ablate a model, tool, environment, or context strategy, hold the
-        control condition fixed and use Bootstrap, Ports, and Adapters.
+        control condition fixed and use Bootstrap, Ports, and Adapters. Keep
+        implementation variables out of the SDK call surface.
       </p>
     </aside>
 
@@ -1582,8 +1583,9 @@
         </div>
         <p class="section-intro">
           The Harness defines the experimental condition. Bootstrap assembles
-          concrete Adapters. Application depends on Ports, and Domain retains
-          the same state semantics across treatments.
+          concrete Adapters. Application depends only on Ports. Domain has no
+          dependency on experimental infrastructure, so treatments retain the
+          same state semantics.
         </p>
       </div>
 
