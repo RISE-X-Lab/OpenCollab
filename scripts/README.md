@@ -1,9 +1,8 @@
 # Framework scripts
 
 This directory contains OpenCollab framework launchers and provider diagnostics.
-Benchmark generation, evaluation, reporting, and remote execution commands are
-owned by [OpenCollab-Eval](https://github.com/RISE-X-Lab/OpenCollab-Eval)
-rather than this framework package.
+[OpenCollab-Eval](https://github.com/RISE-X-Lab/OpenCollab-Eval) contains the
+benchmark generation, evaluation, reporting, and remote execution commands.
 
 Use `uv run opencollab` as the standard development entry point.
 `start_opencollab.sh` remains a compatibility launcher for callers that need
