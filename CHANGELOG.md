@@ -7,13 +7,15 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-07-31
+## [0.4.1] - 2026-08-03
 
 ### Added
 - Added an explicit OpenAI Responses wire protocol with typed streaming,
   locally replayed reasoning and function items, exact tool-call binding,
   configurable reasoning effort, separate stream timeouts, and complete usage
   evidence.
+- Added Mini Edict, a bilingual, tested Three Departments and Six Ministries
+  example with both a team configuration and a hard-gated workflow.
 - Added immutable non-secret effective configuration metadata, public stateless
   tool composition, and caller-owned Local, Worktree, and image-backed Docker
   environment factories for external integrations. Configuration metadata
@@ -53,6 +55,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - Raised the package version to 0.4.1 for the incompatible compact SDK boundary.
 
 ### Fixed
+- Capped structured-output corrective retries at 60 seconds while preserving
+  shorter caller deadlines, so endpoints that degrade forced tool choice cannot
+  consume the caller's full role budget.
 - Restored the exact terminal state after turn-scoped TUI keyboard navigation on
   macOS and added the terminal probe to macOS CI.
 - Emitted valid JavaScript comments around the vendored js-yaml license in Team
@@ -84,5 +89,5 @@ clean architecture where everything but the model sits behind swappable ports.
 - Moved Chinese working notes into `docs/archive/`.
 
 [Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.4.1...HEAD
-[0.4.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.1.0...v0.4.1
-[0.1.0]: https://github.com/RISE-X-Lab/OpenCollab/releases/tag/v0.1.0
+[0.4.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/563027175e2cc2540d19324def73010a7e436dcc...v0.4.1
+[0.1.0]: https://github.com/RISE-X-Lab/OpenCollab/tree/563027175e2cc2540d19324def73010a7e436dcc

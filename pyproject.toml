@@ -57,5 +57,5 @@ packages = ["opencollab"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 pythonpath = ["."]
-testpaths = ["tests"]
+testpaths = ["tests", "examples/mini-edict/tests"]
 norecursedirs = [".git", ".venv", "__pycache__"]
