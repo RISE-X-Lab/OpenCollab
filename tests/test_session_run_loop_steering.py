@@ -12,6 +12,7 @@ from session_run_loop_test_support import (
     _agent_with_tools,
     _no_consecutive_same_role,
     _steering_runner,
+    _steering_steps,
     build_runner,
     llm_response,
     run,
@@ -86,9 +87,9 @@ def test_steering_no_write_nudge_for_readonly_session():
     assert "without" not in msg["content"]
     assert msg["content"].startswith("[Budget:")
 
-def test_steering_hard_rung_forces_tool_choice_through_run_loop():
-    # End-to-end: a write-capable session at the hard read threshold must send
-    # tool_choice="required" to the provider through the real _complete path.
+def test_steering_hard_rung_keeps_source_tools_available():
+    # A write-capable session gets an urgent edit nudge without losing the
+    # ability to refresh stale source before editing.
     state = SessionState(
         messages=[{"role": "tool", "content": "prev"}],
         used_tokens=1_000,
@@ -102,7 +103,7 @@ def test_steering_hard_rung_forces_tool_choice_through_run_loop():
 
     run(runner.run_loop())
 
-    assert llm.calls[0]["tool_choice"] == "required"
+    assert "tool_choice" not in llm.calls[0]
 
 def test_steering_structured_hard_rung_forces_structured_output():
     state = SessionState(
@@ -128,7 +129,7 @@ def test_steering_structured_hard_rung_forces_structured_output():
     }
     assert "structured_output using" in llm.calls[0]["messages"][-1]["content"]
 
-def test_steering_hard_rung_blocks_read_tool_call_before_execution():
+def test_steering_hard_rung_allows_targeted_read_before_edit():
     state = SessionState(
         messages=[{"role": "tool", "content": "prev"}],
         used_tokens=1_000,
@@ -142,7 +143,16 @@ def test_steering_hard_rung_blocks_read_tool_call_before_execution():
             llm_response(content="done"),
         ]
     )
-    tool_execution = FakeToolExecution()
+    tool_execution = FakeToolExecution(
+        ToolProcessingResult(
+            messages_to_append=[{
+                "role": "tool",
+                "tool_call_id": "r1",
+                "content": "current source",
+            }],
+            reads_executed=1,
+        )
+    )
     runner = build_runner(
         state=state,
         llm=llm,
@@ -156,11 +166,10 @@ def test_steering_hard_rung_blocks_read_tool_call_before_execution():
         m for m in state.messages if m.get("role") == "tool" and m.get("tool_call_id")
     ]
     assert result == "done"
-    assert tool_execution.calls == []
+    assert tool_execution.calls == [[read_call]]
     assert len(tool_messages) == 1
     assert tool_messages[0]["tool_call_id"] == "r1"
-    assert "not allowed during the hard write gate" in tool_messages[0]["content"]
-    assert state.turn.reads_since_last_edit == READS_NUDGE_HARD
+    assert tool_messages[0]["content"] == "current source"
 
 def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
     state = SessionState(
@@ -183,7 +192,11 @@ def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
     )
     tool_execution = FakeToolExecution(
         ToolProcessingResult(
-            messages_to_append=[{"role": "tool", "tool_call_id": "w1", "content": "patched"}],
+            messages_to_append=[
+                {"role": "tool", "tool_call_id": "r1", "content": "current source"},
+                {"role": "tool", "tool_call_id": "w1", "content": "patched"},
+            ],
+            reads_executed=1,
             write_succeeded=True,
         )
     )
@@ -200,9 +213,9 @@ def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
         m for m in state.messages if m.get("role") == "tool" and m.get("tool_call_id")
     ]
     assert result == "done"
-    assert tool_execution.calls == [[write_call]]
+    assert tool_execution.calls == [[read_call, write_call]]
     assert [m["tool_call_id"] for m in tool_messages] == ["r1", "w1"]
-    assert "not allowed during the hard write gate" in tool_messages[0]["content"]
+    assert tool_messages[0]["content"] == "current source"
     assert tool_messages[1]["content"] == "patched"
     assert state.turn.reads_since_last_edit == 0
 
@@ -229,7 +242,7 @@ def _failed_edit_state(
     )
 
 
-def test_failed_edit_gets_one_targeted_read_turn_before_write_gate():
+def test_failed_edit_gets_one_targeted_recovery_read():
     target = "pkg/module.py"
     state = _failed_edit_state(
         json.dumps({"path": target, "mode": "unified_diff", "patch": "bad hunk"}),
@@ -267,12 +280,14 @@ def test_failed_edit_gets_one_targeted_read_turn_before_write_gate():
     ]
     assert target in llm.calls[0]["messages"][-1]["content"]
     assert [spec["function"]["name"] for spec in llm.calls[1]["tools"]] == [
+        "file_read",
+        "grep",
         "file_write",
         "apply_patch",
     ]
 
 
-def test_noop_edit_stays_behind_write_gate():
+def test_noop_edit_keeps_read_and_write_tools_available():
     target = "pkg/module.py"
     state = _failed_edit_state(
         json.dumps({
@@ -294,12 +309,14 @@ def test_noop_edit_stays_behind_write_gate():
     run(runner.call_llm(runner.build_tool_schemas()))
 
     assert [spec["function"]["name"] for spec in llm.calls[0]["tools"]] == [
+        "file_read",
+        "grep",
         "file_write",
         "apply_patch",
     ]
 
 
-def test_noop_patch_stays_behind_write_gate():
+def test_noop_patch_keeps_read_and_write_tools_available():
     target = "pkg/module.py"
     state = _failed_edit_state(
         json.dumps({
@@ -321,6 +338,8 @@ def test_noop_patch_stays_behind_write_gate():
     run(runner.call_llm(runner.build_tool_schemas()))
 
     assert [spec["function"]["name"] for spec in llm.calls[0]["tools"]] == [
+        "file_read",
+        "grep",
         "file_write",
         "apply_patch",
     ]
@@ -373,6 +392,8 @@ def test_invalid_edit_arguments_do_not_open_recovery_read_gate():
     run(runner.call_llm(runner.build_tool_schemas()))
 
     assert [spec["function"]["name"] for spec in llm.calls[0]["tools"]] == [
+        "file_read",
+        "grep",
         "file_write",
         "apply_patch",
     ]
@@ -468,8 +489,34 @@ def test_steering_block_ephemeral_on_continuation_step():
     run(runner.call_llm(runner.build_tool_schemas()))
 
     sent = runner.llm.calls[0]["messages"]
-    assert any("STOP reading" in (m.get("content") or "") for m in sent)
+    assert any("Prioritize the edit now" in (m.get("content") or "") for m in sent)
     assert any("Budget:" in (m.get("content") or "") for m in sent)
     # Not persisted: the model saw it, the transcript did not gain it.
-    assert not any("STOP reading" in (m.get("content") or "") for m in state.messages)
+    assert not any("Prioritize the edit now" in (m.get("content") or "") for m in state.messages)
     assert not any("Budget:" in (m.get("content") or "") for m in state.messages)
+
+
+def test_hard_write_nudge_trace_records_no_tool_choice_override():
+    tracer = FakeTracer()
+    runner, _state = _steering_runner(READS_NUDGE_HARD, tracer=tracer)
+
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    assert _steering_steps(tracer)[0]["payload"]["tool_choice_override"] is False
+
+
+def test_structured_gate_trace_records_tool_choice_override():
+    tracer = FakeTracer()
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
+    )
+    runner = build_runner(
+        state=state,
+        tracer=tracer,
+        agent=_agent_with_tool_schemas("structured_output", "file_read", "grep"),
+    )
+
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    assert _steering_steps(tracer)[0]["payload"]["tool_choice_override"] is True

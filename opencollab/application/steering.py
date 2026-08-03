@@ -13,8 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
-# Reads-without-write escalation thresholds: at SOFT we advise a write, at HARD
-# we demand it and force a tool call.
+# Reads-without-write escalation thresholds. SOFT advises an edit and HARD makes
+# the advice urgent while preserving the source tools needed for a safe edit.
 READS_NUDGE_SOFT = 8
 READS_NUDGE_HARD = 16
 
@@ -37,7 +37,9 @@ def build_steering_block(
     ``'hard'`` / ``'soft'`` / ``None`` — the trace seam reads it to log upward
     crossings. The message is a lean ``role:"user"`` block carrying budget
     self-awareness plus, when the session can edit and has read without writing, a
-    write nudge (soft) or a hard demand (``tool_choice="required"``). The message
+    write nudge. At the hard threshold the wording becomes urgent, while the
+    model keeps every tool available so it can refresh stale source before an
+    edit. The message
     is always built; on a fresh post-user turn ``reads`` is ~0 so only the status
     line is returned, which is correct.
 
@@ -64,10 +66,10 @@ def build_steering_block(
         level = "hard"
     elif has_write and reads >= READS_NUDGE_HARD:
         extra = (
-            f" You have read {reads} times without making an edit. STOP reading"
-            " — your next action MUST be a file_write or apply_patch edit."
+            f" You have read {reads} times without making an edit. Prioritize the"
+            " edit now. If the exact source is uncertain, reread only the range"
+            " needed to make that edit safely."
         )
-        override = "required"
         level = "hard"
     elif has_write and reads >= READS_NUDGE_SOFT:
         extra = (

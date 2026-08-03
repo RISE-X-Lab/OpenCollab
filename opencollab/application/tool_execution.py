@@ -162,7 +162,7 @@ def _bash_likely_mutates(args: dict) -> bool:
 
     The coder lands real source edits via bash (``python -c`` read-modify-write,
     ``sed -i``), which never trips the ``_WRITE_TOOLS`` reset, so the
-    reads-without-write counter climbs forever and the hard "STOP reading" nudge
+    reads-without-write counter climbs forever and the urgent edit nudge
     mis-fires at a model already writing. Detecting these mutating shapes lets the
     existing reset path zero the counter. Pure stdlib string inspection — no I/O,
     no re-parsing/executing bash.

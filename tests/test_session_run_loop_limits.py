@@ -101,7 +101,7 @@ def test_relay_wire_limit_recompacts_and_retries_once():
     assert llm.calls[1] == state.messages[:1]
 
 
-def test_overflow_retry_preserves_hard_write_gate():
+def test_overflow_retry_preserves_hard_write_nudge_tools():
     class OverflowThenWrite:
         def __init__(self):
             self.calls = []
@@ -128,10 +128,11 @@ def test_overflow_retry_preserves_hard_write_gate():
     assert run(runner.run_loop()) == "recovered"
     assert len(llm.calls) == 2
     assert [spec["function"]["name"] for spec in llm.calls[1]["tools"]] == [
+        "file_read",
         "file_write",
         "apply_patch",
     ]
-    assert llm.calls[1]["tool_choice"] == "required"
+    assert "tool_choice" not in llm.calls[1]
 
 
 def test_overflow_retry_preserves_failed_edit_error_and_recovery_gate():

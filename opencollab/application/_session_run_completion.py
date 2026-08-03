@@ -94,9 +94,6 @@ class _SessionRunCompletionMixin:
     def build_tool_schemas(self) -> list[dict] | None:
         return self.agent.tool_schemas() or None
 
-    def _write_only_tool_schemas(self, tools: list[dict] | None) -> list[dict] | None:
-        return self._tool_schemas_with_names(tools, _WRITE_TOOLS)
-
     def _tool_schemas_with_names(self, tools: list[dict] | None, names: frozenset[str]) -> list[dict] | None:
         if not tools:
             return tools
@@ -105,8 +102,6 @@ class _SessionRunCompletionMixin:
 
     def _hard_steering_tools(self) -> tuple[frozenset[str], str]:
         tool_names = {getattr(t, "name", None) for t in getattr(self.agent, "tools", []) or []}
-        if tool_names & _WRITE_TOOLS:
-            return _WRITE_TOOLS, "hard write gate"
         if _STRUCTURED_OUTPUT_TOOL in tool_names:
             return frozenset({_STRUCTURED_OUTPUT_TOOL}), "hard structured-output gate"
         return frozenset(), "hard tool gate"
@@ -233,7 +228,10 @@ class _SessionRunCompletionMixin:
             structured_override=_submit_tool_choice(_STRUCTURED_OUTPUT_TOOL),
             failed_edit_path=recovery_path,
         )
-        self._maybe_trace_steering(steering_level)
+        self._maybe_trace_steering(
+            steering_level,
+            tool_choice_override=tool_choice_override is not None,
+        )
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
             self.state.messages[-1] = fold_steering(self.state.messages[-1], steering["content"])
@@ -241,14 +239,25 @@ class _SessionRunCompletionMixin:
         if steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
-            if recovery_path is None:
-                hard_tools, gate_label = self._hard_steering_tools()
-            else:
+            if recovery_path is not None:
                 hard_tools, gate_label = _RECOVERY_READ_TOOLS, "failed-edit recovery gate"
-            self._pending_tool_allowlist = hard_tools
-            self._pending_tool_gate_label = gate_label
-            self._pending_recovery_path = recovery_path
-            tools = self._tool_schemas_with_names(tools, hard_tools)
+                self._pending_tool_allowlist = hard_tools
+                self._pending_tool_gate_label = gate_label
+                self._pending_recovery_path = recovery_path
+                tools = self._tool_schemas_with_names(tools, hard_tools)
+            elif tool_names & _WRITE_TOOLS:
+                # A long exploration deserves a strong nudge, not a capability
+                # restriction. Forcing a blind write can corrupt a correct
+                # partial solution when compaction has made source context stale.
+                self._pending_tool_allowlist = None
+                self._pending_tool_gate_label = None
+                self._pending_recovery_path = None
+            else:
+                hard_tools, gate_label = self._hard_steering_tools()
+                self._pending_tool_allowlist = hard_tools
+                self._pending_tool_gate_label = gate_label
+                self._pending_recovery_path = None
+                tools = self._tool_schemas_with_names(tools, hard_tools)
         else:
             self._pending_tool_allowlist = None
             self._pending_tool_gate_label = None
@@ -406,7 +415,12 @@ class _SessionRunCompletionMixin:
         self.clear_pending_step()
         self.state.transition_to(SessionPhase.STOPPED, reason=reason)
 
-    def _maybe_trace_steering(self, level: str | None) -> None:
+    def _maybe_trace_steering(
+        self,
+        level: str | None,
+        *,
+        tool_choice_override: bool,
+    ) -> None:
         """Emit a ``steering_nudge`` trace step on an UPWARD level crossing.
 
         ``reads_since_last_edit`` can jump past 8/16 in one batch, so the high-
@@ -436,7 +450,7 @@ class _SessionRunCompletionMixin:
                     or self.agent.model,
                     "reads_since_last_edit": self.state.turn.reads_since_last_edit,
                     "level": level,
-                    "tool_choice_override": level == "hard",
+                    "tool_choice_override": tool_choice_override,
                     "step": self.state.step_count,
                 },
             )

@@ -38,7 +38,7 @@ def test_git_diff_shows_status_and_working_tree_patch(repo):
     result = run(GitDiffTool().execute_with_runtime({}, _runtime(repo)))
 
     assert "Status (git status --short):" in result
-    assert "diff vs HEAD:" in result
+    assert "tracked diff vs HEAD:" in result
     assert "-    return 1" in result
     assert "+    return 2" in result
 
@@ -64,7 +64,27 @@ def test_git_diff_path_filter_can_skip_status(repo):
 
     assert "Status" not in result
     assert "app.py" in result
-    assert "other.py" not in result.split("diff vs HEAD:")[1]
+    assert "other.py" not in result.split("tracked diff vs HEAD:")[1]
+
+
+def test_git_diff_calls_out_untracked_files_as_real_changes(repo):
+    (repo / "new.py").write_text("value = 1\n", encoding="utf-8")
+
+    result = run(GitDiffTool().execute_with_runtime({}, _runtime(repo)))
+
+    assert "?? new.py" in result
+    assert "Untracked files above are working-tree changes" in result
+    assert "inspect their contents with file_read" in result
+
+
+def test_git_diff_path_filter_applies_to_status(repo):
+    (repo / "new.py").write_text("value = 1\n", encoding="utf-8")
+    (repo / "other.py").write_text("other = 1\n", encoding="utf-8")
+
+    result = run(GitDiffTool().execute_with_runtime({"path": "new.py"}, _runtime(repo)))
+
+    assert "?? new.py" in result
+    assert "other.py" not in result
 
 
 def test_git_diff_reports_environment_errors(tmp_path):
