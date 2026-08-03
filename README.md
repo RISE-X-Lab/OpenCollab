@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <b>A Python framework for multi-agent teams and workflows.</b>
+  <b>An Operating Theory of Organized Intelligence.</b>
 </p>
 
 <p align="center">
@@ -34,12 +34,17 @@ OpenCollab supports two forms of collaboration on the same agent runtime.
 | **Team** | `opencollab [--team-config FILE] --workspace .` | A lead plans the work and spawns specialists that collaborate until the task is done. The agents decide the division of labor. |
 | **Workflow** | `opencollab workflow run NAME` | Python defines fan-out, pipeline, loop, and verification behavior while agents complete each step. |
 
-Experiments can replace each runtime component independently.
+Model access, context handling, tool execution, orchestration, and environments
+have separate extension points. An experiment can change one component at a
+time.
+
+New collaboration designs can reuse this runtime and live in a small team file
+and workflow.
 
 [Edict](https://github.com/cft0808/edict) implements the Three
 Departments and Six Ministries as a standalone system with roughly 24,000
-source lines. [Mini Edict](examples/mini-edict/) implements the same
-review-and-dispatch structure in 239 lines of team and workflow code on the
+source lines. [Mini Edict](examples/mini-edict/) implements Edict's core
+review-and-dispatch protocol in 239 lines of team and workflow code on the
 OpenCollab runtime. The example includes a bilingual guide and tests.
 
 ## Quick start
@@ -72,8 +77,8 @@ for a complete module.
 ## Evaluate with OpenCollab-Eval
 
 [OpenCollab-Eval](https://github.com/RISE-X-Lab/OpenCollab-Eval) is a downstream
-application built on OpenCollab's public Python API. It exercises the framework
-from outside this repository.
+application built on OpenCollab's public Python API. It exercises agents, teams,
+workflows, tools, and environments from outside this repository.
 
 OpenCollab-Eval runs agents on software-engineering benchmarks. It creates an
 isolated workspace for each task and records the Solver's patch. It then runs
@@ -81,8 +86,9 @@ the official tests and keeps the commands and reports needed to inspect the
 result. It currently supports SWE-bench Pro-Lite and provides a generic task
 runner for other evaluation workloads.
 
-OpenCollab-Eval owns benchmark execution and its experiment records. This
-repository contains the collaboration framework.
+Datasets, Docker integration, benchmark adapters, experiment reports, and their
+execution records live in OpenCollab-Eval. This repository contains the
+collaboration framework.
 
 The [evaluation guide](https://github.com/RISE-X-Lab/OpenCollab-Eval#supported-environment)
 explains how to run it. The [integrity guide](https://github.com/RISE-X-Lab/OpenCollab-Eval/blob/main/docs/evaluation-integrity.md)
@@ -92,19 +98,20 @@ records the boundary between the repositories.
 ## Documentation
 
 The [package guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md)
-covers installation and the Python API. The [configuration guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/configs/README.md)
-covers models and teams.
+covers installation, the CLI, the Python API, architecture, and runtime
+behavior. The [configuration guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/configs/README.md)
+covers providers, models, and teams.
 
 [Mini Edict](https://github.com/RISE-X-Lab/OpenCollab/tree/main/examples/mini-edict)
-is the smallest complete workflow example. The [skills guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/skills/README.md)
-and [scripts guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/scripts/README.md)
-cover the optional tools around it.
+shows a nine-role institutional workflow. The [skills guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/skills/README.md)
+documents on-demand instructions. The [scripts guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/scripts/README.md)
+documents launchers and provider diagnostics.
 
 Repository development is documented in [CONTRIBUTING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md).
 Maintainers can follow [RELEASING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/main/RELEASING.md)
 when preparing a release.
 The [documentation index](https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/README.md)
-links the current design records. Benchmark users should begin with the
+links design records and research notes. Benchmark users should begin with the
 [OpenCollab-Eval README](https://github.com/RISE-X-Lab/OpenCollab-Eval#readme).
 
 ## License

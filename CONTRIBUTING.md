@@ -1,7 +1,7 @@
 # Contributing to OpenCollab
 
-This guide covers the development environment, required checks, and dependency
-rule for OpenCollab contributions.
+This guide explains how to prepare a development environment and submit changes
+that satisfy OpenCollab's checks and dependency rule.
 
 ## Project layout
 
@@ -90,4 +90,5 @@ documentation changes.
 ## Reporting issues
 
 - Functional bugs and feature requests: open a GitHub issue using the templates.
-- Report security vulnerabilities privately through [SECURITY.md](SECURITY.md).
+- Security vulnerabilities must not be reported in a public issue. Use the
+  private process in [SECURITY.md](SECURITY.md).

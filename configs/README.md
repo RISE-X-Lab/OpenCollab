@@ -23,7 +23,7 @@ env file.
 OpenCollab supports OpenAI-compatible APIs through the OpenAI client path. Set
 `provider=openai` and a compatible `base_url` for those providers.
 
-The environment variables can be set as follows.
+Set the shell environment variables directly.
 
 ```bash
 export OPENCOLLAB_PROVIDER=openai
@@ -33,7 +33,7 @@ export OPENCOLLAB_API_KEY=<your-api-key>
 export OPENCOLLAB_LLM_TIMEOUT=600
 ```
 
-The equivalent `configs/.env` values follow.
+The same settings can be written to `configs/.env`.
 
 ```dotenv
 OPENCOLLAB_PROVIDER=openai
@@ -50,7 +50,7 @@ preferred over generic API-key variables for DashScope base URLs.
 
 Compatibility differences are recorded in
 `opencollab.adapters.llm.types.model_capabilities` and consumed by the provider
-and workflow adapters. Product-specific behavior stays in those adapters.
+and workflow adapters. Those adapters handle product-specific behavior.
 
 | Exact model id | Context window | Forced tool choice | Per-role thinking override |
 | --- | ---: | --- | --- |

@@ -37,9 +37,9 @@ uv run opencollab --workspace .
 
 It runs the current checkout in the project environment, resolves
 `configs/.env`, and starts agent 0 with the built-in lead-only configuration.
-Pass `--team-config PATH` to select a declared multi-agent team.
-`scripts/start_opencollab.sh` remains available for environments that need its
-physical-path handling.
+Team mode uses the root command with `--team-config PATH`; there is no separate
+`team` subcommand. `scripts/start_opencollab.sh` remains available for
+environments that need its physical-path handling.
 
 After installation, invoke the CLI directly from the active environment.
 
@@ -154,7 +154,7 @@ performs and verifies its own environment cleanup.
 ### Workflow authoring
 
 A workflow is a plain async Python function tagged with `@workflow`. Create
-`workflows/implement_and_review.py` as shown below.
+`workflows/implement_and_review.py` with this implementation.
 
 ```python
 from typing import Any
@@ -230,7 +230,7 @@ filesystem access.
 ### Validated agent sessions
 
 A single agent is a validated state machine in `domain/session.py`. Invalid
-edges raise an error. Every early stop has a named terminal state. `DONE`
+edges raise an error. The state machine has three terminal states. `DONE`
 contains a final answer, `ERROR` records an unhandled fault, and `STOPPED`
 records a graceful halt. Its `reason` identifies a budget, step, loop, or
 context overflow.
@@ -259,8 +259,10 @@ The test suite pins core invariants such as session transitions, budget
 reservation, context shaping, and import boundaries.
 
 Port-level ablations and workflow-versus-team comparisons have not been
-completed. Prompt caching is unavailable. Budget and phase reset when a session
-restarts. See [`../docs/`](../docs/) for design records and research notes.
+completed. Prompt caching is unavailable. Session snapshots restore token usage
+and recoverable terminal or awaiting-event phases. In-flight provider and tool
+phases resume from `IDLE` because their process-local coroutines do not survive
+a restart. See [`../docs/`](../docs/) for design records and research notes.
 
 ## Development
 

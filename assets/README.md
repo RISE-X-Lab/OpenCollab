@@ -8,6 +8,11 @@ The OpenCollab mark has five nodes on a pentagon ring joined by open arc
 segments. The equal-width gradient ring has a circular notch at each node and a
 dot in the center of each notch.
 
+The ring represents collaboration without a permanent central role. Its open
+segments reflect control moving between roles. The full mark depicts
+intelligence emerging from the organization. The official tagline is *An
+Operating Theory of Organized Intelligence.*
+
 ## Files
 
 The SVG assets contain their gradients, masks, and text paths within each file.
@@ -27,8 +32,8 @@ generated brand board converts that copy to paths.
 | [`app-icon.svg`](app-icon.svg) | Mark on a dark rounded square (512×512) | App or launcher icon on any theme |
 | [`app-icon-mono.svg`](app-icon-mono.svg) | Monochrome rounded-square icon | One-colour app icon |
 | [`favicon.svg`](favicon.svg) | Tightly cropped mark | Favicon / 16–32 px tabs |
-| [`brand-guidelines.svg`](brand-guidelines.svg) | Brand board with construction, colour, clear space, sizing, mono, and application guidance | Reference |
-| [`brand-guidelines.svg.in`](brand-guidelines.svg.in) | Editable brand-board template | Regeneration input only |
+| [`brand-guidelines.svg`](brand-guidelines.svg) | Authoritative brand board with construction and usage guidance | Reference |
+| [`brand-guidelines.svg.in`](brand-guidelines.svg.in) | Source for mark geometry and board copy | Regeneration input only |
 
 ## Colour
 
@@ -49,7 +54,7 @@ The five node dots use colors sampled along the gradient (`#713AED`, `#2A53EB`,
 | Clear space | Keep at least one node diameter (*x*) of empty space on all four sides of the mark. |
 | Minimum size | Use the full-detail mark at about 48 px or larger. At 32 px and below, use the simplified `favicon` crop. |
 | Background | The gradient `mark`, `banner-dark`, and `app-icon` work across themes. Use dark-ink lockups on light backgrounds and `mark-mono-white` on dark backgrounds. |
-| Alterations | Use the supplied gradient, proportions, orientation, and stroke treatment. Keep enough contrast with the background. |
+| Alterations | Keep the supplied gradient, proportions, orientation, and stroke treatment. Do not recolour, stretch, rotate, add shadows or outlines, or use a low-contrast mark on a busy background. |
 
 <p align="center">
   <img src="mark.svg" alt="mark" width="88">
@@ -90,7 +95,7 @@ Liberation Sans is licensed under the **SIL Open Font License 1.1**. Its
 copyright notice and complete license are retained in
 [`LICENSES/LiberationSans-OFL-1.1.txt`](LICENSES/LiberationSans-OFL-1.1.txt).
 Generation uses the font binaries as inputs. The repository stores the
-generated lockups as vector outlines.
+generated lockups as vector outlines and does not store the font binaries.
 
 Regenerate with the pinned path converter.
 

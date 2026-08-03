@@ -4,7 +4,8 @@
 
 Mini Edict implements the Three Departments and Six Ministries as an executable
 governance protocol. Everything specific to the example lives in this
-directory. OpenCollab provides the agent runtime.
+directory. OpenCollab provides agent sessions and model access. It also handles
+concurrency, token budgets, tracing, and persistence.
 
 ```text
 task
@@ -22,7 +23,8 @@ The one-shot workflow enforces this separation in Python control flow. Execution
 cannot start before Menxia approval. A veto returns concrete findings to
 Zhongshu. Shangshu assigns distinct work and acceptance criteria only to
 ministries relevant to the task. The final audit checks the memorial against the
-complete execution record.
+approved proposal and assigned work. It also checks the ministry reports and
+their evidence.
 
 ## Talk to Zhongshu
 
@@ -54,8 +56,9 @@ OPENCOLLAB_WORKFLOWS_DIR=examples/mini-edict/workflows \
   --args '{"task":"Design a six-month open-source community growth plan."}'
 ```
 
-This command prints each institutional phase and returns the complete execution
-record with its token use.
+This command prints each institutional phase. Its return value contains the
+proposal, review history, dispatch decision, selected ministry reports, final
+memorial, audit, and token use.
 
 ## Design references
 
@@ -63,12 +66,12 @@ The workflow adapts Edict's mandatory
 [Menxia review](https://github.com/cft0808/edict/blob/main/agents/menxia/SOUL.md)
 and dynamic [Shangshu routing](https://github.com/cft0808/edict/blob/main/agents/shangshu/SOUL.md).
 It also uses [Agent-Team](https://github.com/EthanHuangEbor/Agent-Team) as a
-reference for packaging skills and controlling revision and dispatch. The
-implementation uses OpenCollab's workflow API.
+reference for skill packaging and the bounded revision loop. The workflow
+dispatches only the ministries needed for the task and carries their evidence
+into the final audit. The implementation uses OpenCollab's workflow API.
 
-## Files to edit
+## Implementation
 
-The team file defines the conversational roles and the workflow file defines
-the gated execution path. Edit role mandates in `team.yaml` and stage order in
-the workflow. Together, these files implement the protocol on OpenCollab's
-shared runtime.
+The protocol lives in `team.yaml` and one workflow module, together totaling
+239 lines. Edit role mandates in `team.yaml` and stage order in the workflow.
+OpenCollab supplies the shared runtime.
