@@ -41,6 +41,11 @@ _STRUCTURED_RETRY = (
     "required schema. Do not explore further or answer in prose."
 )
 
+# The corrective session has one tool and no exploration responsibility. Give
+# it enough time for one reasoning turn without letting an endpoint that
+# degrades forced tool choice to ``auto`` consume the caller's full role budget.
+DEFAULT_STRUCTURED_RETRY_TIMEOUT_SECONDS = 60.0
+
 
 def _named_tool_choice(tool_name: str) -> dict[str, Any]:
     """OpenAI-style named-function ``tool_choice`` forcing exactly ``tool_name``.
@@ -74,6 +79,12 @@ def _schema_satisfied(captured: Any, schema: dict[str, Any]) -> bool:
         # captured dict (even ``{}``) is an accepted commit, not a miss.
         return True
     return all(key in captured for key in required)
+
+
+def _structured_retry_timeout(remaining: float | None) -> float:
+    if remaining is None:
+        return DEFAULT_STRUCTURED_RETRY_TIMEOUT_SECONDS
+    return min(remaining, DEFAULT_STRUCTURED_RETRY_TIMEOUT_SECONDS)
 
 
 class WorkflowStructuredMixin:
@@ -184,7 +195,9 @@ class WorkflowStructuredMixin:
         # passes; the first session is handed in so its exploration history is
         # carried into the corrective turn.
         try:
-            retry_timeout = self._remaining_timeout(deadline)
+            retry_timeout = _structured_retry_timeout(
+                self._remaining_timeout(deadline)
+            )
         except CallerTimeoutError:
             await self.log(
                 f"structured agent timed out ({label or 'agent'}) after {timeout}s"
