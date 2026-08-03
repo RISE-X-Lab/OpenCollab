@@ -1,12 +1,12 @@
 # Skills
 
-A **skill** is an on-demand *instruction set* — a packaged unit of procedural
-knowledge an agent can pull into its context when the task calls for it. A skill is
-**not** a tool and registers no runtime function. Its `SKILL.md` contains the
-instructions the model loads by name; the package may also include supporting
-templates, scripts, or assets that those instructions use through existing tools.
+A **skill** is an on-demand instruction set stored in `SKILL.md`. It adds
+procedural guidance to a role without registering a new runtime function or a
+dedicated tool. A skill directory may contain supporting files used through
+tools the role already has. Enabled roles load skills through the generic
+`use_skill` tool.
 
-How it works at runtime:
+At runtime, discovery and loading happen in two steps.
 
 1. On startup, every skill under this directory is discovered and a **catalog**
    (each skill's `name` + `description`) is folded into the agent's system prompt.
@@ -14,9 +14,7 @@ How it works at runtime:
    `use_skill(name)` tool, which loads that skill's full instruction **body** into the
    conversation.
 
-One `use_skill` tool serves every skill — adding skills never adds tools.
-
-> Internals / design rationale: see
+> The design record explains this interface in
 > [`docs/2026-06-18-skill-interface-design.md`](../docs/2026-06-18-skill-interface-design.md).
 
 ---
@@ -25,7 +23,7 @@ One `use_skill` tool serves every skill — adding skills never adds tools.
 
 ### 1. Create the file
 
-Each skill is one directory holding a `SKILL.md` and optional supporting files:
+Each skill uses one directory containing `SKILL.md` and any supporting files.
 
 ```
 skills/
@@ -34,7 +32,8 @@ skills/
     └── scripts/ or templates/ (optional)
 ```
 
-`SKILL.md` is YAML frontmatter (delimited by `---`) followed by the instruction body:
+`SKILL.md` contains YAML frontmatter delimited by `---`, followed by the
+instruction body.
 
 ```markdown
 ---
@@ -42,7 +41,7 @@ name: review-migration
 description: Review a database migration for safety and reversibility
 ---
 
-When asked to review a migration:
+When asked to review a migration, follow these steps.
 
 1. Check the migration is reversible (a `down`/rollback exists and is correct).
 2. Flag any non-concurrent index build or table rewrite on a large table.
@@ -50,20 +49,19 @@ When asked to review a migration:
 4. Summarise risk as LOW / MEDIUM / HIGH with the single biggest concern.
 ```
 
-Frontmatter fields:
+The frontmatter has two required fields.
 
 | Field | Required | Purpose |
 |---|---|---|
-| `name` | yes | The **invocation key** — what the model passes to `use_skill(name)`. Keep it equal to the directory name. |
+| `name` | yes | The invocation key passed to `use_skill(name)`. Keep it equal to the directory name. |
 | `description` | yes | One line shown in the catalog. This is what the model matches against the task, so make it specific and trigger-worthy. |
 
-Everything after the closing `---` is the **body** — the instructions loaded when the
-skill is invoked.
+Everything after the closing `---` is the body loaded when the skill is invoked.
 
-### 2. Enable skills for a role (the opt-in switch)
+### 2. Enable skills for a role
 
-A role only sees the catalog and gets the `use_skill` tool if you add `use_skill` to
-its `tools:` list in your team config (`team.yaml`):
+A role sees the catalog and gets the `use_skill` tool after you add `use_skill` to
+its `tools:` list in your team config (`team.yaml`).
 
 ```yaml
 roles:
@@ -71,38 +69,29 @@ roles:
     tools: [bash, file_read, use_skill]   # <- add use_skill
 ```
 
-Without this, skills stay invisible to that role. This is intentional — skills are
-**off by default** until a role opts in.
+Adding `use_skill` gives the role access to the skill catalog and loader. Roles
+that omit it keep their existing tool set and system prompt.
 
-### 3. That's it
+### 3. Restart OpenCollab
 
-No registration, no code changes. Restart the app and the role's system prompt will
-list your new skill; the model invokes it by name when relevant.
+After restart, the role's system prompt lists the new skill and the model can
+invoke it by name. Adding a skill requires no registration or code change.
 
 ---
 
 ## Conventions & limits
 
-- **Naming.** Use a short, kebab-case `name` that matches the directory. The model
-  must type it exactly, so prefer clarity over cleverness.
-- **Descriptions are triggers.** The model decides whether to load a skill from its
-  `description` alone — write it as "when you need to …", not as a title.
-- **Bodies should be self-contained instructions.** A body may *refer* to tools the
-  role already has (e.g. "run the tests with bash"), but it cannot grant new tools.
-- **Size caps** (enforced when loading, single-sited in the store):
-  - body: 8000 characters (longer bodies are truncated with a clear marker);
-  - description: 500 characters.
-  Keep bodies tight — they cost context every time they're loaded.
-- **Malformed skills are skipped, never fatal.** A `SKILL.md` with no `name`, an
-  unclosed frontmatter block, or an unreadable file is silently ignored at startup —
-  it will simply not appear in the catalog. If your skill isn't showing up, check the
-  frontmatter delimiters and that `name` is present.
-- **Unknown invocation is graceful.** If the model calls `use_skill` with a name that
-  doesn't exist, it gets back `Unknown skill '<x>'. Available skills: …` rather than
-  an error.
+| Topic | Convention |
+| --- | --- |
+| Naming | Use a short kebab-case `name` equal to the directory name. The model must type it exactly. |
+| Description | Write a specific task trigger such as "when you need to …". The model decides whether to load the skill from this field. |
+| Body | Write self-contained instructions that use tools already assigned to the role. A skill cannot grant additional tools. |
+| Size | The loader caps the body at 8000 characters and the description at 500 characters. It marks a truncated body clearly. |
+| Malformed file | The loader skips a `SKILL.md` with a missing `name`, unclosed frontmatter, or read error, while startup continues. Check the frontmatter and `name` if a skill is absent from the catalog. |
+| Unknown name | `use_skill` returns `Unknown skill '<x>'. Available skills: …`. |
 
 ## Where skills are loaded from
 
-Skills are read from the `skills/` directory at the **workspace root** the agent runs
-against. Today that is this repository's `skills/`. (A global skills layer and
-per-project overrides are planned but not yet implemented — see the design doc.)
+The current loader reads the `skills/` directory at the workspace root. In this
+repository, that path is `skills/`. The design record discusses global and
+project-specific search paths that the current loader does not implement.

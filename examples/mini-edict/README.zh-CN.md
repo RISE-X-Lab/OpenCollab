@@ -2,7 +2,7 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-Mini Edict 把三省六部组织方式写成了一套紧凑且可执行的协作协议。这个目录包含示例所需的全部配置、工作流、说明和测试。Agent 会话、模型接入、并发、预算、追踪和持久化由 OpenCollab 提供。
+Mini Edict 把三省六部实现为一套可执行的组织协议。这个目录保存示例本身。OpenCollab 提供 Agent 会话和模型访问，并负责并发、token 预算、追踪和持久化。
 
 ```text
 任务
@@ -16,7 +16,7 @@ Mini Edict 把三省六部组织方式写成了一套紧凑且可执行的协作
        -> 形成完成或阻断结果
 ```
 
-工作流用 Python 控制流程保证职责分离。门下省批准前无法进入执行阶段。封驳意见会交回中书省用于修订。尚书省根据任务选择有关部门，并为每个部门给出独立任务与验收条件。最终复核会同时检查批准后的方案、部门分工、执行报告和证据。
+工作流用 Python 控制流程保证职责分离。门下省批准前无法进入执行阶段。封驳意见会交回中书省用于修订。尚书省根据任务选择有关部门，并为每个部门给出独立任务与验收条件。最终复核会将奏报与获批方案及部门分工逐项核对，同时检查部门报告及其证据。
 
 ## 与中书省对话
 
@@ -32,7 +32,7 @@ uv run opencollab \
 
 ## 执行一道政令
 
-同一套组织方式也可以作为流程固定的单次工作流运行。
+同一套组织方式也可以作为带有固定审批节点的单次工作流运行。
 
 ```bash
 OPENCOLLAB_WORKFLOWS_DIR=examples/mini-edict/workflows \
@@ -41,14 +41,12 @@ OPENCOLLAB_WORKFLOWS_DIR=examples/mini-edict/workflows \
   --args '{"task":"Design a six-month open-source community growth plan."}'
 ```
 
-命令会显示每个阶段，并返回中书方案、审议记录、派发决定、六部报告、最终奏报、复核结果和 token 用量。
+命令会显示每个阶段。返回值保存中书方案、审议记录和派发决定，并附上六部报告、最终奏报、复核结果及 token 用量。
 
 ## 设计参考
 
-工作流吸收了 Edict 的[门下省强制审议](https://github.com/cft0808/edict/blob/main/agents/menxia/SOUL.md)和[尚书省动态派发](https://github.com/cft0808/edict/blob/main/agents/shangshu/SOUL.md)设计，也参考了 [Agent-Team](https://github.com/EthanHuangEbor/Agent-Team) 对技能封装、有限修订、按需派发和证据化输出的处理。这里通过 OpenCollab 的工作流 API 表达这些规则，没有复制两个项目的运行时和运维代码。
+工作流采用了 Edict 的[门下省强制审议](https://github.com/cft0808/edict/blob/main/agents/menxia/SOUL.md)和[尚书省动态派发](https://github.com/cft0808/edict/blob/main/agents/shangshu/SOUL.md)设计。[Agent-Team](https://github.com/EthanHuangEbor/Agent-Team) 提供了技能封装和有限修订方面的参考。工作流按任务选择六部，并把部门证据交给最终复核。实现使用 OpenCollab 的工作流 API。
 
-## 为什么它很小
+## 实现位置
 
-Mini Edict 的组织逻辑集中在一个团队文件和一个工作流文件中。修改角色职责时编辑 `team.yaml`，调整阶段顺序时编辑工作流即可。其余通用能力由 OpenCollab 统一提供。
-
-这个示例展示了 OpenCollab 的核心价值。一种原本需要完整多智能体仓库表达的协作构想，可以缩成一套容易阅读、运行和修改的小型协议。
+协议位于 `team.yaml` 和一个工作流模块中，合计 239 行。修改角色职责时编辑 `team.yaml`，调整阶段顺序时编辑工作流。共享运行时由 OpenCollab 提供。
