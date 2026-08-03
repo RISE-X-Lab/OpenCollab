@@ -4,39 +4,30 @@
 
 # Brand assets
 
-The OpenCollab mark is **five nodes on a pentagon ring, joined by open arc
-segments** — an equal-width gradient ring with a circular notch bitten out at
-each node, plus five center dots. It encodes how the framework works:
-
-- **Organization** — the ring is non-linear and decentralized; every role is
-  interconnected, none is the hub.
-- **Control** — authority is not fixed to one node; it flows around the ring
-  as collaborators exchange ownership of the work.
-- **Emergence** — intelligence comes from the whole ring, not any single dot.
-
-> *An Operating Theory of Organized Intelligence — organization shapes intelligence.*
+The OpenCollab mark has five nodes on a pentagon ring joined by open arc
+segments. The equal-width gradient ring has a circular notch at each node and a
+dot in the center of each notch.
 
 ## Files
 
-The deployment-ready assets are self-contained SVG (inline gradients, masks,
-and text paths; no external resources), so they render consistently in places
-such as GitHub Markdown. The brand-board template keeps its explanatory copy as
-editable text; the generated brand board converts all of it to paths.
+The SVG assets contain their gradients, masks, and text paths within each file.
+The brand-board template keeps its explanatory copy as editable text. The
+generated brand board converts that copy to paths.
 
 | File | What it is | Use it on |
 |------|------------|-----------|
-| [`mark.svg`](mark.svg) | Primary mark — gradient ring + five dots, transparent background | Anywhere; theme-safe (no dark ink) |
+| [`mark.svg`](mark.svg) | Primary mark with a gradient ring, five dots, and a transparent background | Any theme |
 | [`mark-mono-black.svg`](mark-mono-black.svg) | Single-colour mark, black | Light backgrounds, one-colour print |
-| [`mark-mono-gray.svg`](mark-mono-gray.svg) | Single-colour mark, gray | Muted / secondary placements |
+| [`mark-mono-gray.svg`](mark-mono-gray.svg) | Single-colour mark, gray | Muted or secondary placements |
 | [`mark-mono-white.svg`](mark-mono-white.svg) | Single-colour mark, white | Dark backgrounds |
-| [`lockup-horizontal.svg`](lockup-horizontal.svg) | Mark + "OpenCollab" wordmark, side by side (dark ink) | **Light** backgrounds |
-| [`lockup-horizontal-tagline.svg`](lockup-horizontal-tagline.svg) | Horizontal lockup + tagline (dark ink) | **Light** backgrounds, hero placements |
+| [`lockup-horizontal.svg`](lockup-horizontal.svg) | Mark and "OpenCollab" wordmark side by side in dark ink | **Light** backgrounds |
+| [`lockup-horizontal-tagline.svg`](lockup-horizontal-tagline.svg) | Horizontal lockup and tagline in dark ink | **Light** backgrounds and hero placements |
 | [`lockup-stacked.svg`](lockup-stacked.svg) | Mark above the wordmark (dark ink) | **Light** backgrounds, square-ish space |
-| [`banner-dark.svg`](banner-dark.svg) | Mark + white wordmark on a dark rounded panel | README headers; theme-safe (own background) |
-| [`app-icon.svg`](app-icon.svg) | Mark on a dark rounded square (512×512) | App / launcher icon; theme-safe |
+| [`banner-dark.svg`](banner-dark.svg) | Mark and white wordmark on a dark rounded panel | README headers on any theme |
+| [`app-icon.svg`](app-icon.svg) | Mark on a dark rounded square (512×512) | App or launcher icon on any theme |
 | [`app-icon-mono.svg`](app-icon-mono.svg) | Monochrome rounded-square icon | One-colour app icon |
 | [`favicon.svg`](favicon.svg) | Tightly cropped mark | Favicon / 16–32 px tabs |
-| [`brand-guidelines.svg`](brand-guidelines.svg) | **Authoritative brand board** — construction, principles, colour, clear space, sizing, mono, applications | Reference / source of truth |
+| [`brand-guidelines.svg`](brand-guidelines.svg) | Brand board with construction, colour, clear space, sizing, mono, and application guidance | Reference |
 | [`brand-guidelines.svg.in`](brand-guidelines.svg.in) | Editable brand-board template | Regeneration input only |
 
 ## Colour
@@ -48,20 +39,17 @@ editable text; the generated brand board converts all of it to paths.
 | Ink / dark surface | `#0F172A` |
 | Light surface | `#E2E8F0` |
 
-The five node dots are sampled along the gradient (`#713AED`, `#2A53EB`,
-`#2563EB`, `#5556EC`, `#7C3AED`) so the ring reads as one continuous sweep.
+The five node dots use colors sampled along the gradient (`#713AED`, `#2A53EB`,
+`#2563EB`, `#5556EC`, `#7C3AED`).
 
 ## Usage
 
-- **Clear space** — keep at least one node-diameter (*x*) of empty space on all
-  four sides of the mark.
-- **Minimum size** — the full-detail mark holds down to ~48 px. At 32 px and
-  below, use the simplified / `favicon` crop.
-- **Pick by background** — gradient `mark` or `banner-dark`/`app-icon` (which
-  carry their own dark panel) are safe on any theme; the dark-ink lockups are
-  for light backgrounds; `mark-mono-white` is for dark backgrounds.
-- **Don't** — recolour the gradient, stretch or rotate the mark, add shadows or
-  outlines, or place a low-contrast variant on a busy background.
+| Requirement | Guidance |
+| --- | --- |
+| Clear space | Keep at least one node diameter (*x*) of empty space on all four sides of the mark. |
+| Minimum size | Use the full-detail mark at about 48 px or larger. At 32 px and below, use the simplified `favicon` crop. |
+| Background | The gradient `mark`, `banner-dark`, and `app-icon` work across themes. Use dark-ink lockups on light backgrounds and `mark-mono-white` on dark backgrounds. |
+| Alterations | Use the supplied gradient, proportions, orientation, and stroke treatment. Keep enough contrast with the background. |
 
 <p align="center">
   <img src="mark.svg" alt="mark" width="88">
@@ -71,17 +59,16 @@ The five node dots are sampled along the gradient (`#713AED`, `#2A53EB`,
 
 ## Terminal splash
 
-The TUI uses a separate pulsing brand dot in
-[`opencollab/adapters/tui/brand_motion.py`](../opencollab/adapters/tui/brand_motion.py).
-It does not render these SVG files and is not generated by the SVG asset script.
+[`opencollab/adapters/tui/brand_motion.py`](../opencollab/adapters/tui/brand_motion.py)
+defines the TUI's pulsing brand dot separately from the SVG assets and their
+generator.
 
 ## Source & regeneration
 
-The source of truth for mark geometry and board copy is
-[`brand-guidelines.svg.in`](brand-guidelines.svg.in). The ring-width / radius is
+[`brand-guidelines.svg.in`](brand-guidelines.svg.in) contains the mark geometry
+and board copy. The ring-width / radius is
 about 0.19, node-radius / radius is about 0.28, and notch-radius / radius is
-about 0.38. The generator preserves that geometry and regenerates these
-products:
+about 0.38. The generator preserves that geometry and produces these files.
 
 - `banner-dark.svg`
 - `lockup-horizontal.svg`
@@ -92,7 +79,7 @@ products:
 The wordmark uses **Liberation Sans 2.1.5 Bold** and the tagline uses
 **Liberation Sans 2.1.5 Regular**. The inputs came from Debian package
 `fonts-liberation 1:2.1.5-3`, corresponding to the upstream
-[`liberation-fonts` 2.1.5 source](https://github.com/liberationfonts/liberation-fonts/tree/2.1.5):
+[`liberation-fonts` 2.1.5 source](https://github.com/liberationfonts/liberation-fonts/tree/2.1.5).
 
 | Input | SHA-256 |
 |-------|---------|
@@ -102,10 +89,10 @@ The wordmark uses **Liberation Sans 2.1.5 Bold** and the tagline uses
 Liberation Sans is licensed under the **SIL Open Font License 1.1**. Its
 copyright notice and complete license are retained in
 [`LICENSES/LiberationSans-OFL-1.1.txt`](LICENSES/LiberationSans-OFL-1.1.txt).
-The font binaries are generation inputs and are not stored in this repository;
-the generated lockups contain vector outlines only.
+Generation uses the font binaries as inputs. The repository stores the
+generated lockups as vector outlines.
 
-Regenerate with the pinned path converter:
+Regenerate with the pinned path converter.
 
 ```bash
 uv run --no-project --with "fonttools==4.59.2" \

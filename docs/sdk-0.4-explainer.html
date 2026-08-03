@@ -1,14 +1,14 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#eaf1f2">
-  <title>OpenCollab SDK 0.4 — A compact surface for topology research</title>
+  <title>OpenCollab SDK 0.4 | Research interfaces</title>
   <meta
     name="description"
-    content="OpenCollab topology research uses the compact SDK, while harness ablations use Clean Architecture through Bootstrap, Ports, and Adapters."
+    content="Use the OpenCollab SDK for topology experiments and Clean Architecture interfaces for implementation ablations."
   >
   <style>
     :root {
@@ -955,7 +955,7 @@
 
     .ownership {
       display: grid;
-      grid-template-rows: repeat(3, 1fr);
+      grid-template-rows: repeat(2, 1fr);
       color: var(--paper);
       background: var(--ink);
       border: 1px solid rgba(248, 251, 250, 0.24);
@@ -978,10 +978,6 @@
       color: var(--mint);
       font: 700 9px/1.4 var(--mono);
       letter-spacing: 0.1em;
-    }
-
-    .ownership-item:nth-child(3) span {
-      color: var(--coral);
     }
 
     .ownership-item strong {
@@ -1134,7 +1130,7 @@
       }
 
       .ownership {
-        grid-template-columns: repeat(3, 1fr);
+        grid-template-columns: repeat(2, 1fr);
         grid-template-rows: 1fr;
       }
 
@@ -1347,19 +1343,19 @@
 
     <div class="hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow">Choose the surface by research question</p>
+        <p class="eyebrow">Research interfaces</p>
         <h1>
-          <span>Study topology</span>
-          <span class="accent">with a compact SDK</span>
+          <span>Run topology experiments</span>
+          <span class="accent">with the OpenCollab SDK</span>
         </h1>
         <p class="hero-lede">
           Establish a baseline with <code>agent</code>, then study collaboration
-          control graphs with <code>team</code> and <code>workflow</code>. When the
-          question becomes an ablation of models, tools, or environments, enter
-          through Clean Architecture instead of expanding the SDK.
+          control graphs with <code>team</code> and <code>workflow</code>. Use
+          Clean Architecture interfaces for ablations of models, tools, or
+          environments.
         </p>
         <div class="hero-thesis">
-          <strong>CHOOSE THE RIGHT ENTRY</strong><br>
+          <strong>RESEARCH ENTRY POINTS</strong><br>
           topology → OpenCollab SDK<br>
           harness → Bootstrap + Ports + Adapters
         </div>
@@ -1368,7 +1364,7 @@
       <figure class="lens-board" aria-labelledby="board-title">
         <div class="board-head">
           <strong id="board-title">RESEARCH LENS BOARD / OC-04</strong>
-          <span>orthogonal questions · shared runtime</span>
+          <span>topology and implementation ablations</span>
         </div>
 
         <div class="lens-grid">
@@ -1387,10 +1383,6 @@
               <div>
                 <dt>CHOOSE</dt>
                 <dd>agent · team · workflow</dd>
-              </div>
-              <div>
-                <dt>RETURN</dt>
-                <dd>one RunResult envelope</dd>
               </div>
             </dl>
           </article>
@@ -1411,10 +1403,6 @@
                 <dt>CHANGE</dt>
                 <dd>one Adapter via one Port</dd>
               </div>
-              <div>
-                <dt>COMPOSE</dt>
-                <dd>Bootstrap binds treatment</dd>
-              </div>
             </dl>
           </article>
         </div>
@@ -1426,42 +1414,19 @@
         </div>
         <figcaption class="board-caption">
           <span>The research object determines the entry point</span>
-          <span>The SDK does not own harness assembly</span>
+          <span>Clean Architecture handles harness assembly</span>
         </figcaption>
       </figure>
     </div>
   </header>
 
   <main id="main">
-    <section class="view-index" aria-label="Overview of two research perspectives">
-      <div class="view-index-inner">
-        <div class="index-thesis">
-          <span>ONE DECISION</span>
-          <strong>Start by asking: what am I studying?</strong>
-        </div>
-        <div class="index-item">
-          <span>TOPOLOGY → SDK</span>
-          <div>
-            <strong>Run the control condition directly</strong>
-            <p>Agent baseline, dynamic team topology, or programmed workflow topology.</p>
-          </div>
-        </div>
-        <div class="index-item">
-          <span>HARNESS → CLEAN ARCHITECTURE</span>
-          <div>
-            <strong>Isolate an infrastructure variable</strong>
-            <p>Hold the control regime fixed and replace one Adapter through one Port.</p>
-          </div>
-        </div>
-      </div>
-    </section>
-
     <section class="research-section" id="topology">
       <div class="section-head">
         <div class="view-badge" aria-hidden="true">A</div>
         <div class="section-title">
           <p class="section-kicker">Topology research · SDK entry</p>
-          <h2>Three conditions, one call surface</h2>
+          <h2>A shared call surface for topology experiments</h2>
         </div>
         <p class="section-intro">
           Construct <code>OpenCollab</code> once, then choose the baseline, a
@@ -1517,15 +1482,8 @@
           <div class="ownership-item">
             <span>INIT</span>
             <div>
-              <strong>Construct once</strong>
-              <p><code>OpenCollab(".")</code> resolves the workspace and configuration once.</p>
-            </div>
-          </div>
-          <div class="ownership-item">
-            <span>SELECT</span>
-            <div>
-              <strong>The method is the condition</strong>
-              <p><code>agent</code>, <code>team</code>, and <code>workflow</code> state the control condition directly.</p>
+              <strong>Construct once, then select a condition</strong>
+              <p><code>OpenCollab(".")</code> resolves the workspace and configuration. The <code>agent</code>, <code>team</code>, and <code>workflow</code> methods select the control condition.</p>
             </div>
           </div>
           <div class="ownership-item">
@@ -1539,7 +1497,7 @@
       </div>
 
       <div class="public-surface">
-        <strong>COMPLETE EVERYDAY SURFACE</strong>
+        <strong>PUBLIC PACKAGE ROOT</strong>
         <div class="surface-names">
           <code>OpenCollab</code>
           <code>RunResult</code>
@@ -1611,8 +1569,7 @@
       <strong>Change the entry point when the research question changes</strong>
       <p>
         To ablate a model, tool, environment, or context strategy, hold the
-        control condition fixed and move through Bootstrap, Ports, and Adapters
-        instead of adding more SDK parameters.
+        control condition fixed and use Bootstrap, Ports, and Adapters.
       </p>
     </aside>
 
@@ -1624,9 +1581,9 @@
           <h2>Hold the regime fixed, isolate one variable</h2>
         </div>
         <p class="section-intro">
-          The Harness defines the experimental condition, and Bootstrap
-          assembles concrete Adapters. Application depends only on Ports;
-          Domain remains unaware of the experimental infrastructure.
+          The Harness defines the experimental condition. Bootstrap assembles
+          concrete Adapters. Application depends on Ports, and Domain retains
+          the same state semantics across treatments.
         </p>
       </div>
 
@@ -1704,15 +1661,15 @@
       </div>
 
       <div class="clean-note">
-        <strong>BOUNDARY RULE</strong>
-        <p>Topology selects a control graph through the SDK; the Harness replaces implementations through Ports. Neither research path contaminates the core.</p>
+        <strong>ARCHITECTURE BOUNDARY</strong>
+        <p>Topology selects a control graph through the SDK. The Harness replaces implementations through Ports. Both paths share the same Application and Domain semantics.</p>
       </div>
     </section>
   </main>
 
   <footer class="page-footer">
     <div class="footer-inner">
-      <p>Topology uses the SDK. <span>Harnesses use Ports.</span></p>
+      <p>See the package guide for the SDK and architecture reference.</p>
       <a
         href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md"
         target="_blank"

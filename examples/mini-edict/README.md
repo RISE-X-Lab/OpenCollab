@@ -2,10 +2,9 @@
 
 [English](README.md) | [Chinese](README.zh-CN.md)
 
-Mini Edict turns the Three Departments and Six Ministries into a compact,
-executable governance protocol. Everything specific to the example lives in
-this directory. OpenCollab provides agent sessions, model access, concurrency,
-budgets, tracing, and persistence.
+Mini Edict implements the Three Departments and Six Ministries as an executable
+governance protocol. Everything specific to the example lives in this
+directory. OpenCollab provides the agent runtime.
 
 ```text
 task
@@ -23,7 +22,7 @@ The one-shot workflow enforces this separation in Python control flow. Execution
 cannot start before Menxia approval. A veto returns concrete findings to
 Zhongshu. Shangshu assigns distinct work and acceptance criteria only to
 ministries relevant to the task. The final audit checks the memorial against the
-approved proposal, assignments, ministry reports, and their evidence.
+complete execution record.
 
 ## Talk to Zhongshu
 
@@ -46,7 +45,7 @@ mode.
 
 ## Run one decree
 
-The same institution is available as a hard-gated one-shot workflow.
+The same institution can run as a one-shot workflow with fixed approval gates.
 
 ```bash
 OPENCOLLAB_WORKFLOWS_DIR=examples/mini-edict/workflows \
@@ -55,27 +54,21 @@ OPENCOLLAB_WORKFLOWS_DIR=examples/mini-edict/workflows \
   --args '{"task":"Design a six-month open-source community growth plan."}'
 ```
 
-This command prints each institutional phase and returns the proposal, review
-history, dispatch decision, selected ministry reports, final memorial, audit,
-and total token use.
+This command prints each institutional phase and returns the complete execution
+record with its token use.
 
 ## Design references
 
 The workflow adapts Edict's mandatory
 [Menxia review](https://github.com/cft0808/edict/blob/main/agents/menxia/SOUL.md)
 and dynamic [Shangshu routing](https://github.com/cft0808/edict/blob/main/agents/shangshu/SOUL.md).
-It also follows the skill-first packaging, bounded revision loop, selective
-dispatch, and evidence-oriented output described by
-[Agent-Team](https://github.com/EthanHuangEbor/Agent-Team). The implementation
-uses OpenCollab's workflow API instead of copying either project's runtime or
-operations stack.
+It also uses [Agent-Team](https://github.com/EthanHuangEbor/Agent-Team) as a
+reference for packaging skills and controlling revision and dispatch. The
+implementation uses OpenCollab's workflow API.
 
-## Why the example is small
+## Files to edit
 
-The example contains one team file for conversation and one workflow file for
-hard-gated execution. Changing the organization means editing role mandates or
-stage order. Generic agent infrastructure remains in OpenCollab.
-
-This is the point of the demonstration. A collaboration idea that often becomes
-a standalone multi-agent repository can be expressed as a small, inspectable
-protocol on top of a shared framework.
+The team file defines the conversational roles and the workflow file defines
+the gated execution path. Edit role mandates in `team.yaml` and stage order in
+the workflow. Together, these files implement the protocol on OpenCollab's
+shared runtime.
