@@ -38,14 +38,20 @@ Model access, context handling, tool execution, orchestration, and environments
 have separate extension points. An experiment can change one component at a
 time.
 
-New collaboration designs can reuse this runtime and live in a small team file
-and workflow.
+OpenCollab turns ambitious multi-agent ideas into small, runnable extensions.
+Researchers describe the collaboration protocol while the framework provides
+the reusable infrastructure needed to run it.
 
 [Edict](https://github.com/cft0808/edict) implements the Three
 Departments and Six Ministries as a standalone system with roughly 24,000
 source lines. [Mini Edict](examples/mini-edict/) implements Edict's core
 review-and-dispatch protocol in 239 lines of team and workflow code on the
-OpenCollab runtime. The example includes a bilingual guide and tests.
+OpenCollab runtime. This roughly hundredfold reduction makes OpenCollab's value
+concrete. A substantial collaboration design becomes a compact, readable
+protocol when it runs on shared infrastructure. Researchers can concentrate on
+the new idea and turn it into a working system with a fraction of the
+engineering effort. The same OpenCollab runtime can carry many more
+collaboration designs. The example includes a bilingual guide and tests.
 
 ## Quick start
 
