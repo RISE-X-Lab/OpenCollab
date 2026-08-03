@@ -1,34 +1,34 @@
 # Contributing to OpenCollab
 
-Thanks for your interest in improving OpenCollab! This guide covers how to set
-up a development environment, the checks your change must pass, and the one
-architectural rule the codebase enforces.
+This guide explains how to prepare a development environment and submit changes
+that satisfy OpenCollab's checks and dependency rule.
 
 ## Project layout
 
-OpenCollab follows a strict clean architecture — dependencies point inward only:
+OpenCollab follows strict clean architecture. Dependencies point inward.
 
 ```
 adapters  →  application  →  domain
 ```
 
-- `opencollab/domain/` — pure value objects + the session FSM. Standard library only, no I/O.
-- `opencollab/application/` — use cases, scheduler, ports (`application/ports.py`). Imports `domain` + stdlib only.
-- `opencollab/adapters/` — concrete implementations: `cli/`, `tui/`, `llm/`, `tools/`, environments, tracing, session store.
-- `opencollab/bootstrap/` — composition root; the only layer that knows concrete types.
-- `opencollab/sdk/` — the versioned boundary for external workflow and evaluation packages.
-- `scripts/` — framework launchers and provider diagnostics.
+- `opencollab/domain/` contains pure value objects and the session FSM. It uses the standard library and performs no I/O.
+- `opencollab/application/` contains use cases, the scheduler, and ports in `application/ports.py`. It imports `domain` and the standard library.
+- `opencollab/adapters/` contains the CLI, TUI, LLM providers, tools, environments, tracing, and session store.
+- `opencollab/bootstrap/` is the composition root and the only layer that knows concrete types.
+- `opencollab/sdk/` is the versioned boundary for external workflow and evaluation packages.
+- `scripts/` contains framework launchers and provider diagnostics.
 
 ## Development setup
 
-OpenCollab uses [uv](https://docs.astral.sh/uv/). From the repository root:
+OpenCollab uses [uv](https://docs.astral.sh/uv/). Run the following command from
+the repository root.
 
 ```bash
 uv sync --extra dev            # create .venv with runtime + dev dependencies
 ```
 
-Copy the example config and point it at any OpenAI-compatible (or Anthropic)
-endpoint — **never commit real API keys**:
+Copy the example config and point it at an OpenAI-compatible or Anthropic
+endpoint. **Never commit real API keys.**
 
 ```bash
 cp configs/.env.example configs/.env   # then set OPENCOLLAB_API_KEY
@@ -45,14 +45,15 @@ New behavior needs tests, and the suite must stay green.
 
 ### Enforced automatically in CI
 
-- **Lint** — `ruff check .` over the whole repository; config lives in the
+- **Lint** runs `ruff check .` over the whole repository. Config lives in the
   repository-root `ruff.toml`.
-- **PR title** — must follow Conventional Commits; squash-merge uses it as the
+- **PR title** must follow Conventional Commits. Squash-merge uses it as the
   commit subject on `main`.
-- **File hygiene** — a newly added file over 500 KB, or a new `.py` module over
-  800 lines, fails the build. Commit `.tex`/`.md` sources, not compiled PDFs.
+- **File hygiene** rejects a newly added file over 500 KB or a new `.py` module over
+  800 lines. Commit `.tex`/`.md` sources, not compiled PDFs.
 
-Optionally mirror these locally: `pip install pre-commit && pre-commit install`.
+To run the same hooks locally, use
+`pip install pre-commit && pre-commit install`.
 
 ## The architecture rule (enforced by tests)
 
@@ -65,10 +66,10 @@ Optionally mirror these locally: `pip install pre-commit && pre-commit install`.
 
 ## Commits & pull requests
 
-- Use [Conventional Commits](https://www.conventionalcommits.org/) in English:
+- Use [Conventional Commits](https://www.conventionalcommits.org/) in English.
   `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
 - `refactor:` commits must stay behavior-preserving.
-- Keep pull requests focused; describe what changed and how you verified it.
+- Keep pull requests focused. Describe what changed and how you verified it.
 - Keep code, comments, tracked documentation, commit summaries, pull request
   titles, pull request descriptions, and review replies in English.
 
@@ -89,4 +90,5 @@ documentation changes.
 ## Reporting issues
 
 - Functional bugs and feature requests: open a GitHub issue using the templates.
-- Security vulnerabilities: **do not** open a public issue — see [SECURITY.md](SECURITY.md).
+- Security vulnerabilities must not be reported in a public issue. Use the
+  private process in [SECURITY.md](SECURITY.md).

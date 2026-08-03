@@ -1,24 +1,26 @@
 # OpenCollab Python Package
 
-This guide documents the installed package and the framework internals behind
-the concise [project homepage](../README.md). Run repository commands from the
-repository root unless noted otherwise.
+OpenCollab is installed as a Python package and exposes a small public API over
+the framework runtime. The [project homepage](../README.md) gives the quick
+start. Run repository commands from the repository root unless a command says
+otherwise.
 
 ## Install
 
 OpenCollab supports Linux and macOS hosts. Its local file adapters require
 descriptor-relative operations, no-follow `stat`, `O_NOFOLLOW`, fd-based
-directory listing, callable `fcntl.flock`, and an atomic no-clobber rename:
-`renameat2(RENAME_NOREPLACE)` on Linux or `renameatx_np(RENAME_EXCL)` on macOS
-10.12 and newer. Missing primitives produce an explicit capability error.
+directory listing, callable `fcntl.flock`, and an atomic no-clobber rename. The
+rename primitive is `renameat2(RENAME_NOREPLACE)` on Linux and
+`renameatx_np(RENAME_EXCL)` on macOS 10.12 and newer. OpenCollab reports a
+capability error when the host lacks a required primitive.
 
-Install the project and development dependencies with `uv`:
+Install the project and development dependencies with `uv`.
 
 ```bash
 uv sync --extra dev
 ```
 
-Or create a conventional virtual environment with `pip`:
+Or create a conventional virtual environment with `pip`.
 
 ```bash
 python3 -m venv .venv
@@ -27,7 +29,7 @@ python3 -m venv .venv
 
 ## Commands
 
-The registered CLI is the preferred entry point during development:
+During development, run the registered CLI from the project environment.
 
 ```bash
 uv run opencollab --workspace .
@@ -35,11 +37,11 @@ uv run opencollab --workspace .
 
 It runs the current checkout in the project environment, resolves
 `configs/.env`, and starts agent 0 with the built-in lead-only configuration.
-There is no separate `team` subcommand: pass `--team-config PATH` to select a
-declared multi-agent team explicitly. `scripts/start_opencollab.sh` remains a
-compatibility launcher for environments that need its physical-path handling.
+Team mode uses the root command with `--team-config PATH`; there is no separate
+`team` subcommand. `scripts/start_opencollab.sh` remains available for
+environments that need its physical-path handling.
 
-After installation, invoke the CLI directly from the active environment:
+After installation, invoke the CLI directly from the active environment.
 
 ```bash
 opencollab --workspace .
@@ -52,18 +54,17 @@ A workflow directory contains caller-authored Python modules tagged with
 `@workflow`. `OPENCOLLAB_WORKFLOWS_DIR` applies to both `workflow list` and
 `workflow run`.
 
-Useful flags:
+The following flags control tracing, isolation, team selection, and approvals.
 
 - `--trace` records every LLM call and tool execution.
 - `--no-worktrees` disables per-child git-worktree isolation.
-- `--team-config PATH` selects a team YAML file instead of the built-in lead.
+- `--team-config PATH` selects a team YAML file.
 - `--yolo` auto-approves risky commands.
 
 ## Python SDK
 
-The package root is the complete everyday API: one stateful client, one result
-type, one error, and the workflow decorator. Compatibility follows package
-SemVer.
+The package root exposes `OpenCollab`, `RunResult`, `RunError`, and the
+`workflow` decorator. Compatibility follows package SemVer.
 
 ```python
 import asyncio
@@ -84,8 +85,8 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
-The same client exposes `agent(...)`, `team(...)`, and `workflow(...)`; all
-return `RunResult`. Import optional authoring contracts from
+The same client exposes `agent(...)`, `team(...)`, and `workflow(...)`. All
+three return `RunResult`. Import optional authoring contracts from
 `opencollab.tools`, `opencollab.environments`, and `opencollab.workflows`.
 Treat other package paths as internal. An `artifacts` directory, when supplied,
 must be new or empty because each run claims it for executable evidence.
@@ -94,17 +95,17 @@ argument names a team YAML file.
 
 `OpenCollab.configuration` is a read-only snapshot of effective model,
 provider, budget, timeout, sampling, output-token, and thinking settings.
-`thinking_params` is deep-copied so callers cannot mutate client state. API keys
+`thinking_params` is deep-copied, so callers receive an independent snapshot. API keys
 and base URLs are excluded. `base_url_sha256` provides a stable endpoint
 fingerprint without exposing credentials embedded in a URL. Agent runs accept
-`max_steps` and `cleanup_timeout`; the older `steps` spelling remains a supported
+`max_steps` and `cleanup_timeout`. The older `steps` spelling remains a supported
 alias.
 Workflow runs accept `max_steps`, `system_prompt`, and `cleanup_timeout`.
 Completed, stopped, and failed workflow results report aggregate session,
 step, token, and markup-recovery metrics. Sanitized child-provider failures are
 available through `RunResult.agent_failures`.
 
-Built-in tools can be composed without importing concrete adapters:
+Use `builtin_tools` to compose tools through the public package.
 
 ```python
 from opencollab.tools import builtin_tools
@@ -124,7 +125,7 @@ the public `VerificationTool` protocol. Its read-only `verified_targets`
 property contains exact requested targets whose latest parser-backed verdict
 was green.
 
-Environment composition uses the same narrow public module:
+Environment composition uses the same narrow public module.
 
 ```python
 from opencollab.environments import (
@@ -138,11 +139,11 @@ isolated_source = worktree_environment(".")
 container = docker_environment("python:3.11-slim", isolated_source)
 ```
 
-These factories construct caller-owned environments without eagerly setting
-them up. Every public environment supports `await environment.setup()`. Docker
-environments additionally accept `mount_dir`; host and worktree environments
-reject that argument. The caller retains setup, mount, and cleanup timing.
-Concrete adapter classes stay behind the bootstrap boundary.
+These factories return caller-owned environments whose setup has not started.
+Every public environment supports `await environment.setup()`. Docker
+environments also accept `mount_dir`. Host and worktree environments raise an
+argument error for `mount_dir`. The caller controls setup, mount, and cleanup
+timing. Concrete adapter classes live in `adapters`, and Bootstrap wires them.
 
 Run metrics separate OpenCollab-owned session quiescence from environment
 quiescence. `session_quiesced` proves that session and persistence work has
@@ -153,7 +154,7 @@ performs and verifies its own environment cleanup.
 ### Workflow authoring
 
 A workflow is a plain async Python function tagged with `@workflow`. Create
-`workflows/implement_and_review.py`:
+`workflows/implement_and_review.py` with this implementation.
 
 ```python
 from typing import Any
@@ -180,7 +181,7 @@ async def implement_and_review(
 ```
 
 OpenCollab discovers top-level `*.py` modules in `workflows/` by default. Run
-the decorated function through the CLI:
+the decorated function through the CLI.
 
 ```bash
 uv run opencollab workflow run implement-and-review \
@@ -193,20 +194,20 @@ embedding OpenCollab in Python.
 
 Evidence-preserving workflows can call `ctx.draft_findings(...)` to capture a
 structured cite-or-abstain draft before exploration. OpenCollab owns this
-generic capture primitive; benchmark-specific prompts, policies, datasets, and
-runners remain in OpenCollab-Eval.
+generic capture primitive. OpenCollab-Eval owns benchmark prompts, policies,
+datasets, and runners.
 
 For a visual architecture walkthrough, open the
 [SDK 0.4 research architecture](../docs/sdk-0.4-explainer.html).
 
-Evaluation runners and benchmark-specific workflows intentionally live outside
-the framework package. Topology research uses `team(...)` and `workflow(...)`;
-external harnesses define ablations while Bootstrap binds each treatment
-through the Clean Architecture ports.
+OpenCollab-Eval contains evaluation runners and benchmark workflows. Topology
+research uses `team(...)` and `workflow(...)`. External harnesses define
+ablations, and Bootstrap binds each treatment through the Clean Architecture
+ports.
 
 ## Architecture
 
-OpenCollab follows strict clean architecture: dependencies point inward only,
+OpenCollab follows strict clean architecture. Dependencies point inward along
 `adapters → application → domain`.
 
 - `domain/` contains pure value objects and the session state machine. It uses
@@ -220,7 +221,7 @@ OpenCollab follows strict clean architecture: dependencies point inward only,
 - `sdk/` is the versioned integration surface for external packages.
 
 Boundary tests enforce the dependency direction. An outer capability needed by
-the application becomes a port; its concrete implementation is wired in
+the application becomes a port. Its concrete implementation is wired in
 `bootstrap/`. This keeps the domain and application testable without network or
 filesystem access.
 
@@ -229,18 +230,18 @@ filesystem access.
 ### Validated agent sessions
 
 A single agent is a validated state machine in `domain/session.py`. Invalid
-edges raise instead of silently passing. Every early stop is one of three
-named terminal states: `DONE` (a final answer), `ERROR` (an unhandled fault),
-and `STOPPED`-a single graceful-stop terminal whose `reason` records whether
-the halt was a budget, step, loop, or context overflow.
+edges raise an error. The state machine has three terminal states. `DONE`
+contains a final answer, `ERROR` records an unhandled fault, and `STOPPED`
+records a graceful halt. Its `reason` identifies a budget, step, loop, or
+context overflow.
 
 ### Cooperative teams
 
-A team follows an OS-process-inspired model: the session table is the process
-table, `spawn` resembles `fork`, and agents suspend and wake through a
-cooperative scheduler. Budget is reserved before the first `await`, preventing
-a concurrent child batch from overspending the shared pool. Each child can work
-in an isolated git worktree, and its diff returns to the parent with its result.
+A team stores active agents in a session table and schedules them cooperatively.
+The `spawn` operation creates child sessions. Budget is reserved before the
+first `await`, so a concurrent child batch cannot overspend the shared pool.
+Each child can work in an isolated git worktree and return its diff with the
+result.
 
 ### Swappable components
 
@@ -257,15 +258,16 @@ in an isolated git worktree, and its diff returns to the parent with its result.
 The test suite pins core invariants such as session transitions, budget
 reservation, context shaping, and import boundaries.
 
-Open research gaps remain: port-level ablations have not yet been run,
-workflow-versus-team comparisons are incomplete, prompt caching is not wired,
-and the session state machine does not yet persist budget and phase across
-restarts. See [`../docs/`](../docs/) for design records and research notes.
+Port-level ablations and workflow-versus-team comparisons have not been
+completed. Prompt caching is unavailable. Session snapshots restore token usage
+and recoverable terminal or awaiting-event phases. In-flight provider and tool
+phases resume from `IDLE` because their process-local coroutines do not survive
+a restart. See [`../docs/`](../docs/) for design records and research notes.
 
 ## Development
 
 Respect the dependency direction and keep public names re-exported when modules
-move. From the repository root, run:
+move. Run the checks from the repository root.
 
 ```bash
 uv run ruff check .
@@ -275,7 +277,8 @@ uv run pytest -q
 See [`../CONTRIBUTING.md`](../CONTRIBUTING.md) for contributor guidance and
 [`../CLAUDE.md`](../CLAUDE.md) for repository-specific architecture notes. The
 archived module map under [`../docs/archive/repomap/`](../docs/archive/repomap/)
-is a historical snapshot rather than a maintained source of truth.
+records an earlier revision. Use the current source and tests for the current
+module layout.
 
 ## License
 
