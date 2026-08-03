@@ -355,11 +355,13 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 )
                 if recent_same >= MAX_EXACT_FILE_READS or same_file >= MAX_SAME_FILE_READS:
                     exact = recent_same >= MAX_EXACT_FILE_READS
+                    _, offset, limit = _file_read_range_key(args)
                     warning = (
                         "[Duplicate read blocked: "
                         + (
-                            "this exact file range was already read. Use a grep hit and "
-                            "a different offset instead of re-reading it."
+                            "this exact file range was already read. Continue with "
+                            f"offset={offset + max(1, limit)} or use grep to inspect "
+                            "a different location."
                             if exact
                             else "this file has already been paged extensively. Edit now or inspect another file."
                         )

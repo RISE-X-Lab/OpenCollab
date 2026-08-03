@@ -162,8 +162,9 @@ def test_run_loop_loop_block_limit_stops_before_next_llm_call():
     assert result == ""
     assert llm.calls == []
     assert state.phase is SessionPhase.STOPPED
-    assert state.terminal_reason == "loop block limit reached: 3 repeated tool calls"
-    assert events == [("error", {"reason": "loop block limit reached: 3 repeated tool calls", "aid": -1})]
+    reason = "loop block limit reached: 3 repeated tool-call batches"
+    assert state.terminal_reason == reason
+    assert events == [("error", {"reason": reason, "aid": -1})]
 
 def test_run_loop_llm_step_events_trace_and_message_shape():
     events, bus = collect_events()

@@ -441,7 +441,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             return
 
         if self.state.turn.loop_blocked_since_progress >= DEFAULT_LOOP_BLOCKED_LIMIT:
-            reason = f"loop block limit reached: {self.state.turn.loop_blocked_since_progress} repeated tool calls"
+            reason = (
+                "loop block limit reached: "
+                f"{self.state.turn.loop_blocked_since_progress} repeated tool-call batches"
+            )
             await self._stop_precheck(reason)
             return
 

@@ -375,6 +375,7 @@ def test_tool_execution_use_case_blocks_a_repeated_exact_file_range():
 
     assert result.loop_detections == [LoopDetection(tool="file_read", count=2)]
     assert "exact file range was already read" in result.messages_to_append[0]["content"]
+    assert "offset=11" in result.messages_to_append[0]["content"]
     assert len(tool.runtime_calls) == 1
 
 
@@ -643,6 +644,30 @@ def test_loop_block_short_circuit_counts_toward_hard_brake():
 
     assert state.turn.loop_blocked_since_progress == 1
     assert result.loop_detections == [LoopDetection(tool="fake_tool", count=3)]
+
+
+def test_parallel_loop_blocks_count_as_one_failed_batch():
+    state = SessionState(messages=[])
+    use_case, _ = build_use_case(
+        state=state, agent=FakeAgent(tools=[RuntimeNativeTool()])
+    )
+    hashes = [use_case.tool_call_hash("fake_tool", {"value": value}) for value in range(1, 4)]
+    state.replace_recent_tool_hashes([*hashes, *hashes])
+
+    result = run(
+        use_case.process(
+            [
+                tool_call(
+                    call_id=f"repeat-{index}", arguments=f'{{"value": {index + 1}}}'
+                )
+                for index in range(3)
+            ]
+        )
+    )
+    result.apply_to(state)
+
+    assert len(result.loop_detections) == 3
+    assert state.turn.loop_blocked_since_progress == 1
 
 
 class RevocableEnvironment(Environment):

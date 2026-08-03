@@ -113,7 +113,7 @@ class ToolProcessingResult:
         if made_progress:
             state.turn.loop_blocked_since_progress = 0
         elif self.loop_detections:
-            state.turn.loop_blocked_since_progress += len(self.loop_detections)
+            state.turn.loop_blocked_since_progress += 1
 
     def apply_hashes_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         """Apply only the loop-detection hashes, not the result messages.
