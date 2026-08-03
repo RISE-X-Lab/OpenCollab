@@ -23,6 +23,7 @@ from session_run_loop_test_support import (
 from opencollab.adapters.llm.errors import is_context_overflow_error
 from opencollab.application.session_run import GenerationTimeoutError
 from opencollab.application.shaping import OldHistorySnipShaper, ShaperPipeline
+from opencollab.application.steering import READS_NUDGE_HARD
 from opencollab.domain.session import (
     SessionPhase,
     SessionState,
@@ -114,7 +115,7 @@ def test_overflow_retry_preserves_hard_write_gate():
     state = SessionState(
         messages=[{"role": "system", "content": "sys"}],
     )
-    state.turn.reads_since_last_edit = 12
+    state.turn.reads_since_last_edit = READS_NUDGE_HARD
     llm = OverflowThenWrite()
     runner = build_runner(
         state=state,
@@ -170,7 +171,7 @@ def test_overflow_retry_preserves_failed_edit_error_and_recovery_gate():
             {"role": "tool", "tool_call_id": "failed-edit", "content": error},
         ],
     )
-    state.turn.reads_since_last_edit = 12
+    state.turn.reads_since_last_edit = READS_NUDGE_HARD
     llm = OverflowThenRecover()
     runner = build_runner(
         state=state,

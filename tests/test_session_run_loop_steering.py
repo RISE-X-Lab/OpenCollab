@@ -32,7 +32,24 @@ from opencollab.domain.tools import ToolProcessingResult
 
 def test_write_steering_leaves_room_to_recover_from_a_failed_edit():
     assert READS_NUDGE_SOFT == 8
-    assert READS_NUDGE_HARD == 12
+    assert READS_NUDGE_HARD == 16
+
+
+def test_write_steering_does_not_force_an_edit_before_hard_threshold():
+    message, override, level = build_steering_block(
+        used_tokens=1_000,
+        max_budget_tokens=100_000,
+        step_count=4,
+        max_steps=60,
+        reads=14,
+        has_write=True,
+        has_structured_output=False,
+        structured_override=None,
+    )
+
+    assert override is None
+    assert level == "soft"
+    assert "make it now" in message["content"]
 
 
 def test_steering_status_line_built_from_budget_and_steps():
@@ -190,7 +207,9 @@ def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
     assert state.turn.reads_since_last_edit == 0
 
 
-def _failed_edit_state(arguments: str, result: str) -> SessionState:
+def _failed_edit_state(
+    arguments: str, result: str, *, tool_name: str = "apply_patch"
+) -> SessionState:
     return SessionState(
         messages=[
             {"role": "system", "content": "sys"},
@@ -198,7 +217,7 @@ def _failed_edit_state(arguments: str, result: str) -> SessionState:
                 "role": "assistant",
                 "tool_calls": [tool_call(
                     call_id="failed-edit",
-                    name="apply_patch",
+                    name=tool_name,
                     arguments=arguments,
                 )],
             },
@@ -250,6 +269,61 @@ def test_failed_edit_gets_one_targeted_read_turn_before_write_gate():
     assert [spec["function"]["name"] for spec in llm.calls[1]["tools"]] == [
         "file_write",
         "apply_patch",
+    ]
+
+
+def test_noop_edit_gets_one_targeted_read_turn_before_write_gate():
+    target = "pkg/module.py"
+    state = _failed_edit_state(
+        json.dumps({
+            "path": target,
+            "mode": "str_replace",
+            "old_str": "same",
+            "new_str": "same",
+        }),
+        f"Error: str_replace was a no-op; nothing changed in {target}.",
+        tool_name="file_write",
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas("file_read", "grep", "file_write", "apply_patch"),
+    )
+
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    assert [spec["function"]["name"] for spec in llm.calls[0]["tools"]] == [
+        "file_read",
+        "grep",
+    ]
+    assert target in llm.calls[0]["messages"][-1]["content"]
+
+
+def test_noop_patch_gets_one_targeted_read_turn_before_write_gate():
+    target = "pkg/module.py"
+    state = _failed_edit_state(
+        json.dumps({
+            "path": target,
+            "mode": "line_replace",
+            "start_line": 1,
+            "end_line": 1,
+            "new_str": "same",
+        }),
+        f"Error: patch was a no-op; nothing changed in {target}.",
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas("file_read", "grep", "file_write", "apply_patch"),
+    )
+
+    run(runner.call_llm(runner.build_tool_schemas()))
+
+    assert [spec["function"]["name"] for spec in llm.calls[0]["tools"]] == [
+        "file_read",
+        "grep",
     ]
 
 

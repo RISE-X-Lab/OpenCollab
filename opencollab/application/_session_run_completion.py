@@ -33,6 +33,8 @@ _RECOVERABLE_EDIT_ERRORS = (
     "Error applying patch to ",
     "Error: old_str not found in ",
     "Error: old_str found ",
+    "Error: str_replace was a no-op",
+    "Error: patch was a no-op",
 )
 
 

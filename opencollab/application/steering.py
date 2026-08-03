@@ -16,7 +16,7 @@ from typing import Any
 # Reads-without-write escalation thresholds: at SOFT we advise a write, at HARD
 # we demand it and force a tool call.
 READS_NUDGE_SOFT = 8
-READS_NUDGE_HARD = 12
+READS_NUDGE_HARD = 16
 
 
 def build_steering_block(
