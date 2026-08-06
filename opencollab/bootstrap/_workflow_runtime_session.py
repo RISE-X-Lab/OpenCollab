@@ -62,7 +62,6 @@ class WorkflowSessionFactory:
         thinking: bool = DEFAULT_THINKING,
         thinking_params: dict | None = None,
         reasoning_effort: str | None = None,
-        llm_max_retries: int = 3,
         llm_connect_timeout: float = 30.0,
         llm_first_event_timeout: float = 180.0,
         llm_stream_idle_timeout: float = 180.0,
@@ -87,7 +86,6 @@ class WorkflowSessionFactory:
         self._thinking = thinking
         self._thinking_params = thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
         self._reasoning_effort = reasoning_effort
-        self._llm_max_retries = llm_max_retries
         self._llm_connect_timeout = llm_connect_timeout
         self._llm_first_event_timeout = llm_first_event_timeout
         self._llm_stream_idle_timeout = llm_stream_idle_timeout
@@ -148,7 +146,6 @@ class WorkflowSessionFactory:
             thinking=use_thinking,
             thinking_params=self._thinking_params,
             reasoning_effort=self._reasoning_effort,
-            llm_max_retries=self._llm_max_retries,
             llm_connect_timeout=self._llm_connect_timeout,
             llm_first_event_timeout=self._llm_first_event_timeout,
             llm_stream_idle_timeout=self._llm_stream_idle_timeout,
@@ -214,7 +211,6 @@ def build_workflow_context(
         thinking=bool(cfg.get("thinking", DEFAULT_THINKING)),
         thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
         reasoning_effort=cfg.get("reasoning_effort"),
-        llm_max_retries=int(cfg.get("llm_max_retries", 3)),
         llm_connect_timeout=float(cfg.get("llm_connect_timeout", 30.0)),
         llm_first_event_timeout=float(cfg.get("llm_first_event_timeout", 180.0)),
         llm_stream_idle_timeout=float(cfg.get("llm_stream_idle_timeout", 180.0)),
