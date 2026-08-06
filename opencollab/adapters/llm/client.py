@@ -91,9 +91,10 @@ class LLMClient:
     ) -> LLMResponse:
         """Single-shot completion. Returns full response.
 
-        ``thinking`` is OFF by default, so existing callers are unaffected. When
-        on, ``thinking_params`` is the provider-specific reasoning payload (sent
-        as ``extra_body`` on the OpenAI-compatible path).
+        ``thinking`` is OFF by default. When enabled, ``thinking_params`` uses
+        the selected provider's request shape. OpenAI-compatible providers
+        receive it through ``extra_body``; Anthropic receives validated native
+        ``thinking`` and optional ``output_config`` fields.
 
         ``tool_choice`` is ``None`` by default (provider default, i.e. "auto");
         a caller may pass ``"required"`` to force the model to emit a tool call.
