@@ -37,8 +37,7 @@ def _response(response_id: str) -> dict[str, Any]:
         "truncation": "disabled",
         "usage": {
             "input_tokens": 20,
-            "input_tokens_details": {"cached_tokens": 7},
-            "cache_write_tokens": 2,
+            "input_tokens_details": {"cached_tokens": 7, "cache_write_tokens": 2},
             "output_tokens": 5,
             "output_tokens_details": {"reasoning_tokens": 3},
             "total_tokens": 25,
@@ -56,11 +55,15 @@ def _item_event(item: dict[str, Any], index: int) -> dict[str, Any]:
     }
 
 
-def _completed_event(response_id: str, sequence: int) -> dict[str, Any]:
+def _completed_event(
+    response_id: str,
+    sequence: int,
+    output: list[dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "type": "response.completed",
         "sequence_number": sequence,
-        "response": _response(response_id),
+        "response": {**_response(response_id), "output": output},
     }
 
 
@@ -134,12 +137,12 @@ async def test_real_http_stream_replays_reasoning_function_call_and_output():
             {"type": "response.created", "sequence_number": 0, "response": _response("resp_1")},
             _item_event(reasoning, 0),
             _item_event(call, 1),
-            _completed_event("resp_1", 3),
+            _completed_event("resp_1", 3, [reasoning, call]),
         ],
         [
             {"type": "response.created", "sequence_number": 0, "response": _response("resp_2")},
             _item_event(message, 0),
-            _completed_event("resp_2", 2),
+            _completed_event("resp_2", 2, [message]),
         ],
     ]
     with fake_responses_server(scripts) as (base_url, requests):

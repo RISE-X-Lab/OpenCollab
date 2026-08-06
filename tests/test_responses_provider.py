@@ -26,12 +26,13 @@ from opencollab.adapters.llm.responses_provider import (
 
 
 @pytest.mark.asyncio
-async def test_stream_text_uses_output_item_done_when_completed_output_is_empty():
-    response = completed_response()
+async def test_stream_text_requires_matching_completed_output():
+    item = message_item("OK")
+    response = completed_response(output=[item])
     stream = FakeStream([
         ns(type="response.created"),
         ns(type="response.output_text.delta", delta="OK", output_index=0),
-        ns(type="response.output_item.done", output_index=0, item=message_item("OK")),
+        ns(type="response.output_item.done", output_index=0, item=item),
         ns(type="response.completed", response=response),
     ])
 
@@ -66,7 +67,7 @@ async def test_stream_aggregates_multiple_tool_calls_and_validates_arguments():
         ),
         ns(type="response.output_item.done", output_index=0, item=first),
         ns(type="response.output_item.done", output_index=1, item=second),
-        ns(type="response.completed", response=completed_response()),
+        ns(type="response.completed", response=completed_response(output=[first, second])),
     ])
 
     state = await _consume_stream(stream, 1, 1)
@@ -368,13 +369,28 @@ async def test_typed_transient_error_event_retries_request(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_stream_rejects_wrong_model_and_final_output_drift():
-    wrong_model = FakeStream([
-        ns(type="response.completed", response=completed_response(model="other-model")),
-    ])
-    with pytest.raises(ResponsesProtocolError, match="model identity mismatch"):
-        await _consume_stream(wrong_model, 1, 1, "gpt-fake")
+async def test_stream_accepts_provider_resolved_model_alias():
+    item = message_item("done")
+    state = await _consume_stream(
+        FakeStream([
+            ns(type="response.output_item.done", output_index=0, item=item),
+            ns(
+                type="response.completed",
+                response=completed_response(output=[item], model="other-model"),
+            ),
+        ]),
+        1,
+        1,
+        "gpt-fake",
+    )
 
+    parsed = _parse_stream(state, [{"role": "user", "content": "work"}], "gpt-fake")
+
+    assert parsed.provider_model == "other-model"
+
+
+@pytest.mark.asyncio
+async def test_stream_rejects_final_output_drift():
     streamed = message_item("streamed")
     final = message_item("different")
     state = await _consume_stream(
@@ -666,14 +682,39 @@ def test_non_streaming_text_and_missing_usage_are_supported():
     assert estimated.usage.reasoning_tokens is None
 
 
-def test_non_streaming_rejects_wrong_model_and_estimates_invalid_usage():
-    wrong_model = completed_response(output=[message_item("done")], model="other-model")
-    with pytest.raises(ResponsesProtocolError, match="model identity mismatch"):
+def test_non_streaming_usage_accepts_top_level_cache_write_fallback():
+    response = completed_response(output=[message_item("done")])
+    del response.usage.input_tokens_details.cache_write_tokens
+    response.usage.cache_write_tokens = 4
+
+    parsed = parse_responses_response(
+        response,
+        [{"role": "user", "content": "work"}],
+        expected_model="gpt-fake",
+    )
+
+    assert parsed.usage.cache_creation_tokens == 4
+
+
+def test_non_streaming_requires_provider_model_identity():
+    response = completed_response(output=[message_item("done")], model="")
+
+    with pytest.raises(ResponsesProtocolError, match="missing model identity"):
         parse_responses_response(
-            wrong_model,
+            response,
             [{"role": "user", "content": "work"}],
             expected_model="gpt-fake",
         )
+
+
+def test_non_streaming_records_provider_resolved_model_alias_and_estimates_invalid_usage():
+    aliased = completed_response(output=[message_item("done")], model="other-model")
+    parsed_alias = parse_responses_response(
+        aliased,
+        [{"role": "user", "content": "work"}],
+        expected_model="gpt-fake",
+    )
+    assert parsed_alias.provider_model == "other-model"
 
     response = completed_response(output=[message_item("done")])
     response.usage.input_tokens = -1

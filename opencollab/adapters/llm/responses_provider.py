@@ -357,10 +357,6 @@ def _validate_completed_response(response: Any, expected_model: str | None) -> s
     actual_model = getattr(response, "model", None)
     if not isinstance(actual_model, str) or not actual_model:
         raise ResponsesProtocolError("completed Responses object is missing model identity")
-    if expected_model is not None and actual_model != expected_model:
-        raise ResponsesProtocolError(
-            f"Responses model identity mismatch expected {expected_model!r} got {actual_model!r}"
-        )
     return actual_model
 
 
@@ -529,6 +525,36 @@ def _semantic_output_item(item: dict[str, Any]) -> tuple[Any, ...]:
     raise ResponsesProtocolError("response output contains an unsupported item")
 
 
+def _output_items_agree(streamed: dict[str, Any], terminal: dict[str, Any]) -> bool:
+    if _semantic_output_item(streamed) != _semantic_output_item(terminal):
+        return False
+    if streamed.get("type") != "reasoning":
+        return True
+    streamed_encrypted = streamed.get("encrypted_content")
+    terminal_encrypted = terminal.get("encrypted_content")
+    for value in (streamed_encrypted, terminal_encrypted):
+        if value is not None and not isinstance(value, str):
+            raise ResponsesProtocolError("reasoning output contains invalid encrypted content")
+    return (
+        streamed_encrypted is None
+        or terminal_encrypted is None
+        or streamed_encrypted == terminal_encrypted
+    )
+
+
+def _merge_terminal_projection(
+    streamed: dict[str, Any],
+    terminal: dict[str, Any],
+) -> dict[str, Any]:
+    if (
+        streamed.get("type") == "reasoning"
+        and streamed.get("encrypted_content") is None
+        and terminal.get("encrypted_content") is not None
+    ):
+        return {**streamed, "encrypted_content": terminal["encrypted_content"]}
+    return streamed
+
+
 def _optional_usage_int(source: Any, key: str) -> int | None:
     if not isinstance(source, dict) or source.get(key) is None:
         return None
@@ -557,6 +583,9 @@ def _parse_usage(
     output_tokens = _positive_usage_int(raw, "output_tokens")
     input_details = raw.get("input_tokens_details") or {}
     output_details = raw.get("output_tokens_details") or {}
+    cache_creation_tokens = _optional_usage_int(input_details, "cache_write_tokens")
+    if cache_creation_tokens is None:
+        cache_creation_tokens = _optional_usage_int(raw, "cache_write_tokens")
     estimated = input_tokens is None or output_tokens is None
     if input_tokens is None:
         input_tokens = estimate_messages_tokens(messages)
@@ -570,7 +599,7 @@ def _parse_usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=_optional_usage_int(input_details, "cached_tokens"),
-        cache_creation_tokens=_optional_usage_int(raw, "cache_write_tokens"),
+        cache_creation_tokens=cache_creation_tokens,
         reasoning_tokens=_optional_usage_int(output_details, "reasoning_tokens"),
         estimated=estimated,
         raw_usage=raw,
@@ -584,15 +613,21 @@ def _parse_stream(
 ) -> LLMResponse:
     actual_model = _validate_completed_response(state.completed_response, expected_model)
     final_output = to_plain_data(getattr(state.completed_response, "output", None))
-    if isinstance(final_output, list) and final_output:
-        final_items = _validated_response_items(final_output)
-        if (
-            [_semantic_output_item(item) for item in final_items]
-            != [_semantic_output_item(item) for item in state.output_items]
-        ):
-            raise ResponsesProtocolError(
-                "response.completed output disagrees with streamed output items"
-            )
+    final_items = _validated_response_items(final_output)
+    if (
+        len(final_items) != len(state.output_items)
+        or not all(
+            _output_items_agree(streamed, terminal)
+            for streamed, terminal in zip(state.output_items, final_items, strict=True)
+        )
+    ):
+        raise ResponsesProtocolError(
+            "response.completed output disagrees with streamed output items"
+        )
+    state.output_items = [
+        _merge_terminal_projection(streamed, terminal)
+        for streamed, terminal in zip(state.output_items, final_items, strict=True)
+    ]
     content = "".join(_output_text(item) for item in state.output_items) or None
     reasoning = "\n".join(
         text for text in (_reasoning_text(item) for item in state.output_items) if text

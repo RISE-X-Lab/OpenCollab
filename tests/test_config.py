@@ -311,11 +311,12 @@ def test_responses_configuration_reads_explicit_protocol_reasoning_and_timeouts(
     assert config.llm_stream_idle_timeout == 90
 
 
-def test_responses_configuration_accepts_max_reasoning_effort(monkeypatch):
+@pytest.mark.parametrize("value", ["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+def test_responses_configuration_accepts_reasoning_effort(monkeypatch, value):
     monkeypatch.setenv("OPENCOLLAB_WIRE_PROTOCOL", "responses")
-    monkeypatch.setenv("OPENCOLLAB_REASONING_EFFORT", "max")
+    monkeypatch.setenv("OPENCOLLAB_REASONING_EFFORT", value)
 
-    assert build_config().reasoning_effort == "max"
+    assert build_config().reasoning_effort == value
 
 
 @pytest.mark.parametrize("value", ["responses-api", "auto", "unknown"])
@@ -325,7 +326,7 @@ def test_unknown_wire_protocol_is_rejected(monkeypatch, value):
         build_config()
 
 
-@pytest.mark.parametrize("value", ["minimal", "ultra", "1"])
+@pytest.mark.parametrize("value", ["ultra", "1"])
 def test_unknown_reasoning_effort_is_rejected(monkeypatch, value):
     monkeypatch.setenv("OPENCOLLAB_REASONING_EFFORT", value)
     with pytest.raises(ValueError, match="reasoning_effort"):

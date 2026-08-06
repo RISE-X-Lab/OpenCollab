@@ -212,8 +212,10 @@ class OpenCollabConfig(BaseModel):
         normalized = str(value).strip().lower()
         if not normalized:
             return None
-        if normalized not in {"low", "medium", "high", "xhigh", "max"}:
-            raise ValueError("reasoning_effort must be low, medium, high, xhigh, or max")
+        if normalized not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:
+            raise ValueError(
+                "reasoning_effort must be none, minimal, low, medium, high, xhigh, or max"
+            )
         return normalized
 
     @field_validator("api_key", "base_url", mode="before")

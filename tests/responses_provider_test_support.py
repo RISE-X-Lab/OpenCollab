@@ -25,8 +25,7 @@ def completed_response(
         output=output or [],
         usage=ns(
             input_tokens=120,
-            input_tokens_details=ns(cached_tokens=80),
-            cache_write_tokens=12,
+            input_tokens_details=ns(cached_tokens=80, cache_write_tokens=12),
             output_tokens=30,
             output_tokens_details=ns(reasoning_tokens=9),
             total_tokens=150,

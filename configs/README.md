@@ -68,9 +68,9 @@ OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT=180
 OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT=180
 ```
 
-Supported reasoning efforts are `low`, `medium`, `high`, and `xhigh`. A service
-may support only a subset. An unsupported value is reported as a provider
-error and never changed automatically.
+Supported reasoning efforts are `none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, and `max`. A service may support only a subset. An unsupported value
+is reported as a provider error and never changed automatically.
 
 ## Model capability metadata
 
