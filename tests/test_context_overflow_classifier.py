@@ -13,6 +13,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
+import pytest
+
 from opencollab.adapters.llm.errors import is_context_overflow_error
 from opencollab.adapters.llm.retry import extract_retry_after_seconds, is_retryable_error
 
@@ -188,6 +190,8 @@ def test_response_non_retryable_status_overrides_transient_wording():
 )
 def test_connection_failures_without_status_attribute_are_retryable(message):
     assert is_retryable_error(RuntimeError(message)) is True
+
+
 def test_retry_after_rejects_non_finite_and_negative_values():
     class Response:
         def __init__(self, value):
