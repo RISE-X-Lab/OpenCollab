@@ -2,13 +2,13 @@
 
 Runtime configuration lives in this directory.
 
-Create `configs/.env` from the example:
+Create `configs/.env` from the example.
 
 ```bash
 cp configs/.env.example configs/.env
 ```
 
-OpenCollab loads config in this order:
+OpenCollab loads config in the following order.
 
 1. Process environment variables
 2. `configs/.env`
@@ -24,7 +24,7 @@ OpenCollab supports both Chat Completions and Responses on the OpenAI client
 path. Select the wire protocol explicitly. Existing compatible services use
 `chat_completions` by default.
 
-Environment variable example:
+Set the shell environment variables directly.
 
 ```bash
 export OPENCOLLAB_PROVIDER=openai
@@ -35,7 +35,7 @@ export OPENCOLLAB_API_KEY=<your-api-key>
 export OPENCOLLAB_LLM_TIMEOUT=600
 ```
 
-Equivalent `configs/.env` values:
+The same settings can be written to `configs/.env`.
 
 ```dotenv
 OPENCOLLAB_PROVIDER=openai
@@ -82,20 +82,20 @@ is reported as a provider error and never changed automatically.
 
 Compatibility differences are recorded in
 `opencollab.adapters.llm.types.model_capabilities` and consumed by the provider
-and workflow adapters. Generic runtime code does not branch on product names.
+and workflow adapters. Those adapters handle product-specific behavior.
 
 | Exact model id | Context window | Forced tool choice | Per-role thinking override |
 | --- | ---: | --- | --- |
 | `kimi-for-coding` | 262,144 | Falls back to `auto` | Keeps global thinking enabled |
 
-Models without an exact entry use provider-neutral defaults and the
+Unlisted models use provider-neutral defaults and the
 best-effort context-window families in the same module.
 
 ## Sampling
 
 `OPENCOLLAB_TEMPERATURE` sets the LLM sampling temperature for every agent.
-It defaults to `0.2`; `0.0` is fully deterministic. The value must be in the
-range `0.0`–`2.0`.
+It defaults to `0.2`. A value of `0.0` is fully deterministic. The value must be
+in the range `0.0`–`2.0`.
 
 ```dotenv
 OPENCOLLAB_TEMPERATURE=0.2
@@ -103,7 +103,7 @@ OPENCOLLAB_TEMPERATURE=0.2
 
 A team file may override the temperature per role via a `temperature:` field on
 the role (see [Team](#team) below). A role that leaves it unset inherits this
-global value; a role override of `0.0` is honored (not treated as "unset").
+global value. A role value of `0.0` overrides the global setting.
 
 ## Display
 
@@ -111,11 +111,11 @@ The TUI retains a separate stream for every agent, starts on the Lead (agent 0),
 and switches focus with Tab/Shift+Tab both during a turn and at the main prompt.
 The prompt redraws the selected agent's complete history collected during the
 current TUI session without changing the current input buffer. The switch order
-includes configured roles marked `available`; their view stays empty until the
-role spawns, then follows the new live agent automatically.
+includes configured roles marked `available`. Their view stays empty until the
+role spawns and then follows the new live agent automatically.
 
-`OPENCOLLAB_FILTER_MESSAGES` remains accepted for compatibility, but no longer
-controls event retention or the selected-agent view. Both values are lossless.
+OpenCollab still accepts `OPENCOLLAB_FILTER_MESSAGES` for compatibility. Event
+retention and the selected-agent view are lossless for either value.
 
 ```dotenv
 OPENCOLLAB_FILTER_MESSAGES=true
@@ -123,33 +123,31 @@ OPENCOLLAB_FILTER_MESSAGES=true
 
 ## Team
 
-Define a multi-agent team — per-role prompts, model overrides, per-role
-`temperature:` overrides, tool allowlists, and a directed spawn/message
-topology — in a YAML file:
+Define a multi-agent team in a YAML file. The file can set role prompts, model
+and temperature overrides, tool allowlists, and the directed spawn and message
+topology.
 
 ```bash
 cp configs/team.example.yaml configs/team.yaml
 uv run opencollab --team-config configs/team.yaml --workspace .
 ```
 
-OpenCollab never discovers a team file by conventional filename. It selects a
-team only through one of these explicit inputs, in priority order:
+OpenCollab selects a team through these inputs, in priority order.
 
 1. CLI `--team-config /path/to/team.yaml` or SDK `team(config=...)`
 2. Process environment variable `OPENCOLLAB_TEAM_FILE=/path/to/team.yaml`
 3. The built-in single `lead` configuration
 
-Merely creating `configs/team.yaml` does not activate it. With no explicit team
-file, the built-in `lead` may still spawn any ad-hoc role. See
+Select `configs/team.yaml` through one of these inputs to activate it. With no
+selected team file, the built-in `lead` may spawn any ad-hoc role. See
 `team.example.yaml` for the schema (lead/analyst/coder/reviewer plus a
-`topology` graph). An explicitly selected file that is missing or unsafe fails
-fast instead of falling back to the built-in team.
+`topology` graph). A selected file that is missing or unsafe raises an error.
 
 ## Validation
 
 The final resolved configuration is validated by a Pydantic model. `budget`
-must be a positive integer; `llm_timeout` must be a positive number of seconds;
-`temperature` must be within `0.0`–`2.0`; blank `api_key` and `base_url` values
+must be a positive integer. `llm_timeout` must be a positive number of seconds.
+`temperature` must be within `0.0`–`2.0`. Blank `api_key` and `base_url` values
 are treated as unset.
 
 Do not commit `configs/.env` or any file containing real API keys.

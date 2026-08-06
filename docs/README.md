@@ -6,19 +6,15 @@ API, and architecture boundary.
 
 ## Current documentation
 
-- [`sdk-0.4-explainer.html`](sdk-0.4-explainer.html) is the visual guide to the
-  compact SDK introduced for the 0.4 series.
-- [`../configs/README.md`](../configs/README.md) documents provider, model, and
-  team configuration.
-- [`../skills/README.md`](../skills/README.md) documents on-demand agent skills.
-- [`../CONTRIBUTING.md`](../CONTRIBUTING.md) and
-  [`../SECURITY.md`](../SECURITY.md) cover contributions and vulnerability
-  reporting.
+The [SDK 0.4 visual guide](sdk-0.4-explainer.html) explains the public research
+interfaces. The [configuration guide](../configs/README.md) covers providers,
+models, and team files. The [skills guide](../skills/README.md) explains
+on-demand agent skills. Contribution checks and vulnerability reporting are in
+[CONTRIBUTING.md](../CONTRIBUTING.md) and [SECURITY.md](../SECURITY.md).
 
 ## Design records
 
-Dated Markdown files in this directory and `archive/` preserve design context.
-They are historical records, not current API contracts. Their branch names,
-line-number anchors, test counts, and implementation status may have drifted.
-Use the current source and tests when an old record disagrees with the package
-guide.
+Dated Markdown files in this directory and `archive/` record earlier design
+work. Their branch names, line-number anchors, test counts, and implementation
+status reflect the repository at the time of writing. The package guide,
+current source, and tests define current behavior.

@@ -7,8 +7,6 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-## [0.4.1] - 2026-08-03
-
 ### Added
 - Added an explicit OpenAI Responses wire protocol with typed streaming,
   locally replayed reasoning and function items, exact tool-call binding,
@@ -16,6 +14,21 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   evidence.
 - Added Mini Edict, a bilingual, tested Three Departments and Six Ministries
   example with both a team configuration and a hard-gated workflow.
+- Added a public maintainer release procedure covering exact-SHA validation,
+  artifact construction, signed tagging, publication, and failure handling.
+
+### Changed
+- Replaced changelog links that depended on the absent remote `v0.1.0` tag with
+  exact historical commit links.
+
+### Fixed
+- Capped structured-output corrective retries at 60 seconds while preserving
+  shorter caller deadlines, so endpoints that degrade forced tool choice cannot
+  consume the caller's full role budget.
+
+## [0.4.1] - 2026-07-31
+
+### Added
 - Added immutable non-secret effective configuration metadata, public stateless
   tool composition, and caller-owned Local, Worktree, and image-backed Docker
   environment factories for external integrations. Configuration metadata
@@ -55,9 +68,6 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - Raised the package version to 0.4.1 for the incompatible compact SDK boundary.
 
 ### Fixed
-- Capped structured-output corrective retries at 60 seconds while preserving
-  shorter caller deadlines, so endpoints that degrade forced tool choice cannot
-  consume the caller's full role budget.
 - Restored the exact terminal state after turn-scoped TUI keyboard navigation on
   macOS and added the terminal probe to macOS CI.
 - Emitted valid JavaScript comments around the vendored js-yaml license in Team
