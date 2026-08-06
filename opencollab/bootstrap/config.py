@@ -131,10 +131,12 @@ class OpenCollabConfig(BaseModel):
     thinking: bool = Field(default=DEFAULT_THINKING)
     thinking_params: dict[str, Any] = Field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
     reasoning_effort: str | None = None
+    llm_max_retries: int = Field(default=3, ge=0)
     llm_timeout: float = Field(default=600.0, gt=0, allow_inf_nan=False)
     llm_connect_timeout: float = Field(default=30.0, gt=0, allow_inf_nan=False)
     llm_first_event_timeout: float = Field(default=180.0, gt=0, allow_inf_nan=False)
     llm_stream_idle_timeout: float = Field(default=180.0, gt=0, allow_inf_nan=False)
+    provider_error_time_budget: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     filter_messages: bool = Field(default=False)
 
     @field_validator("top_p", mode="before")
@@ -167,6 +169,22 @@ class OpenCollabConfig(BaseModel):
     def _reject_boolean_llm_timeout(cls, value: Any) -> Any:
         if isinstance(value, bool):
             raise ValueError("LLM timeouts must be finite positive numbers")
+        return value
+
+    @field_validator("provider_error_time_budget", mode="before")
+    @classmethod
+    def _reject_boolean_provider_error_budget(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError(
+                "provider error time budget must be a finite non-negative number"
+            )
+        return value
+
+    @field_validator("llm_max_retries", mode="before")
+    @classmethod
+    def _reject_boolean_llm_max_retries(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("LLM max retries must be a non-negative integer")
         return value
 
     @field_validator("context_window", mode="before")
@@ -412,6 +430,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         "thinking": resolve("OPENCOLLAB_THINKING", default=str(DEFAULT_THINKING)),
         "thinking_params": resolve("OPENCOLLAB_THINKING_PARAMS"),
         "reasoning_effort": resolve("OPENCOLLAB_REASONING_EFFORT"),
+        "llm_max_retries": resolve("OPENCOLLAB_LLM_MAX_RETRIES", default="3"),
         "llm_timeout": resolve("OPENCOLLAB_LLM_TIMEOUT", default="600"),
         "llm_connect_timeout": resolve("OPENCOLLAB_LLM_CONNECT_TIMEOUT", default="30"),
         "llm_first_event_timeout": resolve(
@@ -419,6 +438,9 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         ),
         "llm_stream_idle_timeout": resolve(
             "OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT", default="180"
+        ),
+        "provider_error_time_budget": resolve(
+            "OPENCOLLAB_PROVIDER_ERROR_TIME_BUDGET", default="0"
         ),
         "filter_messages": resolve("OPENCOLLAB_FILTER_MESSAGES", default="false"),
     }

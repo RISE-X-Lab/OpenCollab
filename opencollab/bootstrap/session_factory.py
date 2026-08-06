@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
+from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.repo_map import build_repo_map
 from opencollab.adapters.safe_files import ensure_directory_no_symlinks
 from opencollab.adapters.trace import Tracer
@@ -163,6 +164,7 @@ def build_session(
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
     llm_timeout: float = 600.0,
+    provider_retry_budget: RetryTimeBudget | None = None,
     store: SessionStorePort | None = None,
     aid: int = -1,
     seed_user_messages: list[dict[str, Any]] | None = None,
@@ -189,6 +191,7 @@ def build_session(
         safety_policy=safety_policy,
         llm=llm,
         llm_timeout=llm_timeout,
+        provider_retry_budget=provider_retry_budget,
         store=store,
         auto_save_callback=session._auto_save,
         auto_save_prepare_callback=session._prepare_auto_save,
@@ -308,6 +311,11 @@ class DefaultSessionFactory:
         allow_unisolated_child_tests: bool = False,
     ):
         self._cfg = cfg
+        self._provider_retry_budget = (
+            RetryTimeBudget(cfg.provider_error_time_budget)
+            if cfg.provider_error_time_budget > 0
+            else None
+        )
         self._team = team_cfg or default_team_config()
         # Resolve the workspace's skills/ directory (FileSkillStore) or fall back
         # to a NullSkillStore. Shared by the builder for both catalog injection
@@ -371,6 +379,7 @@ class DefaultSessionFactory:
             safety_policy=safety_policy,
             auto_save_path=auto_save_path,
             llm_timeout=cfg.llm_timeout,
+            provider_retry_budget=self._provider_retry_budget,
             aid=aid,
             seed_user_messages=plan.startup_user_messages(),
             team_budget_exhausted=_team_budget_guard(scheduler),
@@ -409,6 +418,7 @@ class DefaultSessionFactory:
             safety_policy=build_workspace_safety_policy(env),
             auto_save_path=launch.auto_save_path,
             llm_timeout=cfg.llm_timeout,
+            provider_retry_budget=self._provider_retry_budget,
             aid=aid,
             team_budget_exhausted=_team_budget_guard(scheduler),
         )

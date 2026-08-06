@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from opencollab.adapters.llm.errors import TransientEmptyOutputError, TransientProviderError
-from opencollab.adapters.llm.retry import with_retry
+from opencollab.adapters.llm.retry import RetryTimeBudget, with_retry
 from opencollab.adapters.llm.types import (
     LLMResponse,
     Usage,
@@ -689,6 +689,7 @@ async def complete_responses(
     first_event_timeout: float = 180.0,
     stream_idle_timeout: float = 180.0,
     round_timeout: float | None = None,
+    provider_error_time_budget: RetryTimeBudget | None = None,
     stream: bool = True,
 ) -> LLMResponse:
     """Run one locally replayable Responses request and require typed completion."""
@@ -702,29 +703,42 @@ async def complete_responses(
         max_output_tokens=max_output_tokens,
         reasoning_effort=reasoning_effort,
     )
-    async def run() -> LLMResponse:
+
+    async def request_once() -> LLMResponse:
         if not stream:
             kwargs["stream"] = False
-            async def request_once() -> LLMResponse:
-                response = await client.responses.create(**kwargs)
-                return parse_responses_response(response, messages, expected_model=model)
+            response = await client.responses.create(**kwargs)
+            return parse_responses_response(response, messages, expected_model=model)
 
-            return await with_retry(request_once, max_retries=max_retries)
+        state = await _create_and_consume_stream(
+            client,
+            kwargs,
+            first_event_timeout,
+            stream_idle_timeout,
+            model,
+        )
+        return _parse_stream(state, messages, model)
 
-        async def consume_once() -> LLMResponse:
-            state = await _create_and_consume_stream(
-                client,
-                kwargs,
-                first_event_timeout,
-                stream_idle_timeout,
-                model,
-            )
-            return _parse_stream(state, messages, model)
+    if provider_error_time_budget is not None:
+
+        async def bounded_request_once() -> LLMResponse:
+            if round_timeout is None:
+                return await request_once()
+            try:
+                return await asyncio.wait_for(request_once(), timeout=round_timeout)
+            except asyncio.TimeoutError as exc:
+                raise TransientProviderError(
+                    f"Responses request timeout after {round_timeout:g}s"
+                ) from exc
 
         return await with_retry(
-            consume_once,
+            bounded_request_once,
             max_retries=max_retries,
+            retry_time_budget=provider_error_time_budget,
         )
+
+    async def run() -> LLMResponse:
+        return await with_retry(request_once, max_retries=max_retries)
 
     try:
         if round_timeout is None:

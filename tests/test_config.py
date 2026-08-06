@@ -298,17 +298,21 @@ def test_missing_api_key_honors_dashscope_endpoint(monkeypatch):
 def test_responses_configuration_reads_explicit_protocol_reasoning_and_timeouts(monkeypatch):
     monkeypatch.setenv("OPENCOLLAB_WIRE_PROTOCOL", "responses")
     monkeypatch.setenv("OPENCOLLAB_REASONING_EFFORT", "xhigh")
+    monkeypatch.setenv("OPENCOLLAB_LLM_MAX_RETRIES", "32")
     monkeypatch.setenv("OPENCOLLAB_LLM_CONNECT_TIMEOUT", "12")
     monkeypatch.setenv("OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT", "240")
     monkeypatch.setenv("OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT", "90")
+    monkeypatch.setenv("OPENCOLLAB_PROVIDER_ERROR_TIME_BUDGET", "3600")
 
     config = build_config()
 
     assert config.wire_protocol == "responses"
     assert config.reasoning_effort == "xhigh"
+    assert config.llm_max_retries == 32
     assert config.llm_connect_timeout == 12
     assert config.llm_first_event_timeout == 240
     assert config.llm_stream_idle_timeout == 90
+    assert config.provider_error_time_budget == 3600
 
 
 @pytest.mark.parametrize("value", ["none", "minimal", "low", "medium", "high", "xhigh", "max"])

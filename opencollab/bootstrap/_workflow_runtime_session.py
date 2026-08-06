@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.llm.types import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     model_capabilities,
@@ -62,9 +63,11 @@ class WorkflowSessionFactory:
         thinking: bool = DEFAULT_THINKING,
         thinking_params: dict | None = None,
         reasoning_effort: str | None = None,
+        llm_max_retries: int = 3,
         llm_connect_timeout: float = 30.0,
         llm_first_event_timeout: float = 180.0,
         llm_stream_idle_timeout: float = 180.0,
+        provider_error_time_budget: float = 0.0,
         save_dir: str | None = None,
         env: Any | None = None,
     ) -> None:
@@ -86,9 +89,16 @@ class WorkflowSessionFactory:
         self._thinking = thinking
         self._thinking_params = thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
         self._reasoning_effort = reasoning_effort
+        self._llm_max_retries = llm_max_retries
         self._llm_connect_timeout = llm_connect_timeout
         self._llm_first_event_timeout = llm_first_event_timeout
         self._llm_stream_idle_timeout = llm_stream_idle_timeout
+        self._provider_error_time_budget = provider_error_time_budget
+        self._provider_retry_budget = (
+            RetryTimeBudget(provider_error_time_budget)
+            if provider_error_time_budget > 0
+            else None
+        )
         # Run folder where each one-shot session's transcript is autosaved. When
         # set, every ``build_workflow_session`` gets its own ``<seq>_<role>.json``
         # so the AutoSaveSubscriber (wired by ``build_session`` once an
@@ -146,9 +156,11 @@ class WorkflowSessionFactory:
             thinking=use_thinking,
             thinking_params=self._thinking_params,
             reasoning_effort=self._reasoning_effort,
+            llm_max_retries=self._llm_max_retries,
             llm_connect_timeout=self._llm_connect_timeout,
             llm_first_event_timeout=self._llm_first_event_timeout,
             llm_stream_idle_timeout=self._llm_stream_idle_timeout,
+            provider_error_time_budget=self._provider_error_time_budget,
             tool_choice=tool_choice,
         )
         env = self._env or (LocalEnvironment(self._workspace) if self._workspace else LocalEnvironment())
@@ -160,6 +172,7 @@ class WorkflowSessionFactory:
             max_steps=self._max_steps,
             event_sink=self._event_sink,
             llm_timeout=self._llm_timeout,
+            provider_retry_budget=self._provider_retry_budget,
             auto_save_path=self._next_save_path(label),
         )
 
@@ -211,9 +224,11 @@ def build_workflow_context(
         thinking=bool(cfg.get("thinking", DEFAULT_THINKING)),
         thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
         reasoning_effort=cfg.get("reasoning_effort"),
+        llm_max_retries=int(cfg.get("llm_max_retries", 3)),
         llm_connect_timeout=float(cfg.get("llm_connect_timeout", 30.0)),
         llm_first_event_timeout=float(cfg.get("llm_first_event_timeout", 180.0)),
         llm_stream_idle_timeout=float(cfg.get("llm_stream_idle_timeout", 180.0)),
+        provider_error_time_budget=float(cfg.get("provider_error_time_budget", 0.0)),
         save_dir=save_dir,
         env=environment,
     )

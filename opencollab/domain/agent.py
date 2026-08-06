@@ -60,6 +60,8 @@ class Agent:
     llm_first_event_timeout: float = 180.0
     llm_stream_idle_timeout: float = 180.0
     tool_choice: str | None = None
+    llm_max_retries: int = 3
+    provider_error_time_budget: float = 0.0
 
     def __post_init__(self) -> None:
         self.name = validate_role_identity(self.name)

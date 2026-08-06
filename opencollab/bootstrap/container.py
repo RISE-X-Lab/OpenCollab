@@ -30,6 +30,7 @@ from opencollab.adapters.llm import (
     estimate_messages_tokens,
     is_context_overflow_error,
 )
+from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.skills.file_skill_store import FileSkillStore
 from opencollab.adapters.skills.null_skill_store import NullSkillStore
 from opencollab.adapters.storage import SessionStore
@@ -103,7 +104,12 @@ def _build_initial_state(
     return SessionState(messages=messages)
 
 
-def _resolve_llm(agent: Agent, llm: LLMPort | None, llm_timeout: float) -> LLMPort:
+def _resolve_llm(
+    agent: Agent,
+    llm: LLMPort | None,
+    llm_timeout: float,
+    provider_retry_budget: RetryTimeBudget | None = None,
+) -> LLMPort:
     """The injected ``llm`` if given, else a fresh ``LLMClient`` for the agent."""
     if llm is not None:
         return llm
@@ -113,10 +119,13 @@ def _resolve_llm(agent: Agent, llm: LLMPort | None, llm_timeout: float) -> LLMPo
         base_url=agent.base_url,
         provider=agent.provider,
         wire_protocol=getattr(agent, "wire_protocol", "chat_completions"),
+        max_retries=getattr(agent, "llm_max_retries", 3),
         request_timeout=llm_timeout,
         connect_timeout=getattr(agent, "llm_connect_timeout", 30.0),
         first_event_timeout=getattr(agent, "llm_first_event_timeout", 180.0),
         stream_idle_timeout=getattr(agent, "llm_stream_idle_timeout", 180.0),
+        provider_error_time_budget=getattr(agent, "provider_error_time_budget", 0.0),
+        provider_retry_budget=provider_retry_budget,
         context_window=getattr(agent, "context_window", None),
     )
 
@@ -127,6 +136,7 @@ def _build_summarizer(
     resolved_llm: LLMPort,
     llm_timeout: float,
     auto_save_path: str | None,
+    provider_retry_budget: RetryTimeBudget | None = None,
 ) -> ReadTimeSummarizer:
     """Build the read-time summarizer that powers ``AutoCompactShaper``.
 
@@ -152,10 +162,13 @@ def _build_summarizer(
                 base_url=agent.base_url,
                 provider=agent.provider,
                 wire_protocol=getattr(agent, "wire_protocol", "chat_completions"),
+                max_retries=getattr(agent, "llm_max_retries", 3),
                 request_timeout=llm_timeout,
                 connect_timeout=getattr(agent, "llm_connect_timeout", 30.0),
                 first_event_timeout=getattr(agent, "llm_first_event_timeout", 180.0),
                 stream_idle_timeout=getattr(agent, "llm_stream_idle_timeout", 180.0),
+                provider_error_time_budget=getattr(agent, "provider_error_time_budget", 0.0),
+                provider_retry_budget=provider_retry_budget,
             )
             return await client.complete(
                 request,
@@ -229,6 +242,7 @@ def build_session_runtime(
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
     llm_timeout: float = 600.0,
+    provider_retry_budget: RetryTimeBudget | None = None,
     store: SessionStorePort | None = None,
     auto_save_callback: Callable[[], None] | None = None,
     auto_save_prepare_callback: Callable[
@@ -264,7 +278,9 @@ def build_session_runtime(
     state = _build_initial_state(agent, seed_user_messages)
     state.aid = aid
 
-    resolved_llm = _resolve_llm(agent, llm, llm_timeout)
+    if provider_retry_budget is None and getattr(agent, "provider_error_time_budget", 0.0) > 0:
+        provider_retry_budget = RetryTimeBudget(agent.provider_error_time_budget)
+    resolved_llm = _resolve_llm(agent, llm, llm_timeout, provider_retry_budget)
 
     tool_execution = ToolExecutionUseCase(
         agent=agent,
@@ -276,7 +292,14 @@ def build_session_runtime(
         ask_policy=ask_policy,
         safety_policy=safety_policy,
     )
-    summarizer = _build_summarizer(agent, llm, resolved_llm, llm_timeout, auto_save_path)
+    summarizer = _build_summarizer(
+        agent,
+        llm,
+        resolved_llm,
+        llm_timeout,
+        auto_save_path,
+        provider_retry_budget,
+    )
     resolved_shaper: ShaperPort = (
         shaper if shaper is not None else _build_default_shaper(resolved_llm, summarizer)
     )
@@ -299,7 +322,7 @@ def build_session_runtime(
         # Cooperative per-generation ceiling: bound a single model call to the
         # configured provider timeout so one slow (thinking) generation cannot
         # eat the whole run wall (P7).
-        per_call_timeout=llm_timeout,
+        per_call_timeout=llm_timeout + getattr(agent, "provider_error_time_budget", 0.0),
     )
 
     return SessionRuntime(

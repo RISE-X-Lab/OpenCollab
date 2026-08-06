@@ -308,9 +308,11 @@ async def run_agent(
         thinking=config.get("thinking", False),
         thinking_params=dict(config.get("thinking_params") or {}),
         reasoning_effort=config.get("reasoning_effort"),
+        llm_max_retries=int(config.get("llm_max_retries", 3)),
         llm_connect_timeout=float(config.get("llm_connect_timeout", 30.0)),
         llm_first_event_timeout=float(config.get("llm_first_event_timeout", 180.0)),
         llm_stream_idle_timeout=float(config.get("llm_stream_idle_timeout", 180.0)),
+        provider_error_time_budget=float(config.get("provider_error_time_budget", 0.0)),
     )
     _claim_artifacts(artifacts)
     owned_environment = environment is None

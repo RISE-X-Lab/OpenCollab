@@ -10,7 +10,7 @@ import json
 import re
 from typing import Any
 
-from opencollab.adapters.llm.retry import with_retry
+from opencollab.adapters.llm.retry import RetryTimeBudget, with_retry
 from opencollab.adapters.llm.types import (
     LLMResponse,
     Usage,
@@ -296,6 +296,7 @@ async def complete_openai(
     tool_choice: str | None = None,
     top_p: float | None = None,
     max_output_tokens: int | None = None,
+    provider_error_time_budget: RetryTimeBudget | None = None,
 ) -> LLMResponse:
     """Single-shot completion against an OpenAI-compatible endpoint."""
     kwargs = _build_request_kwargs(
@@ -312,5 +313,6 @@ async def complete_openai(
     resp = await with_retry(
         lambda: client.chat.completions.create(**kwargs),
         max_retries=max_retries,
+        retry_time_budget=provider_error_time_budget,
     )
     return _parse_response(resp, messages)

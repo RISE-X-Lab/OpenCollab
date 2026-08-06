@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import threading
 import time
@@ -19,6 +20,7 @@ from opencollab.adapters.llm.providers import (
     warn_provider_near_miss,
 )
 from opencollab.adapters.llm.responses_provider import complete_responses
+from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.llm.types import LLMResponse, model_context_window
 from opencollab.adapters.llm.usage_ledger import record_api_usage
 
@@ -57,6 +59,8 @@ class LLMClient:
         first_event_timeout: float = 180.0,
         stream_idle_timeout: float = 180.0,
         context_window: int | None = None,
+        provider_error_time_budget: float = 0.0,
+        provider_retry_budget: RetryTimeBudget | None = None,
     ):
         if context_window is not None and (
             isinstance(context_window, bool)
@@ -64,6 +68,14 @@ class LLMClient:
             or context_window <= 0
         ):
             raise ValueError("context_window must be a positive integer or None")
+        if (
+            isinstance(provider_error_time_budget, bool)
+            or not math.isfinite(provider_error_time_budget)
+            or provider_error_time_budget < 0
+        ):
+            raise ValueError(
+                "provider_error_time_budget must be a finite non-negative number"
+            )
         self.model = model
         self.provider = provider
         self.max_retries = max(0, max_retries)
@@ -71,6 +83,17 @@ class LLMClient:
         self.wire_protocol = normalize_wire_protocol(wire_protocol)
         self.first_event_timeout = first_event_timeout
         self.stream_idle_timeout = stream_idle_timeout
+        self.provider_error_time_budget = provider_error_time_budget
+        if provider_retry_budget is not None:
+            if provider_retry_budget.total_seconds != float(provider_error_time_budget):
+                raise ValueError("shared provider retry budget does not match configuration")
+            self.provider_retry_budget = provider_retry_budget
+        else:
+            self.provider_retry_budget = (
+                RetryTimeBudget(provider_error_time_budget)
+                if provider_error_time_budget > 0
+                else None
+            )
         self._context_window = context_window
 
         warn_provider_near_miss(provider)
@@ -148,6 +171,7 @@ class LLMClient:
                     tool_choice=tool_choice,
                     top_p=top_p,
                     max_output_tokens=max_output_tokens,
+                    provider_error_time_budget=self.provider_retry_budget,
                 )
             elif self.wire_protocol == RESPONSES:
                 response = await complete_responses(
@@ -164,6 +188,7 @@ class LLMClient:
                     first_event_timeout=self.first_event_timeout,
                     stream_idle_timeout=self.stream_idle_timeout,
                     round_timeout=self.request_timeout,
+                    provider_error_time_budget=self.provider_retry_budget,
                 )
             else:
                 response = await complete_openai(
@@ -178,6 +203,7 @@ class LLMClient:
                     tool_choice=tool_choice,
                     top_p=top_p,
                     max_output_tokens=max_output_tokens,
+                    provider_error_time_budget=self.provider_retry_budget,
                 )
             await _record_api_usage_async(
                 provider=self.provider,

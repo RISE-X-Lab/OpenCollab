@@ -68,6 +68,12 @@ OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT=180
 OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT=180
 ```
 
+`OPENCOLLAB_LLM_TIMEOUT` bounds each successful model request.
+`OPENCOLLAB_PROVIDER_ERROR_TIME_BUDGET` adds a shared retry-only allowance for
+one workflow or team run. Failed request time and retry backoff consume the
+allowance, while successful requests keep the original request limit.
+`OPENCOLLAB_LLM_MAX_RETRIES` remains a separate request-count ceiling.
+
 Supported reasoning efforts are `none`, `minimal`, `low`, `medium`, `high`,
 `xhigh`, and `max`. A service may support only a subset. An unsupported value
 is reported as a provider error and never changed automatically.
