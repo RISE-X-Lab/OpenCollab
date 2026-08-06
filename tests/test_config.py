@@ -311,6 +311,13 @@ def test_responses_configuration_reads_explicit_protocol_reasoning_and_timeouts(
     assert config.llm_stream_idle_timeout == 90
 
 
+def test_responses_configuration_accepts_max_reasoning_effort(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_WIRE_PROTOCOL", "responses")
+    monkeypatch.setenv("OPENCOLLAB_REASONING_EFFORT", "max")
+
+    assert build_config().reasoning_effort == "max"
+
+
 @pytest.mark.parametrize("value", ["responses-api", "auto", "unknown"])
 def test_unknown_wire_protocol_is_rejected(monkeypatch, value):
     monkeypatch.setenv("OPENCOLLAB_WIRE_PROTOCOL", value)

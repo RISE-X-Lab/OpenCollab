@@ -495,6 +495,41 @@ def _reasoning_text(item: dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
+def _semantic_output_item(item: dict[str, Any]) -> tuple[Any, ...]:
+    """Return the stable meaning shared by streamed and terminal output items."""
+    item_type = item.get("type")
+    if item_type == "function_call":
+        return (item_type, *_function_call_identity(
+            item.get("call_id"),
+            item.get("name"),
+            item.get("arguments"),
+        ))
+    if item_type == "message":
+        role = item.get("role")
+        if not isinstance(role, str) or not role:
+            raise ResponsesProtocolError("message output item is missing its role")
+        parts: list[tuple[str, str]] = []
+        for raw_part in item.get("content") or ():
+            if not isinstance(raw_part, dict):
+                raise ResponsesProtocolError("message output contains an invalid content part")
+            part_type = raw_part.get("type")
+            if part_type == "output_text" and isinstance(raw_part.get("text"), str):
+                parts.append((part_type, raw_part["text"]))
+            elif part_type == "refusal" and isinstance(raw_part.get("refusal"), str):
+                parts.append((part_type, raw_part["refusal"]))
+            else:
+                raise ResponsesProtocolError("message output contains an unsupported content part")
+        return item_type, role, tuple(parts)
+    if item_type == "reasoning":
+        summaries: list[tuple[str | None, str]] = []
+        for raw_summary in item.get("summary") or ():
+            if not isinstance(raw_summary, dict) or not isinstance(raw_summary.get("text"), str):
+                raise ResponsesProtocolError("reasoning output contains an invalid summary part")
+            summaries.append((raw_summary.get("type"), raw_summary["text"]))
+        return item_type, tuple(summaries)
+    raise ResponsesProtocolError("response output contains an unsupported item")
+
+
 def _optional_usage_int(source: Any, key: str) -> int | None:
     if not isinstance(source, dict) or source.get(key) is None:
         return None
@@ -551,7 +586,11 @@ def _parse_stream(
     actual_model = _validate_completed_response(state.completed_response, expected_model)
     final_output = to_plain_data(getattr(state.completed_response, "output", None))
     if isinstance(final_output, list) and final_output:
-        if final_output != state.output_items:
+        final_items = _validated_response_items(final_output)
+        if (
+            [_semantic_output_item(item) for item in final_items]
+            != [_semantic_output_item(item) for item in state.output_items]
+        ):
             raise ResponsesProtocolError(
                 "response.completed output disagrees with streamed output items"
             )
