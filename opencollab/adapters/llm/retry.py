@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import math
 import random
-import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -22,24 +21,15 @@ RETRYABLE_MESSAGE_FRAGMENTS = (
     "timeout",
     "temporarily unavailable",
     "overloaded",
-    "please try again later",
-    "retry your request",
-    "upstream_request_failed",
-    "upstream request failed",
     "connection error",
     "connection reset",
     "connection refused",
     "server disconnected",
 )
-_STATUS_IN_MESSAGE = re.compile(
-    r"\b(?:(?:error|status)(?:\s+code)?|http(?:/\d(?:\.\d)?)?)\s*[:=]?\s*(\d{3})\b",
-    re.IGNORECASE,
-)
 
 # Small random jitter (seconds) added to each backoff to reduce thundering herd.
 RETRY_JITTER_MAX_SECONDS = 0.25
 MAX_RETRY_AFTER_SECONDS = 300.0
-MAX_EXPONENTIAL_RETRY_DELAY_SECONDS = 60.0
 
 
 async def with_retry(call_factory, max_retries: int) -> Any:
@@ -56,11 +46,7 @@ async def with_retry(call_factory, max_retries: int) -> Any:
                 raise
 
             retry_after = extract_retry_after_seconds(e)
-            base = (
-                retry_after
-                if retry_after is not None
-                else min(2.0 ** min(attempt, 16), MAX_EXPONENTIAL_RETRY_DELAY_SECONDS)
-            )
+            base = retry_after if retry_after is not None else (2 ** attempt)
             delay = max(0.0, base + random.uniform(0.0, RETRY_JITTER_MAX_SECONDS))
             await asyncio.sleep(delay)
             attempt += 1
@@ -92,9 +78,6 @@ def is_retryable_error(error: Exception) -> bool:
             return status in RETRYABLE_STATUS_CODES
 
     msg = str(error).lower()
-    status_match = _STATUS_IN_MESSAGE.search(msg)
-    if status_match:
-        return int(status_match.group(1)) in RETRYABLE_STATUS_CODES
     return any(k in msg for k in RETRYABLE_MESSAGE_FRAGMENTS)
 
 

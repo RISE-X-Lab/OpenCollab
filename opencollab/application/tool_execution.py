@@ -57,11 +57,15 @@ def _require_positive_finite_timeout(value: Any, *, name: str) -> float:
         raise ValueError(f"{name} must be a finite positive number")
     return timeout
 
-# Read-only, range-parameterized tools use an exact normalized range for the
-# quick duplicate brake and retain a separate same-file ceiling for pagination.
+# Read-only, range-parameterized tools whose loop key is the FILE PATH alone, not
+# the full args. A model thrashing on one file re-reads it with SHIFTING line
+# ranges (sympy-11400 read ccode.py ~135 times), so each exact-arg hash is unique
+# and the MAX_SIMILAR_CALLS counter never trips. Collapsing these tools to a
+# path-only hash makes the re-reads collide so the loop is caught — at the more
+# lenient MAX_SAME_FILE_READS, since a file is legitimately re-read a handful of
+# times during distill-as-you-read but dozens of times is a stall.
 _PATH_NORMALIZED_TOOLS = frozenset({"file_read"})
-MAX_SAME_FILE_READS = 24
-MAX_EXACT_FILE_READS = 2
+MAX_SAME_FILE_READS = 8
 
 # Read-only vs edit tools, for the reads-without-write steering signal. Reads
 # accumulate ``reads_since_last_edit``; a successful write zeroes it. bash is
@@ -98,15 +102,6 @@ _NO_MATCH_MARKERS = (
 def _result_content_hash(output: str) -> str:
     """Stable hash of a tool result's content, for novelty detection."""
     return hashlib.md5((output or "").encode()).hexdigest()
-
-
-def _file_read_range_key(args: dict[str, Any]) -> tuple[str, int, int]:
-    """Normalize equivalent first-line reads to one exact-range key."""
-    offset = args.get("offset", 1)
-    limit = args.get("limit", 500)
-    offset = offset if isinstance(offset, int) and not isinstance(offset, bool) else 1
-    limit = limit if isinstance(limit, int) and not isinstance(limit, bool) else 500
-    return str(args.get("path") or ""), max(1, offset), limit
 
 
 # Evidence ledger (STEP 2). The harness records one compact card per executed
@@ -162,7 +157,7 @@ def _bash_likely_mutates(args: dict) -> bool:
 
     The coder lands real source edits via bash (``python -c`` read-modify-write,
     ``sed -i``), which never trips the ``_WRITE_TOOLS`` reset, so the
-    reads-without-write counter climbs forever and the urgent edit nudge
+    reads-without-write counter climbs forever and the hard "STOP reading" nudge
     mis-fires at a model already writing. Detecting these mutating shapes lets the
     existing reset path zero the counter. Pure stdlib string inspection — no I/O,
     no re-parsing/executing bash.
@@ -334,65 +329,27 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 continue
 
             call_hash = self.tool_call_hash(tool_name, args)
-            loop_hash = self.loop_call_hash(tool_name, args)
-            result.recent_hash_updates.append(loop_hash)
-            recent_call_hashes.append(loop_hash)
+            result.recent_hash_updates.append(call_hash)
+            recent_call_hashes.append(call_hash)
             if len(recent_call_hashes) > MAX_CALL_HASH_WINDOW:
                 recent_call_hashes = recent_call_hashes[-MAX_CALL_HASH_WINDOW:]
 
-            recent_same = self.count_recent_similar_calls(recent_call_hashes, loop_hash)
-            if tool_name == "file_read":
-                same_file = 1 + sum(
-                    1
-                    for card in self.state.turn.scout_ledger
-                    if card.get("tool") == "file_read"
-                    and card.get("target") == str(args.get("path") or "")
-                ) + sum(
-                    1
-                    for card in result.evidence_cards
-                    if card.get("tool") == "file_read"
-                    and card.get("target") == str(args.get("path") or "")
+            recent_same = self.count_recent_similar_calls(recent_call_hashes, call_hash)
+            # Read tools collide on the path alone, so they get a more lenient
+            # threshold than the exact-arg loop limit (a few re-reads are normal).
+            limit = (
+                MAX_SAME_FILE_READS
+                if tool_name in _PATH_NORMALIZED_TOOLS
+                else MAX_SIMILAR_CALLS
+            )
+            if recent_same >= limit:
+                detail = (
+                    "on the same file (any line range)"
+                    if tool_name in _PATH_NORMALIZED_TOOLS
+                    else "with identical arguments"
                 )
-                if recent_same >= MAX_EXACT_FILE_READS or same_file >= MAX_SAME_FILE_READS:
-                    exact = recent_same >= MAX_EXACT_FILE_READS
-                    _, offset, limit = _file_read_range_key(args)
-                    warning = (
-                        "[Duplicate read blocked: "
-                        + (
-                            "this exact file range was already read. Continue with "
-                            f"offset={offset + max(1, limit)} or use grep to inspect "
-                            "a different location."
-                            if exact
-                            else "this file has already been paged extensively. Edit now or inspect another file."
-                        )
-                        + "]"
-                    )
-                    self._trace_short_circuit(
-                        "loop_blocked",
-                        tool_name,
-                        {
-                            "args": args,
-                            "count": recent_same if exact else same_file,
-                            "scope": "exact_range" if exact else "same_file",
-                        },
-                    )
-                    result.messages_to_append.append(
-                        {"role": "tool", "tool_call_id": tool_id, "content": warning}
-                    )
-                    result.loop_detections.append(
-                        LoopDetection(tool=tool_name, count=recent_same if exact else same_file)
-                    )
-                    await self._emit_observation(
-                        lambda: self.event_factory.loop_detected(
-                            tool_name, recent_same if exact else same_file
-                        ),
-                        label="loop_detected",
-                    )
-                    continue
-
-            if tool_name != "file_read" and recent_same >= MAX_SIMILAR_CALLS:
                 warning = (
-                    f"[Loop detected: tool '{tool_name}' called {recent_same} times with identical arguments. "
+                    f"[Loop detected: tool '{tool_name}' called {recent_same} times {detail}. "
                     f"You are stuck in a loop. Try a completely different approach or ask for help.]"
                 )
                 self._trace_short_circuit(
@@ -434,8 +391,6 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 result.reads_executed += 1
             elif tool_name in _WRITE_TOOLS and not tool_output.startswith(_TOOL_ERROR_PREFIXES):
                 result.write_succeeded = True
-                result.recent_hash_updates.clear()
-                recent_call_hashes.clear()
             elif (
                 tool_name == "bash"
                 and _bash_likely_mutates(args)
@@ -445,8 +400,6 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 # real edit the same as file_write/apply_patch — reuse the reset
                 # path so the reads-without-write counter zeroes (Bug B, OPTION 2).
                 result.write_succeeded = True
-                result.recent_hash_updates.clear()
-                recent_call_hashes.clear()
 
             # Information-gain sensor (STEP 1): record this result's novelty
             # signals for the caller to fold into SessionState's counters. The
@@ -573,12 +526,6 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
         key_args = (
             {"path": args.get("path")} if tool_name in _PATH_NORMALIZED_TOOLS else args
         )
-        return hashlib.md5(
-            json.dumps({"name": tool_name, "args": key_args}, sort_keys=True).encode()
-        ).hexdigest()
-
-    def loop_call_hash(self, tool_name: str, args: dict) -> str:
-        key_args: Any = _file_read_range_key(args) if tool_name == "file_read" else args
         return hashlib.md5(
             json.dumps({"name": tool_name, "args": key_args}, sort_keys=True).encode()
         ).hexdigest()

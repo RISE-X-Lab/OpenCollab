@@ -129,56 +129,7 @@ def test_unified_diff_failed_hunk_writes_nothing(tmp_path):
     )
 
     assert "hunk #2" in result
-    assert "Actual source near that line" in result
-    assert "5: e" in result
-    assert "6: f" in result
     assert target.read_text(encoding="utf-8") == original
-
-
-def test_unified_diff_error_bounds_long_source_and_requested_lines(tmp_path):
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    target = ws / "f.py"
-    target.write_text("a" * 1_000_000 + "\n", encoding="utf-8")
-    patch = "@@ -1 +1 @@\n-" + "b" * 1_000_000 + "\n+replacement\n"
-
-    result = run(
-        ApplyPatchTool().execute_with_runtime(
-            {"path": "f.py", "mode": "unified_diff", "patch": patch},
-            _runtime(ws),
-        )
-    )
-
-    assert result.startswith("Error applying patch")
-    assert "Actual source near that line" in result
-    assert result.count("... [truncated]") == 2
-    assert len(result) < 1_500
-    assert target.read_text(encoding="utf-8") == "a" * 1_000_000 + "\n"
-
-
-def test_line_replace_reports_noop_without_writing(tmp_path):
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    target = ws / "f.py"
-    target.write_text("same\n", encoding="utf-8")
-
-    result = run(
-        ApplyPatchTool().execute_with_runtime(
-            {
-                "path": "f.py",
-                "mode": "line_replace",
-                "start_line": 1,
-                "end_line": 1,
-                "expected_str": "same",
-                "new_str": "same",
-            },
-            _runtime(ws),
-        )
-    )
-
-    assert "Error: patch was a no-op" in result
-    assert str(target) in result
-    assert target.read_text(encoding="utf-8") == "same\n"
 
 
 def test_apply_patch_reports_file_and_workspace_errors(tmp_path):

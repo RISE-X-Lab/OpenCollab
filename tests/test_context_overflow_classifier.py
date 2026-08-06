@@ -15,13 +15,8 @@ from email.utils import format_datetime
 
 import pytest
 
-from opencollab.adapters.llm import retry as retry_module
 from opencollab.adapters.llm.errors import is_context_overflow_error
-from opencollab.adapters.llm.retry import (
-    extract_retry_after_seconds,
-    is_retryable_error,
-    with_retry,
-)
+from opencollab.adapters.llm.retry import extract_retry_after_seconds, is_retryable_error
 
 
 class FakeProviderError(Exception):
@@ -101,15 +96,6 @@ def test_status_on_response_object_is_overflow():
     assert is_context_overflow_error(err) is True
 
 
-def test_relay_wire_limit_413_is_compactable_overflow():
-    err = FakeProviderError(
-        "encoded upstream request exceeds the configured wire byte limit",
-        status_code=413,
-        body={"error": {"code": "upstream_request_too_large"}},
-    )
-    assert is_context_overflow_error(err) is True
-
-
 def test_reduce_the_length_phrasing_is_overflow():
     err = FakeProviderError(
         "Please reduce the length of your prompt.", status_code=400
@@ -134,12 +120,6 @@ def test_bad_model_id_400_is_not_overflow():
 
 def test_rate_limit_429_is_not_overflow():
     err = FakeProviderError("Rate limit exceeded", status_code=429)
-    assert is_context_overflow_error(err) is False
-
-
-@pytest.mark.parametrize("code", [None, "payload_too_large", "context_length_exceeded"])
-def test_unrelated_413_is_not_compactable_overflow(code):
-    err = FakeProviderError("request too large", status_code=413, code=code)
     assert is_context_overflow_error(err) is False
 
 
@@ -202,35 +182,14 @@ def test_response_non_retryable_status_overrides_transient_wording():
 @pytest.mark.parametrize(
     "message",
     [
-        "Error code: 502 - {'error': 'upstream_request_failed'}",
-        "Responses stream failed: upstream_request_failed",
-        "upstream request failed before completion",
         "Connection error.",
         "Connection reset by peer",
         "Connection refused",
         "Server disconnected without sending a response",
-        "Our service encountered an error. You can retry your request.",
-        "The service is busy. Please try again later.",
     ],
 )
-def test_relay_upstream_failures_without_status_attribute_are_retryable(message):
+def test_connection_failures_without_status_attribute_are_retryable(message):
     assert is_retryable_error(RuntimeError(message)) is True
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "Error code: 400 - invalid request",
-        "Error code: 400 - upstream_request_failed",
-        "Error code: 400 - please try again later",
-        "HTTP 400 Bad Request: please try again later",
-        "HTTP/1.1 403 overloaded",
-        "Error code: 403 - rate limit",
-        "Status code 401: timeout",
-    ],
-)
-def test_non_retryable_status_embedded_in_message_overrides_transient_wording(message):
-    assert is_retryable_error(RuntimeError(message)) is False
 
 
 def test_retry_after_rejects_non_finite_and_negative_values():
@@ -259,45 +218,3 @@ def test_retry_after_accepts_standard_http_date():
     Error.response.headers["Retry-After"] = format_datetime(now + timedelta(seconds=45))
 
     assert extract_retry_after_seconds(Error(), now=now) == 45.0
-
-
-@pytest.mark.asyncio
-async def test_retry_backoff_caps_long_provider_outages(monkeypatch):
-    attempts = 0
-    delays = []
-
-    async def fail_until_recovered():
-        nonlocal attempts
-        attempts += 1
-        if attempts < 10:
-            raise FakeProviderError("overloaded", status_code=502)
-        return "ok"
-
-    async def record_sleep(delay):
-        delays.append(delay)
-
-    monkeypatch.setattr(retry_module.asyncio, "sleep", record_sleep)
-    monkeypatch.setattr(retry_module.random, "uniform", lambda _low, _high: 0.0)
-
-    assert await with_retry(fail_until_recovered, max_retries=20) == "ok"
-    assert attempts == 10
-    assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0]
-
-
-@pytest.mark.asyncio
-async def test_retry_recovers_from_relay_error_without_status_attribute(monkeypatch):
-    attempts = 0
-
-    async def fail_once():
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise RuntimeError("Error code: 502 - {'error': 'upstream_request_failed'}")
-        return "ok"
-
-    async def skip_delay(_delay):
-        return None
-
-    monkeypatch.setattr(retry_module.asyncio, "sleep", skip_delay)
-    assert await with_retry(fail_once, max_retries=1) == "ok"
-    assert attempts == 2

@@ -113,7 +113,7 @@ class ToolProcessingResult:
         if made_progress:
             state.turn.loop_blocked_since_progress = 0
         elif self.loop_detections:
-            state.turn.loop_blocked_since_progress += 1
+            state.turn.loop_blocked_since_progress += len(self.loop_detections)
 
     def apply_hashes_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         """Apply only the loop-detection hashes, not the result messages.
@@ -122,8 +122,6 @@ class ToolProcessingResult:
         buffered into the pending table (to keep the whole batch's tool-result
         block contiguous on resume) while their call hashes still record now.
         """
-        if self.write_succeeded:
-            state.turn.recent_call_hashes.clear()
         for call_hash in self.recent_hash_updates:
             state.remember_tool_call_hash(call_hash, max_window=max_window)
 

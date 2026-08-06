@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from dataclasses import replace
 from typing import Any
@@ -16,7 +15,7 @@ from opencollab.application._session_run_shared import (
 )
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import CompletionResponse
-from opencollab.application.shaping import emergency_shape
+from opencollab.application.shaping import forced_shape
 from opencollab.application.steering import (
     READS_NUDGE_SOFT,
     build_steering_block,
@@ -27,13 +26,6 @@ from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, Ro
 from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
-
-_RECOVERY_READ_TOOLS = frozenset({"file_read", "grep"})
-_RECOVERABLE_EDIT_ERRORS = (
-    "Error applying patch to ",
-    "Error: old_str not found in ",
-    "Error: old_str found ",
-)
 
 
 class _SessionRunCompletionMixin:
@@ -94,6 +86,9 @@ class _SessionRunCompletionMixin:
     def build_tool_schemas(self) -> list[dict] | None:
         return self.agent.tool_schemas() or None
 
+    def _write_only_tool_schemas(self, tools: list[dict] | None) -> list[dict] | None:
+        return self._tool_schemas_with_names(tools, _WRITE_TOOLS)
+
     def _tool_schemas_with_names(self, tools: list[dict] | None, names: frozenset[str]) -> list[dict] | None:
         if not tools:
             return tools
@@ -102,40 +97,11 @@ class _SessionRunCompletionMixin:
 
     def _hard_steering_tools(self) -> tuple[frozenset[str], str]:
         tool_names = {getattr(t, "name", None) for t in getattr(self.agent, "tools", []) or []}
+        if tool_names & _WRITE_TOOLS:
+            return _WRITE_TOOLS, "hard write gate"
         if _STRUCTURED_OUTPUT_TOOL in tool_names:
             return frozenset({_STRUCTURED_OUTPUT_TOOL}), "hard structured-output gate"
         return frozenset(), "hard tool gate"
-
-    def _failed_edit_recovery_path(self) -> str | None:
-        """Return the target of the latest executed content-mismatch edit."""
-        messages = self.state.messages
-        first_result = len(messages)
-        while first_result and messages[first_result - 1].get("role") == "tool":
-            first_result -= 1
-        if first_result == len(messages) or not first_result:
-            return None
-        call_message = messages[first_result - 1]
-        if call_message.get("role") != "assistant":
-            return None
-        results = {
-            message.get("tool_call_id"): message.get("content")
-            for message in messages[first_result:]
-        }
-        for call in reversed(call_message.get("tool_calls") or ()):
-            function = call.get("function", {})
-            if function.get("name") not in _WRITE_TOOLS:
-                continue
-            result = results.get(call.get("id"))
-            if not isinstance(result, str) or not result.startswith(_RECOVERABLE_EDIT_ERRORS):
-                continue
-            try:
-                arguments = json.loads(function.get("arguments", ""))
-            except (TypeError, ValueError):
-                continue
-            path = arguments.get("path") if isinstance(arguments, dict) else None
-            if isinstance(path, str) and path:
-                return path
-        return None
 
     def _apply_pending_tool_allowlist(
         self,
@@ -150,7 +116,7 @@ class _SessionRunCompletionMixin:
         for tc in tool_calls:
             func = tc.get("function", {})
             name = func.get("name")
-            if name in allowed and self._recovery_read_allowed(func):
+            if name in allowed:
                 kept.append(tc)
                 continue
             allowed_list = ", ".join(sorted(allowed))
@@ -165,16 +131,6 @@ class _SessionRunCompletionMixin:
                 }
             )
         return kept, blocked
-
-    def _recovery_read_allowed(self, function: dict[str, Any]) -> bool:
-        target = self._pending_recovery_path
-        if target is None or function.get("name") not in _RECOVERY_READ_TOOLS:
-            return True
-        try:
-            arguments = json.loads(function.get("arguments", ""))
-        except (TypeError, ValueError):
-            return False
-        return isinstance(arguments, dict) and arguments.get("path") == target
 
     def _ordered_tool_messages(
         self,
@@ -216,7 +172,6 @@ class _SessionRunCompletionMixin:
         # with no user turn to fold into, so the block rides in the shaped copy
         # only: the model still sees it, but it stays out of the persisted history.
         tool_names = {getattr(t, "name", None) for t in getattr(self.agent, "tools", []) or []}
-        recovery_path = self._failed_edit_recovery_path()
         steering, tool_choice_override, steering_level = build_steering_block(
             used_tokens=self.state.used_tokens,
             max_budget_tokens=self.max_budget_tokens or 0,
@@ -226,12 +181,8 @@ class _SessionRunCompletionMixin:
             has_write=bool(tool_names & _WRITE_TOOLS),
             has_structured_output=_STRUCTURED_OUTPUT_TOOL in tool_names,
             structured_override=_submit_tool_choice(_STRUCTURED_OUTPUT_TOOL),
-            failed_edit_path=recovery_path,
         )
-        self._maybe_trace_steering(
-            steering_level,
-            tool_choice_override=tool_choice_override is not None,
-        )
+        self._maybe_trace_steering(steering_level)
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
             self.state.messages[-1] = fold_steering(self.state.messages[-1], steering["content"])
@@ -239,29 +190,13 @@ class _SessionRunCompletionMixin:
         if steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
-            if recovery_path is not None:
-                hard_tools, gate_label = _RECOVERY_READ_TOOLS, "failed-edit recovery gate"
-                self._pending_tool_allowlist = hard_tools
-                self._pending_tool_gate_label = gate_label
-                self._pending_recovery_path = recovery_path
-                tools = self._tool_schemas_with_names(tools, hard_tools)
-            elif tool_names & _WRITE_TOOLS:
-                # A long exploration deserves a strong nudge, not a capability
-                # restriction. Forcing a blind write can corrupt a correct
-                # partial solution when compaction has made source context stale.
-                self._pending_tool_allowlist = None
-                self._pending_tool_gate_label = None
-                self._pending_recovery_path = None
-            else:
-                hard_tools, gate_label = self._hard_steering_tools()
-                self._pending_tool_allowlist = hard_tools
-                self._pending_tool_gate_label = gate_label
-                self._pending_recovery_path = None
-                tools = self._tool_schemas_with_names(tools, hard_tools)
+            hard_tools, gate_label = self._hard_steering_tools()
+            self._pending_tool_allowlist = hard_tools
+            self._pending_tool_gate_label = gate_label
+            tools = self._tool_schemas_with_names(tools, hard_tools)
         else:
             self._pending_tool_allowlist = None
             self._pending_tool_gate_label = None
-            self._pending_recovery_path = None
 
         try:
             return await self._complete(messages, tools, tool_choice_override)
@@ -270,13 +205,7 @@ class _SessionRunCompletionMixin:
                 raise
 
         # First overflow: force a maximal compaction pass and retry once.
-        forced = (
-            emergency_shape(self.shaper, self.state.messages)
-            if self.shaper is not None
-            else self.state.messages
-        )
-        if steering is not None and not persisted and recovery_path is not None:
-            forced = [*forced, steering]
+        forced = forced_shape(self.shaper, self.state.messages) if self.shaper is not None else self.state.messages
         # No FRESH steering on the emergency-shrink retry: this path is fighting
         # for token space. Any budget folded into a trailing user turn already
         # rides along in history; no new block is added here.
@@ -288,7 +217,7 @@ class _SessionRunCompletionMixin:
         )
         await self.event_publisher.emit(self.event_factory.error("context_overflow_recompacted"))
         try:
-            return await self._complete(forced, tools, tool_choice_override)
+            return await self._complete(forced, tools)
         except Exception as exc:
             if self._is_context_overflow(exc):
                 raise _ContextOverflowStop() from exc
@@ -415,12 +344,7 @@ class _SessionRunCompletionMixin:
         self.clear_pending_step()
         self.state.transition_to(SessionPhase.STOPPED, reason=reason)
 
-    def _maybe_trace_steering(
-        self,
-        level: str | None,
-        *,
-        tool_choice_override: bool,
-    ) -> None:
+    def _maybe_trace_steering(self, level: str | None) -> None:
         """Emit a ``steering_nudge`` trace step on an UPWARD level crossing.
 
         ``reads_since_last_edit`` can jump past 8/16 in one batch, so the high-
@@ -450,7 +374,7 @@ class _SessionRunCompletionMixin:
                     or self.agent.model,
                     "reads_since_last_edit": self.state.turn.reads_since_last_edit,
                     "level": level,
-                    "tool_choice_override": tool_choice_override,
+                    "tool_choice_override": level == "hard",
                     "step": self.state.step_count,
                 },
             )

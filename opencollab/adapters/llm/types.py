@@ -143,10 +143,6 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
-    "deepseek-v4-pro": ModelCapabilities(
-        context_window=64_000,
-        supports_forced_tool_choice=False,
-    ),
     "k3": ModelCapabilities(
         context_window=1_048_576,
         supports_forced_tool_choice=False,

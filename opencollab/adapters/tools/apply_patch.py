@@ -130,8 +130,6 @@ class ApplyPatchTool(Tool):
                     return f"Error applying patch to {path}: {err}"
 
                 assert updated is not None
-                if updated == current:
-                    return f"Error: patch was a no-op; nothing changed in {path}."
                 await env.write_file(path, updated)
                 return _summary(path, mode, current, updated)
 

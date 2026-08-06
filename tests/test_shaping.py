@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
-import json
 
 from opencollab.application.shaping import (
     COMPACTED_MARKER_PREFIX,
@@ -13,7 +11,6 @@ from opencollab.application.shaping import (
     OldHistorySnipShaper,
     PerToolResultBudgetShaper,
     ShaperPipeline,
-    emergency_shape,
 )
 
 
@@ -390,48 +387,3 @@ def test_forced_shape_through_pipeline_reaches_nested_layers():
     assert pipeline.shape(messages) == messages  # normal: nothing to do
     out = forced_shape(pipeline, messages)
     assert not any(m.get("role") == "tool" for m in out)
-
-
-def test_emergency_shape_compacts_completed_edit_without_mutating_history():
-    arguments = json.dumps({"path": "module.py", "patch": "x" * 2000})
-    messages = [
-        _sys(),
-        {
-            "role": "assistant",
-            "reasoning_content": "private working notes" * 100,
-            "tool_calls": [{
-                "id": "edit-1",
-                "function": {"name": "apply_patch", "arguments": arguments},
-            }],
-        },
-        _tool("edit-1", "Error: hunk did not match module.py"),
-    ]
-    snapshot = copy.deepcopy(messages)
-
-    out = emergency_shape(ShaperPipeline(()), messages)
-
-    assert messages == snapshot
-    assert "reasoning_content" not in out[1]
-    compacted = json.loads(out[1]["tool_calls"][0]["function"]["arguments"])
-    assert compacted == {
-        "_compacted": "completed edit arguments",
-        "original_chars": len(arguments),
-        "path": "module.py",
-        "sha256": hashlib.sha256(arguments.encode()).hexdigest(),
-    }
-    assert out[2] == messages[2]
-
-
-def test_emergency_shape_keeps_unanswered_and_small_edit_arguments():
-    messages = [
-        {
-            "role": "assistant",
-            "tool_calls": [
-                {"id": "pending", "function": {"name": "file_write", "arguments": "x" * 1000}},
-                {"id": "small", "function": {"name": "apply_patch", "arguments": "{}"}},
-            ],
-        },
-        _tool("small", "Done"),
-    ]
-
-    assert emergency_shape(ShaperPipeline(()), messages) is messages
