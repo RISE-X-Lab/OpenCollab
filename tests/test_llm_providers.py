@@ -12,6 +12,7 @@ import pytest
 from opencollab.adapters.llm.anthropic_provider import _build_request_kwargs as build_anthropic_kwargs
 from opencollab.adapters.llm.anthropic_provider import _parse_response as parse_anthropic_response
 from opencollab.adapters.llm.anthropic_provider import _parse_usage as parse_anthropic_usage
+from opencollab.adapters.llm.anthropic_provider import convert_to_anthropic_messages
 from opencollab.adapters.llm.openai_provider import _build_request_kwargs as build_openai_kwargs
 from opencollab.adapters.llm.openai_provider import _parse_response as parse_openai_response
 from opencollab.adapters.llm.openai_provider import _usage_int as openai_usage_int
@@ -208,6 +209,7 @@ def test_openai_preserves_reasoning_content_for_tool_follow_up():
             {
                 "role": "assistant",
                 "reasoning_content": "I need to read the target file.",
+                "provider_state": {"anthropic_content": [{"type": "thinking"}]},
                 "tool_calls": [
                     {
                         "id": "call-1",
@@ -226,6 +228,7 @@ def test_openai_preserves_reasoning_content_for_tool_follow_up():
 
     assistant = kwargs["messages"][1]
     assert assistant["reasoning_content"] == "I need to read the target file."
+    assert "provider_state" not in assistant
     assert kwargs["extra_body"] == {"thinking": {"type": "enabled", "keep": "all"}}
 
 
@@ -531,8 +534,8 @@ def _text_block(text):
     return SimpleNamespace(type="text", text=text)
 
 
-def _thinking_block(text):
-    return SimpleNamespace(type="thinking", thinking=text)
+def _thinking_block(text, signature=None):
+    return SimpleNamespace(type="thinking", thinking=text, signature=signature)
 
 
 def _tool_use_block(name="run", input=None):
@@ -563,12 +566,39 @@ def test_anthropic_does_not_harvest_thinking_on_tool_call_turn():
     assert result.tool_calls and result.tool_calls[0]["function"]["name"] == "run"
 
 
+def test_anthropic_preserves_signed_thinking_for_tool_follow_up():
+    resp = _anthropic_resp([
+        _thinking_block("plan", signature="signed-thinking"),
+        _tool_use_block(name="run"),
+    ])
+
+    result = parse_anthropic_response(resp)
+    message = {
+        "role": "assistant",
+        "tool_calls": result.tool_calls,
+        "provider_state": result.provider_state,
+    }
+    _, converted = convert_to_anthropic_messages([message])
+
+    assert converted[0]["content"][0] == {
+        "type": "thinking",
+        "thinking": "plan",
+        "signature": "signed-thinking",
+    }
+    assert converted[0]["content"][1]["type"] == "tool_use"
+
+
 def test_anthropic_redacted_thinking_is_not_harvested():
     """redacted_thinking holds encrypted data, not text — must not become content."""
     redacted = SimpleNamespace(type="redacted_thinking", data="encrypted-bytes")
     resp = _anthropic_resp([redacted])
     result = parse_anthropic_response(resp)
     assert result.content is None
+    assert result.provider_state == {
+        "anthropic_content": [
+            {"type": "redacted_thinking", "data": "encrypted-bytes"}
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------

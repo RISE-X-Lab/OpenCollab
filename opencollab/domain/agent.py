@@ -31,8 +31,8 @@ class Agent:
         top_p: Nucleus-sampling top_p (``None`` keeps the provider default, so
             the request is unchanged; an explicit 0..1 value sends the knob).
         thinking: Enable provider "thinking"/reasoning passthrough (default off).
-        thinking_params: Extra request params sent when ``thinking`` is on
-            (e.g. ``{"enable_thinking": True}`` for DashScope compatible mode).
+        thinking_params: Provider-native request parameters used when
+            ``thinking`` is on.
         tool_choice: Optional override for the provider ``tool_choice`` (e.g.
             ``"required"`` to force a tool call). ``None`` keeps the provider
             default ("auto") — every ordinary agent leaves this unset.
