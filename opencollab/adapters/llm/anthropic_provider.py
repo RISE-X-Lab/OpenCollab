@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from opencollab.adapters.llm.retry import with_retry
+from opencollab.adapters.llm.retry import RetryTimeBudget, with_retry
 from opencollab.adapters.llm.types import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     LLMResponse,
@@ -106,6 +106,7 @@ async def complete_anthropic(
     tool_choice: Any = None,
     top_p: float | None = None,
     max_output_tokens: int | None = None,
+    provider_error_time_budget: RetryTimeBudget | None = None,
 ) -> LLMResponse:
     """Single-shot completion against the Anthropic API."""
     kwargs = _build_request_kwargs(
@@ -122,6 +123,7 @@ async def complete_anthropic(
     resp = await with_retry(
         lambda: client.messages.create(**kwargs),
         max_retries=max_retries,
+        retry_time_budget=provider_error_time_budget,
     )
     return _parse_response(resp)
 
@@ -156,6 +158,7 @@ def _parse_response(resp: Any) -> LLMResponse:
         usage=_parse_usage(resp.usage),
         finish_reason=resp.stop_reason,
         reasoning=reasoning,
+        provider_model=getattr(resp, "model", None),
     )
 
 

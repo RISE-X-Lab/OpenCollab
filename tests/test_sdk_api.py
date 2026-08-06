@@ -289,7 +289,13 @@ def test_client_exposes_immutable_non_secret_configuration(tmp_path: Path) -> No
             "temperature": 0.7,
             "top_p": 0.8,
             "max_output_tokens": 4096,
+            "context_window": 35_500,
             "thinking": True,
+            "wire_protocol": "responses",
+            "reasoning_effort": "high",
+            "llm_connect_timeout": 11,
+            "llm_first_event_timeout": 222,
+            "llm_stream_idle_timeout": 77,
             "thinking_params": {
                 "thinking": {
                     "type": "enabled",
@@ -304,7 +310,13 @@ def test_client_exposes_immutable_non_secret_configuration(tmp_path: Path) -> No
     assert client.configuration["temperature"] == 0.7
     assert client.configuration["top_p"] == 0.8
     assert client.configuration["max_output_tokens"] == 4096
+    assert client.configuration["context_window"] == 35_500
     assert client.configuration["thinking"] is True
+    assert client.configuration["wire_protocol"] == "responses"
+    assert client.configuration["reasoning_effort"] == "high"
+    assert client.configuration["llm_connect_timeout"] == 11
+    assert client.configuration["llm_first_event_timeout"] == 222
+    assert client.configuration["llm_stream_idle_timeout"] == 77
     assert client.configuration["thinking_params"] == {
         "thinking": {
             "type": "enabled",

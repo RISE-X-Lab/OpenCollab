@@ -287,6 +287,11 @@ class _SessionRunCompletionMixin:
         max_output_tokens = getattr(self.agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
             extra["max_output_tokens"] = max_output_tokens
+        reasoning_effort = getattr(self.agent, "reasoning_effort", None)
+        if reasoning_effort is not None:
+            extra["reasoning_effort"] = reasoning_effort
+        if getattr(self.llm, "supports_response_session_identity", False):
+            extra["response_session_id"] = self._response_session_id
         if not getattr(self.agent, "thinking", False):
             return await self._invoke_llm(
                 messages=messages,
@@ -408,12 +413,16 @@ class _SessionRunCompletionMixin:
                     "total_tokens": total_tokens,
                     "cache_read_tokens": cache_read_tokens,
                     "cache_creation_tokens": cache_creation_tokens,
-                    "uncached_input_tokens": max(
-                        input_tokens - cache_read_tokens - cache_creation_tokens,
-                        0,
+                    "uncached_input_tokens": (
+                        max(input_tokens - cache_read_tokens - cache_creation_tokens, 0)
+                        if cache_read_tokens is not None and cache_creation_tokens is not None
+                        else None
                     ),
                     "estimated": getattr(usage, "estimated", False),
                 }
+                reasoning_tokens = getattr(usage, "reasoning_tokens", None)
+                if reasoning_tokens is not None:
+                    payload["usage"]["reasoning_tokens"] = reasoning_tokens
                 raw_usage = getattr(usage, "raw_usage", None)
                 if raw_usage:
                     payload["usage"]["raw_usage"] = raw_usage
@@ -423,6 +432,14 @@ class _SessionRunCompletionMixin:
             if reasoning:
                 payload["reasoning"] = reasoning
             payload["thinking"] = bool(getattr(self.agent, "thinking", False))
+            wire_protocol = getattr(self.agent, "wire_protocol", "chat_completions")
+            payload["wire_protocol"] = wire_protocol
+            reasoning_effort = getattr(self.agent, "reasoning_effort", None)
+            if reasoning_effort is not None:
+                payload["reasoning_effort"] = reasoning_effort
+            provider_model = getattr(response, "provider_model", None)
+            if provider_model is not None:
+                payload["provider_model"] = provider_model
             self.tracer.log_step(
                 step_type="llm_call",
                 payload=payload,
@@ -444,6 +461,9 @@ class _SessionRunCompletionMixin:
             assistant_msg["content"] = response.content
         if response.tool_calls:
             assistant_msg["tool_calls"] = response.tool_calls
+        provider_items = getattr(response, "provider_items", None)
+        if provider_items:
+            assistant_msg["response_items"] = provider_items
         self.state.append_message(assistant_msg)
 
     async def finish_step(self, latency: float) -> None:

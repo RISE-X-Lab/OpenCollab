@@ -20,13 +20,15 @@ env file.
 
 ## Model Settings
 
-OpenCollab supports OpenAI-compatible APIs through the OpenAI client path. Set
-`provider=openai` and a compatible `base_url` for those providers.
+OpenCollab supports both Chat Completions and Responses on the OpenAI client
+path. Select the wire protocol explicitly. Existing compatible services use
+`chat_completions` by default.
 
 Set the shell environment variables directly.
 
 ```bash
 export OPENCOLLAB_PROVIDER=openai
+export OPENCOLLAB_WIRE_PROTOCOL=chat_completions
 export OPENCOLLAB_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 export OPENCOLLAB_MODEL=glm-5.1
 export OPENCOLLAB_API_KEY=<your-api-key>
@@ -37,6 +39,7 @@ The same settings can be written to `configs/.env`.
 
 ```dotenv
 OPENCOLLAB_PROVIDER=openai
+OPENCOLLAB_WIRE_PROTOCOL=chat_completions
 OPENCOLLAB_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 OPENCOLLAB_MODEL=glm-5.1
 OPENCOLLAB_API_KEY=<your-api-key>
@@ -45,6 +48,35 @@ OPENCOLLAB_LLM_TIMEOUT=600
 
 For DashScope-compatible mode, `DASHSCOPE_API_KEY` is also accepted and is
 preferred over generic API-key variables for DashScope base URLs.
+
+## Responses API
+
+Set `OPENCOLLAB_WIRE_PROTOCOL=responses` for a Responses-compatible service.
+The adapter sends system guidance as `instructions`, replays typed output
+items locally, returns tool output with the original `call_id`, and requests
+`store=false`. Stateless requests include encrypted reasoning content so later
+turns can replay the exact reasoning and tool-call items. The adapter does not
+infer the protocol from a model name and does not fall back to Chat Completions
+after a protocol error.
+
+```dotenv
+OPENCOLLAB_PROVIDER=openai
+OPENCOLLAB_WIRE_PROTOCOL=responses
+OPENCOLLAB_REASONING_EFFORT=medium
+OPENCOLLAB_LLM_CONNECT_TIMEOUT=30
+OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT=180
+OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT=180
+```
+
+`OPENCOLLAB_LLM_TIMEOUT` bounds each successful model request.
+`OPENCOLLAB_PROVIDER_ERROR_TIME_BUDGET` adds a shared retry-only allowance for
+one workflow or team run. Failed request time and retry backoff consume the
+allowance, while successful requests keep the original request limit.
+`OPENCOLLAB_LLM_MAX_RETRIES` remains a separate request-count ceiling.
+
+Supported reasoning efforts are `none`, `minimal`, `low`, `medium`, `high`,
+`xhigh`, and `max`. A service may support only a subset. An unsupported value
+is reported as a provider error and never changed automatically.
 
 ## Model capability metadata
 

@@ -20,16 +20,16 @@ _FILTER_ENV = "OPENCOLLAB_FILTER_MESSAGES"
 @pytest.fixture(autouse=True)
 def _isolate_config_env(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv(_FILTER_ENV, raising=False)
-    monkeypatch.delenv("OPENCOLLAB_CONFIG_FILE", raising=False)
-    monkeypatch.delenv("OPENCOLLAB_API_KEY", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-    monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
-    monkeypatch.delenv("OPENCOLLAB_LLM_TIMEOUT", raising=False)
-    monkeypatch.delenv("OPENCOLLAB_TEMPERATURE", raising=False)
-    monkeypatch.delenv("OPENCOLLAB_TOP_P", raising=False)
-    monkeypatch.delenv("OPENCOLLAB_MAX_OUTPUT_TOKENS", raising=False)
+    for name in (
+        _FILTER_ENV, "OPENCOLLAB_CONFIG_FILE",
+        "OPENCOLLAB_API_KEY", "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY",
+        "OPENCOLLAB_LLM_TIMEOUT", "OPENCOLLAB_WIRE_PROTOCOL",
+        "OPENCOLLAB_REASONING_EFFORT", "OPENCOLLAB_LLM_CONNECT_TIMEOUT",
+        "OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT", "OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT",
+        "OPENCOLLAB_TEMPERATURE", "OPENCOLLAB_TOP_P", "OPENCOLLAB_MAX_OUTPUT_TOKENS",
+    ):
+        monkeypatch.delenv(name, raising=False)
 
 
 def test_filter_messages_defaults_off(monkeypatch):
@@ -293,3 +293,45 @@ def test_missing_api_key_honors_dashscope_endpoint(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")
     base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert missing_api_key("openai", None, base_url) is False
+
+
+def test_responses_configuration_reads_explicit_protocol_reasoning_and_timeouts(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_WIRE_PROTOCOL", "responses")
+    monkeypatch.setenv("OPENCOLLAB_REASONING_EFFORT", "xhigh")
+    monkeypatch.setenv("OPENCOLLAB_LLM_MAX_RETRIES", "32")
+    monkeypatch.setenv("OPENCOLLAB_LLM_CONNECT_TIMEOUT", "12")
+    monkeypatch.setenv("OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT", "240")
+    monkeypatch.setenv("OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT", "90")
+    monkeypatch.setenv("OPENCOLLAB_PROVIDER_ERROR_TIME_BUDGET", "3600")
+
+    config = build_config()
+
+    assert config.wire_protocol == "responses"
+    assert config.reasoning_effort == "xhigh"
+    assert config.llm_max_retries == 32
+    assert config.llm_connect_timeout == 12
+    assert config.llm_first_event_timeout == 240
+    assert config.llm_stream_idle_timeout == 90
+    assert config.provider_error_time_budget == 3600
+
+
+@pytest.mark.parametrize("value", ["none", "minimal", "low", "medium", "high", "xhigh", "max"])
+def test_responses_configuration_accepts_reasoning_effort(monkeypatch, value):
+    monkeypatch.setenv("OPENCOLLAB_WIRE_PROTOCOL", "responses")
+    monkeypatch.setenv("OPENCOLLAB_REASONING_EFFORT", value)
+
+    assert build_config().reasoning_effort == value
+
+
+@pytest.mark.parametrize("value", ["responses-api", "auto", "unknown"])
+def test_unknown_wire_protocol_is_rejected(monkeypatch, value):
+    monkeypatch.setenv("OPENCOLLAB_WIRE_PROTOCOL", value)
+    with pytest.raises(ValueError, match="wire protocol"):
+        build_config()
+
+
+@pytest.mark.parametrize("value", ["ultra", "1"])
+def test_unknown_reasoning_effort_is_rejected(monkeypatch, value):
+    monkeypatch.setenv("OPENCOLLAB_REASONING_EFFORT", value)
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        build_config()

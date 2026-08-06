@@ -7,6 +7,7 @@ not required.
 Supported variables:
     OPENCOLLAB_MODEL      — default LLM model (e.g., "claude-sonnet-4-20250514")
     OPENCOLLAB_PROVIDER   — LLM provider ("openai", "anthropic")
+    OPENCOLLAB_WIRE_PROTOCOL — "chat_completions" or "responses"
     OPENCOLLAB_API_KEY    — API key (also reads OPENAI_API_KEY /
                             ANTHROPIC_API_KEY / DASHSCOPE_API_KEY)
     OPENCOLLAB_BASE_URL   — API base URL (also reads OPENAI_BASE_URL)
@@ -19,6 +20,10 @@ Supported variables:
     OPENCOLLAB_THINKING_PARAMS — JSON object of extra request params sent when
                             thinking is on (default {"enable_thinking": true})
     OPENCOLLAB_LLM_TIMEOUT — provider request timeout in seconds
+    OPENCOLLAB_REASONING_EFFORT — Responses reasoning effort
+    OPENCOLLAB_LLM_CONNECT_TIMEOUT — provider connection timeout in seconds
+    OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT — Responses first-event timeout
+    OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT — Responses stream-idle timeout
     OPENCOLLAB_FILTER_MESSAGES — deprecated TUI compatibility setting (bool)
     OPENCOLLAB_CONFIG_FILE — explicit path to an env file
 """
@@ -33,7 +38,11 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from opencollab.adapters.llm.providers import is_anthropic, required_env_key
+from opencollab.adapters.llm.providers import (
+    is_anthropic,
+    normalize_wire_protocol,
+    required_env_key,
+)
 from opencollab.adapters.llm.types import DEFAULT_MAX_OUTPUT_TOKENS
 from opencollab.adapters.safe_files import read_regular_text
 
@@ -111,15 +120,23 @@ class OpenCollabConfig(BaseModel):
 
     model: str = Field(default="gpt-4o", min_length=1)
     provider: str = Field(default="openai", min_length=1)
+    wire_protocol: str = Field(default="chat_completions", min_length=1)
     api_key: str | None = Field(default=None, repr=False)
     base_url: str | None = None
     budget: int = Field(default=1_000_000, ge=1)
     temperature: float = Field(default=DEFAULT_TEMPERATURE, ge=0.0, le=2.0)
     top_p: float | None = Field(default=DEFAULT_TOP_P, ge=0.0, le=1.0)
     max_output_tokens: int = Field(default=DEFAULT_MAX_OUTPUT_TOKENS, ge=1)
+    context_window: int | None = Field(default=None, ge=1)
     thinking: bool = Field(default=DEFAULT_THINKING)
     thinking_params: dict[str, Any] = Field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
+    reasoning_effort: str | None = None
+    llm_max_retries: int = Field(default=3, ge=0)
     llm_timeout: float = Field(default=600.0, gt=0, allow_inf_nan=False)
+    llm_connect_timeout: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+    llm_first_event_timeout: float = Field(default=180.0, gt=0, allow_inf_nan=False)
+    llm_stream_idle_timeout: float = Field(default=180.0, gt=0, allow_inf_nan=False)
+    provider_error_time_budget: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     filter_messages: bool = Field(default=False)
 
     @field_validator("top_p", mode="before")
@@ -141,11 +158,40 @@ class OpenCollabConfig(BaseModel):
             return _parse_bool(value)
         return value
 
-    @field_validator("llm_timeout", mode="before")
+    @field_validator(
+        "llm_timeout",
+        "llm_connect_timeout",
+        "llm_first_event_timeout",
+        "llm_stream_idle_timeout",
+        mode="before",
+    )
     @classmethod
     def _reject_boolean_llm_timeout(cls, value: Any) -> Any:
         if isinstance(value, bool):
-            raise ValueError("llm_timeout must be a finite positive number")
+            raise ValueError("LLM timeouts must be finite positive numbers")
+        return value
+
+    @field_validator("provider_error_time_budget", mode="before")
+    @classmethod
+    def _reject_boolean_provider_error_budget(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError(
+                "provider error time budget must be a finite non-negative number"
+            )
+        return value
+
+    @field_validator("llm_max_retries", mode="before")
+    @classmethod
+    def _reject_boolean_llm_max_retries(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("LLM max retries must be a non-negative integer")
+        return value
+
+    @field_validator("context_window", mode="before")
+    @classmethod
+    def _reject_boolean_context_window(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("context_window must be a positive integer or None")
         return value
 
     @field_validator("thinking_params", mode="before")
@@ -159,7 +205,7 @@ class OpenCollabConfig(BaseModel):
             return dict(DEFAULT_THINKING_PARAMS)
         return value
 
-    @field_validator("model", "provider", mode="before")
+    @field_validator("model", "provider", "wire_protocol", mode="before")
     @classmethod
     def _strip_required_strings(cls, value: Any) -> Any:
         if isinstance(value, str):
@@ -170,6 +216,25 @@ class OpenCollabConfig(BaseModel):
     @classmethod
     def _normalize_provider(cls, value: str) -> str:
         return value.lower()
+
+    @field_validator("wire_protocol")
+    @classmethod
+    def _normalize_wire_protocol(cls, value: str) -> str:
+        return normalize_wire_protocol(value)
+
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def _normalize_reasoning_effort(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        normalized = str(value).strip().lower()
+        if not normalized:
+            return None
+        if normalized not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}:
+            raise ValueError(
+                "reasoning_effort must be none, minimal, low, medium, high, xhigh, or max"
+            )
+        return normalized
 
     @field_validator("api_key", "base_url", mode="before")
     @classmethod
@@ -353,6 +418,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
     values: dict[str, Any] = {
         "model": resolve("OPENCOLLAB_MODEL", default="gpt-4o"),
         "provider": provider_value,
+        "wire_protocol": resolve("OPENCOLLAB_WIRE_PROTOCOL", default="chat_completions"),
         "api_key": api_key_value,
         "base_url": base_url_value,
         "budget": resolve("OPENCOLLAB_BUDGET", default="1000000"),
@@ -363,7 +429,19 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         ),
         "thinking": resolve("OPENCOLLAB_THINKING", default=str(DEFAULT_THINKING)),
         "thinking_params": resolve("OPENCOLLAB_THINKING_PARAMS"),
+        "reasoning_effort": resolve("OPENCOLLAB_REASONING_EFFORT"),
+        "llm_max_retries": resolve("OPENCOLLAB_LLM_MAX_RETRIES", default="3"),
         "llm_timeout": resolve("OPENCOLLAB_LLM_TIMEOUT", default="600"),
+        "llm_connect_timeout": resolve("OPENCOLLAB_LLM_CONNECT_TIMEOUT", default="30"),
+        "llm_first_event_timeout": resolve(
+            "OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT", default="180"
+        ),
+        "llm_stream_idle_timeout": resolve(
+            "OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT", default="180"
+        ),
+        "provider_error_time_budget": resolve(
+            "OPENCOLLAB_PROVIDER_ERROR_TIME_BUDGET", default="0"
+        ),
         "filter_messages": resolve("OPENCOLLAB_FILTER_MESSAGES", default="false"),
     }
     values.update(selected_overrides)

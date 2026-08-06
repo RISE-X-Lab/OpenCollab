@@ -12,9 +12,18 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
+from types import SimpleNamespace
 
+import pytest
+
+from opencollab.adapters.llm import retry as retry_module
 from opencollab.adapters.llm.errors import is_context_overflow_error
-from opencollab.adapters.llm.retry import extract_retry_after_seconds, is_retryable_error
+from opencollab.adapters.llm.retry import (
+    RetryTimeBudget,
+    extract_retry_after_seconds,
+    is_retryable_error,
+    with_retry,
+)
 
 
 class FakeProviderError(Exception):
@@ -161,6 +170,35 @@ def test_genuine_transient_error_still_retryable():
     assert is_retryable_error(err) is True
 
 
+@pytest.mark.parametrize(
+    ("message", "status"),
+    [
+        ("timeout", 400),
+        ("rate limit", 403),
+        ("timeout", 401),
+    ],
+)
+def test_explicit_non_retryable_status_overrides_transient_wording(message, status):
+    assert is_retryable_error(FakeProviderError(message, status_code=status)) is False
+
+
+def test_response_non_retryable_status_overrides_transient_wording():
+    assert is_retryable_error(FakeErrorWithResponse("timeout", status_code=400)) is False
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Connection error.",
+        "Connection reset by peer",
+        "Connection refused",
+        "Server disconnected without sending a response",
+    ],
+)
+def test_connection_failures_without_status_attribute_are_retryable(message):
+    assert is_retryable_error(RuntimeError(message)) is True
+
+
 def test_retry_after_rejects_non_finite_and_negative_values():
     class Response:
         def __init__(self, value):
@@ -187,3 +225,147 @@ def test_retry_after_accepts_standard_http_date():
     Error.response.headers["Retry-After"] = format_datetime(now + timedelta(seconds=45))
 
     assert extract_retry_after_seconds(Error(), now=now) == 45.0
+
+
+@pytest.mark.asyncio
+async def test_retry_time_budget_still_caps_exponential_backoff(monkeypatch):
+    attempts = 0
+    delays = []
+
+    async def fail_until_recovered():
+        nonlocal attempts
+        attempts += 1
+        if attempts < 10:
+            raise FakeProviderError("overloaded", status_code=502)
+        return "ok"
+
+    async def record_sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(retry_module.asyncio, "sleep", record_sleep)
+    monkeypatch.setattr(retry_module.random, "uniform", lambda _low, _high: 0.0)
+
+    assert await with_retry(
+        fail_until_recovered,
+        max_retries=9,
+        retry_time_budget=RetryTimeBudget(1_000),
+    ) == "ok"
+    assert attempts == 10
+    assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0]
+
+
+@pytest.mark.asyncio
+async def test_failed_attempt_time_exhausts_retry_budget(monkeypatch):
+    attempts = 0
+    ticks = iter((10.0, 15.0))
+
+    async def fail():
+        nonlocal attempts
+        attempts += 1
+        raise FakeProviderError("overloaded", status_code=502)
+
+    monkeypatch.setattr(
+        retry_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: next(ticks)),
+    )
+
+    with pytest.raises(FakeProviderError, match="overloaded"):
+        await with_retry(
+            fail,
+            max_retries=9,
+            retry_time_budget=RetryTimeBudget(4),
+        )
+
+    assert attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_non_retryable_failure_does_not_consume_provider_budget(monkeypatch):
+    budget = RetryTimeBudget(30)
+    ticks = iter((10.0, 25.0))
+
+    async def fail():
+        raise FakeProviderError("invalid request", status_code=400)
+
+    monkeypatch.setattr(
+        retry_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: next(ticks)),
+    )
+
+    with pytest.raises(FakeProviderError, match="invalid request"):
+        await with_retry(fail, max_retries=9, retry_time_budget=budget)
+
+    assert budget.remaining_seconds == 30
+
+
+@pytest.mark.asyncio
+async def test_terminal_transient_failure_consumes_provider_budget(monkeypatch):
+    budget = RetryTimeBudget(30)
+    ticks = iter((10.0, 15.0))
+
+    async def fail():
+        raise FakeProviderError("overloaded", status_code=503)
+
+    monkeypatch.setattr(
+        retry_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: next(ticks)),
+    )
+
+    with pytest.raises(FakeProviderError, match="overloaded"):
+        await with_retry(fail, max_retries=0, retry_time_budget=budget)
+
+    assert budget.remaining_seconds == 25
+
+
+@pytest.mark.asyncio
+async def test_retry_time_budget_is_shared_across_calls(monkeypatch):
+    budget = RetryTimeBudget(2.5)
+
+    async def skip_delay(_seconds):
+        return None
+
+    monkeypatch.setattr(retry_module.asyncio, "sleep", skip_delay)
+    monkeypatch.setattr(retry_module.random, "uniform", lambda _low, _high: 0.0)
+
+    async def recover_after_one_failure():
+        calls = 0
+
+        async def call():
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise FakeProviderError("overloaded", status_code=502)
+            return "ok"
+
+        return await with_retry(call, max_retries=1, retry_time_budget=budget)
+
+    assert await recover_after_one_failure() == "ok"
+    assert await recover_after_one_failure() == "ok"
+    with pytest.raises(FakeProviderError, match="overloaded"):
+        await recover_after_one_failure()
+
+
+@pytest.mark.asyncio
+async def test_legacy_retry_backoff_remains_uncapped_without_time_budget(monkeypatch):
+    attempts = 0
+    delays = []
+
+    async def fail():
+        nonlocal attempts
+        attempts += 1
+        raise FakeProviderError("overloaded", status_code=502)
+
+    async def record_sleep(delay):
+        delays.append(delay)
+
+    monkeypatch.setattr(retry_module.asyncio, "sleep", record_sleep)
+    monkeypatch.setattr(retry_module.random, "uniform", lambda _low, _high: 0.0)
+
+    with pytest.raises(FakeProviderError, match="overloaded"):
+        await with_retry(fail, max_retries=8)
+
+    assert attempts == 9
+    assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0]

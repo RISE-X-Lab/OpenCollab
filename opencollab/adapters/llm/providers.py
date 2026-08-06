@@ -13,6 +13,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 ANTHROPIC = "anthropic"
+CHAT_COMPLETIONS = "chat_completions"
+RESPONSES = "responses"
+WIRE_PROTOCOLS = frozenset({CHAT_COMPLETIONS, RESPONSES})
 
 # Provider strings that look like a user meant Anthropic but don't normalize to
 # ``anthropic`` — treating these as OpenAI-compatible would silently send the
@@ -28,6 +31,15 @@ def normalize_provider(provider: str | None) -> str:
 def is_anthropic(provider: str | None) -> bool:
     """Whether ``provider`` selects the native Anthropic SDK path."""
     return normalize_provider(provider) == ANTHROPIC
+
+
+def normalize_wire_protocol(value: str | None) -> str:
+    """Return a validated wire protocol identifier."""
+    normalized = (value or CHAT_COMPLETIONS).strip().lower().replace("-", "_")
+    if normalized not in WIRE_PROTOCOLS:
+        choices = ", ".join(sorted(WIRE_PROTOCOLS))
+        raise ValueError(f"unsupported LLM wire protocol {value!r}; expected one of {choices}")
+    return normalized
 
 
 def required_env_key(provider: str | None) -> str:

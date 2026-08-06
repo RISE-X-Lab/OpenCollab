@@ -61,10 +61,18 @@ class SpawnConfig:
     temperature: float = DEFAULT_TEMPERATURE
     top_p: float | None = DEFAULT_TOP_P
     max_output_tokens: int = DEFAULT_MAX_TOKENS_PER_STEP
+    context_window: int | None = None
     # Global thinking passthrough; a role may override it (resolved in
     # ``ContextBuilder.build_agent``). Defaulted (OFF) so the field stays optional.
     thinking: bool = DEFAULT_THINKING
     thinking_params: dict = field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
+    wire_protocol: str = "chat_completions"
+    reasoning_effort: str | None = None
+    llm_max_retries: int = 3
+    llm_connect_timeout: float = 30.0
+    llm_first_event_timeout: float = 180.0
+    llm_stream_idle_timeout: float = 180.0
+    provider_error_time_budget: float = 0.0
 
 
 class ContextBuilder:
@@ -212,13 +220,21 @@ class ContextBuilder:
             tools=tools,
             model=role.model or cfg.model,
             provider=cfg.provider,
+            wire_protocol=cfg.wire_protocol,
             api_key=cfg.api_key,
             base_url=cfg.base_url,
             temperature=temperature,
             top_p=cfg.top_p,
             max_tokens_per_step=cfg.max_output_tokens,
+            context_window=cfg.context_window,
             thinking=thinking,
             thinking_params=thinking_params,
+            reasoning_effort=cfg.reasoning_effort,
+            llm_max_retries=cfg.llm_max_retries,
+            llm_connect_timeout=cfg.llm_connect_timeout,
+            llm_first_event_timeout=cfg.llm_first_event_timeout,
+            llm_stream_idle_timeout=cfg.llm_stream_idle_timeout,
+            provider_error_time_budget=cfg.provider_error_time_budget,
         )
 
     def _team_section(self, role_name: str, role: RoleConfig) -> str:

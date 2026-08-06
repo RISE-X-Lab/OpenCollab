@@ -8,6 +8,10 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- Added an explicit OpenAI Responses wire protocol with typed streaming,
+  locally replayed reasoning and function items, exact tool-call binding,
+  configurable reasoning effort, separate stream timeouts, and complete usage
+  evidence.
 - Added Mini Edict, a bilingual, tested Three Departments and Six Ministries
   example with both a team configuration and a hard-gated workflow.
 - Added a public maintainer release procedure covering exact-SHA validation,

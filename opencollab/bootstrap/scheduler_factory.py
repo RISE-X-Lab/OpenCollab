@@ -82,6 +82,7 @@ def build_scheduler(
         SpawnConfig(
             model=cfg["model"],
             provider=cfg["provider"],
+            wire_protocol=cfg.get("wire_protocol", "chat_completions"),
             api_key=cfg["api_key"],
             base_url=cfg["base_url"],
             llm_timeout=cfg.get("llm_timeout", 600.0),
@@ -90,8 +91,15 @@ def build_scheduler(
             max_output_tokens=cfg.get(
                 "max_output_tokens", DEFAULT_MAX_TOKENS_PER_STEP
             ),
+            context_window=cfg.get("context_window"),
             thinking=cfg.get("thinking", DEFAULT_THINKING),
             thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
+            reasoning_effort=cfg.get("reasoning_effort"),
+            llm_max_retries=cfg.get("llm_max_retries", 3),
+            llm_connect_timeout=cfg.get("llm_connect_timeout", 30.0),
+            llm_first_event_timeout=cfg.get("llm_first_event_timeout", 180.0),
+            llm_stream_idle_timeout=cfg.get("llm_stream_idle_timeout", 180.0),
+            provider_error_time_budget=cfg.get("provider_error_time_budget", 0.0),
             tracer=ctx.tracer,
             event_bus=event_bus,
             permission_policy=ctx.permission_policy,

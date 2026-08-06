@@ -373,6 +373,16 @@ class CompletionResponse(Protocol):
         """
         ...
 
+    @property
+    def provider_items(self) -> list[dict[str, Any]]:
+        """Provider-native items retained for auditable local replay."""
+        ...
+
+    @property
+    def provider_model(self) -> str | None:
+        """Provider-confirmed model identity, if the wire protocol reports it."""
+        ...
+
 
 class LLMPort(Protocol):
     """LLM client surface used by the session run loop and compaction."""
@@ -385,9 +395,11 @@ class LLMPort(Protocol):
         temperature: float = 0.0,
         thinking: bool = False,
         thinking_params: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
         tool_choice: str | None = None,
         top_p: float | None = None,
         max_output_tokens: int | None = None,
+        response_session_id: str | None = None,
     ) -> CompletionResponse:
         ...
 
