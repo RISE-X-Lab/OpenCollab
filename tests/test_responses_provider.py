@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
-from typing import Any
 
 import pytest
+from responses_provider_test_support import (
+    FakeStream,
+    completed_response,
+    function_item,
+    message_item,
+    ns,
+)
 
 from opencollab.adapters.llm.responses_provider import (
     ResponsesEmptyOutputError,
@@ -18,78 +23,6 @@ from opencollab.adapters.llm.responses_provider import (
     complete_responses,
     parse_responses_response,
 )
-
-
-def ns(**values: Any) -> SimpleNamespace:
-    return SimpleNamespace(**values)
-
-
-def completed_response(
-    *,
-    output: list[dict[str, Any]] | None = None,
-    status: str = "completed",
-    error: Any = None,
-    incomplete_details: Any = None,
-    model: str = "gpt-fake",
-) -> SimpleNamespace:
-    return ns(
-        status=status,
-        error=error,
-        incomplete_details=incomplete_details,
-        model=model,
-        output=output or [],
-        usage=ns(
-            input_tokens=120,
-            input_tokens_details=ns(cached_tokens=80),
-            cache_write_tokens=12,
-            output_tokens=30,
-            output_tokens_details=ns(reasoning_tokens=9),
-            total_tokens=150,
-        ),
-    )
-
-
-def message_item(text: str) -> dict[str, Any]:
-    return {
-        "id": "msg_1",
-        "type": "message",
-        "role": "assistant",
-        "status": "completed",
-        "content": [{"type": "output_text", "text": text, "annotations": []}],
-    }
-
-
-def function_item(call_id: str, name: str, arguments: str) -> dict[str, Any]:
-    return {
-        "id": f"fc_{call_id}",
-        "type": "function_call",
-        "status": "completed",
-        "call_id": call_id,
-        "name": name,
-        "arguments": arguments,
-    }
-
-
-class FakeStream:
-    def __init__(self, events: list[Any], *, delays: list[float] | None = None):
-        self.events = iter(events)
-        self.delays = iter(delays or [0.0] * len(events))
-        self.closed = False
-
-    def __aiter__(self):
-        return self
-
-    async def __anext__(self):
-        delay = next(self.delays, 0.0)
-        if delay:
-            await asyncio.sleep(delay)
-        try:
-            return next(self.events)
-        except StopIteration as exc:
-            raise StopAsyncIteration from exc
-
-    async def close(self):
-        self.closed = True
 
 
 @pytest.mark.asyncio
@@ -458,69 +391,6 @@ async def test_stream_rejects_wrong_model_and_final_output_drift():
     )
     with pytest.raises(ResponsesProtocolError, match="disagrees with streamed"):
         _parse_stream(state, [{"role": "user", "content": "work"}], "gpt-fake")
-
-
-@pytest.mark.asyncio
-async def test_stream_accepts_terminal_projection_without_transport_metadata():
-    streamed_message = {
-        **message_item("OK"),
-        "phase": "final_answer",
-        "metadata": {"turn_id": "turn-1"},
-        "internal_chat_message_metadata_passthrough": {"turn_id": "turn-1"},
-    }
-    streamed_message["content"][0]["logprobs"] = []
-    final_message = {
-        "type": "message",
-        "role": "assistant",
-        "content": [{"type": "output_text", "text": "OK"}],
-    }
-    state = await _consume_stream(
-        FakeStream([
-            ns(type="response.output_item.done", output_index=0, item=streamed_message),
-            ns(
-                type="response.completed",
-                response=completed_response(output=[final_message]),
-            ),
-        ]),
-        1,
-        1,
-        "gpt-fake",
-    )
-
-    parsed = _parse_stream(state, [{"role": "user", "content": "work"}], "gpt-fake")
-
-    assert parsed.content == "OK"
-    assert parsed.provider_items == [streamed_message]
-
-
-@pytest.mark.asyncio
-async def test_stream_accepts_terminal_function_call_projection():
-    streamed_call = {
-        **function_item("call_1", "read_file", '{"path":"a.py"}'),
-        "metadata": {"turn_id": "turn-1"},
-    }
-    final_call = {
-        "type": "function_call",
-        "call_id": "call_1",
-        "name": "read_file",
-        "arguments": '{"path": "a.py"}',
-    }
-    state = await _consume_stream(
-        FakeStream([
-            ns(type="response.output_item.done", output_index=0, item=streamed_call),
-            ns(
-                type="response.completed",
-                response=completed_response(output=[final_call]),
-            ),
-        ]),
-        1,
-        1,
-        "gpt-fake",
-    )
-
-    parsed = _parse_stream(state, [{"role": "user", "content": "work"}], "gpt-fake")
-
-    assert parsed.tool_calls[0]["id"] == "call_1"
 
 
 @pytest.mark.asyncio
