@@ -73,6 +73,45 @@ A team file may override the temperature per role via a `temperature:` field on
 the role (see [Team](#team) below). A role that leaves it unset inherits this
 global value. A role value of `0.0` overrides the global setting.
 
+## Thinking
+
+OpenCollab adds no thinking configuration by default, leaving that behavior to
+the provider. Enable an explicit configuration globally with
+`OPENCOLLAB_THINKING=true` or set `thinking: true` on one role. Parameters use
+the selected provider's native request shape.
+
+OpenAI-compatible endpoints receive `OPENCOLLAB_THINKING_PARAMS` through
+`extra_body`.
+
+```dotenv
+OPENCOLLAB_THINKING=true
+OPENCOLLAB_THINKING_PARAMS={"enable_thinking":true}
+```
+
+The native Anthropic provider accepts manual or adaptive thinking. Manual
+thinking requires a budget of at least 1,024 tokens and below
+`OPENCOLLAB_MAX_OUTPUT_TOKENS`.
+
+```dotenv
+OPENCOLLAB_PROVIDER=anthropic
+OPENCOLLAB_MAX_OUTPUT_TOKENS=32768
+OPENCOLLAB_THINKING=true
+OPENCOLLAB_THINKING_PARAMS={"thinking":{"type":"enabled","budget_tokens":16000}}
+```
+
+Adaptive thinking can include an effort setting supported by the selected
+Anthropic model.
+
+```dotenv
+OPENCOLLAB_THINKING_PARAMS={"thinking":{"type":"adaptive"},"output_config":{"effort":"high"}}
+```
+
+OpenCollab omits `temperature` from native Anthropic thinking requests and
+requires the provider default for `top_p`. Manual thinking uses automatic tool
+selection when a caller requests a forced tool. Signed thinking blocks and
+their original ordering survive tool calls. Invalid or incompatible thinking
+parameters fail before the provider request is sent.
+
 ## Display
 
 The TUI retains a separate stream for every agent, starts on the Lead (agent 0),

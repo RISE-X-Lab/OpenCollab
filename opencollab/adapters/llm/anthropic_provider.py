@@ -6,6 +6,7 @@ to Anthropic's format on the way out.
 
 from __future__ import annotations
 
+import copy
 import json
 from typing import Any
 
@@ -44,6 +45,93 @@ def _anthropic_tool_choice(tool_choice: Any) -> dict[str, Any] | None:
     return None
 
 
+def _anthropic_thinking_kwargs(
+    thinking_params: dict | None,
+    *,
+    max_tokens: int,
+) -> dict[str, Any]:
+    """Validate provider-native thinking settings for one Anthropic request."""
+    if not isinstance(thinking_params, dict) or not thinking_params:
+        raise ValueError(
+            "Anthropic thinking requires provider-native thinking_params"
+        )
+
+    unknown = set(thinking_params) - {"thinking", "output_config"}
+    if unknown:
+        names = ", ".join(sorted(map(str, unknown)))
+        raise ValueError(f"unsupported Anthropic thinking parameter(s): {names}")
+
+    thinking_config = thinking_params.get("thinking")
+    if not isinstance(thinking_config, dict):
+        raise ValueError("Anthropic thinking_params.thinking must be an object")
+    thinking_type = thinking_config.get("type")
+    if not isinstance(thinking_type, str) or thinking_type not in {
+        "enabled",
+        "adaptive",
+    }:
+        raise ValueError(
+            "Anthropic thinking_params.thinking.type must be enabled or adaptive"
+        )
+    allowed_thinking = (
+        {"type", "budget_tokens", "display"}
+        if thinking_type == "enabled"
+        else {"type", "display"}
+    )
+    unknown_thinking = set(thinking_config) - allowed_thinking
+    if unknown_thinking:
+        names = ", ".join(sorted(map(str, unknown_thinking)))
+        raise ValueError(f"unsupported Anthropic thinking field(s): {names}")
+    display = thinking_config.get("display")
+    if display is not None and (
+        not isinstance(display, str) or display not in {"summarized", "omitted"}
+    ):
+        raise ValueError("Anthropic thinking display must be summarized or omitted")
+
+    if thinking_type == "enabled":
+        budget = thinking_config.get("budget_tokens")
+        if isinstance(budget, bool) or not isinstance(budget, int):
+            raise ValueError(
+                "Anthropic manual thinking requires an integer budget_tokens"
+            )
+        if budget < 1024:
+            raise ValueError("Anthropic thinking budget_tokens must be at least 1024")
+        if budget >= max_tokens:
+            raise ValueError(
+                "Anthropic thinking budget_tokens must be less than max_output_tokens"
+            )
+    request = {"thinking": copy.deepcopy(thinking_config)}
+    if "output_config" in thinking_params:
+        output_config = thinking_params["output_config"]
+        if not isinstance(output_config, dict):
+            raise ValueError("Anthropic thinking_params.output_config must be an object")
+        unknown_output = set(output_config) - {"effort", "format"}
+        if unknown_output:
+            names = ", ".join(sorted(map(str, unknown_output)))
+            raise ValueError(f"unsupported Anthropic output_config field(s): {names}")
+        if "effort" in output_config:
+            effort = output_config["effort"]
+            if not isinstance(effort, str) or effort not in {
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max",
+            }:
+                raise ValueError("unsupported Anthropic output_config.effort")
+        if "format" in output_config:
+            _validate_anthropic_output_format(output_config["format"])
+        request["output_config"] = copy.deepcopy(output_config)
+    return request
+
+
+def _validate_anthropic_output_format(value: Any) -> None:
+    """Validate the JSON-schema output format accepted by Anthropic."""
+    if not isinstance(value, dict) or set(value) != {"type", "schema"}:
+        raise ValueError("Anthropic output_config.format requires type and schema")
+    if value["type"] != "json_schema" or not isinstance(value["schema"], dict):
+        raise ValueError("Anthropic output_config.format must contain a JSON schema")
+
+
 def _build_request_kwargs(
     model: str,
     messages: list[dict],
@@ -56,15 +144,27 @@ def _build_request_kwargs(
     max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
     system_parts, anthropic_messages = convert_to_anthropic_messages(messages)
+    max_tokens = int(max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
+    thinking_kwargs = (
+        _anthropic_thinking_kwargs(thinking_params, max_tokens=max_tokens)
+        if thinking
+        else {}
+    )
 
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": anthropic_messages,
-        "max_tokens": int(max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS),
-        "temperature": temperature,
+        "max_tokens": max_tokens,
     }
+    # Anthropic requires the default temperature while thinking is enabled.
+    # Omitting it also works for compatible gateways and avoids turning the
+    # ordinary OpenCollab temperature default into a provider-side 400.
+    if not thinking:
+        kwargs["temperature"] = temperature
     # Nucleus sampling rides along ONLY when explicitly set; when None the key is
     # omitted so the request is byte-for-byte identical to today's behavior.
+    if thinking and top_p is not None:
+        raise ValueError("Anthropic thinking requires the provider-default top_p")
     if top_p is not None:
         kwargs["top_p"] = top_p
     if system_parts:
@@ -73,14 +173,13 @@ def _build_request_kwargs(
         kwargs["tools"] = [_convert_tool(tool) for tool in tools]
         choice = _anthropic_tool_choice(tool_choice)
         if choice is not None:
+            if (
+                thinking_kwargs.get("thinking", {}).get("type") == "enabled"
+                and choice.get("type") in {"any", "tool"}
+            ):
+                choice = {"type": "auto"}
             kwargs["tool_choice"] = choice
-    # Thinking passthrough (minimal, flag-guarded). This native-Anthropic path is
-    # unused here (DashScope compatible mode runs the OpenAI path), so keep it
-    # behind the flag: default-off changes nothing. ``thinking_params`` is the
-    # OpenAI-shaped payload; the Anthropic API instead wants an extended-thinking
-    # block, so we send a conservative enabled block rather than the raw params.
-    if thinking:
-        kwargs["thinking"] = {"type": "enabled", "budget_tokens": 2048}
+    kwargs.update(thinking_kwargs)
     return kwargs
 
 
@@ -129,15 +228,18 @@ async def complete_anthropic(
 def _parse_response(resp: Any) -> LLMResponse:
     content = ""
     thinking_text = ""
+    provider_content: list[dict[str, Any]] = []
+    has_thinking = False
     tool_calls = []
     for block in resp.content:
+        provider_content.append(_serialize_content_block(block))
         if block.type == "text":
             content += block.text
         elif block.type == "thinking":
-            # Only plain thinking blocks carry usable text. ``redacted_thinking``
-            # blocks hold encrypted ``data`` (not human-readable), so they are
-            # intentionally not harvested as answer content.
             thinking_text += getattr(block, "thinking", "")
+            has_thinking = True
+        elif block.type == "redacted_thinking":
+            has_thinking = True
         elif block.type == "tool_use":
             tool_calls.append({
                 "id": block.id,
@@ -156,7 +258,38 @@ def _parse_response(resp: Any) -> LLMResponse:
         usage=_parse_usage(resp.usage),
         finish_reason=resp.stop_reason,
         reasoning=reasoning,
+        provider_state=(
+            {"anthropic_content": provider_content}
+            if has_thinking
+            else None
+        ),
     )
+
+
+def _serialize_content_block(block: Any) -> dict[str, Any]:
+    """Return a JSON-safe Anthropic block for an unchanged later request."""
+    if hasattr(block, "model_dump"):
+        payload = block.model_dump(mode="json", exclude_none=True)
+        if isinstance(payload, dict):
+            return payload
+    if isinstance(block, dict):
+        return copy.deepcopy(block)
+    if block.type == "text":
+        return {"type": "text", "text": getattr(block, "text", "")}
+    if block.type == "thinking":
+        payload = {"type": "thinking", "thinking": getattr(block, "thinking", "")}
+        signature = getattr(block, "signature", None)
+        if signature is not None:
+            payload["signature"] = signature
+        return payload
+    if block.type == "redacted_thinking":
+        return {"type": "redacted_thinking", "data": getattr(block, "data", "")}
+    return {
+        "type": "tool_use",
+        "id": block.id,
+        "name": block.name,
+        "input": copy.deepcopy(block.input),
+    }
 
 
 def _parse_usage(usage: Any) -> Usage:
@@ -225,6 +358,11 @@ def convert_to_anthropic_messages(messages: list[dict]) -> tuple[list[str], list
 
 def _convert_assistant_content(message: dict) -> list[dict]:
     """Build Anthropic content blocks (text + tool_use) from an assistant message."""
+    provider_state = message.get("provider_state")
+    if isinstance(provider_state, dict):
+        provider_content = provider_state.get("anthropic_content")
+        if isinstance(provider_content, list):
+            return copy.deepcopy(provider_content)
     content_blocks: list[dict] = []
     if message.get("content"):
         content_blocks.append({"type": "text", "text": message["content"]})

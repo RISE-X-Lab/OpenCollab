@@ -21,6 +21,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - Capped structured-output corrective retries at 60 seconds while preserving
   shorter caller deadlines, so endpoints that degrade forced tool choice cannot
   consume the caller's full role budget.
+- Honored native Anthropic manual and adaptive thinking settings, including
+  provider-compatible sampling, tool selection, and signed thinking continuity.
 
 ## [0.4.1] - 2026-07-31
 
