@@ -294,8 +294,6 @@ def test_client_exposes_immutable_non_secret_configuration(tmp_path: Path) -> No
             "wire_protocol": "responses",
             "reasoning_effort": "high",
             "llm_max_retries": 17,
-            "eager_tool_keep_recent": 2,
-            "history_keep_recent_groups": 1,
             "llm_connect_timeout": 11,
             "llm_first_event_timeout": 222,
             "llm_stream_idle_timeout": 77,
@@ -318,8 +316,6 @@ def test_client_exposes_immutable_non_secret_configuration(tmp_path: Path) -> No
     assert client.configuration["wire_protocol"] == "responses"
     assert client.configuration["reasoning_effort"] == "high"
     assert client.configuration["llm_max_retries"] == 17
-    assert client.configuration["eager_tool_keep_recent"] == 2
-    assert client.configuration["history_keep_recent_groups"] == 1
     assert client.configuration["llm_connect_timeout"] == 11
     assert client.configuration["llm_first_event_timeout"] == 222
     assert client.configuration["llm_stream_idle_timeout"] == 77

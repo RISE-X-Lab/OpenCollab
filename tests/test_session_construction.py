@@ -100,38 +100,6 @@ def test_session_wires_a_default_shaper_pipeline():
     assert isinstance(session.runner.shaper, ShaperPipeline)
 
 
-def test_session_configures_eager_tool_result_retention():
-    agent = _FakeAgent()
-    agent.eager_tool_keep_recent = 1
-
-    session = Session(agent=agent, llm=_FakeLLM())
-
-    assert session.runner.shaper._shapers[0].keep_recent == 1
-
-
-def test_session_configures_reactive_history_group_retention():
-    agent = _FakeAgent()
-    agent.history_keep_recent_groups = 1
-
-    session = Session(agent=agent, llm=_FakeLLM())
-
-    assert {layer.keep_recent_groups for layer in session.runner.shaper._shapers[2:]} == {1}
-
-
-def test_session_history_budget_reserves_configured_output_tokens():
-    agent = _FakeAgent()
-    agent.context_window = 34_000
-    agent.max_tokens_per_step = 8_192
-    llm = _FakeLLM()
-    llm.context_window = lambda: 34_000
-
-    session = Session(agent=agent, llm=llm)
-
-    reactive_layers = session.runner.shaper._shapers[2:]
-    assert {layer.trigger_tokens for layer in reactive_layers} == {12_808}
-    assert {layer.target_tokens for layer in reactive_layers} == {9_606}
-
-
 def test_session_event_bus_reaches_injected_sink():
     from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 

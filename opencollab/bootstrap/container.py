@@ -70,7 +70,7 @@ from opencollab.bootstrap.tool_registry import (
     COMPACTABLE_TOOL_NAMES,
     build_tools_for_role,
 )
-from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP, Agent
+from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionState
 
 if TYPE_CHECKING:
@@ -169,12 +169,7 @@ def _build_summarizer(
 
 
 def _build_default_shaper(
-    resolved_llm: LLMPort,
-    summarizer: ReadTimeSummarizer,
-    *,
-    max_output_tokens: int,
-    eager_tool_keep_recent: int | None = None,
-    history_keep_recent_groups: int | None = None,
+    resolved_llm: LLMPort, summarizer: ReadTimeSummarizer
 ) -> ShaperPort:
     """Assemble the default lazy-degradation shaper pipeline.
 
@@ -188,32 +183,16 @@ def _build_default_shaper(
     # Trigger/target scale to the active model's real context window, degrading
     # to fixed defaults when the model is unrecognised.
     context_window = getattr(resolved_llm, "context_window", lambda: None)()
-    history_trigger, history_target = history_trigger_target(
-        context_window,
-        output_reserve=max_output_tokens,
-    )
+    history_trigger, history_target = history_trigger_target(context_window)
 
     history_kwargs = {
         "estimate_tokens": estimate_messages_tokens,
         "trigger_tokens": history_trigger,
         "target_tokens": history_target,
-        **(
-            {}
-            if history_keep_recent_groups is None
-            else {"keep_recent_groups": history_keep_recent_groups}
-        ),
     }
-    eager_kwargs = (
-        {}
-        if eager_tool_keep_recent is None
-        else {"keep_recent": eager_tool_keep_recent}
-    )
     return ShaperPipeline(
         (
-            EagerToolOutputClearShaper(
-                compactable_tools=COMPACTABLE_TOOL_NAMES,
-                **eager_kwargs,
-            ),
+            EagerToolOutputClearShaper(compactable_tools=COMPACTABLE_TOOL_NAMES),
             PerToolResultBudgetShaper(DEFAULT_TOOL_RESULT_BUDGET),
             ToolOutputClearShaper(compactable_tools=COMPACTABLE_TOOL_NAMES, **history_kwargs),
             OldHistorySnipShaper(**history_kwargs),
@@ -301,27 +280,7 @@ def build_session_runtime(
     )
     summarizer = _build_summarizer(agent, llm, resolved_llm, llm_timeout, auto_save_path)
     resolved_shaper: ShaperPort = (
-        shaper
-        if shaper is not None
-        else _build_default_shaper(
-            resolved_llm,
-            summarizer,
-            max_output_tokens=getattr(
-                agent,
-                "max_tokens_per_step",
-                DEFAULT_MAX_TOKENS_PER_STEP,
-            ),
-            eager_tool_keep_recent=getattr(
-                agent,
-                "eager_tool_keep_recent",
-                None,
-            ),
-            history_keep_recent_groups=getattr(
-                agent,
-                "history_keep_recent_groups",
-                None,
-            ),
-        )
+        shaper if shaper is not None else _build_default_shaper(resolved_llm, summarizer)
     )
     runner = SessionRunUseCase(
         agent=agent,

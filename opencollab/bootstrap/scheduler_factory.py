@@ -96,8 +96,6 @@ def build_scheduler(
             thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
             reasoning_effort=cfg.get("reasoning_effort"),
             llm_max_retries=cfg.get("llm_max_retries", 3),
-            eager_tool_keep_recent=cfg.get("eager_tool_keep_recent"),
-            history_keep_recent_groups=cfg.get("history_keep_recent_groups"),
             llm_connect_timeout=cfg.get("llm_connect_timeout", 30.0),
             llm_first_event_timeout=cfg.get("llm_first_event_timeout", 180.0),
             llm_stream_idle_timeout=cfg.get("llm_stream_idle_timeout", 180.0),

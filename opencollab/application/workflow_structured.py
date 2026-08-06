@@ -151,7 +151,6 @@ class WorkflowStructuredMixin:
 
         # Track immediately so tokens count even if a run_loop raises midway.
         self._track_session(session)
-        failures_before = len(self._agent_failures)
         try:
             await self._run_session_turn(
                 session,
@@ -162,30 +161,12 @@ class WorkflowStructuredMixin:
             if _schema_satisfied(capture_tool.captured, schema):
                 return capture_tool.captured
         except CallerTimeoutError:
-            if not _schema_satisfied(capture_tool.captured, schema):
-                self._record_agent_stop(label, "timeout")
             await self.log(f"structured agent timed out ({label or 'agent'}) after {timeout}s")
             return None
-        except Exception as exc:  # noqa: BLE001 — partial exploration may still be usable
+        except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             self._record_agent_failure(label, exc)
-            if _schema_satisfied(capture_tool.captured, schema):
-                await self.log(
-                    f"structured agent failed after capture ({label or 'agent'}); "
-                    f"preserving validated result: {exc}"
-                )
-                return capture_tool.captured
-            await self.log(
-                f"structured agent failed ({label or 'agent'}); "
-                f"attempting forced commit: {exc}"
-            )
-
-        terminal_reason = self._session_stop_reason(session)
-        if (
-            terminal_reason is not None
-            and not _schema_satisfied(capture_tool.captured, schema)
-            and len(self._agent_failures) == failures_before
-        ):
-            self._record_agent_stop(label, terminal_reason)
+            await self.log(f"structured agent failed ({label or 'agent'}): {exc}")
+            return None
 
         # Corrective pass (only when the capture is genuinely empty above): force
         # the structured commit on a single-tool session pinned to a
@@ -245,7 +226,7 @@ class WorkflowStructuredMixin:
         session that gathered nothing.
         """
         deadline = self._timeout_deadline(timeout)
-        retry_prompt = _STRUCTURED_RETRY
+        retry_prompt = prompt + "\n\n" + _STRUCTURED_RETRY
         session_budget = self._capped_session_budget(budget)
         try:
             session = self._factory.build_workflow_session(
@@ -263,10 +244,8 @@ class WorkflowStructuredMixin:
             return None
 
         self._track_session(session)
-        failures_before = len(self._agent_failures)
         try:
-            if not self._carry_exploration(prior_session, session):
-                retry_prompt = prompt + "\n\n" + _STRUCTURED_RETRY
+            self._carry_exploration(prior_session, session)
             await self._run_session_turn(
                 session,
                 retry_prompt,
@@ -274,25 +253,16 @@ class WorkflowStructuredMixin:
                 cancel_event=capture_done,
             )
         except CallerTimeoutError:
-            if not _schema_satisfied(capture_tool.captured, schema):
-                self._record_agent_stop(label, "timeout")
             await self.log(f"structured retry timed out ({label or 'agent'}) after {timeout}s")
             return None
         except Exception as exc:  # noqa: BLE001 — one dead agent never kills the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"structured retry failed ({label or 'agent'}): {exc}")
             return None
-        terminal_reason = self._session_stop_reason(session)
-        if (
-            terminal_reason is not None
-            and not _schema_satisfied(capture_tool.captured, schema)
-            and len(self._agent_failures) == failures_before
-        ):
-            self._record_agent_stop(label, terminal_reason)
         return capture_tool.captured if _schema_satisfied(capture_tool.captured, schema) else None
 
     @staticmethod
-    def _carry_exploration(prior_session: Any, session: Any) -> bool:
+    def _carry_exploration(prior_session: Any, session: Any) -> None:
         """Copy the first pass's conversation into the corrective session.
 
         The corrective session is built fresh (seeded only with the system
@@ -302,15 +272,14 @@ class WorkflowStructuredMixin:
         mutate the first session's history) while the message dicts are shared,
         which is safe because neither side mutates a message in place.
 
-        Returns whether the history was copied. A session shape that lacks a
-        settable ``messages`` must not abort the corrective turn; the caller
-        falls back to repeating the original prompt in that rare case.
+        Defensive: a session shape that lacks a settable ``messages`` (e.g. the
+        very first pass having failed before any message landed) must not abort
+        the corrective turn — the worst case is the pre-fix bare-prompt commit.
         """
+        prior = getattr(prior_session, "messages", None)
+        if prior is None:
+            return
         try:
-            prior = getattr(prior_session, "messages", None)
-            if prior is None:
-                return False
             session.messages = list(prior)
         except Exception:  # noqa: BLE001 — carry-over is best-effort, never fatal
-            return False
-        return True
+            pass

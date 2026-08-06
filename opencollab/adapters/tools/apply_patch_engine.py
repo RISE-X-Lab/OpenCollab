@@ -12,7 +12,6 @@ from typing import Any
 
 # A hunk header: @@ -<old_start>[,<old_len>] +<new_start>[,<new_len>] @@ [heading]
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
-_ERROR_EXCERPT_CHARS = 512
 
 
 # ---------------------------------------------------------------------------
@@ -35,13 +34,6 @@ def _join_lines(lines: list[str], ended_nl: bool) -> str:
     if not lines:
         return ""
     return "\n".join(lines) + ("\n" if ended_nl else "")
-
-
-def _bounded_excerpt(text: str) -> str:
-    if len(text) <= _ERROR_EXCERPT_CHARS:
-        return text
-    marker = "... [truncated]"
-    return text[: _ERROR_EXCERPT_CHARS - len(marker)] + marker
 
 
 def _summary(path: str, mode: str, before: str, after: str) -> str:
@@ -205,18 +197,10 @@ def _apply_unified_diff(source: str, patch: str) -> tuple[str | None, str]:
 
         pos = _find_block(src_lines, old_block, hunk["old_start"] - 1, src_idx)
         if pos is None:
-            snippet = _bounded_excerpt("\n".join(old_block[:6])) or "(empty context)"
-            actual_start = max(0, min(hunk["old_start"] - 2, len(src_lines)))
-            actual = _bounded_excerpt(
-                "\n".join(
-                    f"{index + 1}: {src_lines[index]}"
-                    for index in range(actual_start, min(actual_start + 6, len(src_lines)))
-                )
-            ) or "(empty file)"
+            snippet = "\n".join(old_block[:6]) or "(empty context)"
             return None, (
                 f"hunk #{n} (near line {hunk['old_start']}) did not match the file. "
-                f"Actual source near that line:\n{actual}\n"
-                f"The requested context/removed lines were not found:\n{snippet}"
+                f"The context/removed lines were not found:\n{snippet}"
             )
         result.extend(src_lines[src_idx:pos])
         result.extend(new_block)

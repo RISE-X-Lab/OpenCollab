@@ -309,8 +309,6 @@ async def run_agent(
         thinking_params=dict(config.get("thinking_params") or {}),
         reasoning_effort=config.get("reasoning_effort"),
         llm_max_retries=int(config.get("llm_max_retries", 3)),
-        eager_tool_keep_recent=config.get("eager_tool_keep_recent"),
-        history_keep_recent_groups=config.get("history_keep_recent_groups"),
         llm_connect_timeout=float(config.get("llm_connect_timeout", 30.0)),
         llm_first_event_timeout=float(config.get("llm_first_event_timeout", 180.0)),
         llm_stream_idle_timeout=float(config.get("llm_stream_idle_timeout", 180.0)),

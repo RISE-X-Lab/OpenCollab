@@ -266,47 +266,22 @@ def test_tool_execution_use_case_catches_same_file_reread_with_shifting_ranges()
     # Regression (sympy-11400): a model thrashed by re-reading ONE file ~135 times
     # with SHIFTING line ranges. Each exact-arg hash was unique, so the
     # MAX_SIMILAR_CALLS=3 counter never tripped. Read tools now key on the PATH
-    # alone, so the re-reads collide after bounded pagination and write steering
-    # have had enough room to work.
+    # alone, so the re-reads collide and trip at MAX_SAME_FILE_READS (8).
     state = SessionState(messages=[])
     use_case, _ = build_use_case(state=state)
-    state.turn.scout_ledger = [
-        {"tool": "file_read", "target": "x/ccode.py", "outcome": "hit", "snippet": "x"}
-        for _ in range(23)
-    ]
+    # Seven prior reads of the same file at DIFFERENT ranges collapse to one
+    # path-only hash (range args are ignored for file_read).
+    path_hash = use_case.tool_call_hash("file_read", {"path": "x/ccode.py"})
+    state.replace_recent_tool_hashes([path_hash] * 7)
     call = tool_call(
         name="file_read",
-        arguments='{"path": "x/ccode.py", "offset": 900, "limit": 50}',
+        arguments='{"path": "x/ccode.py", "start": 900, "limit": 50}',
     )
 
     result = run(use_case.process([call]))
 
-    assert result.loop_detections == [LoopDetection(tool="file_read", count=24)]
-    assert "paged extensively" in result.messages_to_append[0]["content"]
-
-
-def test_tool_execution_use_case_allows_long_file_pagination_before_write_nudge():
-    state = SessionState(messages=[])
-    tool = RuntimeNativeTool()
-    tool.name = "file_read"
-    agent = FakeAgent(tools=[tool])
-    use_case, _ = build_use_case(state=state, agent=agent)
-    path_hash = use_case.tool_call_hash("file_read", {"path": "x/component.tsx"})
-    state.replace_recent_tool_hashes([path_hash] * 16)
-
-    result = run(
-        use_case.process(
-            [
-                tool_call(
-                    name="file_read",
-                    arguments='{"path": "x/component.tsx", "offset": 321, "limit": 20}',
-                )
-            ]
-        )
-    )
-
-    assert result.loop_detections == []
-    assert result.messages_to_append[0]["content"] == "runtime result"
+    assert result.loop_detections == [LoopDetection(tool="file_read", count=8)]
+    assert "on the same file" in result.messages_to_append[0]["content"]
 
 
 def test_tool_execution_use_case_allows_a_few_legitimate_rereads():
@@ -318,188 +293,14 @@ def test_tool_execution_use_case_allows_a_few_legitimate_rereads():
     tool.name = "file_read"
     agent = FakeAgent(tools=[tool])
     use_case, _ = build_use_case(state=state, agent=agent)
-    for index, offset in enumerate((1, 11), start=1):
-        prior = run(
-            use_case.process(
-                [
-                    tool_call(
-                        call_id=f"prior-{index}",
-                        name="file_read",
-                        arguments=f'{{"path":"x/ccode.py","offset":{offset},"limit":10}}',
-                    )
-                ]
-            )
-        )
-        prior.apply_to(state)
-    call = tool_call(
-        name="file_read",
-        arguments='{"path":"x/ccode.py","offset":21,"limit":10}',
-    )
+    path_hash = use_case.tool_call_hash("file_read", {"path": "x/ccode.py"})
+    state.replace_recent_tool_hashes([path_hash] * 2)  # two prior reads
+    call = tool_call(name="file_read", arguments='{"path": "x/ccode.py", "start": 1}')
 
     result = run(use_case.process([call]))
 
     assert result.loop_detections == []
     assert tool.runtime_calls  # the third read executed normally
-
-
-def test_tool_execution_use_case_blocks_a_repeated_exact_file_range():
-    state = SessionState(messages=[])
-    tool = RuntimeNativeTool()
-    tool.name = "file_read"
-    agent = FakeAgent(tools=[tool])
-    use_case, _ = build_use_case(state=state, agent=agent)
-
-    first = run(
-        use_case.process(
-            [
-                tool_call(
-                    call_id="old-read",
-                    name="file_read",
-                    arguments='{"path":"x/ccode.py","offset":0,"limit":10}',
-                )
-            ]
-        )
-    )
-    first.apply_to(state)
-
-    result = run(
-        use_case.process(
-            [
-                tool_call(
-                    name="file_read",
-                    arguments='{"path":"x/ccode.py","offset":1,"limit":10}',
-                )
-            ]
-        )
-    )
-
-    assert result.loop_detections == [LoopDetection(tool="file_read", count=2)]
-    assert "exact file range was already read" in result.messages_to_append[0]["content"]
-    assert "offset=11" in result.messages_to_append[0]["content"]
-    assert len(tool.runtime_calls) == 1
-
-
-@pytest.mark.parametrize(
-    ("first_args", "second_args"),
-    [
-        ('{"path":"x.py"}', '{"path":"x.py","offset":1,"limit":500}'),
-        ('{"path":"x.py","offset":0}', '{"path":"x.py","offset":1}'),
-    ],
-)
-def test_file_read_duplicate_normalizes_default_range(first_args, second_args):
-    state = SessionState(messages=[])
-    tool = RuntimeNativeTool()
-    tool.name = "file_read"
-    use_case, _ = build_use_case(state=state, agent=FakeAgent(tools=[tool]))
-
-    first = run(use_case.process([tool_call(arguments=first_args, name="file_read")]))
-    first.apply_to(state)
-    second = run(use_case.process([tool_call(arguments=second_args, name="file_read")]))
-
-    assert second.loop_detections == [LoopDetection(tool="file_read", count=2)]
-    assert len(tool.runtime_calls) == 1
-
-
-def test_file_read_allows_different_ranges():
-    state = SessionState(messages=[])
-    tool = RuntimeNativeTool()
-    tool.name = "file_read"
-    use_case, _ = build_use_case(state=state, agent=FakeAgent(tools=[tool]))
-
-    first = run(
-        use_case.process(
-            [tool_call(arguments='{"path":"x.py","offset":1,"limit":10}', name="file_read")]
-        )
-    )
-    first.apply_to(state)
-    second = run(
-        use_case.process(
-            [tool_call(arguments='{"path":"x.py","offset":11,"limit":10}', name="file_read")]
-        )
-    )
-
-    assert second.loop_detections == []
-    assert len(tool.runtime_calls) == 2
-
-
-def test_file_read_does_not_merge_nonpositive_limit_with_one_line_read():
-    state = SessionState(messages=[])
-    tool = RuntimeNativeTool()
-    tool.name = "file_read"
-    use_case, _ = build_use_case(state=state, agent=FakeAgent(tools=[tool]))
-
-    first = run(
-        use_case.process(
-            [tool_call(arguments='{"path":"x.py","limit":0}', name="file_read")]
-        )
-    )
-    first.apply_to(state)
-    second = run(
-        use_case.process(
-            [tool_call(arguments='{"path":"x.py","limit":1}', name="file_read")]
-        )
-    )
-
-    assert second.loop_detections == []
-    assert len(tool.runtime_calls) == 2
-
-
-def test_file_read_allows_same_range_after_successful_write():
-    state = SessionState(messages=[])
-    read_tool = RuntimeNativeTool()
-    read_tool.name = "file_read"
-    write_tool = RuntimeNativeTool()
-    write_tool.name = "apply_patch"
-    use_case, _ = build_use_case(
-        state=state,
-        agent=FakeAgent(tools=[read_tool, write_tool]),
-    )
-    read = tool_call(arguments='{"path":"x.py","offset":1,"limit":10}', name="file_read")
-
-    first = run(use_case.process([read]))
-    first.apply_to(state)
-    written = run(
-        use_case.process(
-            [tool_call(arguments='{"patch":"change"}', name="apply_patch", call_id="write")]
-        )
-    )
-    written.apply_to(state)
-    reread = run(use_case.process([read]))
-
-    assert reread.loop_detections == []
-    assert len(read_tool.runtime_calls) == 2
-
-
-def test_file_read_blocks_next_duplicate_after_same_batch_write_and_reread():
-    state = SessionState(messages=[])
-    read_tool = RuntimeNativeTool()
-    read_tool.name = "file_read"
-    write_tool = RuntimeNativeTool()
-    write_tool.name = "apply_patch"
-    use_case, _ = build_use_case(
-        state=state,
-        agent=FakeAgent(tools=[read_tool, write_tool]),
-    )
-    read_args = '{"path":"x.py","offset":1,"limit":10}'
-    batch = run(
-        use_case.process(
-            [
-                tool_call(arguments=read_args, name="file_read", call_id="read-before"),
-                tool_call(arguments='{"patch":"change"}', name="apply_patch", call_id="write"),
-                tool_call(arguments=read_args, name="file_read", call_id="read-after"),
-            ]
-        )
-    )
-    batch.apply_to(state)
-    duplicate = run(
-        use_case.process(
-            [tool_call(arguments=read_args, name="file_read", call_id="read-next")]
-        )
-    )
-
-    assert batch.loop_detections == []
-    assert duplicate.loop_detections == [LoopDetection(tool="file_read", count=2)]
-    assert len(read_tool.runtime_calls) == 2
 
 
 def _bash_tool(output: str = "ok"):
@@ -644,30 +445,6 @@ def test_loop_block_short_circuit_counts_toward_hard_brake():
 
     assert state.turn.loop_blocked_since_progress == 1
     assert result.loop_detections == [LoopDetection(tool="fake_tool", count=3)]
-
-
-def test_parallel_loop_blocks_count_as_one_failed_batch():
-    state = SessionState(messages=[])
-    use_case, _ = build_use_case(
-        state=state, agent=FakeAgent(tools=[RuntimeNativeTool()])
-    )
-    hashes = [use_case.tool_call_hash("fake_tool", {"value": value}) for value in range(1, 4)]
-    state.replace_recent_tool_hashes([*hashes, *hashes])
-
-    result = run(
-        use_case.process(
-            [
-                tool_call(
-                    call_id=f"repeat-{index}", arguments=f'{{"value": {index + 1}}}'
-                )
-                for index in range(3)
-            ]
-        )
-    )
-    result.apply_to(state)
-
-    assert len(result.loop_detections) == 3
-    assert state.turn.loop_blocked_since_progress == 1
 
 
 class RevocableEnvironment(Environment):

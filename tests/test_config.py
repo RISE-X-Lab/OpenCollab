@@ -22,11 +22,11 @@ def _isolate_config_env(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     for name in (
         _FILTER_ENV, "OPENCOLLAB_CONFIG_FILE", "OPENCOLLAB_API_KEY", "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY", "OPENCOLLAB_EAGER_TOOL_KEEP_RECENT",
+        "ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY",
         "OPENCOLLAB_LLM_TIMEOUT", "OPENCOLLAB_WIRE_PROTOCOL",
         "OPENCOLLAB_REASONING_EFFORT", "OPENCOLLAB_LLM_MAX_RETRIES",
         "OPENCOLLAB_LLM_CONNECT_TIMEOUT", "OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT",
-        "OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT", "OPENCOLLAB_HISTORY_KEEP_RECENT_GROUPS",
+        "OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT",
         "OPENCOLLAB_TEMPERATURE", "OPENCOLLAB_TOP_P", "OPENCOLLAB_MAX_OUTPUT_TOKENS",
     ):
         monkeypatch.delenv(name, raising=False)
@@ -334,29 +334,3 @@ def test_llm_max_retries_rejects_negative_env(monkeypatch):
     monkeypatch.setenv("OPENCOLLAB_LLM_MAX_RETRIES", "-1")
     with pytest.raises(Exception):
         build_config()
-
-
-def test_eager_tool_keep_recent_reads_env(monkeypatch):
-    monkeypatch.setenv("OPENCOLLAB_EAGER_TOOL_KEEP_RECENT", "2")
-    assert build_config().eager_tool_keep_recent == 2
-
-
-def test_eager_tool_keep_recent_rejects_zero(monkeypatch):
-    monkeypatch.setenv("OPENCOLLAB_EAGER_TOOL_KEEP_RECENT", "0")
-    with pytest.raises(Exception):
-        build_config()
-
-
-def test_eager_tool_keep_recent_rejects_boolean_override():
-    with pytest.raises(Exception):
-        build_config(overrides={"eager_tool_keep_recent": True})
-
-
-def test_history_keep_recent_groups_reads_env_and_rejects_invalid(monkeypatch):
-    monkeypatch.setenv("OPENCOLLAB_HISTORY_KEEP_RECENT_GROUPS", "1")
-    assert build_config().history_keep_recent_groups == 1
-    monkeypatch.setenv("OPENCOLLAB_HISTORY_KEEP_RECENT_GROUPS", "0")
-    with pytest.raises(Exception):
-        build_config()
-    with pytest.raises(Exception):
-        build_config(overrides={"history_keep_recent_groups": True})

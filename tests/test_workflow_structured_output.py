@@ -242,7 +242,6 @@ class CapturingSession:
         self.run_count = 0
         self.rounds = 0
         self.cancel_events: list[Any] = []
-        self.messages_read_error: Exception | None = None
         # True once a turn has finished; cleared by add_user_message.
         self._done = False
 
@@ -251,8 +250,6 @@ class CapturingSession:
         # Mirrors the real ``Session.messages`` property (getter -> state.messages,
         # setter -> replace) so the engine can carry first-pass exploration into
         # the corrective session.
-        if self.messages_read_error is not None:
-            raise self.messages_read_error
         return self.state.messages
 
     @messages.setter
@@ -377,67 +374,6 @@ async def test_agent_schema_retries_once_then_succeeds():
 
 
 @pytest.mark.asyncio
-async def test_agent_schema_provider_failure_still_forces_commit():
-    factory = ScriptedFactory(payloads=[{"x": 9}])
-    original_build = factory.build_workflow_session
-    exploration = {"role": "tool", "content": "evidence from source.py"}
-
-    def build_with_failed_exploration(**kwargs: Any) -> CapturingSession:
-        session = original_build(**kwargs)
-        if len(factory.sessions) == 1:
-            async def fail_after_exploration(cancel_event: Any = None) -> str:
-                session.state.messages.append(exploration)
-                raise RuntimeError("upstream 408")
-
-            session.run_loop = fail_after_exploration  # type: ignore[method-assign]
-        return session
-
-    factory.build_workflow_session = build_with_failed_exploration  # type: ignore[method-assign]
-    ctx = WorkflowContext(factory)
-
-    result = await ctx.agent("give me x", schema=SCHEMA, tools=[object()])
-
-    assert result == {"x": 9}
-    assert len(factory.sessions) == 2
-    assert exploration in factory.sessions[1].messages
-    assert ctx.agent_failures == (
-        {
-            "label": "agent",
-            "exception_type": "RuntimeError",
-            "status_code": None,
-            "provider_error_type": None,
-        },
-    )
-
-
-@pytest.mark.asyncio
-async def test_agent_schema_keeps_capture_when_session_cleanup_fails():
-    factory = ScriptedFactory(payloads=[])
-    original_build = factory.build_workflow_session
-
-    def build_with_failed_cleanup(**kwargs: Any) -> CapturingSession:
-        session = original_build(**kwargs)
-
-        async def capture_then_fail(cancel_event: Any = None) -> str:
-            tool = session._structured_tool()
-            assert tool is not None
-            await tool.execute_with_runtime({"x": 9}, _runtime())
-            raise RuntimeError("post-capture autosave failed")
-
-        session.run_loop = capture_then_fail  # type: ignore[method-assign]
-        return session
-
-    factory.build_workflow_session = build_with_failed_cleanup  # type: ignore[method-assign]
-    ctx = WorkflowContext(factory)
-
-    result = await ctx.agent("give me x", schema=SCHEMA)
-
-    assert result == {"x": 9}
-    assert len(factory.sessions) == 1
-    assert ctx.agent_failures[0]["exception_type"] == "RuntimeError"
-
-
-@pytest.mark.asyncio
 async def test_agent_schema_returns_none_after_failed_retry():
     factory = ScriptedFactory(payloads=[{"x": "bad"}, {"x": "still bad"}])
     ctx = WorkflowContext(factory)
@@ -458,26 +394,6 @@ async def test_agent_schema_no_call_at_all_returns_none():
 
     assert result is None
     assert len(factory.sessions) == 2
-
-
-@pytest.mark.asyncio
-async def test_agent_schema_records_controlled_session_stops_without_capture():
-    factory = ScriptedFactory(payloads=[_NO_CALL, _NO_CALL])
-    original_build = factory.build_workflow_session
-
-    def build_stopped(**kwargs: Any) -> CapturingSession:
-        session = original_build(**kwargs)
-        session.state.terminal_reason = "context overflow: prompt exceeds model window"
-        return session
-
-    factory.build_workflow_session = build_stopped  # type: ignore[method-assign]
-    ctx = WorkflowContext(factory)
-
-    assert await ctx.agent("give me x", schema=SCHEMA, label="analyst") is None
-    assert [failure["exception_type"] for failure in ctx.agent_failures] == [
-        "ContextOverflow",
-        "ContextOverflow",
-    ]
 
 
 @pytest.mark.asyncio
@@ -667,39 +583,9 @@ async def test_forced_retry_carries_first_pass_exploration():
         m.get("role") == "user" and "structured_output" in str(m.get("content", ""))
         for m in corrective.messages
     )
-    assert sum(
-        str(m.get("content", "")).count("give me x") for m in corrective.messages
-    ) == 1
-    assert "give me x" not in factory.builds[1]["prompt"]
     # carry-over is an independent list copy: the corrective session's appends
     # did not mutate the first session's history length.
     assert len(factory.sessions[0].messages) == len(exploration) + 1  # +seeded prompt
-
-
-@pytest.mark.asyncio
-async def test_forced_retry_repeats_original_prompt_when_history_is_unreadable():
-    factory = ScriptedFactory(payloads=[_NO_CALL, {"x": 7}])
-    original_build = factory.build_workflow_session
-
-    def build_with_unreadable_prior(**kwargs: Any) -> CapturingSession:
-        session = original_build(**kwargs)
-        if len(factory.sessions) == 1:
-            session.messages_read_error = RuntimeError("unreadable history")
-        return session
-
-    factory.build_workflow_session = build_with_unreadable_prior  # type: ignore[method-assign]
-    ctx = WorkflowContext(factory)
-
-    result = await ctx.agent("complete original task", schema=SCHEMA)
-
-    assert result == {"x": 7}
-    corrective = factory.sessions[1]
-    assert any(
-        m.get("role") == "user"
-        and "complete original task" in str(m.get("content", ""))
-        and "MUST call" in str(m.get("content", ""))
-        for m in corrective.messages
-    )
 
 
 @pytest.mark.asyncio

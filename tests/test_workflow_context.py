@@ -37,47 +37,6 @@ async def test_agent_returns_final_text_and_seeds_prompt():
     assert result == "the answer"
     assert session.prompt == "solve it"
     assert factory.builds[0]["prompt"] == "solve it"
-    assert ctx.agent_failures == ()
-
-
-@pytest.mark.asyncio
-async def test_agent_records_controlled_session_stop():
-    session = FakeSession(reply="partial analysis")
-    session.state.terminal_reason = "context overflow: prompt exceeds model window"
-    ctx = WorkflowContext(FakeFactory([session]))
-
-    assert await ctx.agent("solve it", label="coder") == "partial analysis"
-    assert ctx.agent_failures == (
-        {
-            "label": "coder",
-            "exception_type": "ContextOverflow",
-            "status_code": None,
-            "provider_error_type": None,
-        },
-    )
-
-
-@pytest.mark.asyncio
-async def test_agent_records_timeout_as_failure():
-    session = FakeSession(gate=asyncio.Event())
-    ctx = WorkflowContext(FakeFactory([session]))
-
-    assert await ctx.agent("solve it", label="coder", timeout=0.001) is None
-    assert ctx.agent_failures[0]["exception_type"] == "AgentTimeout"
-
-
-@pytest.mark.asyncio
-async def test_enforced_agent_records_controlled_session_stop():
-    session = FakeSession(reply="partial evidence")
-    session.state.terminal_reason = "context overflow: prompt exceeds model window"
-    ctx = WorkflowContext(FakeFactory([session]))
-
-    assert await ctx.agent(
-        "inspect it",
-        label="scout",
-        enforcement_strength=ENFORCEMENT_ON,
-    ) == "partial evidence"
-    assert ctx.agent_failures[0]["exception_type"] == "ContextOverflow"
 
 @pytest.mark.parametrize("timeout", [0, -1, float("nan"), True, "bad"])
 @pytest.mark.asyncio
@@ -389,7 +348,6 @@ async def test_structured_agent_timeout_bounds_first_pass_and_returns_none():
 
     assert result is None
     assert any("structured agent timed out" in e.message for e in sink.events)
-    assert ctx.agent_failures[0]["exception_type"] == "AgentTimeout"
 
 @pytest.mark.asyncio
 async def test_structured_agent_timeout_bounds_forced_retry_and_returns_none():

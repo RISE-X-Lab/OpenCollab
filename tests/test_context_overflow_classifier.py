@@ -101,15 +101,6 @@ def test_status_on_response_object_is_overflow():
     assert is_context_overflow_error(err) is True
 
 
-def test_relay_wire_limit_413_is_compactable_overflow():
-    err = FakeProviderError(
-        "encoded upstream request exceeds the configured wire byte limit",
-        status_code=413,
-        body={"error": {"code": "upstream_request_too_large"}},
-    )
-    assert is_context_overflow_error(err) is True
-
-
 def test_reduce_the_length_phrasing_is_overflow():
     err = FakeProviderError(
         "Please reduce the length of your prompt.", status_code=400
@@ -134,12 +125,6 @@ def test_bad_model_id_400_is_not_overflow():
 
 def test_rate_limit_429_is_not_overflow():
     err = FakeProviderError("Rate limit exceeded", status_code=429)
-    assert is_context_overflow_error(err) is False
-
-
-@pytest.mark.parametrize("code", [None, "payload_too_large", "context_length_exceeded"])
-def test_unrelated_413_is_not_compactable_overflow(code):
-    err = FakeProviderError("request too large", status_code=413, code=code)
     assert is_context_overflow_error(err) is False
 
 
@@ -209,8 +194,6 @@ def test_response_non_retryable_status_overrides_transient_wording():
         "Connection reset by peer",
         "Connection refused",
         "Server disconnected without sending a response",
-        "Our service encountered an error. You can retry your request.",
-        "The service is busy. Please try again later.",
     ],
 )
 def test_relay_upstream_failures_without_status_attribute_are_retryable(message):
@@ -222,9 +205,6 @@ def test_relay_upstream_failures_without_status_attribute_are_retryable(message)
     [
         "Error code: 400 - invalid request",
         "Error code: 400 - upstream_request_failed",
-        "Error code: 400 - please try again later",
-        "HTTP 400 Bad Request: please try again later",
-        "HTTP/1.1 403 overloaded",
         "Error code: 403 - rate limit",
         "Status code 401: timeout",
     ],

@@ -2,10 +2,9 @@
 
 Reviewers and the lead need to see *what actually changed* in the working tree
 to judge a fix, without burning budget reconstructing it from a transcript of
-edits. This tool returns ``git status --short`` plus the tracked working-tree
-diff against HEAD, focused by an optional pathspec and truncated so a large
-diff can't blow up the context. Untracked paths remain visible in status and
-are called out explicitly so a reviewer does not mistake them for no change.
+edits. This tool returns ``git status --short`` plus the working-tree diff
+against HEAD (all uncommitted changes), focused by an optional pathspec and
+truncated so a large diff can't blow up the context.
 
 Read-only: it never stages, commits, or resets — only ``git status`` and
 ``git diff``.
@@ -39,7 +38,7 @@ class GitDiffTool(Tool):
 
     name = "git_diff"
     description = (
-        "Show the current working-tree changes (tracked diff vs HEAD) plus a "
+        "Show the current working-tree changes (uncommitted diff vs HEAD) plus a "
         "short status. Read-only — never stages or commits. Pass `path` to focus on "
         "a file or directory, `staged: true` to see only staged changes, or "
         "`stat_only: true` for a per-file summary instead of the full diff. Output "
@@ -111,25 +110,16 @@ class GitDiffTool(Tool):
 
         parts: list[str] = []
         if include_status:
-            status_cmd = "git --no-pager status --short" + pathspec
-            status_result = await env.exec_cmd(status_cmd, timeout=30)
-            if status_result.returncode != 0:
-                err = (status_result.stderr or status_result.stdout).strip()
-                return f"Error running '{status_cmd}':\n{truncate(err, self.max_status_chars)}"
+            status_result = await env.exec_cmd("git --no-pager status --short", timeout=30)
             status = status_result.stdout.strip()
             parts.append(
                 "Status (git status --short):\n" + truncate(status, self.max_status_chars)
                 if status
                 else "Status: working tree clean."
             )
-            if any(line.startswith("?? ") for line in status.splitlines()):
-                parts.append(
-                    "Untracked files above are working-tree changes. Git has no line diff "
-                    "for them until they are tracked; inspect their contents with file_read."
-                )
 
         diff = diff_result.stdout.strip()
-        label = "diff --stat" if stat_only else ("staged diff" if staged else "tracked diff vs HEAD")
+        label = "diff --stat" if stat_only else ("staged diff" if staged else "diff vs HEAD")
         if diff:
             parts.append(f"{label}:\n" + truncate(diff, self.max_diff_chars))
         else:

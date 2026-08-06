@@ -12,7 +12,6 @@ from session_run_loop_test_support import (
     FakeOverflowError,
     OverflowThenOkLLM,
     SlowLLM,
-    _agent_with_tool_schemas,
     _is_overflow,
     build_runner,
     collect_events,
@@ -20,10 +19,9 @@ from session_run_loop_test_support import (
     run,
 )
 
-from opencollab.adapters.llm.errors import is_context_overflow_error
-from opencollab.application.session_run import GenerationTimeoutError
-from opencollab.application.shaping import OldHistorySnipShaper, ShaperPipeline
-from opencollab.application.steering import READS_NUDGE_HARD
+from opencollab.application.session_run import (
+    GenerationTimeoutError,
+)
 from opencollab.domain.session import (
     SessionPhase,
     SessionState,
@@ -65,140 +63,6 @@ def test_call_llm_recompacts_and_retries_once_on_overflow():
         {"role": "assistant", "content": "b" * 4000},
     ]
     assert state.messages[-1] == {"role": "assistant", "content": "recovered"}
-
-
-def test_relay_wire_limit_recompacts_and_retries_once():
-    class RelayWireOverflow(Exception):
-        status_code = 413
-        body = {"error": {"code": "upstream_request_too_large"}}
-
-    class RelayOverflowThenOk:
-        def __init__(self):
-            self.calls = []
-
-        async def complete(self, messages, tools=None, temperature=0.0):
-            self.calls.append(list(messages))
-            if len(self.calls) == 1:
-                raise RelayWireOverflow("encoded request exceeds wire byte limit")
-            return llm_response(content="recovered")
-
-    state = SessionState(
-        messages=[
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "large history"},
-        ]
-    )
-    llm = RelayOverflowThenOk()
-    runner = build_runner(
-        state=state,
-        llm=llm,
-        shaper=FakeForcedShaper(),
-        is_context_overflow=is_context_overflow_error,
-    )
-
-    assert run(runner.run_loop()) == "recovered"
-    assert len(llm.calls) == 2
-    assert llm.calls[1] == state.messages[:1]
-
-
-def test_overflow_retry_preserves_hard_write_nudge_tools():
-    class OverflowThenWrite:
-        def __init__(self):
-            self.calls = []
-
-        async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
-            self.calls.append({"messages": messages, "tools": tools, **kwargs})
-            if len(self.calls) == 1:
-                raise FakeOverflowError("prompt is too long")
-            return llm_response(content="recovered")
-
-    state = SessionState(
-        messages=[{"role": "system", "content": "sys"}],
-    )
-    state.turn.reads_since_last_edit = READS_NUDGE_HARD
-    llm = OverflowThenWrite()
-    runner = build_runner(
-        state=state,
-        llm=llm,
-        agent=_agent_with_tool_schemas("file_read", "file_write", "apply_patch"),
-        shaper=FakeForcedShaper(),
-        is_context_overflow=_is_overflow,
-    )
-
-    assert run(runner.run_loop()) == "recovered"
-    assert len(llm.calls) == 2
-    assert [spec["function"]["name"] for spec in llm.calls[1]["tools"]] == [
-        "file_read",
-        "file_write",
-        "apply_patch",
-    ]
-    assert "tool_choice" not in llm.calls[1]
-
-
-def test_overflow_retry_preserves_failed_edit_error_and_recovery_gate():
-    class OverflowThenRecover:
-        def __init__(self):
-            self.calls = []
-
-        async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
-            self.calls.append({"messages": messages, "tools": tools, **kwargs})
-            if len(self.calls) == 1:
-                raise FakeOverflowError("prompt is too long")
-            return llm_response(content="recovered")
-
-    target = "pkg/module.py"
-    large_arguments = '{"path":"pkg/module.py","mode":"unified_diff","patch":"' + "x" * 2000 + '"}'
-    error = f"Error applying patch to {target}: hunk did not match"
-    state = SessionState(
-        messages=[
-            {"role": "system", "content": "sys"},
-            {"role": "user", "content": "task"},
-            {
-                "role": "assistant",
-                "tool_calls": [{
-                    "id": "old-read",
-                    "function": {"name": "file_read", "arguments": '{}'},
-                }],
-            },
-            {"role": "tool", "tool_call_id": "old-read", "content": "old source"},
-            {
-                "role": "assistant",
-                "reasoning_content": "working notes" * 200,
-                "tool_calls": [{
-                    "id": "failed-edit",
-                    "function": {"name": "apply_patch", "arguments": large_arguments},
-                }],
-            },
-            {"role": "tool", "tool_call_id": "failed-edit", "content": error},
-        ],
-    )
-    state.turn.reads_since_last_edit = READS_NUDGE_HARD
-    llm = OverflowThenRecover()
-    runner = build_runner(
-        state=state,
-        llm=llm,
-        agent=_agent_with_tool_schemas("file_read", "grep", "file_write", "apply_patch"),
-        shaper=ShaperPipeline((OldHistorySnipShaper(
-            trigger_tokens=1_000_000,
-            target_tokens=1,
-            keep_recent_groups=1,
-        ),)),
-        is_context_overflow=_is_overflow,
-    )
-
-    assert run(runner.run_loop()) == "recovered"
-    retry = llm.calls[1]
-    assert any(message.get("content") == error for message in retry["messages"])
-    assert any(target in str(message.get("content", "")) for message in retry["messages"])
-    failed_call = next(
-        call for message in retry["messages"] for call in message.get("tool_calls", [])
-        if call.get("id") == "failed-edit"
-    )
-    compacted = failed_call["function"]["arguments"]
-    assert "completed edit arguments" in compacted
-    assert "x" * 100 not in compacted
-    assert [spec["function"]["name"] for spec in retry["tools"]] == ["file_read", "grep"]
-    assert retry["tool_choice"] == "required"
 
 def test_call_llm_emits_recompaction_event_on_overflow():
     events, bus = collect_events()

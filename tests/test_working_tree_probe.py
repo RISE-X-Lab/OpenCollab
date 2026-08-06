@@ -30,24 +30,14 @@ def run(coro):
 class RecordingEnv:
     """Fake Environment recording every exec_cmd; returns a scripted stdout."""
 
-    def __init__(
-        self,
-        *,
-        stdout: str = "",
-        workspace: str = "/ws",
-        returncode: int = 0,
-    ) -> None:
+    def __init__(self, *, stdout: str = "", workspace: str = "/ws") -> None:
         self.workspace = workspace
         self._stdout = stdout
-        self._returncode = returncode
         self.commands: list[str] = []
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0):
         self.commands.append(cmd)
-        return SimpleNamespace(
-            returncode=self._returncode,
-            stdout=self._stdout,
-        )
+        return SimpleNamespace(stdout=self._stdout)
 
 
 def test_changed_excluding_issues_exclude_pathspec_and_returns_bool():
@@ -69,18 +59,6 @@ def test_changed_excluding_returns_false_on_empty_status():
     probe = EnvWorkingTreeProbe(env, workspace="/ws")
 
     assert run(probe.changed_excluding(["tests/test_inj.py"])) is False
-
-
-@pytest.mark.parametrize("method", ["changed", "changed_excluding", "diff"])
-def test_git_probe_failure_is_unknown_instead_of_clean(method):
-    env = RecordingEnv(returncode=128)
-    probe = EnvWorkingTreeProbe(env, workspace="/ws")
-
-    with pytest.raises(RuntimeError, match="git .* failed with exit code 128"):
-        if method == "changed_excluding":
-            run(probe.changed_excluding(["tests/test_inj.py"]))
-        else:
-            run(getattr(probe, method)())
 
 
 def test_changed_excluding_quotes_each_exclude_token_separately():
@@ -126,11 +104,7 @@ class _RealEnv:
         proc = subprocess.run(
             cmd, shell=True, capture_output=True, text=True
         )
-        return SimpleNamespace(
-            returncode=proc.returncode,
-            stdout=proc.stdout,
-            stderr=proc.stderr,
-        )
+        return SimpleNamespace(stdout=proc.stdout, stderr=proc.stderr)
 
 
 def _git(repo: Path, *args: str) -> None:

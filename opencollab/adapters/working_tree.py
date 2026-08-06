@@ -20,8 +20,9 @@ class EnvWorkingTreeProbe:
 
     ``changed()`` runs ``git status --porcelain`` — non-empty output means the
     working tree has uncommitted changes (modified, added, or untracked files).
-    A non-zero Git exit raises so the workflow can map the probe to ``None``
-    ("unknown") instead of mistaking a failed command for a clean tree.
+    Both methods are best-effort: any exec failure is treated as "no change"
+    (``changed`` -> ``False``) / empty diff so a flaky git call never blocks a
+    workflow. The workflow swallows even those to ``None`` via ``ctx.tree_changed``.
     """
 
     def __init__(self, env: Any, *, workspace: str | None = None) -> None:
@@ -33,8 +34,6 @@ class EnvWorkingTreeProbe:
     async def changed(self) -> bool:
         cmd = f"git -C {shlex.quote(self._workspace)} status --porcelain"
         result = await self._env.exec_cmd(cmd, timeout=30)
-        if result.returncode != 0:
-            raise RuntimeError(f"git status failed with exit code {result.returncode}")
         return bool(result.stdout.strip())
 
     async def changed_excluding(self, paths: Sequence[str]) -> bool:
@@ -55,15 +54,11 @@ class EnvWorkingTreeProbe:
             f"--untracked-files=all -- . {excludes}"
         )
         result = await self._env.exec_cmd(cmd, timeout=30)
-        if result.returncode != 0:
-            raise RuntimeError(f"git status failed with exit code {result.returncode}")
         return bool(result.stdout.strip())
 
     async def diff(self) -> str:
         cmd = f"git -C {shlex.quote(self._workspace)} diff"
         result = await self._env.exec_cmd(cmd, timeout=30)
-        if result.returncode != 0:
-            raise RuntimeError(f"git diff failed with exit code {result.returncode}")
         return result.stdout
 
 

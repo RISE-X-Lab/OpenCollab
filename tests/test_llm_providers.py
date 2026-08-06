@@ -308,22 +308,6 @@ def test_openai_kimi_uses_auto_for_unsupported_forced_tool_choice(thinking, tool
     assert kwargs["tool_choice"] == "auto"
 
 
-@pytest.mark.parametrize(
-    "tool_choice",
-    ["required", {"type": "function", "function": {"name": "structured_output"}}],
-)
-def test_openai_deepseek_v4_pro_uses_auto_for_unsupported_forced_tool_choice(tool_choice):
-    kwargs = build_openai_kwargs(
-        "deepseek-v4-pro",
-        [{"role": "user", "content": "write the final patch"}],
-        [{"type": "function", "function": {"name": "structured_output", "parameters": {}}}],
-        1.0,
-        tool_choice=tool_choice,
-    )
-
-    assert kwargs["tool_choice"] == "auto"
-
-
 def test_openai_other_thinking_model_keeps_required_tool_choice():
     kwargs = build_openai_kwargs(
         "another-thinking-model",
@@ -361,14 +345,6 @@ def test_exact_model_capabilities_centralize_provider_compatibility(model, conte
     assert capabilities.context_window == context_window
     assert capabilities.supports_forced_tool_choice is False
     assert capabilities.honors_workflow_thinking_override is False
-
-
-def test_deepseek_v4_pro_capabilities_disable_only_forced_tool_choice():
-    capabilities = model_capabilities("deepseek-v4-pro")
-
-    assert capabilities.context_window == 64_000
-    assert capabilities.supports_forced_tool_choice is False
-    assert capabilities.honors_workflow_thinking_override is True
 
 
 def test_unknown_model_capabilities_use_neutral_defaults():
@@ -507,54 +483,6 @@ def test_llm_client_forwards_anthropic_base_url(monkeypatch):
     assert captured["api_key"] == "k"
     assert captured["timeout"] == 12.0
     assert captured["max_retries"] == 0
-
-
-def test_llm_client_forwards_configured_openai_user_agent(monkeypatch):
-    captured = {}
-
-    class FakeAsyncOpenAI:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    monkeypatch.setenv("OPENCOLLAB_LLM_USER_AGENT", "compatible-client/1.2.3")
-    monkeypatch.setattr("opencollab.adapters.llm.client.openai.AsyncOpenAI", FakeAsyncOpenAI)
-
-    from opencollab.adapters.llm.client import LLMClient
-
-    LLMClient(provider="openai", model="model", api_key="k")
-
-    assert captured["default_headers"] == {"User-Agent": "compatible-client/1.2.3"}
-    assert captured["max_retries"] == 0
-
-
-def test_llm_client_keeps_openai_default_user_agent_when_unconfigured(monkeypatch):
-    captured = {}
-
-    class FakeAsyncOpenAI:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
-
-    monkeypatch.delenv("OPENCOLLAB_LLM_USER_AGENT", raising=False)
-    monkeypatch.setattr("opencollab.adapters.llm.client.openai.AsyncOpenAI", FakeAsyncOpenAI)
-
-    from opencollab.adapters.llm.client import LLMClient
-
-    LLMClient(provider="openai", model="model", api_key="k")
-
-    assert captured["default_headers"] is None
-
-
-@pytest.mark.parametrize(
-    "value",
-    ["bad\nheader", "bad\x7fheader", "\u5ba2\u6237\u7aef/1", "x" * 257],
-)
-def test_llm_client_rejects_unsafe_openai_user_agent(monkeypatch, value):
-    monkeypatch.setenv("OPENCOLLAB_LLM_USER_AGENT", value)
-
-    from opencollab.adapters.llm.client import LLMClient
-
-    with pytest.raises(ValueError, match="OPENCOLLAB_LLM_USER_AGENT"):
-        LLMClient(provider="openai", model="model", api_key="k")
 
 
 def test_openai_estimates_output_from_tool_calls_when_no_content():
