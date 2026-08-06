@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import time
+import uuid
 from typing import Any, Callable
 
 from opencollab.application._session_run_completion import _SessionRunCompletionMixin
@@ -89,6 +90,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.agent = agent
         self.state = state
         self.llm = llm
+        self._response_session_id = uuid.uuid4().hex
         self.event_publisher = event_publisher
         self.event_factory = event_factory or default_session_event_factory(state.aid)
         self.tool_execution = tool_execution

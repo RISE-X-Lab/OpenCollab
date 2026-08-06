@@ -290,6 +290,8 @@ class _SessionRunCompletionMixin:
         reasoning_effort = getattr(self.agent, "reasoning_effort", None)
         if reasoning_effort is not None:
             extra["reasoning_effort"] = reasoning_effort
+        if getattr(self.llm, "supports_response_session_identity", False):
+            extra["response_session_id"] = self._response_session_id
         if not getattr(self.agent, "thinking", False):
             return await self._invoke_llm(
                 messages=messages,

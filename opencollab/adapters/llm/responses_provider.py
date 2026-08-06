@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -241,6 +242,8 @@ def _build_request_kwargs(
     top_p: float | None = None,
     max_output_tokens: int | None = None,
     reasoning_effort: str | None = None,
+    prompt_cache_namespace: str | None = None,
+    response_session_id: str | None = None,
 ) -> dict[str, Any]:
     instructions, input_items = _messages_to_input(messages)
     if not input_items:
@@ -265,6 +268,10 @@ def _build_request_kwargs(
         kwargs["max_output_tokens"] = int(max_output_tokens)
     if reasoning_effort is not None:
         kwargs["reasoning"] = {"effort": reasoning_effort}
+    if prompt_cache_namespace and response_session_id:
+        kwargs["prompt_cache_key"] = hashlib.sha256(
+            f"{prompt_cache_namespace}\0{response_session_id}".encode()
+        ).hexdigest()
     return kwargs
 
 
@@ -686,6 +693,8 @@ async def complete_responses(
     top_p: float | None = None,
     max_output_tokens: int | None = None,
     reasoning_effort: str | None = None,
+    prompt_cache_namespace: str | None = None,
+    response_session_id: str | None = None,
     first_event_timeout: float = 180.0,
     stream_idle_timeout: float = 180.0,
     round_timeout: float | None = None,
@@ -702,6 +711,8 @@ async def complete_responses(
         top_p=top_p,
         max_output_tokens=max_output_tokens,
         reasoning_effort=reasoning_effort,
+        prompt_cache_namespace=prompt_cache_namespace,
+        response_session_id=response_session_id,
     )
 
     async def request_once() -> LLMResponse:

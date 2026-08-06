@@ -173,6 +173,7 @@ async def test_real_http_stream_replays_reasoning_function_call_and_output(monke
             reasoning_effort="medium",
             top_p=0.95,
             max_output_tokens=128,
+            response_session_id="session-a",
         )
         second = await client.complete(
             [
@@ -187,6 +188,7 @@ async def test_real_http_stream_replays_reasoning_function_call_and_output(monke
             ],
             temperature=1.0,
             reasoning_effort="medium",
+            response_session_id="session-a",
         )
 
         await client.close()
@@ -198,6 +200,7 @@ async def test_real_http_stream_replays_reasoning_function_call_and_output(monke
     assert requests[0]["store"] is False
     assert requests[0]["reasoning"] == {"effort": "medium"}
     assert requests[0]["_user_agent"] == "codex_cli_rs/test"
+    assert requests[0]["prompt_cache_key"] == requests[1]["prompt_cache_key"]
     replay = requests[1]["input"]
     assert reasoning in replay
     assert call in replay

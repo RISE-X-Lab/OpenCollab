@@ -661,6 +661,50 @@ def test_request_maps_instructions_tools_reasoning_and_sampling():
     assert kwargs["max_output_tokens"] == 32768
 
 
+def test_prompt_cache_key_is_stable_within_one_run_and_isolated_between_runs():
+    messages = [
+        {"role": "system", "content": "You are a coder."},
+        {"role": "user", "content": "Fix it."},
+    ]
+    first = _build_request_kwargs(
+        "gpt-5.6-luna",
+        messages,
+        None,
+        1.0,
+        prompt_cache_namespace="client-a",
+        response_session_id="session-a",
+    )
+    next_turn = _build_request_kwargs(
+        "gpt-5.6-luna",
+        [*messages, {"role": "assistant", "content": "Inspecting."}],
+        None,
+        1.0,
+        prompt_cache_namespace="client-a",
+        response_session_id="session-a",
+    )
+    other_run = _build_request_kwargs(
+        "gpt-5.6-luna",
+        messages,
+        None,
+        1.0,
+        prompt_cache_namespace="client-a",
+        response_session_id="session-b",
+    )
+    other_client = _build_request_kwargs(
+        "gpt-5.6-luna",
+        messages,
+        None,
+        1.0,
+        prompt_cache_namespace="client-b",
+        response_session_id="session-a",
+    )
+
+    assert first["prompt_cache_key"] == next_turn["prompt_cache_key"]
+    assert first["prompt_cache_key"] != other_run["prompt_cache_key"]
+    assert first["prompt_cache_key"] != other_client["prompt_cache_key"]
+    assert len(first["prompt_cache_key"]) == 64
+
+
 def test_non_streaming_text_and_missing_usage_are_supported():
     response = completed_response(output=[message_item("done")])
     parsed = parse_responses_response(

@@ -399,6 +399,7 @@ class LLMPort(Protocol):
         tool_choice: str | None = None,
         top_p: float | None = None,
         max_output_tokens: int | None = None,
+        response_session_id: str | None = None,
     ) -> CompletionResponse:
         ...
 

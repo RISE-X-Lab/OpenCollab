@@ -7,6 +7,7 @@ import math
 import os
 import threading
 import time
+import uuid
 from typing import Any
 
 import openai
@@ -82,6 +83,10 @@ class LLMClient:
         self.max_retries = max(0, max_retries)
         self.request_timeout = request_timeout
         self.wire_protocol = normalize_wire_protocol(wire_protocol)
+        self.supports_response_session_identity = self.wire_protocol == RESPONSES
+        self._responses_prompt_cache_namespace = (
+            uuid.uuid4().hex if self.wire_protocol == RESPONSES else None
+        )
         self.first_event_timeout = first_event_timeout
         self.stream_idle_timeout = stream_idle_timeout
         self.provider_error_time_budget = provider_error_time_budget
@@ -152,6 +157,7 @@ class LLMClient:
         tool_choice: Any = None,
         top_p: float | None = None,
         max_output_tokens: int | None = None,
+        response_session_id: str | None = None,
     ) -> LLMResponse:
         """Single-shot completion. Returns full response.
 
@@ -183,6 +189,7 @@ class LLMClient:
                     provider_error_time_budget=self.provider_retry_budget,
                 )
             elif self.wire_protocol == RESPONSES:
+                resolved_session_id = response_session_id or uuid.uuid4().hex
                 response = await complete_responses(
                     self._openai,
                     self.model,
@@ -194,6 +201,8 @@ class LLMClient:
                     top_p=top_p,
                     max_output_tokens=max_output_tokens,
                     reasoning_effort=reasoning_effort,
+                    prompt_cache_namespace=self._responses_prompt_cache_namespace,
+                    response_session_id=resolved_session_id,
                     first_event_timeout=self.first_event_timeout,
                     stream_idle_timeout=self.stream_idle_timeout,
                     round_timeout=self.request_timeout,

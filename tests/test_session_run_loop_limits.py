@@ -9,6 +9,7 @@ from session_run_loop_test_support import (
     AlwaysOverflowLLM,
     CancelCleanupLLM,
     FakeForcedShaper,
+    FakeLLM,
     FakeOverflowError,
     OverflowThenOkLLM,
     SlowLLM,
@@ -26,6 +27,48 @@ from opencollab.domain.session import (
     SessionPhase,
     SessionState,
 )
+
+
+class _ResponsesIdentityLLM:
+    supports_response_session_identity = True
+
+    def __init__(self, count=2):
+        self.calls = []
+        self.responses = [llm_response(content="ok") for _ in range(count)]
+
+    async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+        self.calls.append(kwargs)
+        return self.responses.pop(0)
+
+
+def test_responses_session_identity_survives_prompt_compaction():
+    llm = _ResponsesIdentityLLM()
+    runner = build_runner(llm=llm)
+
+    run(runner._complete([{"role": "user", "content": "full history"}], None))
+    run(runner._complete([{"role": "user", "content": "compact summary"}], None))
+
+    assert llm.calls[0]["response_session_id"] == llm.calls[1]["response_session_id"]
+
+
+def test_responses_sessions_are_isolated_when_the_client_is_shared():
+    llm = _ResponsesIdentityLLM()
+    first = build_runner(llm=llm)
+    second = build_runner(llm=llm)
+
+    run(first._complete([{"role": "user", "content": "same"}], None))
+    run(second._complete([{"role": "user", "content": "same"}], None))
+
+    assert llm.calls[0]["response_session_id"] != llm.calls[1]["response_session_id"]
+
+
+def test_chat_clients_do_not_receive_responses_session_identity():
+    llm = FakeLLM([llm_response(content="ok")])
+    runner = build_runner(llm=llm)
+
+    run(runner._complete([{"role": "user", "content": "same"}], None))
+
+    assert "response_session_id" not in llm.calls[0]
 
 
 def test_call_llm_recompacts_and_retries_once_on_overflow():
