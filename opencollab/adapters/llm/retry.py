@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import math
 import random
-import re
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any
@@ -22,16 +21,10 @@ RETRYABLE_MESSAGE_FRAGMENTS = (
     "timeout",
     "temporarily unavailable",
     "overloaded",
-    "upstream_request_failed",
-    "upstream request failed",
     "connection error",
     "connection reset",
     "connection refused",
     "server disconnected",
-)
-_STATUS_IN_MESSAGE = re.compile(
-    r"\b(?:error|status)(?:\s+code)?\s*[:=]?\s*(\d{3})\b",
-    re.IGNORECASE,
 )
 
 # Small random jitter (seconds) added to each backoff to reduce thundering herd.
@@ -90,9 +83,6 @@ def is_retryable_error(error: Exception) -> bool:
             return status in RETRYABLE_STATUS_CODES
 
     msg = str(error).lower()
-    status_match = _STATUS_IN_MESSAGE.search(msg)
-    if status_match:
-        return int(status_match.group(1)) in RETRYABLE_STATUS_CODES
     return any(k in msg for k in RETRYABLE_MESSAGE_FRAGMENTS)
 
 

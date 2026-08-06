@@ -187,32 +187,14 @@ def test_response_non_retryable_status_overrides_transient_wording():
 @pytest.mark.parametrize(
     "message",
     [
-        "Error code: 502 - {'error': 'upstream_request_failed'}",
-        "Responses stream failed: upstream_request_failed",
-        "upstream request failed before completion",
         "Connection error.",
         "Connection reset by peer",
         "Connection refused",
         "Server disconnected without sending a response",
     ],
 )
-def test_relay_upstream_failures_without_status_attribute_are_retryable(message):
+def test_connection_failures_without_status_attribute_are_retryable(message):
     assert is_retryable_error(RuntimeError(message)) is True
-
-
-@pytest.mark.parametrize(
-    "message",
-    [
-        "Error code: 400 - invalid request",
-        "Error code: 400 - upstream_request_failed",
-        "Error code: 403 - rate limit",
-        "Status code 401: timeout",
-    ],
-)
-def test_non_retryable_status_embedded_in_message_overrides_transient_wording(message):
-    assert is_retryable_error(RuntimeError(message)) is False
-
-
 def test_retry_after_rejects_non_finite_and_negative_values():
     class Response:
         def __init__(self, value):
@@ -262,22 +244,3 @@ async def test_retry_backoff_caps_long_provider_outages(monkeypatch):
     assert await with_retry(fail_until_recovered, max_retries=20) == "ok"
     assert attempts == 10
     assert delays == [1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 60.0, 60.0, 60.0]
-
-
-@pytest.mark.asyncio
-async def test_retry_recovers_from_relay_error_without_status_attribute(monkeypatch):
-    attempts = 0
-
-    async def fail_once():
-        nonlocal attempts
-        attempts += 1
-        if attempts == 1:
-            raise RuntimeError("Error code: 502 - {'error': 'upstream_request_failed'}")
-        return "ok"
-
-    async def skip_delay(_delay):
-        return None
-
-    monkeypatch.setattr(retry_module.asyncio, "sleep", skip_delay)
-    assert await with_retry(fail_once, max_retries=1) == "ok"
-    assert attempts == 2
