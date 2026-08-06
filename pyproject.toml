@@ -28,7 +28,7 @@ classifiers = [
 ]
 dependencies = [
     "openai>=1.30",
-    "anthropic>=0.40",
+    "anthropic>=0.78",
     "typer>=0.12",
     "rich>=13.0",
     "prompt-toolkit>=3.0",

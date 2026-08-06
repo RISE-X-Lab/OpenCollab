@@ -347,12 +347,22 @@ def test_reasoning_is_preserved_in_assistant_tool_call_history():
     response = llm_response(
         tool_calls=[tool_call()],
         reasoning="I need to inspect the file first.",
+        provider_state={
+            "anthropic_content": [
+                {
+                    "type": "thinking",
+                    "thinking": "I need to inspect the file first.",
+                    "signature": "signed-thinking",
+                }
+            ]
+        },
     )
     runner = build_runner(state=state)
 
     runner.append_assistant_message(response)
 
     assert state.messages[-1]["reasoning_content"] == "I need to inspect the file first."
+    assert state.messages[-1]["provider_state"] == response.provider_state
     assert state.messages[-1]["tool_calls"] == response.tool_calls
 
 def test_llm_trace_omits_reasoning_when_absent():
