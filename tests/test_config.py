@@ -28,8 +28,8 @@ def _isolate_config_env(monkeypatch, tmp_path):
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     monkeypatch.delenv("OPENCOLLAB_LLM_TIMEOUT", raising=False)
     monkeypatch.delenv("OPENCOLLAB_TEMPERATURE", raising=False)
-    monkeypatch.delenv("OPENCOLLAB_TOP_P", raising=False)
-    monkeypatch.delenv("OPENCOLLAB_MAX_OUTPUT_TOKENS", raising=False)
+    for name in _ISOLATED_OUTPUT_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
 
 
 def test_filter_messages_defaults_off(monkeypatch):
@@ -293,3 +293,34 @@ def test_missing_api_key_honors_dashscope_endpoint(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")
     base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert missing_api_key("openai", None, base_url) is False
+
+
+_ISOLATED_OUTPUT_ENV_NAMES = (
+    "OPENCOLLAB_TOP_P",
+    "OPENCOLLAB_MAX_OUTPUT_TOKENS",
+    "OPENCOLLAB_THINKING",
+    "OPENCOLLAB_THINKING_PARAMS",
+)
+
+
+def test_thinking_reads_provider_native_parameters(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_THINKING", "true")
+    monkeypatch.setenv(
+        "OPENCOLLAB_THINKING_PARAMS",
+        '{"thinking":{"type":"enabled","budget_tokens":16000}}',
+    )
+
+    config = build_config()
+
+    assert config.thinking is True
+    assert config.thinking_params == {
+        "thinking": {"type": "enabled", "budget_tokens": 16_000}
+    }
+
+
+@pytest.mark.parametrize("raw", ["not-json", "[]"])
+def test_thinking_rejects_invalid_parameter_json(monkeypatch, raw):
+    monkeypatch.setenv("OPENCOLLAB_THINKING_PARAMS", raw)
+
+    with pytest.raises(Exception, match="OPENCOLLAB_THINKING_PARAMS"):
+        build_config()

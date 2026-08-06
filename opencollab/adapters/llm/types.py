@@ -52,6 +52,10 @@ class LLMResponse:
     # ``thinking`` blocks), kept for trajectory observability. ``None`` when the
     # provider/turn produced no thinking.
     reasoning: str | None = None
+    # Provider-owned continuation data that must survive a tool round trip.
+    # The application stores it without interpreting it, and each provider
+    # removes data that does not belong on its request path.
+    provider_state: dict[str, Any] | None = None
 
 
 def rescue_empty_turn(

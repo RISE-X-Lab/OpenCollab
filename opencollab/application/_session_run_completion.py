@@ -440,6 +440,9 @@ class _SessionRunCompletionMixin:
         reasoning = getattr(response, "reasoning", None)
         if reasoning:
             assistant_msg["reasoning_content"] = reasoning
+        provider_state = getattr(response, "provider_state", None)
+        if provider_state:
+            assistant_msg["provider_state"] = provider_state
         if response.content:
             assistant_msg["content"] = response.content
         if response.tool_calls:

@@ -28,6 +28,7 @@ def llm_response(
     input_tokens=1,
     finish_reason="stop",
     reasoning=None,
+    provider_state=None,
     output_tokens=0,
 ):
     return SimpleNamespace(
@@ -41,6 +42,7 @@ def llm_response(
         ),
         finish_reason=finish_reason,
         reasoning=reasoning,
+        provider_state=provider_state,
     )
 
 def tool_call(call_id="call-1", name="fake_tool", arguments='{"value": 1}'):

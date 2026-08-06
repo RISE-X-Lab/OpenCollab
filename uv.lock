@@ -362,7 +362,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "anthropic", specifier = ">=0.40" },
+    { name = "anthropic", specifier = ">=0.78" },
     { name = "filelock", specifier = ">=3.15" },
     { name = "openai", specifier = ">=1.30" },
     { name = "prompt-toolkit", specifier = ">=3.0" },
