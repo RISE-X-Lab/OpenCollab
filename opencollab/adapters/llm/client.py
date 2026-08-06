@@ -61,6 +61,7 @@ class LLMClient:
         context_window: int | None = None,
         provider_error_time_budget: float = 0.0,
         provider_retry_budget: RetryTimeBudget | None = None,
+        user_agent: str | None = None,
     ):
         if context_window is not None and (
             isinstance(context_window, bool)
@@ -114,12 +115,20 @@ class LLMClient:
             self._openai = None
         else:
             self.base_url = base_url or os.environ.get("OPENAI_BASE_URL")
-            self._openai = openai.AsyncOpenAI(
-                api_key=api_key or os.environ.get("OPENAI_API_KEY"),
-                base_url=self.base_url,
-                timeout=openai.Timeout(request_timeout, connect=connect_timeout),
-                max_retries=0,
-            )
+            openai_kwargs: dict[str, Any] = {
+                "api_key": api_key or os.environ.get("OPENAI_API_KEY"),
+                "base_url": self.base_url,
+                "timeout": openai.Timeout(request_timeout, connect=connect_timeout),
+                "max_retries": 0,
+            }
+            resolved_user_agent = (user_agent or os.environ.get("OPENCOLLAB_LLM_USER_AGENT", "")).strip()
+            if resolved_user_agent:
+                if len(resolved_user_agent.encode()) > 256 or any(
+                    not 32 <= ord(char) <= 126 for char in resolved_user_agent
+                ):
+                    raise ValueError("user_agent must be at most 256 bytes of printable ASCII")
+                openai_kwargs["default_headers"] = {"User-Agent": resolved_user_agent}
+            self._openai = openai.AsyncOpenAI(**openai_kwargs)
             self._anthropic = None
 
     def context_window(self) -> int | None:

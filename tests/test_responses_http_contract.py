@@ -80,7 +80,9 @@ def fake_responses_server(
                 self.send_error(404)
                 return
             body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
-            requests.append(json.loads(body))
+            request = json.loads(body)
+            request["_user_agent"] = self.headers.get("User-Agent")
+            requests.append(request)
             with lock:
                 events = scripts.pop(0) if scripts else None
             if events is None:
@@ -110,7 +112,8 @@ def fake_responses_server(
 
 
 @pytest.mark.asyncio
-async def test_real_http_stream_replays_reasoning_function_call_and_output():
+async def test_real_http_stream_replays_reasoning_function_call_and_output(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_LLM_USER_AGENT", "codex_cli_rs/test")
     reasoning = {
         "id": "rs_1",
         "type": "reasoning",
@@ -194,6 +197,7 @@ async def test_real_http_stream_replays_reasoning_function_call_and_output():
     assert requests[1]["include"] == ["reasoning.encrypted_content"]
     assert requests[0]["store"] is False
     assert requests[0]["reasoning"] == {"effort": "medium"}
+    assert requests[0]["_user_agent"] == "codex_cli_rs/test"
     replay = requests[1]["input"]
     assert reasoning in replay
     assert call in replay
