@@ -78,6 +78,29 @@ def test_cli_prompt_file_rejects_unsafe_or_oversized_input(
         cli_main._resolve_one_shot_prompt(None, str(prompt))
 
 
+@pytest.mark.parametrize("prompt", ["", "   ", "\t\n"])
+def test_cli_rejects_explicit_blank_prompt(prompt):
+    with pytest.raises(typer.BadParameter, match="--prompt must not be empty"):
+        cli_main._resolve_one_shot_prompt(prompt, None)
+
+
+def test_cli_rejects_empty_prompt_file_path():
+    with pytest.raises(typer.BadParameter, match="--prompt-file path must not be empty"):
+        cli_main._resolve_one_shot_prompt(None, "")
+
+
+def test_cli_rejects_both_prompt_inputs_even_when_prompt_is_empty(tmp_path):
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("from file", encoding="utf-8")
+
+    with pytest.raises(typer.BadParameter, match="mutually exclusive"):
+        cli_main._resolve_one_shot_prompt("", str(prompt_file))
+
+
+def test_cli_preserves_nonblank_unicode_prompt():
+    assert cli_main._resolve_one_shot_prompt(" 你好，世界 ", None) == " 你好，世界 "
+
+
 class FakeConsole:
     def print(self, *args, **kwargs):
         return None
