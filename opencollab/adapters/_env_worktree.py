@@ -71,7 +71,7 @@ class WorktreeEnvironment(Environment):
             if self._git_mode:
                 await self._setup_git_worktree()
             else:
-                self._setup_directory_copy()
+                await self._setup_directory_copy()
         except BaseException as original:
             try:
                 await await_owned_operation(
@@ -146,20 +146,28 @@ class WorktreeEnvironment(Environment):
             raise RuntimeError(f"git worktree add failed: {added.stderr.strip()}")
         self._worktree_registered = True
 
-    def _setup_directory_copy(self) -> None:
+    async def _setup_directory_copy(self) -> None:
         self._copy_baseline_dir = tempfile.mkdtemp(prefix="opencollab-cp-baseline-")
         self._worktree_dir = tempfile.mkdtemp(prefix="opencollab-cp-")
-        shutil.copytree(
-            self._source,
-            self._copy_baseline_dir,
-            dirs_exist_ok=True,
-            symlinks=True,
+        await await_owned_operation(
+            asyncio.to_thread(
+                shutil.copytree,
+                self._source,
+                self._copy_baseline_dir,
+                dirs_exist_ok=True,
+                symlinks=True,
+            ),
+            propagate_cancellation=True,
         )
-        shutil.copytree(
-            self._source,
-            self._worktree_dir,
-            dirs_exist_ok=True,
-            symlinks=True,
+        await await_owned_operation(
+            asyncio.to_thread(
+                shutil.copytree,
+                self._source,
+                self._worktree_dir,
+                dirs_exist_ok=True,
+                symlinks=True,
+            ),
+            propagate_cancellation=True,
         )
 
     async def _delete_owned_branch(self, expected_oid: str | None) -> None:
@@ -283,7 +291,7 @@ class WorktreeEnvironment(Environment):
                 self._worktree_registered = False
         if not self._worktree_registered and self._worktree_dir is not None:
             try:
-                shutil.rmtree(self._worktree_dir)
+                await asyncio.to_thread(shutil.rmtree, self._worktree_dir)
             except FileNotFoundError:
                 self._worktree_dir = None
             except BaseException as exc:
@@ -292,7 +300,7 @@ class WorktreeEnvironment(Environment):
                 self._worktree_dir = None
         if self._worktree_dir is None and self._copy_baseline_dir is not None:
             try:
-                shutil.rmtree(self._copy_baseline_dir)
+                await asyncio.to_thread(shutil.rmtree, self._copy_baseline_dir)
             except FileNotFoundError:
                 self._copy_baseline_dir = None
             except BaseException as exc:
