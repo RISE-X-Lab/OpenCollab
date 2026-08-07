@@ -43,6 +43,7 @@ from opencollab.application.scheduler_lifecycle import LifecycleMixin
 from opencollab.application.scheduler_messaging import MessagingMixin
 from opencollab.application.scheduler_types import LaunchSpec as LaunchSpec
 from opencollab.application.scheduler_types import QueuedTeammateMessage as QueuedTeammateMessage
+from opencollab.application.scheduler_types import SchedulerTurnError as SchedulerTurnError
 from opencollab.domain.identity import role_collision_key, validate_role_identity
 from opencollab.domain.scheduler import SessionTable
 from opencollab.domain.team import Topology
@@ -188,4 +189,4 @@ class Scheduler(
             tuple[int, dict[str, int]] | None
         ] = contextvars.ContextVar("review_parent_lease_tracker", default=None)
 
-__all__ = ["LaunchSpec", "QueuedTeammateMessage", "Scheduler"]
+__all__ = ["LaunchSpec", "QueuedTeammateMessage", "Scheduler", "SchedulerTurnError"]
