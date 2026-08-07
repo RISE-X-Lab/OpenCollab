@@ -44,6 +44,7 @@ def test_deferred_spawn_suspends_then_resumes_after_fill():
     result = run(runner.run_loop())
     assert state.phase is SessionPhase.AWAITING_EVENTS
     assert result == "spawning"
+    assert state.active_turn_start_message_index == 1
     assert len(llm.calls) == 1
     row = state.pending_events.rows["s1"]
     assert row.tool_call_id == "s1"
@@ -57,6 +58,7 @@ def test_deferred_spawn_suspends_then_resumes_after_fill():
 
     assert result2 == "done after child"
     assert state.phase is SessionPhase.DONE
+    assert state.active_turn_start_message_index is None
     assert state.pending_events.is_empty()
     # The resumed LLM call saw the child result as a proper tool result.
     second_call_msgs = llm.calls[1]["messages"]

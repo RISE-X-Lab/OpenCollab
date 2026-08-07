@@ -141,6 +141,51 @@ def test_restore_converts_orphaned_deferred_child_to_failed_tool_result(tmp_path
     assert "interrupted by session restore" in (row.result or "")
     assert loaded.state.pending_events.is_complete()
 
+
+def test_restore_awaiting_turn_never_returns_previous_turn_answer(tmp_path):
+    """A restored suspended turn must not scan back before its own boundary."""
+    agent = FakeAgent()
+    original = Session(agent=agent, llm=FakeLLMClient(), max_steps=1)
+    original.state.replace_messages([
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "content": "OLD ANSWER"},
+        {"role": "user", "content": "current question"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{
+                "id": "child-current",
+                "type": "function",
+                "function": {"name": "spawn_agent", "arguments": "{}"},
+            }],
+        },
+    ])
+    original.state.set_step_count(1)
+    original.state.set_phase(SessionPhase.AWAITING_EVENTS)
+    original.state.active_turn_start_message_index = 4
+    original.state.pending_events.add(
+        PendingRow(
+            tool_call_id="child-current",
+            kind=RowKind.CHILD_AGENT,
+            order=0,
+            ref=1,
+            status=RowStatus.PENDING,
+        )
+    )
+    path = tmp_path / "awaiting-cursor.json"
+    original.save(str(path))
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    assert snapshot["session_state"]["active_turn_start_message_index"] == 4
+
+    restored = load_session(
+        str(path), agent=agent, llm=FakeLLMClient(), max_steps=1
+    )
+
+    assert restored.state.phase is SessionPhase.AWAITING_EVENTS
+    assert restored.state.active_turn_start_message_index == 4
+    assert run(restored.run_loop()) == ""
+
 def test_scheduler_init_preserves_and_drains_restored_awaiting_phase(tmp_path):
     from opencollab.application.scheduler import LaunchSpec, Scheduler
 
