@@ -218,6 +218,7 @@ class Session:
 
         self.messages = list(snapshot.get("messages", []))
         self.state.pending_external_user_turn = None
+        self.state.clear_active_turn()
         pending_messages = snapshot.get("pending_messages", [])
         self.state.pending_user_messages = [
             dict(message) for message in pending_messages if isinstance(message, dict)
@@ -229,6 +230,9 @@ class Session:
 
         self.state.pending_external_user_turn = _restore_queued_external_user_turn(
             raw_state.get("pending_external_user_turn"), self.state.messages
+        )
+        restored_turn_start = _restore_active_turn_start(
+            raw_state.get("active_turn_start_message_index"), self.state.messages
         )
 
         self.state.set_used_tokens(_snapshot_nonnegative_int(raw_state.get("used_tokens")))
@@ -288,6 +292,8 @@ class Session:
         # child rows above are converted to explicit FAILED tool results.
         recoverable = {SessionPhase.AWAITING_EVENTS, *[p for p in SessionPhase if p.is_terminal()]}
         self.state.set_phase(phase if phase in recoverable else SessionPhase.IDLE)
+        if self.state.phase is SessionPhase.AWAITING_EVENTS:
+            self.state.active_turn_start_message_index = restored_turn_start
         if phase is not SessionPhase.AWAITING_EVENTS:
             self._append_restore_results_for_open_tool_calls()
             # Rows from an interrupted non-awaiting phase have no live producer
@@ -391,6 +397,7 @@ class Session:
                 "pending_external_user_turn": copy.deepcopy(
                     self.state.pending_external_user_turn
                 ),
+                "active_turn_start_message_index": self.state.active_turn_start_message_index,
             },
         }
         if self.state.pending_user_messages:
@@ -466,6 +473,15 @@ def _restore_queued_external_user_turn(
         "content": content,
         "message_index": index,
     }
+
+
+def _restore_active_turn_start(
+    value: object, messages: list[dict[str, Any]]
+) -> int | None:
+    """Return a valid suspended-turn answer boundary, else leave it unknown."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= len(messages) else None
 
 
 def _snapshot_nonnegative_int(value: object) -> int:
