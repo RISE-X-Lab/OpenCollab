@@ -431,6 +431,15 @@ class _SessionRunCompletionMixin:
             )
 
     def append_assistant_message(self, response: CompletionResponse) -> None:
+        # A provider-limit response may contain an incomplete tool call. Never
+        # persist that structure: a later turn would send an orphaned call back
+        # to the provider, and the run loop must not execute partial arguments.
+        # Preserve only user-visible partial text; the full raw response remains
+        # available in the trace for diagnosis.
+        if response.finish_reason in {"length", "max_tokens"}:
+            if response.content:
+                self.state.append_message({"role": "assistant", "content": response.content})
+            return
         # An empty-stop turn (no content, no tool calls) would append a bare
         # ``{"role": "assistant"}`` message that some providers reject on the
         # next request. Skip it — handle_pending_response decides retry-vs-DONE.
