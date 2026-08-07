@@ -312,6 +312,87 @@ async def test_enforced_timeout_does_not_start_synth_while_scout_cleans_up():
     timed_out.release_cancel.set()
     await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=0.5)
 
+
+@pytest.mark.asyncio
+async def test_dead_scout_synth_respects_the_callers_deadline():
+    class DeadScout(FakeSession):
+        async def run_loop(self, cancel_event=None):
+            raise RuntimeError("scout failed after collecting evidence")
+
+    class BlockingSynth(FakeSession):
+        def __init__(self) -> None:
+            super().__init__()
+            self.cancelled = asyncio.Event()
+
+        async def run_loop(self, cancel_event=None):
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+
+    scout = DeadScout()
+    scout.state.turn.scout_ledger = [
+        {
+            "tool": "file_read",
+            "target": "module.py",
+            "outcome": "hit",
+            "snippet": "observed evidence",
+        }
+    ]
+    synth = BlockingSynth()
+    ctx = WorkflowContext(FakeFactory([scout, synth]))
+    started_at = asyncio.get_running_loop().time()
+    try:
+        result = await asyncio.wait_for(
+            ctx.agent(
+                "scout",
+                timeout=0.01,
+                enforcement_strength=ENFORCEMENT_ON,
+            ),
+            timeout=0.2,
+        )
+    finally:
+        await ctx.wait_for_pending_cleanup()
+
+    assert result is not None and "evidence cards" in result
+    assert synth.cancelled.is_set()
+    assert asyncio.get_running_loop().time() - started_at < 0.1
+
+
+@pytest.mark.asyncio
+async def test_dead_scout_synth_uses_internal_cap_without_caller_deadline(monkeypatch):
+    dead = FakeSession()
+    dead.state.turn.scout_ledger = [
+        {
+            "tool": "file_read",
+            "target": "module.py",
+            "outcome": "hit",
+            "snippet": "observed evidence",
+        }
+    ]
+    ctx = WorkflowContext(FakeFactory([FakeSession()]))
+    internal_deadline = asyncio.get_running_loop().time() + 120.0
+    seen_deadlines: list[float | None] = []
+
+    monkeypatch.setattr(ctx, "_internal_commit_deadline", lambda: internal_deadline)
+
+    async def record_deadline(_session, _prompt, *, deadline, cancel_event=None):
+        seen_deadlines.append(deadline)
+        return ""
+
+    monkeypatch.setattr(ctx, "_run_session_turn", record_deadline)
+
+    await ctx._synthesize_dead_scout(
+        dead,
+        "scout",
+        commit_reserve=1,
+        caller_deadline=None,
+    )
+
+    assert seen_deadlines == [internal_deadline]
+
+
 @pytest.mark.asyncio
 async def test_caller_cancellation_keeps_budget_reserved_until_cleanup_finishes():
     cancelled = CancelCleanupSession(tokens_after_cancel=80)
