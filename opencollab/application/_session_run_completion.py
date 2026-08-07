@@ -53,7 +53,11 @@ def _is_tool_choice_rejection(exc: Exception) -> bool:
         detail = body.get("error", body)
         if isinstance(detail, dict):
             selector_keys = ("param", "field", "path")
-            selectors = [detail[key] for key in selector_keys if key in detail]
+            selectors = [
+                detail[key]
+                for key in selector_keys
+                if key in detail and detail[key] is not None
+            ]
             if selectors:
                 return any(_selector_names_tool_choice(value) for value in selectors)
             code = detail.get("code")
@@ -69,7 +73,8 @@ def _is_tool_choice_rejection(exc: Exception) -> bool:
     return any(
         re.search(pattern, message)
         for pattern in (
-            rf"\b(?:{rejection})\s+(?:value\s+for\s+)?{choice}\b",
+            rf"\b(?:{rejection})\s+(?:(?:value\s+for|parameter|field)\s*:?\s+)?"
+            rf"{choice}\b",
             rf"\b{choice}\b(?:\s+(?:parameter|field|value))?"
             rf"\s+(?:(?:is|was)\s+)?(?:{rejection})\b",
             rf"\b(?:does\s+not\s+support|doesn't\s+support|rejects?|rejected)"
