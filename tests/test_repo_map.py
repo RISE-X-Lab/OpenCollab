@@ -130,6 +130,20 @@ def test_build_repo_map_stops_scanning_when_global_budget_is_exhausted(
     assert "truncated" in result
 
 
+def test_build_repo_map_reserves_root_budget_for_project_files(tmp_path):
+    for index in range(31):
+        (tmp_path / f"directory-{index:02}").mkdir()
+    for name in ("README.md", "pyproject.toml", "team.yaml"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    result = build_repo_map(str(tmp_path))
+
+    assert "README.md" in result
+    assert "pyproject.toml" in result
+    assert "team.yaml" in result
+    assert "directory-00/" in result
+
+
 def test_build_repo_map_missing_or_empty_workspace_returns_empty(tmp_path):
     assert build_repo_map(str(tmp_path / "nope")) == ""
     empty = tmp_path / "empty"
