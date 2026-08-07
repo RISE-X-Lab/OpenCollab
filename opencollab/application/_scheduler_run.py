@@ -27,7 +27,7 @@ class SchedulerRunMixin:
         """
         current_task = asyncio.current_task()
         if current_task is not None:
-            self._active_run_tasks.add(current_task)
+            self._active_run_tasks[current_task] = aid
         try:
             async with self._run_lock:
                 return await self._run_turn_exclusive(aid, user_message)
@@ -36,12 +36,14 @@ class SchedulerRunMixin:
             # driver and descendants running after that owner is cancelled.
             if not self._shutting_down:
                 if current_task is not None:
-                    self._active_run_tasks.discard(current_task)
+                    if self._active_run_tasks.get(current_task) == aid:
+                        self._active_run_tasks.pop(current_task, None)
                 await self.cleanup()
             raise
         finally:
             if current_task is not None:
-                self._active_run_tasks.discard(current_task)
+                if self._active_run_tasks.get(current_task) == aid:
+                    self._active_run_tasks.pop(current_task, None)
 
     async def _run_turn_exclusive(self, aid: int, user_message: str) -> str:
         """Drive one externally visible agent turn under ``_run_lock``."""
