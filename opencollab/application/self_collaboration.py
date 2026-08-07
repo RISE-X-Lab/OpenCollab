@@ -15,6 +15,7 @@ from typing import Protocol
 from opencollab.application.events import SchedulerEventFactory
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.scheduler import ReviewVerdict, SessionTable
+from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
 MAX_REVIEW_ITERATIONS = 3
@@ -101,6 +102,19 @@ async def run_spawn_with_review(
         await scheduler.wait_until_terminal(coder_aid)
         coder_scb = scheduler.table.get(coder_aid)
         code_result = coder_scb.result if coder_scb else ""
+        if coder_scb is None or coder_scb.state.phase is not SessionPhase.DONE:
+            phase = "missing" if coder_scb is None else coder_scb.state.phase.value
+            reason = None if coder_scb is None else coder_scb.state.terminal_reason
+            await _emit_review_event(
+                scheduler,
+                scheduler.events.review_completed(iteration, False),
+            )
+            return (
+                f"[Self-Collaboration: FAILED after {iteration} iteration(s)]\n\n"
+                f"Coder terminal phase: {phase}\n"
+                f"Coder terminal reason: {reason or 'none'}\n\n"
+                f"Last implementation:\n{code_result}"
+            )
 
         # Spawn reviewer and wait
         review_prompt = (
@@ -118,12 +132,16 @@ async def run_spawn_with_review(
         review_result = reviewer_scb.result if reviewer_scb else ""
 
         verdict = ReviewVerdict.parse(review_result)
+        reviewer_completed = (
+            reviewer_scb is not None
+            and reviewer_scb.state.phase is SessionPhase.DONE
+        )
+        passed = reviewer_completed and verdict.passed
         await _emit_review_event(
-            scheduler,
-            scheduler.events.review_completed(iteration, verdict.passed)
+            scheduler, scheduler.events.review_completed(iteration, passed)
         )
 
-        if verdict.passed:
+        if passed:
             return (
                 f"[Self-Collaboration: PASSED after {iteration} iteration(s)]\n\n"
                 f"{code_result}"
