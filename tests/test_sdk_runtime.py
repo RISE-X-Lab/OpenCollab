@@ -677,6 +677,64 @@ async def test_shared_team_runtime_always_cleans_scheduler(
     assert result.metrics == {"steps": 2, "sessions": 1}
 
 
+async def test_team_result_exposes_sanitized_child_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    child = SimpleNamespace(
+        agent=SimpleNamespace(name="reviewer"),
+        state=SimpleNamespace(
+            phase=SimpleNamespace(value="error"),
+            terminal_reason="ProviderFailure: private provider detail",
+        ),
+    )
+
+    class FakeScheduler:
+        used_tokens = 8
+        table = SimpleNamespace(entries={0: object(), 1: child})
+        lead_session = SimpleNamespace(
+            phase=SimpleNamespace(value="done"),
+            state=SimpleNamespace(terminal_reason="completed"),
+            step_count=2,
+        )
+
+        async def run(self, _prompt: str) -> str:
+            return "done"
+
+        async def cleanup(self, *, cleanup_timeout: float) -> None:
+            assert cleanup_timeout > 0
+
+    monkeypatch.setattr(
+        programmatic,
+        "build_scheduler",
+        lambda *_args, **_kwargs: FakeScheduler(),
+    )
+
+    internal = await programmatic.run_team(
+        prompt="solve",
+        config={"model": "model", "provider": "openai", "budget": 50},
+        workspace=str(tmp_path),
+        team_config_path=None,
+        max_tokens=50,
+        timeout=None,
+        artifacts=None,
+        trace=False,
+        use_worktrees=False,
+    )
+    public = sdk_client._public_result(internal)
+
+    assert public.status == "completed"
+    assert public.agent_failures == (
+        {
+            "label": "reviewer",
+            "exception_type": "ProviderFailure",
+            "status_code": None,
+            "provider_error_type": None,
+        },
+    )
+    assert "private provider detail" not in repr(public)
+
+
 @pytest.mark.parametrize(
     ("cleanup_fails", "trace_fails"),
     ((True, False), (False, True), (True, True)),
