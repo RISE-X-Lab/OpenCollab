@@ -348,6 +348,54 @@ async def test_cli_successful_one_shot_holds_before_stopping_and_cleanup(
 
 
 @pytest.mark.asyncio
+async def test_cli_warns_when_event_log_persistence_is_degraded(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("occupied", encoding="utf-8")
+    monkeypatch.setenv(
+        "OPENCOLLAB_EVENTS_FILE",
+        str(blocker / "events.jsonl"),
+    )
+
+    class Scheduler:
+        used_tokens = 0
+        lead_session = SimpleNamespace(auto_save_path=None, step_count=0)
+
+        def team_roster(self):
+            return []
+
+        async def run_turn(self, aid, line):
+            assert (aid, line) == (0, "do work")
+
+        def agent_step_count(self, aid):
+            return 0
+
+        async def cleanup(self):
+            return None
+
+    tracer = FakeTracer()
+    install_cli_fakes(monkeypatch, Scheduler(), tracer)
+
+    await cli_main._run(
+        str(tmp_path),
+        config(),
+        None,
+        True,
+        True,
+        False,
+        one_shot_prompt="do work",
+    )
+
+    warning = capsys.readouterr().err
+    assert "event log persistence degraded" in warning
+    assert "dropped events: 0" in warning
+    assert str(blocker / "events.jsonl") in warning
+
+
+@pytest.mark.asyncio
 async def test_cli_double_cancel_waits_for_cleanup_then_closes_tracer(
     monkeypatch,
     tmp_path,
