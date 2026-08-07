@@ -154,10 +154,6 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # threshold uses.
         self._watchdog_k = watchdog_k
         self._low_yield_m = low_yield_m
-        # Guards the once-per-session provider-compat retry on the wind-down turn
-        # (a model that ignored the forced tool_choice and called another/unknown
-        # tool gets exactly ONE more turn before going terminal).
-        self._wind_down_retried = False
         self._pending_tool_allowlist: frozenset[str] | None = None
         self._pending_tool_gate_label: str | None = None
         # Message index where the current user turn began. It survives a
@@ -367,6 +363,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         tool is somehow absent the toolset is left as-is (the injected message + the
         one allowed turn still apply)."""
         self.state.wind_down_done = True
+        self.state.wind_down_attempts += 1
         self.state.wind_down_token_mark = self.state.used_tokens
         finder = getattr(self.agent, "find_tool", None)
         submit = finder(self._submit_tool_name) if callable(finder) else None
@@ -442,15 +439,15 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         (``low_yield_since_progress`` >= M). Any one trips it; none fires while a
         tool result is still un-ingested (``pending_events`` non-empty).
 
-        Once wound down, the latch grants EXACTLY ONE protected commit turn, then a
-        single retry (``_wind_down_retried``) if that turn strays, then a terminal
-        STOPPED — never an unbounded forced loop.
+        Once wound down, the durable attempt count grants EXACTLY ONE protected
+        commit turn and a single retry if that turn strays, then a terminal
+        STOPPED — never an unbounded forced loop, including after restore.
         """
         if not self._enforcement_on():
             return False
         if self.state.wind_down_done:
-            if not self._wind_down_retried:
-                self._wind_down_retried = True
+            if self.state.wind_down_attempts < 2:
+                self.state.wind_down_attempts += 1
                 self.state.append_message({"role": "system", "content": _WIND_DOWN_RETRY})
                 self.state.transition_to(SessionPhase.CALLING_LLM)
                 return True

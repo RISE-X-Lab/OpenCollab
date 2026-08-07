@@ -331,6 +331,14 @@ class Session:
             raw_state.get("steps_since_progress")
         )
         self.state.wind_down_done = bool(raw_state.get("wind_down_done", False))
+        if "wind_down_attempts" in raw_state:
+            self.state.wind_down_attempts = _snapshot_nonnegative_int(
+                raw_state.get("wind_down_attempts")
+            )
+        else:
+            # A legacy snapshot cannot prove whether its one retry was already
+            # allocated. Preserve the budget contract by not granting another.
+            self.state.wind_down_attempts = 2 if self.state.wind_down_done else 0
         self.state.wind_down_token_mark = _snapshot_nonnegative_int(
             raw_state.get("wind_down_token_mark")
         )
@@ -450,6 +458,7 @@ class Session:
                 "scout_ledger": [dict(card) for card in self.state.turn.scout_ledger],
                 "steps_since_progress": self.state.turn.steps_since_progress,
                 "wind_down_done": self.state.wind_down_done,
+                "wind_down_attempts": self.state.wind_down_attempts,
                 "wind_down_token_mark": self.state.wind_down_token_mark,
                 "loop_blocked_since_progress": self.state.turn.loop_blocked_since_progress,
                 "phase": self.state.phase.value,
