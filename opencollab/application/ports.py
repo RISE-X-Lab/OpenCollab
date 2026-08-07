@@ -294,9 +294,18 @@ class SchedulerPort(Protocol):
         """
         ...
 
-    def inflight_spawn(self, role: str, task: str) -> int | None:
-        """The aid already handling this (role, task) if a spawn is in flight,
-        else ``None``. Lets the spawn tool refuse a duplicate single-flight.
+    def inflight_spawn(
+        self,
+        role: str,
+        task: str,
+        *,
+        parent_aid: int = 0,
+        context: str = "",
+    ) -> int | None:
+        """The aid handling this parent's exact delegated work, if any.
+
+        Lets the spawn tool refuse only a duplicate single-flight from the same
+        parent/context, not distinct delegations that happen to share task text.
         """
         ...
 

@@ -149,12 +149,9 @@ class Scheduler(
         # post-delivery event; this marker preserves the already-committed child /
         # parent terminal pair instead of rewriting only the child to CANCELLED.
         self._delivery_committed: set[int] = set()
-        # Single-flight spawn dedup: task key -> the aid currently handling it,
-        # plus the reverse map for release. A (role, task) is reserved at spawn
-        # and freed when the child reaches a terminal phase, so a model that
-        # re-issues an identical spawn is refused (see ``inflight_spawn``) rather
-        # than spinning up a duplicate — tool-level enforcement of "don't spawn
-        # the same task twice", which prompt guidance alone cannot guarantee.
+        # Single-flight spawn dedup: delegated-work identity -> the handling aid,
+        # plus the reverse map for release. A (parent, role, task, context) is
+        # reserved at spawn and freed when the child reaches a terminal phase.
         self._inflight: dict[str, int] = {}
         self._inflight_key_of: dict[int, str] = {}
         # Per-active-turn token leases. A lease records the session's token count
