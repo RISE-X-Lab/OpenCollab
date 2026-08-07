@@ -67,6 +67,44 @@ def test_file_store_get_body_miss_returns_none(tmp_path):
     assert store.get_body("nonexistent") is None
 
 
+def test_file_store_parses_yaml_frontmatter_scalars(tmp_path):
+    skill_dir = tmp_path / "package"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        """\
+---
+name: "review:code"
+description: >-
+  Review code carefully
+  and preserve evidence.
+---
+Run the review.
+""",
+        encoding="utf-8",
+    )
+
+    store = FileSkillStore(tmp_path)
+
+    assert store.list_manifests() == (
+        SkillManifest(
+            name="review:code",
+            description="Review code carefully and preserve evidence.",
+        ),
+    )
+    assert store.get_body("review:code") == "Run the review."
+
+
+def test_file_store_skips_non_mapping_yaml_frontmatter(tmp_path):
+    skill_dir = tmp_path / "package"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n- name\n- not-a-mapping\n---\nbody\n",
+        encoding="utf-8",
+    )
+
+    assert FileSkillStore(tmp_path).list_manifests() == ()
+
+
 # --- FileSkillStore: robustness ---------------------------------------------
 
 
