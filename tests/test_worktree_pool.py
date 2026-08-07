@@ -279,6 +279,52 @@ async def test_git_worktree_rejects_dirty_source_snapshot(tmp_path) -> None:
     assert not _branch_exists(source, branch)
 
 
+async def test_git_worktree_preserves_ignored_output_until_recovered(
+    tmp_path,
+) -> None:
+    source = _repo(tmp_path / "repo")
+    (source / ".gitignore").write_text("*.ignored\n", encoding="utf-8")
+    _git(source, "add", ".gitignore")
+    _git(source, "commit", "-qm", "add ignore rule")
+    env = WorktreeEnvironment(str(source), branch_name="ignored-output")
+    workspace = Path(await env.setup())
+    (workspace / "lost.ignored").write_text("deliver me\n", encoding="utf-8")
+    (workspace / "shown.txt").write_text("shown\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="ignored untracked files"):
+        await env.get_diff()
+    with pytest.raises(RuntimeError, match="worktree retained"):
+        await env.cleanup()
+
+    assert workspace.is_dir()
+    assert (workspace / "lost.ignored").read_text(encoding="utf-8") == "deliver me\n"
+    (workspace / "lost.ignored").unlink()
+    assert "shown.txt" in await env.get_diff()
+    await env.cleanup()
+    assert not workspace.exists()
+
+
+async def test_git_worktree_preserves_oversized_diff_until_recovered(
+    tmp_path,
+) -> None:
+    source = _repo(tmp_path / "repo")
+    env = WorktreeEnvironment(str(source), branch_name="oversized-output")
+    workspace = Path(await env.setup())
+    (workspace / "large.txt").write_text("x" * (1_200_000), encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="exceeded capture limit"):
+        await env.get_diff()
+    with pytest.raises(RuntimeError, match="worktree retained"):
+        await env.cleanup()
+
+    assert workspace.is_dir()
+    assert (workspace / "large.txt").stat().st_size == 1_200_000
+    (workspace / "large.txt").unlink()
+    assert await env.get_diff() == ""
+    await env.cleanup()
+    assert not workspace.exists()
+
+
 async def test_git_worktree_preserves_nested_source_workspace(tmp_path) -> None:
     source = _repo(tmp_path / "repo")
     nested = source / "packages" / "worker"
@@ -333,9 +379,14 @@ async def test_git_worktree_rejects_truncated_patch_evidence(tmp_path) -> None:
         return ExecResult(0, "partial diff", "", stdout_truncated=True)
 
     assert env._local_env is not None
+    real_exec = env._local_env.exec_cmd
     env._local_env.exec_cmd = truncated_exec
     with pytest.raises(RuntimeError, match="exceeded capture limit"):
         await env.get_diff()
+    with pytest.raises(RuntimeError, match="worktree retained"):
+        await env.cleanup()
+    env._local_env.exec_cmd = real_exec
+    assert await env.get_diff() == ""
     await env.cleanup()
 
 
@@ -348,9 +399,14 @@ async def test_git_worktree_reports_returncode_when_diff_has_no_stderr(tmp_path)
         return ExecResult(128, "", "")
 
     assert env._local_env is not None
+    real_exec = env._local_env.exec_cmd
     env._local_env.exec_cmd = failed_exec
     with pytest.raises(RuntimeError, match="git exited with status 128"):
         await env.get_diff()
+    with pytest.raises(RuntimeError, match="worktree retained"):
+        await env.cleanup()
+    env._local_env.exec_cmd = real_exec
+    assert await env.get_diff() == ""
     await env.cleanup()
 
 
