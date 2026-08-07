@@ -404,6 +404,36 @@ def test_run_tests_falls_back_to_native_runner_when_pytest_missing():
     assert "without an executed-target proof parser" in result
 
 
+def test_run_tests_does_not_fallback_from_a_green_pytest_message():
+    env = FakeEnv(
+        stdout=PLAIN_PASS_OUTPUT + "\nNo module named pytest\n",
+        returncode=0,
+    )
+    target = "tests/test_x.py::test_one"
+
+    result = run(
+        RunTestsTool().execute_with_runtime(
+            {"target": target},
+            runtime_for(env),
+        )
+    )
+
+    assert "Verdict: GREEN" in result
+    assert len(env.exec_calls) == 1
+
+
+def test_run_tests_does_not_fallback_from_failed_test_output_text():
+    env = FakeEnv(
+        stdout=FAIL_OUTPUT + "\nNo module named pytest\n",
+        returncode=1,
+    )
+
+    result = run(RunTestsTool().execute_with_runtime({}, runtime_for(env)))
+
+    assert "Verdict: RED" in result
+    assert len(env.exec_calls) == 1
+
+
 def test_run_tests_falls_back_to_go_runner_when_pytest_missing():
     env = ScriptedEnv([
         ("python -m pytest", 1, "No module named pytest"),
