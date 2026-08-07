@@ -553,3 +553,57 @@ def test_concurrent_scheduler_runs_are_serialized_on_the_lead_session():
         assert lead.added == ["first question", "second question"]
 
     run(scenario())
+
+
+def test_external_turns_for_different_agents_start_concurrently():
+    release = asyncio.Event()
+    lead_started = asyncio.Event()
+    child_started = asyncio.Event()
+
+    def gated_turn(started, answer):
+        async def turn(sess: ScriptedSession) -> str:
+            started.set()
+            await release.wait()
+            sess.state.set_phase(SessionPhase.DONE)
+            sess.state.append_message(
+                {"role": "assistant", "content": answer}
+            )
+            return answer
+
+        return turn
+
+    lead = ScriptedSession("lead", [gated_turn(lead_started, "lead answer")])
+    child = ScriptedSession(
+        "coder", [gated_turn(child_started, "child answer")]
+    )
+    child.state.aid = 1
+    scheduler, _ = build_scheduler(lead, [])
+    scheduler.table.add(
+        SessionControlBlock(
+            aid=1,
+            parent_aid=0,
+            agent=child.agent,
+            state=child.state,
+        )
+    )
+    scheduler._sessions[1] = child
+    scheduler._reserve_child_budget(1)
+
+    async def scenario():
+        lead_call = asyncio.create_task(scheduler.run_turn(0, "lead task"))
+        await lead_started.wait()
+        child_call = asyncio.create_task(
+            scheduler.run_turn(1, "child task")
+        )
+        try:
+            await asyncio.wait_for(child_started.wait(), timeout=0.1)
+        finally:
+            release.set()
+            results = await asyncio.gather(
+                lead_call,
+                child_call,
+                return_exceptions=True,
+            )
+        assert results == ["lead answer", "child answer"]
+
+    run(scenario())
