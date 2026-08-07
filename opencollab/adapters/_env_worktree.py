@@ -69,6 +69,7 @@ class WorktreeEnvironment(Environment):
         self._lifecycle_lock = asyncio.Lock()
         self._source_subdir = ""
         self._repository_root: str | None = None
+        self._git_diff_delivery_pending = False
 
     async def _git(self, *args: str, timeout: float = WORKTREE_GIT_TIMEOUT_SECONDS) -> ExecResult:
         result = await run_process(
@@ -371,14 +372,21 @@ class WorktreeEnvironment(Environment):
             return diff
         if self._base_commit is None:
             raise RuntimeError("worktree base commit is unavailable")
+        self._git_diff_delivery_pending = True
         result = await self._local_env.exec_cmd(
             guarded_staged_diff_command(base_revision=self._base_commit)
         )
         if result.stdout_truncated or result.stderr_truncated:
-            raise RuntimeError("worktree diff exceeded capture limit")
+            raise RuntimeError(
+                f"worktree diff exceeded capture limit; worktree retained at {self.workspace}"
+            )
         if result.returncode != 0:
             detail = result.stderr.strip() or f"git exited with status {result.returncode}"
-            raise RuntimeError(f"worktree diff extraction failed: {detail}")
+            raise RuntimeError(
+                f"worktree diff extraction failed: {detail}; "
+                f"worktree retained at {self.workspace}"
+            )
+        self._git_diff_delivery_pending = False
         return result.stdout
 
     async def _directory_copy_diff(self) -> str:
@@ -529,6 +537,11 @@ class WorktreeEnvironment(Environment):
     async def cleanup(self) -> None:
         async with self._lifecycle_lock:
             await self._ensure_directory_copy_changes_exported()
+            if self._git_mode and self._git_diff_delivery_pending:
+                raise RuntimeError(
+                    "refusing to clean undelivered Git worktree changes; "
+                    f"worktree retained at {self.workspace}"
+                )
             self.revoke()
             await await_owned_operation(
                 self._cleanup_resources(),
@@ -537,8 +550,13 @@ class WorktreeEnvironment(Environment):
 
     async def abort(self) -> None:
         async with self._lifecycle_lock:
-            self.revoke()
             await self._ensure_directory_copy_changes_exported()
+            if self._git_mode and self._git_diff_delivery_pending:
+                raise RuntimeError(
+                    "refusing to clean undelivered Git worktree changes; "
+                    f"worktree retained at {self.workspace}"
+                )
+            self.revoke()
             await await_owned_operation(
                 self._cleanup_resources(),
                 propagate_cancellation=True,
