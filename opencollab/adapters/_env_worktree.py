@@ -47,6 +47,7 @@ class WorktreeEnvironment(Environment):
         self._branch_owned = False
         self._owned_branch_oid: str | None = None
         self._worktree_registered = False
+        self._lifecycle_lock = asyncio.Lock()
 
     async def _git(self, *args: str, timeout: float = WORKTREE_GIT_TIMEOUT_SECONDS) -> ExecResult:
         result = await run_process(
@@ -58,6 +59,10 @@ class WorktreeEnvironment(Environment):
         return result.to_exec_result()
 
     async def setup(self, mount_dir: str | None = None) -> str:
+        async with self._lifecycle_lock:
+            return await self._setup_locked(mount_dir)
+
+    async def _setup_locked(self, mount_dir: str | None) -> str:
         self._ensure_active()
         if mount_dir is not None:
             raise ValueError("mount_dir is supported only by container environments")
@@ -331,11 +336,21 @@ class WorktreeEnvironment(Environment):
             raise RuntimeError("worktree cleanup failed") from failures[0]
 
     async def cleanup(self) -> None:
-        await self._ensure_directory_copy_changes_exported()
-        self.revoke()
-        await await_owned_operation(
-            self._cleanup_resources(),
-            propagate_cancellation=True,
-        )
+        async with self._lifecycle_lock:
+            await self._ensure_directory_copy_changes_exported()
+            self.revoke()
+            await await_owned_operation(
+                self._cleanup_resources(),
+                propagate_cancellation=True,
+            )
+
+    async def abort(self) -> None:
+        async with self._lifecycle_lock:
+            self.revoke()
+            await self._ensure_directory_copy_changes_exported()
+            await await_owned_operation(
+                self._cleanup_resources(),
+                propagate_cancellation=True,
+            )
 
 __all__ = ["WorktreeEnvironment"]
