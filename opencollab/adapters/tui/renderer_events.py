@@ -290,12 +290,8 @@ class _RendererEventsMixin:
         styled_segments.extend((text, style) for text, style in segments if text)
         line = Text.assemble(*styled_segments)
         self._append_history_block(target, line)
-        target.timeline_blocks.append(line)
+        self._append_timeline_block(target, line)
         target.history_revision += 1
-        # Keep recent timeline blocks bounded.
-        overflow = len(target.timeline_blocks) - MAX_TIMELINE_BLOCKS
-        if overflow > 0:
-            target.timeline_blocks = target.timeline_blocks[overflow:]
 
     def _flush_current_text_to_timeline(self, state: Any | None = None) -> None:
         """Commit accumulated assistant text so later events appear in-order."""
@@ -304,7 +300,7 @@ class _RendererEventsMixin:
             return
         block = self._assistant_block(Markdown(target.current_text))
         self._append_history_block(target, block)
-        target.timeline_blocks.append(block)
+        self._append_timeline_block(target, block)
         target.current_text = ""
         target.history_revision += 1
 
