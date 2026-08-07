@@ -9,10 +9,16 @@ stream in the marker when given (e.g. ``stdout``).
 from __future__ import annotations
 
 
+def require_positive_int(value: int, name: str) -> int:
+    """Validate one public output budget before a tool can perform work."""
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
 def truncate(text: str, max_chars: int, label: str | None = None) -> str:
     """Keep head + tail, drop the middle to avoid context explosion."""
-    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars <= 0:
-        raise ValueError("max_chars must be a positive integer")
+    require_positive_int(max_chars, "max_chars")
     if len(text) <= max_chars:
         return text
     dropped = len(text) - max_chars
@@ -32,4 +38,4 @@ def truncate(text: str, max_chars: int, label: str | None = None) -> str:
     return result
 
 
-__all__ = ["truncate"]
+__all__ = ["require_positive_int", "truncate"]

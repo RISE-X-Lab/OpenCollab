@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from opencollab.adapters.tools._output import truncate
+from opencollab.adapters.tools._output import require_positive_int, truncate
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -86,13 +86,9 @@ class BashTool(Tool):
         *,
         require_process_isolation: bool = False,
     ):
-        if (
-            isinstance(max_output_chars, bool)
-            or not isinstance(max_output_chars, int)
-            or max_output_chars <= 0
-        ):
-            raise ValueError("max_output_chars must be a positive integer")
-        self.max_output_chars = max_output_chars
+        self.max_output_chars = require_positive_int(
+            max_output_chars, "max_output_chars"
+        )
         self.require_process_isolation = require_process_isolation
 
     async def execute_with_runtime(
