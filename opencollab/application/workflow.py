@@ -736,6 +736,8 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         async def guard(thunk: Thunk) -> Any:
             try:
                 return await thunk()
+            except WorkflowBudgetExceeded:
+                raise
             except Exception:  # noqa: BLE001 — failures localize to one slot
                 return None
 
