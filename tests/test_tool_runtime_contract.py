@@ -322,6 +322,26 @@ def test_file_write_preserves_duplicate_old_str_error(tmp_path):
     )
 
 
+def test_file_write_rejects_overlapping_old_str_matches(tmp_path):
+    target = tmp_path / "note.txt"
+    target.write_text("aaa", encoding="utf-8")
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {"path": "note.txt", "mode": "str_replace", "old_str": "aa", "new_str": "b"},
+            runtime,
+        )
+    )
+
+    assert (
+        result
+        == "Error: old_str found 2 times in note.txt. Provide more context to make it unique."
+    )
+    assert target.read_text(encoding="utf-8") == "aaa"
+
+
 # ---------------------------------------------------------------------------
 # Host write lock — only taken when I/O hits the host filesystem
 # ---------------------------------------------------------------------------
