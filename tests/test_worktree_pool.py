@@ -86,6 +86,49 @@ async def test_non_git_source_uses_independent_directory_copy(tmp_path) -> None:
     assert not os.path.exists(workspace)
 
 
+async def test_concurrent_setup_reuses_one_worktree(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "plain"
+    source.mkdir()
+    env = WorktreeEnvironment(str(source), branch_name="plain-concurrent")
+    started = asyncio.Event()
+    release = asyncio.Event()
+    probe_count = 0
+    copy_count = 0
+
+    async def blocking_probe(*args, **_kwargs):
+        nonlocal probe_count
+        assert args == ("rev-parse", "--git-dir")
+        probe_count += 1
+        started.set()
+        await release.wait()
+        return ExecResult(1, "", "")
+
+    async def fake_copy() -> None:
+        nonlocal copy_count
+        copy_count += 1
+        baseline = tmp_path / f"baseline-{copy_count}"
+        worktree = tmp_path / f"worktree-{copy_count}"
+        baseline.mkdir()
+        worktree.mkdir()
+        env._copy_baseline_dir = str(baseline)
+        env._worktree_dir = str(worktree)
+
+    monkeypatch.setattr(env, "_git", blocking_probe)
+    monkeypatch.setattr(env, "_setup_directory_copy", fake_copy)
+    first = asyncio.create_task(env.setup())
+    await started.wait()
+    second = asyncio.create_task(env.setup())
+    try:
+        await asyncio.sleep(0.01)
+        assert probe_count == 1
+    finally:
+        release.set()
+        outcomes = await asyncio.gather(first, second, return_exceptions=True)
+
+    assert copy_count == 1
+    assert outcomes == [env.workspace, env.workspace]
+
+
 async def test_non_git_copy_does_not_block_event_loop(tmp_path, monkeypatch) -> None:
     source = tmp_path / "plain"
     source.mkdir()

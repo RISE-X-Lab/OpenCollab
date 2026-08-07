@@ -155,6 +155,7 @@ class DockerEnvironment(Environment):
         self._container_id = self._attached_reference if self._attached else None
         self._attached_bound = False
         self._attach_lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
         self._active_exec_lock = asyncio.Lock()
         self._active_execs: dict[str, asyncio.Task | None] = {}
         self._container_name: str | None = None
@@ -217,6 +218,10 @@ class DockerEnvironment(Environment):
             self._attached_bound = True
 
     async def setup(self, mount_dir: str | None = None) -> str:
+        async with self._lifecycle_lock:
+            return await self._setup_locked(mount_dir)
+
+    async def _setup_locked(self, mount_dir: str | None) -> str:
         self._ensure_active()
         if self._attached:
             await self._bind_attached()
@@ -544,43 +549,50 @@ class DockerEnvironment(Environment):
             raise RuntimeError("Docker cleanup failed") from failures[0]
 
     async def cleanup(self) -> None:
-        if self._attached:
-            return
-        self.revoke()
-        await await_owned_operation(
-            self._cleanup_resources(),
-            propagate_cancellation=True,
-        )
+        async with self._lifecycle_lock:
+            if self._attached:
+                return
+            self.revoke()
+            await await_owned_operation(
+                self._cleanup_resources(),
+                propagate_cancellation=True,
+            )
 
     async def abort(self) -> None:
-        self.revoke()
-        if not self._attached:
-            await self.cleanup()
-            return
-        async with self._active_exec_lock:
-            active = dict(self._active_execs)
-        if not active:
-            return
-        cancelled = await asyncio.gather(
-            *(self._cancel_inner(token) for token in active),
-            return_exceptions=True,
-        )
-        current = asyncio.current_task()
-        pending = {
-            task
-            for task in active.values()
-            if task is not None and task is not current and not task.done()
-        }
-        if pending:
-            _done, pending = await asyncio.wait(
-                pending,
-                timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
+        async with self._lifecycle_lock:
+            self.revoke()
+            if not self._attached:
+                await await_owned_operation(
+                    self._cleanup_resources(),
+                    propagate_cancellation=True,
+                )
+                return
+            async with self._active_exec_lock:
+                active = dict(self._active_execs)
+            if not active:
+                return
+            cancelled = await asyncio.gather(
+                *(self._cancel_inner(token) for token in active),
+                return_exceptions=True,
             )
-        failed_cancellations = any(
-            result is not True and (task is None or not task.done())
-            for result, task in zip(cancelled, active.values())
-        )
-        if failed_cancellations or pending:
-            raise ProcessCleanupError("attached container commands did not quiesce during abort")
+            current = asyncio.current_task()
+            pending = {
+                task
+                for task in active.values()
+                if task is not None and task is not current and not task.done()
+            }
+            if pending:
+                _done, pending = await asyncio.wait(
+                    pending,
+                    timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
+                )
+            failed_cancellations = any(
+                result is not True and (task is None or not task.done())
+                for result, task in zip(cancelled, active.values())
+            )
+            if failed_cancellations or pending:
+                raise ProcessCleanupError(
+                    "attached container commands did not quiesce during abort"
+                )
 
 __all__ = ["DockerEnvironment"]
