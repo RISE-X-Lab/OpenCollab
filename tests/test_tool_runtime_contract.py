@@ -119,6 +119,12 @@ def test_tool_runtime_confirm_fn_returns_none_without_permission_policy():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("value", [0, -1, False, 1.5])
+def test_bash_rejects_invalid_output_limits_at_construction(value):
+    with pytest.raises(ValueError, match="positive integer"):
+        BashTool(max_output_chars=value)
+
+
 def test_bash_tool_without_env_returns_existing_error():
     runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
 
