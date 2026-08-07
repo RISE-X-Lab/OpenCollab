@@ -292,6 +292,9 @@ class LifecycleMixin:
         # later writer that can overwrite the already-filled parent row.
         if not self._shutting_down:
             self._delivery_committed.discard(aid)
+            scb = self.table.get(aid)
+            if scb is not None and scb.state.phase.is_terminal():
+                self._write_manifest()
         try:
             task.result()
         except asyncio.CancelledError:
