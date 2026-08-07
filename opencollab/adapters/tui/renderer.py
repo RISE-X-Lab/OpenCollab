@@ -30,11 +30,19 @@ from opencollab.adapters.tui.renderer_events import (
     MAX_TIMELINE_BLOCKS,
     _RendererEventsMixin,
 )
+from opencollab.domain.session import TERMINAL_PHASES
 
 MAX_HISTORY_BLOCKS_PER_AGENT = 400
 MAX_TERMINAL_AGENT_STATES = 128
 MAX_TERMINAL_AGENT_SUMMARIES = 256
-_TERMINAL_RENDER_STATES = frozenset({"idle", "failed", "cancelled"})
+_TERMINAL_RENDER_STATES = frozenset(
+    {
+        "idle",
+        "failed",
+        "cancelled",
+        *(phase.value for phase in TERMINAL_PHASES),
+    }
+)
 
 
 @dataclass
