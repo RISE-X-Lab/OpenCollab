@@ -32,17 +32,21 @@ def _stub_registry() -> Registry:
     return reg
 
 
-def test_workflow_run_prints_result_as_json(monkeypatch):
+def test_workflow_run_prints_result_as_json(tmp_path, monkeypatch):
     @workflow(name="echo", description="echoes its args")
     async def echo(ctx, args):
         return {"received": args}
 
     reg = Registry()
     reg.register(echo.__workflow_spec__)
-    monkeypatch.setattr(workflow_cli, "load_registry", lambda: reg)
-    monkeypatch.setattr(workflow_cli, "missing_api_key_for", lambda *a, **k: False)
-
     captured: dict[str, Any] = {}
+
+    def fake_load_registry(workspace="."):
+        captured["registry_workspace"] = workspace
+        return reg
+
+    monkeypatch.setattr(workflow_cli, "load_registry", fake_load_registry)
+    monkeypatch.setattr(workflow_cli, "missing_api_key_for", lambda *a, **k: False)
 
     async def fake_run_workflow(spec_or_fn, args, **kwargs):
         captured["spec_or_fn"] = spec_or_fn
@@ -53,9 +57,22 @@ def test_workflow_run_prints_result_as_json(monkeypatch):
 
     monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
 
+    workspace = tmp_path / "example-workspace"
+    workspace.mkdir()
     result = runner.invoke(
         workflow_cli.app,
-        ["run", "echo", "--args", '{"name": "bob"}', "--budget", "50000", "--concurrency", "2"],
+        [
+            "run",
+            "echo",
+            "--args",
+            '{"name": "bob"}',
+            "--budget",
+            "50000",
+            "--concurrency",
+            "2",
+            "--workspace",
+            str(workspace),
+        ],
     )
 
     assert result.exit_code == 0
@@ -64,6 +81,33 @@ def test_workflow_run_prints_result_as_json(monkeypatch):
     assert captured["args"] == {"name": "bob"}
     assert captured["kwargs"]["budget"] == 50000
     assert captured["kwargs"]["max_concurrency"] == 2
+    assert captured["registry_workspace"] == str(workspace)
+
+
+def test_load_registry_resolves_relative_directory_from_workspace(tmp_path, monkeypatch):
+    project = tmp_path / "project"
+    workflow_dir = project / "custom-workflows"
+    workflow_dir.mkdir(parents=True)
+    (workflow_dir / "example.py").write_text(
+        "\n".join(
+            [
+                "from opencollab.application.workflow_registry import workflow",
+                "",
+                '@workflow(name="workspace-flow", description="workspace scoped")',
+                "async def run(ctx, args):",
+                "    return None",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    monkeypatch.chdir(unrelated)
+    monkeypatch.setenv("OPENCOLLAB_WORKFLOWS_DIR", "custom-workflows")
+
+    registry = workflow_cli.load_registry(str(project))
+
+    assert registry.get("workspace-flow").description == "workspace scoped"
 
 
 def test_workflow_run_default_budget_raised_to_1m(monkeypatch):
@@ -74,13 +118,14 @@ def test_workflow_run_default_budget_raised_to_1m(monkeypatch):
     raised value reaches the context: ``--budget`` is None, so run_workflow falls
     back to ``cfg['budget']``.
     """
+
     @workflow(name="echo", description="echoes its args")
     async def echo(ctx, args):
         return {"ok": True}
 
     reg = Registry()
     reg.register(echo.__workflow_spec__)
-    monkeypatch.setattr(workflow_cli, "load_registry", lambda: reg)
+    monkeypatch.setattr(workflow_cli, "load_registry", lambda _workspace=".": reg)
     monkeypatch.setattr(workflow_cli, "missing_api_key_for", lambda *a, **k: False)
     # A small config fallback budget so the 1M floor is the value that wins.
     monkeypatch.setattr(
@@ -115,13 +160,14 @@ def test_workflow_run_default_budget_raised_to_1m(monkeypatch):
 
 def test_workflow_run_explicit_budget_not_raised(monkeypatch):
     """An explicit --budget below 1M is honored verbatim, not floored up."""
+
     @workflow(name="echo", description="echoes its args")
     async def echo(ctx, args):
         return {"ok": True}
 
     reg = Registry()
     reg.register(echo.__workflow_spec__)
-    monkeypatch.setattr(workflow_cli, "load_registry", lambda: reg)
+    monkeypatch.setattr(workflow_cli, "load_registry", lambda _workspace=".": reg)
     monkeypatch.setattr(workflow_cli, "missing_api_key_for", lambda *a, **k: False)
 
     captured: dict[str, Any] = {}
@@ -133,9 +179,7 @@ def test_workflow_run_explicit_budget_not_raised(monkeypatch):
 
     monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
 
-    result = runner.invoke(
-        workflow_cli.app, ["run", "echo", "--args", "{}", "--budget", "12345"]
-    )
+    result = runner.invoke(workflow_cli.app, ["run", "echo", "--args", "{}", "--budget", "12345"])
 
     assert result.exit_code == 0
     # Explicit budget is passed through and the cfg budget equals it (resolve_config
@@ -145,7 +189,7 @@ def test_workflow_run_explicit_budget_not_raised(monkeypatch):
 
 
 def test_workflow_run_unknown_name_exits_nonzero(monkeypatch):
-    monkeypatch.setattr(workflow_cli, "load_registry", lambda: _stub_registry())
+    monkeypatch.setattr(workflow_cli, "load_registry", lambda _workspace=".": _stub_registry())
 
     result = runner.invoke(workflow_cli.app, ["run", "nope", "--args", "{}"])
 
@@ -153,7 +197,7 @@ def test_workflow_run_unknown_name_exits_nonzero(monkeypatch):
 
 
 def test_workflow_run_invalid_json_args_exits_nonzero(monkeypatch):
-    monkeypatch.setattr(workflow_cli, "load_registry", lambda: _stub_registry())
+    monkeypatch.setattr(workflow_cli, "load_registry", lambda _workspace=".": _stub_registry())
 
     result = runner.invoke(workflow_cli.app, ["run", "alpha", "--args", "{not-json"])
 
