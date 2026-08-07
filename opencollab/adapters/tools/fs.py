@@ -232,6 +232,8 @@ class FileWriteTool(Tool):
                 "Error: file creation disabled in this phase; edit the existing "
                 "target via str_replace (or apply_patch for a content-anchored diff)."
             )
+        if mode == "create" and "content" not in params:
+            return "Error: content is required for create mode."
 
         path = checked_path(runtime, path)
 
