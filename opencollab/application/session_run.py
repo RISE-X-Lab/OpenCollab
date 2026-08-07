@@ -200,19 +200,26 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             self.state.fail(reason=f"{type(exc).__name__}: {exc}")
             raise
 
-        return self._last_turn_answer()
+        answer = self._last_turn_answer()
+        if self.is_terminal_phase():
+            self.state.clear_active_turn()
+        return answer
 
     def _prepare_turn(self) -> None:
         """Set the answer cursor and resume the phase appropriate to this call."""
         entry_phase = self.state.phase
         if entry_phase is SessionPhase.IDLE:
             self.state.consume_queued_external_user_turn()
-        if entry_phase in {SessionPhase.AWAITING_EVENTS, SessionPhase.DONE}:
+        if entry_phase is SessionPhase.AWAITING_EVENTS:
             if self._turn_start_message_index is None:
-                # Restored sessions do not yet persist this runtime-only cursor.
-                self._turn_start_message_index = 0
+                self._turn_start_message_index = self.state.active_turn_start_message_index
+        elif entry_phase is SessionPhase.DONE:
+            # Re-entering an already-completed session is a compatibility
+            # read-only query for its final answer, not a restored active turn.
+            self._turn_start_message_index = 0
         else:
             self._turn_start_message_index = len(self.state.messages)
+            self.state.start_active_turn(self._turn_start_message_index)
 
         if entry_phase is SessionPhase.AWAITING_EVENTS:
             self._resume_from_awaiting()
@@ -224,7 +231,9 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
 
     def _last_turn_answer(self) -> str:
         """Return the last real assistant text produced by the current turn."""
-        turn_start = self._turn_start_message_index or 0
+        turn_start = self._turn_start_message_index
+        if turn_start is None:
+            return ""
         for message in reversed(self.state.messages[turn_start:]):
             content = message.get("content")
             if message["role"] == "assistant" and content and content != _EMPTY_STOP_PLACEHOLDER:

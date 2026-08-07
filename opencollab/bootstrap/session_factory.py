@@ -251,6 +251,7 @@ def snapshot_session(session: Session) -> Session:
     new.state.pending_external_user_turn = copy.deepcopy(
         session.state.pending_external_user_turn
     )
+    new.state.active_turn_start_message_index = session.state.active_turn_start_message_index
     return new
 
 
