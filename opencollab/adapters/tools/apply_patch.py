@@ -135,3 +135,5 @@ class ApplyPatchTool(Tool):
 
         except PermissionError as e:
             return f"Error: {e}"
+        except UnicodeDecodeError as e:
+            return f"Error: refusing to edit non-UTF-8 file: invalid UTF-8 at byte {e.start}."
