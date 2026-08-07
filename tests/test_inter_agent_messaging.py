@@ -229,7 +229,7 @@ def test_send_message_to_idle_target_schedules_background_run():
     scheduler._sessions[1] = teammate
     async def scenario():
         ack = await scheduler.send_message(0, 1, "hello", "please review")
-        await scheduler._tasks[1]
+        await scheduler.wait_until_terminal(1)
         return ack
 
     ack = run(scenario())
@@ -260,7 +260,7 @@ def test_message_events_cannot_strand_a_durable_delivery():
 
     async def scenario():
         ack = await scheduler.send_message(0, 1, "hello", "please review")
-        await scheduler._tasks[1]
+        await scheduler.wait_until_terminal(1)
         return ack
 
     assert run(scenario()) == "Message queued to aid 1."
@@ -370,7 +370,9 @@ def test_delivery_final_autosave_commits_message_and_removes_pending_sidecar(tmp
 
     async def scenario():
         await scheduler.send_message(0, 1, "once", "deliver exactly once")
-        await scheduler._tasks[1]
+        driver = scheduler._tasks.get(1)
+        if driver is not None:
+            await driver
         await asyncio.gather(
             *scheduler._fallback_autosavers[1].pending_tasks,
             return_exceptions=True,
@@ -532,7 +534,7 @@ def test_multiple_queued_messages_are_delivered_as_one_timestamped_user_turn():
         sent_at = [message.sent_at for message in scheduler._message_inbox[1]]
         teammate.state.set_phase(SessionPhase.DONE)
         await scheduler._drain_message_inbox(1)
-        await scheduler._tasks[1]
+        await scheduler.wait_until_terminal(1)
         return sent_at
 
     sent_at = run(scenario())

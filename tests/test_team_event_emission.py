@@ -201,7 +201,7 @@ def test_spawn_lifecycle_slow_autosave_keeps_event_loop_responsive(tmp_path):
         assert owners
         release.set()
         await asyncio.gather(*owners, return_exceptions=True)
-        await scheduler._tasks[aid]
+        await scheduler.wait_until_terminal(aid)
         await scheduler.cleanup()
 
     run(scenario())
