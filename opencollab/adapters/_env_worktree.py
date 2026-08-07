@@ -68,6 +68,7 @@ class WorktreeEnvironment(Environment):
         self._worktree_registered = False
         self._lifecycle_lock = asyncio.Lock()
         self._source_subdir = ""
+        self._repository_root: str | None = None
 
     async def _git(self, *args: str, timeout: float = WORKTREE_GIT_TIMEOUT_SECONDS) -> ExecResult:
         result = await run_process(
@@ -101,6 +102,7 @@ class WorktreeEnvironment(Environment):
             ):
                 raise RuntimeError("cannot resolve Git repository root")
             repository_root = os.path.realpath(top_level.stdout.strip())
+            self._repository_root = repository_root
             try:
                 contained = os.path.commonpath((repository_root, self._source))
             except ValueError as exc:
@@ -210,6 +212,116 @@ class WorktreeEnvironment(Environment):
         if added.returncode != 0:
             raise RuntimeError(f"git worktree add failed: {added.stderr.strip()}")
         self._worktree_registered = True
+        await self._initialize_available_submodules()
+
+    async def _worktree_git(self, *args: str) -> ExecResult:
+        assert self._worktree_dir is not None
+        result = await run_process(
+            ("git", "-C", self._worktree_dir, *args),
+            shell=False,
+            timeout=WORKTREE_GIT_TIMEOUT_SECONDS,
+        )
+        return result.to_exec_result()
+
+    async def _initialize_available_submodules(self) -> None:
+        repository_root = self._repository_root
+        if repository_root is None or self._worktree_dir is None:
+            return
+        modules_file = os.path.join(repository_root, ".gitmodules")
+        if not os.path.isfile(modules_file):
+            return
+        configured = await self._git(
+            "config",
+            "--file",
+            modules_file,
+            "--get-regexp",
+            r"^submodule\..*\.path$",
+        )
+        if configured.returncode == 1:
+            return
+        if (
+            configured.returncode != 0
+            or configured.stdout_truncated
+            or configured.stderr_truncated
+        ):
+            raise RuntimeError("cannot inspect Git submodule configuration")
+
+        paths: list[str] = []
+        url_overrides: list[str] = []
+        source_prefix = self._source_subdir.replace(os.sep, "/").rstrip("/")
+        for line in configured.stdout.splitlines():
+            try:
+                key, configured_path = line.split(maxsplit=1)
+            except ValueError as exc:
+                raise RuntimeError("invalid Git submodule path configuration") from exc
+            prefix = "submodule."
+            suffix = ".path"
+            if not key.startswith(prefix) or not key.endswith(suffix):
+                raise RuntimeError("invalid Git submodule path configuration")
+            name = key[len(prefix) : -len(suffix)]
+            normalized_path = configured_path.replace("\\", "/").strip("/")
+            if (
+                not normalized_path
+                or normalized_path == ".."
+                or normalized_path.startswith("../")
+            ):
+                raise RuntimeError("invalid Git submodule path configuration")
+            if source_prefix and not (
+                normalized_path == source_prefix
+                or normalized_path.startswith(f"{source_prefix}/")
+            ):
+                continue
+            source_module = os.path.realpath(
+                os.path.join(repository_root, *normalized_path.split("/"))
+            )
+            if (
+                os.path.commonpath((repository_root, source_module))
+                != repository_root
+                or not os.path.isdir(source_module)
+            ):
+                raise RuntimeError(
+                    f"Git submodule is not initialized in source workspace: {configured_path}"
+                )
+            available = await run_process(
+                ("git", "-C", source_module, "rev-parse", "--is-inside-work-tree"),
+                shell=False,
+                timeout=WORKTREE_GIT_TIMEOUT_SECONDS,
+            )
+            if (
+                available.returncode != 0
+                or available.stdout_dropped_bytes > 0
+                or available.stderr_dropped_bytes > 0
+                or available.stdout.decode("ascii", errors="ignore").strip() != "true"
+            ):
+                raise RuntimeError(
+                    f"Git submodule is not initialized in source workspace: {configured_path}"
+                )
+            paths.append(normalized_path)
+            url_overrides.extend(("-c", f"submodule.{name}.url={source_module}"))
+
+        if not paths:
+            return
+        updated = await self._worktree_git(
+            "-c",
+            "protocol.allow=never",
+            "-c",
+            "protocol.file.allow=always",
+            *url_overrides,
+            "submodule",
+            "update",
+            "--init",
+            "--no-fetch",
+            "--recursive",
+            "--",
+            *paths,
+        )
+        if (
+            updated.returncode != 0
+            or updated.stdout_truncated
+            or updated.stderr_truncated
+        ):
+            detail = updated.stderr.strip() or "submodule checkout failed"
+            raise RuntimeError(f"cannot initialize source-available submodules: {detail}")
 
     async def _setup_directory_copy(self) -> None:
         self._copy_baseline_dir = tempfile.mkdtemp(prefix="opencollab-cp-baseline-")
