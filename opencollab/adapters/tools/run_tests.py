@@ -24,6 +24,7 @@ Ref:
 
 from __future__ import annotations
 
+import posixpath
 import re
 import shlex
 from typing import Any
@@ -99,6 +100,34 @@ _PYTEST_MISSING_RE = re.compile(
 )
 
 
+def _normalize_verification_target(target: str) -> str:
+    path, separator, selectors = target.partition("::")
+    normalized_path = posixpath.normpath(path)
+    if separator:
+        return f"{normalized_path}::{selectors}"
+    return normalized_path
+
+
+def _verification_target_covers(parent: str, child: str) -> bool:
+    normalized_parent = _normalize_verification_target(parent)
+    normalized_child = _normalize_verification_target(child)
+    if normalized_parent == ".":
+        return True
+    if normalized_parent == normalized_child:
+        return True
+    if normalized_child.startswith(f"{normalized_parent}::"):
+        return True
+    parent_path, parent_separator, _ = normalized_parent.partition("::")
+    child_path, _, _ = normalized_child.partition("::")
+    return not parent_separator and child_path.startswith(f"{parent_path}/")
+
+
+def _verification_targets_overlap(left: str, right: str) -> bool:
+    return _verification_target_covers(
+        left, right
+    ) or _verification_target_covers(right, left)
+
+
 class RunTestsTool(Tool):
     """Run tests and return a structured pass/fail summary (not raw output).
 
@@ -169,14 +198,21 @@ class RunTestsTool(Tool):
         # the eval toolset), so this survives across run_tests calls.
         self._consecutive_fail: dict[str, int] = {}
 
+    def _invalidate_verification_scope(self, target: str) -> None:
+        stale = {
+            verified
+            for verified in self._verified_targets
+            if _verification_targets_overlap(target, verified)
+        }
+        self._verified_targets.difference_update(stale)
+
     async def execute_with_runtime(
         self,
         params: dict[str, Any],
         runtime: ToolRuntime,
     ) -> str:
         target = params.get("target", "")
-        if target:
-            self._verified_targets.discard(target)
+        self._invalidate_verification_scope(target)
         pinned_runner = params.get("runner")
         extra_args = params.get("extra_args", "")
         timeout = params.get("timeout", DEFAULT_TIMEOUT)
