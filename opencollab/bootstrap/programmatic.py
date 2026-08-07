@@ -308,7 +308,9 @@ async def run_agent(
     )
     _claim_artifacts(artifacts)
     owned_environment = environment is None
-    resolved_environment = environment or LocalEnvironment(workspace)
+    resolved_environment = (
+        environment if environment is not None else LocalEnvironment(workspace)
+    )
     transcript_path = None if artifacts is None else artifacts / "agent.json"
     tracer = None
     if artifacts is not None and trace:
@@ -428,7 +430,9 @@ async def run_workflow(
     """Run one workflow and return its live metrics directly."""
     _claim_artifacts(artifacts)
     owned_environment = environment is None
-    resolved_environment = environment or LocalEnvironment(workspace)
+    resolved_environment = (
+        environment if environment is not None else LocalEnvironment(workspace)
+    )
     workdir, source_root = _environment_paths(resolved_environment, workspace)
     deadline = (
         None

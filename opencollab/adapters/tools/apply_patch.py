@@ -104,7 +104,7 @@ class ApplyPatchTool(Tool):
         mode = params["mode"]
         env = runtime.environment
 
-        if not env:
+        if env is None:
             return "Error: no execution environment available."
 
         path = checked_path(runtime, path)

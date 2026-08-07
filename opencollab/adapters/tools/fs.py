@@ -75,7 +75,7 @@ class FileReadTool(Tool):
         limit = params.get("limit", 500)
         env = runtime.environment
 
-        if not env:
+        if env is None:
             return "Error: no execution environment available."
 
         path = checked_path(runtime, path)
@@ -175,7 +175,7 @@ class FileWriteTool(Tool):
         mode = params["mode"]
         env = runtime.environment
 
-        if not env:
+        if env is None:
             return "Error: no execution environment available."
 
         if not self.allow_create and mode == "create":
@@ -321,7 +321,7 @@ class GrepTool(Tool):
         raw_max_results = params.get("max_results", 50)
         env = runtime.environment
 
-        if not env:
+        if env is None:
             return "Error: no execution environment available."
         try:
             search_path = checked_path(runtime, search_path)

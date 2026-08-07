@@ -35,6 +35,24 @@ def test_build_workflow_context_returns_context(monkeypatch):
     ctx = workflow_runtime.build_workflow_context(cfg=_cfg())
     assert isinstance(ctx, WorkflowContext)
 
+
+class _FalseyEnvironment:
+    def __bool__(self) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_built_context_preserves_falsey_injected_environment(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    environment = _FalseyEnvironment()
+    ctx = workflow_runtime.build_workflow_context(cfg=_cfg(), env=environment)
+
+    await ctx.agent("solve this")
+
+    assert calls[0]["env"] is environment
+    assert ctx._tree_probe._env is environment
+
+
 @pytest.mark.asyncio
 async def test_built_context_agent_runs_session_with_resolved_llm(monkeypatch):
     calls = _patch_build_session(monkeypatch)
