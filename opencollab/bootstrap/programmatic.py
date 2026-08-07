@@ -42,6 +42,7 @@ from opencollab.bootstrap.agent_runtime import (
 from opencollab.bootstrap.config import resolve_thinking_params
 from opencollab.bootstrap.runtime_context import build_runtime_context
 from opencollab.bootstrap.scheduler_factory import build_scheduler
+from opencollab.bootstrap.team_config import load_team_config
 from opencollab.bootstrap.tool_registry import build_tools_for_role
 from opencollab.bootstrap.workflow_runtime import (
     WORKFLOW_AGENT_PROMPT,
@@ -600,10 +601,11 @@ async def run_team(
     use_worktrees: bool,
 ) -> ProgrammaticResult:
     """Run the scheduler regime once, including bounded team cleanup."""
-    _claim_artifacts(artifacts)
     run_config = dict(config)
     run_config["budget"] = max_tokens
     context = build_runtime_context(workspace, run_config, trace=False)
+    team_config = load_team_config(workspace, path=team_config_path)
+    _claim_artifacts(artifacts)
     if artifacts is not None and trace:
         context.tracer = Tracer(
             run_id="team",
@@ -617,6 +619,7 @@ async def run_team(
             interactive=False,
             auto_save=artifacts is not None,
             team_config_path=team_config_path,
+            resolved_team_config=team_config,
             save_dir=artifacts,
         )
     except BaseException as exc:
