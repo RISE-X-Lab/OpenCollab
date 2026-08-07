@@ -42,6 +42,12 @@ def _selector_names_tool_choice(selector: Any) -> bool:
     return False
 
 
+def _selector_has_named_segment(selector: Any) -> bool:
+    """Return whether a structured selector contains an authoritative name."""
+    values = selector if isinstance(selector, (list, tuple)) else [selector]
+    return any(isinstance(value, str) and bool(value.strip()) for value in values)
+
+
 def _is_tool_choice_rejection(exc: Exception) -> bool:
     """Return whether a provider validation error specifically rejects choice."""
     status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
@@ -56,7 +62,7 @@ def _is_tool_choice_rejection(exc: Exception) -> bool:
             selectors = [
                 detail[key]
                 for key in selector_keys
-                if key in detail and detail[key] is not None
+                if key in detail and _selector_has_named_segment(detail[key])
             ]
             if selectors:
                 return any(_selector_names_tool_choice(value) for value in selectors)
