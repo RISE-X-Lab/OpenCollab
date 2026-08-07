@@ -94,11 +94,15 @@ if TYPE_CHECKING:
 
 
 def _build_initial_state(
-    agent: Agent, seed_user_messages: list[dict[str, Any]] | None = None
+    agent: Agent,
+    seed_user_messages: list[dict[str, Any]] | None = None,
+    seed_system_messages: list[dict[str, Any]] | None = None,
 ) -> SessionState:
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": agent.system_prompt}
-    ]
+    messages: list[dict[str, Any]] = (
+        list(seed_system_messages)
+        if seed_system_messages
+        else [{"role": "system", "content": agent.system_prompt}]
+    )
     if seed_user_messages:
         messages.extend(seed_user_messages)
     return SessionState(messages=messages)
@@ -219,6 +223,7 @@ def build_session_runtime(
     ] | None = None,
     aid: int = -1,
     seed_user_messages: list[dict[str, Any]] | None = None,
+    seed_system_messages: list[dict[str, Any]] | None = None,
     shaper: ShaperPort | None = None,
     team_budget_exhausted: Callable[[], bool] | None = None,
 ) -> SessionRuntime:
@@ -228,8 +233,9 @@ def build_session_runtime(
     ``auto_save_callback`` is the bound method the facade exposes for direct
     autosave. ``auto_save_prepare_callback`` freezes a payload on the event
     loop and returns the file-I/O operation run by the subscriber worker.
-    ``seed_user_messages`` are startup user-context
-    messages appended after the system prompt (e.g. a spawned agent's task);
+    ``seed_system_messages`` retain source-level provenance for layered system
+    context; ``seed_user_messages`` are startup user-context messages appended
+    after them (e.g. a spawned agent's task);
     ``shaper`` reshapes the message list before each model call.
     """
     resolved_env = env if env is not None else LocalEnvironment()
@@ -244,7 +250,11 @@ def build_session_runtime(
         )
         event_bus.subscribe(auto_save_subscriber)
 
-    state = _build_initial_state(agent, seed_user_messages)
+    state = _build_initial_state(
+        agent,
+        seed_user_messages,
+        seed_system_messages,
+    )
     state.aid = aid
 
     resolved_llm = _resolve_llm(agent, llm, llm_timeout)
