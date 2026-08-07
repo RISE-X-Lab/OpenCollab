@@ -1,4 +1,6 @@
 import asyncio
+import hashlib
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -602,6 +604,34 @@ def test_tool_execution_use_case_preserves_trace_payload_capping():
     assert "\n...[truncated]...\n" in payload["result"]
 
 
+def test_tool_observations_bound_large_nested_arguments():
+    content = "x" * (4 * 1024 * 1024)
+    arguments = {"content": content, "nested": {"small": "kept"}}
+    tool = RuntimeNativeTool()
+    tracer = FakeTracer()
+    use_case, publisher = build_use_case(
+        agent=FakeAgent(tools=[tool]),
+        tracer=tracer,
+    )
+
+    run(use_case.process([tool_call(arguments=json.dumps(arguments))]))
+
+    event_args = publisher.events[0].data["args"]
+    trace_args = tracer.steps[0]["payload"]["args"]
+    assert event_args == trace_args
+    assert len(json.dumps(event_args).encode("utf-8")) < 16 * 1024
+    assert content not in json.dumps(event_args)
+    assert event_args["content"] == {
+        "__opencollab_truncated__": True,
+        "preview": "x" * 512,
+        "original_length": len(content),
+        "original_bytes": len(content),
+        "sha256": hashlib.sha256(content.encode()).hexdigest(),
+    }
+    assert event_args["nested"] == {"small": "kept"}
+    assert tool.runtime_calls[0][0] == arguments
+
+
 def test_tool_execution_use_case_persists_full_tool_output():
     # The full result is appended/persisted; bounding what the model sees is the
     # job of the call-time per-tool-result budget shaper, not tool execution.
@@ -653,5 +683,4 @@ def test_loop_block_short_circuit_counts_toward_hard_brake():
 
     assert state.turn.loop_blocked_since_progress == 1
     assert result.loop_detections == [LoopDetection(tool="fake_tool", count=3)]
-
 
