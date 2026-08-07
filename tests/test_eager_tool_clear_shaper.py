@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from opencollab.application.shaping import (
     EAGER_STUB_PREFIX,
     EagerToolOutputClearShaper,
@@ -117,6 +119,12 @@ def test_noop_when_within_keep_recent():
     # exactly keep_recent compactable results -> nothing older -> identity
     msgs = _history(3)
     assert _shaper().shape(msgs) is msgs
+
+
+@pytest.mark.parametrize("keep_recent", [0, -1, True, 1.5])
+def test_rejects_invalid_keep_recent(keep_recent):
+    with pytest.raises(ValueError, match="keep_recent"):
+        EagerToolOutputClearShaper(keep_recent=keep_recent)
 
 
 # --- DETERMINISTIC ---

@@ -75,7 +75,7 @@ def test_reactive_clear_keeps_new_result_when_provider_reuses_call_id():
     ]
     shaper = ToolOutputClearShaper(
         estimate_tokens=_chars,
-        trigger_tokens=1,
+        trigger_tokens=2,
         target_tokens=1,
         keep_recent=1,
         keep_recent_groups=0,
@@ -83,6 +83,28 @@ def test_reactive_clear_keeps_new_result_when_provider_reuses_call_id():
     out = shaper.shape(messages)
     results = [message["content"] for message in out if message.get("role") == "tool"]
     assert results == [DEFAULT_CLEARED_TOOL_CONTENT, "new result"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"trigger_tokens": 0},
+        {"trigger_tokens": True},
+        {"target_tokens": 0},
+        {"target_tokens": 1_500},
+        {"keep_recent_groups": -1},
+        {"keep_recent_groups": 1.5},
+    ],
+)
+def test_reactive_shapers_reject_inconsistent_thresholds(kwargs):
+    defaults = {
+        "estimate_tokens": _chars,
+        "trigger_tokens": 1_500,
+        "target_tokens": 800,
+        "keep_recent_groups": 1,
+    }
+    with pytest.raises(ValueError):
+        OldHistorySnipShaper(**{**defaults, **kwargs})
 
 
 @pytest.mark.parametrize("max_chars", [True, 0, -1, 1.5, float("nan")])

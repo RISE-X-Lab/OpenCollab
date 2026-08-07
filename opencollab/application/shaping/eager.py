@@ -36,6 +36,7 @@ from typing import Any
 from opencollab.application.shaping.pipeline import (
     is_pinned,
     matched_tool_result_occurrences,
+    require_positive_int,
 )
 from opencollab.application.shaping.reactive import DEFAULT_COMPACTABLE_TOOLS
 
@@ -143,8 +144,9 @@ class EagerToolOutputClearShaper:
         compactable_tools: frozenset[str] = DEFAULT_COMPACTABLE_TOOLS,
         keep_recent: int = DEFAULT_EAGER_KEEP_RECENT,
     ):
+        require_positive_int(keep_recent, "keep_recent")
         self.compactable_tools = compactable_tools
-        self.keep_recent = max(1, keep_recent)  # never clear the most recent result
+        self.keep_recent = keep_recent
 
     def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         stubs = self._stubs_for_old_results(messages)
