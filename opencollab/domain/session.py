@@ -323,6 +323,8 @@ class SessionState:
         self.message_timestamps = [ts for _, ts in rebuilt]
 
     def add_used_tokens(self, tokens: int) -> None:
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+            raise ValueError("used token increment must be a non-negative integer")
         self.used_tokens += tokens
 
     def add_markup_recovered(self, count: int) -> None:
