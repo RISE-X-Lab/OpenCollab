@@ -677,6 +677,61 @@ async def test_shared_team_runtime_always_cleans_scheduler(
     assert result.metrics == {"steps": 2, "sessions": 1}
 
 
+@pytest.mark.parametrize(
+    ("cleanup_fails", "trace_fails"),
+    ((True, False), (False, True), (True, True)),
+)
+async def test_team_lifecycle_failure_preserves_execution_root_cause(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cleanup_fails: bool,
+    trace_fails: bool,
+) -> None:
+    primary = ValueError("run-root-cause")
+    cleanup_failure = OSError("cleanup-secondary")
+    trace_failure = RuntimeError("trace-secondary")
+
+    class FakeScheduler:
+        async def run(self, _prompt: str) -> str:
+            raise primary
+
+        async def cleanup(self, *, cleanup_timeout: float) -> None:
+            assert cleanup_timeout > 0
+            if cleanup_fails:
+                raise cleanup_failure
+
+    monkeypatch.setattr(
+        programmatic,
+        "build_scheduler",
+        lambda *_args, **_kwargs: FakeScheduler(),
+    )
+    monkeypatch.setattr(
+        programmatic,
+        "_close_tracer",
+        lambda _tracer: trace_failure if trace_fails else None,
+    )
+
+    with pytest.raises(ProgrammaticLifecycleError) as caught:
+        await programmatic.run_team(
+            prompt="solve",
+            config={"model": "model", "provider": "openai", "budget": 50},
+            workspace=str(tmp_path),
+            team_config_path=None,
+            max_tokens=50,
+            timeout=None,
+            artifacts=None,
+            trace=False,
+            use_worktrees=False,
+        )
+
+    assert caught.value.__cause__ is primary
+    notes = getattr(primary, "__notes__", ())
+    if cleanup_fails:
+        assert any("cleanup-secondary" in note for note in notes)
+    if trace_fails:
+        assert any("trace-secondary" in note for note in notes)
+
+
 def test_tool_presets_are_small_fresh_and_named() -> None:
     read_tools = programmatic.resolve_tools("read")
     assert tuple(tool.name for tool in read_tools) == (
