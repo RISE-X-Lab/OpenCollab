@@ -747,6 +747,60 @@ def test_anthropic_conversion_rejects_unsupported_content_block_with_location():
         convert_to_anthropic_messages(messages)
 
 
+@pytest.mark.parametrize(
+    ("arguments", "reason"),
+    [
+        ('{"path":', "invalid JSON"),
+        ('"path"', "JSON object"),
+        ("[]", "JSON object"),
+        (b"{}", "text or an object"),
+        (None, "text or an object"),
+    ],
+)
+def test_anthropic_conversion_rejects_invalid_restored_tool_arguments(
+    arguments,
+    reason,
+):
+    messages = [
+        {"role": "user", "content": "before"},
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-bad",
+                "type": "function",
+                "function": {"name": "file_read", "arguments": arguments},
+            }],
+        },
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match=rf"message 1 .*file_read.*call-bad.*{reason}",
+    ):
+        convert_to_anthropic_messages(messages)
+
+
+def test_anthropic_conversion_preserves_object_tool_arguments():
+    messages = [{
+        "role": "assistant",
+        "tool_calls": [{
+            "id": "call-ok",
+            "type": "function",
+            "function": {
+                "name": "file_read",
+                "arguments": '{"path": "src/a.py", "options": {"line": 2}}',
+            },
+        }],
+    }]
+
+    _, converted = convert_to_anthropic_messages(messages)
+
+    assert converted[0]["content"][0]["input"] == {
+        "path": "src/a.py",
+        "options": {"line": 2},
+    }
+
+
 def test_anthropic_redacted_thinking_is_not_harvested():
     """redacted_thinking holds encrypted data, not text — must not become content."""
     redacted = SimpleNamespace(type="redacted_thinking", data="encrypted-bytes")
