@@ -162,6 +162,60 @@ async def test_failed_worktree_add_removes_unregistered_directory(tmp_path, monk
     assert not _branch_exists(source, "failed-add")
 
 
+async def test_concurrent_same_branch_setup_preserves_winner_after_loser_cleanup(tmp_path, monkeypatch) -> None:
+    source = _repo(tmp_path / "repo")
+    branch = "same-branch"
+    first = WorktreeEnvironment(str(source), branch_name=branch)
+    second = WorktreeEnvironment(str(source), branch_name=branch)
+    barrier = asyncio.Barrier(2)
+
+    def make_racing_git(env):
+        real_git = env._git
+        paused = False
+
+        async def racing_git(*args, **kwargs):
+            nonlocal paused
+            if not paused and args[:2] == ("show-ref", "--verify"):
+                paused = True
+                await barrier.wait()
+            return await real_git(*args, **kwargs)
+
+        return racing_git
+
+    monkeypatch.setattr(first, "_git", make_racing_git(first))
+    monkeypatch.setattr(second, "_git", make_racing_git(second))
+    outcomes = await asyncio.gather(first.setup(), second.setup(), return_exceptions=True)
+
+    winners = [env for env, outcome in zip((first, second), outcomes) if isinstance(outcome, str)]
+    failures = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+    assert len(winners) == 1
+    assert len(failures) == 1
+    winner = winners[0]
+    assert _branch_exists(source, branch)
+    assert os.path.isdir(winner.workspace)
+    assert os.path.exists(os.path.join(winner.workspace, "tracked.txt"))
+
+    await winner.cleanup()
+    assert not _branch_exists(source, branch)
+
+
+async def test_worktree_cleanup_preserves_externally_advanced_owned_branch(tmp_path) -> None:
+    source = _repo(tmp_path / "repo")
+    branch = "externally-advanced"
+    env = WorktreeEnvironment(str(source), branch_name=branch)
+    workspace = await env.setup()
+    base = _git(source, "rev-parse", branch).stdout.strip()
+    tree = _git(source, "rev-parse", f"{base}^{{tree}}").stdout.strip()
+    advanced = _git(source, "commit-tree", tree, "-p", base, "-m", "external advance").stdout.strip()
+    _git(source, "update-ref", f"refs/heads/{branch}", advanced, base)
+
+    await env.cleanup()
+
+    assert not os.path.exists(workspace)
+    assert _branch_exists(source, branch)
+    assert _git(source, "rev-parse", branch).stdout.strip() == advanced
+
+
 async def test_double_cancellation_cannot_interrupt_setup_cleanup(tmp_path, monkeypatch) -> None:
     source = tmp_path / "source"
     source.mkdir()
