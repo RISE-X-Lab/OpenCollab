@@ -239,6 +239,40 @@ def test_discover_workflows_dedupes_aliased_workflow(tmp_path):
     assert [s.name for s in reg.list_specs()] == ["alpha"]
 
 
+def test_discover_workflows_ignores_decorated_imports(tmp_path):
+    from opencollab.bootstrap.workflow_runtime import discover_workflows
+
+    wf_dir = tmp_path / "workflows"
+    wf_dir.mkdir()
+    _write_workflow_module(
+        wf_dir,
+        "_shared.py",
+        """
+        from opencollab.application.workflow_registry import workflow
+
+        @workflow(name="imported", description="shared helper")
+        async def imported(ctx, args):
+            return None
+        """,
+    )
+    _write_workflow_module(
+        wf_dir,
+        "local.py",
+        """
+        from opencollab.application.workflow_registry import workflow
+        from ._shared import imported
+
+        @workflow(name="local", description="local workflow")
+        async def local(ctx, args):
+            return None
+        """,
+    )
+
+    reg = discover_workflows(str(wf_dir))
+
+    assert [s.name for s in reg.list_specs()] == ["local"]
+
+
 def test_load_workflow_specs_supports_dataclasses_and_relative_imports(tmp_path):
     """Discovery modules get a package context while they are executing."""
     wf_dir = tmp_path / "workflows"
