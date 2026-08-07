@@ -218,6 +218,10 @@ class SessionState:
     # it yet. Unlike scheduler-owned ``pending_user_messages``, this records
     # the crash window between accepting a public turn and starting its driver.
     pending_external_user_turn: dict[str, Any] | None = None
+    # First message position *after* the history visible when the active turn
+    # began. It is retained only while a deferred turn is suspended so a
+    # restored runner can keep answer lookup within that turn.
+    active_turn_start_message_index: int | None = None
 
     def __post_init__(self) -> None:
         self._align_timestamps()
@@ -274,6 +278,14 @@ class SessionState:
         """Mark a queued external turn as claimed by the current runner."""
         if self.pending_external_user_turn is not None:
             self.pending_external_user_turn = None
+
+    def start_active_turn(self, message_index: int) -> None:
+        """Persist the answer-lookup boundary for an active user turn."""
+        self.active_turn_start_message_index = message_index
+
+    def clear_active_turn(self) -> None:
+        """Discard a turn boundary once that turn reaches a terminal phase."""
+        self.active_turn_start_message_index = None
 
     @property
     def is_done(self) -> bool:
