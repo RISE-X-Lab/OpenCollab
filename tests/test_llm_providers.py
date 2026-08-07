@@ -201,6 +201,34 @@ def test_openai_thinking_on_adds_extra_body():
     assert kwargs["extra_body"] == {"enable_thinking": True}
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "model",
+        "messages",
+        "tools",
+        "tool_choice",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "max_completion_tokens",
+        "stream",
+        "stream_options",
+    ],
+)
+def test_openai_thinking_rejects_framework_controlled_request_fields(field):
+    with pytest.raises(ValueError, match=field):
+        build_openai_kwargs(
+            "safe-model",
+            [{"role": "user", "content": "keep this message"}],
+            None,
+            0.2,
+            thinking=True,
+            thinking_params={field: "override"},
+            max_output_tokens=10,
+        )
+
+
 def test_openai_preserves_reasoning_content_for_tool_follow_up():
     kwargs = build_openai_kwargs(
         "kimi-for-coding",
