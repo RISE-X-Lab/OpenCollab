@@ -8,11 +8,13 @@ import pytest
 
 from opencollab.application.shaping import (
     COMPACTED_MARKER_PREFIX,
+    DEFAULT_CLEARED_TOOL_CONTENT,
     PIN_FLOOR,
     AutoCompactShaper,
     OldHistorySnipShaper,
     PerToolResultBudgetShaper,
     ShaperPipeline,
+    ToolOutputClearShaper,
 )
 from opencollab.application.shaping.pipeline import approx_messages_tokens
 
@@ -60,6 +62,27 @@ def test_any_size_result_fits_budget():
     for n in (1999, 2000, 2001, 100_000):
         out = shaper.shape([_tool_msg("z" * n)])
         assert len(out[0]["content"]) <= 2000
+
+
+def test_reactive_clear_keeps_new_result_when_provider_reuses_call_id():
+    messages = [
+        _sys(),
+        _call("call_1"),
+        _tool("call_1", "old" * 300),
+        _call("call_1"),
+        _tool("call_1", "new result"),
+        _text("recent"),
+    ]
+    shaper = ToolOutputClearShaper(
+        estimate_tokens=_chars,
+        trigger_tokens=1,
+        target_tokens=1,
+        keep_recent=1,
+        keep_recent_groups=0,
+    )
+    out = shaper.shape(messages)
+    results = [message["content"] for message in out if message.get("role") == "tool"]
+    assert results == [DEFAULT_CLEARED_TOOL_CONTENT, "new result"]
 
 
 @pytest.mark.parametrize("max_chars", [True, 0, -1, 1.5, float("nan")])

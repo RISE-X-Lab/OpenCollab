@@ -71,18 +71,30 @@ def _is_stub(content):
 # --- always-on (no estimate gate) ---
 
 
-def test_runs_with_no_trigger_clears_old_even_for_tiny_history():
-    # Bodies are tiny — far below any reactive trigger — yet the eager rung still
-    # stubs everything older than keep_recent. Proves it is NOT estimate-gated.
+def test_runs_with_no_trigger_clears_old_without_expanding_short_results():
+    # The eager rung is not estimate-gated, but it still preserves its non-growth
+    # invariant: old one-byte results remain smaller than the explanatory stub.
     messages = [_sys()]
     for i in range(1, 6):
         messages += _exchange(f"t{i}", body="s")  # 1-char bodies
     out = _shaper().shape(messages)
-    assert _is_stub(_tool_content(out, "t1"))
-    assert _is_stub(_tool_content(out, "t2"))
+    assert _tool_content(out, "t1") == "s"
+    assert _tool_content(out, "t2") == "s"
     # last 3 verbatim
     assert _tool_content(out, "t3") == "s"
     assert _tool_content(out, "t5") == "s"
+
+
+def test_reused_call_id_only_clears_the_old_occurrence():
+    messages = [
+        _sys(),
+        *_exchange("call_1", body="old" * 300),
+        *_exchange("call_1", body="new result"),
+    ]
+    out = EagerToolOutputClearShaper(keep_recent=1).shape(messages)
+    results = [message["content"] for message in out if message.get("role") == "tool"]
+    assert _is_stub(results[0])
+    assert results[1] == "new result"
 
 
 def test_keeps_recent_k_verbatim_stubs_older():
@@ -119,16 +131,17 @@ def test_deterministic_byte_identical_across_calls():
     assert _tool_content(first, "t1") == _tool_content(second, "t1")
 
 
-def test_deterministic_independent_of_context_size():
-    # Same logical message, two wildly different surrounding body sizes: the stub
-    # for an aged-out result must be byte-identical (no token-size dependence).
+def test_clear_decision_never_expands_an_aged_result():
+    # Stub text is deterministic, but an old result is replaced only when doing
+    # so actually shrinks that result.
     small = [_sys(), *_exchange("a", body="x"), *_exchange("b", body="x"),
              *_exchange("c", body="x"), *_exchange("d", body="x")]
     big = [_sys(), *_exchange("a", body="x" * 9000),
            *_exchange("b", body="x" * 9000), *_exchange("c", body="x" * 9000),
            *_exchange("d", body="x" * 9000)]
     sh = EagerToolOutputClearShaper(keep_recent=3)
-    assert _tool_content(sh.shape(small), "a") == _tool_content(sh.shape(big), "a")
+    assert _tool_content(sh.shape(small), "a") == "x"
+    assert _is_stub(_tool_content(sh.shape(big), "a"))
 
 
 def test_stub_names_tool_and_target():
