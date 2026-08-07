@@ -277,7 +277,26 @@ class Session:
                 "messages": self.store.load_messages(path, self.agent.system_prompt)
             }
 
-        self.messages = list(snapshot.get("messages", []))
+        messages = list(snapshot.get("messages", []))
+        raw_state = snapshot.get("session_state")
+        if not isinstance(raw_state, dict):
+            # A message-only (or pre-runtime-state) snapshot has no authority
+            # over the current session's counters, phase, or pending work. Build
+            # a complete clean state first, then update the existing object so
+            # the runner and tool executor retain their shared state reference.
+            restored = SessionState(
+                messages=messages,
+                aid=_snapshot_int(snapshot.get("aid"), default=self.state.aid),
+            )
+            pending_messages = snapshot.get("pending_messages", [])
+            restored.pending_user_messages = [
+                dict(message) for message in pending_messages if isinstance(message, dict)
+            ] if isinstance(pending_messages, list) else []
+            self.state.__dict__.clear()
+            self.state.__dict__.update(restored.__dict__)
+            return
+
+        self.messages = messages
         self.state.pending_external_user_turn = None
         self.state.clear_active_turn()
         pending_messages = snapshot.get("pending_messages", [])
@@ -285,9 +304,6 @@ class Session:
             dict(message) for message in pending_messages if isinstance(message, dict)
         ] if isinstance(pending_messages, list) else []
         self.state.aid = _snapshot_int(snapshot.get("aid"), default=self.state.aid)
-        raw_state = snapshot.get("session_state")
-        if not isinstance(raw_state, dict):
-            return
 
         self.state.pending_external_user_turn = _restore_queued_external_user_turn(
             raw_state.get("pending_external_user_turn"), self.state.messages
