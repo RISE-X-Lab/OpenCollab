@@ -171,6 +171,8 @@ class RunTestsTool(Tool):
         runtime: ToolRuntime,
     ) -> str:
         target = params.get("target", "")
+        if target:
+            self._verified_targets.discard(target)
         pinned_runner = params.get("runner")
         extra_args = params.get("extra_args", "")
         timeout = params.get("timeout", DEFAULT_TIMEOUT)

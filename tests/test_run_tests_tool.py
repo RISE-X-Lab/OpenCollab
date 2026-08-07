@@ -714,6 +714,36 @@ def test_run_tests_records_only_parser_backed_green_targets():
     assert tool.verified_targets == frozenset({target})
 
 
+def test_run_tests_invalidates_old_green_before_a_new_attempt_can_raise():
+    target = "tests/test_x.py::test_one"
+
+    class GreenThenError:
+        def __init__(self):
+            self.calls = 0
+
+        async def exec_cmd(self, _cmd, timeout=120.0):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=PLAIN_PASS_OUTPUT,
+                    stderr="",
+                )
+            raise RuntimeError("runner unavailable")
+
+    tool = RunTestsTool()
+    runtime = runtime_for(GreenThenError())
+    assert "Verdict: GREEN" in run(
+        tool.execute_with_runtime({"target": target}, runtime)
+    )
+    assert tool.verified_targets == frozenset({target})
+
+    with pytest.raises(RuntimeError, match="runner unavailable"):
+        run(tool.execute_with_runtime({"target": target}, runtime))
+
+    assert tool.verified_targets == frozenset()
+
+
 def test_run_tests_requires_named_target_pass_proof():
     runtime = runtime_for(FakeEnv(stdout=PASS_OUTPUT, returncode=0))
 
