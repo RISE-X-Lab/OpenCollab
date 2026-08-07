@@ -680,7 +680,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
                 self.state.transition_to(SessionPhase.AUTOSAVING)
                 return
         tool_calls, blocked_messages = self._apply_pending_tool_allowlist(original_tool_calls)
-        immediate, deferred = self._split_tool_calls(tool_calls)
+        _immediate, deferred = self._split_tool_calls(tool_calls)
 
         # Fast path, unchanged: every tool is synchronous — run them, append
         # results, and autosave the step.
@@ -704,46 +704,39 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         table = self.state.pending_events
         order = {tc["id"]: i for i, tc in enumerate(original_tool_calls)}
         completed_messages = list(blocked_messages)
-        terminal_capture_tools = {"structured_output", self._submit_tool_name}
-        terminal_capture_in_batch = any(
-            tc.get("function", {}).get("name") in terminal_capture_tools
-            for tc in tool_calls
-        )
-        if terminal_capture_in_batch:
-            terminal_capture_accepted = False
-            for tc in tool_calls:
-                if terminal_capture_accepted:
-                    completed_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": TERMINAL_CAPTURE_SKIP_MESSAGE,
-                        }
-                    )
-                    continue
-                if tc.get("function", {}).get("name") in self.deferrable_tool_names:
-                    await self._execute_deferred_tools(table, order, [tc])
-                    continue
-                proc = await self.tool_execution.process([tc])
-                proc.apply_hashes_to(self.state)
-                proc.apply_read_write_counter_to(self.state)
-                proc.apply_evidence_counter_to(self.state)
-                completed_messages.extend(proc.messages_to_append)
-                terminal_capture_accepted = proc.terminal_capture_accepted
-        elif immediate:
-            proc = await self.tool_execution.process(immediate)
+        observations = ToolProcessingResult()
+        terminal_capture_accepted = False
+        for tc in tool_calls:
+            if terminal_capture_accepted:
+                completed_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": TERMINAL_CAPTURE_SKIP_MESSAGE,
+                    }
+                )
+                continue
+            if tc.get("function", {}).get("name") in self.deferrable_tool_names:
+                await self._execute_deferred_tools(table, order, [tc])
+                continue
+
+            proc = await self.tool_execution.process([tc])
             proc.apply_hashes_to(self.state)  # hashes now; messages buffered
-            # The reads/edit steering counter must still fold in even though the
-            # result MESSAGES are buffered into the pending table (a mixed batch of
-            # immediate reads + a deferred spawn would otherwise lose its reads).
-            proc.apply_read_write_counter_to(self.state)
-            # Likewise the STEP 1 information-gain counters: a buffered immediate
-            # result is still a real tool result and must register its novelty.
-            proc.apply_evidence_counter_to(self.state)
-            completed_messages = [*proc.messages_to_append, *completed_messages]
+            observations.reads_executed += proc.reads_executed
+            observations.write_succeeded |= proc.write_succeeded
+            observations.read_write_signals.extend(proc.read_write_signals)
+            observations.evidence_signals.extend(proc.evidence_signals)
+            observations.evidence_cards.extend(proc.evidence_cards)
+            observations.loop_detections.extend(proc.loop_detections)
+            observations.tool_step_attempted |= proc.tool_step_attempted
+            completed_messages.extend(proc.messages_to_append)
+            terminal_capture_accepted = proc.terminal_capture_accepted
+
+        # Fold the provider batch once so the progress watchdog remains per-step,
+        # while read/write and evidence signals replay in declared call order.
+        observations.apply_read_write_counter_to(self.state)
+        observations.apply_evidence_counter_to(self.state)
         self._buffer_completed_rows(table, order, completed_messages)
-        if not terminal_capture_in_batch:
-            await self._execute_deferred_tools(table, order, deferred)
 
         self._pending_tool_allowlist = None
         self._pending_tool_gate_label = None
