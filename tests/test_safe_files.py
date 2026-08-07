@@ -34,7 +34,7 @@ def test_bounded_read_accepts_regular_file_and_rejects_large_file(tmp_path) -> N
 
 def test_ranged_text_read_handles_utf8_crlf_and_missing_final_newline(tmp_path) -> None:
     path = tmp_path / "value.txt"
-    path.write_bytes("零\r\n一\r\n二".encode())
+    path.write_bytes("alpha\r\nβeta\r\nγamma".encode())
 
     window = read_regular_text_range(
         path,
@@ -43,7 +43,7 @@ def test_ranged_text_read_handles_utf8_crlf_and_missing_final_newline(tmp_path) 
         max_chars=20,
     )
 
-    assert window.lines == ["一", "二"]
+    assert window.lines == ["βeta", "γamma"]
     assert window.start_line == 2
     assert window.total_lines == 3
     assert not window.has_more
