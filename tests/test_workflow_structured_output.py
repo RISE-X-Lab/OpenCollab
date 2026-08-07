@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from opencollab.application.schema_validate import validate
+from opencollab.application.schema_validate import validate, validate_schema
 from opencollab.application.structured_output import StructuredOutputTool
 from opencollab.application.tool_execution import ToolRuntime
 from opencollab.application.workflow import (
@@ -61,6 +61,18 @@ def test_validate_enum_violation():
     errors = validate({"color": "blue"}, schema)
     assert errors
     assert any("color" in e for e in errors)
+
+
+@pytest.mark.parametrize("enum", ["abc", 3, {"x": 1}, [], [float("nan")]])
+def test_validate_schema_rejects_malformed_enum(enum):
+    errors = validate_schema({"type": "string", "enum": enum})
+    assert errors
+    assert any("enum" in error for error in errors)
+
+
+def test_validate_schema_accepts_nonempty_json_enum():
+    schema = {"enum": ["red", 3, None, {"kind": "nested"}, ["x"]]}
+    assert validate_schema(schema) == []
 
 
 def test_validate_nested_object_and_array():
