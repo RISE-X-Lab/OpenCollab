@@ -18,6 +18,7 @@ from session_characterization_test_support import (
 )
 
 from opencollab.application.event_bus import EventBus
+from opencollab.application.session import SessionBusyError
 from opencollab.application.tool_execution import CallbackPermissionPolicy
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import snapshot_session
@@ -135,6 +136,93 @@ def test_add_user_message_appends_resets_hashes_and_autosaves():
     assert saved_messages[-1]["role"] == "user"
     assert saved_messages[-1]["content"] == "hello"
     assert "timestamp" in saved_messages[-1]
+
+
+def test_session_rejects_a_second_queued_user_turn_before_the_first_runs():
+    session = Session(agent=FakeAgent(), llm=FakeLLMClient())
+    run(session.add_user_message("first queued turn"))
+    before = copy.deepcopy(session.messages)
+
+    with pytest.raises(SessionBusyError, match="active turn"):
+        run(session.add_user_message("must not merge into the first turn"))
+
+    assert session.messages == before
+    assert session.state.pending_external_user_turn is not None
+    assert session.state.pending_external_user_turn["content"] == "first queued turn"
+
+
+@pytest.mark.asyncio
+async def test_session_rejects_a_second_runner_while_a_turn_is_active():
+    class GatedLLM:
+        def __init__(self):
+            self.calls = 0
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def complete(self, messages, tools=None, temperature=0.0):
+            del messages, tools, temperature
+            self.calls += 1
+            self.started.set()
+            await self.release.wait()
+            return llm_response(content="done")
+
+    llm = GatedLLM()
+    session = Session(agent=FakeAgent(), llm=llm)
+    first = asyncio.create_task(session.run_loop())
+    await asyncio.wait_for(llm.started.wait(), timeout=0.5)
+    second = asyncio.create_task(session.run_loop())
+
+    try:
+        for _ in range(5):
+            if second.done():
+                break
+            await asyncio.sleep(0)
+        assert second.done()
+        assert isinstance(second.exception(), SessionBusyError)
+        assert llm.calls == 1
+    finally:
+        llm.release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_session_rejects_user_message_while_provider_turn_is_active():
+    class GatedLLM:
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def complete(self, messages, tools=None, temperature=0.0):
+            del messages, tools, temperature
+            self.started.set()
+            await self.release.wait()
+            return llm_response(content="done")
+
+    llm = GatedLLM()
+    session = Session(agent=FakeAgent(), llm=llm)
+    run_task = asyncio.create_task(session.run_loop())
+    await asyncio.wait_for(llm.started.wait(), timeout=0.5)
+    before = list(session.messages)
+
+    try:
+        with pytest.raises(SessionBusyError, match="active turn"):
+            await session.add_user_message("must not interleave")
+        assert session.messages == before
+    finally:
+        llm.release.set()
+        await run_task
+
+
+def test_session_rejects_user_message_for_a_suspended_turn():
+    session = Session(agent=FakeAgent(), llm=FakeLLMClient())
+    session.phase = SessionPhase.AWAITING_EVENTS
+    before = list(session.messages)
+
+    with pytest.raises(SessionBusyError, match="active turn"):
+        run(session.add_user_message("must not replace suspended turn"))
+
+    assert session.messages == before
+
 
 def test_snapshot_preserves_historical_subset_only():
     agent = FakeAgent()

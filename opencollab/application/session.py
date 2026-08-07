@@ -28,6 +28,10 @@ if TYPE_CHECKING:
     from opencollab.application.scheduler import LaunchSpec
 
 
+class SessionBusyError(RuntimeError):
+    """Raised when a public operation would interleave an active session turn."""
+
+
 @dataclass
 class SessionRuntime:
     """Pre-built collaborators a ``Session`` facade keeps as attributes.
@@ -77,6 +81,10 @@ class Session:
         self._safety_policy = safety_policy
         self._auto_save_path = auto_save_path
         self._launch_applied = False
+        # The public facade owns turn admission. The runner protects its own
+        # cleanup, but callers can otherwise interleave a new message or a
+        # second run with the same mutable FSM.
+        self._turn_lock = asyncio.Lock()
 
         # Adopt the runtime's collaborators as Session attributes so the
         # public surface stays exactly what it used to be.
@@ -225,12 +233,23 @@ class Session:
         self.state.set_phase(value)
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
-        return await self.runner.run_loop(cancel_event)
+        if self._turn_lock.locked() or self.runner.pending_cleanup_tasks:
+            raise SessionBusyError("session already has an active turn")
+        async with self._turn_lock:
+            return await self.runner.run_loop(cancel_event)
 
     async def add_user_message(self, content: str) -> None:
-        self.state.append_queued_external_user_turn(content)
-        self.state.reset_for_user_turn()
-        await self.event_bus.emit(SessionEvent(type="user_message_appended"))
+        if (
+            self._turn_lock.locked()
+            or self.runner.pending_cleanup_tasks
+            or self.state.pending_external_user_turn is not None
+            or (self.state.phase is not SessionPhase.IDLE and not self.state.phase.is_terminal())
+        ):
+            raise SessionBusyError("session already has an active turn")
+        async with self._turn_lock:
+            self.state.append_queued_external_user_turn(content)
+            self.state.reset_for_user_turn()
+            await self.event_bus.emit(SessionEvent(type="user_message_appended"))
 
     def apply_launch(self, launch: "LaunchSpec") -> None:
         """Apply launch-time persistence as a one-shot lifecycle step.
