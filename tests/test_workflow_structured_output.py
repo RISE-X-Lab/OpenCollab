@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -740,3 +741,16 @@ def test_schema_satisfied_predicate():
     assert _schema_satisfied("not a dict", schema) is False
     # no required keys: any captured dict (even {}) is an accepted commit
     assert _schema_satisfied({}, {"type": "object"}) is True
+
+
+def test_structured_retry_carries_history_through_declared_state_port():
+    prior_messages = [
+        {"role": "assistant", "tool_calls": [{"id": "read-1"}]},
+        {"role": "tool", "tool_call_id": "read-1", "content": "evidence"},
+    ]
+    prior = SimpleNamespace(state=SimpleNamespace(messages=prior_messages))
+    retry = SimpleNamespace(state=SimpleNamespace(messages=[]))
+
+    assert WorkflowContext._carry_exploration(prior, retry) is True
+    assert retry.state.messages == prior_messages
+    assert retry.state.messages is not prior_messages
