@@ -146,6 +146,38 @@ def test_openai_usage_zero_counts_fall_back_to_estimate():
     assert result.usage.estimated is True
 
 
+def test_openai_usage_estimate_includes_tool_call_structure_and_tool_schema():
+    """Usage fallbacks must charge serialized requests, not only prose content."""
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "reasoning_content": "r" * 3_000,
+            "tool_calls": [{
+                "id": "call_large_payload",
+                "type": "function",
+                "function": {"name": "search_records", "arguments": "x" * 12_000},
+            }],
+        },
+        {"role": "tool", "tool_call_id": "call_large_payload", "content": ""},
+    ]
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "search_records",
+            "description": "d" * 6_000,
+            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
+        },
+    }]
+    resp = _openai_resp(usage=None, content="ok")
+
+    result = parse_openai_response(resp, messages, tools)
+
+    assert result.usage.input_tokens == estimate_messages_tokens(messages, tools)
+    assert result.usage.input_tokens > 6_000
+    assert result.usage.input_tokens > estimate_messages_tokens(messages)
+
+
 def test_openai_normal_usage_unchanged_and_no_double_count():
     """A normal usage block is used verbatim; cached_tokens is NOT added on top.
 
