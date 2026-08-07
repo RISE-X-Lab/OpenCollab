@@ -93,6 +93,10 @@ _PYTEST_NO_TESTS_RE = re.compile(
     r"no tests ran in \d+(?:\.\d+)?s(?:\s+\([^)]+\))?",
     re.IGNORECASE,
 )
+_PYTEST_MISSING_RE = re.compile(
+    r"(?:(?:\S*/)?(?:python(?:\d+(?:\.\d+)*)?|pypy\d*): )?"
+    r"No module named pytest"
+)
 
 
 class RunTestsTool(Tool):
@@ -466,7 +470,12 @@ async def _native_fallback_candidate(
 
 def _pytest_missing(returncode: int, output: str) -> bool:
     """Whether the run failed because pytest itself is absent."""
-    return returncode == 127 or "No module named pytest" in output
+    if returncode == 0:
+        return False
+    if returncode == 127:
+        return True
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return len(lines) == 1 and _PYTEST_MISSING_RE.fullmatch(lines[0]) is not None
 
 
 def _pytest_no_tests(returncode: int, output: str) -> bool:
