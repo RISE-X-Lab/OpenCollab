@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from typing import Any
 
 from opencollab.adapters.env import Environment
 
@@ -20,6 +21,8 @@ MAX_MAP_DEPTH = 3
 MAX_MAP_ENTRIES = 300
 MAX_MAP_DIRS = 100
 MAX_ENTRIES_PER_DIR = 30
+MIN_ROOT_FILE_ENTRIES = 5
+MIN_ROOT_DIR_ENTRIES = 5
 # Bulky generated/vendored dirs that never help orientation. Hidden entries
 # (".git", ".venv", ...) are skipped by their dot prefix.
 SKIP_DIR_NAMES = frozenset({"__pycache__", "node_modules", "dist", "build", "venv"})
@@ -181,8 +184,34 @@ def _walk(path: str, depth: int, budget: _WalkBudget) -> None:
         return
     budget.scanned_dirs += 1
     candidates: list[os.DirEntry[str]] = []
+    root_directories: list[os.DirEntry[str]] = []
+    root_files: list[os.DirEntry[str]] = []
     kept_entries = 0
+    kept_directories = 0
+    kept_files = 0
     completed_scan = True
+
+    def root_key(entry: os.DirEntry[str]) -> tuple[bool, bool, str]:
+        is_directory = entry.is_dir(follow_symlinks=False)
+        return (
+            not (
+                entry.name in ROOT_PRIORITY_FILES
+                and not is_directory
+            ),
+            not is_directory,
+            entry.name,
+        )
+
+    def retain(
+        entries: list[os.DirEntry[str]],
+        entry: os.DirEntry[str],
+        *,
+        key: Any,
+    ) -> None:
+        entries.append(entry)
+        entries.sort(key=key)
+        del entries[MAX_ENTRIES_PER_DIR:]
+
     try:
         with os.scandir(path) as it:
             iterator = iter(it)
@@ -195,58 +224,54 @@ def _walk(path: str, depth: int, budget: _WalkBudget) -> None:
                 if not _keep(entry.name):
                     continue
                 kept_entries += 1
-                entry_key = (
-                    not (
-                        depth == 0
-                        and entry.name in ROOT_PRIORITY_FILES
-                        and not entry.is_dir(follow_symlinks=False)
-                    ),
-                    not entry.is_dir(follow_symlinks=False),
-                    entry.name,
-                )
-                if len(candidates) < MAX_ENTRIES_PER_DIR:
-                    candidates.append(entry)
+                is_directory = entry.is_dir(follow_symlinks=False)
+                if is_directory:
+                    kept_directories += 1
                 else:
-                    worst_index = max(
-                        range(len(candidates)),
-                        key=lambda index: (
-                            not (
-                                depth == 0
-                                and candidates[index].name in ROOT_PRIORITY_FILES
-                                and not candidates[index].is_dir(follow_symlinks=False)
-                            ),
-                            not candidates[index].is_dir(follow_symlinks=False),
-                            candidates[index].name,
+                    kept_files += 1
+                if depth == 0:
+                    bucket = root_directories if is_directory else root_files
+                    retain(
+                        bucket,
+                        entry,
+                        key=(
+                            (lambda candidate: candidate.name)
+                            if is_directory
+                            else (
+                                lambda candidate: (
+                                    candidate.name not in ROOT_PRIORITY_FILES,
+                                    candidate.name,
+                                )
+                            )
                         ),
                     )
-                    worst = candidates[worst_index]
-                    worst_key = (
-                        not (
-                            depth == 0
-                            and worst.name in ROOT_PRIORITY_FILES
-                            and not worst.is_dir(follow_symlinks=False)
+                else:
+                    retain(
+                        candidates,
+                        entry,
+                        key=lambda candidate: (
+                            not candidate.is_dir(follow_symlinks=False),
+                            candidate.name,
                         ),
-                        not worst.is_dir(follow_symlinks=False),
-                        worst.name,
                     )
-                    if entry_key < worst_key:
-                        candidates[worst_index] = entry
             else:
                 budget.truncated = True
                 completed_scan = False
     except OSError:
         return
-    candidates.sort(
-        key=lambda entry: (
-            not (
-                depth == 0
-                and entry.name in ROOT_PRIORITY_FILES
-                and not entry.is_dir(follow_symlinks=False)
-            ),
-            not entry.is_dir(follow_symlinks=False),
-            entry.name,
+    if depth == 0:
+        required_files = root_files[:MIN_ROOT_FILE_ENTRIES]
+        required_directories = root_directories[:MIN_ROOT_DIR_ENTRIES]
+        candidates = [*required_files, *required_directories]
+        remaining = [
+            *root_files[len(required_files):],
+            *root_directories[len(required_directories):],
+        ]
+        remaining.sort(key=root_key)
+        candidates.extend(
+            remaining[:MAX_ENTRIES_PER_DIR - len(candidates)]
         )
-    )
+        candidates.sort(key=root_key)
     indent = "  " * depth
     for entry in candidates:
         if entry.is_dir(follow_symlinks=False):
@@ -259,7 +284,15 @@ def _walk(path: str, depth: int, budget: _WalkBudget) -> None:
                 return
     omitted = kept_entries - len(candidates)
     if completed_scan and omitted > 0:
-        budget.append(f"{indent}... ({omitted} more)")
+        shown_directories = sum(
+            entry.is_dir(follow_symlinks=False) for entry in candidates
+        )
+        shown_files = len(candidates) - shown_directories
+        budget.append(
+            f"{indent}... ({omitted} more) — "
+            f"{kept_directories - shown_directories} directories, "
+            f"{kept_files - shown_files} files omitted"
+        )
 
 
 async def build_repo_map_via_env(
@@ -297,7 +330,12 @@ async def build_repo_map_via_env(
         result = await env.exec_cmd(cmd)
     except Exception:
         return ""
-    if result.returncode != 0 or result.stderr.strip():
+    if (
+        result.returncode != 0
+        or result.stderr.strip()
+        or result.stdout_truncated
+        or result.stderr_truncated
+    ):
         return ""
     paths = sorted(
         line[2:] if line.startswith("./") else line
@@ -307,7 +345,7 @@ async def build_repo_map_via_env(
     )
     if not paths:
         return ""
-    truncated = len(paths) > max_entries or result.stdout_truncated
+    truncated = len(paths) > max_entries
     return _render_map(
         paths[:max_entries],
         max_chars=max_chars,
