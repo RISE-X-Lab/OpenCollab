@@ -81,9 +81,27 @@ class SessionStore:
         if text is None and not records:
             raise FileNotFoundError(path)
 
-        parsed = self._parse_document(text) if text is not None else {}
-        snapshot = dict(parsed) if isinstance(parsed, dict) else {"messages": parsed}
-        messages = list(snapshot.get("messages", []))
+        blank_legacy_file = text is not None and not text.strip()
+        if text is None:
+            snapshot: dict[str, Any] = {}
+            raw_messages: Any = []
+        else:
+            parsed = self._parse_document(text)
+            if isinstance(parsed, dict):
+                snapshot = dict(parsed)
+                if "messages" not in snapshot:
+                    raise ValueError(
+                        "Invalid session snapshot: missing required 'messages' list"
+                    )
+                raw_messages = snapshot["messages"]
+            else:
+                snapshot = {"messages": parsed}
+                raw_messages = parsed
+            if not isinstance(raw_messages, list):
+                raise ValueError(
+                    "Invalid session snapshot: 'messages' must be a list"
+                )
+        messages = list(raw_messages)
         sequence = self._snapshot_sequence(snapshot)
         for record in records:
             record_sequence = self._record_integer(record, "sequence", minimum=1)
@@ -147,6 +165,10 @@ class SessionStore:
 
         self._validate_messages(messages)
         if not messages:
+            if text is not None and not blank_legacy_file:
+                raise ValueError(
+                    "Invalid session snapshot: expected at least one message"
+                )
             messages = [{"role": "system", "content": system_prompt}]
         snapshot["messages"] = messages
         return snapshot
@@ -161,6 +183,50 @@ class SessionStore:
             role = msg.get("role")
             if role not in self.allowed_roles:
                 raise ValueError(f"Invalid message role at position {lineno}: {role}")
+            if role in {"system", "user"}:
+                self._validate_content(msg, lineno)
+            elif role == "assistant":
+                tool_calls = msg.get("tool_calls")
+                if "tool_calls" in msg and not isinstance(tool_calls, list):
+                    raise ValueError(
+                        "Invalid assistant message at position "
+                        f"{lineno}: 'tool_calls' must be a list"
+                    )
+                if "content" not in msg and not tool_calls:
+                    raise ValueError(
+                        "Invalid assistant message at position "
+                        f"{lineno}: expected 'content' or 'tool_calls'"
+                    )
+                if "content" in msg:
+                    self._validate_content(msg, lineno, allow_none=bool(tool_calls))
+            else:
+                self._validate_content(msg, lineno)
+                tool_call_id = msg.get("tool_call_id")
+                if not isinstance(tool_call_id, str) or not tool_call_id:
+                    raise ValueError(
+                        "Invalid tool message at position "
+                        f"{lineno}: expected non-empty 'tool_call_id'"
+                    )
+
+    @staticmethod
+    def _validate_content(
+        message: dict[str, Any],
+        position: int,
+        *,
+        allow_none: bool = False,
+    ) -> None:
+        if "content" not in message:
+            raise ValueError(
+                f"Invalid message at position {position}: missing 'content'"
+            )
+        content = message["content"]
+        if allow_none and content is None:
+            return
+        if not isinstance(content, (str, list)):
+            raise ValueError(
+                "Invalid message at position "
+                f"{position}: 'content' must be text or a content-part list"
+            )
 
     def _parse_document(self, text: str) -> dict[str, Any] | list[dict[str, Any]]:
         if not text.strip():
