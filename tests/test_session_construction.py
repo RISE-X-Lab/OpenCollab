@@ -185,9 +185,11 @@ def test_session_snapshot_preserves_external_sink():
     session = _new_session(event_sink=sink)
     snap = snapshot_session(session)
 
-    # External sink reference still in the bus targets.
+    # External subscribers are never silently shared with a runnable snapshot.
     targets = list(snap.event_bus._targets)
-    assert sink in targets
+    assert sink not in targets
+    observed = snapshot_session(session, event_sink=sink)
+    assert sink in observed.event_bus._targets
 
 
 def test_session_load_returns_session_with_loaded_messages(tmp_path):
