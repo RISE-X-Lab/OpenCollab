@@ -11,6 +11,7 @@ from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import (
     EnvironmentPort,
+    JournalSnapshotStorePort,
     LLMPort,
     PermissionPort,
     SafetyPolicyPort,
@@ -100,6 +101,11 @@ class Session:
         self._owns_llm = runtime.owns_llm
         self._llm_closed = False
         self._llm_close_error: BaseException | None = None
+        self._auto_save_sequence = 0
+        self._auto_save_message_count = 0
+        self._auto_save_rewrite_from: int | None = 0
+        self._auto_save_seen_result_hashes: set[str] = set()
+        self._next_auto_save_checkpoint = 1
         # The env attribute mirrors the runtime's tool_execution env so
         # downstream readers (snapshot, characterization tests) still see
         # the same Environment instance.
@@ -208,6 +214,8 @@ class Session:
     @messages.setter
     def messages(self, value: list[dict]) -> None:
         self.state.replace_messages(value)
+        if hasattr(self, "_auto_save_rewrite_from"):
+            self._auto_save_rewrite_from = 0
 
     @property
     def used_tokens(self) -> int:
@@ -287,7 +295,17 @@ class Session:
         if self._launch_applied:
             return
         self._launch_applied = True
-        if launch.session_file and os.path.exists(launch.session_file):
+        resumable = bool(
+            launch.session_file
+            and (
+                os.path.exists(launch.session_file)
+                or (
+                    isinstance(self.store, JournalSnapshotStorePort)
+                    and self.store.has_snapshot(launch.session_file)
+                )
+            )
+        )
+        if launch.session_file and resumable:
             self.restore(launch.session_file)
         elif launch.auto_save_path:
             self.save(launch.auto_save_path)
@@ -318,6 +336,7 @@ class Session:
             ] if isinstance(pending_messages, list) else []
             self.state.__dict__.clear()
             self.state.__dict__.update(restored.__dict__)
+            self._restore_auto_save_tracking(snapshot)
             return
 
         self.messages = messages
@@ -418,6 +437,23 @@ class Session:
         if self.state.phase is SessionPhase.AWAITING_EVENTS and self.state.pending_events.is_empty():
             self.state.set_phase(SessionPhase.IDLE)
             self._append_restore_results_for_open_tool_calls()
+        self._restore_auto_save_tracking(snapshot)
+
+    def _restore_auto_save_tracking(self, snapshot: dict[str, Any]) -> None:
+        sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
+        self._auto_save_sequence = sequence
+        stored_messages = snapshot.get("messages")
+        self._auto_save_message_count = min(
+            len(stored_messages) if isinstance(stored_messages, list) else 0,
+            len(self.state.messages),
+        )
+        self._auto_save_rewrite_from = None
+        self._auto_save_seen_result_hashes = set(
+            self.state.turn.seen_result_hashes
+        )
+        self._next_auto_save_checkpoint = (
+            1 if sequence == 0 else 1 << sequence.bit_length()
+        )
 
     def _open_tool_call_ids(self) -> list[str]:
         # Pair calls and results in transcript order. Tool-call ids are expected
@@ -476,9 +512,25 @@ class Session:
 
     def save(self, path: str) -> None:
         messages, meta = self._snapshot_for_save()
+        if (
+            path == self._auto_save_path
+            and isinstance(self.store, JournalSnapshotStorePort)
+        ):
+            self.store.checkpoint_snapshot(
+                path,
+                messages,
+                meta=meta,
+                sequence=self._auto_save_sequence,
+            )
+            self._auto_save_message_count = len(self.state.messages)
+            self._auto_save_rewrite_from = None
+            self._auto_save_seen_result_hashes = set(
+                self.state.turn.seen_result_hashes
+            )
+            return
         self.store.save(path, messages, meta=meta)
 
-    def _snapshot_for_save(self) -> tuple[list[dict], dict]:
+    def _snapshot_for_save(self, message_start: int = 0) -> tuple[list[dict], dict]:
         """Freeze one internally consistent payload before persistence starts."""
         meta = {
             "snapshot_version": 1,
@@ -513,7 +565,7 @@ class Session:
         if self.state.pending_user_messages:
             meta["pending_messages"] = self.state.enriched_pending_user_messages()
         return (
-            copy.deepcopy(self.state.enriched_messages()),
+            copy.deepcopy(self.state.enriched_messages(message_start)),
             copy.deepcopy(meta),
         )
 
@@ -521,8 +573,64 @@ class Session:
         if not self._auto_save_path:
             return None
         path = self._auto_save_path
-        messages, meta = self._snapshot_for_save()
-        return lambda: self.store.save(path, messages, meta=meta)
+        if not isinstance(self.store, JournalSnapshotStorePort):
+            messages, meta = self._snapshot_for_save()
+            return lambda: self.store.save(path, messages, meta=meta)
+
+        sequence = self._auto_save_sequence + 1
+        message_count = len(self.state.messages)
+        replace_from = min(self._auto_save_message_count, message_count)
+        if replace_from:
+            # The run loop can fold steering into the most recent persisted
+            # user message, so retain one-message overlap without re-copying
+            # the complete transcript.
+            replace_from -= 1
+        if self._auto_save_rewrite_from is not None:
+            replace_from = min(replace_from, self._auto_save_rewrite_from)
+        messages, meta = self._snapshot_for_save(replace_from)
+        current_seen_hashes = set(self.state.turn.seen_result_hashes)
+        seen_hashes_reset = not self._auto_save_seen_result_hashes.issubset(
+            current_seen_hashes
+        )
+        seen_hashes_added = sorted(
+            current_seen_hashes
+            if seen_hashes_reset
+            else current_seen_hashes - self._auto_save_seen_result_hashes
+        )
+        checkpoint_due = sequence >= self._next_auto_save_checkpoint
+        checkpoint_messages = (
+            copy.deepcopy(self.state.enriched_messages())
+            if checkpoint_due
+            else None
+        )
+
+        def persist_incrementally() -> None:
+            self.store.append_snapshot_delta(
+                path,
+                sequence=sequence,
+                replace_from=replace_from,
+                messages=messages,
+                meta=meta,
+                seen_result_hashes_reset=seen_hashes_reset,
+                seen_result_hashes_added=seen_hashes_added,
+            )
+            # The journal append is already fsync'd. Advance the absolute
+            # cursor before optional compaction so a failed base rewrite
+            # cannot cause the durable delta to be skipped on the next save.
+            self._auto_save_sequence = sequence
+            self._auto_save_message_count = message_count
+            self._auto_save_rewrite_from = None
+            self._auto_save_seen_result_hashes = current_seen_hashes
+            if checkpoint_messages is not None:
+                self.store.checkpoint_snapshot(
+                    path,
+                    checkpoint_messages,
+                    meta=meta,
+                    sequence=sequence,
+                )
+                self._next_auto_save_checkpoint *= 2
+
+        return persist_incrementally
 
     def enqueue_auto_save(self) -> asyncio.Task[None] | None:
         if self._auto_save_subscriber is None:
