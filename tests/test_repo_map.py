@@ -80,6 +80,20 @@ def test_build_repo_map_caps_total_chars(tmp_path):
     assert len(result) < 800
 
 
+def test_build_repo_map_truncates_only_at_complete_lines(tmp_path):
+    names = {f"module_with_a_long_name_{index:03}.py" for index in range(40)}
+    for name in names:
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    result = build_repo_map(str(tmp_path), max_chars=300)
+
+    for line in result.splitlines()[2:]:
+        entry = line.strip()
+        if not entry or "truncated" in entry:
+            continue
+        assert entry in names or entry.startswith("... (")
+
+
 def test_build_repo_map_caps_entries_per_dir(tmp_path):
     for i in range(40):
         (tmp_path / f"f{i:02}.py").write_text("")
