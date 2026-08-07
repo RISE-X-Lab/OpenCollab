@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import inspect
+import math
 import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
@@ -461,6 +462,11 @@ class Session:
         if self.state.phase is SessionPhase.AWAITING_EVENTS and self.state.pending_events.is_empty():
             self.state.set_phase(SessionPhase.IDLE)
             self._append_restore_results_for_open_tool_calls()
+        self.state.pending_step_latency = (
+            _snapshot_nonnegative_float(raw_state.get("pending_step_latency"))
+            if self.state.phase is SessionPhase.AWAITING_EVENTS
+            else None
+        )
         self.state.terminal_reason = (
             str(raw_state["terminal_reason"])
             if self.state.phase.is_terminal()
@@ -591,6 +597,7 @@ class Session:
                     self.state.pending_external_user_turn
                 ),
                 "active_turn_start_message_index": self.state.active_turn_start_message_index,
+                "pending_step_latency": self.state.pending_step_latency,
             },
         }
         if self.state.pending_user_messages:
@@ -738,6 +745,16 @@ def _snapshot_nonnegative_int(value: object) -> int:
         return max(0, int(value))
     except (TypeError, ValueError, OverflowError):
         return 0
+
+
+def _snapshot_nonnegative_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) and parsed >= 0 else None
 
 
 def _snapshot_int(value: object, *, default: int) -> int:

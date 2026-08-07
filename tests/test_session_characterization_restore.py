@@ -207,6 +207,7 @@ def test_restore_converts_orphaned_deferred_child_to_failed_tool_result(tmp_path
     agent = FakeAgent()
     session = Session(agent=agent, llm=FakeLLMClient())
     session.phase = SessionPhase.AWAITING_EVENTS
+    session.state.pending_step_latency = 0.125
     session.state.pending_events.add(
         PendingRow(
             tool_call_id="child-1",
@@ -223,6 +224,7 @@ def test_restore_converts_orphaned_deferred_child_to_failed_tool_result(tmp_path
 
     row = loaded.state.pending_events.rows["child-1"]
     assert loaded.phase is SessionPhase.AWAITING_EVENTS
+    assert loaded.state.pending_step_latency == 0.125
     assert row.status is RowStatus.FAILED
     assert "interrupted by session restore" in (row.result or "")
     assert loaded.state.pending_events.is_complete()
