@@ -427,3 +427,73 @@ def test_completed_deferred_delivery_releases_commit_marker():
         assert scheduler.table.get(0).result == "received: child result"
 
     run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected_phase"),
+    [
+        ("done", SessionPhase.DONE),
+        ("error", SessionPhase.ERROR),
+        ("stopped", SessionPhase.STOPPED),
+        ("cancelled", SessionPhase.STOPPED),
+    ],
+)
+def test_fire_and_forget_terminal_refreshes_team_manifest(outcome, expected_phase):
+    started = asyncio.Event()
+    never_release = asyncio.Event()
+
+    async def child_step(sess: ScriptedSession) -> str:
+        if outcome == "cancelled":
+            started.set()
+            await never_release.wait()
+        elif outcome == "error":
+            sess.state.fail("provider failed")
+        elif outcome == "stopped":
+            sess.state.cancel("budget stopped")
+        else:
+            sess.state.set_phase(SessionPhase.DONE)
+        return "child result"
+
+    lead = ScriptedSession("lead", [])
+    child = ScriptedSession("coder", [child_step])
+    scheduler, _ = build_scheduler(lead, [child])
+    snapshots = []
+
+    def prepare_manifest():
+        payload = scheduler.team_snapshot()
+        return lambda: snapshots.append(payload)
+
+    scheduler.set_manifest_writer(lambda: None, prepare_fn=prepare_manifest)
+
+    async def scenario():
+        aid = await scheduler.spawn(0, "coder", f"{outcome} child")
+        driver = scheduler._tasks[aid]
+        if outcome == "cancelled":
+            await started.wait()
+            driver.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await driver
+        else:
+            await driver
+        assert scheduler._manifest_subscriber is not None
+        await asyncio.gather(
+            *scheduler._manifest_subscriber.pending_tasks,
+            return_exceptions=True,
+        )
+        return aid
+
+    aid = run(scenario())
+    child_rows = [
+        row
+        for row in snapshots[-1]
+        if row["aid"] == aid
+    ]
+    assert child_rows == [
+        {
+            "aid": aid,
+            "role": "coder",
+            "parent_aid": 0,
+            "phase": expected_phase.value,
+            "busy": False,
+        }
+    ]
