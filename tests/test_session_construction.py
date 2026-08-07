@@ -177,7 +177,7 @@ def test_session_snapshot_returns_independent_session_without_autosave(tmp_path)
 
 
 def test_session_snapshot_preserves_queued_external_turn():
-    session = _new_session()
+    session = _new_session(env=_ForkableEnvironment())
     run(session.add_user_message("resume this request"))
 
     snap = snapshot_session(session)
