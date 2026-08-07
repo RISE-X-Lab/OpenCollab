@@ -15,6 +15,7 @@ helpers defined on ``Scheduler``.
 from __future__ import annotations
 
 import asyncio
+import uuid
 import xml.etree.ElementTree as ET
 from typing import Any
 from xml.sax.saxutils import escape, quoteattr
@@ -61,7 +62,13 @@ class MessagingMixin:
         async with lock:
             if self._shutting_down:
                 return "Error: scheduler is shutting down."
-            xml = self._format_teammate_message(from_aid, summary, content)
+            message_id = uuid.uuid4().hex
+            xml = self._format_teammate_message(
+                from_aid,
+                summary,
+                content,
+                message_id=message_id,
+            )
             message_bytes = self._encoded_size(xml)
             if message_bytes > MAX_TEAMMATE_MESSAGE_BYTES:
                 return (
@@ -84,6 +91,7 @@ class MessagingMixin:
                     "from_aid": from_aid,
                     "to_aid": to_aid,
                     "summary": summary,
+                    "message_id": message_id,
                 }
             )
             sent_at = str(target.state.pending_user_messages[-1]["timestamp"])
@@ -94,6 +102,7 @@ class MessagingMixin:
                 content=content,
                 xml=xml,
                 sent_at=sent_at,
+                message_id=message_id,
             )
             inbox.append(message)
             self._message_inbox[to_aid] = inbox
@@ -148,11 +157,18 @@ class MessagingMixin:
         pending = getattr(state, "pending_user_messages", None)
         if not isinstance(pending, list) or not pending:
             return
+        committed_ids = self._message_ids_in_history(state)
         restored: list[QueuedTeammateMessage] = []
-        for item in pending:
+        for item in list(pending):
             if not isinstance(item, dict) or not item.get("content"):
                 continue
             xml = str(item["content"])
+            message_id = str(item.get("message_id") or self._message_id_from_xml(xml) or "")
+            if message_id and message_id in committed_ids:
+                state.discard_pending_user_message_id(message_id)
+                continue
+            if message_id and not item.get("message_id"):
+                item["message_id"] = message_id
             restored.append(
                 QueuedTeammateMessage(
                     from_aid=self._restored_aid(item.get("from_aid"), default=-1),
@@ -164,6 +180,7 @@ class MessagingMixin:
                     ),
                     xml=xml,
                     sent_at=str(item.get("timestamp") or ""),
+                    message_id=message_id,
                 )
             )
         if restored:
@@ -188,11 +205,44 @@ class MessagingMixin:
         return content
 
     @staticmethod
-    def _format_teammate_message(from_aid: int, summary: str, content: str) -> str:
+    def _message_id_from_xml(xml: str) -> str | None:
+        try:
+            return ET.fromstring(xml).attrib.get("message_id")
+        except ET.ParseError:
+            return None
+
+    @staticmethod
+    def _message_ids_in_history(state: object) -> set[str]:
+        message_ids: set[str] = set()
+        for message in getattr(state, "messages", ()):
+            if not isinstance(message, dict) or message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str):
+                continue
+            try:
+                root = ET.fromstring(content)
+            except ET.ParseError:
+                continue
+            for element in root.iter():
+                message_id = element.attrib.get("message_id")
+                if message_id:
+                    message_ids.add(message_id)
+        return message_ids
+
+    @staticmethod
+    def _format_teammate_message(
+        from_aid: int,
+        summary: str,
+        content: str,
+        *,
+        message_id: str = "",
+    ) -> str:
         sender = f"A{from_aid}"
+        message_id_attr = f" message_id={quoteattr(message_id)}" if message_id else ""
         return (
             f"<teammate-message teammate_id={quoteattr(sender)} "
-            f"summary={quoteattr(summary)}>\n"
+            f"summary={quoteattr(summary)}{message_id_attr}>\n"
             f"{escape(content)}\n"
             "</teammate-message>"
         )
@@ -205,7 +255,8 @@ class MessagingMixin:
             envelopes.append(
                 f"<teammate-message teammate_id={quoteattr(sender)} "
                 f"summary={quoteattr(message.summary)} "
-                f"sent_at={quoteattr(message.sent_at)}>\n"
+                f"sent_at={quoteattr(message.sent_at)}"
+                f"{f' message_id={quoteattr(message.message_id)}' if message.message_id else ''}>\n"
                 f"{escape(message.content)}\n"
                 "</teammate-message>"
             )
@@ -293,9 +344,15 @@ class MessagingMixin:
         )
         await self._append_user_turn_txn(aid, session, delivery, prior_lease)
 
+        # Commit the durable dequeue immediately after the history append. A
+        # shutdown may stop the follow-on driver, but it must never leave the
+        # already-appended message in a sidecar that restore would re-deliver.
         del inbox[: len(messages)]
         for message in messages:
-            session.state.discard_pending_user_message(message.xml)
+            if message.message_id:
+                session.state.discard_pending_user_message_id(message.message_id)
+            else:
+                session.state.discard_pending_user_message(message.xml)
         self._autosave_session(aid)
 
         if self._shutting_down:
