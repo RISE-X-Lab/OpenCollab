@@ -95,10 +95,10 @@ class GitDiffTool(Tool):
         diff_cmd = "git --no-pager diff"
         if staged:
             diff_cmd += " --cached"
+        else:
+            diff_cmd += " HEAD"
         if stat_only:
             diff_cmd += " --stat"
-        else:
-            diff_cmd += " HEAD" if not staged else ""
         diff_cmd += pathspec
 
         diff_result = await env.exec_cmd(diff_cmd, timeout=30)

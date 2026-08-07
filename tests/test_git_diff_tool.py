@@ -52,6 +52,16 @@ def test_git_diff_stat_only_summarizes_without_raw_patch(repo):
     assert "-    return 1" not in result
 
 
+def test_git_diff_stat_only_uses_same_head_baseline_for_staged_changes(repo):
+    _git(repo, "add", "app.py")
+
+    result = run(GitDiffTool().execute_with_runtime({"stat_only": True}, _runtime(repo)))
+
+    assert "diff --stat:" in result
+    assert "app.py" in result
+    assert "1 file changed" in result
+
+
 def test_git_diff_path_filter_can_skip_status(repo):
     (repo / "other.py").write_text("x = 1\n", encoding="utf-8")
 
