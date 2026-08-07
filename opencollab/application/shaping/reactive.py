@@ -299,4 +299,9 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
             ),
             "compacted": True,
         }
-        return [*messages[:start], marker, *messages[end:]]
+        candidate = [*messages[:start], marker, *messages[end:]]
+        before = self._estimate(messages)
+        after = self._estimate(candidate)
+        if after >= before or after > self.target_tokens:
+            return messages
+        return candidate
