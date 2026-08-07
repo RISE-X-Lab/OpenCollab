@@ -292,8 +292,10 @@ class LifecycleMixin:
         # later writer that can overwrite the already-filled parent row.
         if not self._shutting_down:
             self._delivery_committed.discard(aid)
-            scb = self.table.get(aid)
-            if scb is not None and scb.state.phase.is_terminal():
+        scb = self.table.get(aid)
+        if scb is not None and scb.state.phase.is_terminal():
+            self._turn_started_at.pop(aid, None)
+            if not self._shutting_down:
                 self._write_manifest()
         try:
             task.result()
@@ -317,7 +319,7 @@ class LifecycleMixin:
         if scb is None:
             return
 
-        start = time.monotonic()
+        start = self._turn_started_at.setdefault(aid, time.monotonic())
 
         try:
             result = await session.run_loop()

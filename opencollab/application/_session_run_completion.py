@@ -109,13 +109,18 @@ class _SessionRunCompletionMixin:
     async def autosave_pending_step(self) -> None:
         """Emit step_end (the autosave trigger) and loop back to PRECHECK."""
         pending = self._pending
-        latency = pending.latency if pending is not None else 0.0
+        latency = (
+            pending.latency
+            if pending is not None
+            else (self.state.pending_step_latency or 0.0)
+        )
         await self.finish_step(latency)
         self.clear_pending_step()
         self.state.transition_to(SessionPhase.PRECHECK)
 
     def clear_pending_step(self) -> None:
         self._pending = None
+        self.state.pending_step_latency = None
 
     def build_tool_schemas(self) -> list[dict] | None:
         return self.agent.tool_schemas() or None

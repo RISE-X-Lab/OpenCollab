@@ -130,6 +130,9 @@ class Scheduler(
 
         self.table = SessionTable()
         self._tasks: dict[int, asyncio.Task] = {}
+        # Monotonic start of the current agent turn. A deferred suspend keeps
+        # this entry so terminal latency includes child wait and resume work.
+        self._turn_started_at: dict[int, float] = {}
         # ``spawn`` owns resources before the child driver exists. Track that
         # pre-driver window separately so cleanup can cancel/abort/finalize an
         # external spawn blocked in worktree setup or lifecycle event delivery.

@@ -89,7 +89,7 @@ PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
     SessionPhase.EXECUTING_TOOLS: frozenset(
         {SessionPhase.AUTOSAVING, SessionPhase.AWAITING_EVENTS}
     ),
-    SessionPhase.AWAITING_EVENTS: frozenset({SessionPhase.PRECHECK}),
+    SessionPhase.AWAITING_EVENTS: frozenset({SessionPhase.AUTOSAVING}),
     SessionPhase.AUTOSAVING: frozenset({SessionPhase.PRECHECK}),
     # Terminal phases resume back to IDLE for a fresh user turn or a re-run.
     SessionPhase.DONE: frozenset({SessionPhase.IDLE}),
@@ -167,6 +167,7 @@ class _UserTurnCheckpoint:
     phase: SessionPhase
     terminal_reason: str | None
     pending_external_user_turn: dict[str, Any] | None
+    pending_step_latency: float | None
     # The per-turn enforcement window, snapshotted and rolled back as one unit.
     turn: TurnEnforcementState
     wind_down_done: bool
@@ -233,6 +234,9 @@ class SessionState:
     # began. It is retained only while a deferred turn is suspended so a
     # restored runner can keep answer lookup within that turn.
     active_turn_start_message_index: int | None = None
+    # Elapsed provider/tool time for a deferred step whose process-local
+    # PendingStep response was released while waiting for child results.
+    pending_step_latency: float | None = None
 
     def __post_init__(self) -> None:
         self._align_timestamps()
@@ -302,6 +306,7 @@ class SessionState:
     def clear_active_turn(self) -> None:
         """Discard a turn boundary once that turn reaches a terminal phase."""
         self.active_turn_start_message_index = None
+        self.pending_step_latency = None
 
     @property
     def is_done(self) -> bool:
@@ -411,6 +416,7 @@ class SessionState:
             phase=self.phase,
             terminal_reason=self.terminal_reason,
             pending_external_user_turn=copy.deepcopy(self.pending_external_user_turn),
+            pending_step_latency=self.pending_step_latency,
             # Deep-copy the whole per-turn window as one pristine, reusable unit.
             turn=copy.deepcopy(self.turn),
             wind_down_done=self.wind_down_done,
@@ -427,6 +433,7 @@ class SessionState:
         self.pending_external_user_turn = copy.deepcopy(
             checkpoint.pending_external_user_turn
         )
+        self.pending_step_latency = checkpoint.pending_step_latency
         # A fresh copy each restore, so the checkpoint stays reusable.
         self.turn = copy.deepcopy(checkpoint.turn)
         self.wind_down_done = checkpoint.wind_down_done
@@ -448,6 +455,7 @@ class SessionState:
         self.wind_down_done = False
         self.wind_down_attempts = 0
         self.wind_down_token_mark = 0
+        self.pending_step_latency = None
 
     def record_evidence_signal(
         self,

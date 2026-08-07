@@ -10,6 +10,7 @@ from session_run_loop_test_support import (
     FakeLLM,
     FakeToolExecutionDeferred,
     build_runner,
+    collect_events,
     llm_response,
     run,
     tool_call,
@@ -209,6 +210,58 @@ def test_deferred_spawn_suspends_then_resumes_after_fill():
     # The resumed LLM call saw the child result as a proper tool result.
     second_call_msgs = llm.calls[1]["messages"]
     assert {"role": "tool", "tool_call_id": "s1", "content": "child result"} in second_call_msgs
+
+
+def test_deferred_step_emits_original_nonzero_latency_once_after_resume():
+    class DelayedSequenceLLM(FakeLLM):
+        async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+            await asyncio.sleep(0.01)
+            return await super().complete(
+                messages,
+                tools=tools,
+                temperature=temperature,
+                **kwargs,
+            )
+
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    llm = DelayedSequenceLLM(
+        [
+            llm_response(
+                content="spawning",
+                tool_calls=[
+                    tool_call(
+                        call_id="s1",
+                        name="spawn_agent",
+                        arguments="{}",
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            llm_response(content="done after child", total_tokens=4),
+        ]
+    )
+    events, bus = collect_events()
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        event_bus=bus,
+        tool_execution=FakeToolExecutionDeferred(
+            deferred_outcomes={"s1": (7, None)}
+        ),
+    )
+
+    assert run(runner.run_loop()) == "spawning"
+    state.pending_events.fill("s1", result="child result")
+    assert run(runner.run_loop()) == "done after child"
+
+    first_step_ends = [
+        data
+        for event_type, data in events
+        if event_type == "step_end" and data["step"] == 1
+    ]
+    assert len(first_step_ends) == 1
+    assert first_step_ends[0]["latency"] >= 0.008
+
 
 def test_deferred_row_exists_before_fast_child_can_complete():
     state = SessionState(messages=[{"role": "system", "content": "sys"}])
