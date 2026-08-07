@@ -142,7 +142,7 @@ async def test_agent_runtime_returns_quiescent_execution_failure(monkeypatch) ->
     assert result.environment_quiesced is None
 
 
-async def test_agent_runtime_timeout_revokes_aborts_and_quiesces(monkeypatch) -> None:
+async def test_agent_runtime_timeout_leaves_caller_environment_active(monkeypatch) -> None:
     session = Session(outcome="block")
     _patch_session(monkeypatch, session)
     environment = Environment()
@@ -158,8 +158,8 @@ async def test_agent_runtime_timeout_revokes_aborts_and_quiesces(monkeypatch) ->
     )
     assert result.outcome == "timed_out"
     assert result.cleanup_quiesced
-    assert environment.revoked
-    assert environment.abort_calls == 1
+    assert not environment.revoked
+    assert environment.abort_calls == 0
 
 
 async def test_agent_runtime_timeout_fails_when_abort_fails(monkeypatch) -> None:
@@ -175,6 +175,7 @@ async def test_agent_runtime_timeout_fails_when_abort_fails(monkeypatch) -> None
             timeout_seconds=0.01,
             cleanup_timeout_seconds=0.1,
             transcript_path=None,
+            cleanup_environment=True,
         )
 
 
@@ -192,11 +193,12 @@ async def test_agent_runtime_timeout_still_aborts_when_revoke_fails(monkeypatch)
             timeout_seconds=0.01,
             cleanup_timeout_seconds=0.1,
             transcript_path=None,
+            cleanup_environment=True,
         )
     assert environment.abort_calls == 1
 
 
-async def test_agent_runtime_caller_cancellation_still_aborts(monkeypatch) -> None:
+async def test_agent_runtime_caller_cancellation_leaves_caller_environment_active(monkeypatch) -> None:
     session = Session(outcome="block")
     _patch_session(monkeypatch, session)
     environment = Environment()
@@ -216,8 +218,8 @@ async def test_agent_runtime_caller_cancellation_still_aborts(monkeypatch) -> No
     owner.cancel()
     with pytest.raises(asyncio.CancelledError):
         await owner
-    assert environment.revoked
-    assert environment.abort_calls == 1
+    assert not environment.revoked
+    assert environment.abort_calls == 0
 
 
 async def test_agent_runtime_double_cancellation_finishes_abort_and_save(monkeypatch) -> None:
@@ -234,6 +236,7 @@ async def test_agent_runtime_double_cancellation_finishes_abort_and_save(monkeyp
             timeout_seconds=None,
             cleanup_timeout_seconds=0.1,
             transcript_path=None,
+            cleanup_environment=True,
         )
     )
     await session.started.wait()
