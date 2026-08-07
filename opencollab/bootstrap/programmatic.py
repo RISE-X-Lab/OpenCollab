@@ -27,6 +27,7 @@ from opencollab.adapters.safe_files import (
     ensure_directory_no_symlinks,
     read_regular_text,
 )
+from opencollab.adapters.storage import SessionStore
 from opencollab.adapters.trace import Tracer
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
@@ -220,6 +221,30 @@ def _require_json_object(path: Path, description: str) -> dict[str, Any]:
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ProgrammaticLifecycleError(f"{description} is incomplete: {path}") from exc
     return value
+
+
+def _settle_programmatic_workflow_manifest(
+    artifacts: Path | None,
+    *,
+    cleanup_succeeded: bool,
+) -> BaseException | None:
+    """Promote or downgrade the manifest after the outer environment owner."""
+    if artifacts is None:
+        return None
+    path = artifacts / "workflow.json"
+    try:
+        manifest = _require_json_object(path, "workflow manifest")
+        if cleanup_succeeded:
+            manifest["evidence_complete"] = True
+        else:
+            manifest["status"] = "failed"
+            manifest["reason"] = "environment_cleanup_failed"
+            manifest["failure_type"] = "ProgrammaticLifecycleError"
+            manifest["evidence_complete"] = False
+        SessionStore().save_manifest(path, manifest)
+    except BaseException as exc:
+        return exc
+    return None
 
 
 def _require_agent_evidence(
@@ -479,6 +504,9 @@ async def run_workflow(
                 system_prompt=system_prompt or WORKFLOW_AGENT_PROMPT,
                 return_details=True,
                 cleanup_environment=owned_environment,
+                defer_manifest_completion=(
+                    owned_environment and artifacts is not None
+                ),
             )
         except WorkflowDeadlineExceeded as exc:
             bootstrap_stopped_environment = True
@@ -509,13 +537,34 @@ async def run_workflow(
                 propagate_cancellation=True,
             )
             if not cleaned:
-                raise ProgrammaticLifecycleError(
+                manifest_failure = _settle_programmatic_workflow_manifest(
+                    artifacts,
+                    cleanup_succeeded=False,
+                )
+                failure = ProgrammaticLifecycleError(
                     "workflow-owned environment cleanup failed"
                 )
+                if manifest_failure is not None:
+                    add_exception_note(
+                        failure,
+                        "workflow manifest downgrade also failed: "
+                        f"{type(manifest_failure).__name__}: {manifest_failure}",
+                    )
+                    raise failure from manifest_failure
+                raise failure
             environment_cleanup_quiesced = True
             environment_quiesced = True
 
     _verify_artifact_claim(artifacts)
+    if owned_environment and artifacts is not None:
+        manifest_failure = _settle_programmatic_workflow_manifest(
+            artifacts,
+            cleanup_succeeded=True,
+        )
+        if manifest_failure is not None:
+            raise ProgrammaticLifecycleError(
+                "workflow manifest finalization failed"
+            ) from manifest_failure
     if stopped_error is not None:
         details = stopped_error.result
         metrics = _workflow_metrics(
