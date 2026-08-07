@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 
 import pytest
 
@@ -87,7 +88,7 @@ def test_session_surfaces_autosave_persistence_error():
     assert session.persistence_errors == (error,)
 
 
-def test_autosave_queues_frozen_operations_in_order():
+def test_autosave_coalesces_generations_not_yet_started():
     current = {"value": "first"}
     saved: list[str] = []
 
@@ -105,26 +106,62 @@ def test_autosave_queues_frozen_operations_in_order():
         await asyncio.gather(first, second)
 
     asyncio.run(scenario())
-    assert saved == ["first", "second"]
+    assert saved == ["second"]
     assert subscriber.pending_tasks == ()
 
 
-def test_cancelling_emit_keeps_submitted_save_owned():
+def test_autosave_coalesces_pending_generations_without_blocking_emit():
+    current = {"value": ""}
+    saved: list[str] = []
+
+    def prepare():
+        frozen = current["value"]
+
+        def save():
+            time.sleep(0.02)
+            saved.append(frozen)
+
+        return save
+
+    subscriber = AutoSaveSubscriber(lambda: None, prepare_fn=prepare)
+
+    async def scenario():
+        started = time.monotonic()
+        for index in range(10):
+            current["value"] = str(index)
+            await subscriber.emit(SessionEvent(type="step_end"))
+        emit_elapsed = time.monotonic() - started
+        await asyncio.gather(*subscriber.pending_tasks)
+        return emit_elapsed
+
+    elapsed = asyncio.run(scenario())
+
+    assert elapsed < 0.05
+    assert saved == ["0", "9"]
+
+
+def test_cancelling_owned_worker_finishes_submitted_save():
     prepared = asyncio.Event()
     saved: list[str] = []
 
     def prepare():
         prepared.set()
-        return lambda: saved.append("saved")
+
+        def save():
+            time.sleep(0.02)
+            saved.append("saved")
+
+        return save
 
     subscriber = AutoSaveSubscriber(lambda: None, prepare_fn=prepare)
 
     async def scenario():
-        emit = asyncio.create_task(subscriber.emit(SessionEvent(type="step_end")))
+        owner = subscriber.enqueue()
+        assert owner is not None
         await prepared.wait()
-        emit.cancel()
+        owner.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await emit
+            await owner
         pending = subscriber.pending_tasks
         if pending:
             await pending[0]

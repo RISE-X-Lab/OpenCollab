@@ -269,18 +269,14 @@ async def test_workflow_cleanup_marks_cancelled_blocking_autosave_nonquiescent()
     second_waiter = asyncio.create_task(
         event_bus.emit(SessionRuntimeEvent(type="step_end"))
     )
-    while len(subscriber.pending_tasks) < 2:
-        await asyncio.sleep(0)
-    first_waiter.cancel()
-    second_waiter.cancel()
     waiter_results = await asyncio.gather(
         first_waiter,
         second_waiter,
         return_exceptions=True,
     )
-    assert all(isinstance(result, asyncio.CancelledError) for result in waiter_results)
+    assert waiter_results == [None, None]
     owners = subscriber.pending_tasks
-    assert len(owners) == 2
+    assert len(owners) == 1
     assert event_bus.pending_tasks == owners
 
     cleanup = asyncio.create_task(
@@ -322,7 +318,9 @@ async def test_workflow_cleanup_reports_completed_autosave_failure():
     event_bus = EventBus(subscriber)
 
     class SessionWithFailedAutosave:
-        pending_cleanup_tasks = ()
+        @property
+        def pending_cleanup_tasks(self):
+            return event_bus.pending_tasks
 
         @property
         def persistence_errors(self):
