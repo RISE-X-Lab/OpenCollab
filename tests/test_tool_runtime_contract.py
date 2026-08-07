@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 from tool_execution_test_support import AlwaysAllowPermissionPolicy as FakePermissionPolicy
-from tool_runtime_test_support import FakeEnv, SpySafetyPolicy, run
+from tool_runtime_test_support import FakeEnv, FalseyFakeEnv, SpySafetyPolicy, run
 
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.tools import human
@@ -79,6 +79,16 @@ def test_bash_tool_without_env_returns_existing_error():
     result = run(BashTool().execute_with_runtime({"command": "pwd"}, runtime))
 
     assert result == "Error: no execution environment available."
+
+
+def test_bash_tool_accepts_falsey_environment():
+    env = FalseyFakeEnv(stdout="ok\n")
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(BashTool().execute_with_runtime({"command": "echo ok"}, runtime))
+
+    assert env.exec_calls == [("echo ok", 120.0)]
+    assert "stdout:\nok" in result
 
 
 def test_bash_tool_passes_permission_confirm_fn_to_safety_check():
