@@ -177,6 +177,21 @@ def test_build_repo_map_reserves_root_budget_for_project_files(tmp_path):
     assert "directory-00/" in result
 
 
+def test_build_repo_map_balances_root_directories_and_other_files(tmp_path):
+    for index in range(31):
+        (tmp_path / f"directory-{index:02}").mkdir()
+    for name in ("AGENTS.md", "Makefile", "requirements.txt", "uv.lock"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    result = build_repo_map(str(tmp_path))
+
+    for name in ("AGENTS.md", "Makefile", "requirements.txt", "uv.lock"):
+        assert name in result
+    assert "directory-00/" in result
+    assert "directories" in result
+    assert "files omitted" in result
+
+
 def test_build_repo_map_missing_or_empty_workspace_returns_empty(tmp_path):
     assert build_repo_map(str(tmp_path / "nope")) == ""
     empty = tmp_path / "empty"
@@ -194,11 +209,15 @@ class _FakeEnv:
         returncode: int = 0,
         raises: bool = False,
         stderr: str = "",
+        stdout_truncated: bool = False,
+        stderr_truncated: bool = False,
     ):
         self._result = ExecResult(
             returncode=returncode,
             stdout=stdout,
             stderr=stderr,
+            stdout_truncated=stdout_truncated,
+            stderr_truncated=stderr_truncated,
         )
         self._raises = raises
         self.cmds: list[str] = []
@@ -249,6 +268,15 @@ def test_build_repo_map_via_env_rejects_find_diagnostics():
     env = _FakeEnv(
         stdout="./visible.py\n",
         stderr="find: unreadable directory",
+    )
+
+    assert run(build_repo_map_via_env(env)) == ""
+
+
+def test_build_repo_map_via_env_rejects_truncated_traversal_output():
+    env = _FakeEnv(
+        stdout="./visible.py\n",
+        stdout_truncated=True,
     )
 
     assert run(build_repo_map_via_env(env)) == ""
