@@ -768,6 +768,45 @@ def test_spawn_with_review_returns_artifact_when_reviewer_spawn_fails(monkeypatc
     assert review_events == ["review_started", "review_completed"]
 
 
+@pytest.mark.parametrize("failure_mode", ["wait", "terminal"])
+def test_spawn_with_review_retains_prior_artifact_when_next_coder_is_empty(
+    monkeypatch,
+    failure_mode,
+):
+    scheduler, _ = _build_scheduler(
+        monkeypatch,
+        {
+            "coder": ["best first implementation", ""],
+            "reviewer": ["Needs another fix.\nVERDICT: FAIL"],
+        },
+    )
+    real_wait = scheduler.wait_until_terminal
+    coder_waits = 0
+
+    async def fail_empty_second_coder(aid):
+        nonlocal coder_waits
+        scb = scheduler.table.get(aid)
+        is_coder = scb is not None and scb.agent.name == "coder"
+        if is_coder:
+            coder_waits += 1
+        await real_wait(aid)
+        if not is_coder or coder_waits != 2:
+            return
+        assert scb is not None
+        scb.result = ""
+        if failure_mode == "wait":
+            raise RuntimeError("second coder wait failed")
+        scb.state.fail("second coder terminal failed")
+
+    monkeypatch.setattr(scheduler, "wait_until_terminal", fail_empty_second_coder)
+
+    result = run(scheduler.spawn_with_review(0, "write fn", max_iterations=2))
+
+    assert f"Failure stage: coder_{failure_mode}" in result
+    assert "Last implementation:\nbest first implementation" in result
+    assert "Last reviewer feedback:\nNeeds another fix.\nVERDICT: FAIL" in result
+
+
 def test_spawn_with_review_passes_context_and_constraints_to_reviewer(monkeypatch):
     scheduler, _ = _build_scheduler(
         monkeypatch,
