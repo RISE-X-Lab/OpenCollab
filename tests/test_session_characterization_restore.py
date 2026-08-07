@@ -437,6 +437,55 @@ def test_session_accepts_explicit_store():
     assert fake_store.load_calls == [("fake-session.jsonl", agent.system_prompt)]
     assert loaded.messages == fake_store.loaded_messages
 
+
+def test_legacy_restore_resets_runtime_state_on_an_existing_session():
+    class LegacyStore:
+        def load_messages(self, _path, _system_prompt):
+            return [{"role": "system", "content": "restored system"}]
+
+        def save(self, *_args, **_kwargs):
+            return None
+
+        def save_manifest(self, *_args, **_kwargs):
+            return None
+
+    session = Session(agent=FakeAgent(), llm=FakeLLMClient(), store=LegacyStore())
+    session.used_tokens = 123
+    session.step_count = 7
+    session.state.set_context_tokens(45)
+    session.state.markup_recovered = 2
+    session.state.fail("stale provider failure")
+    session.state.pending_external_user_turn = {
+        "turn_id": "old-turn",
+        "status": "queued",
+        "content": "old request",
+        "message_index": 0,
+    }
+    session.state.pending_user_messages = [{"role": "user", "content": "old queued"}]
+    session.state.pending_events.add(
+        PendingRow(
+            tool_call_id="old-child",
+            kind=RowKind.CHILD_AGENT,
+            order=0,
+            ref=1,
+            status=RowStatus.PENDING,
+        )
+    )
+
+    session.restore("legacy.jsonl")
+
+    assert session.messages == [{"role": "system", "content": "restored system"}]
+    assert session.used_tokens == 0
+    assert session.step_count == 0
+    assert session.state.context_tokens == 0
+    assert session.state.markup_recovered == 0
+    assert session.phase is SessionPhase.IDLE
+    assert session.state.terminal_reason is None
+    assert session.state.pending_external_user_turn is None
+    assert session.state.pending_user_messages == []
+    assert session.state.pending_events.is_empty()
+
+
 def test_session_store_preserves_messages_only_jsonl_semantics(tmp_path):
     store = SessionStore()
     path = tmp_path / "stored.jsonl"
