@@ -279,6 +279,26 @@ async def test_git_worktree_rejects_dirty_source_snapshot(tmp_path) -> None:
     assert not _branch_exists(source, branch)
 
 
+async def test_git_worktree_preserves_nested_source_workspace(tmp_path) -> None:
+    source = _repo(tmp_path / "repo")
+    nested = source / "packages" / "worker"
+    nested.mkdir(parents=True)
+    (nested / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _git(source, "add", "packages/worker/module.py")
+    _git(source, "commit", "-qm", "add nested package")
+    env = WorktreeEnvironment(str(nested), branch_name="nested-source")
+
+    workspace = Path(await env.setup())
+
+    assert workspace.name == "worker"
+    assert (workspace / "module.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert not (workspace / "packages").exists()
+    await env.write_file("module.py", "VALUE = 2\n")
+    assert (nested / "module.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+    assert "packages/worker/module.py" in await env.get_diff()
+    await env.cleanup()
+
+
 async def test_git_worktree_rejects_truncated_patch_evidence(tmp_path) -> None:
     source = _repo(tmp_path / "repo")
     env = WorktreeEnvironment(str(source), branch_name="truncated-diff")
@@ -434,7 +454,9 @@ async def test_double_cancellation_cannot_interrupt_setup_cleanup(tmp_path, monk
     cleanup_release = asyncio.Event()
     cleanup_done = asyncio.Event()
 
-    async def fake_git(*_args, **_kwargs):
+    async def fake_git(*args, **_kwargs):
+        if args[-1:] == ("--show-toplevel",):
+            return ExecResult(0, str(source), "")
         return ExecResult(0, ".git\n", "")
 
     async def blocked_setup():
