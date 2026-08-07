@@ -293,13 +293,14 @@ class MessagingMixin:
         )
         await self._append_user_turn_txn(aid, session, delivery, prior_lease)
 
-        if self._shutting_down:
-            self._release_turn_lease(aid)
-            return []
         del inbox[: len(messages)]
         for message in messages:
             session.state.discard_pending_user_message(message.xml)
         self._autosave_session(aid)
+
+        if self._shutting_down:
+            self._release_turn_lease(aid)
+            return []
 
         self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
         return [
