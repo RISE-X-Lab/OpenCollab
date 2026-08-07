@@ -393,19 +393,23 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
             # Closed-loop steering signal: a successful read accumulates the
             # reads-without-write counter; a successful edit resets it (recorded on
             # the result; applied to state by ToolProcessingResult.apply_to).
-            if tool_name in _READ_TOOLS:
+            tool_succeeded = not tool_output.startswith(_TOOL_ERROR_PREFIXES)
+            if tool_name in _READ_TOOLS and tool_succeeded:
                 result.reads_executed += 1
-            elif tool_name in _WRITE_TOOLS and not tool_output.startswith(_TOOL_ERROR_PREFIXES):
+                result.read_write_signals.append("read")
+            elif tool_name in _WRITE_TOOLS and tool_succeeded:
                 result.write_succeeded = True
+                result.read_write_signals.append("write")
             elif (
                 tool_name == "bash"
                 and _bash_likely_mutates(args)
-                and not tool_output.startswith(_TOOL_ERROR_PREFIXES)
+                and tool_succeeded
             ):
                 # bash that writes to disk (sed -i, redirect, python RMW) lands a
                 # real edit the same as file_write/apply_patch — reuse the reset
                 # path so the reads-without-write counter zeroes (Bug B, OPTION 2).
                 result.write_succeeded = True
+                result.read_write_signals.append("write")
 
             # Information-gain sensor (STEP 1): record this result's novelty
             # signals for the caller to fold into SessionState's counters. The

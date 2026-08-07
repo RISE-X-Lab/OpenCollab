@@ -88,6 +88,10 @@ class ToolProcessingResult:
     # ``reads_since_last_edit``; otherwise the reads accumulate onto it.
     reads_executed: int = 0
     write_succeeded: bool = False
+    # Successful read/write signals in execution order. New producers populate
+    # this so a write resets only the reads that precede it; the aggregate fields
+    # above remain as a compatibility fallback for older/custom executors.
+    read_write_signals: list[str] = field(default_factory=list)
     # STEP 1 information-gain sensor: one ``(content_hash, call_hash,
     # intrinsic_low_yield)`` tuple per EXECUTED tool result, in call order. Folded
     # into SessionState's novelty counters by ``apply_evidence_counter_to``.
@@ -119,6 +123,13 @@ class ToolProcessingResult:
         edit adds its read calls so the steering layer can escalate when the
         model keeps reading without writing.
         """
+        if self.read_write_signals:
+            for signal in self.read_write_signals:
+                if signal == "write":
+                    state.turn.reads_since_last_edit = 0
+                elif signal == "read":
+                    state.turn.reads_since_last_edit += 1
+            return
         if self.write_succeeded:
             state.turn.reads_since_last_edit = 0
         else:
