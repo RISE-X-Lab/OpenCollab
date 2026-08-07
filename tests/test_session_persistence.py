@@ -75,6 +75,108 @@ def test_store_loads_legacy_jsonl_and_empty_fallback(tmp_path) -> None:
     ]
 
 
+def test_store_replays_durable_journal_and_ignores_partial_tail(tmp_path) -> None:
+    path = tmp_path / "session.json"
+    journal = tmp_path / "session.json.journal"
+    store = SessionStore()
+    base = [
+        {"role": "system", "content": "sys"},
+        {"role": "assistant", "content": "step 1"},
+    ]
+    store.checkpoint_snapshot(
+        str(path),
+        base,
+        meta={"session_state": {"step_count": 1}},
+        sequence=1,
+    )
+    store.append_snapshot_delta(
+        str(path),
+        sequence=2,
+        replace_from=2,
+        messages=[{"role": "assistant", "content": "step 2"}],
+        meta={"session_state": {"step_count": 2}},
+    )
+    with journal.open("ab") as handle:
+        handle.write(b'{"journal_version":1,"sequence":3')
+
+    restored = store.load_snapshot(str(path), "fallback")
+
+    assert restored["session_state"]["step_count"] == 2
+    assert [message["content"] for message in restored["messages"]] == [
+        "sys",
+        "step 1",
+        "step 2",
+    ]
+
+    store.append_snapshot_delta(
+        str(path),
+        sequence=3,
+        replace_from=3,
+        messages=[{"role": "assistant", "content": "step 3"}],
+        meta={"session_state": {"step_count": 3}},
+    )
+    resumed = store.load_snapshot(str(path), "fallback")
+    assert resumed["session_state"]["step_count"] == 3
+    assert resumed["messages"][-1]["content"] == "step 3"
+
+
+def test_store_replay_ignores_journal_records_covered_by_atomic_base(tmp_path) -> None:
+    path = tmp_path / "session.json"
+    store = SessionStore()
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "assistant", "content": "step 1"},
+        {"role": "assistant", "content": "step 2"},
+    ]
+    store.checkpoint_snapshot(
+        str(path),
+        messages,
+        meta={"session_state": {"step_count": 2}},
+        sequence=2,
+    )
+    # Models a crash after the base rename but before journal compaction:
+    # the covered absolute record must not duplicate its message suffix.
+    store.append_snapshot_delta(
+        str(path),
+        sequence=2,
+        replace_from=2,
+        messages=[messages[-1]],
+        meta={"session_state": {"step_count": 2}},
+    )
+    store.append_snapshot_delta(
+        str(path),
+        sequence=3,
+        replace_from=3,
+        messages=[{"role": "assistant", "content": "step 3"}],
+        meta={"session_state": {"step_count": 3}},
+    )
+
+    restored = store.load_snapshot(str(path), "fallback")
+
+    assert restored["session_state"]["step_count"] == 3
+    assert [message["content"] for message in restored["messages"]] == [
+        "sys",
+        "step 1",
+        "step 2",
+        "step 3",
+    ]
+
+
+def test_store_rejects_complete_invalid_journal_record(tmp_path) -> None:
+    path = tmp_path / "session.json"
+    store = SessionStore()
+    store.checkpoint_snapshot(
+        str(path),
+        [{"role": "system", "content": "sys"}],
+        meta={},
+        sequence=0,
+    )
+    (tmp_path / "session.json.journal").write_text("not-json\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="journal record at line 1"):
+        store.load_snapshot(str(path), "fallback")
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
 def test_store_rejects_fifo_without_blocking(tmp_path) -> None:
     path = tmp_path / "snapshot.fifo"

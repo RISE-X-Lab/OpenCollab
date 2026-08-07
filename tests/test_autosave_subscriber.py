@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 
@@ -12,9 +13,11 @@ import pytest
 # added to sys.path by pytest's rootdir discovery).
 from test_session_characterization import FakeAgent, FakeLLMClient
 
+from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
 from opencollab.bootstrap import build_session as Session
+from opencollab.bootstrap import load_session
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 
 
@@ -140,65 +143,86 @@ def test_autosave_coalesces_pending_generations_without_blocking_emit():
     assert saved == ["0", "9"]
 
 
-def test_autosave_bounds_checkpoint_growth_and_flushes_latest(monkeypatch):
-    current = {"generation": 0}
-    saved_sizes: list[int] = []
+class _CountingSessionStore(SessionStore):
+    def __init__(self):
+        self.persisted_bytes = 0
 
-    async def immediate_to_thread(function, *args, **kwargs):
-        return function(*args, **kwargs)
+    def _atomic_json_write(self, path, value):
+        self.persisted_bytes += len(
+            json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
+        )
+        return super()._atomic_json_write(path, value)
 
-    monkeypatch.setattr(asyncio, "to_thread", immediate_to_thread)
-
-    def prepare():
-        frozen_size = current["generation"]
-        return lambda: saved_sizes.append(frozen_size)
-
-    subscriber = AutoSaveSubscriber(lambda: None, prepare_fn=prepare)
-
-    async def scenario():
-        for generation in range(1, 1001):
-            current["generation"] = generation
-            await subscriber.emit(SessionEvent(type="step_end"))
-        final = subscriber.enqueue()
-        assert final is not None
-        await final
-
-    asyncio.run(scenario())
-
-    assert saved_sizes[-1] == 1000
-    assert len(saved_sizes) <= 12
-    assert sum(saved_sizes) <= 3000
+    def _append_journal_record(self, path, record):
+        self.persisted_bytes += len(
+            (
+                json.dumps(
+                    record,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                + "\n"
+            ).encode("utf-8")
+        )
+        return super()._append_journal_record(path, record)
 
 
-def test_autosave_growth_stays_linear_during_sustained_fast_events(monkeypatch):
-    current = {"generation": 0}
-    saved_sizes: list[int] = []
+@pytest.mark.parametrize("trigger", sorted(SAVE_TRIGGERS))
+def test_autosave_journal_recovers_every_trigger_with_linear_write_growth(
+    tmp_path,
+    trigger,
+):
+    def persist_steps(name: str, count: int):
+        path = tmp_path / name
+        store = _CountingSessionStore()
+        session = Session(
+            agent=FakeAgent(),
+            llm=FakeLLMClient(),
+            auto_save_path=str(path),
+            store=store,
+        )
 
-    async def immediate_to_thread(function, *args, **kwargs):
-        return function(*args, **kwargs)
+        async def scenario():
+            for step in range(1, count + 1):
+                session.state.append_message(
+                    {
+                        "role": (
+                            "assistant"
+                            if trigger == "step_end"
+                            else "user"
+                        ),
+                        "content": f"durable {trigger} {step}: " + ("x" * 128),
+                    }
+                )
+                session.state.turn.seen_result_hashes.add(f"result-hash-{step:04d}")
+                session.step_count = step
+                await session.event_bus.emit(SessionEvent(type=trigger))
+                pending = session.pending_cleanup_tasks
+                if pending:
+                    await asyncio.gather(*pending)
 
-    monkeypatch.setattr(asyncio, "to_thread", immediate_to_thread)
+        asyncio.run(scenario())
+        restored = load_session(
+            str(path),
+            agent=FakeAgent(),
+            llm=FakeLLMClient(),
+        )
+        return store.persisted_bytes, restored
 
-    def prepare():
-        frozen_size = current["generation"]
-        return lambda: saved_sizes.append(frozen_size)
+    bytes_500, restored_500 = persist_steps(f"{trigger}-500.json", 500)
+    bytes_1000, restored_1000 = persist_steps(f"{trigger}-1000.json", 1000)
 
-    subscriber = AutoSaveSubscriber(lambda: None, prepare_fn=prepare)
-
-    async def scenario():
-        for generation in range(1, 1001):
-            current["generation"] = generation
-            await subscriber.emit(SessionEvent(type="step_end"))
-            await asyncio.sleep(0.001)
-        final = subscriber.enqueue()
-        assert final is not None
-        await final
-
-    asyncio.run(scenario())
-
-    assert saved_sizes[-1] == 1000
-    assert len(saved_sizes) <= 12
-    assert sum(saved_sizes) <= 3000
+    assert restored_500.step_count == 500
+    assert restored_500.messages[-1]["content"].startswith(
+        f"durable {trigger} 500:"
+    )
+    assert len(restored_500.state.turn.seen_result_hashes) == 500
+    assert restored_1000.step_count == 1000
+    assert restored_1000.messages[-1]["content"].startswith(
+        f"durable {trigger} 1000:"
+    )
+    assert len(restored_1000.state.turn.seen_result_hashes) == 1000
+    assert bytes_1000 <= bytes_500 * 2.5
 
 
 def test_cancelling_owned_worker_finishes_submitted_save():
