@@ -15,7 +15,7 @@ import shlex
 from typing import Any
 
 from opencollab.adapters._env_base import TextFileRange
-from opencollab.adapters.tools._output import truncate
+from opencollab.adapters.tools._output import require_positive_int, truncate
 from opencollab.adapters.tools._paths import checked_path
 from opencollab.adapters.tools.apply_patch_engine import (
     _MIXED_NEWLINES,
@@ -81,7 +81,9 @@ class FileReadTool(Tool):
     }
 
     def __init__(self, max_read_chars: int = MAX_READ_CHARS):
-        self.max_read_chars = max_read_chars
+        self.max_read_chars = require_positive_int(
+            max_read_chars, "max_read_chars"
+        )
 
     async def execute_with_runtime(
         self,
@@ -383,7 +385,9 @@ class GrepTool(Tool):
     }
 
     def __init__(self, max_grep_chars: int = MAX_GREP_CHARS):
-        self.max_grep_chars = max_grep_chars
+        self.max_grep_chars = require_positive_int(
+            max_grep_chars, "max_grep_chars"
+        )
 
     async def execute_with_runtime(
         self,

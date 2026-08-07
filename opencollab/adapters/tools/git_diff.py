@@ -19,7 +19,7 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
-from opencollab.adapters.tools._output import truncate
+from opencollab.adapters.tools._output import require_positive_int, truncate
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -74,8 +74,12 @@ class GitDiffTool(Tool):
         max_diff_chars: int = MAX_DIFF_CHARS,
         max_status_chars: int = MAX_STATUS_CHARS,
     ):
-        self.max_diff_chars = max_diff_chars
-        self.max_status_chars = max_status_chars
+        self.max_diff_chars = require_positive_int(
+            max_diff_chars, "max_diff_chars"
+        )
+        self.max_status_chars = require_positive_int(
+            max_status_chars, "max_status_chars"
+        )
 
     async def execute_with_runtime(
         self,
