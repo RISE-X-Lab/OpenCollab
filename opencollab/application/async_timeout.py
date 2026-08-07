@@ -118,6 +118,7 @@ async def abandon_on_timeout(
     *,
     timeout_error_type: type[CallerTimeoutError] = CallerTimeoutError,
     task_tracker: Callable[[asyncio.Task[T]], None] | None = None,
+    late_task_tracker: Callable[[asyncio.Task[T]], None] | None = None,
     late_result_handler: Callable[[asyncio.Future[T]], None] | None = None,
 ) -> T:
     """Await ``awaitable`` with a hard caller-side timeout.
@@ -152,6 +153,8 @@ async def abandon_on_timeout(
     if task in done:
         return task.result()
 
+    if late_task_tracker is not None and isinstance(task, asyncio.Task):
+        late_task_tracker(task)
     task.cancel()
     task.add_done_callback(late_result_handler or consume_task_result)
     raise timeout_error_type
