@@ -316,6 +316,35 @@ async def test_workflow_uses_real_runtime_and_returns_live_metrics(
     assert manifest["evidence_complete"] is True
 
 
+async def test_workflow_rejects_non_json_inputs_before_claiming_artifacts(
+    tmp_path: Path,
+) -> None:
+    invoked = False
+
+    async def plain(_ctx, _inputs):
+        nonlocal invoked
+        invoked = True
+        return "completed before the old late manifest failure"
+
+    inputs = {"path": Path("not-json-serializable")}
+    result = await OpenCollab(tmp_path).workflow(plain, inputs, trace=False)
+    assert result.output == "completed before the old late manifest failure"
+    assert invoked is True
+
+    invoked = False
+    artifacts = tmp_path / "workflow-run"
+    with pytest.raises(ValueError, match="JSON-serializable"):
+        await OpenCollab(tmp_path).workflow(
+            plain,
+            inputs,
+            artifacts=artifacts,
+            trace=False,
+        )
+
+    assert invoked is False
+    assert not artifacts.exists()
+
+
 async def test_workflow_execution_failure_is_a_result(tmp_path: Path) -> None:
     @workflow
     async def broken(_ctx, _inputs):
