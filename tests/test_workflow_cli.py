@@ -7,6 +7,7 @@ drive the Typer commands through ``CliRunner`` and assert on stdout.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 
 from typer.testing import CliRunner
@@ -108,6 +109,37 @@ def test_load_registry_resolves_relative_directory_from_workspace(tmp_path, monk
     registry = workflow_cli.load_registry(str(project))
 
     assert registry.get("workspace-flow").description == "workspace scoped"
+
+
+def test_workflow_run_prints_event_and_result_markup_literally(monkeypatch):
+    @workflow(name="literal", description="returns bracketed data")
+    async def literal(ctx, args):
+        return None
+
+    reg = Registry()
+    reg.register(literal.__workflow_spec__)
+    monkeypatch.setattr(workflow_cli, "load_registry", lambda: reg)
+    monkeypatch.setattr(workflow_cli, "missing_api_key_for", lambda *a, **k: False)
+
+    async def fake_run_workflow(_spec, _args, **kwargs):
+        await kwargs["event_sink"].emit(
+            SimpleNamespace(kind="log", message="[x] [link=unterminated")
+        )
+        return {"values": ["[bold]literal[/bold]", "[x]"]}
+
+    monkeypatch.setattr(workflow_cli, "run_workflow", fake_run_workflow)
+
+    result = runner.invoke(
+        workflow_cli.app,
+        ["run", "literal", "--args", "{}", "--budget", "50000", "--no-save"],
+    )
+
+    assert result.exit_code == 0
+    assert "-- [x] [link=unterminated" in result.stdout
+    json_start = result.stdout.rfind("\n{") + 1
+    assert json.loads(result.stdout[json_start:]) == {
+        "values": ["[bold]literal[/bold]", "[x]"],
+    }
 
 
 def test_workflow_run_default_budget_raised_to_1m(monkeypatch):

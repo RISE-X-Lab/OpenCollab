@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 import typer
 from rich.console import Console
+from rich.text import Text
 
 from opencollab.adapters.cli.config_resolve import (
     missing_api_key_for,
@@ -58,7 +59,7 @@ class _ConsoleEventSink:
         kind = getattr(event, "kind", "log")
         message = getattr(event, "message", str(event))
         marker = "==" if kind == "phase" else "--"
-        self._console.print(f"[dim]{marker} {message}[/dim]")
+        self._console.print(Text(f"{marker} {message}", style="dim"))
 
 
 @app.command(name="list")
@@ -153,7 +154,7 @@ def run_cmd(
         if trace:
             trace_path = os.path.join(save_dir, "orchestration.jsonl")
             console.print(f"[dim]== orchestration at {trace_path}[/dim]")
-    console.print(json.dumps(result, indent=2, default=str))
+    typer.echo(json.dumps(result, indent=2, default=str))
 
 
 __all__ = ["app", "load_registry", "run_workflow"]
