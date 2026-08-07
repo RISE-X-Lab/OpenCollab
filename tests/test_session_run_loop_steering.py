@@ -257,6 +257,58 @@ def test_structured_unrelated_param_blocks_tool_choice_text_fallback():
     assert [call["tool_choice"] for call in llm.calls] == ["required"]
 
 
+@pytest.mark.parametrize(
+    ("message", "code"),
+    [
+        ("invalid request", "invalid_tool_choice"),
+        ("Invalid parameter: tool_choice", "invalid_parameter"),
+    ],
+)
+def test_null_structured_selector_uses_explicit_tool_choice_rejection(
+    message,
+    code,
+):
+    llm = _RaisingFakeLLM(
+        [
+            _ProviderRequestError(
+                message,
+                status_code=400,
+                body={"error": {"param": None, "code": code}},
+            ),
+            llm_response(content="done"),
+        ]
+    )
+    agent = _agent_with_tool_schemas("file_write")
+    agent.tool_choice = "required"
+    runner = build_runner(llm=llm, agent=agent)
+
+    assert run(runner.run_loop()) == "done"
+    assert [call["tool_choice"] for call in llm.calls] == ["required", "auto"]
+
+
+def test_unrelated_structured_selector_blocks_conflicting_tool_choice_code():
+    error = _ProviderRequestError(
+        "tool_choice is not supported",
+        status_code=400,
+        body={
+            "error": {
+                "param": "temperature",
+                "code": "invalid_tool_choice",
+            }
+        },
+    )
+    llm = _RaisingFakeLLM([error, llm_response(content="must not retry")])
+    agent = _agent_with_tool_schemas("file_write")
+    agent.tool_choice = "required"
+    runner = build_runner(llm=llm, agent=agent)
+
+    with pytest.raises(_ProviderRequestError) as captured:
+        run(runner.run_loop())
+
+    assert captured.value is error
+    assert [call["tool_choice"] for call in llm.calls] == ["required"]
+
+
 def test_explicit_tool_choice_rejection_retries_once_with_auto():
     llm = _RaisingFakeLLM(
         [
