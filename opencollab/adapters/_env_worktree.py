@@ -18,6 +18,7 @@ from opencollab.application.exception_notes import add_exception_note
 
 WORKTREE_GIT_TIMEOUT_SECONDS = 30.0
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,180}$")
+_ZERO_OID = "0" * 40
 
 
 class WorktreeEnvironment(Environment):
@@ -41,6 +42,7 @@ class WorktreeEnvironment(Environment):
         self._base_commit: str | None = None
         self._git_mode = False
         self._branch_owned = False
+        self._owned_branch_oid: str | None = None
         self._worktree_registered = False
 
     async def _git(self, *args: str, timeout: float = WORKTREE_GIT_TIMEOUT_SECONDS) -> ExecResult:
@@ -108,13 +110,32 @@ class WorktreeEnvironment(Environment):
         if base.returncode != 0 or base.stdout_truncated or base.stderr_truncated:
             raise RuntimeError("cannot resolve worktree base commit")
         self._base_commit = base.stdout.strip()
-        self._worktree_dir = tempfile.mkdtemp(prefix="opencollab-wt-")
+        claimed = await self._git(
+            "update-ref",
+            f"refs/heads/{self._branch}",
+            self._base_commit,
+            _ZERO_OID,
+        )
+        if claimed.returncode != 0:
+            branch_probe = await self._git(
+                "show-ref",
+                "--verify",
+                "--quiet",
+                f"refs/heads/{self._branch}",
+            )
+            if branch_probe.returncode == 0:
+                raise RuntimeError(f"git worktree branch already exists: {self._branch}")
+            raise RuntimeError(f"cannot atomically claim worktree branch: {claimed.stderr.strip()}")
         self._branch_owned = True
+        self._owned_branch_oid = self._base_commit
+        self._worktree_dir = tempfile.mkdtemp(prefix="opencollab-wt-")
+        # The claimed ref is an ownership lease, not the worktree's HEAD. A
+        # detached worktree keeps its own commits from moving that lease, so a
+        # later external ref advance is observable and cannot be deleted by us.
         added = await self._git(
             "worktree",
             "add",
-            "-b",
-            self._branch,
+            "--detach",
             self._worktree_dir,
             self._base_commit,
         )
@@ -143,6 +164,7 @@ class WorktreeEnvironment(Environment):
         if deleted.returncode != 0:
             raise RuntimeError(f"cannot delete owned worktree branch: {deleted.stderr.strip()}")
         self._branch_owned = False
+        self._owned_branch_oid = None
 
     async def get_diff(self) -> str:
         self._ensure_active()
@@ -223,16 +245,25 @@ class WorktreeEnvironment(Environment):
             else:
                 self._worktree_dir = None
         if self._git_mode and self._branch_owned and self._worktree_dir is None:
-            branch = await self._git("rev-parse", f"refs/heads/{self._branch}")
-            if branch.returncode == 0:
-                try:
-                    await self._delete_owned_branch(branch.stdout.strip())
-                except BaseException as exc:
-                    failures.append(exc)
-            elif branch.returncode == 128:
+            expected_oid = self._owned_branch_oid
+            if expected_oid is None:
                 self._branch_owned = False
             else:
-                failures.append(RuntimeError("cannot inspect owned worktree branch"))
+                branch = await self._git("rev-parse", f"refs/heads/{self._branch}")
+                if branch.returncode == 0:
+                    if branch.stdout.strip() == expected_oid:
+                        try:
+                            await self._delete_owned_branch(expected_oid)
+                        except BaseException as exc:
+                            failures.append(exc)
+                    else:
+                        self._branch_owned = False
+                        self._owned_branch_oid = None
+                elif branch.returncode == 128:
+                    self._branch_owned = False
+                    self._owned_branch_oid = None
+                else:
+                    failures.append(RuntimeError("cannot inspect owned worktree branch"))
         if failures:
             raise RuntimeError("worktree cleanup failed") from failures[0]
 
