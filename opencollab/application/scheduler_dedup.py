@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import hashlib
 
+from opencollab.application.scheduler_types import DuplicateSpawnError
+
 
 class InflightDedupMixin:
     """Reserve/lookup/release for in-flight delegated-work identities."""
@@ -54,6 +56,9 @@ class InflightDedupMixin:
         context: str,
     ) -> None:
         key = self._task_key(parent_aid, role, task, context)
+        existing_aid = self._inflight.get(key)
+        if existing_aid is not None:
+            raise DuplicateSpawnError(existing_aid)
         self._inflight[key] = aid
         self._inflight_key_of[aid] = key
 

@@ -41,6 +41,7 @@ from opencollab.application.ports import (
 from opencollab.application.scheduler_dedup import InflightDedupMixin
 from opencollab.application.scheduler_lifecycle import LifecycleMixin
 from opencollab.application.scheduler_messaging import MessagingMixin
+from opencollab.application.scheduler_types import DuplicateSpawnError as DuplicateSpawnError
 from opencollab.application.scheduler_types import LaunchSpec as LaunchSpec
 from opencollab.application.scheduler_types import QueuedTeammateMessage as QueuedTeammateMessage
 from opencollab.application.scheduler_types import SchedulerStalledError as SchedulerStalledError
@@ -206,6 +207,7 @@ class Scheduler(
 
 
 __all__ = [
+    "DuplicateSpawnError",
     "LaunchSpec",
     "QueuedTeammateMessage",
     "Scheduler",
