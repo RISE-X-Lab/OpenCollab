@@ -575,6 +575,29 @@ def test_enforced_agent_injects_submit_configures_runner_harvests_and_emits_metr
     assert payload["artifact_nonempty"] is True
 
 
+def test_commitment_trace_failure_does_not_overturn_harvested_result():
+    class ThrowingTracer:
+        def log_step(self, **_kwargs):
+            raise OSError("trace sink unavailable")
+
+    session = _EnforcedFakeSession(capture=_captured(), reply="")
+    ctx = _ctx_with(_EnforcedFakeFactory(session), ThrowingTracer())
+
+    result = run(
+        ctx.agent(
+            "scout the bug",
+            tools=[_ReadStub()],
+            label="scout:0",
+            enforcement_strength=ENFORCEMENT_ON,
+        )
+    )
+
+    assert "root cause located" in result
+    assert ctx.trace_failures == (
+        {"step_type": "commitment_terminus", "exception_type": "OSError"},
+    )
+
+
 def test_off_default_does_not_inject_submit_or_emit_metric():
     tracer = _FakeTracer()
     session = _EnforcedFakeSession(reply="plain text report", used_tokens=10_000)

@@ -189,6 +189,7 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         self._active_call_tasks: set[asyncio.Task[Any]] = set()
         self._active_session_tasks: set[asyncio.Task[Any]] = set()
         self._agent_failures: list[dict[str, Any]] = []
+        self._trace_failures: list[dict[str, str]] = []
         self._tree_probe = tree_probe
         # Absolute path of the repo the sessions edit/read (the workspace passed to
         # ``run_workflow``). Read-only metadata for workflows that need to run a
@@ -266,6 +267,26 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
     def agent_failures(self) -> tuple[dict[str, Any], ...]:
         """Safe structured summaries for child-agent exceptions."""
         return tuple(dict(failure) for failure in self._agent_failures)
+
+    @property
+    def trace_failures(self) -> tuple[dict[str, str], ...]:
+        """Sticky, payload-free diagnostics for failed trace writes."""
+        return tuple(dict(failure) for failure in self._trace_failures)
+
+    def _trace_step(self, step_type: str, payload: dict[str, Any]) -> None:
+        """Best-effort trace emission that never overturns workflow results."""
+        if self._tracer is None:
+            return
+        try:
+            self._tracer.log_step(step_type=step_type, payload=payload)
+        except Exception as exc:  # noqa: BLE001 — observability is non-authoritative
+            self._trace_failures.append(
+                {
+                    "step_type": str(step_type)[:240],
+                    "exception_type": type(exc).__name__[:128],
+                }
+            )
+            logger.error("workflow %s trace failed: %s", step_type, exc)
 
     def _record_agent_failure(self, label: str | None, exc: Exception) -> None:
         status_code = getattr(exc, "status_code", None)
@@ -804,13 +825,7 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         await self._emit("log", message)
 
     async def _emit(self, kind: str, message: str) -> None:
-        if self._tracer is not None:
-            try:
-                self._tracer.log_step(
-                    step_type=f"workflow_{kind}", payload={"message": message}
-                )
-            except Exception as exc:
-                logger.error("workflow %s trace failed: %s", kind, exc)
+        self._trace_step(f"workflow_{kind}", {"message": message})
         if self._event_sink is not None:
             try:
                 await self._event_sink.emit(WorkflowEvent(kind=kind, message=message))
