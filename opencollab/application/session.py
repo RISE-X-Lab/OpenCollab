@@ -83,7 +83,8 @@ class Session:
         self._permission_policy = permission_policy
         self._safety_policy = safety_policy
         self._auto_save_path = auto_save_path
-        self._launch_applied = False
+        self._launch_state = "not_applied"
+        self._applied_launch: object | None = None
         # The public facade owns turn admission. The runner protects its own
         # cleanup, but callers can otherwise interleave a new message or a
         # second run with the same mutable FSM.
@@ -292,23 +293,37 @@ class Session:
         re-truncated. The ongoing per-event ``AutoSaveSubscriber`` (wired at
         construction) is a separate concern and unaffected.
         """
-        if self._launch_applied:
+        if self._launch_state == "applied":
+            if launch != self._applied_launch:
+                raise ValueError(
+                    "session already applied a different launch specification"
+                )
             return
-        self._launch_applied = True
-        resumable = bool(
-            launch.session_file
-            and (
-                os.path.exists(launch.session_file)
-                or (
-                    isinstance(self.store, JournalSnapshotStorePort)
-                    and self.store.has_snapshot(launch.session_file)
+        if self._launch_state == "applying":
+            raise SessionBusyError("session launch persistence is already applying")
+
+        self._launch_state = "applying"
+        try:
+            resumable = bool(
+                launch.session_file
+                and (
+                    os.path.exists(launch.session_file)
+                    or (
+                        isinstance(self.store, JournalSnapshotStorePort)
+                        and self.store.has_snapshot(launch.session_file)
+                    )
                 )
             )
-        )
-        if launch.session_file and resumable:
-            self.restore(launch.session_file)
-        elif launch.auto_save_path:
-            self.save(launch.auto_save_path)
+            if launch.session_file and resumable:
+                self.restore(launch.session_file)
+            elif launch.auto_save_path:
+                self.save(launch.auto_save_path)
+        except BaseException:
+            self._launch_state = "not_applied"
+            raise
+        else:
+            self._applied_launch = launch
+            self._launch_state = "applied"
 
     def restore(self, path: str) -> None:
         """Restore a complete snapshot while accepting legacy message-only stores."""
