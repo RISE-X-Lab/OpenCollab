@@ -10,6 +10,7 @@ registered-but-deferred source (the pre-existing behavior).
 from __future__ import annotations
 
 import asyncio
+import os
 
 from opencollab.adapters import repo_map as repo_map_module
 from opencollab.adapters.env import ExecResult, LocalEnvironment
@@ -266,7 +267,9 @@ def test_build_repo_map_via_env_limits_enumeration_work() -> None:
     assert "path-004" in result
     assert "path-005" not in result
     assert "truncated" in result
-    assert "| head -n 6" in env.cmds[0]
+    assert "mkfifo" in env.cmds[0]
+    assert "head -n 6" in env.cmds[0]
+    assert "| head" not in env.cmds[0]
     assert "| sort" not in env.cmds[0]
 
 
@@ -329,6 +332,45 @@ def test_build_repo_map_via_env_works_against_local_environment(tmp_path):
 
     assert "src/pkg/core.py" in result
     assert ".git" not in result
+
+
+def test_build_repo_map_via_env_accepts_find_sigpipe_at_the_entry_limit(tmp_path):
+    for index in range(100):
+        (tmp_path / f"entry-{index:03}.py").write_text("", encoding="utf-8")
+
+    result = run(
+        build_repo_map_via_env(LocalEnvironment(str(tmp_path)), max_entries=5)
+    )
+
+    assert "repository map truncated" in result
+    assert len(
+        [
+            line
+            for line in result.splitlines()
+            if line.startswith("entry-")
+        ]
+    ) == 5
+
+
+def test_build_repo_map_via_env_preserves_a_silent_find_failure(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_find = fake_bin / "find"
+    fake_find.write_text(
+        "#!/bin/sh\nprintf './visible.py\\n'\nexit 7\n",
+        encoding="utf-8",
+    )
+    fake_find.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    result = run(build_repo_map_via_env(LocalEnvironment(str(workspace))))
+
+    assert result == ""
 
 
 # --- injection into the PROJECT context layer --------------------------------

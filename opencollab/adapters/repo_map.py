@@ -351,9 +351,35 @@ async def build_repo_map_via_env(
         for value in (max_depth, max_chars, max_entries)
     ):
         raise ValueError("repo-map budgets must be positive integers")
-    cmd = (
+    find_cmd = (
         rf"find . -mindepth 1 -maxdepth {max_depth} "
-        rf"\( {prunes} \) -prune -o -print | head -n {max_entries + 1}"
+        rf"\( {prunes} \) -prune -o -print"
+    )
+    cmd = (
+        'repo_map_tmp=$(mktemp -d "${TMPDIR:-/tmp}/'
+        'opencollab-repo-map.XXXXXX") || exit 70\n'
+        'repo_map_fifo="$repo_map_tmp/paths"\n'
+        'repo_map_err="$repo_map_tmp/find.err"\n'
+        "repo_map_cleanup() {\n"
+        '  rm -f "$repo_map_fifo" "$repo_map_err"\n'
+        '  rmdir "$repo_map_tmp" 2>/dev/null || :\n'
+        "}\n"
+        "trap repo_map_cleanup 0 1 2 15\n"
+        'mkfifo "$repo_map_fifo" || exit 70\n'
+        f'{find_cmd} >"$repo_map_fifo" 2>"$repo_map_err" &\n'
+        "repo_map_find_pid=$!\n"
+        f'head -n {max_entries + 1} <"$repo_map_fifo"\n'
+        "repo_map_head_status=$?\n"
+        'wait "$repo_map_find_pid"\n'
+        "repo_map_find_status=$?\n"
+        'cat "$repo_map_err" >&2\n'
+        'if [ "$repo_map_head_status" -ne 0 ]; then\n'
+        '  exit "$repo_map_head_status"\n'
+        "fi\n"
+        'case "$repo_map_find_status" in\n'
+        "  0|141) exit 0 ;;\n"
+        '  *) exit "$repo_map_find_status" ;;\n'
+        "esac"
     )
     try:
         result = await env.exec_cmd(cmd)
