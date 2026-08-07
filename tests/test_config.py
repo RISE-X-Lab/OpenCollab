@@ -298,6 +298,11 @@ def test_empty_high_priority_file_value_does_not_hide_lower_value(
     assert build_config(str(tmp_path)).model == "lower-priority-model"
 
 
+def test_unknown_override_key_fails_fast():
+    with pytest.raises(Exception, match="modle"):
+        build_config(overrides={"modle": "gpt-4o-mini"})
+
+
 def test_api_key_env_precedence_is_provider_and_endpoint_specific():
     assert api_key_env_precedence("openai") == (
         "OPENCOLLAB_API_KEY",
