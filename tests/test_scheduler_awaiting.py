@@ -245,7 +245,7 @@ def test_unknown_completion_route_fails_open_parent_batch_in_one_delivery():
 
     async def scenario():
         await scheduler._deliver_to_parent(99, "child result", RowStatus.DONE)
-        await scheduler._tasks[0]
+        await scheduler.wait_until_terminal(0)
 
     run(scenario())
 
@@ -265,7 +265,7 @@ def test_misrouted_completion_retargets_the_unique_child_row():
 
     async def scenario():
         await scheduler._deliver_to_parent(99, "result", RowStatus.DONE)
-        await scheduler._tasks[0]
+        await scheduler.wait_until_terminal(0)
 
     run(scenario())
 
@@ -304,7 +304,7 @@ def test_already_filled_claimed_row_retargets_unique_pending_child_row():
 
     async def scenario():
         await scheduler._deliver_to_parent(99, "child result", RowStatus.DONE)
-        await scheduler._tasks[0]
+        await scheduler.wait_until_terminal(0)
 
     run(scenario())
 
@@ -341,7 +341,7 @@ def test_ambiguous_completion_route_fails_open_parent_batch_in_one_delivery():
 
     async def scenario():
         await scheduler._deliver_to_parent(99, "child result", RowStatus.DONE)
-        await scheduler._tasks[0]
+        await scheduler.wait_until_terminal(0)
 
     run(scenario())
 
