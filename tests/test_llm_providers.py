@@ -705,6 +705,24 @@ def test_openai_markup_two_tool_calls_are_synthesized():
     assert result.content is None
 
 
+def test_openai_markup_malformed_group_is_not_partially_executed():
+    content = (
+        "<|tool_calls_section_begin|>"
+        "<|tool_call_begin|>functions.file_read:c1"
+        '<|tool_call_argument_begin|>{"path": "safe.txt"}<|tool_call_end|>'
+        "<|tool_call_begin|>functions.file_write:c2"
+        '<|tool_call_argument_begin|>{"path": "target.txt"<|tool_call_end|>'
+        "<|tool_calls_section_end|>"
+    )
+    resp = _openai_resp(usage=None, content=content)
+
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+
+    assert result.tool_calls == []
+    assert result.content == content
+    assert result.usage.markup_recovered == 0
+
+
 def test_openai_markup_preserves_surrounding_prose():
     """Genuine prose around the markup is preserved; the call is still synthesized."""
     content = "Let me search the repo. " + _markup("grep", "c1", '{"pattern": "foo"}')
