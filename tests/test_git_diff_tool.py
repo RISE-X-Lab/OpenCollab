@@ -78,6 +78,25 @@ def test_git_diff_path_filter_can_skip_status(repo):
 
 
 @pytest.mark.parametrize("stat_only", [False, True])
+def test_git_diff_includes_untracked_files_in_default_change_set(repo, stat_only):
+    target = repo / "new file.py"
+    target.write_text("new_value = 3\n", encoding="utf-8")
+
+    result = run(
+        GitDiffTool().execute_with_runtime(
+            {"stat_only": stat_only, "include_status": False},
+            _runtime(repo),
+        )
+    )
+
+    assert "new file.py" in result
+    if stat_only:
+        assert "1 insertion" in result
+    else:
+        assert "+new_value = 3" in result
+
+
+@pytest.mark.parametrize("stat_only", [False, True])
 def test_git_diff_supports_unborn_repository_with_staged_file(tmp_path, stat_only):
     repo = tmp_path / "repo"
     repo.mkdir()
