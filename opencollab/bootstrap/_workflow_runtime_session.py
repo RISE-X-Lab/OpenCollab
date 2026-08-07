@@ -36,9 +36,8 @@ class WorkflowSessionFactory:
 
     Each ``build_workflow_session`` call assembles a fresh one-shot ``Agent``
     (carrying the resolved LLM config) and a self-wiring ``Session``. ``tools``
-    from the caller become the agent's toolset; ``isolation`` is accepted for
-    forward-compatibility (a future worktree-backed environment) but currently
-    runs in a local environment.
+    from the caller become the agent's toolset. ``isolation=True`` is rejected
+    until this factory can provide a distinct worktree-backed environment.
     """
 
     def __init__(
@@ -114,6 +113,8 @@ class WorkflowSessionFactory:
         tool_choice: str | None = None,
         thinking: bool | None = None,
     ) -> Any:
+        if isolation:
+            raise ValueError("workflow agent isolation is not available")
         use_thinking = self._thinking if thinking is None else thinking
         capabilities = model_capabilities(self._model)
         if self._thinking and not capabilities.honors_workflow_thinking_override:
