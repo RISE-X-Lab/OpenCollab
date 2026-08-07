@@ -16,20 +16,30 @@ from opencollab.bootstrap import load_session
 def test_session_runtime_config_mutations_update_all_runtime_consumers():
     old_env = object()
     new_env = object()
+    old_max_steps = 7
+    new_max_steps = 3
+    old_budget = 1_000
+    new_budget = 200
     old_tracer = object()
     new_tracer = object()
     session = Session(
         agent=FakeAgent(),
         llm=FakeLLMClient(),
         env=old_env,
+        max_steps=old_max_steps,
+        max_budget_tokens=old_budget,
         tracer=old_tracer,
     )
 
     session.env = new_env
+    session.max_steps = new_max_steps
+    session.max_budget_tokens = new_budget
     session.tracer = new_tracer
 
     assert session.env is new_env
     assert session.tool_execution.environment is new_env
+    assert session.max_steps == session.runner.max_steps == new_max_steps
+    assert session.max_budget_tokens == session.runner.max_budget_tokens == new_budget
     assert session.tracer is new_tracer
     assert session.tool_execution.tracer is new_tracer
     assert session.runner.tracer is new_tracer
