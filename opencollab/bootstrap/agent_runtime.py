@@ -253,7 +253,12 @@ async def run_agent(
         return False
 
     async def stop_owned() -> tuple[bool, bool, bool]:
-        aborted = await revoke_and_abort_environment(environment, cleanup_timeout_seconds)
+        aborted = True
+        if cleanup_environment:
+            aborted = await revoke_and_abort_environment(
+                environment,
+                cleanup_timeout_seconds,
+            )
         terminal = await force_task_terminal(owner, timeout=cleanup_timeout_seconds)
         finalized = await finalize_with_retry()
         return aborted, terminal, finalized
