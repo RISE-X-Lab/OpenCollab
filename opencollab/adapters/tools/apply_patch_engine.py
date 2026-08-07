@@ -104,7 +104,7 @@ def _apply_line_replace(source: str, params: dict[str, Any]) -> tuple[str | None
 
 
 def _parse_hunks(patch: str) -> tuple[list[dict] | None, str]:
-    """Parse ``@@`` hunks out of a unified diff into {old_start, lines} dicts."""
+    """Parse and structurally validate ``@@`` hunks from a unified diff."""
     hunks: list[dict] = []
     cur: dict | None = None
     seen_header = False
@@ -113,20 +113,36 @@ def _parse_hunks(patch: str) -> tuple[list[dict] | None, str]:
     # context line in a unified diff is " " (a lone space), not "".
     if raw_lines and raw_lines[-1] == "":
         raw_lines.pop()
-    for raw in raw_lines:
+    for line_number, raw in enumerate(raw_lines, 1):
         m = _HUNK_RE.match(raw)
         if m:
+            if cur is not None:
+                err = _validate_hunk_counts(cur)
+                if err:
+                    return None, err
             seen_header = True
-            cur = {"old_start": int(m.group(1)), "lines": []}
+            old_start = int(m.group(1))
+            old_len = int(m.group(2) or 1)
+            new_start = int(m.group(3))
+            new_len = int(m.group(4) or 1)
+            if old_start == 0 and old_len != 0:
+                return None, f"hunk header on patch line {line_number} has invalid old range."
+            if new_start == 0 and new_len != 0:
+                return None, f"hunk header on patch line {line_number} has invalid new range."
+            cur = {
+                "old_start": old_start,
+                "old_len": old_len,
+                "new_start": new_start,
+                "new_len": new_len,
+                "lines": [],
+            }
             hunks.append(cur)
             continue
         if cur is None:
             # Lines before the first @@ (e.g. ---/+++ headers) are ignored.
             continue
         if raw == "":
-            # A blank line inside a hunk is a blank context line.
-            cur["lines"].append(" ")
-            continue
+            return None, f"hunk on patch line {line_number} has an untagged blank line."
         tag = raw[0]
         if tag in " +-":
             cur["lines"].append(raw)
@@ -134,13 +150,29 @@ def _parse_hunks(patch: str) -> tuple[list[dict] | None, str]:
             # "\ No newline at end of file" — metadata, not content.
             continue
         else:
-            # Unexpected content ends the current hunk (trailing prose, etc.).
-            cur = None
+            return None, f"hunk on patch line {line_number} has an unknown line prefix."
     if not seen_header:
         return None, "no @@ hunk headers found in patch."
     if not hunks:
         return None, "patch contains no applicable hunks."
+    assert cur is not None
+    err = _validate_hunk_counts(cur)
+    if err:
+        return None, err
     return hunks, ""
+
+
+def _validate_hunk_counts(hunk: dict) -> str:
+    """Return an error unless hunk body counts match its header exactly."""
+    old_count = sum(line[0] in " -" for line in hunk["lines"])
+    new_count = sum(line[0] in " +" for line in hunk["lines"])
+    if old_count != hunk["old_len"] or new_count != hunk["new_len"]:
+        return (
+            f"hunk near line {hunk['old_start']} declares {hunk['old_len']} old lines and "
+            f"{hunk['new_len']} new lines, but contains {old_count} old lines and "
+            f"{new_count} new lines."
+        )
+    return ""
 
 
 def _find_block(
@@ -152,8 +184,9 @@ def _find_block(
     resolve to the intended one. Returns None if the block isn't found.
     """
     if not old_block:
-        # Pure insertion: clamp the stated position into the valid range.
-        return max(min_idx, min(expected_idx, len(src_lines)))
+        if expected_idx < min_idx or expected_idx > len(src_lines):
+            return None
+        return expected_idx
     n = len(old_block)
     matches = [
         start
@@ -193,7 +226,8 @@ def _apply_unified_diff(source: str, patch: str) -> tuple[str | None, str]:
             elif tag == "+":
                 new_block.append(content)
 
-        pos = _find_block(src_lines, old_block, hunk["old_start"] - 1, src_idx)
+        expected_idx = hunk["old_start"] if hunk["old_len"] == 0 else hunk["old_start"] - 1
+        pos = _find_block(src_lines, old_block, expected_idx, src_idx)
         if pos is None:
             snippet = "\n".join(old_block[:6]) or "(empty context)"
             return None, (
