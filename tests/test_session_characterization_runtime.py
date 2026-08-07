@@ -213,7 +213,7 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
         "content": "retry after restore",
         "message_index": 1,
     }
-    # A session-lifetime latch is deliberately NOT part of the per-turn snapshot.
+    # The durable current-turn latch is part of the user-turn transaction.
     state.wind_down_done = True
 
     checkpoint = state.checkpoint_user_turn()
@@ -245,8 +245,8 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
         "content": "retry after restore",
         "message_index": 1,
     }
-    # The lifetime latch is not touched by a per-turn restore.
-    assert state.wind_down_done is False
+    # Rollback restores the prior turn's latch along with its counters.
+    assert state.wind_down_done is True
 
     # The checkpoint is an independent snapshot: mutating restored state and
     # restoring a second time still yields the checkpoint values.
