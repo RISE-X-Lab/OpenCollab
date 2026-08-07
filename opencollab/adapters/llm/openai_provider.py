@@ -309,7 +309,14 @@ def _estimate_output_tokens(message: Any) -> int:
     """Estimate output tokens from response text + serialized tool-call args."""
     text = message.content or ""
     for tool_call in message.tool_calls or []:
-        text += tool_call.function.name + tool_call.function.arguments
+        # Some OpenAI-compatible gateways emit partially formed tool calls with
+        # ``arguments=null`` (or, more rarely, ``name=null``). Usage estimation
+        # is observational and must not turn that provider response into a
+        # Python TypeError before the normal structured-output retry can act.
+        text += (
+            (getattr(tool_call.function, "name", None) or "")
+            + (getattr(tool_call.function, "arguments", None) or "")
+        )
     return estimate_tokens(text) if text else 0
 
 
