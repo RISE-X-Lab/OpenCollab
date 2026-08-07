@@ -243,13 +243,8 @@ async def test_budget_none_never_raises():
     assert ctx.budget.remaining() == float("inf")
 
 @pytest.mark.asyncio
-async def test_parallel_swallows_budget_exceeded_to_none():
-    """A budget-exhausted ctx.agent() inside a parallel thunk resolves to None.
-
-    WorkflowBudgetExceeded escapes ctx.agent() at the WorkflowContext level, but
-    parallel()'s per-slot guard localizes ANY exception (including the budget
-    one) to that slot — it must not abort the gather.
-    """
+async def test_parallel_propagates_budget_exceeded():
+    """A parallel fan-out must preserve the workflow terminal budget signal."""
     s1 = FakeSession(reply="a", tokens=500)
     s2 = FakeSession(reply="b", tokens=0)
     ctx = WorkflowContext(FakeFactory([s1, s2]), budget_total=500)
@@ -257,9 +252,8 @@ async def test_parallel_swallows_budget_exceeded_to_none():
     # First call spends the whole budget; the second starts already exhausted.
     assert await ctx.agent("warm up") == "a"
 
-    results = await ctx.parallel([lambda: ctx.agent("exhausted")])
-
-    assert results == [None]
+    with pytest.raises(WorkflowBudgetExceeded):
+        await ctx.parallel([lambda: ctx.agent("exhausted")])
 
 @pytest.mark.asyncio
 async def test_pipeline_swallows_budget_exceeded_to_none_and_skips_rest():
