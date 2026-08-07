@@ -13,24 +13,26 @@ from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import load_session
 
 
-def test_session_runtime_config_desync_after_mutating_env_and_max_steps():
+def test_session_runtime_config_mutations_update_all_runtime_consumers():
     old_env = object()
     new_env = object()
-    old_max_steps = 7
-    new_max_steps = 3
+    old_tracer = object()
+    new_tracer = object()
     session = Session(
         agent=FakeAgent(),
         llm=FakeLLMClient(),
         env=old_env,
-        max_steps=old_max_steps,
+        tracer=old_tracer,
     )
 
     session.env = new_env
-    session.max_steps = new_max_steps
+    session.tracer = new_tracer
 
     assert session.env is new_env
-    assert session.tool_execution.environment is old_env
-    assert session.runner.max_steps == old_max_steps
+    assert session.tool_execution.environment is new_env
+    assert session.tracer is new_tracer
+    assert session.tool_execution.tracer is new_tracer
+    assert session.runner.tracer is new_tracer
 
 def test_scheduler_init_process_lead_uses_workspace_local_env(tmp_path, monkeypatch):
     import os
