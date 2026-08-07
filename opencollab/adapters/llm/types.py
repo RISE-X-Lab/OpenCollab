@@ -78,7 +78,10 @@ def rescue_empty_turn(
     this is the single source both ``openai_provider`` and ``anthropic_provider``
     delegate to instead of hand-mirroring the guard.
     """
-    if not content and not tool_calls:
+    if (
+        (content is None or not content.strip())
+        and not tool_calls
+    ):
         return reasoning
     return content
 
