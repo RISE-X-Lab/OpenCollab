@@ -21,6 +21,37 @@ MAX_STATUS_LINES = 40
 class _RendererEventsMixin:
     """Consumes runtime/scheduler events and updates the TUI's render state."""
 
+    @staticmethod
+    def _tool_start_key(state: Any, label: str, data: dict[str, Any]) -> str:
+        tool_call_id = data.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            return f"{label}#{tool_call_id}"
+        prefix = f"{label}#legacy-"
+        has_legacy = any(key.startswith(prefix) for key in state.active_tools)
+        if label not in state.active_tools and not has_legacy:
+            return label
+
+        if label in state.active_tools:
+            existing = state.active_tools.pop(label)
+            state.active_tools[f"{label}#legacy-1"] = existing
+        sequence = 1
+        while f"{prefix}{sequence}" in state.active_tools:
+            sequence += 1
+        return f"{prefix}{sequence}"
+
+    @staticmethod
+    def _tool_end_key(state: Any, label: str, data: dict[str, Any]) -> str | None:
+        tool_call_id = data.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            return f"{label}#{tool_call_id}"
+        if label in state.active_tools:
+            return label
+        prefix = f"{label}#legacy-"
+        return next(
+            (key for key in state.active_tools if key.startswith(prefix)),
+            None,
+        )
+
     def event_handler(self, event: Any) -> None:
         """Synchronous event handler — subscribed to the Session event bus.
 
@@ -54,7 +85,8 @@ class _RendererEventsMixin:
             if not role and tool == "spawn_agent" and isinstance(args, dict):
                 role = str(args.get("role", ""))
             label = f"{agent_label}:{tool}"
-            state.active_tools[label] = event.data
+            key = self._tool_start_key(state, label, event.data)
+            state.active_tools[key] = {**event.data, "_display_label": label}
             preview = self._args_preview(event.data)
             self._append_activity(
                 (f"{label} started", self._STYLE_ACCENT),
@@ -72,7 +104,9 @@ class _RendererEventsMixin:
         elif etype == "tool_end":
             tool = event.data.get("tool", "?")
             label = f"{agent_label}:{tool}"
-            state.active_tools.pop(label, None)
+            key = self._tool_end_key(state, label, event.data)
+            if key is not None:
+                state.active_tools.pop(key, None)
             latency = event.data.get("latency", 0.0)
             self._append_activity(
                 (f"{label} finished", self._STYLE_SUCCESS),

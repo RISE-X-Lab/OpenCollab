@@ -29,8 +29,8 @@ class SessionEventFactory:
     error: Callable[[str], Any]
     # tool execution
     loop_detected: Callable[[str, int], Any]
-    tool_start: Callable[[str, dict[str, Any]], Any]
-    tool_end: Callable[[str, float], Any]
+    tool_start: Callable[[str, dict[str, Any], str | None], Any]
+    tool_end: Callable[[str, float, str | None], Any]
 
 
 def default_session_event_factory(
@@ -57,13 +57,23 @@ def default_session_event_factory(
             type="loop_detected",
             data={"tool": tool, "count": count, "aid": current_aid()},
         ),
-        tool_start=lambda tool, args: SessionRuntimeEvent(
+        tool_start=lambda tool, args, tool_call_id=None: SessionRuntimeEvent(
             type="tool_start",
-            data={"tool": tool, "args": args, "aid": current_aid()},
+            data={
+                "tool": tool,
+                "args": args,
+                "tool_call_id": tool_call_id,
+                "aid": current_aid(),
+            },
         ),
-        tool_end=lambda tool, latency: SessionRuntimeEvent(
+        tool_end=lambda tool, latency, tool_call_id=None: SessionRuntimeEvent(
             type="tool_end",
-            data={"tool": tool, "latency": latency, "aid": current_aid()},
+            data={
+                "tool": tool,
+                "latency": latency,
+                "tool_call_id": tool_call_id,
+                "aid": current_aid(),
+            },
         ),
     )
 
