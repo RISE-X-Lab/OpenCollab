@@ -22,8 +22,8 @@ from opencollab.application.scheduler import LaunchSpec, Scheduler
 from opencollab.bootstrap.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_THINKING,
-    DEFAULT_THINKING_PARAMS,
     DEFAULT_TOP_P,
+    resolve_thinking_params,
 )
 from opencollab.bootstrap.container import RuntimeContext, build_workspace_safety_policy
 from opencollab.bootstrap.context_builder import SpawnConfig
@@ -91,7 +91,7 @@ def build_scheduler(
                 "max_output_tokens", DEFAULT_MAX_TOKENS_PER_STEP
             ),
             thinking=cfg.get("thinking", DEFAULT_THINKING),
-            thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
+            thinking_params=resolve_thinking_params(cfg.get("thinking_params")),
             tracer=ctx.tracer,
             event_bus=event_bus,
             permission_policy=ctx.permission_policy,

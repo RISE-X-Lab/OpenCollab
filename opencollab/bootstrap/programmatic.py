@@ -39,6 +39,7 @@ from opencollab.bootstrap.agent_runtime import (
 from opencollab.bootstrap.agent_runtime import (
     run_agent as _run_agent,
 )
+from opencollab.bootstrap.config import resolve_thinking_params
 from opencollab.bootstrap.runtime_context import build_runtime_context
 from opencollab.bootstrap.scheduler_factory import build_scheduler
 from opencollab.bootstrap.tool_registry import build_tools_for_role
@@ -314,7 +315,7 @@ async def run_agent(
         temperature=config.get("temperature", 0.2),
         top_p=config.get("top_p"),
         thinking=config.get("thinking", False),
-        thinking_params=dict(config.get("thinking_params") or {}),
+        thinking_params=resolve_thinking_params(config.get("thinking_params")),
     )
     _claim_artifacts(artifacts)
     owned_environment = environment is None

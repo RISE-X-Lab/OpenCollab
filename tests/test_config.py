@@ -12,6 +12,7 @@ from opencollab.bootstrap.config import (
     api_key_env_precedence,
     build_config,
     missing_api_key,
+    resolve_thinking_params,
 )
 
 _FILTER_ENV = "OPENCOLLAB_FILTER_MESSAGES"
@@ -413,6 +414,11 @@ def test_thinking_params_override_rejects_non_json_values():
 
     with pytest.raises(ValueError, match="JSON-serializable"):
         build_config(overrides={"thinking_params": {"cutoff": date(2026, 8, 7)}})
+
+
+def test_resolve_thinking_params_preserves_explicit_empty_mapping():
+    assert resolve_thinking_params({}) == {}
+    assert resolve_thinking_params(None) == {"enable_thinking": True}
 
 
 @pytest.mark.parametrize("raw", ["not-json", "[]"])

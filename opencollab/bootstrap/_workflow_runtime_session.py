@@ -19,8 +19,8 @@ from opencollab.bootstrap._workflow_runtime_state import WORKFLOW_AGENT_PROMPT
 from opencollab.bootstrap.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_THINKING,
-    DEFAULT_THINKING_PARAMS,
     DEFAULT_TOP_P,
+    resolve_thinking_params,
 )
 from opencollab.bootstrap.session_factory import build_session, workflow_transcript_path
 from opencollab.domain.agent import Agent
@@ -75,7 +75,7 @@ class WorkflowSessionFactory:
         self._top_p = top_p
         self._max_output_tokens = max_output_tokens
         self._thinking = thinking
-        self._thinking_params = thinking_params if thinking_params is not None else dict(DEFAULT_THINKING_PARAMS)
+        self._thinking_params = resolve_thinking_params(thinking_params)
         # Run folder where each one-shot session's transcript is autosaved. When
         # set, every ``build_workflow_session`` gets its own ``<seq>_<role>.json``
         # so the AutoSaveSubscriber (wired by ``build_session`` once an
@@ -196,7 +196,7 @@ def build_workflow_context(
         top_p=cfg.get("top_p", DEFAULT_TOP_P),
         max_output_tokens=int(cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)),
         thinking=bool(cfg.get("thinking", DEFAULT_THINKING)),
-        thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
+        thinking_params=resolve_thinking_params(cfg.get("thinking_params")),
         save_dir=save_dir,
         env=environment,
     )

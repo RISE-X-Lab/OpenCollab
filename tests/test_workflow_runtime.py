@@ -103,6 +103,18 @@ async def test_built_context_injects_sampling_and_output_limits(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_built_context_preserves_explicit_empty_thinking_params(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    ctx = workflow_runtime.build_workflow_context(
+        cfg=_cfg(thinking=True, thinking_params={})
+    )
+
+    await ctx.agent("solve")
+
+    assert calls[0]["agent"].thinking_params == {}
+
+
+@pytest.mark.asyncio
 async def test_built_context_threads_session_limits_and_system_prompt(monkeypatch):
     calls = _patch_build_session(monkeypatch)
     ctx = workflow_runtime.build_workflow_context(
