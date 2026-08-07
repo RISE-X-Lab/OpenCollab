@@ -71,6 +71,22 @@ async def test_built_context_preserves_falsey_injected_environment(monkeypatch):
     assert ctx._tree_probe._env is environment
 
 
+def test_concrete_factory_rejects_unsupported_isolation_before_building_session(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    cfg = _cfg()
+    factory = workflow_runtime.WorkflowSessionFactory(
+        model=cfg["model"],
+        provider=cfg["provider"],
+        api_key=cfg["api_key"],
+        base_url=cfg["base_url"],
+    )
+
+    with pytest.raises(ValueError, match="isolation is not available"):
+        factory.build_workflow_session(prompt="solve", budget=1, isolation=True)
+
+    assert calls == []
+
+
 @pytest.mark.asyncio
 async def test_built_context_injects_sampling_and_output_limits(monkeypatch):
     calls = _patch_build_session(monkeypatch)
