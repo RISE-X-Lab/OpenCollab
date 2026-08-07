@@ -17,6 +17,7 @@ from session_characterization_test_support import (
 
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.event_bus import EventBus
+from opencollab.application.scheduler_types import LaunchSpec
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import load_session
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
@@ -79,6 +80,50 @@ def test_restore_of_unknown_or_retired_phase_string_falls_back_to_idle(tmp_path,
 
     loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
     assert loaded.state.phase is SessionPhase.IDLE
+
+
+@pytest.mark.parametrize("operation", ["restore", "save"])
+def test_apply_launch_can_retry_after_persistence_failure(
+    tmp_path, monkeypatch, operation
+):
+    session = Session(agent=FakeAgent(), llm=FakeLLMClient())
+    path = tmp_path / "session.json"
+    path.write_text("{}", encoding="utf-8")
+    calls = 0
+
+    def flaky(_path):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("transient persistence failure")
+
+    monkeypatch.setattr(session, operation, flaky)
+    launch = (
+        LaunchSpec(session_file=str(path))
+        if operation == "restore"
+        else LaunchSpec(auto_save_path=str(path))
+    )
+    if operation == "save":
+        path.unlink()
+
+    with pytest.raises(OSError, match="transient"):
+        session.apply_launch(launch)
+    session.apply_launch(launch)
+    session.apply_launch(launch)
+
+    assert calls == 2
+
+
+def test_apply_launch_rejects_conflicting_spec_after_success(tmp_path, monkeypatch):
+    session = Session(agent=FakeAgent(), llm=FakeLLMClient())
+    monkeypatch.setattr(session, "save", lambda _path: None)
+    session.apply_launch(LaunchSpec(auto_save_path=str(tmp_path / "first.json")))
+
+    with pytest.raises(ValueError, match="different launch specification"):
+        session.apply_launch(
+            LaunchSpec(auto_save_path=str(tmp_path / "second.json"))
+        )
+
 
 def test_restore_pairs_reused_tool_call_ids_in_transcript_order(tmp_path):
     agent = FakeAgent()
