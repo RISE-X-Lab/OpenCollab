@@ -50,3 +50,11 @@ class _BudgetLease:
     def remaining(self) -> int:
         spent = sum(max(0, int(getattr(s, "used_tokens", 0))) for s in self.sessions)
         return max(0, self.total - spent)
+
+
+@dataclass
+class _ConcurrencyPermit:
+    """One semaphore slot owned by a task and reusable by nested agent calls."""
+
+    owner: asyncio.Task[Any] | None
+    pending_cleanup_tasks: list[asyncio.Task[Any]]
