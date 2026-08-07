@@ -21,8 +21,10 @@ from opencollab.application.shaping.pipeline import (
     DEFAULT_HISTORY_TRIGGER_TOKENS,
     _droppable_region,
     approx_messages_tokens,
+    is_complete_tool_exchange,
     matched_tool_result_occurrences,
     pinned_free_region,
+    span_is_safe_to_compact,
 )
 
 # Tool-output clearing (ToolOutputClearShaper). Old results from these bulky,
@@ -170,19 +172,42 @@ class OldHistorySnipShaper(_ReactiveHistoryShaper):
 
         running = self._estimate(messages)
         drop: set[int] = set()
+        replacements: dict[int, dict[str, Any]] = {}
         for gi in range(lo, hi):
             start, end = spans[gi]
             leader = messages[start]
             if not (leader.get("role") == "assistant" and leader.get("tool_calls")):
                 continue  # preserve user / assistant-text turns
-            drop.update(range(start, end))
-            running -= self._estimate(messages[start:end])
+            if not is_complete_tool_exchange(messages, spans[gi]):
+                continue
+
+            content = leader.get("content")
+            reasoning = leader.get("reasoning_content") or leader.get("reasoning")
+            if reasoning and not content:
+                continue  # cannot safely split provider-signed reasoning
+            replacement = None
+            if content:
+                replacement = {
+                    key: value for key, value in leader.items() if key != "tool_calls"
+                }
+                replacements[start] = replacement
+                drop.update(range(start + 1, end))
+            else:
+                drop.update(range(start, end))
+
+            removed = self._estimate(messages[start:end])
+            retained = self._estimate([replacement]) if replacement is not None else 0
+            running -= max(0, removed - retained)
             if running <= self.target_tokens:
                 break
 
         if not drop:
             return messages
-        return [m for i, m in enumerate(messages) if i not in drop]
+        return [
+            replacements.get(index, message)
+            for index, message in enumerate(messages)
+            if index not in drop
+        ]
 
 
 class AutoCompactShaper(_ReactiveHistoryShaper):
@@ -254,6 +279,12 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
         spans, lo, hi = _droppable_region(messages, self.keep_recent_groups)
         # Never fold a pinned source (identity/team/task) into the summary.
         lo, hi = pinned_free_region(messages, spans, lo, hi)
+        while lo < hi and not span_is_safe_to_compact(messages, spans[lo]):
+            lo += 1
+        safe_end = lo
+        while safe_end < hi and span_is_safe_to_compact(messages, spans[safe_end]):
+            safe_end += 1
+        hi = safe_end
         if lo >= hi:
             return messages
         start, end = spans[lo][0], spans[hi - 1][1]
