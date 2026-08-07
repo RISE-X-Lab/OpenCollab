@@ -192,6 +192,21 @@ def test_build_repo_map_balances_root_directories_and_other_files(tmp_path):
     assert "files omitted" in result
 
 
+def test_build_repo_map_reserves_root_siblings_before_directory_children(tmp_path):
+    for index in range(31):
+        directory = tmp_path / f"directory-{index:02}"
+        directory.mkdir()
+        (directory / "child.py").write_text("", encoding="utf-8")
+    root_files = ("AGENTS.md", "Makefile", "requirements.txt", "uv.lock")
+    for name in root_files:
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    result = build_repo_map(str(tmp_path), max_entries=35)
+
+    for name in root_files:
+        assert f"\n{name}\n" in f"\n{result}\n"
+
+
 def test_build_repo_map_missing_or_empty_workspace_returns_empty(tmp_path):
     assert build_repo_map(str(tmp_path / "nope")) == ""
     empty = tmp_path / "empty"

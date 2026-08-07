@@ -194,11 +194,8 @@ def _walk(path: str, depth: int, budget: _WalkBudget) -> None:
     def root_key(entry: os.DirEntry[str]) -> tuple[bool, bool, str]:
         is_directory = entry.is_dir(follow_symlinks=False)
         return (
-            not (
-                entry.name in ROOT_PRIORITY_FILES
-                and not is_directory
-            ),
-            not is_directory,
+            is_directory,
+            not is_directory and entry.name not in ROOT_PRIORITY_FILES,
             entry.name,
         )
 
@@ -273,26 +270,58 @@ def _walk(path: str, depth: int, budget: _WalkBudget) -> None:
         )
         candidates.sort(key=root_key)
     indent = "  " * depth
-    for entry in candidates:
-        if entry.is_dir(follow_symlinks=False):
-            if not budget.append(f"{indent}{entry.name}/"):
-                return
-            if depth + 1 < budget.max_depth:
-                _walk(entry.path, depth + 1, budget)
-        else:
-            if not budget.append(f"{indent}{entry.name}"):
-                return
     omitted = kept_entries - len(candidates)
+    omission_line: str | None = None
     if completed_scan and omitted > 0:
         shown_directories = sum(
             entry.is_dir(follow_symlinks=False) for entry in candidates
         )
         shown_files = len(candidates) - shown_directories
-        budget.append(
+        omission_line = (
             f"{indent}... ({omitted} more) — "
             f"{kept_directories - shown_directories} directories, "
             f"{kept_files - shown_files} files omitted"
         )
+
+    def entry_line(entry: os.DirEntry[str]) -> str:
+        suffix = "/" if entry.is_dir(follow_symlinks=False) else ""
+        return f"{indent}{entry.name}{suffix}"
+
+    for index, entry in enumerate(candidates):
+        if entry.is_dir(follow_symlinks=False):
+            if not budget.append(entry_line(entry)):
+                return
+            if depth + 1 < budget.max_depth:
+                if depth == 0:
+                    reserved_lines = [
+                        entry_line(candidate)
+                        for candidate in candidates[index + 1 :]
+                    ]
+                    if omission_line is not None:
+                        reserved_lines.append(omission_line)
+                    prior_max_entries = budget.max_entries
+                    prior_max_chars = budget.max_chars
+                    budget.max_entries = max(
+                        budget.shown_entries,
+                        prior_max_entries - len(reserved_lines),
+                    )
+                    budget.max_chars = max(
+                        budget.body_chars,
+                        prior_max_chars
+                        - sum(len(line) + 1 for line in reserved_lines),
+                    )
+                    try:
+                        _walk(entry.path, depth + 1, budget)
+                    finally:
+                        budget.max_entries = prior_max_entries
+                        budget.max_chars = prior_max_chars
+                else:
+                    _walk(entry.path, depth + 1, budget)
+        else:
+            if not budget.append(entry_line(entry)):
+                return
+    if omission_line is not None:
+        budget.append(omission_line)
 
 
 async def build_repo_map_via_env(
