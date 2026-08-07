@@ -117,6 +117,11 @@ def _validate_thinking_params(value: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+def resolve_thinking_params(value: dict[str, Any] | None) -> dict[str, Any]:
+    """Copy explicit provider parameters, defaulting only when absent."""
+    return dict(DEFAULT_THINKING_PARAMS if value is None else value)
+
+
 class OpenCollabConfig(BaseModel):
     """Runtime configuration for OpenCollab."""
 
