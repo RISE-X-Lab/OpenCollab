@@ -729,8 +729,9 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
     async def parallel(self, thunks: Sequence[Thunk]) -> list[Any]:
         """Run thunks concurrently behind the shared semaphore.
 
-        A thunk that raises yields ``None`` in its slot; the gather always
-        completes. Result order matches input order.
+        A thunk that raises yields ``None`` in its slot, except a budget stop
+        which is re-raised after every started slot has settled. Result order
+        matches input order.
         """
 
         async def guard(thunk: Thunk) -> Any:
@@ -741,7 +742,19 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
             except Exception:  # noqa: BLE001 — failures localize to one slot
                 return None
 
-        return list(await asyncio.gather(*(guard(t) for t in thunks)))
+        results = list(
+            await asyncio.gather(
+                *(guard(thunk) for thunk in thunks),
+                return_exceptions=True,
+            )
+        )
+        for result in results:
+            if isinstance(result, WorkflowBudgetExceeded):
+                raise result
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return results
 
     # -- pipeline ---------------------------------------------------------- #
 
@@ -751,7 +764,8 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         There is NO barrier between stages: item A may be in stage 2 while item
         B is still in stage 1. A stage raising drops that item's result to
         ``None`` and skips its remaining stages; other items are unaffected.
-        Result order matches input order.
+        Result order matches input order. A budget stop is re-raised only after
+        every started item has settled.
         """
 
         async def flow(item: Any, idx: int) -> Any:
@@ -765,9 +779,19 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
                     return None
             return result
 
-        return list(
-            await asyncio.gather(*(flow(item, i) for i, item in enumerate(items)))
+        results = list(
+            await asyncio.gather(
+                *(flow(item, i) for i, item in enumerate(items)),
+                return_exceptions=True,
+            )
         )
+        for result in results:
+            if isinstance(result, WorkflowBudgetExceeded):
+                raise result
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return results
 
     # -- observability ----------------------------------------------------- #
 
