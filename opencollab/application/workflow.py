@@ -943,7 +943,12 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
 
     # -- pipeline ---------------------------------------------------------- #
 
-    async def pipeline(self, items: Sequence[Any], *stages: Stage) -> list[Any]:
+    async def pipeline(
+        self,
+        items: Sequence[Any],
+        *stages: Stage,
+        stop_on_none: bool = True,
+    ) -> list[Any]:
         """Flow each item through ``stages`` independently and concurrently.
 
         There is NO barrier between stages: item A may be in stage 2 while item
@@ -958,6 +963,8 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
             for stage in stages:
                 try:
                     result = await stage(result, item, idx)
+                    if result is None and stop_on_none:
+                        return None
                 except WorkflowBudgetExceeded:
                     raise
                 except Exception:  # noqa: BLE001 — drop this item, skip its rest

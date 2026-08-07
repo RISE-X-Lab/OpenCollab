@@ -256,6 +256,45 @@ async def test_pipeline_stage_exception_drops_item_and_skips_rest():
 
 
 @pytest.mark.asyncio
+async def test_pipeline_stops_after_agent_failure_returns_none():
+    ctx = WorkflowContext(FakeFactory([FakeSession(boom=True)]))
+    later_inputs: list[Any] = []
+
+    async def agent_stage(_previous: Any, _item: str, _idx: int) -> Any:
+        return await ctx.agent("fail")
+
+    async def later_stage(previous: Any, _item: str, _idx: int) -> str:
+        later_inputs.append(previous)
+        return "unexpected"
+
+    assert await ctx.pipeline(["item"], agent_stage, later_stage) == [None]
+    assert later_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_pipeline_can_explicitly_continue_after_business_none():
+    seen: list[Any] = []
+
+    async def returns_none(_previous: Any, _item: str, _idx: int) -> None:
+        return None
+
+    async def consume_none(previous: Any, _item: str, _idx: int) -> str:
+        seen.append(previous)
+        return "continued"
+
+    ctx = WorkflowContext(FakeFactory([]))
+    result = await ctx.pipeline(
+        ["item"],
+        returns_none,
+        consume_none,
+        stop_on_none=False,
+    )
+
+    assert result == ["continued"]
+    assert seen == [None]
+
+
+@pytest.mark.asyncio
 async def test_pipeline_passes_index_and_original_item():
     captured: list[tuple[Any, str, int]] = []
 
