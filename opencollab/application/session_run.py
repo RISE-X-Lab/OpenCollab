@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import math
 import time
 from typing import Any, Callable
@@ -115,6 +116,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         low_yield_m: int = DEFAULT_LOW_YIELD_M,
     ):
         self.agent = agent
+        self._initial_agent_tools = tuple(getattr(agent, "tools", ()) or ())
+        self._initial_agent_tool_choice = copy.deepcopy(
+            getattr(agent, "tool_choice", None)
+        )
         self.state = state
         self.llm = llm
         self.event_publisher = event_publisher
@@ -191,6 +196,13 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # Successful responses that arrived only after their caller timeout.
         # They count against the budget but never enter a later turn's history.
         self._late_provider_usage: tuple[int, ...] = ()
+
+    def reset_runtime_for_user_turn(self) -> None:
+        """Restore agent capabilities narrowed by the previous turn."""
+        self.agent.tools = list(self._initial_agent_tools)
+        self.agent.tool_choice = copy.deepcopy(self._initial_agent_tool_choice)
+        self._pending_tool_allowlist = None
+        self._pending_tool_gate_label = None
 
     @property
     def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:

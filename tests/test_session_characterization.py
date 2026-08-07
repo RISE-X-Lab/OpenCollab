@@ -139,6 +139,31 @@ def test_add_user_message_appends_resets_hashes_and_autosaves():
     assert "timestamp" in saved_messages[-1]
 
 
+def test_new_user_turn_restores_agent_tools_and_wind_down_latches():
+    original_tool = object()
+    forced_submit_tool = object()
+    agent = FakeAgent(tools=[original_tool])
+    agent.tool_choice = None
+    session = Session(agent=agent, llm=FakeLLMClient())
+    session.agent.tools = [forced_submit_tool]
+    session.agent.tool_choice = {
+        "type": "function",
+        "function": {"name": "submit_findings"},
+    }
+    session.state.wind_down_done = True
+    session.state.wind_down_attempts = 2
+    session.state.wind_down_token_mark = 123
+    session.state.set_phase(SessionPhase.STOPPED)
+
+    run(session.add_user_message("start a fresh turn"))
+
+    assert session.agent.tools == [original_tool]
+    assert session.agent.tool_choice is None
+    assert session.state.wind_down_done is False
+    assert session.state.wind_down_attempts == 0
+    assert session.state.wind_down_token_mark == 0
+
+
 def test_session_rejects_a_second_queued_user_turn_before_the_first_runs():
     session = Session(agent=FakeAgent(), llm=FakeLLMClient())
     run(session.add_user_message("first queued turn"))
