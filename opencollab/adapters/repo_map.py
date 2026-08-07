@@ -14,7 +14,6 @@ import os
 from dataclasses import dataclass, field
 
 from opencollab.adapters.env import Environment
-from opencollab.adapters.tools._output import truncate
 
 MAX_MAP_CHARS = 4_000
 MAX_MAP_DEPTH = 3
@@ -44,6 +43,37 @@ _TRUNCATED_MARKER = "... (repository map truncated; traversal budget reached)"
 
 def _keep(name: str) -> bool:
     return not name.startswith(".") and name not in SKIP_DIR_NAMES
+
+
+def _render_bounded_lines(lines: list[str], max_chars: int) -> str:
+    if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars <= 0:
+        raise ValueError("max_chars must be a positive integer")
+    body = "\n".join(lines)
+    if len(body) <= max_chars:
+        return body
+
+    selected: list[str] = []
+    for line in lines:
+        omitted = len(lines) - len(selected) - 1
+        suffix = (
+            [f"... ({omitted} entries omitted; repository map truncated)"]
+            if omitted
+            else []
+        )
+        candidate = "\n".join([*selected, line, *suffix])
+        if len(candidate) > max_chars:
+            break
+        selected.append(line)
+
+    omitted = len(lines) - len(selected)
+    marker = f"... ({omitted} entries omitted; repository map truncated)"
+    while selected and len("\n".join([*selected, marker])) > max_chars:
+        selected.pop()
+        omitted += 1
+        marker = f"... ({omitted} entries omitted; repository map truncated)"
+    if len(marker) > max_chars:
+        return ""
+    return "\n".join([*selected, marker])
 
 
 def build_repo_map(
@@ -116,10 +146,10 @@ class _WalkBudget:
 
 
 def _render_map(lines: list[str], *, max_chars: int, truncated: bool) -> str:
-    body = "\n".join(lines)
+    rendered_lines = list(lines)
     if truncated:
-        body = f"{body}\n{_TRUNCATED_MARKER}" if body else _TRUNCATED_MARKER
-    return f"{MAP_HEADER}\n\n" + truncate(body, max_chars)
+        rendered_lines.append(_TRUNCATED_MARKER)
+    return f"{MAP_HEADER}\n\n" + _render_bounded_lines(rendered_lines, max_chars)
 
 
 def _walk(path: str, depth: int, budget: _WalkBudget) -> None:
