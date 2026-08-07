@@ -26,6 +26,8 @@ from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
 
+_MAX_DELIVERY_ROUTE_ATTEMPTS = 2
+
 
 class LifecycleMixin:
     """Spawn, drive, finalize, and wake agents in the delegation tree."""
@@ -222,6 +224,7 @@ class LifecycleMixin:
         self.table.entries.pop(aid, None)
         self._sessions.pop(aid, None)
         self._spawn_origin.pop(aid, None)
+        self._delivery_route_failures.pop(aid, None)
         self._startup_tasks.pop(aid, None)
         self._startup_envs.pop(aid, None)
         self._startup_origin.pop(aid, None)
@@ -454,12 +457,121 @@ class LifecycleMixin:
                 error=error,
             )
         except PendingRowError as exc:
-            self._spawn_origin.pop(child_aid, None)
+            retry_tool_call_id = await self._recover_delivery_route(
+                child_aid,
+                parent_aid,
+                exc,
+            )
+            if retry_tool_call_id is not None:
+                try:
+                    await self._wake(
+                        parent_aid,
+                        retry_tool_call_id,
+                        result,
+                        status,
+                        child_aid=child_aid,
+                        error=error,
+                    )
+                    return
+                except PendingRowError as retry_exc:
+                    # The unique row disappeared or changed between discovery
+                    # and fill. Count that as the bounded final route failure.
+                    exc = retry_exc
+                    await self._recover_delivery_route(child_aid, parent_aid, retry_exc)
             # A misrouted completion must surface loudly, never silently succeed.
             logger.error("misrouted completion from child %s: %s", child_aid, exc)
             await self._safe_emit_scheduler_event(
                 self._events.agent_failed(parent_aid, self._role_of(parent_aid), str(exc))
             )
+
+    async def _recover_delivery_route(
+        self,
+        child_aid: int,
+        parent_aid: int,
+        cause: PendingRowError,
+    ) -> str | None:
+        """Keep one failed completion route retryable, then fail it explicitly.
+
+        A pending row is identified only by its ``ref`` pointing to the child;
+        this never writes the child's result into an unrelated tool row.  The
+        first failure is retained for a publication race.  A second unresolved
+        failure marks only rows that explicitly reference this child as failed,
+        so an unrelated pending result is never overwritten.
+        """
+        attempts = self._delivery_route_failures.get(child_aid, 0) + 1
+        self._delivery_route_failures[child_aid] = attempts
+        parent_scb = self.table.get(parent_aid)
+        parent_session = self._sessions.get(parent_aid)
+        if parent_scb is None or parent_session is None:
+            self._spawn_origin.pop(child_aid, None)
+            self._delivery_route_failures.pop(child_aid, None)
+            return None
+
+        lock = self._locks.setdefault(parent_aid, asyncio.Lock())
+        should_resume = False
+        async with lock:
+            table = parent_scb.state.pending_events
+            child_rows = [
+                tool_call_id
+                for tool_call_id, row in table.rows.items()
+                if row.status is RowStatus.PENDING and row.ref == child_aid
+            ]
+            if len(child_rows) == 1:
+                return child_rows[0]
+            if attempts < _MAX_DELIVERY_ROUTE_ATTEMPTS:
+                return None
+
+            reason = (
+                "Error: child completion routing failed after "
+                f"{attempts} attempts: {cause}"
+            )
+            # We cannot select one row safely. Fail only rows that claim this
+            # child; never write the child result (or a failure) into unrelated
+            # pending work. With no matching row, this completion owns no
+            # outstanding wait, so detaching it cannot strand the parent.
+            for tool_call_id in child_rows:
+                table.fill(
+                    tool_call_id,
+                    result=reason,
+                    status=RowStatus.FAILED,
+                    error=reason,
+                )
+            self._spawn_origin.pop(child_aid, None)
+            self._delivery_route_failures.pop(child_aid, None)
+            in_flight = self._tasks.get(parent_aid)
+            should_resume = (
+                not self._shutting_down
+                and parent_scb.state.phase is SessionPhase.AWAITING_EVENTS
+                and table.is_complete()
+                and (in_flight is None or in_flight.done())
+            )
+            if should_resume:
+                self._reserve_turn_lease(parent_aid)
+                self._tasks[parent_aid] = asyncio.create_task(
+                    self._drive_agent(parent_aid, parent_session)
+                )
+            elif (
+                not self._shutting_down
+                and parent_scb.state.phase is SessionPhase.AWAITING_EVENTS
+                and table.is_complete()
+                and in_flight is not None
+                and not in_flight.done()
+            ):
+                in_flight.add_done_callback(
+                    lambda finished: asyncio.create_task(
+                        self._resume_after_parent_task(
+                            parent_aid,
+                            parent_session,
+                            finished,
+                        )
+                    )
+                )
+
+        if should_resume:
+            await self._safe_emit_scheduler_event(
+                self._events.agent_resumed(parent_aid, self._role_of(parent_aid))
+            )
+        return None
 
     async def _wake(
         self,
@@ -482,6 +594,7 @@ class LifecycleMixin:
         if parent_scb is None or parent_session is None:
             if child_aid is not None:
                 self._spawn_origin.pop(child_aid, None)
+                self._delivery_route_failures.pop(child_aid, None)
             return
 
         lock = self._locks.setdefault(parent_aid, asyncio.Lock())
@@ -507,6 +620,7 @@ class LifecycleMixin:
             )
             if child_aid is not None:
                 self._spawn_origin.pop(child_aid, None)
+                self._delivery_route_failures.pop(child_aid, None)
                 if not cleanup_forced:
                     self._delivery_committed.add(child_aid)
             in_flight = self._tasks.get(parent_aid)
