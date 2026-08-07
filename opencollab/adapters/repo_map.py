@@ -24,6 +24,19 @@ MAX_ENTRIES_PER_DIR = 30
 # Bulky generated/vendored dirs that never help orientation. Hidden entries
 # (".git", ".venv", ...) are skipped by their dot prefix.
 SKIP_DIR_NAMES = frozenset({"__pycache__", "node_modules", "dist", "build", "venv"})
+ROOT_PRIORITY_FILES = frozenset(
+    {
+        "Cargo.toml",
+        "README",
+        "README.md",
+        "go.mod",
+        "package.json",
+        "pyproject.toml",
+        "setup.py",
+        "team.yaml",
+        "team.yml",
+    }
+)
 
 MAP_HEADER = "## Repository layout"
 _TRUNCATED_MARKER = "... (repository map truncated; traversal budget reached)"
@@ -131,14 +144,58 @@ def _walk(path: str, depth: int, budget: _WalkBudget) -> None:
                 if not _keep(entry.name):
                     continue
                 kept_entries += 1
+                entry_key = (
+                    not (
+                        depth == 0
+                        and entry.name in ROOT_PRIORITY_FILES
+                        and not entry.is_dir(follow_symlinks=False)
+                    ),
+                    not entry.is_dir(follow_symlinks=False),
+                    entry.name,
+                )
                 if len(candidates) < MAX_ENTRIES_PER_DIR:
                     candidates.append(entry)
+                else:
+                    worst_index = max(
+                        range(len(candidates)),
+                        key=lambda index: (
+                            not (
+                                depth == 0
+                                and candidates[index].name in ROOT_PRIORITY_FILES
+                                and not candidates[index].is_dir(follow_symlinks=False)
+                            ),
+                            not candidates[index].is_dir(follow_symlinks=False),
+                            candidates[index].name,
+                        ),
+                    )
+                    worst = candidates[worst_index]
+                    worst_key = (
+                        not (
+                            depth == 0
+                            and worst.name in ROOT_PRIORITY_FILES
+                            and not worst.is_dir(follow_symlinks=False)
+                        ),
+                        not worst.is_dir(follow_symlinks=False),
+                        worst.name,
+                    )
+                    if entry_key < worst_key:
+                        candidates[worst_index] = entry
             else:
                 budget.truncated = True
                 completed_scan = False
     except OSError:
         return
-    candidates.sort(key=lambda entry: (not entry.is_dir(), entry.name))
+    candidates.sort(
+        key=lambda entry: (
+            not (
+                depth == 0
+                and entry.name in ROOT_PRIORITY_FILES
+                and not entry.is_dir(follow_symlinks=False)
+            ),
+            not entry.is_dir(follow_symlinks=False),
+            entry.name,
+        )
+    )
     indent = "  " * depth
     for entry in candidates:
         if entry.is_dir(follow_symlinks=False):
