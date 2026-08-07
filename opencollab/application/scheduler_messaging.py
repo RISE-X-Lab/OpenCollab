@@ -19,6 +19,11 @@ import xml.etree.ElementTree as ET
 from typing import Any
 from xml.sax.saxutils import escape, quoteattr
 
+from opencollab.application._scheduler_constants import (
+    MAX_TEAMMATE_INBOX_BYTES,
+    MAX_TEAMMATE_INBOX_MESSAGES,
+    MAX_TEAMMATE_MESSAGE_BYTES,
+)
 from opencollab.application.scheduler_types import QueuedTeammateMessage
 from opencollab.domain.session import SessionPhase
 
@@ -56,6 +61,20 @@ class MessagingMixin:
             if self._shutting_down:
                 return "Error: scheduler is shutting down."
             xml = self._format_teammate_message(from_aid, summary, content)
+            message_bytes = self._encoded_size(xml)
+            if message_bytes > MAX_TEAMMATE_MESSAGE_BYTES:
+                return (
+                    "Error: teammate message exceeds the "
+                    f"{MAX_TEAMMATE_MESSAGE_BYTES}-byte limit."
+                )
+            inbox = self._message_inbox.get(to_aid, [])
+            if len(inbox) >= MAX_TEAMMATE_INBOX_MESSAGES:
+                return f"Error: teammate inbox for aid {to_aid} is full (backpressure)."
+            if self._inbox_size(inbox) + message_bytes > MAX_TEAMMATE_INBOX_BYTES:
+                return (
+                    f"Error: teammate inbox for aid {to_aid} exceeds the "
+                    f"{MAX_TEAMMATE_INBOX_BYTES}-byte limit (backpressure)."
+                )
             target.state.queue_pending_user_message(
                 {
                     "role": "user",
@@ -75,7 +94,8 @@ class MessagingMixin:
                 xml=xml,
                 sent_at=sent_at,
             )
-            self._message_inbox.setdefault(to_aid, []).append(message)
+            inbox.append(message)
+            self._message_inbox[to_aid] = inbox
             self._autosave_session(to_aid)
             delivered_events = await self._drain_message_inbox_locked(to_aid)
         # Scheduler events are observational and may re-enter send_message. Emit
@@ -193,6 +213,14 @@ class MessagingMixin:
             + "\n".join(envelopes)
             + "\n</teammate-messages>"
         )
+
+    @staticmethod
+    def _encoded_size(value: str) -> int:
+        return len(value.encode("utf-8"))
+
+    @classmethod
+    def _inbox_size(cls, inbox: list[QueuedTeammateMessage]) -> int:
+        return sum(cls._encoded_size(message.xml) for message in inbox)
 
     async def _drain_message_inbox(self, aid: int, *, allow_current_task: bool = False) -> None:
         lock = self._locks.setdefault(aid, asyncio.Lock())
