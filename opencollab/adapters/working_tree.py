@@ -44,9 +44,9 @@ class EnvWorkingTreeProbe:
 
     ``changed()`` runs ``git status --porcelain`` — non-empty output means the
     working tree has uncommitted changes (modified, added, or untracked files).
-    Both methods are best-effort: any exec failure is treated as "no change"
-    (``changed`` -> ``False``) / empty diff so a flaky git call never blocks a
-    workflow. The workflow swallows even those to ``None`` via ``ctx.tree_changed``.
+    Git failures or incomplete captured output raise instead of being
+    misreported as "clean" or as a complete patch. ``WorkflowContext`` converts
+    those failures to its explicit ``None``/unknown result.
     """
 
     def __init__(self, env: Any, *, workspace: str | None = None) -> None:
