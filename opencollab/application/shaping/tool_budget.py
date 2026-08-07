@@ -19,6 +19,8 @@ class PerToolResultBudgetShaper:
     """
 
     def __init__(self, max_chars: int = DEFAULT_TOOL_RESULT_BUDGET):
+        if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars <= 0:
+            raise ValueError("max_chars must be a positive integer")
         self.max_chars = max_chars
 
     def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -33,12 +35,18 @@ class PerToolResultBudgetShaper:
         content = message.get("content")
         if not isinstance(content, str) or len(content) <= self.max_chars:
             return message
-        # Reserve headroom so head + notice still fits the budget. The notice is
-        # short and bounded; a fixed 200-char reserve covers it comfortably.
-        head_len = max(0, self.max_chars - 200)
-        dropped = len(content) - head_len
-        notice = (
-            f"\n\n[truncated {dropped} chars — re-read a narrower range "
-            f"(file_read with offset/limit, or grep) to see the rest]"
-        )
-        return {**message, "content": content[:head_len] + notice}
+        def notice(dropped: int) -> str:
+            return (
+                f"\n\n[truncated {dropped} chars — re-read a narrower range "
+                f"(file_read with offset/limit, or grep) to see the rest]"
+            )
+
+        # The number of dropped characters affects the marker length. Recompute
+        # until its digit width stabilizes, then enforce the cap defensively.
+        head_len = 0
+        for _ in range(3):
+            marker = notice(len(content) - head_len)
+            head_len = max(0, self.max_chars - len(marker))
+        marker = notice(len(content) - head_len)
+        shaped_content = content[:head_len] + marker
+        return {**message, "content": shaped_content[: self.max_chars]}
