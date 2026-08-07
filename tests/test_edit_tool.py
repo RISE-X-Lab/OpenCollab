@@ -1,4 +1,5 @@
 import asyncio
+from hashlib import sha256
 
 import pytest
 
@@ -284,3 +285,62 @@ def test_str_replace_success_reports_content_changed(tmp_path):
 
     assert "content changed" in result
     assert target.read_text(encoding="utf-8") == "hello there\n"
+
+
+@pytest.mark.parametrize(
+    ("tool", "params"),
+    [
+        (
+            FileWriteTool(),
+            {
+                "path": "f.py",
+                "mode": "str_replace",
+                "old_str": "target",
+                "new_str": "changed",
+            },
+        ),
+        (
+            ApplyPatchTool(),
+            {
+                "path": "f.py",
+                "mode": "unified_diff",
+                "patch": "@@ -1 +1 @@\n-target\n+changed\n",
+            },
+        ),
+    ],
+)
+def test_non_utf8_edit_attempt_is_explicit_and_preserves_bytes(tmp_path, tool, params):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    original = b"prefix\ntarget\xffkeep\n"
+    target.write_bytes(original)
+    before = sha256(original).hexdigest()
+
+    result = run(tool.execute_with_runtime(params, _runtime(ws)))
+
+    assert result == "Error: refusing to edit non-UTF-8 file: invalid UTF-8 at byte 13."
+    assert target.read_bytes() == original
+    assert sha256(target.read_bytes()).hexdigest() == before
+
+
+def test_str_replace_preserves_legal_utf8_with_cjk(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text("\u4f60\u597d\uff0c\u4e16\u754c\n", encoding="utf-8")
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "str_replace",
+                "old_str": "\u4e16\u754c",
+                "new_str": "OpenCollab",
+            },
+            _runtime(ws),
+        )
+    )
+
+    assert "Replaced in" in result
+    assert target.read_text(encoding="utf-8") == "\u4f60\u597d\uff0cOpenCollab\n"

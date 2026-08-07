@@ -86,6 +86,8 @@ class FileReadTool(Tool):
             return f"Error: file not found: {path}"
         except PermissionError as e:
             return f"Error: {e}"
+        except UnicodeDecodeError as e:
+            return f"Error: file is not valid UTF-8: invalid UTF-8 at byte {e.start}."
 
         lines = content.splitlines()
         total = len(lines)
@@ -200,6 +202,8 @@ class FileWriteTool(Tool):
                 return f"Error: unknown mode '{mode}'. Use 'create' or 'str_replace'."
         except PermissionError as e:
             return f"Error: {e}"
+        except UnicodeDecodeError as e:
+            return f"Error: refusing to edit non-UTF-8 file: invalid UTF-8 at byte {e.start}."
 
     async def _create(
         self, env: Any, path: str, content: str, *, overwrite: bool = False
