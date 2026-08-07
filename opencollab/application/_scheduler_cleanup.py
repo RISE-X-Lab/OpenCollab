@@ -72,20 +72,23 @@ class SchedulerCleanupMixin:
         startup_aids = set(self._startup_tasks)
         origins = {**self._startup_origin, **self._spawn_origin}
         interrupted_deliveries = set(self._message_delivery_tasks)
+        public_run_tasks = _unique_task_owners(
+            ((aid, task) for task, aid in self._active_run_tasks.items()),
+        )
         execution_tasks = _unique_task_owners(
             self._tasks.items(),
             self._startup_tasks.items(),
         )
         delivery_tasks = _unique_task_owners(
             self._message_delivery_tasks.items(),
-            ((0, task) for task in self._active_run_tasks),
+            public_run_tasks,
         )
         tracked_tasks = _unique_task_owners(execution_tasks, delivery_tasks)
         running_execution = {
             (aid, task) for aid, task in execution_tasks if not task.done()
         }
-        running_delivery = {
-            (aid, task) for aid, task in delivery_tasks if not task.done()
+        running_public_turns = {
+            (aid, task) for aid, task in public_run_tasks if not task.done()
         }
         all_tasks = {task for _aid, task in tracked_tasks}
         pending = await cancel_tasks_and_wait(all_tasks, timeout=timeout)
@@ -110,8 +113,8 @@ class SchedulerCleanupMixin:
         for aid, task in running_execution:
             if task.cancelled() or task in pending or (task.done() and task.exception() is not None):
                 self._finalize_cleanup_failure(aid, origin_override=origins.get(aid))
-        if any(aid == 0 for aid, _task in running_delivery):
-            self._finalize_cleanup_failure(0)
+        for aid, _task in running_public_turns:
+            self._finalize_cleanup_failure(aid)
         for aid in startup_aids:
             self._finalize_cleanup_failure(aid, origin_override=origins.get(aid))
             self.table.entries.pop(aid, None)
