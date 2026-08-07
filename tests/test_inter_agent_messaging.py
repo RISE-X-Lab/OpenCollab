@@ -515,6 +515,57 @@ def test_restored_message_revalidates_current_roster_and_topology(
         assert "agent_message_delivered" not in event_types
 
 
+def test_ready_inboxes_drain_independent_targets_concurrently():
+    async def scenario():
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        second_started = asyncio.Event()
+
+        class SignallingSession(FakeSession):
+            def __init__(self, role, started, release=None):
+                super().__init__(["handled"], role=role)
+                self._started = started
+                self._release = release
+
+            async def add_user_message(self, content):
+                self._started.set()
+                if self._release is not None:
+                    await self._release.wait()
+                await super().add_user_message(content)
+
+        first = SignallingSession("coder", first_started, release_first)
+        second = SignallingSession("reviewer", second_started)
+        scheduler, _ = _build_scheduler(first)
+        _register_child(scheduler, first, aid=1)
+        _register_child(scheduler, second, aid=2)
+        first.state.set_phase(SessionPhase.AWAITING_EVENTS)
+        second.state.set_phase(SessionPhase.AWAITING_EVENTS)
+        await scheduler.send_message(0, 1, "first", "message one")
+        await scheduler.send_message(0, 2, "second", "message two")
+        first.state.set_phase(SessionPhase.DONE)
+        second.state.set_phase(SessionPhase.DONE)
+
+        drain = asyncio.create_task(scheduler._drain_ready_message_inboxes())
+        await first_started.wait()
+        try:
+            await asyncio.wait_for(second_started.wait(), timeout=0.2)
+            second_started_before_release = True
+        except TimeoutError:
+            second_started_before_release = False
+        finally:
+            release_first.set()
+            await drain
+            await _wait_agent_idle(scheduler, 1)
+            await _wait_agent_idle(scheduler, 2)
+        return second_started_before_release, first, second
+
+    second_started_before_release, first, second = run(scenario())
+
+    assert second_started_before_release is True
+    assert len(first.added) == 1
+    assert len(second.added) == 1
+
+
 def test_add_user_message_failure_rolls_back_partial_state_and_restores_budget():
     class FailingAdd(FakeSession):
         async def add_user_message(self, content):
