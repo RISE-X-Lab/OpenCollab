@@ -26,7 +26,10 @@ from rich.text import Text
 from opencollab.adapters.tui.brand_motion import MARK_HEX, PulseDot
 from opencollab.adapters.tui.keyboard import TabKeyNavigator
 from opencollab.adapters.tui.renderer_display import _RendererDisplayMixin
-from opencollab.adapters.tui.renderer_events import _RendererEventsMixin
+from opencollab.adapters.tui.renderer_events import (
+    MAX_TIMELINE_BLOCKS,
+    _RendererEventsMixin,
+)
 
 MAX_HISTORY_BLOCKS_PER_AGENT = 400
 MAX_TERMINAL_AGENT_STATES = 128
@@ -110,6 +113,12 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
             del state.history_blocks[:overflow]
             state.history_omitted_blocks += overflow
             state.turn_history_start = max(0, state.turn_history_start - overflow)
+
+    def _append_timeline_block(self, state: _AgentRenderState, block: Any) -> None:
+        state.timeline_blocks.append(block)
+        overflow = len(state.timeline_blocks) - MAX_TIMELINE_BLOCKS
+        if overflow > 0:
+            del state.timeline_blocks[:overflow]
 
     def _track_agent_render_lifecycle(self, aid: int, state: str) -> None:
         if aid in self._terminal_summary_order:
@@ -211,8 +220,8 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
 
     @_timeline_blocks.setter
     def _timeline_blocks(self, value: list[Any]) -> None:
-        self._selected_state.timeline_blocks = value
         blocks = list(value)
+        self._selected_state.timeline_blocks = blocks[-MAX_TIMELINE_BLOCKS:]
         self._selected_state.history_blocks = blocks[-MAX_HISTORY_BLOCKS_PER_AGENT:]
         self._selected_state.history_omitted_blocks = max(
             0, len(blocks) - MAX_HISTORY_BLOCKS_PER_AGENT
@@ -280,9 +289,15 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         """
         live_roles: dict[int, str] = {}
 
-        for aid, role, _state in self._team_entries():
+        for aid, role, state in self._team_entries():
             role = str(role)
-            if isinstance(aid, int) and aid >= 0:
+            if not isinstance(aid, int) or aid < 0:
+                continue
+            if (
+                aid == 0
+                or aid in self._agent_states
+                or state not in _TERMINAL_RENDER_STATES
+            ):
                 live_roles.setdefault(aid, role)
 
         for aid in self._agent_states:
@@ -340,7 +355,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         self._flush_current_text_to_timeline(state)
         block = self._user_block(content)
         self._append_history_block(state, block)
-        state.timeline_blocks.append(block)
+        self._append_timeline_block(state, block)
         state.history_revision += 1
 
     def _refresh(self) -> None:
