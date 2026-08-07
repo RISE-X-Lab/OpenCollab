@@ -16,6 +16,12 @@ from typing import Any
 
 from opencollab.adapters.tools._output import truncate
 from opencollab.adapters.tools._paths import checked_path
+from opencollab.adapters.tools.apply_patch_engine import (
+    _MIXED_NEWLINES,
+    _detect_newline_style,
+    _normalize_newlines,
+    _restore_newlines,
+)
 from opencollab.adapters.tools.base import Tool, host_write_lock
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -263,9 +269,29 @@ class FileWriteTool(Tool):
             )
 
         current = await env.read_file(path)
+        newline_style = _detect_newline_style(current)
+        if newline_style == _MIXED_NEWLINES:
+            if any(character in old_str + new_str for character in ("\r", "\n")):
+                return (
+                    f"Error: {path} uses mixed newline styles; refusing to "
+                    "normalize a multiline replacement implicitly."
+                )
+            normalized_current = current
+            normalized_old = old_str
+            normalized_new = new_str
+        else:
+            normalized_current = _normalize_newlines(current)
+            normalized_old = _normalize_newlines(old_str)
+            normalized_new = _normalize_newlines(new_str)
+
+        if normalized_new == normalized_old:
+            return (
+                f"Error: str_replace was a no-op — old_str and new_str are "
+                f"logically identical; nothing changed in {path}."
+            )
 
         # Check uniqueness (ref: claude-code Edit — must be unique)
-        count = _count_overlapping(current, old_str)
+        count = _count_overlapping(normalized_current, normalized_old)
         if count == 0:
             return (
                 f"Error: old_str not found in {path}. Make sure the text matches "
@@ -275,7 +301,9 @@ class FileWriteTool(Tool):
         if count > 1:
             return f"Error: old_str found {count} times in {path}. Provide more context to make it unique."
 
-        updated = current.replace(old_str, new_str, 1)
+        updated = normalized_current.replace(normalized_old, normalized_new, 1)
+        if newline_style != _MIXED_NEWLINES:
+            updated = _restore_newlines(updated, newline_style)
         if updated == current:
             # Defensive: old_str matched but the resulting content is byte-for-byte
             # identical (e.g. a degenerate overlap). Report no change rather than a
