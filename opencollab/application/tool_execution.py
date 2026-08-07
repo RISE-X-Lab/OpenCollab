@@ -378,6 +378,25 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 })
                 continue
 
+            schema = getattr(tool, "parameters", None)
+            if isinstance(schema, dict):
+                schema_errors = validate(args, schema)
+                if schema_errors:
+                    detail = "; ".join(schema_errors)[:1_000]
+                    self._trace_short_circuit(
+                        "tool_error",
+                        tool_name,
+                        {"error": "schema_validation_failed", "args": args},
+                    )
+                    result.messages_to_append.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "content": "Error: schema validation failed: " + detail,
+                        }
+                    )
+                    continue
+
             await self._emit_observation(
                 lambda: self.event_factory.tool_start(tool_name, args),
                 label="tool_start",
