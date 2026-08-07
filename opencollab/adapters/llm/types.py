@@ -6,6 +6,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
+from opencollab.domain.token_estimation import (  # noqa: F401 - compatibility re-export
+    estimate_messages_tokens,
+    estimate_tokens,
+)
 
 # ---------------------------------------------------------------------------
 # Response containers
@@ -143,27 +147,3 @@ def model_capabilities(model: str | None) -> ModelCapabilities:
 def model_context_window(model: str | None) -> int | None:
     """The known context window for ``model``, or ``None`` if unrecognised."""
     return model_capabilities(model).context_window
-
-
-# ---------------------------------------------------------------------------
-# Token estimation
-# ---------------------------------------------------------------------------
-
-
-def estimate_tokens(text: str) -> int:
-    """Rough token estimation: ~4 chars per token for English, ~2 for CJK."""
-    return max(1, len(text) // 3)
-
-
-def estimate_messages_tokens(messages: list[dict]) -> int:
-    """Estimate total tokens across a message list."""
-    total = 0
-    for m in messages:
-        content = m.get("content", "")
-        if isinstance(content, str):
-            total += estimate_tokens(content)
-        elif isinstance(content, list):
-            for part in content:
-                if isinstance(part, dict) and "text" in part:
-                    total += estimate_tokens(part["text"])
-    return total
