@@ -123,8 +123,6 @@ def _parse_hunks(patch: str) -> tuple[list[dict] | None, str]:
         if cur is None:
             # Lines before the first @@ (e.g. ---/+++ headers) are ignored.
             continue
-        if raw.startswith("---") or raw.startswith("+++"):
-            continue
         if raw == "":
             # A blank line inside a hunk is a blank context line.
             cur["lines"].append(" ")

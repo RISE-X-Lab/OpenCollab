@@ -132,6 +132,27 @@ def test_unified_diff_failed_hunk_writes_nothing(tmp_path):
     assert target.read_text(encoding="utf-8") == original
 
 
+def test_unified_diff_treats_header_like_hunk_content_as_content(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text("old\n", encoding="utf-8")
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "unified_diff",
+                "patch": "@@ -1 +1 @@\n-old\n+++value\n",
+            },
+            _runtime(ws),
+        )
+    )
+
+    assert "Applied unified_diff" in result
+    assert target.read_text(encoding="utf-8") == "++value\n"
+
+
 def test_apply_patch_reports_file_and_workspace_errors(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
