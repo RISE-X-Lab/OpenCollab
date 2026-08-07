@@ -186,7 +186,11 @@ def test_build_plan_task_is_user_context_source_when_given():
         {
             "role": "user",
             "content": task.content,
-            "_ctx": {"layer": "task", "priority": task.effective_priority},
+            "_ctx": {
+                "name": "task",
+                "layer": "task",
+                "priority": task.effective_priority,
+            },
         }
     ]
 
