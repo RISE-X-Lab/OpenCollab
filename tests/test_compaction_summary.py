@@ -99,4 +99,31 @@ def test_summarizer_fallback_is_bounded_and_never_empty():
     big = [{"role": "user", "content": "x" * 100_000}]
     s = _summarizer(RuntimeError("boom"))
     out = s(big)
-    assert 0 < len(out) <= 4_010  # fallback_chars budget (+ role prefix slack)
+    assert 0 < len(out) <= 4_000
+
+
+def test_summarizer_fallback_preserves_supported_content_blocks():
+    segment = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "critical requirement"},
+                {"type": "image", "source": {"data": "..."}},
+                {"type": "input_text", "text": "second requirement"},
+                {"type": "custom_attachment", "payload": "..."},
+            ],
+        },
+        {"role": "assistant", "content": ["plain list text"]},
+    ]
+    out = _summarizer(RuntimeError("boom"))(segment)
+    assert "critical requirement" in out
+    assert "second requirement" in out
+    assert "[image block]" in out
+    assert "[custom_attachment block]" in out
+    assert "plain list text" in out
+
+
+def test_summarizer_fallback_keeps_non_text_only_messages_visible():
+    segment = [{"role": "user", "content": [{"type": "image_url", "image_url": "..."}]}]
+    out = _summarizer(RuntimeError("boom"))(segment)
+    assert out == "[user]: [image_url block]"
