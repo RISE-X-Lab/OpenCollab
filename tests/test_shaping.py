@@ -189,8 +189,8 @@ def test_snip_noop_below_trigger_returns_input_identity():
     assert out is messages
 
 
-def test_fallback_estimator_compacts_large_tool_call_reasoning():
-    """The dependency-free estimator must trigger on request-side tool payloads."""
+def test_snip_preserves_reasoning_only_tool_group_when_it_cannot_split_safely():
+    """Provider-signed reasoning must not be detached from its tool call."""
     old_call = _call("large")
     old_call["reasoning_content"] = "r" * 6_000
     messages = [_sys(), _user(), old_call, _tool("large", "small result"), _text("recent")]
@@ -204,7 +204,8 @@ def test_fallback_estimator_compacts_large_tool_call_reasoning():
     out = shaper.shape(messages)
 
     assert approx_messages_tokens(messages) > shaper.trigger_tokens
-    assert not any(m.get("tool_calls") for m in out)
+    assert old_call in out
+    assert _tool("large", "small result") in out
     assert out[-1] == _text("recent")
 
 
@@ -247,6 +248,39 @@ def test_snip_preserves_tool_pairing():
     ]
     out = _snip().shape(messages)
     assert _orphaned_tool_ids(out) == set()
+
+
+def test_snip_preserves_hybrid_assistant_text_when_dropping_tool_payload():
+    hybrid = _call("t1", text="decision: keep the verified constraint")
+    messages = [
+        _sys(),
+        _user(),
+        hybrid,
+        _tool("t1", "x" * 2_000),
+        _text("recent"),
+    ]
+    out = _snip().shape(messages)
+    preserved = next(
+        message for message in out
+        if message.get("content") == "decision: keep the verified constraint"
+    )
+    assert "tool_calls" not in preserved
+    assert not any(message.get("role") == "tool" for message in out)
+
+
+@pytest.mark.parametrize(
+    "malformed_results",
+    [
+        [_tool("unknown", "x" * 2_000)],
+        [_tool("t1", "x" * 1_000), _tool("t1", "duplicate")],
+        [],
+    ],
+)
+def test_snip_leaves_malformed_tool_exchanges_untouched(malformed_results):
+    exchange = [_call("t1"), *malformed_results]
+    messages = [_sys(), _user(), *exchange, _text("p" * 2_000), _text("recent")]
+    out = _snip().shape(messages)
+    assert all(message in out for message in exchange)
 
 
 def test_snip_does_not_mutate_input():
