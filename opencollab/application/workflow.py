@@ -148,6 +148,14 @@ class _BudgetLease:
         return max(0, self.total - spent)
 
 
+@dataclass
+class _ConcurrencyPermit:
+    """One semaphore slot owned by a task and reusable by nested agent calls."""
+
+    owner: asyncio.Task[Any] | None
+    pending_cleanup_tasks: list[asyncio.Task[Any]]
+
+
 class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
     """Primitives a workflow function uses to orchestrate agent sessions.
 
@@ -180,6 +188,7 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         self._factory = factory
         self._event_sink = event_sink
         self._tracer = tracer
+        self._max_concurrency = max_concurrency
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._sessions: list[Any] = []
         self.budget = WorkflowBudget(budget_total, self._sessions)
@@ -188,6 +197,12 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         self._active_budget_lease: contextvars.ContextVar[_BudgetLease | None] = (
             contextvars.ContextVar("workflow_budget_lease", default=None)
         )
+        self._active_collection_budget: contextvars.ContextVar[int | None] = (
+            contextvars.ContextVar("workflow_collection_budget", default=None)
+        )
+        self._active_concurrency_permit: contextvars.ContextVar[
+            _ConcurrencyPermit | None
+        ] = contextvars.ContextVar("workflow_concurrency_permit", default=None)
         self._pending_cleanup_tasks: set[asyncio.Task[Any]] = set()
         self._active_call_tasks: set[asyncio.Task[Any]] = set()
         self._active_session_tasks: set[asyncio.Task[Any]] = set()
@@ -459,7 +474,8 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         slot_acquired = False
         slot_handed_to_cleanup = False
         lease: _BudgetLease | None = None
-        token = None
+        budget_token = None
+        permit_token = None
         try:
             # Reserve before the concurrency gate so every agent declared in a
             # parallel fan-out registers with the shared allocator, even when
@@ -468,9 +484,17 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
                 budget,
                 over_budget_ok=over_budget_ok,
             )
-            token = self._active_budget_lease.set(lease)
-            await self._semaphore.acquire()
-            slot_acquired = True
+            budget_token = self._active_budget_lease.set(lease)
+            permit = self._active_concurrency_permit.get()
+            if permit is None or permit.owner is not call_task:
+                await self._semaphore.acquire()
+                slot_acquired = True
+                permit_token = self._active_concurrency_permit.set(
+                    _ConcurrencyPermit(
+                        owner=call_task,
+                        pending_cleanup_tasks=[],
+                    )
+                )
             if schema is not None:
                 return await self._run_structured_agent(
                     prompt, schema=schema, label=label, tools=tools,
@@ -505,34 +529,98 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
                 budget=budget,
             )
         finally:
-            if token is not None:
-                self._active_budget_lease.reset(token)
+            if budget_token is not None:
+                self._active_budget_lease.reset(budget_token)
             if lease is not None:
-                slot_handed_to_cleanup = self._release_lease_when_quiescent(lease)
+                slot_handed_to_cleanup = self._release_lease_when_quiescent(
+                    lease,
+                    release_slot=slot_acquired,
+                )
             if slot_acquired and not slot_handed_to_cleanup:
                 self._semaphore.release()
+            if permit_token is not None:
+                self._active_concurrency_permit.reset(permit_token)
             if call_task is not None:
                 self._active_call_tasks.discard(call_task)
 
     async def _release_call_after_tasks(
-        self, lease: _BudgetLease, tasks: list[asyncio.Task[Any]]
+        self,
+        lease: _BudgetLease,
+        tasks: list[asyncio.Task[Any]],
+        *,
+        release_slot: bool,
     ) -> None:
         """Release one timed-out call's budget and slot after it is quiescent."""
         try:
             await asyncio.gather(*tasks, return_exceptions=True)
         finally:
             self.budget.release(lease)
-            self._semaphore.release()
+            if release_slot:
+                self._semaphore.release()
 
-    def _release_lease_when_quiescent(self, lease: _BudgetLease) -> bool:
+    def _release_lease_when_quiescent(
+        self,
+        lease: _BudgetLease,
+        *,
+        release_slot: bool,
+    ) -> bool:
         """Release now, or hand the lease and semaphore slot to cleanup."""
         pending = [task for task in (lease.pending_tasks or []) if not task.done()]
         if not pending:
             self.budget.release(lease)
             return False
-        cleanup_task = asyncio.create_task(self._release_call_after_tasks(lease, pending))
+        cleanup_task = asyncio.create_task(
+            self._release_call_after_tasks(
+                lease,
+                pending,
+                release_slot=release_slot,
+            )
+        )
         self._track_pending_cleanup(cleanup_task)
-        return True
+        if not release_slot:
+            permit = self._active_concurrency_permit.get()
+            if permit is not None and permit.owner is asyncio.current_task():
+                permit.pending_cleanup_tasks.append(cleanup_task)
+        return release_slot
+
+    async def _release_slot_after_tasks(
+        self,
+        tasks: list[asyncio.Task[Any]],
+    ) -> None:
+        try:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            self._semaphore.release()
+
+    async def _run_with_concurrency_permit(
+        self,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Run one collection unit under a task-reentrant shared permit."""
+        current = asyncio.current_task()
+        active = self._active_concurrency_permit.get()
+        if active is not None and active.owner is current:
+            return await operation()
+
+        await self._semaphore.acquire()
+        permit = _ConcurrencyPermit(owner=current, pending_cleanup_tasks=[])
+        token = self._active_concurrency_permit.set(permit)
+        handed_to_cleanup = False
+        try:
+            return await operation()
+        finally:
+            pending = [
+                task for task in permit.pending_cleanup_tasks if not task.done()
+            ]
+            if pending:
+                release_task = asyncio.create_task(
+                    self._release_slot_after_tasks(pending)
+                )
+                self._track_pending_cleanup(release_task)
+                handed_to_cleanup = True
+            self._active_concurrency_permit.reset(token)
+            if not handed_to_cleanup:
+                self._semaphore.release()
 
     def _track_pending_cleanup(self, task: asyncio.Task[Any]) -> None:
         """Own a background cleanup task and always consume its final result."""
@@ -734,7 +822,14 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
                     return _BudgetLease(total=total, reserved=0, sessions=[])
 
                 if cap is None:
-                    total = max(1, available // max(1, self._budget_waiters))
+                    collection_share = self._active_collection_budget.get()
+                    if collection_share is not None:
+                        total = min(collection_share, available)
+                    else:
+                        total = max(
+                            1,
+                            available // max(1, self._budget_waiters),
+                        )
                 else:
                     total = min(max(0, cap), available)
                 lease = _BudgetLease(total=total, reserved=total, sessions=[])
@@ -759,6 +854,72 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
 
     # -- parallel ---------------------------------------------------------- #
 
+    async def _bounded_collection(
+        self,
+        size: int,
+        run_unit: Callable[[int], Awaitable[Any]],
+    ) -> list[Any]:
+        """Run indexed units with O(max_concurrency) live asyncio tasks."""
+        if size == 0:
+            return []
+
+        remaining = self.budget.remaining()
+        planned_budget = (
+            None
+            if remaining == float("inf")
+            else max(0, int(remaining)) // size
+        )
+        results: list[Any] = [None] * size
+        next_index = iter(range(size))
+        terminal: list[BaseException] = []
+
+        async def execute(index: int) -> None:
+            budget_token = self._active_collection_budget.set(planned_budget)
+            try:
+                results[index] = await self._run_with_concurrency_permit(
+                    lambda: run_unit(index)
+                )
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:  # preserve terminal workflow signals
+                results[index] = exc
+                terminal.append(exc)
+            finally:
+                self._active_collection_budget.reset(budget_token)
+
+        async def worker() -> None:
+            while not terminal:
+                try:
+                    index = next(next_index)
+                except StopIteration:
+                    return
+                await execute(index)
+
+        active = self._active_concurrency_permit.get()
+        if active is not None and active.owner is asyncio.current_task():
+            # A nested collection already owns the only slot it may need. Run
+            # inline to preserve reentrancy even when max_concurrency is one.
+            while not terminal:
+                try:
+                    index = next(next_index)
+                except StopIteration:
+                    break
+                await execute(index)
+        else:
+            workers = [
+                asyncio.create_task(worker())
+                for _ in range(min(size, self._max_concurrency))
+            ]
+            await asyncio.gather(*workers)
+
+        for result in results:
+            if isinstance(result, WorkflowBudgetExceeded):
+                raise result
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return results
+
     async def parallel(self, thunks: Sequence[Thunk]) -> list[Any]:
         """Run thunks concurrently behind the shared semaphore.
 
@@ -775,19 +936,10 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
             except Exception:  # noqa: BLE001 — failures localize to one slot
                 return None
 
-        results = list(
-            await asyncio.gather(
-                *(guard(thunk) for thunk in thunks),
-                return_exceptions=True,
-            )
+        return await self._bounded_collection(
+            len(thunks),
+            lambda index: guard(thunks[index]),
         )
-        for result in results:
-            if isinstance(result, WorkflowBudgetExceeded):
-                raise result
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
-        return results
 
     # -- pipeline ---------------------------------------------------------- #
 
@@ -812,19 +964,10 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
                     return None
             return result
 
-        results = list(
-            await asyncio.gather(
-                *(flow(item, i) for i, item in enumerate(items)),
-                return_exceptions=True,
-            )
+        return await self._bounded_collection(
+            len(items),
+            lambda index: flow(items[index], index),
         )
-        for result in results:
-            if isinstance(result, WorkflowBudgetExceeded):
-                raise result
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
-        return results
 
     # -- observability ----------------------------------------------------- #
 

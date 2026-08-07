@@ -220,11 +220,8 @@ class WorkflowAgentsMixin:
         call_task = asyncio.current_task()
         if call_task is not None:
             self._active_call_tasks.add(call_task)
-        slot_acquired = False
-        slot_handed_to_cleanup = False
-        try:
-            await self._semaphore.acquire()
-            slot_acquired = True
+
+        async def run_with_lease() -> dict[str, Any] | None:
             try:
                 lease = await self._acquire_budget_lease(budget, over_budget_ok=False)
             except WorkflowBudgetExceeded:
@@ -238,10 +235,14 @@ class WorkflowAgentsMixin:
                 )
             finally:
                 self._active_budget_lease.reset(token)
-                slot_handed_to_cleanup = self._release_lease_when_quiescent(lease)
+                self._release_lease_when_quiescent(
+                    lease,
+                    release_slot=False,
+                )
+
+        try:
+            return await self._run_with_concurrency_permit(run_with_lease)
         finally:
-            if slot_acquired and not slot_handed_to_cleanup:
-                self._semaphore.release()
             if call_task is not None:
                 self._active_call_tasks.discard(call_task)
 

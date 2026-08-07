@@ -124,7 +124,7 @@ async def test_uncapped_parallel_agents_split_budget_before_concurrency_admissio
 
 
 @pytest.mark.asyncio
-async def test_parallel_cancellation_releases_presemaphore_budget_leases():
+async def test_parallel_cancellation_releases_bounded_worker_budget_lease():
     started = asyncio.Event()
     gate = asyncio.Event()
 
@@ -145,10 +145,10 @@ async def test_parallel_cancellation_releases_presemaphore_budget_leases():
     await started.wait()
     for _ in range(20):
         await asyncio.sleep(0)
-        if len(ctx.budget._leases) == 3:
-            break
-    assert len(ctx.budget._leases) == 3
-    assert ctx.budget.remaining() == 0
+    # Bounded collection scheduling starts only one worker at concurrency=1,
+    # while preserving the planned one-third budget grant.
+    assert len(ctx.budget._leases) == 1
+    assert ctx.budget.remaining() == 60
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
