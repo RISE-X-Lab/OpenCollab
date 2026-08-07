@@ -72,6 +72,53 @@ def test_tool_start_and_tool_end_for_generic_tool_tracks_active_tools():
     assert not any("bash" in k for k in tui._active_tools)
 
 
+def test_same_named_tool_calls_track_by_tool_call_id():
+    tui = _make_tui()
+    start = {"tool": "grep", "args": {"pattern": "x"}, "aid": 3}
+
+    tui.event_handler(
+        SessionRuntimeEvent("tool_start", {**start, "tool_call_id": "call-a"})
+    )
+    tui.event_handler(
+        SessionRuntimeEvent("tool_start", {**start, "tool_call_id": "call-b"})
+    )
+    state = tui._state_for(3)
+    assert len(state.active_tools) == 2
+
+    tui.event_handler(
+        SessionRuntimeEvent(
+            "tool_end",
+            {"tool": "grep", "latency": 0.1, "aid": 3, "tool_call_id": "call-a"},
+        )
+    )
+    assert len(state.active_tools) == 1
+    assert next(iter(state.active_tools.values()))["tool_call_id"] == "call-b"
+
+    tui.event_handler(
+        SessionRuntimeEvent(
+            "tool_end",
+            {"tool": "grep", "latency": 0.2, "aid": 3, "tool_call_id": "call-b"},
+        )
+    )
+    assert state.active_tools == {}
+
+
+def test_legacy_same_named_tool_events_receive_local_sequence_keys():
+    tui = _make_tui()
+    start = {"tool": "grep", "args": {"pattern": "x"}, "aid": 3}
+    end = {"tool": "grep", "latency": 0.1, "aid": 3}
+
+    tui.event_handler(SessionRuntimeEvent("tool_start", start))
+    tui.event_handler(SessionRuntimeEvent("tool_start", start))
+    state = tui._state_for(3)
+    assert len(state.active_tools) == 2
+
+    tui.event_handler(SessionRuntimeEvent("tool_end", end))
+    assert len(state.active_tools) == 1
+    tui.event_handler(SessionRuntimeEvent("tool_end", end))
+    assert state.active_tools == {}
+
+
 def test_tool_start_for_spawn_agent_promotes_role_from_args():
     """The session emits tool_start when the LLM calls SpawnAgentTool;
     role gets lifted from the tool args even though it's not at top level."""

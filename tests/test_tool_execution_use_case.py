@@ -220,13 +220,17 @@ def event_factory() -> SessionEventFactory:
             type="loop_detected",
             data={"tool": tool, "count": count},
         ),
-        tool_start=lambda tool, args: SimpleNamespace(
+        tool_start=lambda tool, args, tool_call_id: SimpleNamespace(
             type="tool_start",
-            data={"tool": tool, "args": args},
+            data={"tool": tool, "args": args, "tool_call_id": tool_call_id},
         ),
-        tool_end=lambda tool, latency: SimpleNamespace(
+        tool_end=lambda tool, latency, tool_call_id: SimpleNamespace(
             type="tool_end",
-            data={"tool": tool, "latency": latency},
+            data={
+                "tool": tool,
+                "latency": latency,
+                "tool_call_id": tool_call_id,
+            },
         ),
     )
 
@@ -545,9 +549,14 @@ def test_tool_execution_use_case_executes_runtime_native_tool_and_events():
     assert runtime.safety_policy is safety_policy
     assert runtime.permission_policy is permission_policy
     assert publisher.events[0].type == "tool_start"
-    assert publisher.events[0].data == {"tool": "fake_tool", "args": {"value": 1}}
+    assert publisher.events[0].data == {
+        "tool": "fake_tool",
+        "args": {"value": 1},
+        "tool_call_id": "call-1",
+    }
     assert publisher.events[1].type == "tool_end"
     assert publisher.events[1].data["tool"] == "fake_tool"
+    assert publisher.events[1].data["tool_call_id"] == "call-1"
 
 
 def _named_runtime_tool(name: str, output: str = "ok"):
@@ -648,6 +657,7 @@ def test_tool_execution_use_case_preserves_trace_payload_capping():
     assert len(tracer.steps) == 1
     payload = tracer.steps[0]["payload"]
     assert payload["tool"] == "fake_tool"
+    assert payload["tool_call_id"] == "call-1"
     assert payload["args"] == {"value": 1}
     assert payload["result_len"] == len(raw_output)
     assert "\n...[truncated]...\n" in payload["result"]
