@@ -154,12 +154,17 @@ def test_file_store_skips_dir_without_skill_md(tmp_path):
 
 def test_file_store_rejects_oversized_body_instead_of_returning_partial_instructions(
     tmp_path,
+    caplog,
 ):
     big_body = "x" * (SKILL_BODY_MAX_CHARS + 5_000)
     _write_skill(tmp_path, "huge", description="Huge.", body=big_body)
     store = FileSkillStore(tmp_path)
     assert store.get_body("huge") is None
     assert store.list_manifests() == ()
+    assert store.load_diagnostics == (
+        f"skill 'huge' rejected: body exceeds {SKILL_BODY_MAX_CHARS} characters",
+    )
+    assert "skill 'huge' rejected" in caplog.text
 
 
 def test_file_store_returns_a_maximum_length_body_verbatim(tmp_path):
