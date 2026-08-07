@@ -64,6 +64,36 @@ def test_tracer_records_valid_jsonl_and_flushes(tmp_path) -> None:
     assert row["metrics"] == {"tokens": 3, "latency_s": 0.25}
 
 
+def test_tracer_reopen_continues_step_sequence(tmp_path) -> None:
+    first = Tracer("run", output_dir=str(tmp_path))
+    first.log_step("first", {})
+    first.log_step("second", {})
+    first.close()
+
+    resumed = Tracer("run", output_dir=str(tmp_path))
+    resumed.log_step("third", {})
+    resumed.close()
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "run.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["step"] for row in rows] == [1, 2, 3]
+
+
+def test_tracer_reopen_separates_an_unterminated_tail(tmp_path) -> None:
+    path = tmp_path / "run.jsonl"
+    path.write_text('{"step": 7}\n{"damaged":', encoding="utf-8")
+
+    resumed = Tracer("run", output_dir=str(tmp_path))
+    resumed.log_step("after-damage", {})
+    resumed.close()
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert lines[-2] == '{"damaged":'
+    assert json.loads(lines[-1])["step"] == 8
+
+
 def test_tracer_write_failure_is_sticky(tmp_path, monkeypatch) -> None:
     tracer = Tracer("run", output_dir=str(tmp_path))
 
