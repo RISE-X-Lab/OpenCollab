@@ -19,6 +19,8 @@ import os
 import stat
 from pathlib import Path
 
+import yaml
+
 from opencollab.adapters.safe_files import read_regular_text
 from opencollab.adapters.tools._output import truncate
 from opencollab.domain.skill import SkillManifest
@@ -56,17 +58,16 @@ def _parse_skill(text: str) -> tuple[str, str, str] | None:
     if close_idx is None:
         return None
 
-    frontmatter: dict[str, str] = {}
-    for raw in lines[1:close_idx]:
-        key, sep, value = raw.partition(":")
-        if not sep:
-            continue
-        frontmatter[key.strip().lower()] = value.strip()
+    frontmatter = yaml.safe_load("\n".join(lines[1:close_idx]))
+    if not isinstance(frontmatter, dict):
+        return None
 
     name = frontmatter.get("name", "")
-    if not name:
+    if not isinstance(name, str) or not name:
         return None
     description = frontmatter.get("description", "")
+    if not isinstance(description, str):
+        return None
     body = "\n".join(lines[close_idx + 1 :]).strip()
     return name, description, body
 
