@@ -359,7 +359,7 @@ class MessagingMixin:
             self._release_turn_lease(aid)
             return []
 
-        self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
+        self._start_agent_task(aid, session)
         return [
             (
                 self._events.agent_message_delivered(

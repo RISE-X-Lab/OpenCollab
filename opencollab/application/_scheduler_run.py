@@ -72,7 +72,7 @@ class SchedulerRunMixin:
             task = self._tasks.get(aid)
             if task is None or task.done():
                 self._reserve_turn_lease(aid)
-                self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
+                self._start_agent_task(aid, session)
             await self.wait_until_terminal(aid)
 
         # A snapshot can capture the durable gap after an external user message
@@ -81,7 +81,7 @@ class SchedulerRunMixin:
         # unrelated user requests into one provider prompt.
         if getattr(session.state, "pending_external_user_turn", None) is not None:
             self._reserve_turn_lease(aid)
-            self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
+            self._start_agent_task(aid, session)
             await self.wait_until_terminal(aid)
 
         # Restored teammate messages are scheduler-owned turns. Deliver and
@@ -104,7 +104,7 @@ class SchedulerRunMixin:
         if self._shutting_down:
             self._release_turn_lease(aid)
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
-        self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
+        self._start_agent_task(aid, session)
 
         while True:
             for done_aid in [a for a, t in self._tasks.items() if t.done()]:

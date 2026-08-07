@@ -134,6 +134,7 @@ class SchedulerCleanupMixin:
         self._lease_baseline.clear()
         self._inflight.clear()
         self._inflight_key_of.clear()
+        self._delivery_committed.clear()
         self._tasks.clear()
 
         persistence_quiesced = await self._wait_for_session_persistence(

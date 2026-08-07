@@ -370,3 +370,60 @@ def test_cleanup_caller_cancellation_waits_for_owned_teardown_then_propagates():
         assert pool.finished is True
 
     run(scenario())
+
+
+def test_completed_direct_spawns_release_driver_task_references():
+    lead = ScriptedSession("lead", [])
+    children = [
+        ScriptedSession("coder", [terminal(f"result-{index}")])
+        for index in range(100)
+    ]
+    scheduler, _ = build_scheduler(lead, children)
+
+    async def scenario():
+        for index in range(100):
+            aid = await scheduler.spawn(0, "coder", f"task-{index}")
+            await scheduler.wait_until_terminal(aid)
+
+        await asyncio.sleep(0)
+        assert scheduler._tasks == {}
+
+    run(scenario())
+
+
+def test_completed_deferred_delivery_releases_commit_marker():
+    lead = ScriptedSession(
+        "lead",
+        [resume_done(lambda results: f"received: {results[0]}")],
+    )
+    child = ScriptedSession("coder", [terminal("child result")])
+    scheduler, _ = build_scheduler(lead, [child])
+
+    async def scenario():
+        lead.state.set_phase(SessionPhase.AWAITING_EVENTS)
+        aid = await scheduler.spawn(
+            0,
+            "coder",
+            "deliver once",
+            tool_call_id="child-call",
+        )
+        lead.state.pending_events.add(
+            PendingRow(
+                tool_call_id="child-call",
+                kind=RowKind.CHILD_AGENT,
+                order=0,
+                ref=aid,
+            )
+        )
+
+        await scheduler.wait_until_terminal(aid)
+        await scheduler.wait_until_terminal(0)
+        await asyncio.sleep(0)
+
+        assert scheduler._tasks == {}
+        assert scheduler._delivery_committed == set()
+        row = lead.state.pending_events.rows.get("child-call")
+        assert row is None
+        assert scheduler.table.get(0).result == "received: child result"
+
+    run(scenario())
