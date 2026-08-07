@@ -101,6 +101,10 @@ fingerprint without exposing credentials embedded in a URL. Agent runs accept
 `max_steps` and `cleanup_timeout`. The older `steps` spelling remains a supported
 alias.
 Workflow runs accept `max_steps`, `system_prompt`, and `cleanup_timeout`.
+Their `concurrency` option limits agent sessions only. `task_concurrency`
+separately limits active `parallel` and `pipeline` units across the workflow;
+omitting it inherits `concurrency`. The two limits are independent, so mixed
+agent and task work may peak at their sum.
 Completed, stopped, and failed workflow results report aggregate session,
 step, token, and markup-recovery metrics. Sanitized child-provider failures are
 available through `RunResult.agent_failures`.

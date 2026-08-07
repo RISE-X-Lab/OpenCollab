@@ -165,7 +165,12 @@ async def test_parallel_cancellation_releases_bounded_worker_budget_lease():
         FakeSession(),
         FakeSession(),
     ]
-    ctx = WorkflowContext(FakeFactory(sessions), budget_total=90, max_concurrency=1)
+    ctx = WorkflowContext(
+        FakeFactory(sessions),
+        budget_total=90,
+        max_concurrency=3,
+        task_concurrency=1,
+    )
     task = asyncio.create_task(
         ctx.parallel([lambda i=i: ctx.agent(f"agent {i}") for i in range(3)])
     )
@@ -173,7 +178,7 @@ async def test_parallel_cancellation_releases_bounded_worker_budget_lease():
     await started.wait()
     for _ in range(20):
         await asyncio.sleep(0)
-    # Bounded collection scheduling starts only one worker at concurrency=1,
+    # Bounded collection scheduling starts only one task worker,
     # while preserving the planned one-third budget grant.
     assert len(ctx.budget._leases) == 1
     assert ctx.budget.remaining() == 60

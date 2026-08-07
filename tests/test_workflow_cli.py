@@ -71,6 +71,8 @@ def test_workflow_run_prints_result_as_json(tmp_path, monkeypatch):
             "50000",
             "--concurrency",
             "2",
+            "--task-concurrency",
+            "5",
             "--workspace",
             str(workspace),
         ],
@@ -82,6 +84,7 @@ def test_workflow_run_prints_result_as_json(tmp_path, monkeypatch):
     assert captured["args"] == {"name": "bob"}
     assert captured["kwargs"]["budget"] == 50000
     assert captured["kwargs"]["max_concurrency"] == 2
+    assert captured["kwargs"]["task_concurrency"] == 5
     assert captured["registry_workspace"] == str(workspace)
 
 
@@ -140,6 +143,16 @@ def test_workflow_run_prints_event_and_result_markup_literally(monkeypatch):
     assert json.loads(result.stdout[json_start:]) == {
         "values": ["[bold]literal[/bold]", "[x]"],
     }
+
+
+def test_workflow_run_help_distinguishes_concurrency_caps():
+    result = runner.invoke(workflow_cli.app, ["run", "--help"])
+    normalized = " ".join(result.stdout.replace("│", " ").split())
+
+    assert result.exit_code == 0
+    assert "Max concurrent agent sessions" in normalized
+    assert "Max active parallel/pipeline units" in normalized
+    assert "defaults to --concurrency" in normalized
 
 
 def test_workflow_run_default_budget_raised_to_1m(monkeypatch):

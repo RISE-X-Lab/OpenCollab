@@ -200,12 +200,16 @@ async def test_workflow_delegates_evaluation_controls(
 
     result = await OpenCollab(tmp_path).workflow(
         plain,
+        concurrency=2,
+        task_concurrency=5,
         max_steps=60,
         system_prompt="Evaluation system prompt",
         cleanup_timeout=10.0,
     )
 
     assert result.output == "done"
+    assert captured["max_concurrency"] == 2
+    assert captured["task_concurrency"] == 5
     assert captured["max_steps"] == 60
     assert captured["system_prompt"] == "Evaluation system prompt"
     assert captured["cleanup_timeout"] == 10.0
@@ -270,11 +274,32 @@ async def test_workflow_rejects_invalid_evaluation_controls(
     client = OpenCollab(tmp_path)
     with pytest.raises(ValueError, match="max_steps"):
         await client.workflow(plain, max_steps=0)
+    with pytest.raises(ValueError, match="task_concurrency"):
+        await client.workflow(plain, task_concurrency=0)
+    with pytest.raises(ValueError, match="task_concurrency"):
+        await client.workflow(plain, task_concurrency=True)
     with pytest.raises(ValueError, match="system_prompt"):
         await client.workflow(plain, system_prompt=" ")
     with pytest.raises(ValueError, match="cleanup_timeout"):
         await client.workflow(plain, cleanup_timeout=float("nan"))
     assert not called
+
+
+async def test_workflow_threads_concurrency_caps_end_to_end(tmp_path: Path) -> None:
+    async def plain(ctx, _inputs):
+        return {
+            "agent": ctx._max_concurrency,
+            "task": ctx._task_concurrency,
+        }
+
+    result = await OpenCollab(tmp_path).workflow(
+        plain,
+        concurrency=2,
+        task_concurrency=5,
+        trace=False,
+    )
+
+    assert result.output == {"agent": 2, "task": 5}
 
 
 async def test_workflow_uses_real_runtime_and_returns_live_metrics(

@@ -91,6 +91,11 @@ def run_cmd(
         help="Max token budget (default: max(config budget, 1000000); workflows fan out many sessions)",
     ),
     concurrency: int = typer.Option(4, "--concurrency", "-c", help="Max concurrent agent sessions"),
+    task_concurrency: Optional[int] = typer.Option(
+        None,
+        "--task-concurrency",
+        help="Max active parallel/pipeline units (defaults to --concurrency)",
+    ),
     save: bool = typer.Option(
         True,
         "--save/--no-save",
@@ -145,6 +150,7 @@ def run_cmd(
             event_sink=event_sink,
             budget=budget,
             max_concurrency=concurrency,
+            task_concurrency=task_concurrency,
             save_dir=save_dir,
             trace=trace,
         )
