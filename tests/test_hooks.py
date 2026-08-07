@@ -475,6 +475,17 @@ def test_config_rejects_unbounded_or_nonpositive_hook_timeout(
         load_team_config(str(tmp_path))
 
 
+@pytest.mark.parametrize("timeout", ["true", "false", "yes", "no"])
+def test_config_rejects_boolean_hook_timeout(tmp_path, monkeypatch, timeout):
+    team = (
+        "roles:\n  lead:\n    tools: [bash]\n    prompt: x\n"
+        f"hooks:\n  Stop:\n    - command: echo\n      timeout: {timeout}\n"
+    )
+    _write_team(tmp_path, monkeypatch, team)
+    with pytest.raises(Exception, match="must not be a boolean"):
+        load_team_config(str(tmp_path))
+
+
 @pytest.mark.parametrize("action_type", ["prompt", "agent"])
 def test_config_rejects_reserved_action_types_until_runner_supports_them(
     tmp_path, monkeypatch, action_type
