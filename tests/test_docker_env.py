@@ -104,6 +104,38 @@ async def test_owned_setup_is_network_isolated_and_cleanup_uses_full_id(monkeypa
     assert fake.calls[-1][0] == ("docker", "rm", "-f", "--", CONTAINER_ID)
 
 
+async def test_concurrent_setup_reuses_one_owned_container(monkeypatch) -> None:
+    env = DockerEnvironment()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    run_count = 0
+
+    async def fake_docker(*args, **_kwargs):
+        nonlocal run_count
+        if args[0] == "run":
+            run_count += 1
+            started.set()
+            await release.wait()
+            return _result(stdout=f"{CONTAINER_ID}\n".encode())
+        if args[:3] == ("rm", "-f", "--"):
+            return _result()
+        raise AssertionError(args)
+
+    monkeypatch.setattr(env, "_docker", fake_docker)
+    first = asyncio.create_task(env.setup())
+    await started.wait()
+    second = asyncio.create_task(env.setup())
+    try:
+        await asyncio.sleep(0.01)
+        assert run_count == 1
+    finally:
+        release.set()
+        outcomes = await asyncio.gather(first, second, return_exceptions=True)
+
+    assert outcomes == [CONTAINER_ID, CONTAINER_ID]
+    await env.cleanup()
+
+
 async def test_start_failure_never_removes_foreign_name_collision(monkeypatch) -> None:
     def respond(command, _kwargs):
         if command[1] == "run":
