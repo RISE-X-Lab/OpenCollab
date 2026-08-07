@@ -353,8 +353,9 @@ class GrepTool(Tool):
         rg_cmd = "rg -n "
         if glob_pattern:
             rg_cmd += f"-g {shlex.quote(glob_pattern)} "
-        rg_cmd += f"-- {quoted_pattern} {quoted_search_path} 2>/dev/null"
+        rg_cmd += f"-- {quoted_pattern} {quoted_search_path}"
 
+        backend = "rg"
         result = await env.exec_cmd(rg_cmd, timeout=30)
         if result.returncode == 127:
             # Fallback only when rg is unavailable. A normal rg no-match uses
@@ -365,8 +366,18 @@ class GrepTool(Tool):
             )
             if glob_pattern:
                 grep_cmd += f"--include={shlex.quote(glob_pattern)} "
-            grep_cmd += f"-- {quoted_pattern} {quoted_search_path} 2>/dev/null"
+            grep_cmd += f"-- {quoted_pattern} {quoted_search_path}"
+            backend = "grep"
             result = await env.exec_cmd(grep_cmd, timeout=30)
+        if result.returncode == 1:
+            return f"No matches found for pattern: {pattern}"
+        if result.returncode != 0:
+            diagnostic = (result.stderr or result.stdout).strip()
+            if not diagnostic:
+                diagnostic = f"exit code {result.returncode}"
+            if getattr(result, "stderr_truncated", False):
+                diagnostic += " (stderr truncated)"
+            return f"Error: {backend} search failed: {truncate(diagnostic, 1000)}"
         if result.stdout.strip():
             matches = result.stdout.strip().splitlines()[:max_results]
             return truncate("\n".join(matches), self.max_grep_chars)
