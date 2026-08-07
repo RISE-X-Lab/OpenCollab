@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import opencollab.application.compaction_summary as compaction_summary
 from opencollab.application.compaction_summary import ReadTimeSummarizer, run_coro_blocking
 
 SEGMENT = [
@@ -80,6 +81,17 @@ def test_summarizer_falls_back_when_no_summary_block():
     s = _summarizer("<analysis>only thinking, forgot the summary</analysis>")
     out = s(SEGMENT)
     assert "[assistant]: working on it" in out
+    assert s.last_call_cacheable is False
+
+
+def test_summarizer_falls_back_when_summary_formatting_fails(monkeypatch):
+    def broken_formatter(_raw):
+        raise ValueError("broken parser")
+
+    monkeypatch.setattr(compaction_summary, "format_compact_summary", broken_formatter)
+    s = _summarizer("<summary>valid provider response</summary>")
+    out = s(SEGMENT)
+    assert "[user]: build the thing" in out
     assert s.last_call_cacheable is False
 
 
