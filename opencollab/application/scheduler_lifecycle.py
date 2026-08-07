@@ -322,7 +322,12 @@ class LifecycleMixin:
         start = self._turn_started_at.setdefault(aid, time.monotonic())
 
         try:
-            result = await session.run_loop()
+            cancel_event = self._turn_cancel_events.get(aid)
+            result = (
+                await session.run_loop(cancel_event)
+                if cancel_event is not None
+                else await session.run_loop()
+            )
         except asyncio.CancelledError:
             self._release_leases(aid)
             scb.state.cancel()

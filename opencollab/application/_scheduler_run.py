@@ -12,11 +12,21 @@ logger = logging.getLogger(__name__)
 
 
 class SchedulerRunMixin:
-    async def run(self, user_message: str) -> str:
+    async def run(
+        self,
+        user_message: str,
+        cancel_event: asyncio.Event | None = None,
+    ) -> str:
         """Compatibility entry point for an external turn addressed to Lead."""
-        return await self.run_turn(0, user_message)
+        return await self.run_turn(0, user_message, cancel_event=cancel_event)
 
-    async def run_turn(self, aid: int, user_message: str) -> str:
+    async def run_turn(
+        self,
+        aid: int,
+        user_message: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+    ) -> str:
         """Send an external user turn to ``aid`` and wait for team quiescence.
 
         A session that suspends on deferred work (``AWAITING_EVENTS``) returns
@@ -27,13 +37,21 @@ class SchedulerRunMixin:
         """
         if isinstance(aid, bool) or not isinstance(aid, int) or aid < 0:
             raise ValueError("Agent aid must be a non-negative integer.")
+        if cancel_event is not None and not isinstance(cancel_event, asyncio.Event):
+            raise TypeError("cancel_event must be an asyncio.Event or None.")
         current_task = asyncio.current_task()
         if current_task is not None:
             self._active_run_tasks[current_task] = aid
         try:
             lock = self._run_locks.setdefault(aid, asyncio.Lock())
             async with lock:
-                return await self._run_turn_exclusive(aid, user_message)
+                if cancel_event is not None:
+                    self._turn_cancel_events[aid] = cancel_event
+                try:
+                    return await self._run_turn_exclusive(aid, user_message)
+                finally:
+                    if self._turn_cancel_events.get(aid) is cancel_event:
+                        self._turn_cancel_events.pop(aid, None)
         except asyncio.CancelledError:
             # The public caller owns the whole team turn. Do not leave its target
             # driver and descendants running after that owner is cancelled.

@@ -133,6 +133,9 @@ class Scheduler(
         # Monotonic start of the current agent turn. A deferred suspend keeps
         # this entry so terminal latency includes child wait and resume work.
         self._turn_started_at: dict[int, float] = {}
+        # Optional cooperative cancellation token owned by the current public
+        # turn for each aid. Deferred resume drivers reuse the same token.
+        self._turn_cancel_events: dict[int, asyncio.Event] = {}
         # ``spawn`` owns resources before the child driver exists. Track that
         # pre-driver window separately so cleanup can cancel/abort/finalize an
         # external spawn blocked in worktree setup or lifecycle event delivery.
