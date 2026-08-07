@@ -240,6 +240,8 @@ async def run_agent(
         return record_finalization_result(task)
 
     async def finalize_with_retry() -> bool:
+        if finalization_succeeded:
+            return True
         while not finalization_succeeded:
             if (
                 finalization_task is None
