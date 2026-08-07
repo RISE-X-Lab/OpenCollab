@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from collections.abc import Callable
 
 import pytest
@@ -51,6 +52,36 @@ class FakeDocker:
 
 def _patch(monkeypatch, fake: FakeDocker) -> None:
     monkeypatch.setattr(docker_module, "run_process", fake)
+
+
+@pytest.mark.parametrize(
+    ("probe_result", "expected_returncode", "pidfile_retained"),
+    [(0, 125, True), (1, 0, False)],
+    ids=("group-survives", "group-quiesces"),
+)
+def test_exec_cancel_only_succeeds_after_process_group_quiesces(
+    tmp_path,
+    probe_result,
+    expected_returncode,
+    pidfile_retained,
+) -> None:
+    pidfile = tmp_path / "exec.pid"
+    pidfile.write_text("123\n", encoding="utf-8")
+    command = (
+        f'kill() {{ [ "$1" = "-0" ] && return {probe_result}; return 0; }}; '
+        "sleep() { :; }; "
+        f"{docker_module._EXEC_CANCEL}"
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", command, "opencollab-cancel", str(pidfile)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == expected_returncode
+    assert pidfile.exists() is pidfile_retained
 
 
 async def test_owned_setup_is_network_isolated_and_cleanup_uses_full_id(monkeypatch) -> None:

@@ -36,21 +36,45 @@ pidfile=$1
 shellflag=$2
 command=$3
 cleanup() { rm -f -- "$pidfile"; }
-terminate() {
-    kill -TERM -- "-$child" 2>/dev/null || true
-    sleep 0.1
-    kill -KILL -- "-$child" 2>/dev/null || true
+group_alive() {
+    [ -n "$child" ] && kill -0 -- "-$child" 2>/dev/null
 }
-trap 'terminate; cleanup; exit 143' TERM INT HUP
+wait_for_group_exit() {
+    attempts=0
+    while group_alive; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -ge 20 ] && return 1
+        sleep 0.05
+    done
+    return 0
+}
+terminate() {
+    if ! group_alive; then
+        return 0
+    fi
+    kill -TERM -- "-$child" 2>/dev/null || true
+    if wait_for_group_exit; then
+        return 0
+    fi
+    kill -KILL -- "-$child" 2>/dev/null || true
+    wait_for_group_exit
+}
+cancel_and_exit() {
+    if terminate; then
+        cleanup
+        exit 143
+    fi
+    exit 125
+}
+child=
+trap cancel_and_exit TERM INT HUP
 set -m
 bash "$shellflag" "$command" &
 child=$!
-printf '%s\n' "$child" > "$pidfile" || { terminate; cleanup; exit 125; }
+printf '%s\n' "$child" > "$pidfile" || { terminate || true; cleanup; exit 125; }
 wait "$child"
 status=$?
-if kill -0 -- "-$child" 2>/dev/null; then
-    terminate
-    cleanup
+if group_alive && ! terminate; then
     exit 125
 fi
 cleanup
@@ -63,11 +87,27 @@ if ! read -r child < "$pidfile" 2>/dev/null; then
     exit 124
 fi
 case "$child" in ''|*[!0-9]*) exit 125 ;; esac
+group_alive() {
+    kill -0 -- "-$child" 2>/dev/null
+}
+wait_for_group_exit() {
+    attempts=0
+    while group_alive; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -ge 20 ] && return 1
+        sleep 0.05
+    done
+    return 0
+}
 kill -TERM -- "-$child" 2>/dev/null || true
-sleep 0.1
-kill -KILL -- "-$child" 2>/dev/null || true
-rm -f -- "$pidfile"
-exit 0
+if ! wait_for_group_exit; then
+    kill -KILL -- "-$child" 2>/dev/null || true
+    if ! wait_for_group_exit; then
+        exit 125
+    fi
+fi
+rm -f -- "$pidfile" && exit 0
+exit 125
 """.strip()
 
 
