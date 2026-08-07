@@ -118,8 +118,12 @@ def test_tracer_reopen_separates_an_unterminated_tail(tmp_path) -> None:
     resumed.close()
 
     lines = path.read_text(encoding="utf-8").splitlines()
-    assert lines[-2] == '{"damaged":'
-    assert json.loads(lines[-1])["step"] == 8
+    assert [json.loads(line)["step"] for line in lines] == [8]
+    quarantined = list(tmp_path.glob("run.jsonl.corrupt-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == (
+        '{"step": 7}\n{"damaged":'
+    )
 
 
 def test_tracer_write_failure_is_sticky(tmp_path, monkeypatch) -> None:
