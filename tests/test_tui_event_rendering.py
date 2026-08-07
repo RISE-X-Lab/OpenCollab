@@ -15,6 +15,7 @@ from rich.console import Console
 from rich.text import Text
 
 from opencollab.adapters.tui import TUI
+from opencollab.adapters.tui import renderer as renderer_mod
 from opencollab.domain.events import SchedulerEvent, SessionRuntimeEvent
 
 
@@ -411,6 +412,40 @@ def test_live_timeline_cap_does_not_truncate_complete_agent_history():
     history = tui.render_selected_history()
     assert "activity 0" in history
     assert "activity 99" in history
+
+
+def test_agent_history_has_a_global_per_agent_bound():
+    tui = TUI(Console(file=StringIO(), width=100, color_system=None))
+    state = tui._state_for(1)
+
+    for index in range(renderer_mod.MAX_HISTORY_BLOCKS_PER_AGENT + 20):
+        tui._append_activity(
+            (f"bounded activity {index}", tui._STYLE_MUTED),
+            state=state,
+        )
+
+    assert len(state.history_blocks) == renderer_mod.MAX_HISTORY_BLOCKS_PER_AGENT
+    tui.select_agent(1)
+    history = tui.render_selected_history()
+    assert "bounded activity 0" not in history
+    assert f"bounded activity {renderer_mod.MAX_HISTORY_BLOCKS_PER_AGENT + 19}" in history
+
+
+def test_completed_agent_render_states_have_a_global_bound():
+    tui = TUI()
+
+    for aid in range(1, renderer_mod.MAX_TERMINAL_AGENT_STATES + 10):
+        tui.event_handler(
+            SchedulerEvent(
+                "agent_completed",
+                {"aid": aid, "role": "worker", "latency": 0.1},
+            )
+        )
+
+    retained_children = {aid for aid in tui._agent_states if aid != 0}
+    assert len(retained_children) <= renderer_mod.MAX_TERMINAL_AGENT_STATES
+    assert 1 not in retained_children
+    assert renderer_mod.MAX_TERMINAL_AGENT_STATES + 9 in retained_children
 
 
 def test_user_message_is_recorded_only_in_target_history_and_revises_cache_key():

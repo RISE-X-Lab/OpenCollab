@@ -15,6 +15,7 @@ from opencollab.domain.events import SchedulerEvent
 
 # Cap on retained timeline blocks so long sessions don't grow render cost.
 MAX_TIMELINE_BLOCKS = 80
+MAX_STATUS_LINES = 40
 
 
 class _RendererEventsMixin:
@@ -123,7 +124,7 @@ class _RendererEventsMixin:
         if etype == "agent_spawned":
             state = self._state_for(aid)
             self._clear_thinking_status(state)
-            self._roster[aid] = {"role": role or "agent", "state": "running"}
+            self._mark_roster(aid, role, "running")
             # aid 0 is the lead/turn itself, not a spawned teammate — no chrome.
             if aid != 0:
                 label = f"{agent_label}:spawn"
@@ -250,6 +251,7 @@ class _RendererEventsMixin:
         entry["state"] = state
         if role:
             entry["role"] = role
+        self._track_agent_render_lifecycle(aid, state)
 
     def _emit_status(
         self,
@@ -263,10 +265,13 @@ class _RendererEventsMixin:
         target = state or self._selected_state
         if preserve:
             self._flush_current_text_to_timeline(target)
-            target.history_blocks.append(status)
+            self._append_history_block(target, status)
             target.history_revision += 1
         if self._live or self._live_paused:
             target.status_lines.append(status)
+            overflow = len(target.status_lines) - MAX_STATUS_LINES
+            if overflow > 0:
+                del target.status_lines[:overflow]
             self._refresh()
             return
         self.console.print(status)
@@ -284,7 +289,7 @@ class _RendererEventsMixin:
         styled_segments: list[tuple[str, str]] = [marker or self._MARK_DOT]
         styled_segments.extend((text, style) for text, style in segments if text)
         line = Text.assemble(*styled_segments)
-        target.history_blocks.append(line)
+        self._append_history_block(target, line)
         target.timeline_blocks.append(line)
         target.history_revision += 1
         # Keep recent timeline blocks bounded.
@@ -298,7 +303,7 @@ class _RendererEventsMixin:
         if not target.current_text:
             return
         block = self._assistant_block(Markdown(target.current_text))
-        target.history_blocks.append(block)
+        self._append_history_block(target, block)
         target.timeline_blocks.append(block)
         target.current_text = ""
         target.history_revision += 1
