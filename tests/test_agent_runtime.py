@@ -281,6 +281,34 @@ async def test_agent_runtime_cancellation_during_finalization_keeps_cleanup_owne
     assert session.save_calls == 1
 
 
+async def test_agent_runtime_retries_transient_finalization_failure(monkeypatch) -> None:
+    session = Session()
+    _patch_session(monkeypatch, session)
+    attempts = 0
+
+    async def flaky_finalize(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        return attempts > 1
+
+    monkeypatch.setattr(agent_runtime, "_finalize_session", flaky_finalize)
+
+    result = await agent_runtime.run_agent(
+        agent=_agent(),
+        environment=Environment(),
+        prompt="run",
+        max_tokens=100,
+        max_steps=5,
+        timeout_seconds=None,
+        cleanup_timeout_seconds=0.1,
+        transcript_path=None,
+        cleanup_environment=True,
+    )
+
+    assert result.outcome == "completed"
+    assert attempts == 2
+
+
 async def test_agent_runtime_rejects_missing_final_save_owner(monkeypatch) -> None:
     session = Session(auto_save_path="agent.json")
     original_enqueue = session.enqueue_auto_save
@@ -304,8 +332,8 @@ async def test_agent_runtime_rejects_missing_final_save_owner(monkeypatch) -> No
             transcript_path="agent.json",
             cleanup_environment=True,
         )
-    assert session.save_calls == 1
-    assert environment.cleanup_calls == 1
+    assert session.save_calls == 2
+    assert environment.cleanup_calls == 2
     assert original_enqueue is not None
 
 
@@ -327,5 +355,6 @@ async def test_agent_runtime_attempts_cleanup_after_pending_task_timeout(monkeyp
             transcript_path=None,
             cleanup_environment=True,
         )
-    assert environment.cleanup_calls == 1
-    assert session.save_calls == 1
+    assert environment.cleanup_calls == 2
+    assert session.save_calls == 2
+    assert pending.done()
