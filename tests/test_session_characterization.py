@@ -20,9 +20,8 @@ from session_characterization_test_support import (
 from opencollab.application.event_bus import EventBus
 from opencollab.application.session import SessionBusyError
 from opencollab.application.tool_execution import CallbackPermissionPolicy
+from opencollab.bootstrap import SnapshotSessionError, snapshot_session
 from opencollab.bootstrap import build_session as Session
-from opencollab.bootstrap import snapshot_session
-from opencollab.bootstrap.session_factory import SnapshotSessionError
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase
