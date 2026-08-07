@@ -373,6 +373,33 @@ def test_delivery_final_autosave_commits_message_and_removes_pending_sidecar(tmp
     assert teammate.state.pending_user_messages == []
 
 
+def test_shutdown_after_append_dequeues_and_restore_skips_committed_message():
+    class ShutdownAfterAppend(RespondingFakeSession):
+        def __init__(self):
+            super().__init__(["must not run"], role="coder")
+            self.scheduler = None
+
+        async def add_user_message(self, content):
+            await super().add_user_message(content)
+            self.scheduler._shutting_down = True
+
+    teammate = ShutdownAfterAppend()
+    scheduler, _ = _build_scheduler(teammate)
+    teammate.scheduler = scheduler
+    teammate.state.set_phase(SessionPhase.DONE)
+    _register_child(scheduler, teammate)
+
+    async def scenario():
+        assert "queued" in await scheduler.send_message(0, 1, "once", "do this once")
+
+    run(scenario())
+
+    assert len(teammate.state.messages) == 1
+    assert teammate.state.pending_user_messages == []
+    assert scheduler._message_inbox.get(1) == []
+    assert 1 not in scheduler._tasks
+
+
 def test_add_user_message_failure_rolls_back_partial_state_and_restores_budget():
     class FailingAdd(FakeSession):
         async def add_user_message(self, content):
