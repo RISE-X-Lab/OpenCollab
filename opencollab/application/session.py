@@ -402,132 +402,134 @@ class Session:
 
         messages = list(snapshot.get("messages", []))
         raw_state = snapshot.get("session_state")
+        restored = SessionState(
+            messages=[],
+            aid=_snapshot_int(snapshot.get("aid"), default=self.state.aid),
+        )
+        restored.replace_messages(messages)
+        pending_messages = snapshot.get("pending_messages", [])
+        restored.pending_user_messages = (
+            [
+                dict(message)
+                for message in pending_messages
+                if isinstance(message, dict)
+            ]
+            if isinstance(pending_messages, list)
+            else []
+        )
         if not isinstance(raw_state, dict):
             # A message-only (or pre-runtime-state) snapshot has no authority
             # over the current session's counters, phase, or pending work. Build
             # a complete clean state first, then update the existing object so
             # the runner and tool executor retain their shared state reference.
-            restored = SessionState(
-                messages=messages,
-                aid=_snapshot_int(snapshot.get("aid"), default=self.state.aid),
-            )
-            pending_messages = snapshot.get("pending_messages", [])
-            restored.pending_user_messages = [
-                dict(message) for message in pending_messages if isinstance(message, dict)
-            ] if isinstance(pending_messages, list) else []
-            self.state.__dict__.clear()
-            self.state.__dict__.update(restored.__dict__)
+            self._publish_restored_state(restored)
             self._restore_auto_save_tracking(snapshot)
             self._checkpoint_restored_auto_save_target(path)
             return
 
-        self.messages = messages
-        self.state.pending_external_user_turn = None
-        self.state.clear_active_turn()
-        pending_messages = snapshot.get("pending_messages", [])
-        self.state.pending_user_messages = [
-            dict(message) for message in pending_messages if isinstance(message, dict)
-        ] if isinstance(pending_messages, list) else []
-        self.state.aid = _snapshot_int(snapshot.get("aid"), default=self.state.aid)
-
-        self.state.pending_external_user_turn = _restore_queued_external_user_turn(
-            raw_state.get("pending_external_user_turn"), self.state.messages
+        restored.pending_external_user_turn = _restore_queued_external_user_turn(
+            raw_state.get("pending_external_user_turn"), restored.messages
         )
         restored_turn_start = _restore_active_turn_start(
-            raw_state.get("active_turn_start_message_index"), self.state.messages
+            raw_state.get("active_turn_start_message_index"), restored.messages
         )
 
-        self.state.set_used_tokens(_snapshot_nonnegative_int(raw_state.get("used_tokens")))
-        self.state.set_context_tokens(_snapshot_nonnegative_int(raw_state.get("context_tokens")))
-        self.state.set_step_count(_snapshot_nonnegative_int(raw_state.get("step_count")))
-        self.state.markup_recovered = _snapshot_nonnegative_int(
+        restored.set_used_tokens(_snapshot_nonnegative_int(raw_state.get("used_tokens")))
+        restored.set_context_tokens(
+            _snapshot_nonnegative_int(raw_state.get("context_tokens"))
+        )
+        restored.set_step_count(_snapshot_nonnegative_int(raw_state.get("step_count")))
+        restored.markup_recovered = _snapshot_nonnegative_int(
             raw_state.get("markup_recovered")
         )
         hashes = raw_state.get("recent_call_hashes")
-        self.state.replace_recent_tool_hashes(
+        restored.replace_recent_tool_hashes(
             [str(value) for value in hashes] if isinstance(hashes, list) else []
         )
-        self.state.turn.reads_since_last_edit = _snapshot_nonnegative_int(
+        restored.turn.reads_since_last_edit = _snapshot_nonnegative_int(
             raw_state.get("reads_since_last_edit")
         )
-        self.state.turn.has_landed_write = bool(
+        restored.turn.has_landed_write = bool(
             raw_state.get("has_landed_write", False)
         )
-        self.state.turn.low_yield_since_progress = _snapshot_nonnegative_int(
+        restored.turn.low_yield_since_progress = _snapshot_nonnegative_int(
             raw_state.get("low_yield_since_progress")
         )
-        self.state.turn.distinct_evidence_count = _snapshot_nonnegative_int(
+        restored.turn.distinct_evidence_count = _snapshot_nonnegative_int(
             raw_state.get("distinct_evidence_count")
         )
         seen_hashes = raw_state.get("seen_result_hashes")
-        self.state.turn.seen_result_hashes = (
+        restored.turn.seen_result_hashes = (
             {str(value) for value in seen_hashes}
             if isinstance(seen_hashes, list)
             else set()
         )
         ledger = raw_state.get("scout_ledger")
-        self.state.turn.scout_ledger = (
+        restored.turn.scout_ledger = (
             [dict(card) for card in ledger if isinstance(card, dict)]
             if isinstance(ledger, list)
             else []
         )
-        self.state.turn.steps_since_progress = _snapshot_nonnegative_int(
+        restored.turn.steps_since_progress = _snapshot_nonnegative_int(
             raw_state.get("steps_since_progress")
         )
-        self.state.wind_down_done = bool(raw_state.get("wind_down_done", False))
+        restored.wind_down_done = bool(raw_state.get("wind_down_done", False))
         if "wind_down_attempts" in raw_state:
-            self.state.wind_down_attempts = _snapshot_nonnegative_int(
+            restored.wind_down_attempts = _snapshot_nonnegative_int(
                 raw_state.get("wind_down_attempts")
             )
         else:
             # A legacy snapshot cannot prove whether its one retry was already
             # allocated. Preserve the budget contract by not granting another.
-            self.state.wind_down_attempts = 2 if self.state.wind_down_done else 0
-        self.state.wind_down_token_mark = _snapshot_nonnegative_int(
+            restored.wind_down_attempts = 2 if restored.wind_down_done else 0
+        restored.wind_down_token_mark = _snapshot_nonnegative_int(
             raw_state.get("wind_down_token_mark")
         )
-        self.state.turn.loop_blocked_since_progress = _snapshot_nonnegative_int(
+        restored.turn.loop_blocked_since_progress = _snapshot_nonnegative_int(
             raw_state.get("loop_blocked_since_progress")
         )
-        self.state.pending_events.clear()
         rows = raw_state.get("pending_events", [])
         if isinstance(rows, list):
             for value in rows:
                 row = _restore_pending_row(value)
                 if row is not None:
-                    self.state.pending_events.add(row)
+                    restored.pending_events.add(row)
 
         phase = _restore_phase(raw_state.get("phase", SessionPhase.IDLE.value))
         if phase is SessionPhase.AWAITING_EVENTS:
-            self._complete_missing_pending_rows()
+            self._complete_missing_pending_rows(restored)
         # In-flight provider/tool phases depend on process-local coroutines that
         # cannot survive restart. AWAITING_EVENTS is recoverable because pending
         # child rows above are converted to explicit FAILED tool results.
         recoverable = {SessionPhase.AWAITING_EVENTS, *[p for p in SessionPhase if p.is_terminal()]}
-        self.state.set_phase(phase if phase in recoverable else SessionPhase.IDLE)
-        if self.state.phase is SessionPhase.AWAITING_EVENTS:
-            self.state.active_turn_start_message_index = restored_turn_start
+        restored.set_phase(phase if phase in recoverable else SessionPhase.IDLE)
+        if restored.phase is SessionPhase.AWAITING_EVENTS:
+            restored.active_turn_start_message_index = restored_turn_start
         if phase is not SessionPhase.AWAITING_EVENTS:
-            self._append_restore_results_for_open_tool_calls()
+            self._append_restore_results_for_open_tool_calls(restored)
             # Rows from an interrupted non-awaiting phase have no live producer
             # after process restart. The explicit tool results above close the
             # provider protocol; keeping the stale sidecar rows would make the
             # scheduler's quiescence check wait forever after the resumed turn.
-            self.state.pending_events.clear()
-        if self.state.phase is SessionPhase.AWAITING_EVENTS and self.state.pending_events.is_empty():
-            self.state.set_phase(SessionPhase.IDLE)
-            self._append_restore_results_for_open_tool_calls()
-        self.state.pending_step_latency = (
+            restored.pending_events.clear()
+        if (
+            restored.phase is SessionPhase.AWAITING_EVENTS
+            and restored.pending_events.is_empty()
+        ):
+            restored.set_phase(SessionPhase.IDLE)
+            self._append_restore_results_for_open_tool_calls(restored)
+        restored.pending_step_latency = (
             _snapshot_nonnegative_float(raw_state.get("pending_step_latency"))
-            if self.state.phase is SessionPhase.AWAITING_EVENTS
+            if restored.phase is SessionPhase.AWAITING_EVENTS
             else None
         )
-        self.state.terminal_reason = (
+        restored.terminal_reason = (
             str(raw_state["terminal_reason"])
-            if self.state.phase.is_terminal()
+            if restored.phase.is_terminal()
             and raw_state.get("terminal_reason") is not None
             else None
         )
+        self._publish_restored_state(restored)
         self._restore_auto_save_tracking(snapshot)
         self._checkpoint_restored_auto_save_target(path)
 
@@ -552,13 +554,22 @@ class Session:
         if target_path and not _same_snapshot_path(source_path, target_path):
             self.save(target_path)
 
-    def _open_tool_call_ids(self) -> list[str]:
+    def _publish_restored_state(self, restored: SessionState) -> None:
+        """Publish one fully validated restore while retaining shared identity."""
+        self.state.__dict__.clear()
+        self.state.__dict__.update(restored.__dict__)
+
+    def _open_tool_call_ids(
+        self,
+        state: SessionState | None = None,
+    ) -> list[str]:
         # Pair calls and results in transcript order. Tool-call ids are expected
         # to be unique, but several OpenAI-compatible providers reuse short ids
         # such as ``call_1`` on later turns. A global "answered ids" set would
         # let an old result incorrectly close a newer interrupted call.
         open_ids: list[str] = []
-        for message in self.state.messages:
+        restored_state = state or self.state
+        for message in restored_state.messages:
             if message.get("role") == "tool":
                 tool_call_id = message.get("tool_call_id")
                 if tool_call_id is None:
@@ -579,13 +590,19 @@ class Session:
                 open_ids.append(str(call["id"]))
         return open_ids
 
-    def _complete_missing_pending_rows(self) -> None:
-        existing = set(self.state.pending_events.rows)
-        for order, tool_call_id in enumerate(self._open_tool_call_ids()):
+    def _complete_missing_pending_rows(
+        self,
+        state: SessionState | None = None,
+    ) -> None:
+        restored_state = state or self.state
+        existing = set(restored_state.pending_events.rows)
+        for order, tool_call_id in enumerate(
+            self._open_tool_call_ids(restored_state)
+        ):
             if tool_call_id in existing:
                 continue
             error = "deferred child state missing during session restore"
-            self.state.pending_events.add(
+            restored_state.pending_events.add(
                 PendingRow(
                     tool_call_id=tool_call_id,
                     kind=RowKind.CHILD_AGENT,
@@ -596,10 +613,14 @@ class Session:
                 )
             )
 
-    def _append_restore_results_for_open_tool_calls(self) -> None:
+    def _append_restore_results_for_open_tool_calls(
+        self,
+        state: SessionState | None = None,
+    ) -> None:
         """Close assistant tool calls whose process-local execution was lost."""
-        for tool_call_id in self._open_tool_call_ids():
-            self.state.append_message(
+        restored_state = state or self.state
+        for tool_call_id in self._open_tool_call_ids(restored_state):
+            restored_state.append_message(
                 {
                     "role": "tool",
                     "tool_call_id": tool_call_id,
