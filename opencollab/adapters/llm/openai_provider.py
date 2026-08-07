@@ -15,7 +15,6 @@ from opencollab.adapters.llm.types import (
     LLMResponse,
     Usage,
     estimate_messages_tokens,
-    estimate_tokens,
     model_capabilities,
     rescue_empty_turn,
 )
@@ -196,7 +195,9 @@ def _normalize_tool_arguments(arguments: str | None) -> str:
     return raw
 
 
-def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
+def _parse_response(
+    resp: Any, request_messages: list[dict], tools: list[dict] | None = None
+) -> LLMResponse:
     choice = resp.choices[0]
     message = choice.message
 
@@ -233,7 +234,7 @@ def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
                 reasoning = cleaned_reasoning
                 markup_recovered = True
 
-    usage = _parse_usage(resp, request_messages, message)
+    usage = _parse_usage(resp, request_messages, message, tools)
     # Surface the P6 recovery as an observability counter (summed up the chain
     # into the run metrics) without altering the recovered response itself.
     usage.markup_recovered = 1 if markup_recovered else 0
@@ -251,7 +252,12 @@ def _parse_response(resp: Any, request_messages: list[dict]) -> LLMResponse:
     )
 
 
-def _parse_usage(resp: Any, request_messages: list[dict], message: Any) -> Usage:
+def _parse_usage(
+    resp: Any,
+    request_messages: list[dict],
+    message: Any,
+    tools: list[dict] | None = None,
+) -> Usage:
     """Build a ``Usage`` from an OpenAI-compatible response, with estimate fallback.
 
     Some OpenAI-compatible endpoints (proxies, certain streaming configs,
@@ -275,7 +281,7 @@ def _parse_usage(resp: Any, request_messages: list[dict], message: Any) -> Usage
 
     estimated = False
     if input_tokens <= 0:
-        input_tokens = estimate_messages_tokens(request_messages)
+        input_tokens = estimate_messages_tokens(request_messages, tools)
         estimated = True
     if output_tokens <= 0:
         output_tokens = _estimate_output_tokens(message)
@@ -335,11 +341,11 @@ def _usage_to_plain(value: Any) -> Any:
 
 
 def _estimate_output_tokens(message: Any) -> int:
-    """Estimate output tokens from response text + serialized tool-call args."""
-    text = message.content or ""
-    for tool_call in message.tool_calls or []:
-        text += tool_call.function.name + tool_call.function.arguments
-    return estimate_tokens(text) if text else 0
+    """Estimate output tokens from all serialized assistant response fields."""
+    plain_message = _usage_to_plain(message)
+    if not isinstance(plain_message, dict):
+        return 0
+    return estimate_messages_tokens([{"role": "assistant", **plain_message}])
 
 
 async def complete_openai(
@@ -371,4 +377,4 @@ async def complete_openai(
         lambda: client.chat.completions.create(**kwargs),
         max_retries=max_retries,
     )
-    return _parse_response(resp, messages)
+    return _parse_response(resp, kwargs["messages"], kwargs.get("tools"))
