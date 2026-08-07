@@ -79,6 +79,7 @@ if TYPE_CHECKING:
     from opencollab.bootstrap.scheduler_factory import build_scheduler
     from opencollab.bootstrap.session_factory import (
         DefaultSessionFactory,
+        SnapshotSessionError,
         agent_save_path,
         build_session,
         build_spawn_session,
@@ -309,6 +310,7 @@ def build_session_runtime(
 _SESSION_FACTORY_EXPORTS = frozenset(
     {
         "DefaultSessionFactory",
+        "SnapshotSessionError",
         "agent_save_path",
         "build_session",
         "build_spawn_session",
@@ -337,6 +339,7 @@ __all__ = [
     "DefaultSessionFactory",
     "RuntimeContext",
     "SessionRuntime",
+    "SnapshotSessionError",
     "SpawnConfig",
     "agent_save_path",
     "make_run_dir",
