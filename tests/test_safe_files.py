@@ -5,6 +5,9 @@ from __future__ import annotations
 import concurrent.futures
 import os
 import stat
+import sys
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -59,6 +62,27 @@ def test_write_rejects_nested_ancestor_symlink(tmp_path) -> None:
     with pytest.raises(OSError, match="real directory"):
         write_regular_bytes_atomic(workspace / "link" / "sub" / "value", b"escape")
     assert not (outside / "sub").exists()
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS system aliases only")
+@pytest.mark.parametrize(
+    ("alias_root", "canonical_root"),
+    [("/tmp", "/private/tmp"), ("/var/tmp", "/private/var/tmp")],
+)
+def test_macos_system_directory_aliases_match_canonical_paths(
+    alias_root,
+    canonical_root,
+) -> None:
+    with tempfile.TemporaryDirectory(dir=canonical_root) as directory:
+        canonical_directory = Path(directory)
+        alias_directory = Path(alias_root) / canonical_directory.relative_to(canonical_root)
+        alias_path = alias_directory / "state"
+        canonical_path = canonical_directory / "state"
+
+        write_regular_bytes_atomic(alias_path, b"payload")
+
+        assert read_regular_bytes(alias_path, max_bytes=7) == b"payload"
+        assert canonical_path.read_bytes() == b"payload"
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
