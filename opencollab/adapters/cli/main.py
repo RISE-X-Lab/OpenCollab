@@ -346,9 +346,11 @@ async def _run(
 
     event_sink = TuiEventSink(tui)
     events_file = os.environ.get("OPENCOLLAB_EVENTS_FILE")
+    file_event_sink: JsonlEventSink | None = None
     if events_file:
         bus = EventBus(event_sink)
-        bus.subscribe(JsonlEventSink(events_file))
+        file_event_sink = JsonlEventSink(events_file)
+        bus.subscribe(file_event_sink)
         event_sink = bus
 
     ctx = build_runtime_context(
@@ -441,6 +443,27 @@ async def _run(
                     )
                 except BaseException as exc:
                     tracer_failure = exc
+    if file_event_sink is not None:
+        try:
+            event_write_error = file_event_sink.write_error
+            dropped_events = file_event_sink.dropped_events
+        except BaseException as exc:
+            event_write_error = (
+                "event sink diagnostics unavailable: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            dropped_events = 0
+        if event_write_error is not None or dropped_events:
+            safe_error = " ".join(str(event_write_error or "unknown error").splitlines())
+            try:
+                print(
+                    "Warning: event log persistence degraded for "
+                    f"{events_file!r}; first error: {safe_error[:1000]}; "
+                    f"dropped events: {dropped_events}",
+                    file=sys.stderr,
+                )
+            except BaseException:
+                pass
     if primary_failure is not None:
         if repeated_cancellation is not None:
             add_exception_note(
