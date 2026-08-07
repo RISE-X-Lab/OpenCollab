@@ -36,6 +36,22 @@ def test_build_workflow_context_returns_context(monkeypatch):
     assert isinstance(ctx, WorkflowContext)
 
 
+def test_concrete_factory_rejects_unsupported_isolation_before_building_session(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    cfg = _cfg()
+    factory = workflow_runtime.WorkflowSessionFactory(
+        model=cfg["model"],
+        provider=cfg["provider"],
+        api_key=cfg["api_key"],
+        base_url=cfg["base_url"],
+    )
+
+    with pytest.raises(ValueError, match="isolation is not available"):
+        factory.build_workflow_session(prompt="solve", budget=1, isolation=True)
+
+    assert calls == []
+
+
 class _FalseyEnvironment:
     def __bool__(self) -> bool:
         return False

@@ -417,6 +417,8 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         controlled way inside the workflow (its on-disk edits survive) rather than
         being truncated by the outer wall.
         """
+        if isolation:
+            raise ValueError("workflow agent isolation is not available")
         timeout = self._normalize_timeout(timeout)
         call_task = asyncio.current_task()
         if call_task is not None:
