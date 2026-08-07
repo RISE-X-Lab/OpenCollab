@@ -23,6 +23,7 @@ from opencollab.application.tool_execution import CallbackPermissionPolicy
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import snapshot_session
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
+from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase
 
 
@@ -224,28 +225,44 @@ def test_session_rejects_user_message_for_a_suspended_turn():
     assert session.messages == before
 
 
-def test_snapshot_preserves_historical_subset_only():
+def test_snapshot_copies_full_state_and_isolates_mutable_components():
     agent = FakeAgent()
+    agent.tools = [FakeTool("snapshot-tool")]
     session = Session(agent=agent, llm=FakeLLMClient())
-    session.messages.append({"role": "assistant", "content": "old answer"})
-    session.used_tokens = 123
-    session.step_count = 4
-    session.is_done = True
-    session.phase = SessionPhase.DONE
-    session._recent_call_hashes.append("hash-1")
+    state = session.state
+    state.context_tokens = 17
+    state.markup_recovered = 3
+    state.wind_down_done = True
+    state.wind_down_attempts = 2
+    state.wind_down_token_mark = 99
+    state.phase = SessionPhase.ERROR
+    state.terminal_reason = "provider failed"
+    state.aid = 7
+    state.pending_events.add(
+        PendingRow(
+            tool_call_id="pending-1",
+            kind=RowKind.CHILD_AGENT,
+            order=0,
+            status=RowStatus.PENDING,
+        )
+    )
 
     snap = snapshot_session(session)
 
-    assert snap is not session
-    assert snap.agent is agent
-    assert snap.messages == session.messages
-    assert snap.messages is not session.messages
-    assert snap.messages[0] is not session.messages[0]
-    assert snap.used_tokens == 123
-    assert snap.step_count == 4
-    assert snap.is_done is False
-    assert snap.phase == SessionPhase.IDLE
-    assert snap._recent_call_hashes == []
+    assert snap.agent is not session.agent
+    assert snap.state is not state
+    assert snap.state.context_tokens == 17
+    assert snap.state.markup_recovered == 3
+    assert snap.state.wind_down_attempts == 2
+    assert snap.state.phase is SessionPhase.ERROR
+    assert snap.state.terminal_reason == "provider failed"
+    assert snap.state.aid == 7
+    assert "pending-1" in snap.state.pending_events.rows
+
+    snap.agent.tools.clear()
+    snap.state.pending_events.clear()
+    assert session.agent.tools
+    assert "pending-1" in state.pending_events.rows
 
 def test_budget_exceeded_stops_before_llm_call_and_emits_error():
     fake_llm = FakeLLMClient()

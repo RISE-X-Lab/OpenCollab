@@ -72,7 +72,8 @@ def test_snapshot_preserves_explicit_safety_policy(tmp_path):
 
     snap = session_mod.snapshot_session(session)
 
-    assert snap.tool_execution.safety_policy is safety_policy
+    assert snap.tool_execution.safety_policy is not safety_policy
+    assert snap.tool_execution.safety_policy.root == safety_policy.root
 
 
 def test_tool_execution_accepts_explicit_safety_policy(tmp_path):
