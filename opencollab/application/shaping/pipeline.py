@@ -147,6 +147,55 @@ def _group_spans(messages: list[dict[str, Any]]) -> list[tuple[int, int]]:
     return spans
 
 
+def matched_tool_result_occurrences(
+    messages: list[dict[str, Any]],
+) -> list[tuple[int, str, str, Any]]:
+    """Return unambiguous tool-result occurrences in assistant issue order.
+
+    Each tuple is ``(result_index, call_id, tool_name, arguments)``. Pairing is
+    local to one assistant turn, so providers that reuse an id in later turns
+    cannot cause an old compaction decision to affect the newest result. A
+    malformed group (missing, unknown, or duplicate ids) is skipped entirely.
+    """
+    matched: list[tuple[int, str, str, Any]] = []
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant" or not message.get("tool_calls"):
+            continue
+        calls = list(message.get("tool_calls") or ())
+        call_ids = [call.get("id") for call in calls]
+        if (
+            any(not isinstance(call_id, str) or not call_id for call_id in call_ids)
+            or len(set(call_ids)) != len(call_ids)
+        ):
+            continue
+
+        end = index + 1
+        while end < len(messages) and messages[end].get("role") == "tool":
+            end += 1
+        results = list(enumerate(messages[index + 1 : end], start=index + 1))
+        result_ids = [result.get("tool_call_id") for _, result in results]
+        if (
+            any(not isinstance(result_id, str) or not result_id for result_id in result_ids)
+            or len(set(result_ids)) != len(result_ids)
+            or set(result_ids) != set(call_ids)
+        ):
+            continue
+        result_index = {
+            result.get("tool_call_id"): result_i for result_i, result in results
+        }
+        for call in calls:
+            function = call.get("function") or {}
+            matched.append(
+                (
+                    result_index[call["id"]],
+                    call["id"],
+                    function.get("name"),
+                    function.get("arguments"),
+                )
+            )
+    return matched
+
+
 def _droppable_region(
     messages: list[dict[str, Any]], keep_recent_groups: int
 ) -> tuple[list[tuple[int, int]], int, int]:
