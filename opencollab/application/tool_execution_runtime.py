@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -18,6 +19,108 @@ from opencollab.application.async_timeout import (
 from opencollab.application.ports import AskUserPort, EnvironmentPort, PermissionPort, SafetyPolicyPort
 
 logger = logging.getLogger(__name__)
+
+OBSERVATION_PAYLOAD_BUDGET_BYTES = 8 * 1024
+OBSERVATION_STRING_PREVIEW_CHARS = 512
+OBSERVATION_MAX_ITEMS = 64
+OBSERVATION_MAX_DEPTH = 8
+
+
+def sanitize_observation_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Return a structure-preserving, bounded copy for event and trace sinks."""
+    budget = [OBSERVATION_PAYLOAD_BUDGET_BYTES]
+    sanitized = _sanitize_observation_value(args, budget=budget, depth=0)
+    return sanitized if isinstance(sanitized, dict) else {"value": sanitized}
+
+
+def _sanitize_observation_value(
+    value: Any,
+    *,
+    budget: list[int],
+    depth: int,
+) -> Any:
+    if isinstance(value, str):
+        raw = value.encode("utf-8", errors="surrogatepass")
+        if (
+            len(value) <= OBSERVATION_STRING_PREVIEW_CHARS
+            and len(raw) + 32 <= budget[0]
+        ):
+            budget[0] -= len(raw) + 32
+            return value
+        preview = value[:OBSERVATION_STRING_PREVIEW_CHARS]
+        budget[0] = max(
+            0,
+            budget[0]
+            - len(preview.encode("utf-8", errors="surrogatepass"))
+            - 192,
+        )
+        return {
+            "__opencollab_truncated__": True,
+            "preview": preview,
+            "original_length": len(value),
+            "original_bytes": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    if value is None or isinstance(value, (bool, int, float)):
+        budget[0] = max(0, budget[0] - 32)
+        return value
+    if depth >= OBSERVATION_MAX_DEPTH:
+        budget[0] = max(0, budget[0] - 96)
+        return {
+            "__opencollab_truncated__": True,
+            "original_type": type(value).__name__,
+        }
+    if isinstance(value, dict):
+        result: dict[str, Any] = {}
+        items = list(value.items())
+        for index, (key, nested) in enumerate(items):
+            if index >= OBSERVATION_MAX_ITEMS or budget[0] < 128:
+                result["__opencollab_truncated_items__"] = len(items) - index
+                break
+            rendered_key = str(key)
+            if len(rendered_key) > 128:
+                key_raw = rendered_key.encode("utf-8", errors="surrogatepass")
+                rendered_key = (
+                    rendered_key[:64]
+                    + "...[sha256:"
+                    + hashlib.sha256(key_raw).hexdigest()
+                    + "]"
+                )
+            budget[0] = max(
+                0,
+                budget[0]
+                - len(rendered_key.encode("utf-8", errors="surrogatepass"))
+                - 16,
+            )
+            result[rendered_key] = _sanitize_observation_value(
+                nested,
+                budget=budget,
+                depth=depth + 1,
+            )
+        return result
+    if isinstance(value, (list, tuple)):
+        result_list: list[Any] = []
+        for index, nested in enumerate(value):
+            if index >= OBSERVATION_MAX_ITEMS or budget[0] < 128:
+                result_list.append(
+                    {
+                        "__opencollab_truncated_items__": len(value) - index,
+                    }
+                )
+                break
+            result_list.append(
+                _sanitize_observation_value(
+                    nested,
+                    budget=budget,
+                    depth=depth + 1,
+                )
+            )
+        return result_list
+    return _sanitize_observation_value(
+        str(value),
+        budget=budget,
+        depth=depth + 1,
+    )
 
 
 def _positive_env_float(name: str, default: float) -> float:
@@ -296,8 +399,9 @@ class ToolExecutionRuntimeMixin:
         if not tool:
             return None, f"Error: unknown tool '{tool_name}'."
 
+        observation_args = sanitize_observation_args(args)
         await self._emit_observation(
-            lambda: self.event_factory.tool_start(tool_name, args),
+            lambda: self.event_factory.tool_start(tool_name, observation_args),
             label="tool_start",
         )
 

@@ -28,6 +28,7 @@ from opencollab.application.tool_execution_runtime import (
     DEFAULT_TOOL_CANCELLATION_FORCE_TIMEOUT,
     DEFAULT_TOOL_ENVIRONMENT_ABORT_TIMEOUT,
     ToolExecutionRuntimeMixin,
+    sanitize_observation_args,
 )
 from opencollab.application.tool_execution_runtime import (
     DeferredCall as DeferredCall,
@@ -374,8 +375,12 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                     )
                     continue
 
+            observation_args = sanitize_observation_args(args)
             await self._emit_observation(
-                lambda: self.event_factory.tool_start(tool_name, args),
+                lambda: self.event_factory.tool_start(
+                    tool_name,
+                    observation_args,
+                ),
                 label="tool_start",
             )
 
@@ -428,7 +433,11 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
             if self.tracer:
                 self._trace_observation(
                     step_type="tool_exec",
-                    payload=self.trace_payload(tool_name, args, tool_output),
+                    payload=self.trace_payload(
+                        tool_name,
+                        observation_args,
+                        tool_output,
+                    ),
                     tokens=0,
                     latency=tool_latency,
                 )
