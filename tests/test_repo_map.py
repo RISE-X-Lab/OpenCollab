@@ -429,6 +429,28 @@ def test_session_factory_injects_lead_workspace_repo_map(tmp_path):
     assert "core.py" in session.agent.system_prompt
 
 
+def test_session_factory_refreshes_repo_map_for_each_new_session(tmp_path):
+    ws = _workspace(tmp_path)
+    factory = DefaultSessionFactory(_spawn_cfg(), lead_workspace=str(ws))
+    first = factory.build_spawn_session(
+        role="coder",
+        env=LocalEnvironment(str(ws)),
+        budget=10_000,
+        aid=1,
+    )
+
+    (ws / "created-after-first-session.py").write_text("", encoding="utf-8")
+    second = factory.build_spawn_session(
+        role="coder",
+        env=LocalEnvironment(str(ws)),
+        budget=10_000,
+        aid=2,
+    )
+
+    assert "created-after-first-session.py" not in first.agent.system_prompt
+    assert "created-after-first-session.py" in second.agent.system_prompt
+
+
 def test_session_factory_without_workspace_injects_no_map(tmp_path):
     factory = DefaultSessionFactory(_spawn_cfg())
 
