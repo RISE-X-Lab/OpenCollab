@@ -39,6 +39,8 @@ class JsonlEventSink(EventPublisherPort):
         try:
             if is_dataclass(event):
                 payload = asdict(event)
+            elif isinstance(event, dict):
+                payload = dict(event)
             else:
                 payload = {
                     "type": getattr(event, "type", type(event).__name__),

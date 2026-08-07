@@ -24,6 +24,18 @@ def test_jsonl_event_sink_serializes_custom_event_data(tmp_path):
     assert row["data"]["value"] == "custom-object"
 
 
+def test_jsonl_event_sink_preserves_plain_mapping_payload(tmp_path):
+    path = tmp_path / "events.jsonl"
+    sink = JsonlEventSink(str(path))
+
+    asyncio.run(sink.emit({"type": "custom", "data": {"value": 7}, "sequence": 3}))
+
+    row = json.loads(path.read_text(encoding="utf-8"))
+    assert row["type"] == "custom"
+    assert row["data"] == {"value": 7}
+    assert row["sequence"] == 3
+
+
 def test_jsonl_event_sink_remains_passive_when_parent_cannot_be_created(tmp_path):
     blocker = tmp_path / "not_a_directory"
     blocker.write_text("occupied", encoding="utf-8")
