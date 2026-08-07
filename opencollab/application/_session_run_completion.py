@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -28,6 +29,19 @@ from opencollab.domain.session import SessionPhase
 logger = logging.getLogger(__name__)
 
 
+def _selector_names_tool_choice(selector: Any) -> bool:
+    """Return whether a structured error selector targets ``tool_choice``."""
+    values = selector if isinstance(selector, (list, tuple)) else [selector]
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        normalized = re.sub(r"[\s-]+", "_", value.strip().lower())
+        segments = re.split(r"[.\[\]/]+", normalized)
+        if "tool_choice" in segments:
+            return True
+    return False
+
+
 def _is_tool_choice_rejection(exc: Exception) -> bool:
     """Return whether a provider validation error specifically rejects choice."""
     status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
@@ -38,28 +52,30 @@ def _is_tool_choice_rejection(exc: Exception) -> bool:
     if isinstance(body, dict):
         detail = body.get("error", body)
         if isinstance(detail, dict):
-            field = detail.get("param") or detail.get("field")
+            selector_keys = ("param", "field", "path")
+            selectors = [detail[key] for key in selector_keys if key in detail]
+            if selectors:
+                return any(_selector_names_tool_choice(value) for value in selectors)
             code = detail.get("code")
-            if field in {"tool_choice", "tool choice"}:
-                return True
             if code in {"invalid_tool_choice", "unsupported_tool_choice"}:
                 return True
 
     message = str(exc).lower()
-    names_choice = "tool_choice" in message or "tool choice" in message
-    rejects_choice = any(
-        marker in message
-        for marker in (
-            "invalid",
-            "not supported",
-            "unsupported",
-            "not allowed",
-            "unknown",
-            "unrecognized",
-            "unexpected",
+    choice = r"tool(?:_| )choice"
+    rejection = (
+        r"invalid|unsupported|not\s+supported|not\s+allowed|unknown|"
+        r"unrecognized|unexpected|rejected"
+    )
+    return any(
+        re.search(pattern, message)
+        for pattern in (
+            rf"\b(?:{rejection})\s+(?:value\s+for\s+)?{choice}\b",
+            rf"\b{choice}\b(?:\s+(?:parameter|field|value))?"
+            rf"\s+(?:(?:is|was)\s+)?(?:{rejection})\b",
+            rf"\b(?:does\s+not\s+support|doesn't\s+support|rejects?|rejected)"
+            rf"\s+(?:the\s+)?{choice}\b",
         )
     )
-    return names_choice and rejects_choice
 
 
 class _SessionRunCompletionMixin:
