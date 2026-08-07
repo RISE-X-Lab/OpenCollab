@@ -64,6 +64,42 @@ def test_multiple_parallel_children_resume_exactly_once():
     assert len(event_types(events, "agent_resumed")) == 1
     assert lead.state.pending_events.is_empty()
 
+
+@pytest.mark.parametrize(
+    ("phase", "reason", "disposition"),
+    [
+        (SessionPhase.STOPPED, "budget exceeded", "stopped"),
+        (SessionPhase.ERROR, "provider failed", "failed"),
+    ],
+)
+def test_non_done_child_delivers_failed_result_and_event(phase, reason, disposition):
+    async def terminal_child(sess: ScriptedSession) -> str:
+        sess.state.set_phase(phase)
+        sess.state.terminal_reason = reason
+        return "partial child output"
+
+    async def resume_after_failed_child(sess: ScriptedSession) -> str:
+        row = sess.state.pending_events.rows["tc-1"]
+        assert row.status is RowStatus.FAILED
+        assert row.result == f"Error: agent {disposition}: {reason}"
+        assert row.error == row.result
+        sess.state.pending_events.clear()
+        sess.state.set_phase(SessionPhase.DONE)
+        sess.state.append_message({"role": "assistant", "content": "lead recovered"})
+        return "lead recovered"
+
+    lead = ScriptedSession(
+        "lead",
+        [suspend_spawning([("coder", "do it", "tc-1")]), resume_after_failed_child],
+    )
+    child = ScriptedSession("coder", [terminal_child])
+    scheduler, events = build_scheduler(lead, [child])
+
+    assert run(scheduler.run("please delegate")) == "lead recovered"
+    assert len(event_types(events, "agent_failed")) == 1
+    assert len(event_types(events, "agent_completed")) == 1  # lead only
+
+
 def test_last_child_completion_in_parent_return_tail_still_resumes():
     lead = ScriptedSession(
         "lead",
