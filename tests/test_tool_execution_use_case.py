@@ -554,6 +554,54 @@ def test_tool_execution_use_case_executes_runtime_native_tool_and_events():
     assert publisher.events[1].data["tool"] == "fake_tool"
 
 
+def _named_runtime_tool(name: str, output: str = "ok"):
+    tool = RuntimeNativeTool(output=output)
+    tool.name = name
+    return tool
+
+
+def test_failed_read_does_not_advance_read_without_write_counter():
+    state = SessionState(messages=[])
+    state.turn.reads_since_last_edit = 5
+    read = _named_runtime_tool("file_read", "Error: file unavailable")
+    use_case, _ = build_use_case(
+        agent=FakeAgent(tools=[read]),
+        state=state,
+    )
+
+    result = run(use_case.process([tool_call(name="file_read")]))
+    result.apply_read_write_counter_to(state)
+
+    assert state.turn.reads_since_last_edit == 5
+
+
+@pytest.mark.parametrize(
+    ("names", "expected_reads"),
+    [
+        (["file_read", "file_write"], 0),
+        (["file_write", "file_read", "file_read"], 2),
+        (["file_read", "file_write", "file_read"], 1),
+        (["file_write", "file_read", "file_write"], 0),
+    ],
+)
+def test_read_write_counter_replays_successful_batch_order(names, expected_reads):
+    state = SessionState(messages=[])
+    tools = [_named_runtime_tool(name) for name in set(names)]
+    use_case, _ = build_use_case(
+        agent=FakeAgent(tools=tools),
+        state=state,
+    )
+    calls = [
+        tool_call(name=name, call_id=f"call-{index}")
+        for index, name in enumerate(names)
+    ]
+
+    result = run(use_case.process(calls))
+    result.apply_read_write_counter_to(state)
+
+    assert state.turn.reads_since_last_edit == expected_reads
+
+
 @pytest.mark.parametrize("fail_type", ["tool_start", "tool_end"])
 def test_tool_event_failures_do_not_discard_executed_result(fail_type):
     class FailingPublisher:
