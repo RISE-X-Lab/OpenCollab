@@ -620,6 +620,20 @@ def test_grep_tool_reports_backend_failures(returncode, stderr, expected):
     assert "2>/dev/null" not in env.exec_calls[0][0]
 
 
+def test_grep_tool_includes_hidden_project_paths_with_noise_exclusions():
+    env = FakeEnv(stdout=".github/workflows/ci.yml:1:needle\n")
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(GrepTool().execute_with_runtime({"pattern": "needle"}, runtime))
+
+    assert result == ".github/workflows/ci.yml:1:needle"
+    command = env.exec_calls[0][0]
+    assert "rg -n --hidden " in command
+    assert "-g '!.git/**'" in command
+    assert "-g '!.venv/**'" in command
+    assert "-g '!.opencollab/**'" in command
+
+
 def test_grep_tool_terminates_options_before_pattern_and_path():
     env = FakeEnv(stdout="")
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
@@ -632,7 +646,8 @@ def test_grep_tool_terminates_options_before_pattern_and_path():
     )
 
     cmd, _ = env.exec_calls[0]
-    assert "rg -n -- '--pre=touch pwned' --debug" in cmd
+    assert "rg -n --hidden" in cmd
+    assert "-- '--pre=touch pwned' --debug" in cmd
 
 
 def test_file_read_description_teaches_distill_and_forbids_reread():
