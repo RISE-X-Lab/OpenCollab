@@ -205,6 +205,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
     def _prepare_turn(self) -> None:
         """Set the answer cursor and resume the phase appropriate to this call."""
         entry_phase = self.state.phase
+        if entry_phase is SessionPhase.IDLE:
+            self.state.consume_queued_external_user_turn()
         if entry_phase in {SessionPhase.AWAITING_EVENTS, SessionPhase.DONE}:
             if self._turn_start_message_index is None:
                 # Restored sessions do not yet persist this runtime-only cursor.

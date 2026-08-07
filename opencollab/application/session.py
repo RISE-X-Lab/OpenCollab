@@ -186,7 +186,7 @@ class Session:
         return await self.runner.run_loop(cancel_event)
 
     async def add_user_message(self, content: str) -> None:
-        self.state.append_message({"role": "user", "content": content})
+        self.state.append_queued_external_user_turn(content)
         self.state.reset_for_user_turn()
         await self.event_bus.emit(SessionEvent(type="user_message_appended"))
 
@@ -217,6 +217,7 @@ class Session:
             }
 
         self.messages = list(snapshot.get("messages", []))
+        self.state.pending_external_user_turn = None
         pending_messages = snapshot.get("pending_messages", [])
         self.state.pending_user_messages = [
             dict(message) for message in pending_messages if isinstance(message, dict)
@@ -225,6 +226,10 @@ class Session:
         raw_state = snapshot.get("session_state")
         if not isinstance(raw_state, dict):
             return
+
+        self.state.pending_external_user_turn = _restore_queued_external_user_turn(
+            raw_state.get("pending_external_user_turn"), self.state.messages
+        )
 
         self.state.set_used_tokens(_snapshot_nonnegative_int(raw_state.get("used_tokens")))
         self.state.set_context_tokens(_snapshot_nonnegative_int(raw_state.get("context_tokens")))
@@ -383,6 +388,9 @@ class Session:
                 "phase": self.state.phase.value,
                 "terminal_reason": self.state.terminal_reason,
                 "pending_events": [_serialize_pending_row(row) for row in self.state.pending_events.rows.values()],
+                "pending_external_user_turn": copy.deepcopy(
+                    self.state.pending_external_user_turn
+                ),
             },
         }
         if self.state.pending_user_messages:
@@ -429,6 +437,35 @@ def _restore_phase(raw: object) -> SessionPhase:
         return SessionPhase(value)
     except ValueError:
         return SessionPhase.IDLE
+
+
+def _restore_queued_external_user_turn(
+    value: object, messages: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Validate a queued external turn against the restored transcript."""
+    if not isinstance(value, dict) or value.get("status") != "queued":
+        return None
+    content = value.get("content")
+    turn_id = value.get("turn_id")
+    index = value.get("message_index")
+    if (
+        not isinstance(content, str)
+        or not isinstance(turn_id, str)
+        or not turn_id
+        or isinstance(index, bool)
+        or not isinstance(index, int)
+        or not 0 <= index < len(messages)
+    ):
+        return None
+    message = messages[index]
+    if message.get("role") != "user" or message.get("content") != content:
+        return None
+    return {
+        "turn_id": turn_id,
+        "status": "queued",
+        "content": content,
+        "message_index": index,
+    }
 
 
 def _snapshot_nonnegative_int(value: object) -> int:
