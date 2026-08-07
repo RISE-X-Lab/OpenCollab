@@ -636,3 +636,79 @@ def test_external_turns_for_different_agents_start_concurrently():
         assert results == ["lead answer", "child answer"]
 
     run(scenario())
+
+
+def test_targeted_cancel_event_stops_only_addressed_agent_and_scheduler_reuses_it():
+    lead_started = asyncio.Event()
+    lead_release = asyncio.Event()
+    child_started = asyncio.Event()
+    child_stopped = asyncio.Event()
+
+    class CancelAwareSession(ScriptedSession):
+        async def add_user_message(self, content: str) -> None:
+            await super().add_user_message(content)
+            self.state.reset_for_user_turn()
+
+        async def run_loop(self, cancel_event=None) -> str:
+            step = self._steps.pop(0)
+            return await step(self, cancel_event)
+
+    async def lead_first(sess, _cancel_event):
+        lead_started.set()
+        await lead_release.wait()
+        sess.state.set_phase(SessionPhase.DONE)
+        sess.state.append_message({"role": "assistant", "content": "lead answer"})
+        return "lead answer"
+
+    async def child_cancelled(sess, cancel_event):
+        child_started.set()
+        assert cancel_event is not None
+        await cancel_event.wait()
+        sess.state.cancel("interrupted by user")
+        child_stopped.set()
+        return ""
+
+    async def child_retry(sess, cancel_event):
+        assert cancel_event is None
+        sess.state.set_phase(SessionPhase.DONE)
+        sess.state.append_message({"role": "assistant", "content": "retry answer"})
+        return "retry answer"
+
+    lead = CancelAwareSession("lead", [lead_first])
+    child = CancelAwareSession("coder", [child_cancelled, child_retry])
+    child.state.aid = 1
+    scheduler, _ = build_scheduler(lead, [])
+    scheduler.table.add(
+        SessionControlBlock(
+            aid=1,
+            parent_aid=0,
+            agent=child.agent,
+            state=child.state,
+        )
+    )
+    scheduler._sessions[1] = child
+    scheduler._reserve_child_budget(1)
+
+    async def scenario():
+        lead_call = asyncio.create_task(scheduler.run_turn(0, "lead task"))
+        await asyncio.wait_for(lead_started.wait(), timeout=0.5)
+        cancel_event = asyncio.Event()
+        child_call = asyncio.create_task(
+            scheduler.run_turn(1, "child task", cancel_event=cancel_event)
+        )
+        await asyncio.wait_for(child_started.wait(), timeout=0.5)
+
+        cancel_event.set()
+        await asyncio.wait_for(child_stopped.wait(), timeout=0.5)
+        assert lead.state.phase is not SessionPhase.STOPPED
+        assert scheduler._shutting_down is False
+
+        lead_release.set()
+        assert await lead_call == "lead answer"
+        with pytest.raises(SchedulerTurnError, match="interrupted by user"):
+            await child_call
+
+        assert await scheduler.run_turn(1, "retry task") == "retry answer"
+        assert scheduler._shutting_down is False
+
+    run(scenario())
