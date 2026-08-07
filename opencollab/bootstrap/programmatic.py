@@ -685,9 +685,30 @@ async def run_team(
             raise cancellation
         lifecycle_failure = cleanup_failure or tracer_failure
         if lifecycle_failure is not None:
+            cause = lifecycle_failure
+            if failure is not None:
+                cause = failure
+                if cleanup_failure is not None:
+                    add_exception_note(
+                        failure,
+                        "team cleanup also failed: "
+                        f"{type(cleanup_failure).__name__}: {cleanup_failure}",
+                    )
+                if tracer_failure is not None:
+                    add_exception_note(
+                        failure,
+                        "team trace also failed: "
+                        f"{type(tracer_failure).__name__}: {tracer_failure}",
+                    )
+            elif cleanup_failure is not None and tracer_failure is not None:
+                add_exception_note(
+                    cleanup_failure,
+                    "team trace also failed: "
+                    f"{type(tracer_failure).__name__}: {tracer_failure}",
+                )
             raise ProgrammaticLifecycleError(
                 "team cleanup or trajectory persistence failed"
-            ) from lifecycle_failure
+            ) from cause
 
     _verify_artifact_claim(artifacts)
     if artifacts is not None:
