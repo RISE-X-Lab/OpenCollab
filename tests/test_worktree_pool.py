@@ -39,6 +39,21 @@ def _branch_exists(repo, branch: str) -> bool:
     return _git(repo, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode == 0
 
 
+class _OneShotAsyncBarrier:
+    """Release all waiters once the expected parties have arrived."""
+
+    def __init__(self, parties: int) -> None:
+        self._parties = parties
+        self._arrived = 0
+        self._released = asyncio.Event()
+
+    async def wait(self) -> None:
+        self._arrived += 1
+        if self._arrived == self._parties:
+            self._released.set()
+        await self._released.wait()
+
+
 async def test_pool_without_worktrees_returns_local_environment(tmp_path) -> None:
     pool = WorktreePool(str(tmp_path), use_worktrees=False)
     env = await pool.acquire("coder")
@@ -196,7 +211,7 @@ async def test_concurrent_same_branch_setup_preserves_winner_after_loser_cleanup
     branch = "same-branch"
     first = WorktreeEnvironment(str(source), branch_name=branch)
     second = WorktreeEnvironment(str(source), branch_name=branch)
-    barrier = asyncio.Barrier(2)
+    barrier = _OneShotAsyncBarrier(2)
 
     def make_racing_git(env):
         real_git = env._git
