@@ -13,6 +13,7 @@ import os
 
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
+from opencollab.application.scheduler_types import LaunchSpec
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.bootstrap import build_session as Session
@@ -150,6 +151,39 @@ def test_session_user_message_appended_triggers_autosave(tmp_path):
         saved = json.load(f)
     user_msgs = [m for m in saved["messages"] if m["role"] == "user"]
     assert any(m["content"] == "hello" and "timestamp" in m for m in user_msgs)
+
+
+def test_apply_launch_recovers_journal_when_atomic_base_is_absent(tmp_path):
+    path = tmp_path / "journal-only.json"
+    store = SessionStore()
+    store.append_snapshot_delta(
+        str(path),
+        sequence=1,
+        replace_from=0,
+        messages=[
+            {"role": "system", "content": "You are a fake agent."},
+            {"role": "assistant", "content": "durable step"},
+        ],
+        meta={
+            "snapshot_version": 1,
+            "session_state": {
+                "step_count": 7,
+                "phase": "idle",
+            },
+        },
+    )
+    assert not path.exists()
+
+    session = _new_session(auto_save_path=str(path), store=store)
+    session.apply_launch(
+        LaunchSpec(
+            session_file=str(path),
+            auto_save_path=str(path),
+        )
+    )
+
+    assert session.step_count == 7
+    assert session.messages[-1]["content"] == "durable step"
 
 
 def test_session_snapshot_returns_independent_session_without_autosave(tmp_path):

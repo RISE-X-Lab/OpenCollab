@@ -276,13 +276,17 @@ def read_regular_text_range(
             os.close(fd)
 
 
-def open_regular_text_append(path: str | os.PathLike[str]) -> TextIO:
+def open_regular_text_append(
+    path: str | os.PathLike[str],
+    *,
+    readable: bool = False,
+) -> TextIO:
     target = _absolute(path)
     ensure_directory_no_symlinks(target.parent)
     _current_regular(target, context="append")
     fd = os.open(
         target,
-        os.O_WRONLY
+        (os.O_RDWR if readable else os.O_WRONLY)
         | os.O_APPEND
         | os.O_CREAT
         | getattr(os, "O_NONBLOCK", 0)

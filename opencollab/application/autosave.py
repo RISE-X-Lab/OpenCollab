@@ -35,11 +35,11 @@ class AutoSaveSubscriber(EventPublisherPort):
     Two phases keep the write off the hot path without tearing the snapshot:
     *freeze* runs ``prepare_fn`` on the event loop to capture a self-consistent
     copy of mutable session state, then *flush* runs the file I/O off-thread via
-    ``asyncio.to_thread``. Step checkpoints use exponentially spaced
-    generations (1, 2, 4, 8, ...) so the cumulative snapshot volume stays
-    linear as a session grows. A single worker also coalesces generations that
-    have not started yet, so a slow sink writes the latest pending snapshot
-    instead of replaying every obsolete intermediate state.
+    ``asyncio.to_thread``. Production session operations append an incremental
+    journal record and periodically compact it into an atomic base snapshot.
+    A single worker also coalesces generations that have not started yet, so a
+    slow sink writes the latest pending state instead of replaying every
+    obsolete intermediate state.
 
     Ordering is guaranteed by *single-subscriber ownership*, not by any key:
     one subscriber owns every queued task, so caller cancellation cannot
@@ -61,8 +61,6 @@ class AutoSaveSubscriber(EventPublisherPort):
         self._last_error: Exception | None = None
         self._failure_count = 0
         self._pending = False
-        self._step_generation = 0
-        self._next_step_checkpoint = 1
 
     @property
     def last_error(self) -> Exception | None:
@@ -81,11 +79,6 @@ class AutoSaveSubscriber(EventPublisherPort):
     async def emit(self, event: SessionEvent) -> None:
         if event.type not in SAVE_TRIGGERS:
             return
-        if event.type == "step_end":
-            self._step_generation += 1
-            if self._step_generation < self._next_step_checkpoint:
-                return
-            self._next_step_checkpoint *= 2
         self._enqueue()
         # Let the owned worker freeze the first pending generation before the
         # caller continues mutating session state, without waiting for I/O.
