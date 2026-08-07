@@ -151,7 +151,7 @@ async def run_spawn_with_review(
             await scheduler.wait_until_terminal(coder_aid)
         except Exception as exc:
             coder_scb = scheduler.table.get(coder_aid)
-            code_result = coder_scb.result if coder_scb else last_result
+            code_result = (coder_scb.result if coder_scb else "") or last_result
             await _emit_review_event(
                 scheduler,
                 scheduler.events.review_completed(iteration, False),
@@ -164,7 +164,7 @@ async def run_spawn_with_review(
                 reason=f"{type(exc).__name__}: {exc}",
             )
         coder_scb = scheduler.table.get(coder_aid)
-        code_result = coder_scb.result if coder_scb else ""
+        code_result = (coder_scb.result if coder_scb else "") or last_result
         if coder_scb is None or coder_scb.state.phase is not SessionPhase.DONE:
             phase = "missing" if coder_scb is None else coder_scb.state.phase.value
             reason = None if coder_scb is None else coder_scb.state.terminal_reason
