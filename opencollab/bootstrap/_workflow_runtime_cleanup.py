@@ -108,6 +108,8 @@ def _session_persistence_succeeded(ctx: WorkflowContext) -> bool:
 async def _abort_session_environments(ctx: WorkflowContext, *, timeout: float) -> bool:
     for task in ctx.pending_cleanup_tasks:
         task.cancel()
+    if not getattr(ctx, "_cleanup_environment", True):
+        return True
     environments = _session_environments(ctx)
     if not environments:
         return True
