@@ -266,6 +266,76 @@ def test_unified_diff_applies_eof_newline_metadata(tmp_path, source, patch, expe
     assert target.read_text(encoding="utf-8") == expected
 
 
+@pytest.mark.parametrize(
+    ("tool", "params"),
+    [
+        (
+            FileWriteTool(),
+            {
+                "path": "f.py",
+                "mode": "str_replace",
+                "old_str": "alpha\ntarget",
+                "new_str": "alpha\nchanged",
+            },
+        ),
+        (
+            ApplyPatchTool(),
+            {
+                "path": "f.py",
+                "mode": "line_replace",
+                "start_line": 2,
+                "end_line": 2,
+                "expected_str": "target",
+                "new_str": "changed",
+            },
+        ),
+        (
+            ApplyPatchTool(),
+            {
+                "path": "f.py",
+                "mode": "unified_diff",
+                "patch": "@@ -1,3 +1,3 @@\n alpha\n-target\n+changed\n omega\n",
+            },
+        ),
+    ],
+    ids=("str-replace", "line-replace", "unified-diff"),
+)
+def test_edit_modes_match_logical_lines_and_preserve_crlf(tmp_path, tool, params):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_bytes(b"alpha\r\ntarget\r\nomega\r\n")
+
+    result = run(tool.execute_with_runtime(params, _runtime(ws)))
+
+    assert not result.startswith("Error:")
+    assert target.read_bytes() == b"alpha\r\nchanged\r\nomega\r\n"
+
+
+def test_line_edit_rejects_mixed_newlines_without_rewriting_file(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    original = b"alpha\r\ntarget\nomega\r\n"
+    target.write_bytes(original)
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "line_replace",
+                "start_line": 2,
+                "end_line": 2,
+                "new_str": "changed",
+            },
+            _runtime(ws),
+        )
+    )
+
+    assert "mixed newline styles" in result
+    assert target.read_bytes() == original
+
+
 def test_apply_patch_reports_file_and_workspace_errors(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
