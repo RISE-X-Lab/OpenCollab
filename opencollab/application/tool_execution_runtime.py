@@ -21,16 +21,54 @@ from opencollab.application.ports import AskUserPort, EnvironmentPort, Permissio
 logger = logging.getLogger(__name__)
 
 OBSERVATION_PAYLOAD_BUDGET_BYTES = 8 * 1024
+OBSERVATION_CONTAINER_RESERVE_BYTES = 512
 OBSERVATION_STRING_PREVIEW_CHARS = 512
+OBSERVATION_SCALAR_PREVIEW_CHARS = 128
 OBSERVATION_MAX_ITEMS = 64
 OBSERVATION_MAX_DEPTH = 8
 
 
+def _serialized_json_bytes(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=False, default=str).encode(
+        "utf-8",
+        errors="surrogatepass",
+    )
+
+
+def _budgeted_metadata(
+    metadata: dict[str, Any],
+    *,
+    budget: list[int],
+) -> dict[str, Any]:
+    encoded = _serialized_json_bytes(metadata)
+    if len(encoded) <= budget[0]:
+        budget[0] -= len(encoded)
+        return metadata
+    compact = {
+        "__opencollab_truncated__": True,
+        "original_type": metadata.get("original_type", "value"),
+    }
+    budget[0] = max(0, budget[0] - len(_serialized_json_bytes(compact)))
+    return compact
+
+
 def sanitize_observation_args(args: dict[str, Any]) -> dict[str, Any]:
     """Return a structure-preserving, bounded copy for event and trace sinks."""
-    budget = [OBSERVATION_PAYLOAD_BUDGET_BYTES]
+    budget = [
+        OBSERVATION_PAYLOAD_BUDGET_BYTES
+        - OBSERVATION_CONTAINER_RESERVE_BYTES
+    ]
     sanitized = _sanitize_observation_value(args, budget=budget, depth=0)
-    return sanitized if isinstance(sanitized, dict) else {"value": sanitized}
+    result = sanitized if isinstance(sanitized, dict) else {"value": sanitized}
+    encoded = _serialized_json_bytes(result)
+    if len(encoded) <= OBSERVATION_PAYLOAD_BUDGET_BYTES:
+        return result
+    return {
+        "__opencollab_truncated__": True,
+        "original_type": "dict",
+        "bounded_representation_bytes": len(encoded),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
 
 
 def _sanitize_observation_value(
@@ -41,35 +79,64 @@ def _sanitize_observation_value(
 ) -> Any:
     if isinstance(value, str):
         raw = value.encode("utf-8", errors="surrogatepass")
+        encoded = _serialized_json_bytes(value)
         if (
             len(value) <= OBSERVATION_STRING_PREVIEW_CHARS
-            and len(raw) + 32 <= budget[0]
+            and len(encoded) <= budget[0]
         ):
-            budget[0] -= len(raw) + 32
+            budget[0] -= len(encoded)
             return value
         preview = value[:OBSERVATION_STRING_PREVIEW_CHARS]
-        budget[0] = max(
-            0,
-            budget[0]
-            - len(preview.encode("utf-8", errors="surrogatepass"))
-            - 192,
+        return _budgeted_metadata(
+            {
+                "__opencollab_truncated__": True,
+                "preview": preview,
+                "original_length": len(value),
+                "original_bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+            },
+            budget=budget,
         )
-        return {
-            "__opencollab_truncated__": True,
-            "preview": preview,
-            "original_length": len(value),
-            "original_bytes": len(raw),
-            "sha256": hashlib.sha256(raw).hexdigest(),
-        }
     if value is None or isinstance(value, (bool, int, float)):
-        budget[0] = max(0, budget[0] - 32)
-        return value
+        try:
+            encoded = _serialized_json_bytes(value)
+        except (OverflowError, ValueError):
+            return _budgeted_metadata(
+                {
+                    "__opencollab_truncated__": True,
+                    "original_type": type(value).__name__,
+                    "serialization_error": "scalar exceeds JSON conversion limits",
+                },
+                budget=budget,
+            )
+        if (
+            len(encoded) <= OBSERVATION_SCALAR_PREVIEW_CHARS
+            and len(encoded) <= budget[0]
+        ):
+            budget[0] -= len(encoded)
+            return value
+        preview = encoded[:OBSERVATION_SCALAR_PREVIEW_CHARS].decode(
+            "utf-8",
+            errors="replace",
+        )
+        return _budgeted_metadata(
+            {
+                "__opencollab_truncated__": True,
+                "original_type": type(value).__name__,
+                "preview": preview,
+                "original_bytes": len(encoded),
+                "sha256": hashlib.sha256(encoded).hexdigest(),
+            },
+            budget=budget,
+        )
     if depth >= OBSERVATION_MAX_DEPTH:
-        budget[0] = max(0, budget[0] - 96)
-        return {
-            "__opencollab_truncated__": True,
-            "original_type": type(value).__name__,
-        }
+        return _budgeted_metadata(
+            {
+                "__opencollab_truncated__": True,
+                "original_type": type(value).__name__,
+            },
+            budget=budget,
+        )
     if isinstance(value, dict):
         result: dict[str, Any] = {}
         items = list(value.items())
@@ -89,8 +156,8 @@ def _sanitize_observation_value(
             budget[0] = max(
                 0,
                 budget[0]
-                - len(rendered_key.encode("utf-8", errors="surrogatepass"))
-                - 16,
+                - len(_serialized_json_bytes(rendered_key))
+                - 2,
             )
             result[rendered_key] = _sanitize_observation_value(
                 nested,
