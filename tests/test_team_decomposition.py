@@ -32,7 +32,7 @@ class FakeScheduler:
         self.spawn_calls.append((parent_aid, role, task, context, tool_call_id))
         return 42  # return a fake aid
 
-    def inflight_spawn(self, role, task):
+    def inflight_spawn(self, role, task, *, parent_aid=0, context=""):
         return None  # never deduped in this fake
 
     async def spawn_with_review(self, parent_aid, task, context="", max_iterations=3):
