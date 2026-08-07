@@ -95,6 +95,7 @@ class _FakeSessionFactory:
         self._queues = {role: list(results) for role, results in role_results.items()}
         self.built: list[tuple[str, int]] = []
         self.built_tasks: list[tuple[str, str]] = []
+        self.built_contexts: list[tuple[str, str]] = []
 
     def build_lead_session(self, **kwargs):
         return _FakeLeadSession()
@@ -102,6 +103,7 @@ class _FakeSessionFactory:
     def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None, task=None, context=""):
         self.built.append((role, budget))
         self.built_tasks.append((role, task or ""))
+        self.built_contexts.append((role, context))
         queue = self._queues.get(role, [])
         result = queue.pop(0) if queue else ""
         return _FakeTeammateSession(result, role=role)
@@ -705,6 +707,31 @@ def test_spawn_with_review_iterates_when_reviewer_fails(monkeypatch):
     second_coder_task = [task for role, task in factory.built_tasks if role == "coder"][1]
     assert "v1 impl" in second_coder_task
     assert "Reapply the previous implementation" in second_coder_task
+
+
+def test_spawn_with_review_passes_context_and_constraints_to_reviewer(monkeypatch):
+    scheduler, _ = _build_scheduler(
+        monkeypatch,
+        {"coder": ["implemented parser"], "reviewer": ["VERDICT: PASS"]},
+    )
+    context = 'Preserve comments.\nSupport "Python 3.10" syntax.'
+
+    result = run(
+        scheduler.spawn_with_review(
+            0,
+            "implement parser",
+            context=context,
+            max_iterations=1,
+        )
+    )
+
+    assert "PASSED after 1 iteration" in result
+    factory = scheduler._session_factory
+    assert factory.built_contexts == [("coder", context), ("reviewer", context)]
+    reviewer_task = [task for role, task in factory.built_tasks if role == "reviewer"][0]
+    assert "Original task:\nimplement parser" in reviewer_task
+    assert f"Required context:\n{context}" in reviewer_task
+    assert "Artifact to review:\nimplemented parser" in reviewer_task
 
 
 def test_review_verdict_uses_only_the_final_nonempty_line():
