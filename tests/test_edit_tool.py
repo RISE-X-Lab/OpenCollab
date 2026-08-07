@@ -162,6 +162,36 @@ def test_unified_diff_failed_hunk_writes_nothing(tmp_path):
     assert target.read_text(encoding="utf-8") == original
 
 
+@pytest.mark.parametrize(
+    "params",
+    [
+        {
+            "path": "f.py",
+            "mode": "line_replace",
+            "start_line": 1,
+            "end_line": 1,
+            "new_str": "a",
+        },
+        {
+            "path": "f.py",
+            "mode": "unified_diff",
+            "patch": "@@ -1,2 +1,2 @@\n a\n b\n",
+        },
+    ],
+)
+def test_apply_patch_rejects_successful_noop_without_writing(tmp_path, params):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text("a\nb\n", encoding="utf-8")
+
+    result = run(ApplyPatchTool().execute_with_runtime(params, _runtime(ws)))
+
+    assert result.startswith("Error applying patch")
+    assert "no changes" in result
+    assert target.read_text(encoding="utf-8") == "a\nb\n"
+
+
 def test_unified_diff_treats_header_like_hunk_content_as_content(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
