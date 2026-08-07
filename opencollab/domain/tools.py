@@ -52,6 +52,10 @@ class ToolProcessingResult:
     # so the card here carries only the envelope facts. Additive to STEP 1 — a
     # caller that never populates it folds counters exactly as before.
     evidence_cards: list[dict[str, Any]] = field(default_factory=list)
+    # A successful structured capture is terminal for the current tool-call
+    # batch. The session runner uses this to reject later deferred calls while
+    # still emitting a result for every provider-issued tool call id.
+    terminal_capture_accepted: bool = False
 
     def apply_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         for message in self.messages_to_append:
