@@ -221,6 +221,47 @@ def test_scheduler_init_preserves_and_drains_restored_awaiting_phase(tmp_path):
     assert llm.calls[1]["messages"][-1]["content"].startswith(queued_xml)
     assert llm.calls[2]["messages"][-1]["content"].startswith("new question")
 
+
+def test_scheduler_restores_queued_external_turn_before_accepting_new_turn(tmp_path):
+    """A crash after autosave but before a driver starts must not merge turns."""
+    from opencollab.application.scheduler import LaunchSpec, Scheduler
+
+    agent = FakeAgent()
+    original = Session(agent=agent, llm=FakeLLMClient())
+    run(original.add_user_message("old question"))
+    path = tmp_path / "queued-external-turn.json"
+    original.save(str(path))
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    assert snapshot["session_state"]["pending_external_user_turn"] == {
+        "turn_id": original.state.pending_external_user_turn["turn_id"],
+        "status": "queued",
+        "content": "old question",
+        "message_index": 1,
+    }
+
+    llm = FakeLLMClient([
+        llm_response(content="old answer"),
+        llm_response(content="new answer"),
+    ])
+    resumed = Session(agent=agent, llm=llm)
+
+    class ResumeFactory:
+        def create_lead_session(self, **kwargs):
+            return resumed
+
+    scheduler = Scheduler(
+        session_factory=ResumeFactory(),
+        worktree_pool=fake_worktree_pool(),
+        event_sink=EventBus(),
+    )
+    scheduler.create_init_process(LaunchSpec(session_file=str(path)))
+
+    assert run(scheduler.run("new question")) == "new answer"
+    assert [call["messages"][-1]["content"].split("\n\n", 1)[0] for call in llm.calls] == [
+        "old question",
+        "new question",
+    ]
+
 def test_restore_keeps_pending_messages_from_legacy_structured_snapshot(tmp_path):
     path = tmp_path / "legacy-structured.json"
     path.write_text(
