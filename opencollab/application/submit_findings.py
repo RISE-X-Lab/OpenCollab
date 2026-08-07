@@ -114,6 +114,19 @@ class SubmitFindingsTool:
                 "Validation failed; the output does not conform to the schema. Fix and call "
                 f"{self.name} again. Errors: {joined}"
             )
+        findings = params.get("findings") or []
+        summary = str(params.get("summary") or "").strip()
+        if not findings:
+            if not params.get("insufficient_evidence"):
+                return (
+                    "Empty report rejected: provide at least one finding, or set "
+                    "insufficient_evidence=true and explain the evidence gap in summary."
+                )
+            if not summary:
+                return (
+                    "Abstention rejected: explain why evidence is insufficient in summary, "
+                    "then call submit_findings again."
+                )
         # Abstention describes the report as a whole; it never turns an uncited
         # verified claim into evidence. Mixed payloads may retain partial cited
         # findings while abstaining on the remaining dimension.

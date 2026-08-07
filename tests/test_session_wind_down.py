@@ -421,6 +421,29 @@ def test_submit_findings_accepts_insufficient_evidence_abstention():
     assert "accepted" in out.lower()
 
 
+def test_submit_findings_rejects_empty_non_abstaining_report():
+    captured_flag = {"hit": False}
+    tool = SubmitFindingsTool(on_capture=lambda: captured_flag.__setitem__("hit", True))
+    out = _exec(
+        tool,
+        {"findings": [], "summary": "", "insufficient_evidence": False},
+    )
+    assert tool.captured is None
+    assert tool.terminal_capture_accepted is False
+    assert captured_flag["hit"] is False
+    assert "at least one finding" in out.lower()
+
+
+def test_submit_findings_requires_explanation_when_abstaining():
+    tool = SubmitFindingsTool()
+    out = _exec(
+        tool,
+        {"findings": [], "summary": "   ", "insufficient_evidence": True},
+    )
+    assert tool.captured is None
+    assert "explain" in out.lower()
+
+
 def test_submit_findings_abstention_cannot_bypass_verified_anchor():
     tool = SubmitFindingsTool()
     bad = _captured(

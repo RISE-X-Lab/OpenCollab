@@ -142,7 +142,11 @@ def _cited_payload():
 
 
 def _insufficient_payload():
-    return {"findings": [], "summary": "", "insufficient_evidence": True}
+    return {
+        "findings": [],
+        "summary": "The available tool evidence did not establish this dimension.",
+        "insufficient_evidence": True,
+    }
 
 
 class _ReadStub:
