@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import time
+from collections.abc import Mapping
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
@@ -37,7 +38,7 @@ class JsonlEventSink(EventPublisherPort):
         try:
             if is_dataclass(event):
                 payload = asdict(event)
-            elif isinstance(event, dict):
+            elif isinstance(event, Mapping):
                 payload = dict(event)
             else:
                 payload = {
