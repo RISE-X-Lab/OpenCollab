@@ -36,13 +36,15 @@ class WorktreePool:
     def __init__(self, workspace: str, *, use_worktrees: bool):
         self._workspace = workspace
         self._use_worktrees = use_worktrees
-        self._envs: list[WorktreeEnvironment] = []
+        self._envs: list[Environment] = []
 
     async def acquire(self, role: str) -> Environment:
         """Create (and remember) an isolated env for a spawned agent of this role."""
         role = validate_role_identity(role)
         if not self._use_worktrees:
-            return LocalEnvironment(self._workspace)
+            env = LocalEnvironment(self._workspace)
+            self._envs.append(env)
+            return env
 
         branch = f"opencollab-{role_storage_slug(role)}-{uuid.uuid4().hex[:8]}"
         env = WorktreeEnvironment(self._workspace, branch_name=branch)
@@ -64,7 +66,7 @@ class WorktreePool:
         return env
 
     async def release(self) -> None:
-        """Tear down every worktree this pool has handed out.
+        """Tear down every environment this pool has handed out.
 
         One failing teardown must not abort the others, so each is isolated;
         the failure is logged rather than swallowed so it is diagnosable.
@@ -78,22 +80,29 @@ class WorktreePool:
                 await _finish_cleanup(env.cleanup())
             except BaseException as exc:
                 failures.append(f"{env.workspace}: {type(exc).__name__}: {exc}")
-                logger.warning("worktree cleanup failed for %s", env.workspace, exc_info=True)
+                logger.warning(
+                    "environment cleanup failed for %s",
+                    env.workspace,
+                    exc_info=True,
+                )
             else:
                 self._envs.remove(env)
         if failures:
             raise OSError(
-                "worktree pool cleanup failed; retry state retained: " + "; ".join(failures)
+                "environment pool cleanup failed; retry state retained: "
+                + "; ".join(failures)
             )
 
     async def release_env(self, env: Environment) -> None:
         """Release one failed spawn's environment without touching siblings."""
-        if not isinstance(env, WorktreeEnvironment) or env not in self._envs:
+        if env not in self._envs:
             return
         try:
             await _finish_cleanup(env.cleanup())
         except BaseException:
-            logger.warning("worktree cleanup failed for %s", env.workspace, exc_info=True)
+            logger.warning(
+                "environment cleanup failed for %s", env.workspace, exc_info=True
+            )
             raise
         self._envs.remove(env)
 
