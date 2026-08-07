@@ -342,7 +342,14 @@ def convert_to_anthropic_messages(messages: list[dict]) -> tuple[list[str], list
     for message in messages:
         role = message.get("role", "")
 
-        if role == "system":
+        if role == "system" and message.get("compacted"):
+            # A compaction record is chronological conversation context, not a
+            # global instruction. Keep it at its original position instead of
+            # hoisting it into Anthropic's top-level system field.
+            anthropic_messages.append(
+                {"role": "user", "content": message.get("content", "")}
+            )
+        elif role == "system":
             system_parts.append(message.get("content", ""))
         elif role == "user":
             anthropic_messages.append({"role": "user", "content": message.get("content", "")})
