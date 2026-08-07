@@ -69,6 +69,22 @@ def test_build_scheduler_lead_omits_ask_user_when_headless(tmp_path, monkeypatch
     assert {"spawn_agent", "spawn_with_review"} <= tool_names
 
 
+def test_build_scheduler_rejects_missing_explicit_session(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+
+    with pytest.raises(ValueError, match="session file does not exist"):
+        build_scheduler(
+            ctx,
+            use_worktrees=False,
+            interactive=False,
+            session_file=str(tmp_path / "missing-session.json"),
+        )
+
+    assert not (workspace / ".opencollab").exists()
+
+
 def test_build_scheduler_preserves_explicit_empty_thinking_params(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
