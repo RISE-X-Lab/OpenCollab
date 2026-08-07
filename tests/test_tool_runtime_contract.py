@@ -279,6 +279,42 @@ def test_file_write_create_and_str_replace(tmp_path):
     assert (workspace / "note.txt").read_text(encoding="utf-8") == "beta\n"
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_file_write_create_requires_explicit_content(tmp_path, existing):
+    target = tmp_path / "note.txt"
+    if existing:
+        target.write_text("KEEP", encoding="utf-8")
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {"path": "note.txt", "mode": "create"},
+            runtime,
+        )
+    )
+
+    assert result == "Error: content is required for create mode."
+    assert target.exists() is existing
+    if existing:
+        assert target.read_text(encoding="utf-8") == "KEEP"
+
+
+def test_file_write_create_allows_explicit_empty_content(tmp_path):
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {"path": "empty.txt", "mode": "create", "content": ""},
+            runtime,
+        )
+    )
+
+    assert "Created/wrote" in result
+    assert (tmp_path / "empty.txt").read_text(encoding="utf-8") == ""
+
+
 def test_file_write_preserves_workspace_path_jail(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
