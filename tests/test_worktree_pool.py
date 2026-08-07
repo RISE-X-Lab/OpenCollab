@@ -390,6 +390,41 @@ async def test_worktree_cleanup_preserves_externally_advanced_owned_branch(tmp_p
     assert _git(source, "rev-parse", branch).stdout.strip() == advanced
 
 
+async def test_worktree_cleanup_stops_when_local_environment_is_not_quiescent(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source = _repo(tmp_path / "repo")
+    env = WorktreeEnvironment(str(source), branch_name="retry-local-cleanup")
+    workspace = await env.setup()
+    assert env._local_env is not None
+    local_env = env._local_env
+    real_cleanup = local_env.cleanup
+    git_calls: list[tuple[str, ...]] = []
+    real_git = env._git
+
+    async def track_git(*args, **kwargs):
+        git_calls.append(args)
+        return await real_git(*args, **kwargs)
+
+    async def fail_cleanup():
+        raise RuntimeError("process still alive")
+
+    monkeypatch.setattr(env, "_git", track_git)
+    monkeypatch.setattr(local_env, "cleanup", fail_cleanup)
+
+    with pytest.raises(RuntimeError, match="worktree cleanup failed"):
+        await env.cleanup()
+
+    assert os.path.isdir(workspace)
+    assert env._local_env is local_env
+    assert not any(args[:2] == ("worktree", "remove") for args in git_calls)
+
+    monkeypatch.setattr(local_env, "cleanup", real_cleanup)
+    await env.cleanup()
+    assert not os.path.exists(workspace)
+
+
 async def test_double_cancellation_cannot_interrupt_setup_cleanup(tmp_path, monkeypatch) -> None:
     source = tmp_path / "source"
     source.mkdir()

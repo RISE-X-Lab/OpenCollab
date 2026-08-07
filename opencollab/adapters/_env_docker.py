@@ -602,7 +602,7 @@ class DockerEnvironment(Environment):
     async def _cleanup_resources(self) -> None:
         failures: list[BaseException] = []
         if not await self._remove_container_if_owned():
-            failures.append(RuntimeError("owned Docker container could not be removed"))
+            raise RuntimeError("owned Docker container could not be removed")
         if self._backing_environment is not None:
             try:
                 await self._backing_environment.cleanup()
