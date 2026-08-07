@@ -587,6 +587,39 @@ def _close_tracer(tracer: Tracer | None) -> BaseException | None:
     return None
 
 
+def _team_agent_failures(scheduler: Any) -> tuple[dict[str, Any], ...]:
+    """Return bounded, message-free summaries for terminal child agents."""
+    failures: list[dict[str, Any]] = []
+    entries = getattr(getattr(scheduler, "table", None), "entries", {})
+    for aid, scb in sorted(entries.items()):
+        if aid == 0:
+            continue
+        state = getattr(scb, "state", None)
+        phase = getattr(getattr(state, "phase", None), "value", None)
+        if phase not in {"error", "stopped"}:
+            continue
+        exception_type = "AgentFailure" if phase == "error" else "AgentStopped"
+        reason = getattr(state, "terminal_reason", None)
+        if phase == "error" and isinstance(reason, str) and ":" in reason:
+            candidate = reason.split(":", 1)[0].strip()
+            if (
+                candidate
+                and len(candidate) <= 128
+                and all(char.isalnum() or char in "._-" for char in candidate)
+            ):
+                exception_type = candidate
+        label = str(getattr(getattr(scb, "agent", None), "name", "agent"))[:240]
+        failures.append(
+            {
+                "label": label,
+                "exception_type": exception_type,
+                "status_code": None,
+                "provider_error_type": None,
+            }
+        )
+    return tuple(failures)
+
+
 async def run_team(
     *,
     prompt: str,
@@ -725,6 +758,7 @@ async def run_team(
             "steps": int(getattr(lead, "step_count", 0)),
             "sessions": len(scheduler.table.entries),
         },
+        agent_failures=_team_agent_failures(scheduler),
     )
 
 
