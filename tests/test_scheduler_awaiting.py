@@ -224,31 +224,34 @@ def test_wake_unknown_tool_call_id_raises():
     with pytest.raises(PendingRowError):
         run(scheduler._wake(0, "tc-unknown", "x", RowStatus.DONE))
 
-def test_misrouted_completion_retains_origin_until_the_correct_row_can_be_filled():
-    lead = ScriptedSession("lead", [resume_done(lambda results: f"recovered: {results[0]}")])
+def test_unknown_completion_route_fails_open_parent_batch_in_one_delivery():
+    async def resume_after_routing_failure(sess: ScriptedSession) -> str:
+        row = sess.state.pending_events.rows["unrelated"]
+        assert row.status is RowStatus.FAILED
+        assert row.result is not None
+        assert "routing failed" in row.result
+        assert row.result != "child result"
+        sess.state.pending_events.clear()
+        sess.state.set_phase(SessionPhase.DONE)
+        return "parent recovered"
+
+    lead = ScriptedSession("lead", [resume_after_routing_failure])
     scheduler, events = build_scheduler(lead, [])
     lead.state.set_phase(SessionPhase.AWAITING_EVENTS)
-    # The child can finish before the parent has published its pending row.
-    # Keep the origin after this first failed wake so the completion remains
-    # routable once the parent-side row is visible.
+    lead.state.pending_events.add(
+        PendingRow(tool_call_id="unrelated", kind=RowKind.CHILD_AGENT, order=0, ref=42)
+    )
     scheduler._spawn_origin[99] = (0, "tc-bogus")
 
     async def scenario():
-        await scheduler._deliver_to_parent(99, "result", RowStatus.DONE)
-        assert scheduler._spawn_origin[99] == (0, "tc-bogus")
-
-        lead.state.pending_events.add(
-            PendingRow(tool_call_id="tc-1", kind=RowKind.CHILD_AGENT, order=0, ref=99)
-        )
-        await scheduler._deliver_to_parent(99, "result", RowStatus.DONE)
+        await scheduler._deliver_to_parent(99, "child result", RowStatus.DONE)
         await scheduler._tasks[0]
 
     run(scenario())
 
     assert len(event_types(events, "agent_failed")) == 1
     assert scheduler._spawn_origin == {}
-    assert scheduler._delivery_route_failures == {}
-    assert scheduler.table.get(0).result == "recovered: result"
+    assert scheduler.table.get(0).result == "parent recovered"
 
 
 def test_misrouted_completion_retargets_the_unique_child_row():
@@ -268,27 +271,62 @@ def test_misrouted_completion_retargets_the_unique_child_row():
 
     assert event_types(events, "agent_failed") == []
     assert scheduler._spawn_origin == {}
-    assert scheduler._delivery_route_failures == {}
     assert scheduler.table.get(0).result == "recovered: result"
 
 
-def test_repeated_misrouted_completion_fails_matching_rows_without_misdelivery():
+def test_already_filled_claimed_row_retargets_unique_pending_child_row():
+    async def resume_after_retarget(sess: ScriptedSession) -> str:
+        already = sess.state.pending_events.rows["already-filled"]
+        assert already.status is RowStatus.DONE
+        assert already.result == "old result"
+        actual = sess.state.pending_events.rows["actual"]
+        assert actual.status is RowStatus.DONE
+        assert actual.result == "child result"
+        sess.state.pending_events.clear()
+        sess.state.set_phase(SessionPhase.DONE)
+        return "parent recovered"
+
+    lead = ScriptedSession("lead", [resume_after_retarget])
+    scheduler, events = build_scheduler(lead, [])
+    lead.state.set_phase(SessionPhase.AWAITING_EVENTS)
+    lead.state.pending_events.add(
+        PendingRow(tool_call_id="already-filled", kind=RowKind.CHILD_AGENT, order=0, ref=7)
+    )
+    lead.state.pending_events.fill(
+        "already-filled",
+        result="old result",
+        status=RowStatus.DONE,
+    )
+    lead.state.pending_events.add(
+        PendingRow(tool_call_id="actual", kind=RowKind.CHILD_AGENT, order=1, ref=99)
+    )
+    scheduler._spawn_origin[99] = (0, "already-filled")
+
+    async def scenario():
+        await scheduler._deliver_to_parent(99, "child result", RowStatus.DONE)
+        await scheduler._tasks[0]
+
+    run(scenario())
+
+    assert event_types(events, "agent_failed") == []
+    assert scheduler._spawn_origin == {}
+    assert scheduler.table.get(0).result == "parent recovered"
+
+
+def test_ambiguous_completion_route_fails_open_parent_batch_in_one_delivery():
     async def resume_after_routing_failure(sess: ScriptedSession) -> str:
-        for tool_call_id in ("duplicate-a", "duplicate-b"):
+        for tool_call_id in ("duplicate-a", "duplicate-b", "unrelated"):
             row = sess.state.pending_events.rows[tool_call_id]
             assert row.status is RowStatus.FAILED
             assert row.result is not None
             assert "routing failed" in row.result
             assert row.result != "child result"
-        unrelated = sess.state.pending_events.rows["unrelated"]
-        assert unrelated.status is RowStatus.DONE
-        assert unrelated.result == "unrelated result"
         sess.state.pending_events.clear()
         sess.state.set_phase(SessionPhase.DONE)
         return "parent recovered"
 
     lead = ScriptedSession("lead", [resume_after_routing_failure])
-    scheduler, _ = build_scheduler(lead, [])
+    scheduler, events = build_scheduler(lead, [])
     lead.state.set_phase(SessionPhase.AWAITING_EVENTS)
     lead.state.pending_events.add(
         PendingRow(tool_call_id="duplicate-a", kind=RowKind.CHILD_AGENT, order=0, ref=99)
@@ -303,17 +341,12 @@ def test_repeated_misrouted_completion_fails_matching_rows_without_misdelivery()
 
     async def scenario():
         await scheduler._deliver_to_parent(99, "child result", RowStatus.DONE)
-        assert scheduler._spawn_origin[99] == (0, "tc-bogus")
-
-        await scheduler._deliver_to_parent(99, "child result", RowStatus.DONE)
-        assert lead.state.pending_events.rows["unrelated"].status is RowStatus.PENDING
-        await scheduler._wake(0, "unrelated", "unrelated result", RowStatus.DONE)
         await scheduler._tasks[0]
 
     run(scenario())
 
+    assert len(event_types(events, "agent_failed")) == 1
     assert scheduler._spawn_origin == {}
-    assert scheduler._delivery_route_failures == {}
     assert scheduler.table.get(0).result == "parent recovered"
 
 def test_send_message_queues_when_target_awaiting_events():
