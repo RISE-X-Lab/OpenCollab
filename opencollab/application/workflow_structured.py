@@ -245,7 +245,11 @@ class WorkflowStructuredMixin:
 
         self._track_session(session)
         try:
-            self._carry_exploration(prior_session, session)
+            if not self._carry_exploration(prior_session, session):
+                await self.log(
+                    f"structured retry could not carry exploration "
+                    f"({label or 'agent'}); continuing from the retry prompt"
+                )
             await self._run_session_turn(
                 session,
                 retry_prompt,
@@ -262,7 +266,7 @@ class WorkflowStructuredMixin:
         return capture_tool.captured if _schema_satisfied(capture_tool.captured, schema) else None
 
     @staticmethod
-    def _carry_exploration(prior_session: Any, session: Any) -> None:
+    def _carry_exploration(prior_session: Any, session: Any) -> bool:
         """Copy the first pass's conversation into the corrective session.
 
         The corrective session is built fresh (seeded only with the system
@@ -272,14 +276,24 @@ class WorkflowStructuredMixin:
         mutate the first session's history) while the message dicts are shared,
         which is safe because neither side mutates a message in place.
 
-        Defensive: a session shape that lacks a settable ``messages`` (e.g. the
-        very first pass having failed before any message landed) must not abort
-        the corrective turn — the worst case is the pre-fix bare-prompt commit.
+        The workflow-session port promises ``state.messages``. A top-level
+        ``messages`` property remains a compatibility fallback for older custom
+        factories. Failure is reported to the caller so it can emit a visible
+        recovery-degradation event without aborting the corrective turn.
         """
-        prior = getattr(prior_session, "messages", None)
+        prior_state = getattr(prior_session, "state", None)
+        prior = getattr(prior_state, "messages", None)
         if prior is None:
-            return
+            prior = getattr(prior_session, "messages", None)
+        if prior is None:
+            return False
+
+        session_state = getattr(session, "state", None)
         try:
-            session.messages = list(prior)
+            if session_state is not None and hasattr(session_state, "messages"):
+                session_state.messages = list(prior)
+            else:
+                session.messages = list(prior)
         except Exception:  # noqa: BLE001 — carry-over is best-effort, never fatal
-            pass
+            return False
+        return True
