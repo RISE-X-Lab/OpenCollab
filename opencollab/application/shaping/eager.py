@@ -33,7 +33,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from opencollab.application.shaping.pipeline import is_pinned
+from opencollab.application.shaping.pipeline import (
+    is_pinned,
+    matched_tool_result_occurrences,
+)
 from opencollab.application.shaping.reactive import DEFAULT_COMPACTABLE_TOOLS
 
 # K most-recent compactable tool results kept verbatim; everything older is
@@ -150,8 +153,8 @@ class EagerToolOutputClearShaper:
 
         out: list[dict[str, Any]] = []
         changed = False
-        for message in messages:
-            stub = stubs.get(message.get("tool_call_id"))
+        for index, message in enumerate(messages):
+            stub = stubs.get(index)
             if (
                 stub is not None
                 and message.get("role") == "tool"
@@ -166,8 +169,8 @@ class EagerToolOutputClearShaper:
 
     def _stubs_for_old_results(
         self, messages: list[dict[str, Any]]
-    ) -> dict[str, str]:
-        """Map ``tool_call_id`` -> deterministic stub for every compactable result
+    ) -> dict[int, str]:
+        """Map exact result index -> stub for every compactable result
         older than the last ``keep_recent``.
 
         Compactable calls are scanned in issue order from the assistant
@@ -180,20 +183,22 @@ class EagerToolOutputClearShaper:
         # parse arguments + build stubs ONLY for the older calls that get cleared —
         # the last ``keep_recent`` are kept verbatim, so parsing their JSON every
         # turn would be pure waste on this always-on rung.
-        compactable: list[tuple[str, str, Any]] = []  # (tool_call_id, name, arguments)
-        for message in messages:
-            if message.get("role") != "assistant" or is_pinned(message):
-                continue
-            for call in message.get("tool_calls") or ():
-                name = call.get("function", {}).get("name")
-                call_id = call.get("id")
-                if name in self.compactable_tools and call_id:
-                    compactable.append(
-                        (call_id, name, call.get("function", {}).get("arguments"))
-                    )
+        compactable: list[tuple[int, str, Any]] = []
+        for result_index, _call_id, name, arguments in matched_tool_result_occurrences(
+            messages
+        ):
+            result = messages[result_index]
+            if (
+                name in self.compactable_tools
+                and not is_pinned(result)
+                and isinstance(result.get("content"), str)
+            ):
+                compactable.append((result_index, name, arguments))
         if len(compactable) <= self.keep_recent:
             return {}
-        return {
-            call_id: _stub_for_call(name, _call_target(name, arguments))
-            for call_id, name, arguments in compactable[: -self.keep_recent]
-        }
+        stubs: dict[int, str] = {}
+        for result_index, name, arguments in compactable[: -self.keep_recent]:
+            stub = _stub_for_call(name, _call_target(name, arguments))
+            if len(stub) < len(messages[result_index]["content"]):
+                stubs[result_index] = stub
+        return stubs
