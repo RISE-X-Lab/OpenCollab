@@ -498,12 +498,17 @@ def test_wiring_fires_hook_on_team_bus(tmp_path, monkeypatch):
 
 
 def test_wiring_runs_relative_hook_in_runtime_workspace(tmp_path, monkeypatch):
+    workspace = tmp_path / "target workspace"
+    launch_directory = tmp_path / "launcher"
+    workspace.mkdir()
+    launch_directory.mkdir()
+    monkeypatch.chdir(launch_directory)
     team = (
         "roles:\n  lead:\n    tools: [bash]\n    prompt: x\n"
         "hooks:\n  Stop:\n    - command: 'touch relative-stop-fired'\n"
     )
-    _write_team(tmp_path, monkeypatch, team)
-    ctx = build_runtime_context(str(tmp_path), _cfg(), trace=False)
+    _write_team(workspace, monkeypatch, team)
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
     scheduler = build_scheduler(
         ctx,
         use_worktrees=False,
@@ -521,7 +526,8 @@ def test_wiring_runs_relative_hook_in_runtime_workspace(tmp_path, monkeypatch):
         )
     )
 
-    assert (tmp_path / "relative-stop-fired").exists()
+    assert (workspace / "relative-stop-fired").exists()
+    assert not (launch_directory / "relative-stop-fired").exists()
 
 
 def test_wiring_disabled_when_enable_hooks_false(tmp_path, monkeypatch):
