@@ -78,6 +78,137 @@ class SideEffectTool(RuntimeNativeTool):
     }
 
 
+@pytest.mark.parametrize(
+    ("schema", "arguments", "expected_error"),
+    [
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "integer"}},
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+            '{"value": 1, "unexpected": true}',
+            "unexpected property",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "number", "minimum": 0}},
+                "required": ["value"],
+            },
+            '{"value": -1}',
+            "must be >= 0",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "number", "maximum": 10}},
+                "required": ["value"],
+            },
+            '{"value": 11}',
+            "must be <= 10",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "string", "minLength": 3}},
+                "required": ["value"],
+            },
+            '{"value": "ab"}',
+            "must have length >= 3",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "string", "maxLength": 3}},
+                "required": ["value"],
+            },
+            '{"value": "abcd"}',
+            "must have length <= 3",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "string", "pattern": "^[A-Z]+$"}},
+                "required": ["value"],
+            },
+            '{"value": "lower"}',
+            "must match pattern",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "array", "minItems": 2}},
+                "required": ["value"],
+            },
+            '{"value": [1]}',
+            "must contain at least 2 items",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "array", "maxItems": 2}},
+                "required": ["value"],
+            },
+            '{"value": [1, 2, 3]}',
+            "must contain at most 2 items",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "oneOf": [
+                            {"type": "integer", "minimum": 0},
+                            {"type": "string", "minLength": 3},
+                        ]
+                    }
+                },
+                "required": ["value"],
+            },
+            '{"value": false}',
+            "must match exactly one schema in oneOf",
+        ),
+    ],
+    ids=[
+        "additional-properties",
+        "minimum",
+        "maximum",
+        "min-length",
+        "max-length",
+        "pattern",
+        "min-items",
+        "max-items",
+        "one-of",
+    ],
+)
+def test_declared_schema_constraints_block_side_effects(schema, arguments, expected_error):
+    tool = SideEffectTool()
+    tool.parameters = schema
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
+
+    result = run(use_case.process([tool_call(arguments=arguments)]))
+
+    assert tool.runtime_calls == []
+    assert result.messages_to_append[0]["content"].startswith(
+        "Error: schema validation failed:"
+    )
+    assert expected_error in result.messages_to_append[0]["content"]
+
+
+def test_structured_output_rejects_unsupported_assertion_schema_before_provider_use():
+    with pytest.raises(ValueError, match="anyOf: unsupported schema keyword"):
+        StructuredOutputTool(
+            {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "integer"},
+                ]
+            }
+        )
+
+
 def event_factory() -> SessionEventFactory:
     factory = default_session_event_factory(aid=-1)
     # Wrap to use SimpleNamespace so tests that previously asserted on a
