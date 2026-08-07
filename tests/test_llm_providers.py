@@ -358,6 +358,35 @@ def test_exact_model_capabilities_centralize_provider_compatibility(model, conte
     assert capabilities.honors_workflow_thinking_override is False
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "vendor/kimi-for-coding",
+        "gateway/kimi-for-coding-2026-08-07",
+    ],
+)
+def test_known_model_capabilities_accept_bounded_provider_aliases(model):
+    capabilities = model_capabilities(model)
+
+    assert capabilities.context_window == 262_144
+    assert capabilities.supports_forced_tool_choice is False
+    assert capabilities.honors_workflow_thinking_override is False
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "vendor/kimi-for-coding-preview",
+        "vendor/not-kimi-for-coding",
+    ],
+)
+def test_known_model_capabilities_reject_prefixed_near_misses(model):
+    capabilities = model_capabilities(model)
+
+    assert capabilities.context_window is None
+    assert capabilities.supports_forced_tool_choice is True
+
+
 def test_unknown_model_capabilities_use_neutral_defaults():
     capabilities = model_capabilities("unknown-model")
 
