@@ -79,7 +79,12 @@ PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
     # AUTOSAVING is the empty-stop retry route: the turn produced nothing to
     # execute, so it autosaves like any step and loops back to PRECHECK.
     SessionPhase.HANDLING_RESPONSE: frozenset(
-        {SessionPhase.EXECUTING_TOOLS, SessionPhase.DONE, SessionPhase.AUTOSAVING}
+        {
+            SessionPhase.EXECUTING_TOOLS,
+            SessionPhase.DONE,
+            SessionPhase.STOPPED,
+            SessionPhase.AUTOSAVING,
+        }
     ),
     SessionPhase.EXECUTING_TOOLS: frozenset(
         {SessionPhase.AUTOSAVING, SessionPhase.AWAITING_EVENTS}
