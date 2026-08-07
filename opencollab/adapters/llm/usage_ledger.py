@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from opencollab.adapters.llm.types import LLMResponse, Usage
+from opencollab.adapters.llm.types import LLMResponse, Usage, model_matches_family
 
 DEFAULT_GLM52_INPUT_USD_PER_MTOK = 1.4
 DEFAULT_GLM52_CACHED_INPUT_USD_PER_MTOK = 0.26
@@ -48,8 +48,7 @@ def _float_env(name: str, default: float) -> float:
 
 
 def pricing_for_model(model: str | None) -> dict[str, float | str]:
-    lowered = (model or "").lower()
-    if "glm" in lowered:
+    if model_matches_family(model, "glm-5.2"):
         input_price = _float_env("GLM_INPUT_USD_PER_MTOK", DEFAULT_GLM52_INPUT_USD_PER_MTOK)
         return {
             "mode": "glm-5.2-default",

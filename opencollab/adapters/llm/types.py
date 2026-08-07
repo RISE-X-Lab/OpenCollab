@@ -92,11 +92,11 @@ class ModelCapabilities:
     honors_workflow_thinking_override: bool = True
 
 
-# Best-effort context-window sizes (tokens), keyed by a substring of the model
-# id. Used to derive history-compaction triggers (see
-# ``shaping.history_trigger_target``); an unrecognised model returns ``None`` and
-# the caller falls back to fixed defaults. Substring match keeps this resilient
-# to version/date suffixes (e.g. ``claude-opus-4-8-2026...`` matches ``claude``).
+# Best-effort context-window sizes (tokens), keyed by a model family. Used to
+# derive history-compaction triggers (see ``shaping.history_trigger_target``);
+# an unrecognised model returns ``None`` and the caller falls back to fixed
+# defaults. Family matching accepts provider prefixes and hyphenated
+# version/date suffixes without treating unrelated substrings as a known model.
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude": 200_000,
     "gpt-4o": 128_000,
@@ -127,6 +127,17 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
 DEFAULT_MAX_OUTPUT_TOKENS = DEFAULT_MAX_TOKENS_PER_STEP
 
 
+def model_matches_family(model: str | None, family: str) -> bool:
+    """Whether ``model`` is an exact or hyphen-suffixed family identifier."""
+    if not model:
+        return False
+    normalized = model.strip().lower().rsplit("/", 1)[-1]
+    normalized_family = family.strip().lower()
+    return normalized == normalized_family or normalized.startswith(
+        f"{normalized_family}-"
+    )
+
+
 def model_capabilities(model: str | None) -> ModelCapabilities:
     """Return exact capability metadata plus a best-effort context window."""
     if not model:
@@ -135,7 +146,7 @@ def model_capabilities(model: str | None) -> ModelCapabilities:
     if lowered in _EXACT_MODEL_CAPABILITIES:
         return _EXACT_MODEL_CAPABILITIES[lowered]
     for key, window in MODEL_CONTEXT_WINDOWS.items():
-        if key in lowered:
+        if model_matches_family(model, key):
             return ModelCapabilities(context_window=window)
     return ModelCapabilities()
 
