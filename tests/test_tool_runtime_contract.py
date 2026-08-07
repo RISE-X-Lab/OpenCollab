@@ -562,6 +562,37 @@ def test_grep_tool_does_not_fallback_after_normal_rg_no_match():
     assert "grep -r" not in env.exec_calls[0][0]
 
 
+@pytest.mark.parametrize(
+    ("returncode", "stderr", "expected"),
+    [
+        (2, "regex parse error", "regex parse error"),
+        (2, "path does not exist", "path does not exist"),
+        (-1, "Command timed out after 30s", "timed out"),
+    ],
+)
+def test_grep_tool_reports_backend_failures(returncode, stderr, expected):
+    class FailedSearchEnv(FakeEnv):
+        async def exec_cmd(self, cmd: str, timeout: float = 120.0):
+            self.exec_calls.append((cmd, timeout))
+            return SimpleNamespace(
+                returncode=returncode,
+                stdout="",
+                stderr=stderr,
+                stdout_truncated=False,
+                stderr_truncated=False,
+            )
+
+    env = FailedSearchEnv()
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(GrepTool().execute_with_runtime({"pattern": "["}, runtime))
+
+    assert result.startswith("Error: rg search failed")
+    assert expected in result
+    assert "No matches" not in result
+    assert "2>/dev/null" not in env.exec_calls[0][0]
+
+
 def test_grep_tool_terminates_options_before_pattern_and_path():
     env = FakeEnv(stdout="")
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
