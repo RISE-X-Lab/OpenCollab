@@ -192,6 +192,20 @@ async def test_tool_schema_surface():
     assert openai["function"]["parameters"] == schema
 
 
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "array", "items": {"type": "string"}},
+        {"type": "string"},
+        {"type": ["object", "null"]},
+        {"properties": {}},
+    ],
+)
+def test_tool_rejects_non_object_top_level_schema(schema):
+    with pytest.raises(ValueError, match="top-level type must be 'object'"):
+        StructuredOutputTool(schema)
+
+
 # --------------------------------------------------------------------------- #
 # agent(schema=...)
 # --------------------------------------------------------------------------- #
