@@ -28,6 +28,10 @@ from opencollab.adapters.tui.keyboard import TabKeyNavigator
 from opencollab.adapters.tui.renderer_display import _RendererDisplayMixin
 from opencollab.adapters.tui.renderer_events import _RendererEventsMixin
 
+MAX_HISTORY_BLOCKS_PER_AGENT = 400
+MAX_TERMINAL_AGENT_STATES = 128
+_TERMINAL_RENDER_STATES = frozenset({"idle", "failed", "cancelled"})
+
 
 @dataclass
 class _AgentRenderState:
@@ -67,6 +71,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         self._agent_states: dict[int, _AgentRenderState] = {}
         # aid -> {"role": str, "state": str} for the live team roster panel.
         self._roster: dict[int, dict] = {}
+        self._terminal_agent_order: list[int] = []
         # Brand motion (single pulsing dot). ``_motion`` is the shared,
         # seconds-less tool-execution spinner. Each agent owns its own LLM-wait
         # indicator so hidden streams remain intact while another agent is selected.
@@ -92,6 +97,33 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
     def _state_for(self, aid: int) -> _AgentRenderState:
         """Return one agent's render state, creating it on first observation."""
         return self._agent_states.setdefault(aid, _AgentRenderState())
+
+    def _append_history_block(self, state: _AgentRenderState, block: Any) -> None:
+        state.history_blocks.append(block)
+        overflow = len(state.history_blocks) - MAX_HISTORY_BLOCKS_PER_AGENT
+        if overflow > 0:
+            del state.history_blocks[:overflow]
+            state.turn_history_start = max(0, state.turn_history_start - overflow)
+
+    def _track_agent_render_lifecycle(self, aid: int, state: str) -> None:
+        if aid in self._terminal_agent_order:
+            self._terminal_agent_order.remove(aid)
+        if aid != 0 and state in _TERMINAL_RENDER_STATES:
+            self._terminal_agent_order.append(aid)
+        while len(self._terminal_agent_order) > MAX_TERMINAL_AGENT_STATES:
+            victim = next(
+                (
+                    candidate
+                    for candidate in self._terminal_agent_order
+                    if candidate != self._selected_aid
+                ),
+                None,
+            )
+            if victim is None:
+                break
+            self._terminal_agent_order.remove(victim)
+            self._agent_states.pop(victim, None)
+            self._roster.pop(victim, None)
 
     def _event_aid(self, aid: Any) -> int:
         """Normalize legacy events without an aid to agent 0, independent of focus."""
@@ -152,7 +184,9 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
     @_timeline_blocks.setter
     def _timeline_blocks(self, value: list[Any]) -> None:
         self._selected_state.timeline_blocks = value
-        self._selected_state.history_blocks = list(value)
+        self._selected_state.history_blocks = list(value)[
+            -MAX_HISTORY_BLOCKS_PER_AGENT:
+        ]
         self._selected_state.history_revision += 1
 
     @property
@@ -262,7 +296,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         state = self._state_for(aid)
         self._flush_current_text_to_timeline(state)
         block = self._user_block(content)
-        state.history_blocks.append(block)
+        self._append_history_block(state, block)
         state.timeline_blocks.append(block)
         state.history_revision += 1
 
