@@ -137,7 +137,10 @@ class Scheduler(
         self._startup_origin: dict[int, tuple[int, str]] = {}
         self._sessions: dict[int, Any] = {}
         self._locks: dict[int, asyncio.Lock] = {}
-        self._run_lock = asyncio.Lock()
+        # Public turns serialize per addressed session, not across the whole
+        # team. Independent aids may make progress concurrently while repeat
+        # turns for one aid remain strictly ordered.
+        self._run_locks: dict[int, asyncio.Lock] = {}
         # A public run_turn owner must retain its addressed aid through cleanup:
         # cancelling a child turn must never terminalize the Lead by default.
         self._active_run_tasks: dict[asyncio.Task[Any], int] = {}

@@ -227,6 +227,7 @@ class LifecycleMixin:
         self._startup_origin.pop(aid, None)
         self._tasks.pop(aid, None)
         self._locks.pop(aid, None)
+        self._run_locks.pop(aid, None)
         self._message_inbox.pop(aid, None)
 
         if env is None:
