@@ -57,6 +57,13 @@ def guarded_staged_diff_command(
         f'{git_index_command} add -f --pathspec-from-file="$untracked" '
         '--pathspec-file-nul; fi && '
     )
+    ignored_guard = (
+        f'{git_index_command} ls-files --others --ignored '
+        '--exclude-per-directory=.gitignore -z > "$ignored" && '
+        'if [ -s "$ignored" ]; then '
+        "echo 'ignored untracked files cannot be included in patch evidence' >&2; "
+        "exit 125; fi; "
+    )
     reserved_guard = (
         f'if {git_index_command} diff --no-ext-diff --no-textconv --cached --quiet '
         f"{shlex.quote(base_revision)} -- "
@@ -72,10 +79,12 @@ def guarded_staged_diff_command(
     return (
         'idx=$(mktemp) || exit 125; '
         'untracked=$(mktemp) || { rm -f -- "$idx"; exit 125; }; '
-        'trap \'rm -f -- "$idx" "$untracked"\' EXIT; '
+        'ignored=$(mktemp) || { rm -f -- "$idx" "$untracked"; exit 125; }; '
+        'trap \'rm -f -- "$idx" "$untracked" "$ignored"\' EXIT; '
         f"{unsafe_config_guard}"
         f"{git_index_command} read-tree {shlex.quote(base_revision)} && "
         f'{git_index_command} add -u && '
+        f"{ignored_guard}"
         f"{stage_untracked}"
         f"{resets}"
         f"{reserved_guard}"
