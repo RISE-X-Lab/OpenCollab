@@ -27,6 +27,20 @@ def test_workflow_context_rejects_invalid_concurrency(max_concurrency):
     with pytest.raises(ValueError, match="max_concurrency must be a positive integer"):
         WorkflowContext(FakeFactory([]), max_concurrency=max_concurrency)
 
+
+@pytest.mark.parametrize("task_concurrency", [0, -1, 1.5, True, "2", float("nan")])
+def test_workflow_context_rejects_invalid_task_concurrency(task_concurrency):
+    with pytest.raises(ValueError, match="task_concurrency must be a positive integer"):
+        WorkflowContext(FakeFactory([]), task_concurrency=task_concurrency)
+
+
+def test_workflow_context_task_concurrency_defaults_to_agent_concurrency():
+    ctx = WorkflowContext(FakeFactory([]), max_concurrency=3)
+
+    assert ctx._max_concurrency == 3
+    assert ctx._task_concurrency == 3
+
+
 @pytest.mark.asyncio
 async def test_agent_returns_final_text_and_seeds_prompt():
     session = FakeSession(reply="the answer")
