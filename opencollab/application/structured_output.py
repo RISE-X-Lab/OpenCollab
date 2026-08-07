@@ -20,7 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from opencollab.application.schema_validate import validate
+from opencollab.application.schema_validate import validate, validate_schema
 from opencollab.application.tool_execution import ToolRuntime
 
 TOOL_NAME = "structured_output"
@@ -49,6 +49,11 @@ class StructuredOutputTool:
         schema: dict[str, Any],
         on_capture: Callable[[], None] | None = None,
     ) -> None:
+        schema_errors = validate_schema(schema)
+        if schema_errors:
+            raise ValueError(
+                "structured output schema is unsupported: " + "; ".join(schema_errors)
+            )
         self._schema = schema
         self._on_capture = on_capture
         self.parameters = schema
