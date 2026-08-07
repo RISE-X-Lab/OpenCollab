@@ -205,6 +205,27 @@ def test_file_read_reads_through_runtime(tmp_path):
     assert "1\talpha" not in result
 
 
+def test_file_read_small_range_bypasses_full_file_limit(tmp_path):
+    target = tmp_path / "large.txt"
+    target.write_bytes(b"first\nsecond\n" + b"x" * (5 * 1024 * 1024))
+    runtime = ToolRuntime(
+        environment=LocalEnvironment(str(tmp_path)),
+        safety_policy=None,
+        permission_policy=None,
+    )
+
+    result = run(
+        FileReadTool().execute_with_runtime(
+            {"path": "large.txt", "offset": 1, "limit": 2},
+            runtime,
+        )
+    )
+
+    assert "1\tfirst" in result
+    assert "2\tsecond" in result
+    assert "more lines below" in result
+
+
 def test_file_read_preserves_workspace_path_jail(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -246,7 +267,7 @@ def test_file_read_preserves_permission_error_string(monkeypatch, tmp_path):
     async def raise_permission_error(*args, **kwargs):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(LocalEnvironment, "read_file", raise_permission_error)
+    monkeypatch.setattr(LocalEnvironment, "read_text_range", raise_permission_error)
     env = LocalEnvironment(str(tmp_path))
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 

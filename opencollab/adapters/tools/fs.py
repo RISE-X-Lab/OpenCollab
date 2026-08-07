@@ -14,6 +14,7 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
+from opencollab.adapters._env_base import TextFileRange
 from opencollab.adapters.tools._output import truncate
 from opencollab.adapters.tools._paths import checked_path
 from opencollab.adapters.tools.apply_patch_engine import (
@@ -98,7 +99,25 @@ class FileReadTool(Tool):
         path = checked_path(runtime, path)
 
         try:
-            content = await env.read_file(path)
+            range_reader = getattr(env, "read_text_range", None)
+            if callable(range_reader):
+                window = await range_reader(
+                    path,
+                    offset=offset,
+                    limit=limit,
+                    max_chars=self.max_read_chars,
+                )
+            else:
+                content = await env.read_file(path)
+                lines = content.splitlines()
+                start = max(0, offset - 1)
+                end = min(len(lines), start + limit)
+                window = TextFileRange(
+                    lines=lines[start:end],
+                    start_line=start + 1,
+                    total_lines=len(lines),
+                    has_more=end < len(lines),
+                )
         except FileNotFoundError:
             return f"Error: file not found: {path}"
         except PermissionError as e:
@@ -106,25 +125,36 @@ class FileReadTool(Tool):
         except UnicodeDecodeError as e:
             return f"Error: file is not valid UTF-8: invalid UTF-8 at byte {e.start}."
 
-        lines = content.splitlines()
-        total = len(lines)
-
-        # Apply line range
-        start = max(0, offset - 1)
-        end = min(total, start + limit)
-        selected = lines[start:end]
+        selected = window.lines
+        start = window.start_line - 1
+        end = start + len(selected)
 
         # Format with line numbers (ref: claude-code cat -n format)
         numbered = [f"{start + i + 1}\t{line}" for i, line in enumerate(selected)]
-        header = f"File: {params['path']} ({total} lines total, showing {start + 1}-{end})"
+        if window.total_lines is None:
+            total_description = "total not scanned"
+        else:
+            total_description = f"{window.total_lines} lines total"
+        header = (
+            f"File: {params['path']} ({total_description}, "
+            f"showing {start + 1}-{end})"
+        )
         body = header + "\n" + truncate("\n".join(numbered), self.max_read_chars)
+        if window.chars_truncated:
+            body += (
+                f"\n... requested content reached the {self.max_read_chars}-character "
+                "read limit."
+            )
         # Loud footer when lines remain below the shown range — otherwise a
         # default read silently stops at the limit and the tail is lost.
-        if end < total:
+        if window.has_more:
+            if window.total_lines is None:
+                remaining = "more lines below (total not scanned)"
+            else:
+                remaining = f"{window.total_lines - end} more lines below"
             body += (
-                f"\n... {total - end} more lines below (showing {start + 1}-{end} "
-                f"of {total}). Continue with offset={end + 1}, or use the grep "
-                f"tool to jump to a symbol."
+                f"\n... {remaining} (showing {start + 1}-{end}). Continue with "
+                f"offset={end + 1}, or use the grep tool to jump to a symbol."
             )
         return body
 

@@ -17,6 +17,7 @@ from opencollab.adapters.safe_files import (
     create_regular_bytes_atomic,
     ensure_directory_no_symlinks,
     read_regular_bytes,
+    read_regular_text_range,
     unlink_regular_file_durable,
     write_regular_bytes_atomic,
     write_regular_file_atomic,
@@ -29,6 +30,41 @@ def test_bounded_read_accepts_regular_file_and_rejects_large_file(tmp_path) -> N
     assert read_regular_bytes(path, max_bytes=7) == b"payload"
     with pytest.raises(ValueError, match="exceeds"):
         read_regular_bytes(path, max_bytes=6)
+
+
+def test_ranged_text_read_handles_utf8_crlf_and_missing_final_newline(tmp_path) -> None:
+    path = tmp_path / "value.txt"
+    path.write_bytes("零\r\n一\r\n二".encode())
+
+    window = read_regular_text_range(
+        path,
+        offset=2,
+        limit=2,
+        max_chars=20,
+    )
+
+    assert window.lines == ["一", "二"]
+    assert window.start_line == 2
+    assert window.total_lines == 3
+    assert not window.has_more
+    assert not window.chars_truncated
+
+
+def test_ranged_text_read_bounds_one_long_line(tmp_path) -> None:
+    path = tmp_path / "value.txt"
+    path.write_bytes(b"x" * (1024 * 1024))
+
+    window = read_regular_text_range(
+        path,
+        offset=1,
+        limit=1,
+        max_chars=32,
+    )
+
+    assert window.lines == ["x" * 32]
+    assert window.total_lines is None
+    assert window.has_more
+    assert window.chars_truncated
 
 
 def test_missing_read_does_not_create_parent_directories(tmp_path) -> None:
