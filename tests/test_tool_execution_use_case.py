@@ -18,6 +18,8 @@ from tool_execution_test_support import (
 import opencollab.application.tool_execution_runtime as tool_execution_runtime
 from opencollab.adapters.env import Environment
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
+from opencollab.application.structured_output import StructuredOutputTool
+from opencollab.application.submit_findings import SubmitFindingsTool
 from opencollab.application.tool_execution import (
     MAX_TOOL_CALLS_PER_BATCH,
     ToolExecutionUseCase,
@@ -162,6 +164,86 @@ def test_tool_execution_use_case_handles_non_string_and_preparsed_arguments():
     assert "must be a JSON object" in invalid.messages_to_append[0]["content"]
     assert valid.messages_to_append[0]["content"] == "runtime result"
     assert tool.runtime_calls[0][0] == {"value": 1}
+
+
+def test_terminal_structured_output_skips_later_side_effect_and_answers_every_call():
+    terminal = StructuredOutputTool(
+        {
+            "type": "object",
+            "required": ["answer"],
+            "properties": {"answer": {"type": "string"}},
+        }
+    )
+    side_effect = SideEffectTool(output="side effect executed")
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[terminal, side_effect]))
+
+    result = run(
+        use_case.process(
+            [
+                tool_call(
+                    name="structured_output",
+                    arguments='{"answer": "done"}',
+                    call_id="terminal",
+                ),
+                tool_call(
+                    name="fake_tool",
+                    arguments='{"value": 1}',
+                    call_id="side-effect",
+                ),
+            ]
+        )
+    )
+
+    assert terminal.captured == {"answer": "done"}
+    assert side_effect.runtime_calls == []
+    assert result.messages_to_append == [
+        {
+            "role": "tool",
+            "tool_call_id": "terminal",
+            "content": "Recorded. Structured output accepted. Your task is complete.",
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "side-effect",
+            "content": "Skipped: terminal structured output accepted earlier in this batch.",
+        },
+    ]
+
+
+def test_terminal_submit_findings_skips_later_side_effect():
+    terminal = SubmitFindingsTool()
+    side_effect = SideEffectTool(output="side effect executed")
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[terminal, side_effect]))
+
+    result = run(
+        use_case.process(
+            [
+                tool_call(
+                    name="submit_findings",
+                    arguments=(
+                        '{"findings": [], "summary": "done", '
+                        '"insufficient_evidence": true}'
+                    ),
+                    call_id="terminal",
+                ),
+                tool_call(
+                    name="fake_tool",
+                    arguments='{"value": 1}',
+                    call_id="side-effect",
+                ),
+            ]
+        )
+    )
+
+    assert terminal.captured is not None
+    assert side_effect.runtime_calls == []
+    assert [message["tool_call_id"] for message in result.messages_to_append] == [
+        "terminal",
+        "side-effect",
+    ]
+    assert result.messages_to_append[-1]["content"] == (
+        "Skipped: terminal structured output accepted earlier in this batch."
+    )
 
 
 def test_tool_execution_use_case_preserves_unknown_tool_error():
