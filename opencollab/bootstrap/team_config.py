@@ -87,6 +87,23 @@ class RoleConfig(BaseModel):
     thinking_params: dict | None = None
     tools: list[str] = Field(default_factory=list)
 
+    @field_validator("prompt")
+    @classmethod
+    def _reject_blank_prompt(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("role prompt must not be blank")
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def _normalize_optional_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("role model must not be blank")
+        return normalized
+
 
 class _RoleFileModel(BaseModel):
     """On-disk role entry; ``prompt`` or ``prompt_file`` (resolved at load)."""
@@ -105,6 +122,23 @@ class _RoleFileModel(BaseModel):
     thinking: bool | None = None
     thinking_params: dict | None = None
     tools: list[str] = Field(default_factory=list)
+
+    @field_validator("prompt")
+    @classmethod
+    def _reject_blank_prompt(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("role prompt must not be blank")
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def _normalize_optional_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("role model must not be blank")
+        return normalized
 
 
 class _HookActionFileModel(BaseModel):
