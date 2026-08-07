@@ -165,6 +165,7 @@ class WorkflowAgentsMixin:
                 thinking=False,
             )
         except Exception as exc:  # noqa: BLE001 — a failed salvage must not abort the fleet
+            self._record_agent_failure(synth_label, exc)
             await self.log(f"dead-scout synth build failed ({synth_label}): {exc}")
             return None
 
@@ -180,6 +181,7 @@ class WorkflowAgentsMixin:
                 cancel_event=capture_done,
             )
         except Exception as exc:  # noqa: BLE001 — one dead salvage never kills the fleet
+            self._record_agent_failure(synth_label, exc)
             await self.log(f"dead-scout synth failed ({synth_label}): {exc}")
             return None
 
@@ -244,6 +246,7 @@ class WorkflowAgentsMixin:
         session_budget = self._capped_session_budget(budget)
         capture_done = asyncio.Event()
         submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
+        draft_label = f"{label}:draft" if label else "draft"
         try:
             session = self._factory.build_workflow_session(
                 prompt=prompt,
@@ -255,6 +258,7 @@ class WorkflowAgentsMixin:
                 thinking=False,
             )
         except Exception as exc:  # noqa: BLE001 — a failed draft must not abort the fleet
+            self._record_agent_failure(draft_label, exc)
             await self.log(f"draft build failed ({label or 'draft'}): {exc}")
             return None
         self._track_session(session)
@@ -267,6 +271,7 @@ class WorkflowAgentsMixin:
                 cancel_event=capture_done,
             )
         except Exception as exc:  # noqa: BLE001 — one dead draft never kills the fleet
+            self._record_agent_failure(draft_label, exc)
             await self.log(f"draft failed ({label or 'draft'}): {exc}")
             return None
         return submit_tool.captured
