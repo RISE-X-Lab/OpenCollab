@@ -167,20 +167,31 @@ def test_per_call_timeout_returns_before_cancel_cleanup_finishes():
     run(scenario())
 
 
-def test_timeout_records_late_success_usage():
+def test_timeout_quarantines_late_success_and_records_its_usage():
     class LateSuccessLLM:
         def __init__(self):
+            self.calls = 0
+            self.active_calls = 0
+            self.max_active_calls = 0
             self.cancel_seen = asyncio.Event()
             self.release = asyncio.Event()
 
         async def complete(self, messages, tools=None, temperature=0.0):
             del messages, tools, temperature
+            self.calls += 1
+            self.active_calls += 1
+            self.max_active_calls = max(self.max_active_calls, self.active_calls)
             try:
-                await asyncio.Event().wait()
-            except asyncio.CancelledError:
-                self.cancel_seen.set()
-                await self.release.wait()
-                return llm_response(content="late", total_tokens=777)
+                if self.calls == 1:
+                    try:
+                        await asyncio.Event().wait()
+                    except asyncio.CancelledError:
+                        self.cancel_seen.set()
+                        await self.release.wait()
+                        return llm_response(content="late", total_tokens=777)
+                return llm_response(content="fresh", total_tokens=5)
+            finally:
+                self.active_calls -= 1
 
     async def scenario():
         state = SessionState(messages=[{"role": "system", "content": "sys"}])
@@ -195,16 +206,30 @@ def test_timeout_records_late_success_usage():
             assert state.used_tokens == 0
             assert len(runner.pending_cleanup_tasks) == 1
 
+            # A caller may reset the terminal state for a new user turn before
+            # the cancellation-resistant provider has actually stopped. That
+            # must not launch a concurrent provider request.
+            state.reset_for_user_turn()
+            with pytest.raises(RuntimeError, match="prior provider generation is still draining"):
+                await runner.run_loop()
+            assert llm.calls == 1
+            assert llm.max_active_calls == 1
+
             llm.release.set()
-            while not runner.late_provider_usage:
+            while runner.pending_cleanup_tasks:
                 await asyncio.sleep(0)
 
             assert state.used_tokens == 777
             assert runner.late_provider_usage == (777,)
             assert all(message.get("content") != "late" for message in state.messages)
+
+            state.reset_for_user_turn()
+            assert await runner.run_loop() == "fresh"
+            assert llm.calls == 2
+            assert llm.max_active_calls == 1
         finally:
             llm.release.set()
-            while runner.pending_cleanup_tasks or not runner.late_provider_usage:
+            while runner.pending_cleanup_tasks:
                 await asyncio.sleep(0)
 
     run(scenario())
