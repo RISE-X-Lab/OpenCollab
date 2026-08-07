@@ -22,6 +22,7 @@ from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.adapters.tools.spawn import SpawnAgentTool, SpawnWithReviewTool
 from opencollab.adapters.tools.use_skill import UseSkillTool
 from opencollab.application.ports import SchedulerPort, SkillStorePort
+from opencollab.domain.tools import validate_unique_tool_names
 
 # Tool name -> factory. Stateless tools need nothing; scheduler-bound tools take
 # the scheduler so an agent can spawn/message via the SchedulerPort.
@@ -129,6 +130,7 @@ def build_tools_for_role(
     team file can tune per-tool output budgets to its backend. Unknown names or
     kwargs raise — fail fast at startup.
     """
+    validate_unique_tool_names(tool_names)
     limits = validate_tool_limits(tool_limits or {})
     uncappable = set(limits) & frozenset(SCHEDULER_TOOL_FACTORIES)
     if uncappable:
