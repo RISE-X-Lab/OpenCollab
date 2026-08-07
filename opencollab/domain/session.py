@@ -244,6 +244,12 @@ class SessionState:
                 del self.pending_user_messages[index]
                 return
 
+    def discard_pending_user_message_id(self, message_id: str) -> None:
+        for index, message in enumerate(self.pending_user_messages):
+            if message.get("message_id") == message_id:
+                del self.pending_user_messages[index]
+                return
+
     def enriched_pending_user_messages(self) -> list[dict[str, Any]]:
         return [dict(message) for message in self.pending_user_messages]
 
