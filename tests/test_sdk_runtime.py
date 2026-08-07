@@ -559,6 +559,23 @@ async def test_artifact_directory_must_be_new_or_empty(tmp_path: Path) -> None:
     assert (artifacts / "keep.txt").read_text() == "user data"
 
 
+async def test_team_config_preflight_does_not_claim_artifact_directory(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "team-run"
+
+    with pytest.raises(ValueError, match="team config does not exist"):
+        await OpenCollab(tmp_path).team(
+            "solve it",
+            config=tmp_path / "missing-team.yaml",
+            artifacts=artifacts,
+            trace=False,
+            use_worktrees=False,
+        )
+
+    assert not artifacts.exists() or not any(artifacts.iterdir())
+
+
 async def test_team_is_first_class_and_passes_explicit_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
