@@ -354,20 +354,19 @@ class GrepTool(Tool):
         if glob_pattern:
             rg_cmd += f"-g {shlex.quote(glob_pattern)} "
         rg_cmd += f"-- {quoted_pattern} {quoted_search_path} 2>/dev/null"
-        # Fallback when rg is missing from PATH: grep MUST use -E (ERE) so that
-        # `a|b|c` alternation works. Plain grep is BRE, where `|` is a literal
-        # character — an alternation pattern then silently matches nothing. Also
-        # exclude VCS/venv and the .opencollab session dir so the fallback can't
-        # "match" its own logged pattern strings instead of real source.
-        rg_cmd += (
-            " || grep -rEn"
-            " --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.opencollab "
-        )
-        if glob_pattern:
-            rg_cmd += f"--include={shlex.quote(glob_pattern)} "
-        rg_cmd += f"-- {quoted_pattern} {quoted_search_path} 2>/dev/null | head -n {max_results}"
 
         result = await env.exec_cmd(rg_cmd, timeout=30)
+        if result.returncode == 127:
+            # Fallback only when rg is unavailable. A normal rg no-match uses
+            # return code 1 and must not scan the same tree a second time.
+            grep_cmd = (
+                "grep -rEn"
+                " --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.opencollab "
+            )
+            if glob_pattern:
+                grep_cmd += f"--include={shlex.quote(glob_pattern)} "
+            grep_cmd += f"-- {quoted_pattern} {quoted_search_path} 2>/dev/null"
+            result = await env.exec_cmd(grep_cmd, timeout=30)
         if result.stdout.strip():
             matches = result.stdout.strip().splitlines()[:max_results]
             return truncate("\n".join(matches), self.max_grep_chars)
