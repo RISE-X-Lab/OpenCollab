@@ -69,6 +69,25 @@ def test_build_scheduler_lead_omits_ask_user_when_headless(tmp_path, monkeypatch
     assert {"spawn_agent", "spawn_with_review"} <= tool_names
 
 
+def test_build_scheduler_preserves_explicit_empty_thinking_params(tmp_path):
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    ctx = build_runtime_context(
+        str(workspace),
+        _cfg(thinking=True, thinking_params={}),
+        trace=False,
+    )
+
+    scheduler = build_scheduler(
+        ctx,
+        use_worktrees=False,
+        interactive=False,
+        auto_save=False,
+    )
+
+    assert scheduler.lead_session.agent.thinking_params == {}
+
+
 def test_build_scheduler_wires_lead_safety_policy_from_bootstrap(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
