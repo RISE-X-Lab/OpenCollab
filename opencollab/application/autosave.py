@@ -13,7 +13,6 @@ SaveOperation = Callable[[], None]
 PrepareSave = Callable[[], SaveOperation | None]
 
 SAVE_TRIGGERS = frozenset({"user_message_appended", "step_end"})
-AUTOSAVE_DEBOUNCE_SECONDS = 0.05
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +35,11 @@ class AutoSaveSubscriber(EventPublisherPort):
     Two phases keep the write off the hot path without tearing the snapshot:
     *freeze* runs ``prepare_fn`` on the event loop to capture a self-consistent
     copy of mutable session state, then *flush* runs the file I/O off-thread via
-    ``asyncio.to_thread``. A single worker coalesces generations that have not
-    started yet, so a slow sink writes the latest pending snapshot instead of
-    replaying every obsolete intermediate state.
+    ``asyncio.to_thread``. Step checkpoints use exponentially spaced
+    generations (1, 2, 4, 8, ...) so the cumulative snapshot volume stays
+    linear as a session grows. A single worker also coalesces generations that
+    have not started yet, so a slow sink writes the latest pending snapshot
+    instead of replaying every obsolete intermediate state.
 
     Ordering is guaranteed by *single-subscriber ownership*, not by any key:
     one subscriber owns every queued task, so caller cancellation cannot
@@ -60,7 +61,8 @@ class AutoSaveSubscriber(EventPublisherPort):
         self._last_error: Exception | None = None
         self._failure_count = 0
         self._pending = False
-        self._wake: asyncio.Event | None = None
+        self._step_generation = 0
+        self._next_step_checkpoint = 1
 
     @property
     def last_error(self) -> Exception | None:
@@ -79,17 +81,22 @@ class AutoSaveSubscriber(EventPublisherPort):
     async def emit(self, event: SessionEvent) -> None:
         if event.type not in SAVE_TRIGGERS:
             return
-        self._enqueue(force=False)
+        if event.type == "step_end":
+            self._step_generation += 1
+            if self._step_generation < self._next_step_checkpoint:
+                return
+            self._next_step_checkpoint *= 2
+        self._enqueue()
         # Let the owned worker freeze the first pending generation before the
         # caller continues mutating session state, without waiting for I/O.
         await asyncio.sleep(0)
 
     def enqueue(self) -> asyncio.Task[None] | None:
-        """Force the latest generation into the owned persistence worker."""
-        return self._enqueue(force=True)
+        """Flush the latest generation through the owned persistence worker."""
+        return self._enqueue()
 
-    def _enqueue(self, *, force: bool) -> asyncio.Task[None]:
-        """Queue one generation, optionally ending the debounce window."""
+    def _enqueue(self) -> asyncio.Task[None]:
+        """Queue one generation, coalescing it behind an active write."""
         loop = asyncio.get_running_loop()
         self._pending = True
         owner = self._tail
@@ -100,12 +107,7 @@ class AutoSaveSubscriber(EventPublisherPort):
                 raise error
             owner = None
         if owner is not None and not owner.done():
-            if force and self._wake is not None:
-                self._wake.set()
             return owner
-        self._wake = asyncio.Event()
-        if force:
-            self._wake.set()
         owner = loop.create_task(self._drain_latest())
         self._tail = owner
         self._owners.add(owner)
@@ -123,7 +125,7 @@ class AutoSaveSubscriber(EventPublisherPort):
 
     async def _drain_latest(self) -> None:
         cancelled = False
-        while True:
+        while self._pending:
             self._pending = False
             operation = self._prepare_operation()
             if operation is not None:
@@ -132,21 +134,6 @@ class AutoSaveSubscriber(EventPublisherPort):
                 error = write.result()
                 if error is not None:
                     self._record_failure(error)
-
-            wake = self._wake
-            if not cancelled and wake is not None:
-                try:
-                    await asyncio.wait_for(
-                        wake.wait(),
-                        timeout=AUTOSAVE_DEBOUNCE_SECONDS,
-                    )
-                except asyncio.TimeoutError:
-                    pass
-                except asyncio.CancelledError:
-                    cancelled = True
-                wake.clear()
-            if not self._pending:
-                break
         if cancelled:
             raise asyncio.CancelledError
 
@@ -174,6 +161,5 @@ class AutoSaveSubscriber(EventPublisherPort):
         self._owners.discard(owner)
         if self._tail is owner:
             self._tail = None
-            self._wake = None
         if not owner.cancelled():
             owner.exception()
