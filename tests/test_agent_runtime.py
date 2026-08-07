@@ -19,6 +19,7 @@ class Environment:
         abort_fails: bool = False,
         revoke_fails: bool = False,
         block_abort: bool = False,
+        block_cleanup: bool = False,
     ) -> None:
         self.revoked = False
         self.abort_fails = abort_fails
@@ -28,6 +29,10 @@ class Environment:
         self.block_abort = block_abort
         self.abort_started = asyncio.Event()
         self.abort_release = asyncio.Event()
+        self.block_cleanup = block_cleanup
+        self.cleanup_started = asyncio.Event()
+        self.cleanup_release = asyncio.Event()
+        self.cleanup_done = asyncio.Event()
 
     def revoke(self) -> None:
         if self.revoke_fails:
@@ -45,6 +50,10 @@ class Environment:
 
     async def cleanup(self) -> None:
         self.cleanup_calls += 1
+        self.cleanup_started.set()
+        if self.block_cleanup:
+            await self.cleanup_release.wait()
+        self.cleanup_done.set()
 
 
 class Session:
@@ -235,6 +244,40 @@ async def test_agent_runtime_double_cancellation_finishes_abort_and_save(monkeyp
     with pytest.raises(asyncio.CancelledError):
         await owner
     assert environment.abort_calls == 1
+    assert session.save_calls == 1
+
+
+async def test_agent_runtime_cancellation_during_finalization_keeps_cleanup_owned(monkeypatch) -> None:
+    session = Session()
+    _patch_session(monkeypatch, session)
+    environment = Environment(block_cleanup=True)
+    owner = asyncio.create_task(
+        agent_runtime.run_agent(
+            agent=_agent(),
+            environment=environment,
+            prompt="run",
+            max_tokens=100,
+            max_steps=5,
+            timeout_seconds=None,
+            cleanup_timeout_seconds=0.1,
+            transcript_path=None,
+            cleanup_environment=True,
+        )
+    )
+
+    await environment.cleanup_started.wait()
+    owner.cancel()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0.01)
+    assert not owner.done()
+    assert not environment.abort_started.is_set()
+    environment.cleanup_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    assert environment.cleanup_done.is_set()
+    assert environment.cleanup_calls == 1
     assert session.save_calls == 1
 
 
