@@ -13,6 +13,7 @@ from opencollab.adapters.llm.types import Usage
 from opencollab.adapters.llm.usage_ledger import (
     append_usage_record,
     build_usage_record,
+    pricing_for_model,
     usage_cost_usd,
     usage_log_path,
 )
@@ -20,6 +21,15 @@ from opencollab.adapters.llm.usage_ledger import (
 
 def _read_jsonl(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+@pytest.mark.parametrize("model", ["glm-4", "glm-5.1", "my-glm-proxy"])
+def test_non_glm52_models_do_not_receive_glm52_pricing(model):
+    assert pricing_for_model(model)["mode"] == "unset"
+
+
+def test_provider_prefixed_glm52_model_uses_glm52_pricing():
+    assert pricing_for_model("zhipu/glm-5.2")["mode"] == "glm-5.2-default"
 
 
 def test_glm_usage_cost_accounts_for_cache_discount(monkeypatch):
