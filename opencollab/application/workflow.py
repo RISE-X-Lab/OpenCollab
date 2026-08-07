@@ -759,6 +759,8 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
             for stage in stages:
                 try:
                     result = await stage(result, item, idx)
+                except WorkflowBudgetExceeded:
+                    raise
                 except Exception:  # noqa: BLE001 — drop this item, skip its rest
                     return None
             return result
