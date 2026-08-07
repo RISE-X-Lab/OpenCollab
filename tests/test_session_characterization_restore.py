@@ -104,6 +104,25 @@ def test_restore_clears_terminal_reason_from_nonterminal_phase(
     assert loaded.state.terminal_reason is None
 
 
+def test_restore_rebinds_default_session_event_factories_to_snapshot_aid(
+    tmp_path,
+):
+    path = tmp_path / "aid-seven.json"
+    source = Session(agent=FakeAgent(), llm=FakeLLMClient(), aid=7)
+    source.save(str(path))
+    restored = Session(agent=FakeAgent(), llm=FakeLLMClient(), aid=-1)
+
+    restored.restore(str(path))
+
+    events = [
+        restored.runner.event_factory.step_start(1),
+        restored.runner.event_factory.error("boom"),
+        restored.tool_execution.event_factory.tool_start("bash", {}),
+    ]
+    assert restored.state.aid == 7
+    assert [event.data["aid"] for event in events] == [7, 7, 7]
+
+
 @pytest.mark.parametrize("operation", ["restore", "save"])
 def test_apply_launch_can_retry_after_persistence_failure(
     tmp_path, monkeypatch, operation
