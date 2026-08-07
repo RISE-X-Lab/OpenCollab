@@ -13,6 +13,7 @@ from scheduler_awaiting_test_support import (
 )
 
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
+from opencollab.domain.scheduler import SessionControlBlock
 from opencollab.domain.session import SessionPhase, SessionState
 
 
@@ -180,6 +181,44 @@ def test_cleanup_does_not_release_pool_while_session_owned_task_survives():
             await asyncio.wait_for(owner, timeout=0.5)
 
     run(scenario())
+
+
+@pytest.mark.parametrize("target_aid", [0, 1, 2])
+def test_cleanup_finalizes_the_actual_active_public_turn_owner(target_aid):
+    started = asyncio.Event()
+
+    async def blocked_turn(sess: ScriptedSession) -> str:
+        started.set()
+        await asyncio.Event().wait()
+
+    lead = ScriptedSession("lead", [blocked_turn] if target_aid == 0 else [])
+    scheduler, _ = build_scheduler(lead, [])
+    if target_aid:
+        target = ScriptedSession("coder", [blocked_turn])
+        target.state.aid = target_aid
+        target.scheduler = scheduler
+        scheduler.table.add(
+            SessionControlBlock(
+                aid=target_aid,
+                parent_aid=0,
+                agent=target.agent,
+                state=target.state,
+            )
+        )
+        scheduler._sessions[target_aid] = target
+
+    async def scenario():
+        turn = asyncio.create_task(scheduler.run_turn(target_aid, "block"))
+        await started.wait()
+        await scheduler.cleanup(cleanup_timeout=0.01)
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+
+    run(scenario())
+
+    assert scheduler.table.get(target_aid).state.phase is SessionPhase.STOPPED
+    if target_aid:
+        assert lead.state.phase is SessionPhase.IDLE
 
 
 def test_cleanup_surfaces_synchronous_worktree_release_failure():
