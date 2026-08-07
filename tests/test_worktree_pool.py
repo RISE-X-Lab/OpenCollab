@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+import threading
 from pathlib import Path
 
 import pytest
 
+from opencollab.adapters import _env_worktree as worktree_module
 from opencollab.adapters import worktree_pool as pool_module
 from opencollab.adapters.env import ExecResult, LocalEnvironment, WorktreeEnvironment
 from opencollab.adapters.worktree_pool import WorktreePool
@@ -82,6 +84,63 @@ async def test_non_git_source_uses_independent_directory_copy(tmp_path) -> None:
     assert "child" in await env.get_diff()
     await env.cleanup()
     assert not os.path.exists(workspace)
+
+
+async def test_non_git_copy_does_not_block_event_loop(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "plain"
+    source.mkdir()
+    (source / "note.txt").write_text("source", encoding="utf-8")
+    started = threading.Event()
+    release = threading.Event()
+    original_copytree = worktree_module.shutil.copytree
+
+    def slow_copytree(*args, **kwargs):
+        started.set()
+        assert release.wait(1.0)
+        return original_copytree(*args, **kwargs)
+
+    monkeypatch.setattr(worktree_module.shutil, "copytree", slow_copytree)
+    env = WorktreeEnvironment(str(source), branch_name="plain-async-copy")
+    owner = asyncio.create_task(env.setup())
+    timer = threading.Timer(0.15, release.set)
+    timer.start()
+    try:
+        await asyncio.sleep(0.02)
+        assert started.is_set()
+        assert not owner.done()
+    finally:
+        release.set()
+        timer.cancel()
+    await owner
+    await env.cleanup()
+
+
+async def test_non_git_cleanup_does_not_block_event_loop(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "plain"
+    source.mkdir()
+    env = WorktreeEnvironment(str(source), branch_name="plain-async-cleanup")
+    await env.setup()
+    started = threading.Event()
+    release = threading.Event()
+    original_rmtree = worktree_module.shutil.rmtree
+
+    def slow_rmtree(*args, **kwargs):
+        started.set()
+        assert release.wait(1.0)
+        return original_rmtree(*args, **kwargs)
+
+    monkeypatch.setattr(worktree_module.shutil, "rmtree", slow_rmtree)
+    owner = asyncio.create_task(env.cleanup())
+    timer = threading.Timer(0.15, release.set)
+    timer.start()
+    try:
+        await asyncio.sleep(0.02)
+        assert started.is_set()
+        assert not owner.done()
+    finally:
+        release.set()
+        timer.cancel()
+    await owner
 
 
 async def test_non_git_copy_preserves_file_and_directory_symlinks(tmp_path) -> None:
