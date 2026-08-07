@@ -170,6 +170,7 @@ def build_session(
     store: SessionStorePort | None = None,
     aid: int = -1,
     seed_user_messages: list[dict[str, Any]] | None = None,
+    seed_system_messages: list[dict[str, Any]] | None = None,
     shaper: ShaperPort | None = None,
     team_budget_exhausted: Callable[[], bool] | None = None,
 ) -> Session:
@@ -198,6 +199,7 @@ def build_session(
         auto_save_prepare_callback=session._prepare_auto_save,
         aid=aid,
         seed_user_messages=seed_user_messages,
+        seed_system_messages=seed_system_messages,
         shaper=shaper,
         team_budget_exhausted=team_budget_exhausted,
     )
@@ -422,6 +424,7 @@ class DefaultSessionFactory:
             llm_timeout=cfg.llm_timeout,
             aid=aid,
             seed_user_messages=plan.startup_user_messages(),
+            seed_system_messages=plan.startup_system_messages(),
             team_budget_exhausted=_team_budget_guard(scheduler),
         )
 
@@ -444,8 +447,12 @@ class DefaultSessionFactory:
         """
         cfg = self._cfg
         env = LocalEnvironment(self._lead_workspace)
+        plan = self._context_builder.build_plan(self._team.entry)
         agent = self._context_builder.build_agent(
-            self._team.entry, scheduler=scheduler, interactive=self._interactive
+            self._team.entry,
+            scheduler=scheduler,
+            interactive=self._interactive,
+            plan=plan,
         )
         return build_session(
             agent=agent,
@@ -459,6 +466,7 @@ class DefaultSessionFactory:
             auto_save_path=launch.auto_save_path,
             llm_timeout=cfg.llm_timeout,
             aid=aid,
+            seed_system_messages=plan.startup_system_messages(),
             team_budget_exhausted=_team_budget_guard(scheduler),
         )
 

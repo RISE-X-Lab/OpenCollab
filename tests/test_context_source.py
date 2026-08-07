@@ -30,6 +30,18 @@ def test_system_prompt_joins_only_system_sources_in_order():
         )
     )
     assert plan.system_prompt() == "I am lead.\n\n## Your team"
+    assert plan.startup_system_messages() == [
+        {
+            "role": "system",
+            "content": "I am lead.",
+            "_ctx": {"name": "identity", "layer": "identity", "priority": 100},
+        },
+        {
+            "role": "system",
+            "content": "## Your team",
+            "_ctx": {"name": "team", "layer": "team", "priority": 90},
+        },
+    ]
 
 
 def test_startup_user_messages_take_only_user_context_sources():
@@ -43,7 +55,11 @@ def test_startup_user_messages_take_only_user_context_sources():
         {
             "role": "user",
             "content": "do the thing",
-            "_ctx": {"layer": "task", "priority": LAYER_PRIORITY[ContextLayer.TASK]},
+            "_ctx": {
+                "name": "task",
+                "layer": "task",
+                "priority": LAYER_PRIORITY[ContextLayer.TASK],
+            },
         }
     ]
 
@@ -76,7 +92,11 @@ def test_assembly_is_generic_over_position_not_layer():
         {
             "role": "user",
             "content": "project conventions here",
-            "_ctx": {"layer": "project", "priority": LAYER_PRIORITY[ContextLayer.PROJECT]},
+            "_ctx": {
+                "name": "proj",
+                "layer": "project",
+                "priority": LAYER_PRIORITY[ContextLayer.PROJECT],
+            },
         }
     ]
 
@@ -100,6 +120,14 @@ def test_startup_user_messages_stamp_layer_and_priority():
     )
     tags = [m["_ctx"] for m in plan.startup_user_messages()]
     assert tags == [
-        {"layer": "project", "priority": LAYER_PRIORITY[ContextLayer.PROJECT]},
-        {"layer": "task", "priority": LAYER_PRIORITY[ContextLayer.TASK]},
+        {
+            "name": "project",
+            "layer": "project",
+            "priority": LAYER_PRIORITY[ContextLayer.PROJECT],
+        },
+        {
+            "name": "task",
+            "layer": "task",
+            "priority": LAYER_PRIORITY[ContextLayer.TASK],
+        },
     ]

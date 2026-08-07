@@ -583,6 +583,34 @@ def test_autocompact_never_folds_a_pinned_source_into_the_summary():
     assert all(task not in segment for segment in seen_segments)
 
 
+def test_autocompact_can_shed_low_priority_system_source_by_provenance():
+    identity = {
+        "role": "system",
+        "content": "identity",
+        "_ctx": {"name": "identity", "layer": "identity", "priority": 100},
+    }
+    team = {
+        "role": "system",
+        "content": "team",
+        "_ctx": {"name": "team", "layer": "team", "priority": 90},
+    }
+    project = {
+        "role": "system",
+        "content": "project-map-" + "x" * 2_000,
+        "_ctx": {"name": "project", "layer": "project", "priority": 30},
+    }
+    task = _ctx_user("task", priority=80)
+    messages = [identity, team, project, task, _text("recent")]
+    snapshot = copy.deepcopy(messages)
+
+    out = _autocompact(summarizer=lambda _segment: "project context omitted").shape(messages)
+
+    assert identity in out and team in out and task in out
+    assert project not in out
+    assert any(message.get("compacted") for message in out)
+    assert messages == snapshot
+
+
 # ---------------------------------------------------------------------------
 # Forced maximal compaction (the context-overflow safety-net entry point)
 # ---------------------------------------------------------------------------
