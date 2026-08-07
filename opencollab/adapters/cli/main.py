@@ -27,6 +27,7 @@ import typer
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 from rich.console import Console
+from rich.text import Text
 
 from opencollab.adapters.cli.config_resolve import (
     missing_api_key_for,
@@ -262,7 +263,15 @@ def _dispatch_repl_command(line: str, lead: Any) -> bool:
     if command in _EXIT_COMMANDS:
         return False
     if command == "/save":
-        _save_session(lead)
+        try:
+            _save_session(lead)
+        except Exception as exc:
+            console.print(
+                Text(
+                    f"Session save failed: {type(exc).__name__}: {exc}",
+                    style="red",
+                )
+            )
         return True
     raise KeyError(line)
 
