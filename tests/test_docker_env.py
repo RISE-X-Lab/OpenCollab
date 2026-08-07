@@ -309,6 +309,12 @@ async def test_timeout_runs_container_inner_cancel_before_return(monkeypatch) ->
     assert docker_module._EXEC_CANCEL in fake.calls[-1][0]
 
 
+@pytest.mark.parametrize("value", [0, False, "0"])
+def test_timeout_returncode_rejects_success_and_non_integer_values(value) -> None:
+    with pytest.raises(ValueError, match="non-zero integer"):
+        DockerEnvironment(timeout_returncode=value)
+
+
 async def test_attached_timeout_revokes_when_inner_cancel_fails(monkeypatch) -> None:
     exec_attempts = 0
 
