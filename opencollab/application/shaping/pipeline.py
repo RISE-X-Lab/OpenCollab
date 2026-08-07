@@ -196,6 +196,42 @@ def matched_tool_result_occurrences(
     return matched
 
 
+def is_complete_tool_exchange(
+    messages: list[dict[str, Any]], span: tuple[int, int]
+) -> bool:
+    """Whether a tool-leading span has a one-to-one local call/result pairing."""
+    start, end = span
+    leader = messages[start]
+    if leader.get("role") != "assistant" or not leader.get("tool_calls"):
+        return False
+    call_ids = [call.get("id") for call in leader.get("tool_calls") or ()]
+    result_ids = [
+        messages[index].get("tool_call_id")
+        for index in range(start + 1, end)
+        if messages[index].get("role") == "tool"
+    ]
+    return bool(call_ids) and (
+        all(isinstance(call_id, str) and call_id for call_id in call_ids)
+        and all(isinstance(result_id, str) and result_id for result_id in result_ids)
+        and len(call_ids) == len(set(call_ids))
+        and len(result_ids) == len(set(result_ids))
+        and set(call_ids) == set(result_ids)
+    )
+
+
+def span_is_safe_to_compact(
+    messages: list[dict[str, Any]], span: tuple[int, int]
+) -> bool:
+    """Reject malformed protocol fragments from deletion or summarization."""
+    start, _end = span
+    leader = messages[start]
+    if leader.get("role") == "tool":
+        return False
+    if leader.get("role") == "assistant" and leader.get("tool_calls"):
+        return is_complete_tool_exchange(messages, span)
+    return True
+
+
 def _droppable_region(
     messages: list[dict[str, Any]], keep_recent_groups: int
 ) -> tuple[list[tuple[int, int]], int, int]:
