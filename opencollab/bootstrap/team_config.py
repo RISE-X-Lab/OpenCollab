@@ -74,7 +74,12 @@ class RoleConfig(BaseModel):
     model: str | None = None
     # Optional per-role sampling-temperature override. ``None`` falls back to the
     # global ``OpenCollabConfig.temperature`` (resolved in ``ContextBuilder``).
-    temperature: float | None = None
+    temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        allow_inf_nan=False,
+    )
     # Optional per-role thinking overrides. ``None`` falls back to the global
     # ``OpenCollabConfig`` values (resolved in ``ContextBuilder``), mirroring how
     # ``temperature`` is resolved.
@@ -91,7 +96,12 @@ class _RoleFileModel(BaseModel):
     prompt: str | None = None
     prompt_file: str | None = None
     model: str | None = None
-    temperature: float | None = None
+    temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        allow_inf_nan=False,
+    )
     thinking: bool | None = None
     thinking_params: dict | None = None
     tools: list[str] = Field(default_factory=list)
