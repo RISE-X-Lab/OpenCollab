@@ -6,12 +6,15 @@ budgets to its backend's context size. Unknown tools/kwargs fail fast.
 """
 
 import asyncio
+import shlex
+import sys
 
 import pytest
 
+from opencollab.adapters import _env_local as local_module
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.tools._output import truncate
-from opencollab.adapters.tools.bash import MAX_OUTPUT_CHARS
+from opencollab.adapters.tools.bash import MAX_OUTPUT_CHARS, BashTool
 from opencollab.application.tool_execution import ToolRuntime
 from opencollab.bootstrap.team_config import _build_team_config
 from opencollab.bootstrap.tool_registry import build_tools_for_role
@@ -110,6 +113,31 @@ def test_configured_cap_actually_bounds_bash_output(tmp_path):
 
     assert "truncated" in result
     assert len(result) < 400  # 100-char cap + exit-code line + marker
+
+
+def test_bash_reports_capture_loss_and_preserves_real_tail(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_module, "PROCESS_OUTPUT_CAPTURE_BYTES", 32)
+    payload = "HEAD" + "x" * 100 + "TAIL"
+    command = (
+        f"{shlex.quote(sys.executable)} -c "
+        f"{shlex.quote(f'import os; os.write(1, {payload.encode()!r})')}"
+    )
+    runtime = ToolRuntime(
+        environment=LocalEnvironment(str(tmp_path)),
+        safety_policy=None,
+        permission_policy=None,
+    )
+
+    result = run(
+        BashTool(max_output_chars=80).execute_with_runtime(
+            {"command": command},
+            runtime,
+        )
+    )
+
+    assert "HEAD" in result
+    assert "TAIL" in result
+    assert "76 bytes of stdout dropped during capture" in result
 
 
 def test_all_capped_tools_accept_their_documented_kwargs():
