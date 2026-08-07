@@ -122,7 +122,6 @@ class SchedulerCleanupMixin:
         self._startup_tasks.clear()
         self._startup_envs.clear()
         self._startup_origin.clear()
-        self._delivery_route_failures.clear()
         self._message_delivery_tasks.clear()
         self._active_run_tasks.clear()
         self._lead_lease = None
@@ -236,7 +235,6 @@ class SchedulerCleanupMixin:
     ) -> None:
         reason = "Error: scheduler cleanup cancelled delegated work"
         self._release_leases(aid)
-        self._delivery_route_failures.pop(aid, None)
         if aid in self._delivery_committed:
             return
         origin = self._spawn_origin.pop(aid, None) or self._startup_origin.pop(aid, None) or origin_override
