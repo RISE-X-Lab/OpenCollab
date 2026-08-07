@@ -32,7 +32,11 @@ from opencollab.bootstrap.session_factory import (
     agent_save_path,
     make_run_dir,
 )
-from opencollab.bootstrap.team_config import load_team_config, resolve_team_file
+from opencollab.bootstrap.team_config import (
+    TeamConfig,
+    load_team_config,
+    resolve_team_file,
+)
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 
 
@@ -45,6 +49,7 @@ def build_scheduler(
     auto_save: bool = True,
     enable_hooks: bool = True,
     team_config_path: str | os.PathLike[str] | None = None,
+    resolved_team_config: TeamConfig | None = None,
     save_dir: str | os.PathLike[str] | None = None,
     allow_unisolated_child_tests: bool = False,
 ) -> Scheduler:
@@ -67,7 +72,11 @@ def build_scheduler(
         raise ValueError(f"session file does not exist: {session_file}")
 
     cfg = ctx.config
-    team_cfg = load_team_config(ctx.workspace, path=team_config_path)
+    team_cfg = (
+        resolved_team_config
+        if resolved_team_config is not None
+        else load_team_config(ctx.workspace, path=team_config_path)
+    )
     event_bus = EventBus(ctx.event_sink)
 
     # Per-run folder: every agent's transcript plus a team.json manifest land
