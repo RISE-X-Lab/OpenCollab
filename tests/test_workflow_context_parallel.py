@@ -108,6 +108,32 @@ async def test_parallel_nested_agent_reuses_single_concurrency_permit():
 
 
 @pytest.mark.asyncio
+async def test_parallel_thunk_can_gather_agents_at_single_concurrency():
+    ctx = WorkflowContext(
+        FakeFactory(
+            [
+                FakeSession(reply="first"),
+                FakeSession(reply="second"),
+            ]
+        ),
+        max_concurrency=1,
+    )
+
+    async def gather_agents():
+        return await asyncio.gather(
+            ctx.agent("first nested agent"),
+            ctx.agent("second nested agent"),
+        )
+
+    result = await asyncio.wait_for(
+        ctx.parallel([gather_agents]),
+        timeout=0.5,
+    )
+
+    assert result == [["first", "second"]]
+
+
+@pytest.mark.asyncio
 async def test_parallel_task_creation_is_bounded_by_concurrency():
     release = asyncio.Event()
     admitted = asyncio.Event()
