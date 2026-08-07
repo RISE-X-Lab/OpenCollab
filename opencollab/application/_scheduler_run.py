@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from opencollab.application.scheduler_types import SchedulerTurnError
 from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
@@ -119,10 +120,20 @@ class SchedulerRunMixin:
         # Limit the answer lookup to messages appended during this invocation.
         # This keeps the public return value free of the worktree diff stored on
         # the SCB and prevents a precheck-only turn from leaking an old answer.
+        partial_answer = ""
         for message in reversed(session.state.messages[turn_start:]):
             if message.get("role") == "assistant" and message.get("content"):
-                return message["content"]
-        return ""
+                partial_answer = message["content"]
+                break
+        phase = scb.state.phase
+        if phase in {SessionPhase.ERROR, SessionPhase.STOPPED}:
+            raise SchedulerTurnError(
+                aid,
+                phase,
+                scb.state.terminal_reason,
+                partial_answer or None,
+            )
+        return partial_answer
 
     def _quiescent(self) -> bool:
         """True when no session is mid-flight: none is awaiting events, none has

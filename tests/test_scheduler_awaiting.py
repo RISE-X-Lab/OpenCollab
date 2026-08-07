@@ -15,6 +15,7 @@ from scheduler_awaiting_test_support import (
     terminal,
 )
 
+from opencollab.application.scheduler import SchedulerTurnError
 from opencollab.domain.pending import PendingRow, PendingRowError, RowKind, RowStatus
 from opencollab.domain.scheduler import SessionControlBlock
 from opencollab.domain.session import SessionPhase
@@ -333,19 +334,60 @@ def test_scheduler_run_retrieves_finished_task_exception(caplog):
     assert finished.result_called is True
     assert "background task for aid 99 failed" in caplog.text
 
-def test_scheduler_run_does_not_return_previous_turn_answer():
+
+@pytest.mark.parametrize(
+    ("existing_reason", "expected_reason"),
+    [
+        ("ProviderFailure: retry budget exhausted", "ProviderFailure: retry budget exhausted"),
+        (None, "ProviderFailure: upstream 429"),
+    ],
+)
+def test_scheduler_run_preserves_session_failure_reason_after_exception(
+    existing_reason, expected_reason
+):
+    class ProviderFailure(RuntimeError):
+        pass
+
+    async def fail_with_provider_reason(sess: ScriptedSession) -> str:
+        if existing_reason is not None:
+            sess.state.fail(existing_reason)
+        raise ProviderFailure("upstream 429")
+
+    lead = ScriptedSession("lead", [fail_with_provider_reason])
+    scheduler, _ = build_scheduler(lead, [])
+
+    with pytest.raises(SchedulerTurnError, match=expected_reason) as caught:
+        run(asyncio.wait_for(scheduler.run("new question"), timeout=0.5))
+    assert caught.value.phase is SessionPhase.ERROR
+    assert caught.value.terminal_reason == expected_reason
+
+
+@pytest.mark.parametrize(
+    ("phase", "reason"),
+    [
+        (SessionPhase.STOPPED, "step limit reached"),
+        (SessionPhase.ERROR, "provider failed"),
+    ],
+)
+def test_scheduler_run_does_not_return_partial_answer_on_terminal_failure(phase, reason):
     async def precheck_stop(sess: ScriptedSession) -> str:
-        sess.state.set_phase(SessionPhase.STOPPED)
+        sess.state.set_phase(phase)
+        sess.state.terminal_reason = reason
         sess.state.append_message(
             {"role": "system", "content": "[Step limit reached. Session stopped.]"}
         )
-        return ""
+        sess.state.append_message({"role": "assistant", "content": "partial answer"})
+        return "partial answer"
 
     lead = ScriptedSession("lead", [precheck_stop])
     lead.state.append_message({"role": "assistant", "content": "previous answer"})
     scheduler, _ = build_scheduler(lead, [])
 
-    assert run(asyncio.wait_for(scheduler.run("new question"), timeout=0.5)) == ""
+    with pytest.raises(SchedulerTurnError, match=f"{phase.value}: {reason}") as caught:
+        run(asyncio.wait_for(scheduler.run("new question"), timeout=0.5))
+    assert caught.value.aid == 0
+    assert caught.value.phase is phase
+    assert caught.value.partial_answer == "partial answer"
 
 def test_concurrent_scheduler_runs_are_serialized_on_the_lead_session():
     first_started = asyncio.Event()
