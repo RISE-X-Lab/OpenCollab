@@ -26,6 +26,7 @@ from opencollab.application.tool_execution import ToolRuntime
 # Diffs can be enormous; keep a bounded head+tail (ref: bash.py truncation).
 MAX_DIFF_CHARS = 8_000
 MAX_STATUS_CHARS = 2_000
+MAX_UNTRACKED_DIFF_FILES = 50
 
 
 class GitDiffTool(Tool):
@@ -131,6 +132,52 @@ class GitDiffTool(Tool):
                 return "Error: not a git repository."
             return f"Error running '{diff_cmd}':\n{truncate(err, self.max_status_chars)}"
 
+        untracked_parts: list[str] = []
+        if not staged:
+            untracked_cmd = (
+                "git --no-pager status --porcelain=v1 -z --untracked-files=all"
+                + pathspec
+            )
+            untracked_result = await env.exec_cmd(untracked_cmd, timeout=30)
+            if untracked_result.returncode != 0:
+                error = (untracked_result.stderr or untracked_result.stdout).strip()
+                return "Error enumerating untracked files:\n" + truncate(
+                    error,
+                    self.max_status_chars,
+                )
+            untracked_paths = [
+                entry[3:]
+                for entry in untracked_result.stdout.split("\0")
+                if entry.startswith("?? ")
+            ]
+            for untracked_path in untracked_paths[:MAX_UNTRACKED_DIFF_FILES]:
+                untracked_diff_cmd = "git --no-pager diff --no-index"
+                if stat_only:
+                    untracked_diff_cmd += " --stat"
+                untracked_diff_cmd += (
+                    f" -- /dev/null {shlex.quote(untracked_path)}"
+                )
+                untracked_diff = await env.exec_cmd(untracked_diff_cmd, timeout=30)
+                if untracked_diff.returncode not in {0, 1}:
+                    error = (untracked_diff.stderr or untracked_diff.stdout).strip()
+                    untracked_parts.append(
+                        f"{untracked_path}: untracked diff unavailable"
+                        + (f" ({truncate(error, 200)})" if error else "")
+                    )
+                    continue
+                text = untracked_diff.stdout.strip()
+                if text:
+                    untracked_parts.append(text)
+                if getattr(untracked_diff, "stdout_truncated", False):
+                    untracked_parts.append(
+                        f"{untracked_path}: untracked diff output was truncated"
+                    )
+            if len(untracked_paths) > MAX_UNTRACKED_DIFF_FILES:
+                untracked_parts.append(
+                    f"... {len(untracked_paths) - MAX_UNTRACKED_DIFF_FILES} "
+                    "additional untracked files omitted"
+                )
+
         parts: list[str] = []
         if include_status:
             status_result = await env.exec_cmd("git --no-pager status --short", timeout=30)
@@ -141,7 +188,12 @@ class GitDiffTool(Tool):
                 else "Status: working tree clean."
             )
 
-        diff = diff_result.stdout.strip()
+        diff_sections = [diff_result.stdout.strip()]
+        if untracked_parts:
+            diff_sections.append(
+                "Untracked files:\n" + "\n".join(untracked_parts)
+            )
+        diff = "\n".join(section for section in diff_sections if section)
         if stat_only:
             label = (
                 "diff --stat"
