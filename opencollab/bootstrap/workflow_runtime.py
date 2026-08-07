@@ -204,7 +204,13 @@ async def run_workflow(
             result=deadline_result,
         )
     except asyncio.CancelledError as cancellation:
-        await stop_once(cancellation, propagate_cancellation=False)
+        aborted, terminated = await stop_once(
+            cancellation, propagate_cancellation=False
+        )
+        if not aborted or not terminated:
+            raise WorkflowLifecycleError(
+                "cancelled workflow did not reach a quiescent terminal state"
+            ) from cancellation
         if owner.done():
             try:
                 owner.result()
