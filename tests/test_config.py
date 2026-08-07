@@ -150,6 +150,35 @@ def test_max_output_tokens_defaults_and_reads_env(monkeypatch):
     assert build_config().max_output_tokens == 32768
 
 
+@pytest.mark.parametrize(
+    "field",
+    ["budget", "temperature", "top_p", "max_output_tokens", "llm_timeout"],
+)
+@pytest.mark.parametrize("value", [True, False])
+def test_numeric_config_rejects_boolean_overrides(field, value):
+    with pytest.raises(Exception, match="must not be booleans"):
+        build_config(overrides={field: value})
+
+
+def test_numeric_config_keeps_canonical_numeric_strings():
+    cfg = build_config(
+        overrides={
+            "budget": "1000",
+            "temperature": "0.5",
+            "top_p": "0.9",
+            "max_output_tokens": "256",
+            "llm_timeout": "30",
+        }
+    )
+    assert (
+        cfg.budget,
+        cfg.temperature,
+        cfg.top_p,
+        cfg.max_output_tokens,
+        cfg.llm_timeout,
+    ) == (1000, 0.5, 0.9, 256, 30.0)
+
+
 def test_provider_override_reselects_provider_specific_api_key(monkeypatch, tmp_path):
     cfg_file = tmp_path / "provider.env"
     cfg_file.write_text(

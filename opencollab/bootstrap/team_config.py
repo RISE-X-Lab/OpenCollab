@@ -130,6 +130,12 @@ class RoleConfig(BaseModel):
     ) -> dict[Any, Any] | None:
         return _validate_thinking_params(value)
 
+    @field_validator("temperature", mode="before")
+    @classmethod
+    def _reject_boolean_temperature(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("role temperature must not be a boolean")
+        return value
 
 class _RoleFileModel(BaseModel):
     """On-disk role entry; ``prompt`` or ``prompt_file`` (resolved at load)."""
@@ -174,6 +180,12 @@ class _RoleFileModel(BaseModel):
     ) -> dict[Any, Any] | None:
         return _validate_thinking_params(value)
 
+    @field_validator("temperature", mode="before")
+    @classmethod
+    def _reject_boolean_temperature(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("role temperature must not be a boolean")
+        return value
 
 class _HookActionFileModel(BaseModel):
     """On-disk hook entry: one action bound to a lifecycle event."""
@@ -184,6 +196,13 @@ class _HookActionFileModel(BaseModel):
     matcher: str | None = None
     type: str = "command"
     timeout: float = Field(default=30.0, gt=0, allow_inf_nan=False)
+
+    @field_validator("timeout", mode="before")
+    @classmethod
+    def _reject_boolean_timeout(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("hook timeout must not be a boolean")
+        return value
 
 
 class _TeamFileModel(BaseModel):

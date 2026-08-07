@@ -205,6 +205,23 @@ def test_role_thinking_params_reject_yaml_native_dates(tmp_path):
     with pytest.raises(ValueError, match="JSON-serializable"):
         load_team_config(str(tmp_path), path=config)
 
+@pytest.mark.parametrize("yaml_boolean", ["true", "false", "yes", "no"])
+def test_role_temperature_rejects_yaml_booleans(
+    tmp_path, monkeypatch, yaml_boolean
+):
+    _write_team(
+        tmp_path,
+        monkeypatch,
+        yaml_text=(
+            "roles:\n"
+            "  lead:\n"
+            "    prompt: Lead prompt.\n"
+            f"    temperature: {yaml_boolean}\n"
+        ),
+    )
+    with pytest.raises(Exception, match="must not be a boolean"):
+        load_team_config(str(tmp_path))
+
 
 def test_prompt_file_is_resolved_relative_to_team_file(tmp_path, monkeypatch):
     _write_team(tmp_path, monkeypatch, coder_prompt="Resolved coder body.")
