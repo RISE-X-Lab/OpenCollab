@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Callable
 from typing import NoReturn
 
-from opencollab.adapters._env_base import Environment, ExecResult
+from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES, Environment, ExecResult
 from opencollab.adapters._env_process import (
     PROCESS_OUTPUT_CAPTURE_BYTES,
     ProcessCleanupError,
@@ -405,6 +405,10 @@ class DockerEnvironment(Environment):
 
     async def _write_file_atomic(self, target: str, content: str) -> None:
         payload = content.encode("utf-8")
+        if len(payload) > ENV_FILE_WRITE_LIMIT_BYTES:
+            raise OSError(
+                f"docker file exceeds write limit of {ENV_FILE_WRITE_LIMIT_BYTES} bytes: {target}"
+            )
         digest = hashlib.sha256(payload).hexdigest()
         directory, filename = posixpath.split(target)
         temporary = posixpath.join(
