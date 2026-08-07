@@ -138,6 +138,7 @@ def build_scheduler(
             scheduler=scheduler,
             workspace=ctx.workspace,
         )
+        scheduler.register_lifecycle_resource(runner, description="hook processes")
         event_bus.subscribe(HookEventSubscriber(runner))
 
     # Persist a team.json manifest from the live roster on every roster change.

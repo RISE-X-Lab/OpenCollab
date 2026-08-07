@@ -159,7 +159,24 @@ class SchedulerCleanupMixin:
         if not session_resources_closed:
             failures.append("session resource close failed or timed out")
 
-        release_safe = not pending and environments_aborted and persistence_quiesced and session_resources_closed
+        lifecycle_errors: list[BaseException] = []
+        lifecycle_quiesced = True
+        for description, resource in self._lifecycle_resources:
+            if getattr(resource, "cleanup_quiesced", False) is True:
+                continue
+            lifecycle_quiesced = False
+            failures.append(f"{description} did not quiesce")
+            error = getattr(resource, "cleanup_error", None)
+            if isinstance(error, BaseException):
+                lifecycle_errors.append(error)
+
+        release_safe = (
+            not pending
+            and environments_aborted
+            and persistence_quiesced
+            and session_resources_closed
+            and lifecycle_quiesced
+        )
         worktrees_released = release_safe and await self._release_worktree_pool_bounded(timeout=timeout)
         if not worktrees_released:
             failures.append(
@@ -171,6 +188,8 @@ class SchedulerCleanupMixin:
             failure = RuntimeError("technical scheduler cleanup failed: " + "; ".join(failures))
             if persistence_errors:
                 raise failure from persistence_errors[0]
+            if lifecycle_errors:
+                raise failure from lifecycle_errors[0]
             raise failure
 
     def _persistence_sessions(self, initial: tuple[Any, ...]) -> tuple[Any, ...]:
