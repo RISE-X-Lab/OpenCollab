@@ -118,6 +118,10 @@ class LifecycleMixin:
         # re-spawn of this (role, task)). Release both and re-raise so the caller
         # (execute_deferred) still surfaces the failure into the parent's row.
         try:
+            # ``spawn`` is the authoritative single-flight boundary. This
+            # compare-and-set runs before the first await, so concurrent
+            # coroutines cannot both reserve the same delegated-work identity.
+            self._reserve_inflight(aid, parent_aid, role, task, context)
             # ``spawn`` runs after the parent's current model generation has
             # completed. Return the parent's unused turn lease before granting
             # children; the parent will acquire a fresh lease when the complete
@@ -136,7 +140,6 @@ class LifecycleMixin:
                 parent_lease = self._release_turn_lease(parent_aid)
                 if parent_lease is not None:
                     self._track_review_parent_lease_release(parent_aid, 1)
-            self._reserve_inflight(aid, parent_aid, role, task, context)
             budget = self._reserve_child_budget(aid)
             if budget <= 0:
                 raise RuntimeError(
