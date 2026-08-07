@@ -9,7 +9,8 @@ Supported variables:
     OPENCOLLAB_PROVIDER   — LLM provider ("openai", "anthropic")
     OPENCOLLAB_API_KEY    — API key (also reads OPENAI_API_KEY /
                             ANTHROPIC_API_KEY / DASHSCOPE_API_KEY)
-    OPENCOLLAB_BASE_URL   — API base URL (also reads OPENAI_BASE_URL)
+    OPENCOLLAB_BASE_URL   — API base URL (also reads the selected provider's
+                            OPENAI_BASE_URL or ANTHROPIC_BASE_URL)
     OPENCOLLAB_BUDGET     — default token budget
     OPENCOLLAB_TEMPERATURE — LLM sampling temperature (default 0.2)
     OPENCOLLAB_TOP_P      — LLM nucleus-sampling top_p (0..1; unset/empty → None,
@@ -345,10 +346,13 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
     provider_value = selected_overrides.get("provider") or resolve(
         "OPENCOLLAB_PROVIDER", default="openai"
     )
+    provider_base_url_key = (
+        "ANTHROPIC_BASE_URL" if is_anthropic(provider_value) else "OPENAI_BASE_URL"
+    )
     base_url_value = (
         selected_overrides["base_url"]
         if "base_url" in selected_overrides
-        else resolve("OPENCOLLAB_BASE_URL", "OPENAI_BASE_URL")
+        else resolve("OPENCOLLAB_BASE_URL", provider_base_url_key)
     )
     api_key_value = selected_overrides.get("api_key") or resolve_ordered(
         *api_key_env_precedence(provider_value, base_url_value), file_first=True
