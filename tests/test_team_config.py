@@ -288,6 +288,21 @@ roles:
 @pytest.mark.parametrize(
     "yaml_text",
     [
+        "roles:\n  lead:\n    prompt: '   '\n",
+        "roles:\n  lead:\n    prompt: valid\n    model: '   '\n",
+    ],
+)
+def test_team_config_rejects_blank_prompt_or_model(tmp_path, yaml_text):
+    config = tmp_path / "team.yaml"
+    config.write_text(yaml_text, encoding="utf-8")
+
+    with pytest.raises(Exception, match="role (prompt|model) must not be blank"):
+        load_team_config(str(tmp_path), path=config)
+
+
+@pytest.mark.parametrize(
+    "yaml_text",
+    [
         "rolse:\n  lead:\n    prompt: typo\n",
         "roles:\n  lead:\n    prompt: ok\n    modle: typo\n",
     ],
