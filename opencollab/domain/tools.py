@@ -127,11 +127,13 @@ class ToolProcessingResult:
             for signal in self.read_write_signals:
                 if signal == "write":
                     state.turn.reads_since_last_edit = 0
+                    state.turn.has_landed_write = True
                 elif signal == "read":
                     state.turn.reads_since_last_edit += 1
             return
         if self.write_succeeded:
             state.turn.reads_since_last_edit = 0
+            state.turn.has_landed_write = True
         else:
             state.turn.reads_since_last_edit += self.reads_executed
 

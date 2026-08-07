@@ -100,6 +100,61 @@ def test_steering_structured_hard_rung_forces_structured_output():
     }
     assert "structured_output using" in llm.calls[0]["messages"][-1]["content"]
 
+
+def test_dual_contract_forces_write_before_structured_submission():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas(
+            "file_read",
+            "file_write",
+            "structured_output",
+        ),
+    )
+
+    run(runner.run_loop())
+
+    assert [
+        spec["function"]["name"] for spec in llm.calls[0]["tools"]
+    ] == ["file_write"]
+    assert llm.calls[0]["tool_choice"] == "required"
+
+
+def test_dual_contract_forces_structured_submission_after_write():
+    state = SessionState(
+        messages=[{"role": "tool", "content": "prev"}],
+        turn=TurnEnforcementState(
+            reads_since_last_edit=READS_NUDGE_HARD,
+            has_landed_write=True,
+        ),
+    )
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        agent=_agent_with_tool_schemas(
+            "file_read",
+            "file_write",
+            "structured_output",
+        ),
+    )
+
+    run(runner.run_loop())
+
+    assert [
+        spec["function"]["name"] for spec in llm.calls[0]["tools"]
+    ] == ["structured_output"]
+    assert llm.calls[0]["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "structured_output"},
+    }
+
+
 def test_steering_hard_rung_blocks_read_tool_call_before_execution():
     state = SessionState(
         messages=[{"role": "tool", "content": "prev"}],
@@ -177,6 +232,7 @@ def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
     assert "not allowed during the hard write gate" in tool_messages[0]["content"]
     assert tool_messages[1]["content"] == "patched"
     assert state.turn.reads_since_last_edit == 0
+    assert state.turn.has_landed_write is True
 
 def test_steering_reaches_provider_and_is_persisted():
     # The steering block is SENT to the model AND persisted to state.messages, so
