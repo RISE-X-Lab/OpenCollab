@@ -316,6 +316,60 @@ async def test_workflow_uses_real_runtime_and_returns_live_metrics(
     assert manifest["evidence_complete"] is True
 
 
+async def test_workflow_manifest_stays_incomplete_until_owned_environment_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "workflow-cleanup-failure"
+    observed_during_cleanup = {}
+
+    class CleanupFailingEnvironment:
+        def __init__(self, workspace: str) -> None:
+            self.workspace = workspace
+            self.source_workspace = workspace
+            self.revoked = False
+
+        async def cleanup(self) -> None:
+            observed_during_cleanup.update(
+                json.loads((artifacts / "workflow.json").read_text())
+            )
+            raise OSError("cleanup-secondary")
+
+    monkeypatch.setattr(
+        programmatic,
+        "LocalEnvironment",
+        CleanupFailingEnvironment,
+    )
+
+    async def plain(_ctx, _inputs):
+        return {"ok": True}
+
+    with pytest.raises(
+        ProgrammaticLifecycleError,
+        match="workflow-owned environment cleanup failed",
+    ):
+        await programmatic.run_workflow(
+            workflow=plain,
+            inputs={},
+            config={"model": "model", "provider": "openai", "budget": 50},
+            workspace=str(tmp_path),
+            max_tokens=50,
+            max_concurrency=1,
+            timeout=None,
+            max_steps=1,
+            system_prompt=None,
+            cleanup_timeout=0.1,
+            artifacts=artifacts,
+            trace=False,
+        )
+
+    assert observed_during_cleanup["evidence_complete"] is False
+    manifest = json.loads((artifacts / "workflow.json").read_text())
+    assert manifest["status"] == "failed"
+    assert manifest["reason"] == "environment_cleanup_failed"
+    assert manifest["evidence_complete"] is False
+
+
 async def test_workflow_rejects_non_json_inputs_before_claiming_artifacts(
     tmp_path: Path,
 ) -> None:
