@@ -546,6 +546,22 @@ def test_grep_tool_applies_max_results_globally():
     ]
 
 
+def test_grep_tool_does_not_fallback_after_normal_rg_no_match():
+    class NoMatchEnv(FakeEnv):
+        async def exec_cmd(self, cmd: str, timeout: float = 120.0):
+            self.exec_calls.append((cmd, timeout))
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    env = NoMatchEnv()
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(GrepTool().execute_with_runtime({"pattern": "absent"}, runtime))
+
+    assert result == "No matches found for pattern: absent"
+    assert len(env.exec_calls) == 1
+    assert "grep -r" not in env.exec_calls[0][0]
+
+
 def test_grep_tool_terminates_options_before_pattern_and_path():
     env = FakeEnv(stdout="")
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
@@ -559,10 +575,6 @@ def test_grep_tool_terminates_options_before_pattern_and_path():
 
     cmd, _ = env.exec_calls[0]
     assert "rg -n -- '--pre=touch pwned' --debug" in cmd
-    assert (
-        "grep -rEn --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.opencollab "
-        "-- '--pre=touch pwned' --debug"
-    ) in cmd
 
 
 def test_file_read_description_teaches_distill_and_forbids_reread():
@@ -583,7 +595,14 @@ def test_grep_tool_fallback_uses_ere_and_skips_session_dir():
     # nothing. It must also skip .opencollab so it can't "match" its own logged
     # pattern strings instead of real source. (Regression: a 100-step run stalled
     # because every alternation grep returned "No matches found".)
-    env = FakeEnv(stdout="")
+    class MissingRgEnv(FakeEnv):
+        async def exec_cmd(self, cmd: str, timeout: float = 120.0):
+            self.exec_calls.append((cmd, timeout))
+            if len(self.exec_calls) == 1:
+                return SimpleNamespace(returncode=127, stdout="", stderr="")
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    env = MissingRgEnv(stdout="")
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
     run(
@@ -592,8 +611,9 @@ def test_grep_tool_fallback_uses_ere_and_skips_session_dir():
         )
     )
 
-    cmd, _ = env.exec_calls[0]
-    assert "|| grep -rEn" in cmd
+    assert len(env.exec_calls) == 2
+    cmd, _ = env.exec_calls[1]
+    assert cmd.startswith("grep -rEn")
     assert " grep -rn " not in cmd  # the buggy BRE fallback must be gone
     assert "--exclude-dir=.opencollab" in cmd
 
