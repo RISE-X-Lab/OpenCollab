@@ -593,6 +593,48 @@ def test_spawn_with_review_iterates_when_reviewer_fails(monkeypatch):
     assert "Reapply the previous implementation" in second_coder_task
 
 
+def test_spawn_with_review_retains_final_reviewer_feedback(monkeypatch):
+    scheduler, _ = _build_scheduler(
+        monkeypatch,
+        {
+            "coder": ["final implementation"],
+            "reviewer": ["Critical race remains.\nVERDICT: FAIL"],
+        },
+    )
+
+    result = run(scheduler.spawn_with_review(0, "write fn", max_iterations=1))
+
+    assert "final implementation" in result
+    assert "Last reviewer feedback:\nCritical race remains.\nVERDICT: FAIL" in result
+
+
+def test_spawn_with_review_returns_artifact_when_reviewer_spawn_fails(monkeypatch):
+    scheduler, events = _build_scheduler(
+        monkeypatch,
+        {"coder": ["recoverable implementation"]},
+    )
+    real_spawn = scheduler.spawn
+
+    async def fail_reviewer(parent_aid, role, task, context="", **kwargs):
+        if role == "reviewer":
+            raise RuntimeError("reviewer infrastructure unavailable")
+        return await real_spawn(parent_aid, role, task, context, **kwargs)
+
+    monkeypatch.setattr(scheduler, "spawn", fail_reviewer)
+
+    result = run(scheduler.spawn_with_review(0, "write fn", max_iterations=1))
+
+    assert "recoverable implementation" in result
+    assert "Failure stage: reviewer_spawn" in result
+    assert "reviewer infrastructure unavailable" in result
+    review_events = [
+        event.type
+        for event in _scheduler_events(events)
+        if event.type.startswith("review_")
+    ]
+    assert review_events == ["review_started", "review_completed"]
+
+
 def test_spawn_with_review_passes_context_and_constraints_to_reviewer(monkeypatch):
     scheduler, _ = _build_scheduler(
         monkeypatch,
