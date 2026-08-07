@@ -58,7 +58,7 @@ DEFAULT_AGENT_SYSTEM_PROMPT = (
     "You are an autonomous software-engineering agent. Complete the user task, "
     "use the available tools when needed, and report the verified result."
 )
-DEFAULT_CLEANUP_TIMEOUT_SECONDS = 2.0
+DEFAULT_TEAM_CLEANUP_TIMEOUT_SECONDS = 10.0
 
 _ARTIFACT_CLAIM_FILENAME = ".opencollab-run"
 _ARTIFACT_CLAIM = b"claimed\n"
@@ -594,6 +594,7 @@ async def run_team(
     team_config_path: str | os.PathLike[str] | None,
     max_tokens: int,
     timeout: float | None,
+    cleanup_timeout: float = DEFAULT_TEAM_CLEANUP_TIMEOUT_SECONDS,
     artifacts: Path | None,
     trace: bool,
     use_worktrees: bool,
@@ -661,9 +662,7 @@ async def run_team(
     finally:
         cleanup_failure: BaseException | None = None
         try:
-            await scheduler.cleanup(
-                cleanup_timeout=DEFAULT_CLEANUP_TIMEOUT_SECONDS
-            )
+            await scheduler.cleanup(cleanup_timeout=cleanup_timeout)
         except BaseException as exc:
             cleanup_failure = exc
         tracer_failure = _close_tracer(context.tracer)
@@ -707,6 +706,7 @@ async def run_team(
 
 __all__ = [
     "DEFAULT_AGENT_SYSTEM_PROMPT",
+    "DEFAULT_TEAM_CLEANUP_TIMEOUT_SECONDS",
     "ProgrammaticLifecycleError",
     "ProgrammaticResult",
     "attach_container",
