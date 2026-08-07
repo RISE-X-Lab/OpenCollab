@@ -197,6 +197,9 @@ class SessionState:
     # unless ``enforcement_strength`` is on, so a self-regulating run never touches
     # them. Unlike the per-turn window they survive a user-turn boundary.
     wind_down_done: bool = False
+    # Counts protected provider calls allocated by the wind-down gate. It is
+    # durable so a restore cannot re-grant the one compatibility retry.
+    wind_down_attempts: int = 0
     wind_down_token_mark: int = 0
     phase: SessionPhase = SessionPhase.IDLE
     # Human-readable detail for the current terminal phase (e.g. the exception
