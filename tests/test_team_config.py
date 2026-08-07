@@ -176,6 +176,21 @@ topology:
     assert cfg.roles["coder"].temperature == 0.9
 
 
+@pytest.mark.parametrize("temperature", ["-0.1", "2.1", ".nan", ".inf", "-.inf"])
+def test_role_temperature_rejects_invalid_values(tmp_path, temperature):
+    config = tmp_path / "team.yaml"
+    config.write_text(
+        "roles:\n"
+        "  lead:\n"
+        "    prompt: Lead prompt.\n"
+        f"    temperature: {temperature}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(Exception, match="temperature"):
+        load_team_config(str(tmp_path), path=config)
+
+
 def test_prompt_file_is_resolved_relative_to_team_file(tmp_path, monkeypatch):
     _write_team(tmp_path, monkeypatch, coder_prompt="Resolved coder body.")
     cfg = load_team_config(str(tmp_path))
