@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from opencollab.application.shaping import (
     COMPACTED_MARKER_PREFIX,
     PIN_FLOOR,
@@ -58,6 +60,21 @@ def test_any_size_result_fits_budget():
     for n in (1999, 2000, 2001, 100_000):
         out = shaper.shape([_tool_msg("z" * n)])
         assert len(out[0]["content"]) <= 2000
+
+
+@pytest.mark.parametrize("max_chars", [True, 0, -1, 1.5, float("nan")])
+def test_tool_result_budget_rejects_invalid_limits(max_chars):
+    with pytest.raises(ValueError, match="positive integer"):
+        PerToolResultBudgetShaper(max_chars=max_chars)
+
+
+@pytest.mark.parametrize("max_chars", [1, 5, 20, 100])
+def test_tiny_tool_result_budgets_remain_hard_caps(max_chars):
+    message = _tool_msg("z" * 1_000)
+    snapshot = copy.deepcopy(message)
+    content = PerToolResultBudgetShaper(max_chars=max_chars).shape([message])[0]["content"]
+    assert 0 < len(content) <= max_chars
+    assert message == snapshot
 
 
 def test_empty_pipeline_is_identity():
