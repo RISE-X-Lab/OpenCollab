@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -72,6 +73,23 @@ def test_tracer_write_failure_is_sticky(tmp_path, monkeypatch) -> None:
     tracer.log_step("second", {})
     assert tracer.write_error == "OSError: disk full"
     assert tracer.dropped_steps == 2
+
+
+def test_tracer_serialization_fallback_does_not_disable_later_steps(tmp_path) -> None:
+    tracer = Tracer("run", output_dir=str(tmp_path))
+
+    tracer.log_step("path", {"workspace": Path("src")})
+    tracer.log_step("later", {"ok": True})
+    tracer.close()
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "run.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["type"] for row in rows] == ["path", "later"]
+    assert rows[0]["payload"]["workspace"] == "src"
+    assert tracer.write_error is None
+    assert tracer.dropped_steps == 0
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")

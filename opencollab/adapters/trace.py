@@ -93,10 +93,15 @@ class Tracer:
             self._dropped_steps += 1
             return
         try:
-            write_locked_text(
-                self._file,
-                json.dumps(record, ensure_ascii=False) + "\n",
-            )
+            line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
+        except Exception as exc:
+            record["payload"] = {
+                "serialization_error": type(exc).__name__,
+                "payload_type": type(payload).__name__,
+            }
+            line = json.dumps(record, ensure_ascii=False) + "\n"
+        try:
+            write_locked_text(self._file, line)
         except Exception as exc:
             self._write_error = f"{type(exc).__name__}: {exc}"
             self._dropped_steps += 1
