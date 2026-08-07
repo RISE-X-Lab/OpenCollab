@@ -9,6 +9,7 @@ from scheduler_awaiting_test_support import (
     ScriptedSession,
     build_scheduler,
     run,
+    terminal,
 )
 
 from opencollab.domain.session import SessionPhase, SessionState
@@ -64,6 +65,45 @@ def test_cleanup_rejects_invalid_timeout_before_any_side_effect(invalid_timeout)
         await asyncio.wait_for(driver, timeout=0.5)
 
     run(scenario())
+
+
+def test_active_startup_prevents_quiescence_until_child_finishes():
+    class BlockingAcquirePool:
+        def __init__(self):
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def acquire(self, role):
+            self.started.set()
+            await self.release.wait()
+            return None
+
+        async def release(self):
+            return None
+
+    lead = ScriptedSession("lead", [terminal("lead done")])
+    child = ScriptedSession("coder", [terminal("child done")])
+    scheduler, _ = build_scheduler(lead, [child])
+    pool = BlockingAcquirePool()
+    scheduler._worktree_pool = pool
+
+    async def scenario():
+        startup = asyncio.create_task(scheduler.spawn(0, "coder", "blocked startup"))
+        await pool.started.wait()
+        assert scheduler._quiescent() is False
+
+        turn = asyncio.create_task(scheduler.run("finish the lead turn"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert turn.done() is False
+
+        pool.release.set()
+        aid = await startup
+        assert await asyncio.wait_for(turn, timeout=0.5) == "lead done"
+        assert scheduler.table.get(aid).state.phase is SessionPhase.DONE
+
+    run(scenario())
+
 
 def test_wait_until_terminal_follows_message_replacement_created_by_finishing_task():
     class BlockingDiff:
