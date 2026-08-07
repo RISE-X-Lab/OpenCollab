@@ -34,6 +34,7 @@ _FRAMEWORK_CONTROLLED_THINKING_FIELDS = frozenset({
     "tools",
     "top_p",
 })
+_OPENAI_REASONING_MODEL_RE = re.compile(r"^o(?:1|3)(?:$|[-.])")
 
 
 def _validated_thinking_params(thinking_params: dict | None) -> dict:
@@ -49,6 +50,11 @@ def _validated_thinking_params(thinking_params: dict | None) -> dict:
     return dict(thinking_params)
 
 
+def _uses_reasoning_request_fields(model: str) -> bool:
+    leaf = model.strip().lower().rsplit("/", 1)[-1]
+    return _OPENAI_REASONING_MODEL_RE.match(leaf) is not None
+
+
 def _build_request_kwargs(
     model: str,
     messages: list[dict],
@@ -60,17 +66,20 @@ def _build_request_kwargs(
     top_p: float | None = None,
     max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
+    reasoning_model = _uses_reasoning_request_fields(model)
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": _normalize_request_messages(messages),
-        "temperature": temperature,
     }
+    if not reasoning_model:
+        kwargs["temperature"] = temperature
     # Nucleus sampling rides along ONLY when explicitly set; when None the key is
     # omitted so the request is byte-for-byte identical to today's behavior.
-    if top_p is not None:
+    if top_p is not None and not reasoning_model:
         kwargs["top_p"] = top_p
     if max_output_tokens is not None:
-        kwargs["max_tokens"] = int(max_output_tokens)
+        token_field = "max_completion_tokens" if reasoning_model else "max_tokens"
+        kwargs[token_field] = int(max_output_tokens)
     if tools:
         kwargs["tools"] = tools
         choice = tool_choice or "auto"

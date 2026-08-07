@@ -456,6 +456,41 @@ def test_openai_top_p_omitted_when_none():
     assert "top_p" not in kwargs
 
 
+@pytest.mark.parametrize(
+    "model",
+    ["o1-preview", "o3-mini", "gateway/o1-2026-08-07"],
+)
+def test_openai_reasoning_models_use_compatible_request_fields(model):
+    kwargs = build_openai_kwargs(
+        model,
+        [{"role": "user", "content": "hi"}],
+        None,
+        0.2,
+        top_p=0.9,
+        max_output_tokens=123,
+    )
+
+    assert kwargs["max_completion_tokens"] == 123
+    assert "max_tokens" not in kwargs
+    assert "temperature" not in kwargs
+    assert "top_p" not in kwargs
+
+
+def test_openai_reasoning_model_near_miss_keeps_classic_fields():
+    kwargs = build_openai_kwargs(
+        "vendor/not-o1-preview",
+        [{"role": "user", "content": "hi"}],
+        None,
+        0.2,
+        top_p=0.9,
+        max_output_tokens=123,
+    )
+
+    assert kwargs["max_tokens"] == 123
+    assert kwargs["temperature"] == 0.2
+    assert kwargs["top_p"] == 0.9
+
+
 def test_anthropic_top_p_included_when_set():
     """Anthropic parity: top_p set -> the payload carries it."""
     kwargs = build_anthropic_kwargs(
