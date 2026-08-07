@@ -340,7 +340,7 @@ class WorktreeEnvironment(Environment):
             try:
                 await self._local_env.cleanup()
             except BaseException as exc:
-                failures.append(exc)
+                raise RuntimeError("worktree cleanup failed") from exc
             else:
                 self._local_env = None
         if self._git_mode and self._worktree_registered and self._worktree_dir is not None:

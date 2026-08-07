@@ -519,6 +519,32 @@ async def test_double_cancellation_finishes_container_and_backing_cleanup(monkey
     assert backing_cleaned.is_set()
 
 
+async def test_cleanup_preserves_backing_when_container_removal_fails(
+    monkeypatch,
+) -> None:
+    backing_cleanup_calls = 0
+
+    class BackingEnvironment:
+        source_workspace = "/source"
+
+        async def cleanup(self):
+            nonlocal backing_cleanup_calls
+            backing_cleanup_calls += 1
+
+    async def fail_remove():
+        return False
+
+    backing = BackingEnvironment()
+    env = DockerEnvironment(backing_environment=backing)
+    monkeypatch.setattr(env, "_remove_container_if_owned", fail_remove)
+
+    with pytest.raises(RuntimeError, match="container could not be removed"):
+        await env.cleanup()
+
+    assert backing_cleanup_calls == 0
+    assert env._backing_environment is backing
+
+
 async def test_verified_write_threads_stdin_and_digest(monkeypatch) -> None:
     payload = b"hello"
     digest = __import__("hashlib").sha256(payload).hexdigest()
