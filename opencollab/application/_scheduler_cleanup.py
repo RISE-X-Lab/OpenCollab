@@ -149,13 +149,13 @@ class SchedulerCleanupMixin:
         if persistence_errors:
             failures.append("session persistence failed")
 
-        release_safe = not pending and environments_aborted
+        release_safe = not pending and environments_aborted and persistence_quiesced
         worktrees_released = release_safe and await self._release_worktree_pool_bounded(timeout=timeout)
         if not worktrees_released:
             failures.append(
                 "worktree pool release failed or timed out"
                 if release_safe
-                else "worktree pool release skipped because scheduler work did not quiesce"
+                else "worktree pool release skipped because owned work did not quiesce"
             )
         if failures:
             failure = RuntimeError("technical scheduler cleanup failed: " + "; ".join(failures))
