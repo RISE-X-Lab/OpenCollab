@@ -112,7 +112,7 @@ def _parse_thinking_params(value: str | None) -> dict[str, Any]:
 class OpenCollabConfig(BaseModel):
     """Runtime configuration for OpenCollab."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     model: str = Field(default="gpt-4o", min_length=1)
     provider: str = Field(default="openai", min_length=1)

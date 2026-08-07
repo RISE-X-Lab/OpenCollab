@@ -270,6 +270,21 @@ roles:
         load_team_config(str(tmp_path))
 
 
+@pytest.mark.parametrize(
+    "yaml_text",
+    [
+        "rolse:\n  lead:\n    prompt: typo\n",
+        "roles:\n  lead:\n    prompt: ok\n    modle: typo\n",
+    ],
+)
+def test_team_config_rejects_unknown_keys(tmp_path, monkeypatch, yaml_text):
+    config = tmp_path / "team.yaml"
+    config.write_text(yaml_text, encoding="utf-8")
+
+    with pytest.raises(Exception, match="rolse|modle"):
+        load_team_config(str(tmp_path), path=config)
+
+
 @pytest.mark.parametrize("kind", ["fifo", "symlink", "oversized"])
 def test_team_config_rejects_unsafe_or_oversized_input(tmp_path, monkeypatch, kind):
     config = tmp_path / "team.yaml"
