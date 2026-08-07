@@ -316,9 +316,12 @@ class MessagingMixin:
 
     async def _drain_ready_message_inboxes(self) -> None:
         """Retry durable messages when another turn has returned budget headroom."""
-        for aid in list(self._message_inbox):
-            if self._message_inbox.get(aid):
-                await self._drain_message_inbox(aid)
+        ready_aids = [
+            aid for aid in list(self._message_inbox) if self._message_inbox.get(aid)
+        ]
+        await asyncio.gather(
+            *(self._drain_message_inbox(aid) for aid in ready_aids)
+        )
 
     async def _drain_message_inbox_locked(
         self,
