@@ -14,6 +14,7 @@ from typing import Any
 from opencollab.bootstrap.config import build_config
 from opencollab.bootstrap.programmatic import (
     DEFAULT_AGENT_SYSTEM_PROMPT,
+    DEFAULT_TEAM_CLEANUP_TIMEOUT_SECONDS,
     ProgrammaticLifecycleError,
     ProgrammaticResult,
     run_agent,
@@ -218,6 +219,7 @@ class OpenCollab:
         config: str | os.PathLike[str] | None = None,
         budget: int | None = None,
         timeout: float | None = None,
+        cleanup_timeout: float = DEFAULT_TEAM_CLEANUP_TIMEOUT_SECONDS,
         artifacts: str | os.PathLike[str] | None = None,
         trace: bool = True,
         use_worktrees: bool = True,
@@ -240,6 +242,10 @@ class OpenCollab:
                     "budget",
                 ),
                 timeout=_positive_timeout(timeout, "timeout"),
+                cleanup_timeout=_required_positive_timeout(
+                    cleanup_timeout,
+                    "cleanup_timeout",
+                ),
                 artifacts=_path(artifacts, "artifacts"),
                 trace=trace,
                 use_worktrees=use_worktrees,
