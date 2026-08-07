@@ -864,11 +864,11 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
             return []
 
         remaining = self.budget.remaining()
-        planned_budget = (
-            None
-            if remaining == float("inf")
-            else max(0, int(remaining)) // size
-        )
+        if remaining == float("inf"):
+            planned_budget = None
+        else:
+            available = max(0, int(remaining))
+            planned_budget = max(1, available // size) if available else 0
         results: list[Any] = [None] * size
         next_index = iter(range(size))
         terminal: list[BaseException] = []
@@ -876,9 +876,11 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         async def execute(index: int) -> None:
             budget_token = self._active_collection_budget.set(planned_budget)
             try:
-                results[index] = await self._run_with_concurrency_permit(
-                    lambda: run_unit(index)
-                )
+                # The fixed worker pool already bounds collection units. Do not
+                # consume an agent-session semaphore slot here: a thunk may
+                # create child Tasks with asyncio.gather(), and those children
+                # must acquire the shared session slots themselves.
+                results[index] = await run_unit(index)
             except asyncio.CancelledError:
                 raise
             except BaseException as exc:  # preserve terminal workflow signals
