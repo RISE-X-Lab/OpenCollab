@@ -256,13 +256,8 @@ async def test_parallel_propagates_budget_exceeded():
         await ctx.parallel([lambda: ctx.agent("exhausted")])
 
 @pytest.mark.asyncio
-async def test_pipeline_swallows_budget_exceeded_to_none_and_skips_rest():
-    """A budget-exhausted ctx.agent() in a pipeline stage drops the item to None.
-
-    The exhausted stage raises WorkflowBudgetExceeded; pipeline()'s flow guard
-    drops that item to None and skips its remaining stages, leaving other items
-    untouched.
-    """
+async def test_pipeline_propagates_budget_exceeded_and_skips_later_stages():
+    """A pipeline must preserve the workflow terminal budget signal."""
     s1 = FakeSession(reply="a", tokens=500)
     s2 = FakeSession(reply="b", tokens=0)
     ctx = WorkflowContext(FakeFactory([s1, s2]), budget_total=500)
@@ -279,8 +274,7 @@ async def test_pipeline_swallows_budget_exceeded_to_none_and_skips_rest():
         later_ran.append(item)
         return prev
 
-    results = await ctx.pipeline([7], agent_stage, later_stage)
-
-    assert results == [None]
+    with pytest.raises(WorkflowBudgetExceeded):
+        await ctx.pipeline([7], agent_stage, later_stage)
     # The exhausted item never reaches the later stage.
     assert later_ran == []

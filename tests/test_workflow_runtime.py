@@ -269,11 +269,21 @@ async def test_run_workflow_reports_live_spend_on_budget_exceeded(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_workflow_marks_parallel_budget_exhaustion_stopped(monkeypatch):
+@pytest.mark.parametrize("composition", ("parallel", "pipeline"))
+async def test_run_workflow_marks_collection_budget_exhaustion_stopped(
+    monkeypatch,
+    composition,
+):
     _patch_build_session(monkeypatch)
 
     async def fn(ctx, args):
-        return await ctx.parallel([lambda: ctx.agent("exhausted")])
+        if composition == "parallel":
+            return await ctx.parallel([lambda: ctx.agent("exhausted")])
+
+        async def agent_stage(_previous, _item, _index):
+            return await ctx.agent("exhausted")
+
+        return await ctx.pipeline(["item"], agent_stage)
 
     details = await workflow_runtime.run_workflow(
         fn,
@@ -284,7 +294,6 @@ async def test_run_workflow_marks_parallel_budget_exhaustion_stopped(monkeypatch
 
     assert details.stop_reason == "budget_exceeded"
     assert details.output["status"] == "budget_exceeded"
-
 
 @pytest.mark.asyncio
 async def test_run_workflow_other_exceptions_propagate(monkeypatch):
