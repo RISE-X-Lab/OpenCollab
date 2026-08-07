@@ -200,6 +200,133 @@ async def test_process_timeout_covers_blocked_stdin_writer(tmp_path) -> None:
         )
 
 
+async def test_process_timeout_covers_subprocess_spawn(monkeypatch, tmp_path) -> None:
+    gate = asyncio.Event()
+    terminated = asyncio.Event()
+    original_spawn = process_module.asyncio.create_subprocess_exec
+    original_terminate = process_module.terminate_process
+
+    async def delayed_spawn(*args, **kwargs):
+        await gate.wait()
+        return await original_spawn(*args, **kwargs)
+
+    async def tracked_terminate(process, **kwargs):
+        result = await original_terminate(process, **kwargs)
+        terminated.set()
+        return result
+
+    monkeypatch.setattr(
+        process_module.asyncio,
+        "create_subprocess_exec",
+        delayed_spawn,
+    )
+    monkeypatch.setattr(process_module, "terminate_process", tracked_terminate)
+    task = asyncio.create_task(
+        run_process(
+            (sys.executable, "-c", "import time; time.sleep(5)"),
+            shell=False,
+            cwd=str(tmp_path),
+            timeout=0.01,
+        )
+    )
+
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=0.1)
+        assert task in done
+        with pytest.raises(asyncio.TimeoutError):
+            task.result()
+    finally:
+        gate.set()
+        if not task.done():
+            with pytest.raises(asyncio.TimeoutError):
+                await task
+        await asyncio.wait_for(terminated.wait(), timeout=1)
+
+
+async def test_process_cancellation_during_spawn_is_bounded(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    gate = asyncio.Event()
+    terminated = asyncio.Event()
+    original_spawn = process_module.asyncio.create_subprocess_exec
+    original_terminate = process_module.terminate_process
+
+    async def delayed_spawn(*args, **kwargs):
+        await gate.wait()
+        return await original_spawn(*args, **kwargs)
+
+    async def tracked_terminate(process, **kwargs):
+        result = await original_terminate(process, **kwargs)
+        terminated.set()
+        return result
+
+    monkeypatch.setattr(
+        process_module.asyncio,
+        "create_subprocess_exec",
+        delayed_spawn,
+    )
+    monkeypatch.setattr(process_module, "terminate_process", tracked_terminate)
+    task = asyncio.create_task(
+        run_process(
+            (sys.executable, "-c", "import time; time.sleep(5)"),
+            shell=False,
+            cwd=str(tmp_path),
+            timeout=5,
+        )
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=0.1)
+        assert task in done
+        with pytest.raises(asyncio.CancelledError):
+            task.result()
+    finally:
+        gate.set()
+        if not task.done():
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        await asyncio.wait_for(terminated.wait(), timeout=1)
+
+
+async def test_registry_abort_bounds_unfinished_spawn_handoff(monkeypatch) -> None:
+    registry = process_module.ProcessRegistry()
+    spawn_started = asyncio.Event()
+    spawn_release = asyncio.Event()
+    process = object()
+
+    async def factory():
+        spawn_started.set()
+        await spawn_release.wait()
+        return process
+
+    async def cleanup(candidate):
+        assert candidate is process
+        return True
+
+    monkeypatch.setattr(process_module, "PROCESS_KILL_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr(process_module, "terminate_process", cleanup)
+    spawn_owner = asyncio.create_task(registry.spawn(factory))
+    await spawn_started.wait()
+    abort_owner = asyncio.create_task(registry.abort())
+
+    try:
+        done, _pending = await asyncio.wait({abort_owner}, timeout=0.1)
+        assert abort_owner in done
+        with pytest.raises(ProcessCleanupError, match="spawn handoff"):
+            abort_owner.result()
+    finally:
+        spawn_release.set()
+        with pytest.raises(RuntimeError, match="revoked"):
+            await spawn_owner
+        if not abort_owner.done():
+            await abort_owner
+
+    await registry.abort()
+
+
 async def test_cancellation_during_timeout_cleanup_is_preserved(monkeypatch) -> None:
     cleanup_started = asyncio.Event()
     cleanup_release = asyncio.Event()
