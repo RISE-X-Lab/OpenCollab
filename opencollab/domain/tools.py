@@ -1,11 +1,59 @@
 from __future__ import annotations
 
+import unicodedata
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from opencollab.domain.session import SessionState
 
 MAX_CALL_HASH_WINDOW = 200
+
+
+def tool_name_collision_key(name: object) -> str:
+    """Return the provider/dispatcher collision key for one tool name."""
+    if not isinstance(name, str) or not name:
+        raise ValueError("tool name must be a non-empty string")
+    normalized = unicodedata.normalize("NFKC", name)
+    if (
+        not normalized
+        or normalized != normalized.strip()
+        or any(
+            unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+            for character in normalized
+        )
+    ):
+        raise ValueError("tool name must not contain surrounding whitespace or controls")
+    return normalized.casefold()
+
+
+def validate_unique_tool_names(
+    names: Sequence[object],
+    *,
+    reserved: Collection[str] = (),
+) -> None:
+    """Reject duplicate or reserved names before schemas reach a provider."""
+    reserved_by_key = {
+        tool_name_collision_key(name): name
+        for name in reserved
+    }
+    seen: dict[str, tuple[int, object]] = {}
+    for index, name in enumerate(names):
+        key = tool_name_collision_key(name)
+        reserved_name = reserved_by_key.get(key)
+        if reserved_name is not None:
+            raise ValueError(
+                f"tool name {name!r} at index {index} collides with reserved "
+                f"tool name {reserved_name!r}"
+            )
+        previous = seen.get(key)
+        if previous is not None:
+            previous_index, previous_name = previous
+            raise ValueError(
+                "duplicate tool names collide after normalization: "
+                f"index {previous_index} {previous_name!r} and index {index} {name!r}"
+            )
+        seen[key] = (index, name)
 
 
 class ToolSpec(Protocol):
@@ -135,4 +183,6 @@ __all__ = [
     "MAX_CALL_HASH_WINDOW",
     "ToolProcessingResult",
     "ToolSpec",
+    "tool_name_collision_key",
+    "validate_unique_tool_names",
 ]
