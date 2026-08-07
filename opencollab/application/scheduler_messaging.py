@@ -20,6 +20,7 @@ from typing import Any
 from xml.sax.saxutils import escape, quoteattr
 
 from opencollab.application._scheduler_constants import (
+    MAX_TEAMMATE_DELIVERY_BYTES,
     MAX_TEAMMATE_INBOX_BYTES,
     MAX_TEAMMATE_INBOX_MESSAGES,
     MAX_TEAMMATE_MESSAGE_BYTES,
@@ -222,6 +223,24 @@ class MessagingMixin:
     def _inbox_size(cls, inbox: list[QueuedTeammateMessage]) -> int:
         return sum(cls._encoded_size(message.xml) for message in inbox)
 
+    @classmethod
+    def _bounded_message_batch(
+        cls, inbox: list[QueuedTeammateMessage]
+    ) -> list[QueuedTeammateMessage]:
+        """Select the largest FIFO prefix whose rendered prompt is bounded."""
+        batch: list[QueuedTeammateMessage] = []
+        for message in inbox:
+            candidate = [*batch, message]
+            delivery = (
+                candidate[0].xml
+                if len(candidate) == 1
+                else cls._format_teammate_message_batch(candidate)
+            )
+            if cls._encoded_size(delivery) > MAX_TEAMMATE_DELIVERY_BYTES:
+                break
+            batch = candidate
+        return batch
+
     async def _drain_message_inbox(self, aid: int, *, allow_current_task: bool = False) -> None:
         lock = self._locks.setdefault(aid, asyncio.Lock())
         async with lock:
@@ -260,11 +279,13 @@ class MessagingMixin:
             return []
         if scb.state.phase is SessionPhase.AWAITING_EVENTS or not scb.state.pending_events.is_empty():
             return []
+        messages = self._bounded_message_batch(inbox)
+        if not messages or self._shutting_down:
+            return []
         prior_lease = self._current_turn_lease(aid)
-        if self._shutting_down or not self._reserve_message_budget(aid):
+        if not self._reserve_message_budget(aid):
             return []
 
-        messages = list(inbox)
         delivery = (
             messages[0].xml
             if len(messages) == 1
