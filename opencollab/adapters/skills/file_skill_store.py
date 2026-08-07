@@ -77,6 +77,7 @@ class FileSkillStore:
     def __init__(self, root: Path) -> None:
         self._manifests: list[SkillManifest] = []
         self._bodies: dict[str, str] = {}
+        self._load_diagnostics: list[str] = []
         self._load(Path(root))
 
     def _load(self, root: Path) -> None:
@@ -129,12 +130,12 @@ class FileSkillStore:
             return
         name, description, body = parsed
         if len(body) > SKILL_BODY_MAX_CHARS:
-            logger.debug(
-                "skipping skill %r at %s: body exceeds %s characters",
-                name,
-                skill_md,
-                SKILL_BODY_MAX_CHARS,
+            diagnostic = (
+                f"skill {name!r} rejected: body exceeds "
+                f"{SKILL_BODY_MAX_CHARS} characters"
             )
+            self._load_diagnostics.append(diagnostic)
+            logger.warning("%s (%s)", diagnostic, skill_md)
             return
         if name in self._bodies:
             logger.debug("skipping duplicate skill name %r at %s", name, skill_md)
@@ -152,6 +153,11 @@ class FileSkillStore:
 
     def get_body(self, name: str) -> str | None:
         return self._bodies.get(name)
+
+    @property
+    def load_diagnostics(self) -> tuple[str, ...]:
+        """Explicit reasons that otherwise valid skill packages were rejected."""
+        return tuple(self._load_diagnostics)
 
 
 __all__ = ["FileSkillStore", "SKILL_BODY_MAX_CHARS", "SKILL_DESCRIPTION_MAX_CHARS"]
