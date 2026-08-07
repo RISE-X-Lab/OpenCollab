@@ -7,7 +7,7 @@ import os
 import re
 import uuid
 
-from opencollab.adapters._env_base import Environment, ExecResult
+from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES, Environment, ExecResult
 from opencollab.adapters._env_process import (
     PROCESS_OUTPUT_CAPTURE_BYTES,
     ProcessCleanupError,
@@ -22,7 +22,7 @@ from opencollab.adapters.safe_files import (
 )
 
 LOCAL_FILE_READ_LIMIT_BYTES = 4 * 1024 * 1024
-LOCAL_FILE_WRITE_LIMIT_BYTES = 4 * 1024 * 1024
+LOCAL_FILE_WRITE_LIMIT_BYTES = ENV_FILE_WRITE_LIMIT_BYTES
 _TEMP_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
