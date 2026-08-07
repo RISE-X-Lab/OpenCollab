@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import importlib.abc
+import importlib.machinery
+import importlib.util
 import os
 import stat
-import types
+import sys
 import uuid
+from types import ModuleType
 
 from opencollab.adapters.safe_files import read_regular_text
 from opencollab.application.workflow_registry import Registry, WorkflowSpec
@@ -14,6 +18,20 @@ from opencollab.bootstrap._workflow_runtime_state import (
     MAX_WORKFLOW_FILES,
     MAX_WORKFLOW_SOURCE_BYTES,
 )
+
+
+class _WorkflowSourceLoader(importlib.abc.Loader):
+    """Execute the already bounded source through an importlib module spec."""
+
+    def __init__(self, path: str, source: str) -> None:
+        self._path = path
+        self._source = source
+
+    def create_module(self, spec: importlib.machinery.ModuleSpec) -> None:
+        return None
+
+    def exec_module(self, module: ModuleType) -> None:
+        exec(compile(self._source, self._path, "exec"), module.__dict__)
 
 
 def discover_workflows(directory: str) -> Registry:
@@ -58,25 +76,46 @@ def discover_workflows(directory: str) -> Registry:
 
 
 def load_workflow_specs(path: str) -> list[WorkflowSpec]:
-    """Import a single python file and collect its workflow specs."""
-    module_name = f"_opencollab_workflow_{uuid.uuid4().hex}"
-    source = read_regular_text(path, max_bytes=MAX_WORKFLOW_SOURCE_BYTES)
-    module = types.ModuleType(module_name)
-    module.__file__ = path
-    exec(compile(source, path, "exec"), module.__dict__)
+    """Import one bounded workflow file and collect its workflow specs.
 
-    # Dedupe by spec identity: a decorated function bound under more than one
-    # module-level name (an alias or a re-export) carries the SAME spec object
-    # under each name. Collecting both would register the same name twice and
-    # abort discovery of the whole directory, so keep one entry per spec.
-    found: list[WorkflowSpec] = []
-    seen: set[int] = set()
-    for value in vars(module).values():
-        wf_spec = getattr(value, "__workflow_spec__", None)
-        if isinstance(wf_spec, WorkflowSpec) and id(wf_spec) not in seen:
-            seen.add(id(wf_spec))
-            found.append(wf_spec)
-    return found
+    Each workflow gets a unique temporary package.  This gives the module the
+    normal import metadata required by dataclasses and by sibling relative
+    imports, without exposing one discovered workflow to another.
+    """
+    source = read_regular_text(path, max_bytes=MAX_WORKFLOW_SOURCE_BYTES)
+    package_name = f"_opencollab_workflow_{uuid.uuid4().hex}"
+    module_name = f"{package_name}.workflow"
+    package_spec = importlib.machinery.ModuleSpec(package_name, loader=None, is_package=True)
+    package_spec.submodule_search_locations = [os.path.dirname(os.path.abspath(path))]
+    package = importlib.util.module_from_spec(package_spec)
+    loader = _WorkflowSourceLoader(path, source)
+    module_spec = importlib.util.spec_from_loader(module_name, loader, origin=path)
+    if module_spec is None:
+        raise ImportError(f"could not create import spec for workflow source: {path}")
+    module = importlib.util.module_from_spec(module_spec)
+
+    sys.modules[package_name] = package
+    sys.modules[module_name] = module
+    try:
+        loader.exec_module(module)
+
+        # Dedupe by spec identity: a decorated function bound under more than one
+        # module-level name (an alias or a re-export) carries the SAME spec object
+        # under each name. Collecting both would register the same name twice and
+        # abort discovery of the whole directory, so keep one entry per spec.
+        found: list[WorkflowSpec] = []
+        seen: set[int] = set()
+        for value in vars(module).values():
+            wf_spec = getattr(value, "__workflow_spec__", None)
+            if isinstance(wf_spec, WorkflowSpec) and id(wf_spec) not in seen:
+                seen.add(id(wf_spec))
+                found.append(wf_spec)
+        return found
+    finally:
+        prefix = f"{package_name}."
+        for registered_name in tuple(sys.modules):
+            if registered_name == package_name or registered_name.startswith(prefix):
+                sys.modules.pop(registered_name, None)
 
 
 _load_specs_from_file = load_workflow_specs
