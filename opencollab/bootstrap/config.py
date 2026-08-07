@@ -262,10 +262,10 @@ def api_key_env_precedence(provider: str | None, base_url: str | None = None) ->
     endpoint (DashScope) or to the native Anthropic path.
     """
     if _is_dashscope_base_url(base_url):
-        return ("DASHSCOPE_API_KEY", "OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+        return ("DASHSCOPE_API_KEY", "OPENCOLLAB_API_KEY")
     if is_anthropic(provider):
-        return ("ANTHROPIC_API_KEY", "OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "DASHSCOPE_API_KEY")
-    return ("OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY")
+        return ("ANTHROPIC_API_KEY", "OPENCOLLAB_API_KEY")
+    return ("OPENCOLLAB_API_KEY", "OPENAI_API_KEY")
 
 
 def accepted_api_key_envs(provider: str | None, base_url: str | None = None) -> list[str]:
@@ -274,9 +274,10 @@ def accepted_api_key_envs(provider: str | None, base_url: str | None = None) -> 
     ``OPENCOLLAB_API_KEY`` plus the provider-specific key, with
     ``DASHSCOPE_API_KEY`` appended for a DashScope-compatible endpoint.
     """
-    names = ["OPENCOLLAB_API_KEY", required_env_key(provider)]
     if _is_dashscope_base_url(base_url):
-        names.append("DASHSCOPE_API_KEY")
+        names = ["OPENCOLLAB_API_KEY", "DASHSCOPE_API_KEY"]
+    else:
+        names = ["OPENCOLLAB_API_KEY", required_env_key(provider)]
     return list(dict.fromkeys(names))
 
 
