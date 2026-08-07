@@ -258,22 +258,30 @@ def test_structured_unrelated_param_blocks_tool_choice_text_fallback():
 
 
 @pytest.mark.parametrize(
-    ("message", "code"),
+    ("message", "code", "selector"),
     [
-        ("invalid request", "invalid_tool_choice"),
-        ("Invalid parameter: tool_choice", "invalid_parameter"),
+        ("invalid request", "invalid_tool_choice", {"param": None}),
+        ("invalid request", "invalid_tool_choice", {"path": []}),
+        ("invalid request", "invalid_tool_choice", {"path": [None]}),
+        ("invalid request", "invalid_tool_choice", {"param": ""}),
+        (
+            "Invalid parameter: tool_choice",
+            "invalid_parameter",
+            {"param": None},
+        ),
     ],
 )
-def test_null_structured_selector_uses_explicit_tool_choice_rejection(
+def test_empty_structured_selector_uses_explicit_tool_choice_rejection(
     message,
     code,
+    selector,
 ):
     llm = _RaisingFakeLLM(
         [
             _ProviderRequestError(
                 message,
                 status_code=400,
-                body={"error": {"param": None, "code": code}},
+                body={"error": {**selector, "code": code}},
             ),
             llm_response(content="done"),
         ]
