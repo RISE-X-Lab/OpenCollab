@@ -33,7 +33,12 @@ from opencollab.bootstrap.tool_registry import (
     KNOWN_TOOL_NAMES,
     validate_tool_limits,
 )
-from opencollab.domain.hooks import HOOK_ACTION_TYPES, HOOK_EVENT_NAMES, HookSpec
+from opencollab.domain.hooks import (
+    EXECUTABLE_HOOK_ACTION_TYPES,
+    HOOK_ACTION_TYPES,
+    HOOK_EVENT_NAMES,
+    HookSpec,
+)
 from opencollab.domain.identity import role_collision_key, validate_role_identity
 from opencollab.domain.team import Topology
 
@@ -389,6 +394,11 @@ def _build_hook_specs(hooks: dict[str, list[_HookActionFileModel]]) -> tuple[Hoo
                 raise ValueError(
                     f"Unknown hook action type '{action.type}' for event "
                     f"'{event_name}'. Known types: {sorted(HOOK_ACTION_TYPES)}"
+                )
+            if action.type not in EXECUTABLE_HOOK_ACTION_TYPES:
+                raise ValueError(
+                    f"Hook action type '{action.type}' for event '{event_name}' "
+                    "is recognized but not implemented"
                 )
             specs.append(
                 HookSpec(

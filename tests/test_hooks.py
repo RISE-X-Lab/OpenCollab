@@ -475,14 +475,17 @@ def test_config_rejects_unbounded_or_nonpositive_hook_timeout(
         load_team_config(str(tmp_path))
 
 
-def test_config_reserved_action_type_parses(tmp_path, monkeypatch):
+@pytest.mark.parametrize("action_type", ["prompt", "agent"])
+def test_config_rejects_reserved_action_types_until_runner_supports_them(
+    tmp_path, monkeypatch, action_type
+):
     team = (
         "roles:\n  lead:\n    tools: [bash]\n    prompt: x\n"
         "hooks:\n  Stop:\n    - command: echo\n      type: agent\n"
-    )
+    ).replace("type: agent", f"type: {action_type}")
     _write_team(tmp_path, monkeypatch, team)
-    cfg = load_team_config(str(tmp_path))
-    assert cfg.hooks[0].action_type == "agent"
+    with pytest.raises(ValueError, match="not implemented"):
+        load_team_config(str(tmp_path))
 
 
 def test_config_without_hooks_is_empty(tmp_path, monkeypatch):
