@@ -153,6 +153,57 @@ def test_unified_diff_treats_header_like_hunk_content_as_content(tmp_path):
     assert target.read_text(encoding="utf-8") == "++value\n"
 
 
+def test_unified_diff_rejects_malformed_hunk_without_writing(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    original = "a\nb\nc\n"
+    target.write_text(original, encoding="utf-8")
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "unified_diff",
+                "patch": "@@ -1,3 +1,3 @@\n a\n-b\n+x\n",
+            },
+            _runtime(ws),
+        )
+    )
+
+    assert "declares 3 old lines" in result
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("@@ -0,0 +1 @@", "X\na\nb\nc\n"),
+        ("@@ -2,0 +3 @@", "a\nb\nX\nc\n"),
+        ("@@ -3,0 +4 @@", "a\nb\nc\nX\n"),
+    ],
+)
+def test_unified_diff_pure_insertions_use_header_position(tmp_path, header, expected):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text("a\nb\nc\n", encoding="utf-8")
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "unified_diff",
+                "patch": f"{header}\n+X\n",
+            },
+            _runtime(ws),
+        )
+    )
+
+    assert "Applied unified_diff" in result
+    assert target.read_text(encoding="utf-8") == expected
+
+
 def test_apply_patch_reports_file_and_workspace_errors(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
