@@ -267,6 +267,25 @@ async def test_run_workflow_reports_live_spend_on_budget_exceeded(monkeypatch):
     assert result["tokens_spent"] == 0  # _FakeSession.used_tokens == 0
     assert len(calls) == 1  # the agent did build+run before the raise
 
+
+@pytest.mark.asyncio
+async def test_run_workflow_marks_parallel_budget_exhaustion_stopped(monkeypatch):
+    _patch_build_session(monkeypatch)
+
+    async def fn(ctx, args):
+        return await ctx.parallel([lambda: ctx.agent("exhausted")])
+
+    details = await workflow_runtime.run_workflow(
+        fn,
+        {},
+        cfg=_cfg(budget=0),
+        return_details=True,
+    )
+
+    assert details.stop_reason == "budget_exceeded"
+    assert details.output["status"] == "budget_exceeded"
+
+
 @pytest.mark.asyncio
 async def test_run_workflow_other_exceptions_propagate(monkeypatch):
     """Only WorkflowBudgetExceeded is caught; everything else still raises."""
