@@ -21,6 +21,7 @@ from opencollab.application.shaping.pipeline import (
     DEFAULT_HISTORY_TRIGGER_TOKENS,
     _droppable_region,
     approx_messages_tokens,
+    matched_tool_result_occurrences,
     pinned_free_region,
 )
 
@@ -107,16 +108,16 @@ class ToolOutputClearShaper(_ReactiveHistoryShaper):
     def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not self._over_trigger(messages):
             return messages
-        clear_ids = self._ids_to_clear(messages)
-        if not clear_ids:
+        clear_indices = self._indices_to_clear(messages)
+        if not clear_indices:
             return messages
 
         out: list[dict[str, Any]] = []
         changed = False
-        for message in messages:
+        for index, message in enumerate(messages):
             if (
                 message.get("role") == "tool"
-                and message.get("tool_call_id") in clear_ids
+                and index in clear_indices
                 and message.get("content") != self.cleared_content
             ):
                 out.append({**message, "content": self.cleared_content})
@@ -125,23 +126,26 @@ class ToolOutputClearShaper(_ReactiveHistoryShaper):
                 out.append(message)
         return out if changed else messages
 
-    def _ids_to_clear(self, messages: list[dict[str, Any]]) -> set[str]:
-        """Compactable tool_call_ids older than the last ``keep_recent``.
+    def _indices_to_clear(self, messages: list[dict[str, Any]]) -> set[int]:
+        """Exact compactable result occurrences older than ``keep_recent``.
 
-        Order is taken from the assistant ``tool_calls`` that issued them (the
-        tool *name* lives on the call, not the ``role:"tool"`` answer).
+        Pairing is local to each assistant turn, so reused ids cannot clear a
+        newer result. Replacing a short body with a longer marker is forbidden.
         """
-        compactable_ids: list[str] = []
-        for message in messages:
-            if message.get("role") != "assistant":
-                continue
-            for call in message.get("tool_calls") or ():
-                name = call.get("function", {}).get("name")
-                if name in self.compactable_tools and call.get("id"):
-                    compactable_ids.append(call["id"])
-        if len(compactable_ids) <= self.keep_recent:
+        compactable = [
+            result_index
+            for result_index, _call_id, name, _arguments
+            in matched_tool_result_occurrences(messages)
+            if name in self.compactable_tools
+        ]
+        if len(compactable) <= self.keep_recent:
             return set()
-        return set(compactable_ids[: -self.keep_recent])
+        return {
+            result_index
+            for result_index in compactable[: -self.keep_recent]
+            if isinstance(messages[result_index].get("content"), str)
+            and len(self.cleared_content) < len(messages[result_index]["content"])
+        }
 
 
 class OldHistorySnipShaper(_ReactiveHistoryShaper):
