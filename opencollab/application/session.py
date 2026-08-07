@@ -94,6 +94,28 @@ class Session:
             self.env = self.tool_execution.environment
 
     @property
+    def env(self) -> EnvironmentPort | None:
+        return self._env
+
+    @env.setter
+    def env(self, value: EnvironmentPort | None) -> None:
+        self._env = value
+        if hasattr(self, "tool_execution"):
+            self.tool_execution.environment = value
+
+    @property
+    def tracer(self) -> TracePort | None:
+        return self._tracer
+
+    @tracer.setter
+    def tracer(self, value: TracePort | None) -> None:
+        self._tracer = value
+        if hasattr(self, "tool_execution"):
+            self.tool_execution.tracer = value
+        if hasattr(self, "runner"):
+            self.runner.tracer = value
+
+    @property
     def permission_policy(self) -> PermissionPort | None:
         return self._permission_policy
 
