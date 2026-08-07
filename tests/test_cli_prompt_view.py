@@ -105,6 +105,48 @@ def test_agent_prompt_history_cache_evicts_old_revisions():
     assert tui.render_calls == 18
 
 
+@pytest.mark.asyncio
+async def test_console_input_fallback_removes_reader_when_cancelled(monkeypatch):
+    class BrokenPromptSession:
+        async def prompt_async(self, *_args, **_kwargs):
+            raise RuntimeError("prompt toolkit unavailable")
+
+    read_fd, write_fd = os.pipe()
+    input_stream = os.fdopen(read_fd, "r", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "_get_prompt_session", lambda: BrokenPromptSession())
+    monkeypatch.setattr(cli_main.sys, "stdin", input_stream)
+    task = asyncio.create_task(cli_main._read_line("> "))
+    await asyncio.sleep(0)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=0.2)
+
+    assert asyncio.get_running_loop().remove_reader(read_fd) is False
+    input_stream.close()
+    os.close(write_fd)
+
+
+@pytest.mark.asyncio
+async def test_console_input_fallback_reads_selectable_pipe(monkeypatch):
+    class BrokenPromptSession:
+        async def prompt_async(self, *_args, **_kwargs):
+            raise RuntimeError("prompt toolkit unavailable")
+
+    read_fd, write_fd = os.pipe()
+    input_stream = os.fdopen(read_fd, "r", encoding="utf-8")
+    monkeypatch.setattr(cli_main, "_get_prompt_session", lambda: BrokenPromptSession())
+    monkeypatch.setattr(cli_main.sys, "stdin", input_stream)
+    task = asyncio.create_task(cli_main._read_line("> "))
+    await asyncio.sleep(0)
+    os.write(write_fd, b"fallback input\n")
+
+    assert await asyncio.wait_for(task, timeout=0.2) == "fallback input"
+    assert asyncio.get_running_loop().remove_reader(read_fd) is False
+    input_stream.close()
+    os.close(write_fd)
+
+
 def test_cli_prompt_session_erases_managed_viewport(monkeypatch):
     captured = {}
     session = object()
