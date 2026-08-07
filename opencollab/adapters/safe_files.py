@@ -164,6 +164,22 @@ def _current_regular(path: Path, *, context: str) -> os.stat_result | None:
     return info
 
 
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(f"fsync target is not a directory: {path}")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def write_regular_file_atomic(
     path: str | os.PathLike[str],
     writer: Callable[[BinaryIO], None],
@@ -206,6 +222,7 @@ def write_regular_file_atomic(
             os.unlink(temporary)
         else:
             os.replace(temporary, target)
+        _fsync_directory(target.parent)
     finally:
         if fd >= 0:
             os.close(fd)
@@ -262,6 +279,7 @@ def unlink_regular_file_durable(path: str | os.PathLike[str]) -> bool:
     if current is None:
         return False
     os.unlink(target)
+    _fsync_directory(target.parent)
     return True
 
 
