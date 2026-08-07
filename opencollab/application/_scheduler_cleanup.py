@@ -137,6 +137,7 @@ class SchedulerCleanupMixin:
         self._delivery_committed.clear()
         self._tasks.clear()
         self._turn_started_at.clear()
+        self._turn_cancel_events.clear()
 
         persistence_quiesced = await self._wait_for_session_persistence(
             persistence_sessions,
