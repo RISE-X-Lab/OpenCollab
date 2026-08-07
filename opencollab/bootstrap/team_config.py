@@ -17,6 +17,7 @@ Tool *names* are resolved to concrete Tool instances by ``ContextBuilder`` in
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from dataclasses import dataclass, field
@@ -55,6 +56,18 @@ BASE_TOOL_NAMES: tuple[str, ...] = tuple(
 _PROMPT_DIR = Path(__file__).resolve().parent / "prompts"
 MAX_TEAM_CONFIG_BYTES = 4 * 1024 * 1024
 MAX_ROLE_PROMPT_BYTES = 4 * 1024 * 1024
+
+
+def _validate_thinking_params(
+    value: dict[Any, Any] | None,
+) -> dict[Any, Any] | None:
+    if value is None:
+        return None
+    try:
+        json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("thinking_params must be JSON-serializable") from exc
+    return value
 
 
 def _load_default_prompt(filename: str) -> str:
@@ -104,6 +117,14 @@ class RoleConfig(BaseModel):
             raise ValueError("role model must not be blank")
         return normalized
 
+    @field_validator("thinking_params")
+    @classmethod
+    def _validate_provider_parameters(
+        cls,
+        value: dict[Any, Any] | None,
+    ) -> dict[Any, Any] | None:
+        return _validate_thinking_params(value)
+
 
 class _RoleFileModel(BaseModel):
     """On-disk role entry; ``prompt`` or ``prompt_file`` (resolved at load)."""
@@ -139,6 +160,14 @@ class _RoleFileModel(BaseModel):
         if not normalized:
             raise ValueError("role model must not be blank")
         return normalized
+
+    @field_validator("thinking_params")
+    @classmethod
+    def _validate_provider_parameters(
+        cls,
+        value: dict[Any, Any] | None,
+    ) -> dict[Any, Any] | None:
+        return _validate_thinking_params(value)
 
 
 class _HookActionFileModel(BaseModel):

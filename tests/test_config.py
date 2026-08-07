@@ -408,6 +408,13 @@ def test_thinking_reads_provider_native_parameters(monkeypatch):
     }
 
 
+def test_thinking_params_override_rejects_non_json_values():
+    from datetime import date
+
+    with pytest.raises(ValueError, match="JSON-serializable"):
+        build_config(overrides={"thinking_params": {"cutoff": date(2026, 8, 7)}})
+
+
 @pytest.mark.parametrize("raw", ["not-json", "[]"])
 def test_thinking_rejects_invalid_parameter_json(monkeypatch, raw):
     monkeypatch.setenv("OPENCOLLAB_THINKING_PARAMS", raw)
