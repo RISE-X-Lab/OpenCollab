@@ -54,8 +54,8 @@ def _release_trace_lease(handle: Any) -> None:
         handle.close()
 
 
-def _recover_trace_tail(path: str) -> tuple[int, bool]:
-    """Return the largest recent step and whether append needs a line boundary."""
+def _recover_trace_tail(path: str) -> tuple[int, bool, bool]:
+    """Return the latest step, boundary need, and damaged-record status."""
     fd = os.open(
         path,
         os.O_RDONLY
@@ -65,7 +65,7 @@ def _recover_trace_tail(path: str) -> tuple[int, bool]:
     try:
         size = os.fstat(fd).st_size
         if size == 0:
-            return 0, False
+            return 0, False, False
         start = max(0, size - _TRACE_RECOVERY_TAIL_BYTES)
         starts_at_boundary = True
         if start:
@@ -81,20 +81,33 @@ def _recover_trace_tail(path: str) -> tuple[int, bool]:
         lines = lines[1:]
     latest_step = 0
     found_step = False
+    damaged = False
     for line in lines:
         try:
             record = json.loads(line)
         except (TypeError, ValueError):
+            damaged = True
             continue
         step = record.get("step") if isinstance(record, dict) else None
         if isinstance(step, int) and not isinstance(step, bool) and step > latest_step:
             latest_step = step
             found_step = True
+        else:
+            damaged = True
     if not found_step:
         raise OSError(
             "cannot safely recover trace step from the bounded file tail"
         )
-    return latest_step, not tail.endswith(b"\n")
+    return latest_step, not tail.endswith(b"\n"), damaged
+
+
+def _quarantine_damaged_trace(path: str) -> str:
+    """Move a damaged trace aside so the active JSONL remains parseable."""
+    quarantine_path = f"{path}.corrupt-{time.time_ns()}-{os.getpid()}"
+    while os.path.lexists(quarantine_path):
+        quarantine_path += "-retry"
+    os.replace(path, quarantine_path)
+    return quarantine_path
 
 
 @dataclass(slots=True)
@@ -215,8 +228,16 @@ class Tracer:
         self._lease = _acquire_trace_lease(output_dir, trace_filename)
         try:
             self._file = open_regular_text_append(self._path)
-            self._step_counter, needs_line_boundary = _recover_trace_tail(self._path)
-            if needs_line_boundary:
+            (
+                self._step_counter,
+                needs_line_boundary,
+                damaged,
+            ) = _recover_trace_tail(self._path)
+            if damaged:
+                self._file.close()
+                _quarantine_damaged_trace(self._path)
+                self._file = open_regular_text_append(self._path)
+            elif needs_line_boundary:
                 write_locked_text(self._file, "\n")
         except BaseException:
             file_handle = getattr(self, "_file", None)
