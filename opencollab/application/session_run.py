@@ -58,6 +58,31 @@ __all__ = [
 ]
 
 
+def _nonnegative_usage_int(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"provider usage {field} must be a non-negative integer")
+    return value
+
+
+def _normalize_completion_usage(usage: Any) -> tuple[int, int]:
+    """Validate provider counters atomically and prevent total undercharging."""
+    input_tokens = _nonnegative_usage_int(
+        getattr(usage, "input_tokens", None),
+        "input_tokens",
+    )
+    reported_total = _nonnegative_usage_int(
+        getattr(usage, "total_tokens", None),
+        "total_tokens",
+    )
+    raw_output = getattr(usage, "output_tokens", None)
+    output_tokens = (
+        max(0, reported_total - input_tokens)
+        if raw_output is None
+        else _nonnegative_usage_int(raw_output, "output_tokens")
+    )
+    return input_tokens, max(reported_total, input_tokens + output_tokens)
+
+
 class SessionRunUseCase(_SessionRunCompletionMixin):
     """Application use case for the session run loop.
 
@@ -197,9 +222,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         """Charge a provider response that survived cancellation after timeout."""
         try:
             response = task.result()
-            total_tokens = response.usage.total_tokens
-            if isinstance(total_tokens, bool) or not isinstance(total_tokens, int) or total_tokens < 0:
-                return
+            _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
             self._late_provider_usage += (total_tokens,)
             self.state.add_used_tokens(total_tokens)
         except BaseException:
@@ -533,9 +556,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             await self._stop_on_context_overflow()
             return
         latency = time.monotonic() - start
-        self.state.add_used_tokens(response.usage.total_tokens)
+        input_tokens, total_tokens = _normalize_completion_usage(response.usage)
+        self.state.add_used_tokens(total_tokens)
         self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
-        self.state.set_context_tokens(response.usage.input_tokens)
+        self.state.set_context_tokens(input_tokens)
 
         self.record_llm_trace(response, latency)
         self.append_assistant_message(response)
