@@ -699,6 +699,54 @@ def test_anthropic_preserves_signed_thinking_for_tool_follow_up():
     assert converted[0]["content"][1]["type"] == "tool_use"
 
 
+def test_anthropic_conversion_normalizes_openai_text_blocks_without_mutation():
+    messages = [
+        {
+            "role": "system",
+            "content": [
+                {"type": "text", "text": "system "},
+                {"type": "text", "text": "policy"},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"},
+            ],
+        },
+    ]
+    original = json.loads(json.dumps(messages))
+
+    system, converted = convert_to_anthropic_messages(messages)
+
+    assert system == ["system policy"]
+    assert converted == [{
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ],
+    }]
+    assert messages == original
+
+
+def test_anthropic_conversion_rejects_unsupported_content_block_with_location():
+    messages = [
+        {"role": "user", "content": "before"},
+        {
+            "role": "assistant",
+            "content": [{"type": "image_url", "image_url": {"url": "https://example.test/a.png"}}],
+        },
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match=r"message 1 .*assistant.* unsupported content block type: image_url",
+    ):
+        convert_to_anthropic_messages(messages)
+
+
 def test_anthropic_redacted_thinking_is_not_harvested():
     """redacted_thinking holds encrypted data, not text — must not become content."""
     redacted = SimpleNamespace(type="redacted_thinking", data="encrypted-bytes")
