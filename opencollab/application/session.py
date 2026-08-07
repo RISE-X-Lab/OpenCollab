@@ -281,6 +281,15 @@ class Session:
                             owner,
                             propagate_cancellation=True,
                         )
+                    # Journal-backed autosave normally appends a delta. A
+                    # terminal turn must also publish a self-contained base
+                    # snapshot: callers and crash recovery may read the base
+                    # file directly, without replaying its sidecar journal.
+                    if (
+                        self._auto_save_path
+                        and isinstance(self.store, JournalSnapshotStorePort)
+                    ):
+                        await asyncio.to_thread(self.save, self._auto_save_path)
 
     async def add_user_message(self, content: str) -> None:
         if (
