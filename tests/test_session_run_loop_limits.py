@@ -12,6 +12,7 @@ from session_run_loop_test_support import (
     FakeOverflowError,
     OverflowThenOkLLM,
     SlowLLM,
+    _agent_with_tools,
     _is_overflow,
     build_runner,
     collect_events,
@@ -22,9 +23,11 @@ from session_run_loop_test_support import (
 from opencollab.application.session_run import (
     GenerationTimeoutError,
 )
+from opencollab.application.steering import READS_NUDGE_HARD
 from opencollab.domain.session import (
     SessionPhase,
     SessionState,
+    TurnEnforcementState,
 )
 
 
@@ -63,6 +66,38 @@ def test_call_llm_recompacts_and_retries_once_on_overflow():
         {"role": "assistant", "content": "b" * 4000},
     ]
     assert state.messages[-1] == {"role": "assistant", "content": "recovered"}
+
+
+def test_overflow_retry_preserves_hard_steering_tool_choice():
+    class RecordingOverflowThenOk:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+            self.calls.append(kwargs.get("tool_choice"))
+            if len(self.calls) == 1:
+                raise FakeOverflowError("prompt is too long")
+            return llm_response(content="recovered")
+
+    llm = RecordingOverflowThenOk()
+    state = SessionState(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "task"},
+        ],
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
+    )
+    runner = build_runner(
+        state=state,
+        agent=_agent_with_tools("file_write"),
+        llm=llm,
+        shaper=FakeForcedShaper(),
+        is_context_overflow=_is_overflow,
+    )
+
+    assert run(runner.run_loop()) == "recovered"
+    assert llm.calls == ["required", "required"]
+
 
 def test_call_llm_emits_recompaction_event_on_overflow():
     events, bus = collect_events()

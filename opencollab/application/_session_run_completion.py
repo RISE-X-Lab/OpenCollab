@@ -217,7 +217,11 @@ class _SessionRunCompletionMixin:
         )
         await self.event_publisher.emit(self.event_factory.error("context_overflow_recompacted"))
         try:
-            return await self._complete(forced, tools)
+            return await self._complete(
+                forced,
+                tools,
+                tool_choice_override,
+            )
         except Exception as exc:
             if self._is_context_overflow(exc):
                 raise _ContextOverflowStop() from exc
