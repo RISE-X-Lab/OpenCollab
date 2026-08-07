@@ -370,6 +370,80 @@ async def test_git_worktree_initializes_source_available_submodules(tmp_path) ->
     await env.cleanup()
 
 
+async def test_git_worktree_maps_nested_submodules_to_initialized_source(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    leaf = _repo(tmp_path / "leaf")
+    middle = _repo(tmp_path / "middle")
+    _git(
+        middle,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(leaf),
+        "vendor/leaf",
+    )
+    _git(
+        middle,
+        "config",
+        "-f",
+        ".gitmodules",
+        "submodule.vendor/leaf.url",
+        "https://example.invalid/leaf.git",
+    )
+    _git(middle, "add", ".gitmodules", "vendor/leaf")
+    _git(middle, "commit", "-qm", "add nested leaf")
+
+    source = _repo(tmp_path / "repo")
+    _git(
+        source,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(middle),
+        "modules/middle",
+    )
+    _git(
+        source / "modules" / "middle",
+        "-c",
+        "protocol.allow=never",
+        "-c",
+        "protocol.file.allow=always",
+        "-c",
+        f"submodule.vendor/leaf.url={leaf}",
+        "submodule",
+        "update",
+        "--init",
+        "--no-fetch",
+        "--",
+        "vendor/leaf",
+    )
+    _git(
+        source,
+        "config",
+        "-f",
+        ".gitmodules",
+        "submodule.modules/middle.url",
+        "https://example.invalid/middle.git",
+    )
+    _git(source, "add", ".gitmodules", "modules/middle")
+    _git(source, "commit", "-qm", "add nested dependency")
+    monkeypatch.setenv("GIT_ALLOW_PROTOCOL", "file")
+    env = WorktreeEnvironment(str(source), branch_name="nested-local-submodule")
+
+    workspace = Path(await env.setup())
+
+    assert (
+        workspace / "modules" / "middle" / "vendor" / "leaf" / "tracked.txt"
+    ).read_text(encoding="utf-8") == "base\n"
+    await env.cleanup()
+
+
 async def test_git_worktree_rejects_truncated_patch_evidence(tmp_path) -> None:
     source = _repo(tmp_path / "repo")
     env = WorktreeEnvironment(str(source), branch_name="truncated-diff")
