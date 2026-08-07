@@ -116,6 +116,26 @@ class Session:
             self.runner.tracer = value
 
     @property
+    def max_budget_tokens(self) -> int:
+        return self._max_budget_tokens
+
+    @max_budget_tokens.setter
+    def max_budget_tokens(self, value: int) -> None:
+        self._max_budget_tokens = value
+        if hasattr(self, "runner"):
+            self.runner.max_budget_tokens = value
+
+    @property
+    def max_steps(self) -> int:
+        return self._max_steps
+
+    @max_steps.setter
+    def max_steps(self, value: int) -> None:
+        self._max_steps = value
+        if hasattr(self, "runner"):
+            self.runner.max_steps = value
+
+    @property
     def permission_policy(self) -> PermissionPort | None:
         return self._permission_policy
 
