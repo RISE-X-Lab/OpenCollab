@@ -144,10 +144,6 @@ class Scheduler(
         # child's completion fill the exact pending row that suspended its
         # parent. Absent for legacy fire-and-forget spawns (tool_call_id=None).
         self._spawn_origin: dict[int, tuple[int, str]] = {}
-        # A completion can race its parent's pending-row publication. Retain its
-        # origin for one bounded recovery attempt instead of silently discarding
-        # the only route back to the suspended parent.
-        self._delivery_route_failures: dict[int, int] = {}
         # Children whose result row was atomically filled before teardown began.
         # Cleanup may cancel their task while it is only emitting an observational
         # post-delivery event; this marker preserves the already-committed child /
