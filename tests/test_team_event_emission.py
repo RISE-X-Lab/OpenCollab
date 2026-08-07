@@ -338,11 +338,8 @@ def test_cleanup_drains_queued_autosaves_before_final_snapshot(tmp_path):
         second_waiter = asyncio.create_task(
             lead.event_bus.emit(SessionRuntimeEvent(type="step_end"))
         )
-        while len(subscriber.pending_tasks) < 2:
-            await asyncio.sleep(0)
-        first_waiter.cancel()
-        second_waiter.cancel()
-        await asyncio.gather(first_waiter, second_waiter, return_exceptions=True)
+        await asyncio.gather(first_waiter, second_waiter)
+        assert len(subscriber.pending_tasks) == 1
 
         cleanup = asyncio.create_task(scheduler.cleanup(cleanup_timeout=1.0))
         await asyncio.sleep(0.02)
@@ -428,9 +425,7 @@ def test_cleanup_reports_nonquiescent_autosave_before_late_release(tmp_path):
             lead.event_bus.emit(SessionRuntimeEvent(type="step_end"))
         )
         assert await asyncio.to_thread(started.wait, 1.0)
-        waiter.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await waiter
+        await waiter
 
         with pytest.raises(
             RuntimeError,
