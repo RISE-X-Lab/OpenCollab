@@ -515,6 +515,29 @@ def test_llm_client_forwards_anthropic_base_url(monkeypatch):
     assert captured["base_url"] == "http://proxy.local"
     assert captured["api_key"] == "k"
     assert captured["timeout"] == 12.0
+    assert captured["max_retries"] == 0
+
+
+def test_llm_client_disables_openai_sdk_retries(monkeypatch):
+    captured = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    from opencollab.adapters.llm import client as client_module
+
+    monkeypatch.setattr(client_module.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    client = client_module.LLMClient(
+        provider="openai",
+        model="gpt-4o",
+        api_key="k",
+        max_retries=3,
+    )
+
+    assert client.max_retries == 3
+    assert captured["max_retries"] == 0
 
 
 def test_openai_estimates_output_from_tool_calls_when_no_content():
