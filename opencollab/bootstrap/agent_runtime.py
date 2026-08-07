@@ -317,8 +317,14 @@ async def run_agent(
             cleanup_quiesced=True,
             cleanup_environment=cleanup_environment,
         )
-    except asyncio.CancelledError:
-        await stop_once(propagate_cancellation=False)
+    except asyncio.CancelledError as cancellation:
+        aborted, terminated, finalized = await stop_once(
+            propagate_cancellation=False
+        )
+        if not aborted or not terminated or not finalized:
+            raise AgentRuntimeLifecycleError(
+                "cancelled agent did not reach a quiescent terminal state"
+            ) from cancellation
         raise
     except Exception:
         if not owner.done():
