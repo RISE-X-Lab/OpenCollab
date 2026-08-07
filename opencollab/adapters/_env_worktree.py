@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import uuid
 
-from opencollab.adapters._env_base import Environment, ExecResult
+from opencollab.adapters._env_base import Environment, ExecResult, TextFileRange
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_process import run_process
 from opencollab.adapters.git_patch import guarded_staged_diff_command
@@ -290,6 +290,25 @@ class WorktreeEnvironment(Environment):
             await self.setup()
         assert self._local_env is not None
         return await self._local_env.read_file(path)
+
+    async def read_text_range(
+        self,
+        path: str,
+        *,
+        offset: int,
+        limit: int,
+        max_chars: int,
+    ) -> TextFileRange:
+        self._ensure_active()
+        if self._local_env is None:
+            await self.setup()
+        assert self._local_env is not None
+        return await self._local_env.read_text_range(
+            path,
+            offset=offset,
+            limit=limit,
+            max_chars=max_chars,
+        )
 
     async def write_file(self, path: str, content: str) -> None:
         self._ensure_active()
