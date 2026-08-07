@@ -637,6 +637,32 @@ def test_tool_observations_bound_large_nested_arguments():
     assert tool.runtime_calls[0][0] == arguments
 
 
+def test_tool_observation_budget_accounts_for_large_numeric_scalars():
+    huge_integer = int("9" * 4000)
+    arguments = {"values": [huge_integer] * 64}
+    tool = RuntimeNativeTool()
+    tracer = FakeTracer()
+    use_case, publisher = build_use_case(
+        agent=FakeAgent(tools=[tool]),
+        tracer=tracer,
+    )
+
+    run(use_case.process([tool_call(arguments=json.dumps(arguments))]))
+
+    event_args = publisher.events[0].data["args"]
+    trace_args = tracer.steps[0]["payload"]["args"]
+    serialized = json.dumps(event_args, ensure_ascii=False).encode("utf-8")
+    assert event_args == trace_args
+    assert len(serialized) <= tool_execution_runtime.OBSERVATION_PAYLOAD_BUDGET_BYTES
+    assert any(
+        isinstance(value, dict)
+        and value.get("__opencollab_truncated__") is True
+        and value.get("original_type") == "int"
+        for value in event_args["values"]
+    )
+    assert tool.runtime_calls[0][0] == arguments
+
+
 def test_tool_execution_use_case_persists_full_tool_output():
     # The full result is appended/persisted; bounding what the model sees is the
     # job of the call-time per-tool-result budget shaper, not tool execution.
