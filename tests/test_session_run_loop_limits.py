@@ -166,6 +166,49 @@ def test_per_call_timeout_returns_before_cancel_cleanup_finishes():
 
     run(scenario())
 
+
+def test_timeout_records_late_success_usage():
+    class LateSuccessLLM:
+        def __init__(self):
+            self.cancel_seen = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def complete(self, messages, tools=None, temperature=0.0):
+            del messages, tools, temperature
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancel_seen.set()
+                await self.release.wait()
+                return llm_response(content="late", total_tokens=777)
+
+    async def scenario():
+        state = SessionState(messages=[{"role": "system", "content": "sys"}])
+        llm = LateSuccessLLM()
+        runner = build_runner(state=state, llm=llm, per_call_timeout=0.01)
+
+        try:
+            with pytest.raises(GenerationTimeoutError):
+                await runner.run_loop()
+
+            await asyncio.wait_for(llm.cancel_seen.wait(), timeout=0.5)
+            assert state.used_tokens == 0
+            assert len(runner.pending_cleanup_tasks) == 1
+
+            llm.release.set()
+            while not runner.late_provider_usage:
+                await asyncio.sleep(0)
+
+            assert state.used_tokens == 777
+            assert runner.late_provider_usage == (777,)
+            assert all(message.get("content") != "late" for message in state.messages)
+        finally:
+            llm.release.set()
+            while runner.pending_cleanup_tasks or not runner.late_provider_usage:
+                await asyncio.sleep(0)
+
+    run(scenario())
+
 def test_provider_timeout_is_not_relabelled_as_generation_ceiling():
 
     class ProviderTimeoutLLM:
