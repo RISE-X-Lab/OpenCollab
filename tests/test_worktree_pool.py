@@ -299,6 +299,31 @@ async def test_git_worktree_preserves_nested_source_workspace(tmp_path) -> None:
     await env.cleanup()
 
 
+async def test_git_worktree_initializes_source_available_submodules(tmp_path) -> None:
+    dependency = _repo(tmp_path / "dependency")
+    source = _repo(tmp_path / "repo")
+    _git(
+        source,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        "-q",
+        str(dependency),
+        "vendor/dependency",
+    )
+    _git(source, "commit", "-qam", "add local dependency")
+    assert (source / "vendor" / "dependency" / "tracked.txt").is_file()
+    env = WorktreeEnvironment(str(source), branch_name="local-submodule")
+
+    workspace = Path(await env.setup())
+
+    assert (workspace / "vendor" / "dependency" / "tracked.txt").read_text(
+        encoding="utf-8"
+    ) == "base\n"
+    await env.cleanup()
+
+
 async def test_git_worktree_rejects_truncated_patch_evidence(tmp_path) -> None:
     source = _repo(tmp_path / "repo")
     env = WorktreeEnvironment(str(source), branch_name="truncated-diff")
