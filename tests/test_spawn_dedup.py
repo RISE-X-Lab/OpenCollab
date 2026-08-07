@@ -19,6 +19,7 @@ from opencollab.adapters.tools.spawn import SpawnAgentTool
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
+from opencollab.application.scheduler_types import DuplicateSpawnError
 from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 from opencollab.domain.scheduler import SessionControlBlock
 from opencollab.domain.session import SessionPhase, SessionState
@@ -131,6 +132,64 @@ def test_duplicate_spawn_tool_call_is_refused_while_in_flight():
 
         gate.set()
         await scheduler._tasks[aid]
+
+    run(scenario())
+
+
+def test_direct_duplicate_spawn_is_rejected_before_allocating_resources():
+    async def scenario():
+        gate = asyncio.Event()
+        scheduler = _scheduler(
+            [
+                BlockingChild("coder", "first", gate),
+                BlockingChild("coder", "duplicate", gate),
+            ]
+        )
+
+        aid = await scheduler.spawn(0, "coder", "build it", "module=a")
+        with pytest.raises(DuplicateSpawnError) as caught:
+            await scheduler.spawn(0, "coder", "build it", "module=a")
+
+        assert caught.value.existing_aid == aid
+        assert set(scheduler._sessions) == {0, aid}
+        assert set(scheduler._tasks) == {aid}
+        assert set(scheduler._child_lease) == {aid}
+
+        gate.set()
+        await scheduler._tasks[aid]
+
+    run(scenario())
+
+
+def test_concurrent_direct_duplicate_spawns_create_only_one_child():
+    async def scenario():
+        gate = asyncio.Event()
+        scheduler = _scheduler(
+            [
+                BlockingChild("coder", "first", gate),
+                BlockingChild("coder", "duplicate", gate),
+            ]
+        )
+
+        results = await asyncio.gather(
+            scheduler.spawn(0, "coder", "build it", "module=a"),
+            scheduler.spawn(0, "coder", "build it", "module=a"),
+            return_exceptions=True,
+        )
+
+        aids = [result for result in results if isinstance(result, int)]
+        duplicates = [
+            result for result in results if isinstance(result, DuplicateSpawnError)
+        ]
+        assert len(aids) == 1
+        assert len(duplicates) == 1
+        assert duplicates[0].existing_aid == aids[0]
+        assert set(scheduler._sessions) == {0, aids[0]}
+        assert set(scheduler._tasks) == {aids[0]}
+        assert set(scheduler._child_lease) == {aids[0]}
+
+        gate.set()
+        await scheduler._tasks[aids[0]]
 
     run(scenario())
 
