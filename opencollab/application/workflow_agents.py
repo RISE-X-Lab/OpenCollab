@@ -75,7 +75,7 @@ class WorkflowAgentsMixin:
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"agent build failed ({label or 'agent'}): {exc}")
-            return None
+            return harvest_fallback or None
 
         self._track_session(session)
         self._configure_session_enforcement(
