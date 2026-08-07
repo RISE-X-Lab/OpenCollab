@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -71,8 +73,32 @@ def test_tracer_write_failure_is_sticky(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("opencollab.adapters.trace.write_locked_text", fail)
     tracer.log_step("first", {})
     tracer.log_step("second", {})
+    tracer.flush()
     assert tracer.write_error == "OSError: disk full"
     assert tracer.dropped_steps == 2
+
+
+def test_tracer_slow_write_does_not_block_log_step(tmp_path, monkeypatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_write(*_args, **_kwargs) -> None:
+        started.set()
+        assert release.wait(1.0)
+
+    monkeypatch.setattr("opencollab.adapters.trace.write_locked_text", slow_write)
+    tracer = Tracer("run", output_dir=str(tmp_path))
+    timer = threading.Timer(0.15, release.set)
+    timer.start()
+    try:
+        before = time.monotonic()
+        tracer.log_step("slow", {})
+        elapsed = time.monotonic() - before
+        assert elapsed < 0.05
+    finally:
+        release.set()
+        timer.cancel()
+        tracer.close()
 
 
 def test_tracer_serialization_fallback_does_not_disable_later_steps(tmp_path) -> None:
@@ -122,3 +148,29 @@ async def test_event_sink_concurrent_records_remain_whole_json_lines(tmp_path) -
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert {row["data"]["index"] for row in rows} == set(range(30))
     assert sink.write_error is None
+
+
+async def test_event_sink_slow_write_does_not_block_event_loop(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_append(*_args, **_kwargs) -> None:
+        started.set()
+        assert release.wait(1.0)
+
+    monkeypatch.setattr("opencollab.adapters.event_log.append_regular_text", slow_append)
+    sink = JsonlEventSink(str(tmp_path / "events.jsonl"))
+    owner = asyncio.create_task(sink.emit(SimpleNamespace(type="event", data={})))
+    timer = threading.Timer(0.15, release.set)
+    timer.start()
+    try:
+        await asyncio.sleep(0.02)
+        assert started.is_set()
+        assert not owner.done()
+    finally:
+        release.set()
+        timer.cancel()
+        await owner
