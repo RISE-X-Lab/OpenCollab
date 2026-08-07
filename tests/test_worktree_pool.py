@@ -251,6 +251,34 @@ async def test_git_worktree_reports_committed_and_untracked_changes(tmp_path) ->
     assert not _branch_exists(source, branch)
 
 
+async def test_git_worktree_rejects_dirty_source_snapshot(tmp_path) -> None:
+    source = _repo(tmp_path / "repo")
+    (source / "deleted.txt").write_text("delete\n", encoding="utf-8")
+    _git(source, "add", "deleted.txt")
+    _git(source, "commit", "-qm", "add deletion fixture")
+    (source / "staged.txt").write_text("staged\n", encoding="utf-8")
+    _git(source, "add", "staged.txt")
+    (source / "tracked.txt").write_text("unstaged\n", encoding="utf-8")
+    (source / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+    (source / "deleted.txt").unlink()
+    branch = "dirty-source"
+    env = WorktreeEnvironment(str(source), branch_name=branch)
+
+    try:
+        with pytest.raises(RuntimeError, match="uncommitted changes") as captured:
+            await env.setup()
+    finally:
+        if env._local_env is not None:
+            await env.cleanup()
+
+    detail = str(captured.value)
+    assert "staged.txt" in detail
+    assert "tracked.txt" in detail
+    assert "untracked.txt" in detail
+    assert "deleted.txt" in detail
+    assert not _branch_exists(source, branch)
+
+
 async def test_git_worktree_rejects_truncated_patch_evidence(tmp_path) -> None:
     source = _repo(tmp_path / "repo")
     env = WorktreeEnvironment(str(source), branch_name="truncated-diff")
