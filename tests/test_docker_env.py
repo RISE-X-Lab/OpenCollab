@@ -166,6 +166,42 @@ async def test_start_failure_reports_unproven_inspect_cleanup(monkeypatch) -> No
     assert all(call[0][1] != "rm" for call in fake.calls)
 
 
+@pytest.mark.parametrize("kind", ["missing", "file"])
+async def test_setup_rejects_invalid_mount_before_docker(
+    monkeypatch,
+    tmp_path,
+    kind,
+) -> None:
+    mount = tmp_path / kind
+    if kind == "file":
+        mount.write_text("not a directory", encoding="utf-8")
+    fake = FakeDocker(lambda command, _kwargs: AssertionError(command))
+    _patch(monkeypatch, fake)
+
+    with pytest.raises(NotADirectoryError):
+        await DockerEnvironment().setup(str(mount))
+
+    assert fake.calls == []
+
+
+async def test_setup_mounts_canonical_host_directory(monkeypatch, tmp_path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+    fake = FakeDocker(
+        lambda command, _kwargs: _result(stdout=f"{CONTAINER_ID}\n".encode())
+    )
+    _patch(monkeypatch, fake)
+    env = DockerEnvironment(workspace="/repo")
+
+    await env.setup(str(alias))
+
+    run_argv = fake.calls[0][0]
+    assert run_argv[run_argv.index("-v") + 1] == f"{target.resolve()}:/repo"
+    assert env.host_workspace == str(target.resolve())
+
+
 async def test_attached_name_binds_once_and_executes_by_full_id(monkeypatch) -> None:
     def respond(command, _kwargs):
         if command[1] == "inspect":
