@@ -413,6 +413,36 @@ async def test_attached_abort_cancels_and_waits_for_all_active_execs(monkeypatch
         await env.exec_cmd("echo after-abort")
 
 
+async def test_attached_cleanup_revokes_and_removes_owned_temporary_files(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_docker(*args, **_kwargs):
+        calls.append(args)
+        return _result()
+
+    env = DockerEnvironment(container_id=CONTAINER_ID)
+    env._attached_bound = True
+    env._temporary_files = {"/tmp/opencollab-a", "/tmp/opencollab-b"}
+    monkeypatch.setattr(env, "_docker", fake_docker)
+
+    await env.cleanup()
+
+    assert env.revoked
+    assert env._temporary_files == set()
+    assert {call[-1] for call in calls} == {
+        "/tmp/opencollab-a",
+        "/tmp/opencollab-b",
+    }
+    assert all(call[:2] == ("exec", "--") for call in calls)
+    with pytest.raises(RuntimeError, match="aborted"):
+        await env.exec_cmd("echo stale")
+
+    await env.cleanup()
+    assert len(calls) == 2
+
+
 async def test_double_cancellation_cannot_interrupt_container_recovery(monkeypatch) -> None:
     fake = FakeDocker(
         lambda command, _kwargs: _result(stdout=f"{CONTAINER_ID}\n".encode())
