@@ -48,17 +48,25 @@ async def _read_bounded(
 ) -> tuple[bytes, int]:
     if stream is None:
         return b"", 0
-    retained = bytearray()
-    dropped = 0
+    head_limit = (limit + 1) // 2
+    tail_limit = limit - head_limit
+    head = bytearray()
+    tail = bytearray()
+    total = 0
     while True:
         chunk = await stream.read(64 * 1024)
         if not chunk:
             break
-        available = max(0, limit - len(retained))
-        kept = chunk[:available]
-        retained.extend(kept)
-        dropped += len(chunk) - len(kept)
-    return bytes(retained), dropped
+        total += len(chunk)
+        available = max(0, head_limit - len(head))
+        head.extend(chunk[:available])
+        remainder = chunk[available:]
+        if tail_limit and remainder:
+            tail.extend(remainder)
+            if len(tail) > tail_limit:
+                del tail[:-tail_limit]
+    retained = bytes(head + tail)
+    return retained, max(0, total - len(retained))
 
 
 def _group_exists(group_id: int) -> bool:

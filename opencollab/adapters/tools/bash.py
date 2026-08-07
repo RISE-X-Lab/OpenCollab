@@ -20,6 +20,29 @@ MAX_OUTPUT_CHARS = 8_000
 DEFAULT_TIMEOUT = 120.0
 
 
+def _format_captured_stream(
+    text: str,
+    max_chars: int,
+    label: str,
+    dropped_bytes: int,
+) -> str:
+    if dropped_bytes <= 0:
+        return truncate(text, max_chars, label)
+    marker = (
+        f"\n\n... [{dropped_bytes} bytes of {label} dropped during capture] ...\n\n"
+    )
+    if len(marker) >= max_chars:
+        return marker[:max_chars]
+    source_budget = max_chars - len(marker)
+    head_budget = (source_budget + 1) // 2
+    tail_budget = source_budget - head_budget
+    captured_split = (len(text) + 1) // 2
+    captured_head = text[:captured_split]
+    captured_tail = text[captured_split:]
+    tail = captured_tail[-tail_budget:] if tail_budget else ""
+    return captured_head[:head_budget] + marker + tail
+
+
 class BashTool(Tool):
     """Execute a shell command in the workspace.
 
@@ -93,8 +116,18 @@ class BashTool(Tool):
         result = await env.exec_cmd(cmd, timeout=timeout)
 
         # Format output with truncation (ref: user blind spot #1)
-        stdout = truncate(result.stdout, self.max_output_chars, "stdout")
-        stderr = truncate(result.stderr, self.max_output_chars, "stderr")
+        stdout = _format_captured_stream(
+            result.stdout,
+            self.max_output_chars,
+            "stdout",
+            getattr(result, "stdout_dropped_bytes", 0),
+        )
+        stderr = _format_captured_stream(
+            result.stderr,
+            self.max_output_chars,
+            "stderr",
+            getattr(result, "stderr_dropped_bytes", 0),
+        )
 
         parts = [f"Exit code: {result.returncode}"]
         if stdout:

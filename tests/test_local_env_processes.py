@@ -64,7 +64,7 @@ async def test_local_exec_bounds_output(tmp_path, monkeypatch) -> None:
     [
         (b"ok", 4, b"ok", 0),
         (b"four", 4, b"four", 0),
-        (b"abcdef", 4, b"abcd", 2),
+        (b"abcdef", 4, b"abef", 2),
     ],
     ids=("below-limit", "exact-limit", "over-limit"),
 )
@@ -84,6 +84,22 @@ async def test_process_output_limit_counts_only_unretained_bytes(
     assert result.stdout == expected_stdout
     assert result.stdout_dropped_bytes == expected_dropped
     assert result.to_exec_result().stdout_truncated is (expected_dropped > 0)
+
+
+async def test_process_output_limit_preserves_real_head_and_tail() -> None:
+    payload = b"HEAD" + b"x" * 100 + b"TAIL"
+
+    result = await run_process(
+        (sys.executable, "-c", f"import os; os.write(1, {payload!r})"),
+        shell=False,
+        timeout=5,
+        output_limit=16,
+    )
+
+    assert result.stdout.startswith(b"HEAD")
+    assert result.stdout.endswith(b"TAIL")
+    assert len(result.stdout) == 16
+    assert result.stdout_dropped_bytes == len(payload) - 16
 
 
 async def test_local_timeout_kills_descendant_before_it_mutates_workspace(tmp_path) -> None:
