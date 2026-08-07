@@ -89,6 +89,7 @@ class SchedulerEventFactory:
     # teammate messaging
     agent_message_sent: Callable[[int, int, str, str], SchedulerEvent]
     agent_message_delivered: Callable[[int, int, str, int], SchedulerEvent]
+    agent_message_rejected_on_restore: Callable[[int, int, str], SchedulerEvent]
     # review loop
     review_started: Callable[[int, int], SchedulerEvent]
     review_completed: Callable[[int, bool], SchedulerEvent]
@@ -140,6 +141,14 @@ def default_scheduler_event_factory() -> SchedulerEventFactory:
                 "to_aid": to_aid,
                 "summary": summary,
                 "content_len": content_len,
+            },
+        ),
+        agent_message_rejected_on_restore=lambda from_aid, to_aid, reason: SchedulerEvent(
+            type="agent_message_rejected_on_restore",
+            data={
+                "from_aid": from_aid,
+                "to_aid": to_aid,
+                "reason": reason,
             },
         ),
         review_started=lambda iteration, maximum: SchedulerEvent(

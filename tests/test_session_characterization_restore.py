@@ -21,6 +21,7 @@ from opencollab.application.scheduler_types import LaunchSpec
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import load_session
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
+from opencollab.domain.scheduler import SessionControlBlock
 from opencollab.domain.session import SessionPhase
 
 
@@ -339,6 +340,18 @@ def test_scheduler_init_preserves_and_drains_restored_awaiting_phase(tmp_path):
         event_sink=EventBus(),
     )
     scheduler.create_init_process(LaunchSpec(session_file=str(path)))
+    sender = Session(agent=FakeAgent(), llm=FakeLLMClient())
+    sender.state.aid = 1
+    sender.state.mark_done()
+    scheduler.table.add(
+        SessionControlBlock(
+            aid=1,
+            parent_aid=0,
+            agent=sender.agent,
+            state=sender.state,
+        )
+    )
+    scheduler._sessions[1] = sender
 
     assert resumed.phase is SessionPhase.AWAITING_EVENTS
     assert resumed.state.pending_events.is_complete()

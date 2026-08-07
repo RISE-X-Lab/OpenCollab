@@ -27,6 +27,7 @@ from opencollab.application._scheduler_constants import (
     MAX_TEAMMATE_MESSAGE_BYTES,
 )
 from opencollab.application.scheduler_types import QueuedTeammateMessage
+from opencollab.domain.identity import role_collision_key
 from opencollab.domain.session import SessionPhase
 
 
@@ -63,6 +64,8 @@ class MessagingMixin:
             if self._shutting_down:
                 return "Error: scheduler is shutting down."
             message_id = uuid.uuid4().hex
+            from_role = self._role_of(from_aid)
+            to_role = self._role_of(to_aid)
             xml = self._format_teammate_message(
                 from_aid,
                 summary,
@@ -90,8 +93,11 @@ class MessagingMixin:
                     "message_content": content,
                     "from_aid": from_aid,
                     "to_aid": to_aid,
+                    "from_role": from_role,
+                    "to_role": to_role,
                     "summary": summary,
                     "message_id": message_id,
+                    "delivery_status": "pending",
                 }
             )
             sent_at = str(target.state.pending_user_messages[-1]["timestamp"])
@@ -103,6 +109,8 @@ class MessagingMixin:
                 xml=xml,
                 sent_at=sent_at,
                 message_id=message_id,
+                from_role=from_role,
+                to_role=to_role,
             )
             inbox.append(message)
             self._message_inbox[to_aid] = inbox
@@ -162,6 +170,8 @@ class MessagingMixin:
         for item in list(pending):
             if not isinstance(item, dict) or not item.get("content"):
                 continue
+            if item.get("delivery_status") == "rejected":
+                continue
             xml = str(item["content"])
             message_id = str(item.get("message_id") or self._message_id_from_xml(xml) or "")
             if message_id and message_id in committed_ids:
@@ -181,6 +191,9 @@ class MessagingMixin:
                     xml=xml,
                     sent_at=str(item.get("timestamp") or ""),
                     message_id=message_id,
+                    from_role=str(item.get("from_role") or ""),
+                    to_role=str(item.get("to_role") or ""),
+                    restored=True,
                 )
             )
         if restored:
@@ -320,6 +333,28 @@ class MessagingMixin:
         scb = self.table.get(aid)
         if session is None or scb is None:
             return []
+        events = []
+        retained = []
+        rejected = False
+        for message in inbox:
+            reason = self._message_route_error(aid, message)
+            if reason is None:
+                retained.append(message)
+                continue
+            rejected = True
+            self._mark_message_rejected(session.state, message, reason)
+            events.append(
+                self._events.agent_message_rejected_on_restore(
+                    message.from_aid,
+                    aid,
+                    reason,
+                )
+            )
+        if rejected:
+            inbox[:] = retained
+            self._autosave_session(aid)
+        if not inbox:
+            return events
         task = self._tasks.get(aid)
         current_task = asyncio.current_task()
         if (
@@ -327,15 +362,15 @@ class MessagingMixin:
             and not task.done()
             and not (allow_current_task and task is current_task)
         ):
-            return []
+            return events
         if scb.state.phase is SessionPhase.AWAITING_EVENTS or not scb.state.pending_events.is_empty():
-            return []
+            return events
         messages = self._bounded_message_batch(inbox)
         if not messages or self._shutting_down:
-            return []
+            return events
         prior_lease = self._current_turn_lease(aid)
         if not self._reserve_message_budget(aid):
-            return []
+            return events
 
         delivery = (
             messages[0].xml
@@ -357,10 +392,10 @@ class MessagingMixin:
 
         if self._shutting_down:
             self._release_turn_lease(aid)
-            return []
+            return events
 
         self._start_agent_task(aid, session)
-        return [
+        return events + [
             (
                 self._events.agent_message_delivered(
                     message.from_aid,
@@ -371,3 +406,76 @@ class MessagingMixin:
             )
             for message in messages
         ]
+
+    def _message_route_error(
+        self,
+        aid: int,
+        message: QueuedTeammateMessage,
+    ) -> str | None:
+        """Validate a durable message against the current roster and topology."""
+        if message.to_aid != aid:
+            return (
+                f"restored target aid changed from {message.to_aid} to {aid}"
+            )
+        if message.from_aid == aid:
+            return "restored route would deliver a message to its sender"
+        sender = self.table.get(message.from_aid)
+        target = self.table.get(aid)
+        if sender is None or self._sessions.get(message.from_aid) is None:
+            return f"restored sender aid {message.from_aid} no longer exists"
+        if target is None or self._sessions.get(aid) is None:
+            return f"restored target aid {aid} no longer exists"
+
+        current_from_role = sender.agent.name
+        current_to_role = target.agent.name
+        if message.from_role:
+            if role_collision_key(message.from_role) != role_collision_key(
+                current_from_role
+            ):
+                return (
+                    f"restored sender role changed from {message.from_role!r} "
+                    f"to {current_from_role!r}"
+                )
+        elif message.restored and self._topology is not None:
+            return "restored message has no durable sender role identity"
+        if message.to_role:
+            if role_collision_key(message.to_role) != role_collision_key(
+                current_to_role
+            ):
+                return (
+                    f"restored target role changed from {message.to_role!r} "
+                    f"to {current_to_role!r}"
+                )
+        elif message.restored and self._topology is not None:
+            return "restored message has no durable target role identity"
+        if self._topology_forbids(current_from_role, current_to_role):
+            return (
+                f"restored route {current_from_role!r} to {current_to_role!r} "
+                "is forbidden by the current team topology"
+            )
+        return None
+
+    @staticmethod
+    def _mark_message_rejected(
+        state: object,
+        message: QueuedTeammateMessage,
+        reason: str,
+    ) -> None:
+        """Move one pending sidecar record into a durable rejected state."""
+        pending = getattr(state, "pending_user_messages", ())
+        for item in pending:
+            if not isinstance(item, dict):
+                continue
+            same_message = (
+                bool(message.message_id)
+                and item.get("message_id") == message.message_id
+            ) or (
+                not message.message_id
+                and item.get("content") == message.xml
+                and item.get("from_aid") == message.from_aid
+            )
+            if not same_message:
+                continue
+            item["delivery_status"] = "rejected"
+            item["rejection_reason"] = reason
+            return
