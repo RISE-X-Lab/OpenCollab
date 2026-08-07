@@ -350,7 +350,7 @@ class GrepTool(Tool):
 
         quoted_pattern = shlex.quote(pattern)
         quoted_search_path = shlex.quote(search_path)
-        rg_cmd = f"rg -n --max-count {max_results} "
+        rg_cmd = "rg -n "
         if glob_pattern:
             rg_cmd += f"-g {shlex.quote(glob_pattern)} "
         rg_cmd += f"-- {quoted_pattern} {quoted_search_path} 2>/dev/null"
@@ -369,5 +369,6 @@ class GrepTool(Tool):
 
         result = await env.exec_cmd(rg_cmd, timeout=30)
         if result.stdout.strip():
-            return truncate(result.stdout.strip(), self.max_grep_chars)
+            matches = result.stdout.strip().splitlines()[:max_results]
+            return truncate("\n".join(matches), self.max_grep_chars)
         return f"No matches found for pattern: {pattern}"

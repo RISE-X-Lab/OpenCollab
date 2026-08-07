@@ -527,6 +527,25 @@ def test_grep_tool_rejects_non_integer_max_results_before_exec():
     assert env.exec_calls == []
 
 
+def test_grep_tool_applies_max_results_globally():
+    env = FakeEnv(
+        stdout="\n".join(f"src/file_{index}.py:1:needle" for index in range(6))
+    )
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        GrepTool().execute_with_runtime(
+            {"pattern": "needle", "max_results": 2},
+            runtime,
+        )
+    )
+
+    assert result.splitlines() == [
+        "src/file_0.py:1:needle",
+        "src/file_1.py:1:needle",
+    ]
+
+
 def test_grep_tool_terminates_options_before_pattern_and_path():
     env = FakeEnv(stdout="")
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
@@ -539,7 +558,7 @@ def test_grep_tool_terminates_options_before_pattern_and_path():
     )
 
     cmd, _ = env.exec_calls[0]
-    assert "rg -n --max-count 50 -- '--pre=touch pwned' --debug" in cmd
+    assert "rg -n -- '--pre=touch pwned' --debug" in cmd
     assert (
         "grep -rEn --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.opencollab "
         "-- '--pre=touch pwned' --debug"
