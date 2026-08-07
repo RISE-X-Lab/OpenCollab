@@ -429,22 +429,32 @@ def _convert_assistant_content(message: dict, *, message_index: int) -> list[dic
         role="assistant",
     )
     for tool_call in message.get("tool_calls") or []:
-        content_blocks.append(_convert_tool_call(tool_call))
+        content_blocks.append(_convert_tool_call(tool_call, message_index=message_index))
     return content_blocks
 
 
-def _convert_tool_call(tool_call: dict) -> dict:
+def _convert_tool_call(tool_call: dict, *, message_index: int) -> dict:
     """Convert one OpenAI tool call to an Anthropic tool_use block."""
     func = tool_call["function"]
-    try:
-        arguments = func["arguments"]
-        tool_input = json.loads(arguments) if isinstance(arguments, str) else arguments
-    except (json.JSONDecodeError, TypeError):
-        tool_input = {}
+    name = func["name"]
+    call_id = tool_call["id"]
+    arguments = func.get("arguments")
+    location = f"message {message_index} (assistant) tool {name} ({call_id})"
+    if isinstance(arguments, str):
+        try:
+            tool_input = json.loads(arguments)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{location} has invalid JSON arguments: {exc.msg}") from exc
+    elif isinstance(arguments, dict):
+        tool_input = copy.deepcopy(arguments)
+    else:
+        raise ValueError(f"{location} arguments must be JSON text or an object")
+    if not isinstance(tool_input, dict):
+        raise ValueError(f"{location} arguments must decode to a JSON object")
     return {
         "type": "tool_use",
-        "id": tool_call["id"],
-        "name": func["name"],
+        "id": call_id,
+        "name": name,
         "input": tool_input,
     }
 
