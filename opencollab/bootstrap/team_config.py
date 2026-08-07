@@ -294,8 +294,13 @@ def _resolve_entry_role(explicit: str | None, roles: dict[str, RoleConfig]) -> s
                 f"({sorted(roles)})."
             )
         return canonical
-    if "lead" in roles:
-        return "lead"
+    canonical_roles = {
+        role_collision_key(role): role
+        for role in roles
+    }
+    lead = canonical_roles.get(role_collision_key("lead"))
+    if lead is not None:
+        return lead
     if roles:
         return next(iter(roles))
     return "lead"
