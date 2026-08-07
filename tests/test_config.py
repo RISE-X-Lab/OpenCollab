@@ -165,6 +165,23 @@ def test_provider_override_reselects_file_first_api_key(monkeypatch, tmp_path):
     assert cfg.api_key == "file-anthropic"
 
 
+def test_anthropic_does_not_inherit_openai_base_url(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_PROVIDER", "anthropic")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://openai-proxy.invalid/v1")
+    monkeypatch.delenv("OPENCOLLAB_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+    assert build_config().base_url is None
+
+
+def test_anthropic_uses_its_provider_specific_base_url(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_PROVIDER", "anthropic")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://openai-proxy.invalid/v1")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://anthropic-proxy.invalid")
+
+    assert build_config().base_url == "https://anthropic-proxy.invalid"
+
+
 def test_cli_resolved_config_keeps_max_output_tokens(monkeypatch, tmp_path):
     from opencollab.adapters.cli.config_resolve import resolve_config
 
