@@ -21,9 +21,20 @@ CommandExecutor = Callable[[HookSpec, dict[str, Any]], Awaitable[None]]
 class ShellHookRunner(HookPort):
     """Run configured shell hooks without letting failures stop the agent."""
 
-    def __init__(self, specs: tuple[HookSpec, ...], *, scheduler: Any = None):
+    def __init__(
+        self,
+        specs: tuple[HookSpec, ...],
+        *,
+        scheduler: Any = None,
+        workspace: str | os.PathLike[str] | None = None,
+    ):
         self._specs = specs
         self._scheduler = scheduler
+        self._workspace = (
+            os.path.abspath(os.fspath(workspace))
+            if workspace is not None
+            else None
+        )
         self.cleanup_quiesced = True
         self._executors: dict[str, CommandExecutor] = {"command": self._run_command}
 
@@ -74,6 +85,7 @@ class ShellHookRunner(HookPort):
                 timeout=timeout,
                 input_bytes=stdin_bytes,
                 env=environment,
+                cwd=self._workspace,
             )
         except asyncio.TimeoutError:
             logger.warning("hook command timed out after %.2fs: %s", timeout, spec.command)
