@@ -68,7 +68,7 @@ DEFAULT_ROLE_PROMPT = _load_default_prompt("role.md")
 class RoleConfig(BaseModel):
     """A single role definition: prompt + optional model override + tool names."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     prompt: str = Field(min_length=1)
     model: str | None = None
@@ -86,7 +86,7 @@ class RoleConfig(BaseModel):
 class _RoleFileModel(BaseModel):
     """On-disk role entry; ``prompt`` or ``prompt_file`` (resolved at load)."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     prompt: str | None = None
     prompt_file: str | None = None
@@ -100,7 +100,7 @@ class _RoleFileModel(BaseModel):
 class _HookActionFileModel(BaseModel):
     """On-disk hook entry: one action bound to a lifecycle event."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     command: str = Field(min_length=1)
     matcher: str | None = None
@@ -111,7 +111,7 @@ class _HookActionFileModel(BaseModel):
 class _TeamFileModel(BaseModel):
     """Top-level team file schema."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     roles: dict[str, _RoleFileModel] = Field(default_factory=dict)
     topology: dict[str, list[str]] = Field(default_factory=dict)
