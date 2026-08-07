@@ -376,18 +376,41 @@ def test_llm_trace_omits_reasoning_when_absent():
     llm_calls = [s for s in tracer.steps if s["step_type"] == "llm_call"]
     assert "reasoning" not in llm_calls[0]["payload"]
 
-def test_empty_stop_with_length_finish_reason_does_not_retry():
-    # A truncated turn (finish_reason="length") with empty content is NOT an
-    # empty-stop: a nudge cannot un-truncate it, so we must not waste a retry.
+@pytest.mark.parametrize("finish_reason", ["length", "max_tokens"])
+@pytest.mark.parametrize("content", [None, "partial answer"])
+def test_length_finish_reason_stops_with_partial_output(content, finish_reason):
+    # A provider length stop is truncated regardless of whether it returned a
+    # partial text fragment. It must never be reported as a clean completion.
     state = SessionState(messages=_convo())
-    llm = FakeLLM([llm_response(content=None, finish_reason="length")])
+    llm = FakeLLM([llm_response(content=content, finish_reason=finish_reason)])
     runner = build_runner(state=state, llm=llm)
 
     result = run(runner.run_loop())
 
-    assert result == ""
-    assert state.phase is SessionPhase.DONE
+    assert result == (content or "")
+    assert state.phase is SessionPhase.STOPPED
+    assert state.terminal_reason == "output truncated: provider reached its generation limit"
     assert len(llm.calls) == 1  # no retry attempted
+
+
+def test_length_finish_reason_never_executes_or_persists_partial_tool_calls():
+    state = SessionState(messages=_convo())
+    tool_execution = FakeToolExecution()
+    llm = FakeLLM(
+        [
+            llm_response(
+                content="partial",
+                tool_calls=[tool_call(arguments='{"path": "unterminated')],
+                finish_reason="length",
+            )
+        ]
+    )
+    runner = build_runner(state=state, llm=llm, tool_execution=tool_execution)
+
+    assert run(runner.run_loop()) == "partial"
+    assert state.phase is SessionPhase.STOPPED
+    assert tool_execution.calls == []
+    assert not any(message.get("tool_calls") for message in state.messages)
 
 def test_empty_stop_retry_budget_resets_across_turns():
     # The once-per-turn flag must reset on a new turn, or a long-lived session
