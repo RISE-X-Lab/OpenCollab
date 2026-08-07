@@ -22,6 +22,7 @@ from opencollab.application.session import SessionBusyError
 from opencollab.application.tool_execution import CallbackPermissionPolicy
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import snapshot_session
+from opencollab.bootstrap.session_factory import SnapshotSessionError
 from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase
@@ -225,10 +226,33 @@ def test_session_rejects_user_message_for_a_suspended_turn():
     assert session.messages == before
 
 
-def test_snapshot_copies_full_state_and_isolates_mutable_components():
+def test_snapshot_rejects_an_environment_without_a_safe_fork():
+    agent = FakeAgent()
+    session = Session(agent=agent, llm=FakeLLMClient())
+    session.messages.append({"role": "assistant", "content": "old answer"})
+    session.used_tokens = 123
+    session.step_count = 4
+    session.is_done = True
+    session.phase = SessionPhase.DONE
+    session._recent_call_hashes.append("hash-1")
+
+    with pytest.raises(SnapshotSessionError, match="environment.fork_snapshot"):
+        snapshot_session(session)
+
+
+def test_snapshot_copies_full_state_and_isolates_agent_and_environment():
+    class ForkableEnvironment:
+        workspace = "."
+        host_workspace = "."
+        source_workspace = "."
+        local_filesystem = False
+
+        def fork_snapshot(self):
+            return ForkableEnvironment()
+
     agent = FakeAgent()
     agent.tools = [FakeTool("snapshot-tool")]
-    session = Session(agent=agent, llm=FakeLLMClient())
+    session = Session(agent=agent, env=ForkableEnvironment(), llm=FakeLLMClient())
     state = session.state
     state.context_tokens = 17
     state.markup_recovered = 3
@@ -250,6 +274,7 @@ def test_snapshot_copies_full_state_and_isolates_mutable_components():
     snap = snapshot_session(session)
 
     assert snap.agent is not session.agent
+    assert snap.env is not session.env
     assert snap.state is not state
     assert snap.state.context_tokens == 17
     assert snap.state.markup_recovered == 3
