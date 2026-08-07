@@ -396,6 +396,19 @@ class ScriptedFactory:
         return session
 
 
+class TransientFailureFactory(ScriptedFactory):
+    """First structured session raises; the single corrective session captures."""
+
+    def build_workflow_session(self, **kwargs):
+        session = super().build_workflow_session(**kwargs)
+        if len(self.sessions) == 1:
+            async def fail_once(cancel_event=None):
+                raise OSError("temporary provider failure")
+
+            session.run_loop = fail_once
+        return session
+
+
 SCHEMA = {"type": "object", "required": ["x"], "properties": {"x": {"type": "integer"}}}
 
 
@@ -428,6 +441,18 @@ async def test_agent_schema_retries_once_then_succeeds():
     assert len(factory.sessions) == 2
     assert factory.sessions[0].run_count == 1
     assert factory.sessions[1].run_count == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_schema_retries_once_after_transient_first_pass_error():
+    factory = TransientFailureFactory(payloads=[{"x": 17}])
+    ctx = WorkflowContext(factory)
+
+    result = await ctx.agent("give me x", schema=SCHEMA, label="solver")
+
+    assert result == {"x": 17}
+    assert len(factory.sessions) == 2
+    assert ctx.agent_failures[0]["exception_type"] == "OSError"
 
 
 @pytest.mark.asyncio
