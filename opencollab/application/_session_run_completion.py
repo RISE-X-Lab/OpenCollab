@@ -28,6 +28,40 @@ from opencollab.domain.session import SessionPhase
 logger = logging.getLogger(__name__)
 
 
+def _is_tool_choice_rejection(exc: Exception) -> bool:
+    """Return whether a provider validation error specifically rejects choice."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status is not None and status not in {400, 422}:
+        return False
+
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        detail = body.get("error", body)
+        if isinstance(detail, dict):
+            field = detail.get("param") or detail.get("field")
+            code = detail.get("code")
+            if field in {"tool_choice", "tool choice"}:
+                return True
+            if code in {"invalid_tool_choice", "unsupported_tool_choice"}:
+                return True
+
+    message = str(exc).lower()
+    names_choice = "tool_choice" in message or "tool choice" in message
+    rejects_choice = any(
+        marker in message
+        for marker in (
+            "invalid",
+            "not supported",
+            "unsupported",
+            "not allowed",
+            "unknown",
+            "unrecognized",
+            "unexpected",
+        )
+    )
+    return names_choice and rejects_choice
+
+
 class _SessionRunCompletionMixin:
     """Implementation details composed into ``SessionRunUseCase``."""
 
@@ -259,9 +293,7 @@ class _SessionRunCompletionMixin:
             # identically, so re-raise it instead of masking a real fault behind
             # a second call. Duck-typed so the application layer needs no
             # provider-specific exception imports.
-            status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
-            msg = str(exc).lower()
-            if status != 400 and "tool_choice" not in msg and "tool choice" not in msg:
+            if not _is_tool_choice_rejection(exc):
                 raise
             logger.warning(
                 "tool_choice=%r rejected on aid=%s (%s); retrying once with 'auto'",
@@ -269,7 +301,15 @@ class _SessionRunCompletionMixin:
                 self.state.aid,
                 type(exc).__name__,
             )
-            return await self._complete_with_choice(messages, tools, "auto")
+            try:
+                return await self._complete_with_choice(messages, tools, "auto")
+            except Exception as fallback_exc:
+                if hasattr(exc, "add_note"):
+                    exc.add_note(
+                        "Retrying with tool_choice='auto' also failed: "
+                        f"{type(fallback_exc).__name__}: {fallback_exc}"
+                    )
+                raise exc from fallback_exc
 
     async def _complete_with_choice(
         self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from session_run_loop_test_support import (
     FakeLLM,
     FakeToolExecution,
@@ -22,6 +23,20 @@ from opencollab.domain.session import (
     TurnEnforcementState,
 )
 from opencollab.domain.tools import ToolProcessingResult
+
+
+class _ProviderRequestError(Exception):
+    def __init__(self, message: str, *, status_code: int):
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class _RaisingFakeLLM(FakeLLM):
+    async def complete(self, *args, **kwargs):
+        response = await super().complete(*args, **kwargs)
+        if isinstance(response, BaseException):
+            raise response
+        return response
 
 
 def test_steering_status_line_built_from_budget_and_steps():
@@ -153,6 +168,62 @@ def test_dual_contract_forces_structured_submission_after_write():
         "type": "function",
         "function": {"name": "structured_output"},
     }
+
+
+def test_unrelated_bad_request_does_not_retry_forced_choice():
+    error = _ProviderRequestError(
+        "invalid tools schema: required field is missing",
+        status_code=400,
+    )
+    llm = _RaisingFakeLLM([error, llm_response(content="should not retry")])
+    agent = _agent_with_tool_schemas("file_write")
+    agent.tool_choice = "required"
+    runner = build_runner(llm=llm, agent=agent)
+
+    with pytest.raises(_ProviderRequestError) as captured:
+        run(runner.run_loop())
+
+    assert captured.value is error
+    assert [call["tool_choice"] for call in llm.calls] == ["required"]
+
+
+def test_explicit_tool_choice_rejection_retries_once_with_auto():
+    llm = _RaisingFakeLLM(
+        [
+            _ProviderRequestError(
+                "invalid value for tool_choice: required is unsupported",
+                status_code=400,
+            ),
+            llm_response(content="done"),
+        ]
+    )
+    agent = _agent_with_tool_schemas("file_write")
+    agent.tool_choice = "required"
+    runner = build_runner(llm=llm, agent=agent)
+
+    assert run(runner.run_loop()) == "done"
+    assert [call["tool_choice"] for call in llm.calls] == ["required", "auto"]
+
+
+def test_failed_tool_choice_fallback_preserves_original_error():
+    original = _ProviderRequestError(
+        "tool_choice is not supported",
+        status_code=400,
+    )
+    fallback = _ProviderRequestError(
+        "invalid tools schema: required field is missing",
+        status_code=400,
+    )
+    llm = _RaisingFakeLLM([original, fallback])
+    agent = _agent_with_tool_schemas("file_write")
+    agent.tool_choice = "required"
+    runner = build_runner(llm=llm, agent=agent)
+
+    with pytest.raises(_ProviderRequestError) as captured:
+        run(runner.run_loop())
+
+    assert captured.value is original
+    assert captured.value.__cause__ is fallback
 
 
 def test_steering_hard_rung_blocks_read_tool_call_before_execution():
