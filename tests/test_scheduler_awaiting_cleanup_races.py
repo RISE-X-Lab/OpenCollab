@@ -150,6 +150,77 @@ def test_cleanup_surfaces_synchronous_worktree_release_failure():
 
     run(scenario())
 
+
+def test_cleanup_retries_transient_failure_then_caches_success():
+    class FlakyReleasePool:
+        def __init__(self):
+            self.release_calls = 0
+
+        async def acquire(self, role):
+            return None
+
+        def release(self):
+            self.release_calls += 1
+            if self.release_calls == 1:
+                raise OSError("transient release failure")
+
+    lead = ScriptedSession("lead", [])
+    scheduler, _ = build_scheduler(lead, [])
+    pool = FlakyReleasePool()
+    scheduler._worktree_pool = pool
+
+    async def scenario():
+        with pytest.raises(
+            RuntimeError,
+            match="technical scheduler cleanup failed: worktree pool release failed or timed out",
+        ):
+            await scheduler.cleanup(cleanup_timeout=0.01)
+
+        await scheduler.cleanup(cleanup_timeout=0.01)
+        await scheduler.cleanup(cleanup_timeout=0.01)
+
+        assert pool.release_calls == 2
+
+    run(scenario())
+
+
+def test_concurrent_cleanup_callers_share_the_inflight_attempt():
+    class GatedReleasePool:
+        def __init__(self):
+            self.release_calls = 0
+            self.started = asyncio.Event()
+            self.release_gate = asyncio.Event()
+
+        async def acquire(self, role):
+            return None
+
+        async def release_pool(self):
+            self.release_calls += 1
+            self.started.set()
+            await self.release_gate.wait()
+
+        def release(self):
+            return self.release_pool()
+
+    lead = ScriptedSession("lead", [])
+    scheduler, _ = build_scheduler(lead, [])
+    pool = GatedReleasePool()
+    scheduler._worktree_pool = pool
+
+    async def scenario():
+        first = asyncio.create_task(scheduler.cleanup(cleanup_timeout=0.2))
+        await pool.started.wait()
+        second = asyncio.create_task(scheduler.cleanup(cleanup_timeout=0.2))
+        await asyncio.sleep(0)
+
+        assert pool.release_calls == 1
+        pool.release_gate.set()
+        await asyncio.gather(first, second)
+        assert pool.release_calls == 1
+
+    run(scenario())
+
+
 def test_cleanup_surfaces_environment_abort_failure():
     class FailingAbortEnv:
         def __init__(self):

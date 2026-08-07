@@ -40,7 +40,20 @@ class SchedulerCleanupMixin:
         timeout = self._validate_cleanup_timeout(cleanup_timeout)
         if self._cleanup_task is None:
             self._cleanup_task = asyncio.create_task(self._cleanup_impl(timeout=timeout))
-        await await_owned_operation(self._cleanup_task, propagate_cancellation=True)
+        task = self._cleanup_task
+        try:
+            await await_owned_operation(task, propagate_cancellation=True)
+        except BaseException:
+            # Share one in-flight teardown across concurrent callers, but do not
+            # permanently memoize a transient failure. Caller cancellation alone
+            # is not a retry signal: await_owned_operation keeps the owner alive
+            # and may re-raise cancellation after that owner succeeded.
+            failed = task.done() and (
+                task.cancelled() or task.exception() is not None
+            )
+            if failed and self._cleanup_task is task:
+                self._cleanup_task = None
+            raise
 
     @staticmethod
     def _validate_cleanup_timeout(value: object) -> float:
