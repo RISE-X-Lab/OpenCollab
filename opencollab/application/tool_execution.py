@@ -76,6 +76,9 @@ _WRITE_TOOLS = frozenset({"file_write", "apply_patch"})
 # these prefixes — see execute_tool's PermissionError/Exception mapping and the
 # tools' own "Error: ..." returns.
 _TOOL_ERROR_PREFIXES = ("Error", "Tool execution error", "Permission denied")
+TERMINAL_CAPTURE_SKIP_MESSAGE = (
+    "Skipped: terminal structured output accepted earlier in this batch."
+)
 
 # Information-gain sensor (STEP 1). Each EXECUTED tool result is classified as
 # informative vs low-yield so later brakes can key on information GAIN, not raw
@@ -263,38 +266,15 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
         """
         result = ToolProcessingResult()
         preflight_errors = (
-            self._preflight_tool_batch(tool_calls)
+            self.preflight_tool_batch(tool_calls)
             if len(tool_calls) > 1
             else [""] * len(tool_calls)
         )
         if any(preflight_errors):
-            summary = "; ".join(
-                f"call {index}: {error}"
-                for index, error in enumerate(preflight_errors)
-                if error
-            )[:2_000]
-            for index, tc in enumerate(tool_calls):
-                tool_id = (
-                    tc.get("id")
-                    if isinstance(tc, dict) and isinstance(tc.get("id"), str)
-                    else f"invalid-tool-call-{index}"
-                )
-                result.messages_to_append.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_id,
-                        "content": (
-                            preflight_errors[index]
-                            if len(tool_calls) == 1
-                            else "Error: entire tool-call batch rejected before execution: "
-                            + summary
-                        ),
-                    }
-                )
-            return result
+            return self.preflight_rejection_result(tool_calls, preflight_errors)
         recent_call_hashes = list(self.state.turn.recent_call_hashes)
 
-        for tc in tool_calls:
+        for index, tc in enumerate(tool_calls):
             func = tc["function"]
             tool_name = func["name"]
             tool_id = tc["id"]
@@ -375,6 +355,25 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 })
                 continue
 
+            schema = getattr(tool, "parameters", None)
+            if isinstance(schema, dict):
+                schema_errors = validate(args, schema)
+                if schema_errors:
+                    detail = "; ".join(schema_errors)[:1_000]
+                    self._trace_short_circuit(
+                        "tool_error",
+                        tool_name,
+                        {"error": "schema_validation_failed", "args": args},
+                    )
+                    result.messages_to_append.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "content": "Error: schema validation failed: " + detail,
+                        }
+                    )
+                    continue
+
             await self._emit_observation(
                 lambda: self.event_factory.tool_start(tool_name, args),
                 label="tool_start",
@@ -439,10 +438,22 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 lambda: self.event_factory.tool_end(tool_name, tool_latency),
                 label="tool_end",
             )
+            if getattr(tool, "terminal_capture_accepted", False):
+                result.terminal_capture_accepted = True
+                for skipped in tool_calls[index + 1 :]:
+                    result.messages_to_append.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": skipped["id"],
+                            "content": TERMINAL_CAPTURE_SKIP_MESSAGE,
+                        }
+                    )
+                break
 
         return result
 
-    def _preflight_tool_batch(self, tool_calls: object) -> list[str]:
+    def preflight_tool_batch(self, tool_calls: object) -> list[str]:
+        """Validate a complete provider batch before any call can start."""
         if not isinstance(tool_calls, list):
             raise ValueError("tool_calls must be a list")
         if len(tool_calls) > MAX_TOOL_CALLS_PER_BATCH:
@@ -507,6 +518,38 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                         schema_errors
                     )[:1_000]
         return errors
+
+    @staticmethod
+    def preflight_rejection_result(
+        tool_calls: list[dict],
+        preflight_errors: list[str],
+    ) -> ToolProcessingResult:
+        """Build ordered no-side-effect responses for a rejected batch."""
+        result = ToolProcessingResult()
+        summary = "; ".join(
+            f"call {index}: {error}"
+            for index, error in enumerate(preflight_errors)
+            if error
+        )[:2_000]
+        for index, tc in enumerate(tool_calls):
+            tool_id = (
+                tc.get("id")
+                if isinstance(tc, dict) and isinstance(tc.get("id"), str)
+                else f"invalid-tool-call-{index}"
+            )
+            result.messages_to_append.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": (
+                        preflight_errors[index]
+                        if len(tool_calls) == 1
+                        else "Error: entire tool-call batch rejected before execution: "
+                        + summary
+                    ),
+                }
+            )
+        return result
 
     def parse_tool_args(self, func: dict) -> dict:
         args_str = func.get("arguments", "")

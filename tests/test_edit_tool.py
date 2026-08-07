@@ -1,4 +1,5 @@
 import asyncio
+from hashlib import sha256
 
 import pytest
 
@@ -132,6 +133,78 @@ def test_unified_diff_failed_hunk_writes_nothing(tmp_path):
     assert target.read_text(encoding="utf-8") == original
 
 
+def test_unified_diff_treats_header_like_hunk_content_as_content(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text("old\n", encoding="utf-8")
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "unified_diff",
+                "patch": "@@ -1 +1 @@\n-old\n+++value\n",
+            },
+            _runtime(ws),
+        )
+    )
+
+    assert "Applied unified_diff" in result
+    assert target.read_text(encoding="utf-8") == "++value\n"
+
+
+def test_unified_diff_rejects_malformed_hunk_without_writing(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    original = "a\nb\nc\n"
+    target.write_text(original, encoding="utf-8")
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "unified_diff",
+                "patch": "@@ -1,3 +1,3 @@\n a\n-b\n+x\n",
+            },
+            _runtime(ws),
+        )
+    )
+
+    assert "declares 3 old lines" in result
+    assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("@@ -0,0 +1 @@", "X\na\nb\nc\n"),
+        ("@@ -2,0 +3 @@", "a\nb\nX\nc\n"),
+        ("@@ -3,0 +4 @@", "a\nb\nc\nX\n"),
+    ],
+)
+def test_unified_diff_pure_insertions_use_header_position(tmp_path, header, expected):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text("a\nb\nc\n", encoding="utf-8")
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "unified_diff",
+                "patch": f"{header}\n+X\n",
+            },
+            _runtime(ws),
+        )
+    )
+
+    assert "Applied unified_diff" in result
+    assert target.read_text(encoding="utf-8") == expected
+
+
 def test_apply_patch_reports_file_and_workspace_errors(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -212,3 +285,62 @@ def test_str_replace_success_reports_content_changed(tmp_path):
 
     assert "content changed" in result
     assert target.read_text(encoding="utf-8") == "hello there\n"
+
+
+@pytest.mark.parametrize(
+    ("tool", "params"),
+    [
+        (
+            FileWriteTool(),
+            {
+                "path": "f.py",
+                "mode": "str_replace",
+                "old_str": "target",
+                "new_str": "changed",
+            },
+        ),
+        (
+            ApplyPatchTool(),
+            {
+                "path": "f.py",
+                "mode": "unified_diff",
+                "patch": "@@ -1 +1 @@\n-target\n+changed\n",
+            },
+        ),
+    ],
+)
+def test_non_utf8_edit_attempt_is_explicit_and_preserves_bytes(tmp_path, tool, params):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    original = b"prefix\ntarget\xffkeep\n"
+    target.write_bytes(original)
+    before = sha256(original).hexdigest()
+
+    result = run(tool.execute_with_runtime(params, _runtime(ws)))
+
+    assert result == "Error: refusing to edit non-UTF-8 file: invalid UTF-8 at byte 13."
+    assert target.read_bytes() == original
+    assert sha256(target.read_bytes()).hexdigest() == before
+
+
+def test_str_replace_preserves_legal_utf8_with_cjk(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text("\u4f60\u597d\uff0c\u4e16\u754c\n", encoding="utf-8")
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "str_replace",
+                "old_str": "\u4e16\u754c",
+                "new_str": "OpenCollab",
+            },
+            _runtime(ws),
+        )
+    )
+
+    assert "Replaced in" in result
+    assert target.read_text(encoding="utf-8") == "\u4f60\u597d\uff0cOpenCollab\n"

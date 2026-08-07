@@ -13,6 +13,7 @@ from scheduler_awaiting_test_support import (
 )
 
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
+from opencollab.domain.scheduler import SessionControlBlock
 from opencollab.domain.session import SessionPhase, SessionState
 
 
@@ -126,6 +127,100 @@ def test_cleanup_is_bounded_when_worktree_release_ignores_cancellation():
 
     run(scenario())
 
+
+def test_cleanup_does_not_release_pool_while_session_owned_task_survives():
+    class ResistantCleanupSession(ScriptedSession):
+        def __init__(self):
+            super().__init__("lead", [])
+            self._owned_tasks: set[asyncio.Task] = set()
+
+        @property
+        def pending_cleanup_tasks(self):
+            return tuple(task for task in self._owned_tasks if not task.done())
+
+    class RecordingPool:
+        def __init__(self):
+            self.release_calls = 0
+
+        async def acquire(self, role):
+            return None
+
+        async def release(self):
+            self.release_calls += 1
+
+    lead = ResistantCleanupSession()
+    scheduler, _ = build_scheduler(lead, [])
+    pool = RecordingPool()
+    scheduler._worktree_pool = pool
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    release = asyncio.Event()
+
+    async def session_owned_task():
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+
+    async def scenario():
+        owner = asyncio.create_task(session_owned_task())
+        lead._owned_tasks.add(owner)
+        await started.wait()
+        try:
+            with pytest.raises(
+                RuntimeError,
+                match="technical scheduler cleanup failed: session-owned tasks did not quiesce",
+            ):
+                await scheduler.cleanup(cleanup_timeout=0.01)
+            assert cancelled.is_set()
+            assert pool.release_calls == 0
+        finally:
+            release.set()
+            await asyncio.wait_for(owner, timeout=0.5)
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("target_aid", [0, 1, 2])
+def test_cleanup_finalizes_the_actual_active_public_turn_owner(target_aid):
+    started = asyncio.Event()
+
+    async def blocked_turn(sess: ScriptedSession) -> str:
+        started.set()
+        await asyncio.Event().wait()
+
+    lead = ScriptedSession("lead", [blocked_turn] if target_aid == 0 else [])
+    scheduler, _ = build_scheduler(lead, [])
+    if target_aid:
+        target = ScriptedSession("coder", [blocked_turn])
+        target.state.aid = target_aid
+        target.scheduler = scheduler
+        scheduler.table.add(
+            SessionControlBlock(
+                aid=target_aid,
+                parent_aid=0,
+                agent=target.agent,
+                state=target.state,
+            )
+        )
+        scheduler._sessions[target_aid] = target
+
+    async def scenario():
+        turn = asyncio.create_task(scheduler.run_turn(target_aid, "block"))
+        await started.wait()
+        await scheduler.cleanup(cleanup_timeout=0.01)
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+
+    run(scenario())
+
+    assert scheduler.table.get(target_aid).state.phase is SessionPhase.STOPPED
+    if target_aid:
+        assert lead.state.phase is SessionPhase.IDLE
+
+
 def test_cleanup_surfaces_synchronous_worktree_release_failure():
     error = OSError("pool release failed")
 
@@ -149,6 +244,77 @@ def test_cleanup_surfaces_synchronous_worktree_release_failure():
         assert "worktree pool" in str(caught.value)
 
     run(scenario())
+
+
+def test_cleanup_retries_transient_failure_then_caches_success():
+    class FlakyReleasePool:
+        def __init__(self):
+            self.release_calls = 0
+
+        async def acquire(self, role):
+            return None
+
+        def release(self):
+            self.release_calls += 1
+            if self.release_calls == 1:
+                raise OSError("transient release failure")
+
+    lead = ScriptedSession("lead", [])
+    scheduler, _ = build_scheduler(lead, [])
+    pool = FlakyReleasePool()
+    scheduler._worktree_pool = pool
+
+    async def scenario():
+        with pytest.raises(
+            RuntimeError,
+            match="technical scheduler cleanup failed: worktree pool release failed or timed out",
+        ):
+            await scheduler.cleanup(cleanup_timeout=0.01)
+
+        await scheduler.cleanup(cleanup_timeout=0.01)
+        await scheduler.cleanup(cleanup_timeout=0.01)
+
+        assert pool.release_calls == 2
+
+    run(scenario())
+
+
+def test_concurrent_cleanup_callers_share_the_inflight_attempt():
+    class GatedReleasePool:
+        def __init__(self):
+            self.release_calls = 0
+            self.started = asyncio.Event()
+            self.release_gate = asyncio.Event()
+
+        async def acquire(self, role):
+            return None
+
+        async def release_pool(self):
+            self.release_calls += 1
+            self.started.set()
+            await self.release_gate.wait()
+
+        def release(self):
+            return self.release_pool()
+
+    lead = ScriptedSession("lead", [])
+    scheduler, _ = build_scheduler(lead, [])
+    pool = GatedReleasePool()
+    scheduler._worktree_pool = pool
+
+    async def scenario():
+        first = asyncio.create_task(scheduler.cleanup(cleanup_timeout=0.2))
+        await pool.started.wait()
+        second = asyncio.create_task(scheduler.cleanup(cleanup_timeout=0.2))
+        await asyncio.sleep(0)
+
+        assert pool.release_calls == 1
+        pool.release_gate.set()
+        await asyncio.gather(first, second)
+        assert pool.release_calls == 1
+
+    run(scenario())
+
 
 def test_cleanup_surfaces_environment_abort_failure():
     class FailingAbortEnv:

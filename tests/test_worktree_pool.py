@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -38,6 +39,21 @@ def _branch_exists(repo, branch: str) -> bool:
     return _git(repo, "show-ref", "--verify", f"refs/heads/{branch}", check=False).returncode == 0
 
 
+class _OneShotAsyncBarrier:
+    """Release all waiters once the expected parties have arrived."""
+
+    def __init__(self, parties: int) -> None:
+        self._parties = parties
+        self._arrived = 0
+        self._released = asyncio.Event()
+
+    async def wait(self) -> None:
+        self._arrived += 1
+        if self._arrived == self._parties:
+            self._released.set()
+        await self._released.wait()
+
+
 async def test_pool_without_worktrees_returns_local_environment(tmp_path) -> None:
     pool = WorktreePool(str(tmp_path), use_worktrees=False)
     env = await pool.acquire("coder")
@@ -63,6 +79,7 @@ async def test_non_git_source_uses_independent_directory_copy(tmp_path) -> None:
     await env.write_file("note.txt", "child")
     assert (source / "note.txt").read_text(encoding="utf-8") == "source"
     assert await env.read_file("note.txt") == "child"
+    assert "child" in await env.get_diff()
     await env.cleanup()
     assert not os.path.exists(workspace)
 
@@ -86,6 +103,33 @@ async def test_non_git_copy_preserves_file_and_directory_symlinks(tmp_path) -> N
     with pytest.raises(OSError):
         await env.read_file("dir-link/secret.txt")
     await env.cleanup()
+
+
+async def test_non_git_copy_exports_changes_before_cleanup(tmp_path) -> None:
+    source = tmp_path / "plain"
+    source.mkdir()
+    (source / "changed.txt").write_text("before\n", encoding="utf-8")
+    (source / "removed.txt").write_text("remove me\n", encoding="utf-8")
+    env = WorktreeEnvironment(str(source), branch_name="plain-export")
+    workspace = await env.setup()
+    await env.write_file("changed.txt", "after\n")
+    (Path(workspace) / "removed.txt").unlink()
+    (Path(workspace) / "added.txt").write_text("added\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="unexported non-Git worktree changes"):
+        await env.cleanup()
+    assert os.path.exists(workspace)
+
+    diff = await env.get_diff()
+    assert "changed.txt" in diff
+    assert "removed.txt" in diff
+    assert "added.txt" in diff
+    assert "-before" in diff
+    assert "+after" in diff
+    assert "opencollab-cp-" not in diff
+
+    await env.cleanup()
+    assert not os.path.exists(workspace)
 
 
 async def test_git_worktree_reports_committed_and_untracked_changes(tmp_path) -> None:
@@ -160,6 +204,60 @@ async def test_failed_worktree_add_removes_unregistered_directory(tmp_path, monk
         await env.setup()
     assert env._worktree_dir is None
     assert not _branch_exists(source, "failed-add")
+
+
+async def test_concurrent_same_branch_setup_preserves_winner_after_loser_cleanup(tmp_path, monkeypatch) -> None:
+    source = _repo(tmp_path / "repo")
+    branch = "same-branch"
+    first = WorktreeEnvironment(str(source), branch_name=branch)
+    second = WorktreeEnvironment(str(source), branch_name=branch)
+    barrier = _OneShotAsyncBarrier(2)
+
+    def make_racing_git(env):
+        real_git = env._git
+        paused = False
+
+        async def racing_git(*args, **kwargs):
+            nonlocal paused
+            if not paused and args[:2] == ("show-ref", "--verify"):
+                paused = True
+                await barrier.wait()
+            return await real_git(*args, **kwargs)
+
+        return racing_git
+
+    monkeypatch.setattr(first, "_git", make_racing_git(first))
+    monkeypatch.setattr(second, "_git", make_racing_git(second))
+    outcomes = await asyncio.gather(first.setup(), second.setup(), return_exceptions=True)
+
+    winners = [env for env, outcome in zip((first, second), outcomes) if isinstance(outcome, str)]
+    failures = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+    assert len(winners) == 1
+    assert len(failures) == 1
+    winner = winners[0]
+    assert _branch_exists(source, branch)
+    assert os.path.isdir(winner.workspace)
+    assert os.path.exists(os.path.join(winner.workspace, "tracked.txt"))
+
+    await winner.cleanup()
+    assert not _branch_exists(source, branch)
+
+
+async def test_worktree_cleanup_preserves_externally_advanced_owned_branch(tmp_path) -> None:
+    source = _repo(tmp_path / "repo")
+    branch = "externally-advanced"
+    env = WorktreeEnvironment(str(source), branch_name=branch)
+    workspace = await env.setup()
+    base = _git(source, "rev-parse", branch).stdout.strip()
+    tree = _git(source, "rev-parse", f"{base}^{{tree}}").stdout.strip()
+    advanced = _git(source, "commit-tree", tree, "-p", base, "-m", "external advance").stdout.strip()
+    _git(source, "update-ref", f"refs/heads/{branch}", advanced, base)
+
+    await env.cleanup()
+
+    assert not os.path.exists(workspace)
+    assert _branch_exists(source, branch)
+    assert _git(source, "rev-parse", branch).stdout.strip() == advanced
 
 
 async def test_double_cancellation_cannot_interrupt_setup_cleanup(tmp_path, monkeypatch) -> None:

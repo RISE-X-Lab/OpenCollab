@@ -104,7 +104,7 @@ class ApplyPatchTool(Tool):
         mode = params["mode"]
         env = runtime.environment
 
-        if not env:
+        if env is None:
             return "Error: no execution environment available."
 
         path = checked_path(runtime, path)
@@ -135,3 +135,5 @@ class ApplyPatchTool(Tool):
 
         except PermissionError as e:
             return f"Error: {e}"
+        except UnicodeDecodeError as e:
+            return f"Error: refusing to edit non-UTF-8 file: invalid UTF-8 at byte {e.start}."

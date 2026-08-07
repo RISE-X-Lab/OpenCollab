@@ -19,6 +19,7 @@ class Environment:
         abort_fails: bool = False,
         revoke_fails: bool = False,
         block_abort: bool = False,
+        block_cleanup: bool = False,
     ) -> None:
         self.revoked = False
         self.abort_fails = abort_fails
@@ -28,6 +29,10 @@ class Environment:
         self.block_abort = block_abort
         self.abort_started = asyncio.Event()
         self.abort_release = asyncio.Event()
+        self.block_cleanup = block_cleanup
+        self.cleanup_started = asyncio.Event()
+        self.cleanup_release = asyncio.Event()
+        self.cleanup_done = asyncio.Event()
 
     def revoke(self) -> None:
         if self.revoke_fails:
@@ -45,6 +50,10 @@ class Environment:
 
     async def cleanup(self) -> None:
         self.cleanup_calls += 1
+        self.cleanup_started.set()
+        if self.block_cleanup:
+            await self.cleanup_release.wait()
+        self.cleanup_done.set()
 
 
 class Session:
@@ -133,7 +142,7 @@ async def test_agent_runtime_returns_quiescent_execution_failure(monkeypatch) ->
     assert result.environment_quiesced is None
 
 
-async def test_agent_runtime_timeout_revokes_aborts_and_quiesces(monkeypatch) -> None:
+async def test_agent_runtime_timeout_leaves_caller_environment_active(monkeypatch) -> None:
     session = Session(outcome="block")
     _patch_session(monkeypatch, session)
     environment = Environment()
@@ -149,8 +158,8 @@ async def test_agent_runtime_timeout_revokes_aborts_and_quiesces(monkeypatch) ->
     )
     assert result.outcome == "timed_out"
     assert result.cleanup_quiesced
-    assert environment.revoked
-    assert environment.abort_calls == 1
+    assert not environment.revoked
+    assert environment.abort_calls == 0
 
 
 async def test_agent_runtime_timeout_fails_when_abort_fails(monkeypatch) -> None:
@@ -166,6 +175,7 @@ async def test_agent_runtime_timeout_fails_when_abort_fails(monkeypatch) -> None
             timeout_seconds=0.01,
             cleanup_timeout_seconds=0.1,
             transcript_path=None,
+            cleanup_environment=True,
         )
 
 
@@ -183,11 +193,12 @@ async def test_agent_runtime_timeout_still_aborts_when_revoke_fails(monkeypatch)
             timeout_seconds=0.01,
             cleanup_timeout_seconds=0.1,
             transcript_path=None,
+            cleanup_environment=True,
         )
     assert environment.abort_calls == 1
 
 
-async def test_agent_runtime_caller_cancellation_still_aborts(monkeypatch) -> None:
+async def test_agent_runtime_caller_cancellation_leaves_caller_environment_active(monkeypatch) -> None:
     session = Session(outcome="block")
     _patch_session(monkeypatch, session)
     environment = Environment()
@@ -207,8 +218,52 @@ async def test_agent_runtime_caller_cancellation_still_aborts(monkeypatch) -> No
     owner.cancel()
     with pytest.raises(asyncio.CancelledError):
         await owner
-    assert environment.revoked
-    assert environment.abort_calls == 1
+    assert not environment.revoked
+    assert environment.abort_calls == 0
+
+
+async def test_agent_runtime_caller_cancellation_rejects_lingering_owner(monkeypatch) -> None:
+    class StubbornSession(Session):
+        def __init__(self):
+            super().__init__(outcome="block")
+            self.cancel_seen = asyncio.Event()
+            self.release = asyncio.Event()
+            self.finished = asyncio.Event()
+
+        async def run_loop(self) -> str:
+            self.started.set()
+            while not self.release.is_set():
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:
+                    self.cancel_seen.set()
+            self.finished.set()
+            return "late"
+
+    session = StubbornSession()
+    _patch_session(monkeypatch, session)
+    task = asyncio.create_task(
+        agent_runtime.run_agent(
+            agent=_agent(),
+            environment=Environment(),
+            prompt="run",
+            max_tokens=100,
+            max_steps=5,
+            timeout_seconds=None,
+            cleanup_timeout_seconds=0.01,
+            transcript_path=None,
+        )
+    )
+    await session.started.wait()
+    task.cancel()
+    try:
+        with pytest.raises(AgentRuntimeLifecycleError, match="cancelled agent"):
+            await task
+        assert session.cancel_seen.is_set()
+        assert not session.finished.is_set()
+    finally:
+        session.release.set()
+        await asyncio.wait_for(session.finished.wait(), timeout=0.2)
 
 
 async def test_agent_runtime_double_cancellation_finishes_abort_and_save(monkeypatch) -> None:
@@ -225,6 +280,7 @@ async def test_agent_runtime_double_cancellation_finishes_abort_and_save(monkeyp
             timeout_seconds=None,
             cleanup_timeout_seconds=0.1,
             transcript_path=None,
+            cleanup_environment=True,
         )
     )
     await session.started.wait()
@@ -236,6 +292,68 @@ async def test_agent_runtime_double_cancellation_finishes_abort_and_save(monkeyp
         await owner
     assert environment.abort_calls == 1
     assert session.save_calls == 1
+
+
+async def test_agent_runtime_cancellation_during_finalization_keeps_cleanup_owned(monkeypatch) -> None:
+    session = Session()
+    _patch_session(monkeypatch, session)
+    environment = Environment(block_cleanup=True)
+    owner = asyncio.create_task(
+        agent_runtime.run_agent(
+            agent=_agent(),
+            environment=environment,
+            prompt="run",
+            max_tokens=100,
+            max_steps=5,
+            timeout_seconds=None,
+            cleanup_timeout_seconds=0.1,
+            transcript_path=None,
+            cleanup_environment=True,
+        )
+    )
+
+    await environment.cleanup_started.wait()
+    owner.cancel()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0.01)
+    assert not owner.done()
+    assert not environment.abort_started.is_set()
+    environment.cleanup_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    assert environment.cleanup_done.is_set()
+    assert environment.cleanup_calls == 1
+    assert session.save_calls == 1
+
+
+async def test_agent_runtime_retries_transient_finalization_failure(monkeypatch) -> None:
+    session = Session()
+    _patch_session(monkeypatch, session)
+    attempts = 0
+
+    async def flaky_finalize(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        return attempts > 1
+
+    monkeypatch.setattr(agent_runtime, "_finalize_session", flaky_finalize)
+
+    result = await agent_runtime.run_agent(
+        agent=_agent(),
+        environment=Environment(),
+        prompt="run",
+        max_tokens=100,
+        max_steps=5,
+        timeout_seconds=None,
+        cleanup_timeout_seconds=0.1,
+        transcript_path=None,
+        cleanup_environment=True,
+    )
+
+    assert result.outcome == "completed"
+    assert attempts == 2
 
 
 async def test_agent_runtime_rejects_missing_final_save_owner(monkeypatch) -> None:
@@ -261,8 +379,8 @@ async def test_agent_runtime_rejects_missing_final_save_owner(monkeypatch) -> No
             transcript_path="agent.json",
             cleanup_environment=True,
         )
-    assert session.save_calls == 1
-    assert environment.cleanup_calls == 1
+    assert session.save_calls == 2
+    assert environment.cleanup_calls == 2
     assert original_enqueue is not None
 
 
@@ -284,5 +402,6 @@ async def test_agent_runtime_attempts_cleanup_after_pending_task_timeout(monkeyp
             transcript_path=None,
             cleanup_environment=True,
         )
-    assert environment.cleanup_calls == 1
-    assert session.save_calls == 1
+    assert environment.cleanup_calls == 2
+    assert session.save_calls == 2
+    assert pending.done()

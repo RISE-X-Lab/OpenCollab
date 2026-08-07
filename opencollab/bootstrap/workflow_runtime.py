@@ -85,8 +85,11 @@ async def run_workflow(
     deadline_monotonic: float | None = None,
     deadline_margin_seconds: float = 120.0,
     return_details: bool = False,
+    cleanup_environment: bool | None = None,
 ) -> Any:
     """Run through one owned lifecycle with an optional wall-clock deadline."""
+    if cleanup_environment is None:
+        cleanup_environment = env is None
     token = _WORKFLOW_ENV_OVERRIDE.set(env)
     cancelled_result: WorkflowRuntimeResult | None = None
     cancelled_notes: tuple[str, ...] = ()
@@ -113,6 +116,7 @@ async def run_workflow(
                 deadline_monotonic=deadline_monotonic,
                 deadline_margin_seconds=deadline_margin_seconds,
                 return_details=return_details,
+                cleanup_environment=cleanup_environment,
             )
         except asyncio.CancelledError as cancellation:
             attached = getattr(cancellation, "runtime_result", None)
@@ -135,9 +139,11 @@ async def run_workflow(
         done, _pending = await asyncio.wait(
             {owner}, timeout=cleanup_timeout * _OWNER_CLEANUP_GRACE_PHASES
         )
-        aborted = env is None or bool(getattr(env, "revoked", False))
-        if not aborted:
-            aborted = await revoke_and_abort_environment(env, cleanup_timeout)
+        aborted = True
+        if cleanup_environment:
+            aborted = env is None or bool(getattr(env, "revoked", False))
+            if not aborted:
+                aborted = await revoke_and_abort_environment(env, cleanup_timeout)
         if done:
             return aborted, True
         terminal = await force_task_terminal(owner, timeout=cleanup_timeout)
@@ -198,7 +204,13 @@ async def run_workflow(
             result=deadline_result,
         )
     except asyncio.CancelledError as cancellation:
-        await stop_once(cancellation, propagate_cancellation=False)
+        aborted, terminated = await stop_once(
+            cancellation, propagate_cancellation=False
+        )
+        if not aborted or not terminated:
+            raise WorkflowLifecycleError(
+                "cancelled workflow did not reach a quiescent terminal state"
+            ) from cancellation
         if owner.done():
             try:
                 owner.result()

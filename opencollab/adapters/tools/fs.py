@@ -75,7 +75,7 @@ class FileReadTool(Tool):
         limit = params.get("limit", 500)
         env = runtime.environment
 
-        if not env:
+        if env is None:
             return "Error: no execution environment available."
 
         path = checked_path(runtime, path)
@@ -86,6 +86,8 @@ class FileReadTool(Tool):
             return f"Error: file not found: {path}"
         except PermissionError as e:
             return f"Error: {e}"
+        except UnicodeDecodeError as e:
+            return f"Error: file is not valid UTF-8: invalid UTF-8 at byte {e.start}."
 
         lines = content.splitlines()
         total = len(lines)
@@ -175,7 +177,7 @@ class FileWriteTool(Tool):
         mode = params["mode"]
         env = runtime.environment
 
-        if not env:
+        if env is None:
             return "Error: no execution environment available."
 
         if not self.allow_create and mode == "create":
@@ -200,6 +202,8 @@ class FileWriteTool(Tool):
                 return f"Error: unknown mode '{mode}'. Use 'create' or 'str_replace'."
         except PermissionError as e:
             return f"Error: {e}"
+        except UnicodeDecodeError as e:
+            return f"Error: refusing to edit non-UTF-8 file: invalid UTF-8 at byte {e.start}."
 
     async def _create(
         self, env: Any, path: str, content: str, *, overwrite: bool = False
@@ -321,7 +325,7 @@ class GrepTool(Tool):
         raw_max_results = params.get("max_results", 50)
         env = runtime.environment
 
-        if not env:
+        if env is None:
             return "Error: no execution environment available."
         try:
             search_path = checked_path(runtime, search_path)

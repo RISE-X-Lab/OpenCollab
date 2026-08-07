@@ -55,6 +55,16 @@ class _FakeLLM:
         raise AssertionError("FakeLLM.complete should not be called")
 
 
+class _ForkableEnvironment:
+    workspace = "."
+    host_workspace = "."
+    source_workspace = "."
+    local_filesystem = False
+
+    def fork_snapshot(self):
+        return _ForkableEnvironment()
+
+
 def _new_session(**overrides) -> Session:
     kwargs = dict(agent=_FakeAgent(), llm=_FakeLLM())
     kwargs.update(overrides)
@@ -144,7 +154,7 @@ def test_session_user_message_appended_triggers_autosave(tmp_path):
 
 def test_session_snapshot_returns_independent_session_without_autosave(tmp_path):
     path = tmp_path / "auto.jsonl"
-    session = _new_session(auto_save_path=str(path))
+    session = _new_session(auto_save_path=str(path), env=_ForkableEnvironment())
     session.messages.extend([
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "world"},
@@ -166,18 +176,30 @@ def test_session_snapshot_returns_independent_session_without_autosave(tmp_path)
     assert {"role": "user", "content": "isolated"} not in session.messages
 
 
+def test_session_snapshot_preserves_queued_external_turn():
+    session = _new_session(env=_ForkableEnvironment())
+    run(session.add_user_message("resume this request"))
+
+    snap = snapshot_session(session)
+
+    assert snap.state.pending_external_user_turn == session.state.pending_external_user_turn
+    assert snap.state.pending_external_user_turn is not session.state.pending_external_user_turn
+
+
 def test_session_snapshot_preserves_external_sink():
     seen: list = []
 
     async def sink(event):
         seen.append(event)
 
-    session = _new_session(event_sink=sink)
+    session = _new_session(event_sink=sink, env=_ForkableEnvironment())
     snap = snapshot_session(session)
 
-    # External sink reference still in the bus targets.
+    # External subscribers are never silently shared with a runnable snapshot.
     targets = list(snap.event_bus._targets)
-    assert sink in targets
+    assert sink not in targets
+    observed = snapshot_session(session, event_sink=sink)
+    assert sink in observed.event_bus._targets
 
 
 def test_session_load_returns_session_with_loaded_messages(tmp_path):

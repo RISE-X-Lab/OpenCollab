@@ -9,7 +9,9 @@ import arbitrary files), so it is exercised here against a tmp_path directory.
 from __future__ import annotations
 
 import os
+import sys
 import textwrap
+from types import SimpleNamespace
 
 import pytest
 
@@ -235,6 +237,70 @@ def test_discover_workflows_dedupes_aliased_workflow(tmp_path):
 
     reg = discover_workflows(str(wf_dir))
     assert [s.name for s in reg.list_specs()] == ["alpha"]
+
+
+def test_load_workflow_specs_supports_dataclasses_and_relative_imports(tmp_path):
+    """Discovery modules get a package context while they are executing."""
+    wf_dir = tmp_path / "workflows"
+    wf_dir.mkdir()
+    _write_workflow_module(
+        wf_dir,
+        "helpers.py",
+        '''
+        DESCRIPTION = "loaded through a relative import"
+        ''',
+    )
+    _write_workflow_module(
+        wf_dir,
+        "with_context.py",
+        '''
+        from __future__ import annotations
+
+        from dataclasses import dataclass
+
+        from .helpers import DESCRIPTION
+        from opencollab.application.workflow_registry import workflow
+
+        @dataclass
+        class Arguments:
+            message: str = DESCRIPTION
+
+        @workflow(name="with_context", description=Arguments().message)
+        async def run(ctx, args):
+            return None
+        ''',
+    )
+
+    specs = workflow_discovery.load_workflow_specs(str(wf_dir / "with_context.py"))
+
+    assert [spec.name for spec in specs] == ["with_context"]
+    assert specs[0].description == "loaded through a relative import"
+
+
+def test_load_workflow_specs_rolls_back_registered_modules_after_failure(tmp_path, monkeypatch):
+    wf_dir = tmp_path / "workflows"
+    wf_dir.mkdir()
+    _write_workflow_module(wf_dir, "helpers.py", "VALUE = 1")
+    _write_workflow_module(
+        wf_dir,
+        "broken.py",
+        '''
+        from .helpers import VALUE
+
+        raise RuntimeError(f"broken workflow: {VALUE}")
+        ''',
+    )
+    module_prefix = "_opencollab_workflow_failure"
+    monkeypatch.setattr(
+        workflow_discovery.uuid,
+        "uuid4",
+        lambda: SimpleNamespace(hex="failure"),
+    )
+
+    with pytest.raises(RuntimeError, match="broken workflow: 1"):
+        workflow_discovery.load_workflow_specs(str(wf_dir / "broken.py"))
+
+    assert not any(name.startswith(module_prefix) for name in sys.modules)
 
 
 @pytest.mark.parametrize("kind", ["fifo", "symlink", "oversized"])
