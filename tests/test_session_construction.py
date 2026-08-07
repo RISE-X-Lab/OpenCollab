@@ -166,6 +166,16 @@ def test_session_snapshot_returns_independent_session_without_autosave(tmp_path)
     assert {"role": "user", "content": "isolated"} not in session.messages
 
 
+def test_session_snapshot_preserves_queued_external_turn():
+    session = _new_session()
+    run(session.add_user_message("resume this request"))
+
+    snap = snapshot_session(session)
+
+    assert snap.state.pending_external_user_turn == session.state.pending_external_user_turn
+    assert snap.state.pending_external_user_turn is not session.state.pending_external_user_turn
+
+
 def test_session_snapshot_preserves_external_sink():
     seen: list = []
 

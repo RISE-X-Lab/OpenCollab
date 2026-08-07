@@ -248,6 +248,9 @@ def snapshot_session(session: Session) -> Session:
     new.messages = copy.deepcopy(session.messages)
     new.used_tokens = session.used_tokens
     new.step_count = session.step_count
+    new.state.pending_external_user_turn = copy.deepcopy(
+        session.state.pending_external_user_turn
+    )
     return new
 
 
