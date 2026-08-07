@@ -167,9 +167,11 @@ def main_callback(
 
 
 def _resolve_one_shot_prompt(prompt: str | None, prompt_file: str | None) -> str | None:
-    if prompt and prompt_file:
+    if prompt is not None and prompt_file is not None:
         raise typer.BadParameter("--prompt and --prompt-file are mutually exclusive.")
-    if prompt_file:
+    if prompt_file is not None:
+        if not prompt_file.strip():
+            raise typer.BadParameter("--prompt-file path must not be empty.")
         try:
             text = read_regular_text(
                 prompt_file,
@@ -180,7 +182,9 @@ def _resolve_one_shot_prompt(prompt: str | None, prompt_file: str | None) -> str
         if not text.strip():
             raise typer.BadParameter(f"--prompt-file is empty: {prompt_file}")
         return text
-    if prompt:
+    if prompt is not None:
+        if not prompt.strip():
+            raise typer.BadParameter("--prompt must not be empty.")
         return prompt
     return None
 
