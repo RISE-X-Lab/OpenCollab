@@ -146,6 +146,33 @@ def test_run_tests_accepts_plain_pytest_q_summary():
     assert "Verdict: GREEN" in result
 
 
+def test_run_tests_accepts_pass_proof_from_retained_capture_tail():
+    class TruncatedOutputEnv(FakeEnv):
+        async def exec_cmd(self, cmd: str, timeout: float = 120.0):
+            self.exec_calls.append((cmd, timeout))
+            return SimpleNamespace(
+                returncode=0,
+                stdout="captured head\n" + PLAIN_PASS_OUTPUT,
+                stderr="",
+                stdout_truncated=True,
+                stderr_truncated=False,
+                stdout_dropped_bytes=1_000_000,
+                stderr_dropped_bytes=0,
+            )
+
+    runtime = runtime_for(TruncatedOutputEnv())
+
+    result = run(
+        RunTestsTool().execute_with_runtime(
+            {"target": "tests/test_x.py::test_one"},
+            runtime,
+        )
+    )
+
+    assert "passed=1" in result
+    assert "Verdict: GREEN" in result
+
+
 def test_run_tests_directory_target_requires_a_descendant_pass():
     output = PLAIN_PASS_OUTPUT.replace(
         "tests/test_x.py::test_one",
