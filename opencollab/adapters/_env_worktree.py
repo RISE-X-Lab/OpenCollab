@@ -67,6 +67,7 @@ class WorktreeEnvironment(Environment):
         self._owned_branch_oid: str | None = None
         self._worktree_registered = False
         self._lifecycle_lock = asyncio.Lock()
+        self._source_subdir = ""
 
     async def _git(self, *args: str, timeout: float = WORKTREE_GIT_TIMEOUT_SECONDS) -> ExecResult:
         result = await run_process(
@@ -91,11 +92,35 @@ class WorktreeEnvironment(Environment):
         if probe.stdout_truncated or probe.stderr_truncated:
             raise RuntimeError("git repository probe output was truncated")
         self._git_mode = probe.returncode == 0
+        if self._git_mode:
+            top_level = await self._git("rev-parse", "--show-toplevel")
+            if (
+                top_level.returncode != 0
+                or top_level.stdout_truncated
+                or top_level.stderr_truncated
+            ):
+                raise RuntimeError("cannot resolve Git repository root")
+            repository_root = os.path.realpath(top_level.stdout.strip())
+            try:
+                contained = os.path.commonpath((repository_root, self._source))
+            except ValueError as exc:
+                raise RuntimeError("source workspace is outside its Git repository") from exc
+            if contained != repository_root:
+                raise RuntimeError("source workspace is outside its Git repository")
+            relative_source = os.path.relpath(self._source, repository_root)
+            self._source_subdir = "" if relative_source == "." else relative_source
         try:
             if self._git_mode:
                 await self._setup_git_worktree()
             else:
                 await self._setup_directory_copy()
+            assert self._worktree_dir is not None
+            exposed_workspace = os.path.join(
+                self._worktree_dir,
+                self._source_subdir,
+            )
+            if not os.path.isdir(exposed_workspace):
+                raise RuntimeError("source subdirectory is absent from the worktree")
         except BaseException as original:
             try:
                 await await_owned_operation(
@@ -116,11 +141,10 @@ class WorktreeEnvironment(Environment):
                     f"{type(cleanup_error).__name__}: {cleanup_error}"
                 )
             raise
-        assert self._worktree_dir is not None
-        self.workspace = self._worktree_dir
-        self.host_workspace = self._worktree_dir
-        self._local_env = LocalEnvironment(self._worktree_dir)
-        return self._worktree_dir
+        self.workspace = exposed_workspace
+        self.host_workspace = exposed_workspace
+        self._local_env = LocalEnvironment(exposed_workspace)
+        return exposed_workspace
 
     async def _setup_git_worktree(self) -> None:
         status = await self._git(
