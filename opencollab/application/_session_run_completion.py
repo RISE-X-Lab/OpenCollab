@@ -95,8 +95,12 @@ class _SessionRunCompletionMixin:
         filtered = [spec for spec in tools if spec.get("function", {}).get("name") in names]
         return filtered or tools
 
-    def _hard_steering_tools(self) -> tuple[frozenset[str], str]:
+    def _hard_steering_tools(
+        self, tool_choice_override: Any | None
+    ) -> tuple[frozenset[str], str]:
         tool_names = {getattr(t, "name", None) for t in getattr(self.agent, "tools", []) or []}
+        if tool_choice_override == _submit_tool_choice(_STRUCTURED_OUTPUT_TOOL):
+            return frozenset({_STRUCTURED_OUTPUT_TOOL}), "hard structured-output gate"
         if tool_names & _WRITE_TOOLS:
             return _WRITE_TOOLS, "hard write gate"
         if _STRUCTURED_OUTPUT_TOOL in tool_names:
@@ -181,6 +185,7 @@ class _SessionRunCompletionMixin:
             has_write=bool(tool_names & _WRITE_TOOLS),
             has_structured_output=_STRUCTURED_OUTPUT_TOOL in tool_names,
             structured_override=_submit_tool_choice(_STRUCTURED_OUTPUT_TOOL),
+            write_landed=self.state.turn.has_landed_write,
         )
         self._maybe_trace_steering(steering_level)
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
@@ -190,7 +195,7 @@ class _SessionRunCompletionMixin:
         if steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
-            hard_tools, gate_label = self._hard_steering_tools()
+            hard_tools, gate_label = self._hard_steering_tools(tool_choice_override)
             self._pending_tool_allowlist = hard_tools
             self._pending_tool_gate_label = gate_label
             tools = self._tool_schemas_with_names(tools, hard_tools)
