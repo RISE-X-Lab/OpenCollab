@@ -48,6 +48,8 @@ from opencollab.application.ports import (
     WorkingTreeProbe,
 )
 from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE, ENFORCEMENT_OFF
+from opencollab.application.structured_output import TOOL_NAME as STRUCTURED_OUTPUT_TOOL_NAME
+from opencollab.application.submit_findings import SUBMIT_TOOL_NAME
 from opencollab.application.workflow_agents import WorkflowAgentsMixin
 from opencollab.application.workflow_budget import WorkflowBudget, _BudgetLease
 from opencollab.application.workflow_structured import (
@@ -56,6 +58,7 @@ from opencollab.application.workflow_structured import (
 from opencollab.application.workflow_structured import (
     _schema_satisfied as _schema_satisfied,
 )
+from opencollab.domain.tools import validate_unique_tool_names
 
 logger = logging.getLogger(__name__)
 
@@ -392,6 +395,15 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         """
         if isolation:
             raise ValueError("workflow agent isolation is not available")
+        supplied_tool_names = [
+            name
+            for tool in tools or ()
+            if isinstance((name := getattr(tool, "name", None)), str)
+        ]
+        validate_unique_tool_names(
+            supplied_tool_names,
+            reserved={STRUCTURED_OUTPUT_TOOL_NAME, SUBMIT_TOOL_NAME},
+        )
         timeout = self._normalize_timeout(timeout)
         call_task = asyncio.current_task()
         if call_task is not None:

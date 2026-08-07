@@ -9,7 +9,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from opencollab.domain.identity import validate_role_identity
-from opencollab.domain.tools import ToolSpec
+from opencollab.domain.tools import (
+    ToolSpec,
+    tool_name_collision_key,
+    validate_unique_tool_names,
+)
 
 DEFAULT_MAX_TOKENS_PER_STEP = 8_192
 
@@ -54,14 +58,24 @@ class Agent:
 
     def __post_init__(self) -> None:
         self.name = validate_role_identity(self.name)
+        self._validate_tool_names()
+
+    def _validate_tool_names(self) -> None:
+        validate_unique_tool_names([tool.name for tool in self.tools])
 
     def tool_schemas(self) -> list[dict]:
         """Generate OpenAI-format tool schemas for LLM function calling."""
+        self._validate_tool_names()
         return [t.to_openai_schema() for t in self.tools]
 
     def find_tool(self, name: str) -> ToolSpec | None:
         """Case-insensitive tool lookup (ref: opencode's tool repair logic)."""
+        self._validate_tool_names()
+        try:
+            key = tool_name_collision_key(name)
+        except ValueError:
+            return None
         for t in self.tools:
-            if t.name.lower() == name.lower():
+            if tool_name_collision_key(t.name) == key:
                 return t
         return None

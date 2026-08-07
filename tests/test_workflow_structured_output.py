@@ -175,6 +175,24 @@ def test_validate_nullable_array_enforces_array_constraints():
     assert validate([1, 2, 3], schema)
 
 
+class _NamedTool:
+    description = "test"
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def to_openai_schema(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
 # --------------------------------------------------------------------------- #
 # StructuredOutputTool
 # --------------------------------------------------------------------------- #
@@ -696,6 +714,40 @@ async def test_non_structured_agent_leaves_thinking_default():
     await ctx.agent("just do it")
 
     assert factory.builds[0]["thinking"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reserved_name",
+    [
+        "structured_output",
+        "STRUCTURED_OUTPUT",
+        "submit_findings",
+        "ｓｕｂｍｉｔ＿ｆｉｎｄｉｎｇｓ",
+    ],
+)
+async def test_agent_rejects_reserved_external_tool_before_build(reserved_name):
+    factory = ScriptedFactory(payloads=[])
+    ctx = WorkflowContext(factory)
+
+    with pytest.raises(ValueError, match="reserved tool name"):
+        await ctx.agent("go", tools=[_NamedTool(reserved_name)])
+
+    assert factory.builds == []
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_normalized_duplicate_tools_before_build():
+    factory = ScriptedFactory(payloads=[])
+    ctx = WorkflowContext(factory)
+
+    with pytest.raises(ValueError, match="duplicate tool names"):
+        await ctx.agent(
+            "go",
+            tools=[_NamedTool("custom_tool"), _NamedTool("ＣＵＳＴＯＭ＿ＴＯＯＬ")],
+        )
+
+    assert factory.builds == []
 
 
 # --------------------------------------------------------------------------- #
