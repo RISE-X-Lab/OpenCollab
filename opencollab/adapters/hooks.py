@@ -36,6 +36,7 @@ class ShellHookRunner(HookPort):
             else None
         )
         self.cleanup_quiesced = True
+        self.cleanup_error: ProcessCleanupError | None = None
         self._executors: dict[str, CommandExecutor] = {"command": self._run_command}
 
     async def fire(self, event_name: str, payload: dict[str, Any]) -> HookOutcome:
@@ -92,6 +93,7 @@ class ShellHookRunner(HookPort):
             return
         except ProcessCleanupError as exc:
             self.cleanup_quiesced = False
+            self.cleanup_error = exc
             logger.warning("hook command cleanup failed (%s): %s", spec.command, exc)
             raise
         except asyncio.CancelledError:

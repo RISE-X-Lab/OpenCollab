@@ -552,6 +552,36 @@ def test_wiring_runs_relative_hook_in_runtime_workspace(tmp_path, monkeypatch):
     assert not (launch_directory / "relative-stop-fired").exists()
 
 
+def test_hook_process_cleanup_failure_reaches_scheduler_cleanup(tmp_path, monkeypatch):
+    cleanup_error = hooks_adapter.ProcessCleanupError("descendant remained alive")
+
+    async def fake_run_process(*_args, **_kwargs):
+        raise cleanup_error
+
+    monkeypatch.setattr(hooks_adapter, "run_process", fake_run_process)
+    scheduler, _sentinel = _scheduler_with_stop_hook(
+        tmp_path,
+        monkeypatch,
+        enable_hooks=True,
+    )
+
+    asyncio.run(
+        scheduler._event_sink.emit(
+            SchedulerEvent(
+                type="agent_completed",
+                data={"aid": 0, "parent_aid": None},
+            )
+        )
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="technical scheduler cleanup failed: hook processes did not quiesce",
+    ) as caught:
+        asyncio.run(scheduler.cleanup())
+    assert caught.value.__cause__ is cleanup_error
+
+
 def test_wiring_disabled_when_enable_hooks_false(tmp_path, monkeypatch):
     scheduler, sentinel = _scheduler_with_stop_hook(tmp_path, monkeypatch, enable_hooks=False)
     bus = scheduler._event_sink
