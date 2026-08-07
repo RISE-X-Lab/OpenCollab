@@ -9,6 +9,9 @@ persisted transcript keep the full original history.
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections import OrderedDict
 from typing import Any, Callable
 
 from opencollab.application.ports import TokenEstimatorPort
@@ -35,6 +38,7 @@ DEFAULT_COMPACTABLE_TOOLS = frozenset(
 # itself as a compressed stand-in rather than masquerading as original history
 # (Liu et al. 2026 §11.3: no invisible compression).
 COMPACTED_MARKER_PREFIX = "[Context auto-compacted"
+DEFAULT_AUTOCOMPACT_CACHE_SIZE = 8
 
 # A synchronous summarizer: given a contiguous message segment, return summary
 # prose. Kept sync because ``ShaperPort.shape`` is sync; ``None`` disables the
@@ -190,9 +194,55 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
     ``state.messages`` / the transcript for a lossless resume.
     """
 
-    def __init__(self, *, summarizer: SummarizerPort | None = None, **kwargs: Any):
+    def __init__(
+        self,
+        *,
+        summarizer: SummarizerPort | None = None,
+        summary_cache_size: int = DEFAULT_AUTOCOMPACT_CACHE_SIZE,
+        **kwargs: Any,
+    ):
         super().__init__(**kwargs)
         self.summarizer = summarizer
+        self._summary_cache_size = max(0, int(summary_cache_size))
+        self._summary_cache: OrderedDict[str, str] = OrderedDict()
+
+    def _summary_cache_key(self, segment: list[dict[str, Any]]) -> str:
+        """Hash normalized input plus the summarizer's model/prompt namespace."""
+        assert self.summarizer is not None
+        namespace = getattr(self.summarizer, "cache_key", None)
+        if callable(namespace):
+            namespace = namespace()
+        payload = json.dumps(
+            segment,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=repr,
+        )
+        material = f"{id(self.summarizer)}\0{namespace!r}\0{payload}".encode("utf-8")
+        return hashlib.sha256(material).hexdigest()
+
+    def _summarize(self, segment: list[dict[str, Any]]) -> str:
+        assert self.summarizer is not None
+        if self._summary_cache_size <= 0:
+            return self.summarizer(segment)
+
+        key = self._summary_cache_key(segment)
+        cached = self._summary_cache.get(key)
+        if cached is not None:
+            self._summary_cache.move_to_end(key)
+            return cached
+
+        summary = self.summarizer(segment)
+        cacheable = bool(summary) and bool(
+            getattr(self.summarizer, "last_call_cacheable", True)
+        )
+        if cacheable:
+            self._summary_cache[key] = summary
+            self._summary_cache.move_to_end(key)
+            while len(self._summary_cache) > self._summary_cache_size:
+                self._summary_cache.popitem(last=False)
+        return summary
 
     def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if self.summarizer is None or not self._over_trigger(messages):
@@ -210,7 +260,7 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
             "role": "system",
             "content": (
                 f"{COMPACTED_MARKER_PREFIX} — summary of {len(segment)} earlier "
-                f"messages]:\n{self.summarizer(segment)}"
+                f"messages]:\n{self._summarize(segment)}"
             ),
             "compacted": True,
         }
