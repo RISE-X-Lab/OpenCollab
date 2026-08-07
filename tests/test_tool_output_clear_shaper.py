@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from opencollab.application.shaping import (
     DEFAULT_CLEARED_TOOL_CONTENT,
     DEFAULT_HISTORY_TARGET_TOKENS,
@@ -138,7 +140,25 @@ def test_history_trigger_target_defaults_when_window_unknown():
 
 def test_history_trigger_target_never_negative_for_tiny_window():
     trigger, target = history_trigger_target(1_000)
-    assert trigger >= 1 and target >= 1
+    assert 1 <= target < trigger
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"output_reserve": -1},
+        {"output_reserve": True},
+        {"buffer": -1},
+        {"buffer": 1.5},
+        {"target_ratio": 0},
+        {"target_ratio": 1},
+        {"target_ratio": float("nan")},
+        {"target_ratio": float("inf")},
+    ],
+)
+def test_history_trigger_target_rejects_invalid_configuration(kwargs):
+    with pytest.raises(ValueError):
+        history_trigger_target(200_000, **kwargs)
 
 
 def test_model_context_window_lookup_matches_by_substring():

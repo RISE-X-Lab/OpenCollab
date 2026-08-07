@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -32,6 +33,18 @@ DEFAULT_COMPACT_BUFFER_TOKENS = 13_000  # safety margin below the effective wind
 HISTORY_TARGET_RATIO = 0.75
 
 
+def require_nonnegative_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def require_positive_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
 def history_trigger_target(
     context_window: int | None,
     *,
@@ -46,10 +59,23 @@ def history_trigger_target(
     window is unknown (``None``/non-positive), so an unrecognised model still
     gets sane behaviour.
     """
+    require_nonnegative_int(output_reserve, "output_reserve")
+    require_nonnegative_int(buffer, "buffer")
+    if (
+        isinstance(target_ratio, bool)
+        or not isinstance(target_ratio, (int, float))
+        or not math.isfinite(target_ratio)
+        or not 0 < target_ratio < 1
+    ):
+        raise ValueError("target_ratio must be finite and satisfy 0 < target_ratio < 1")
+    if context_window is not None and (
+        isinstance(context_window, bool) or not isinstance(context_window, int)
+    ):
+        raise ValueError("context_window must be an integer or None")
     if not context_window or context_window <= 0:
         return DEFAULT_HISTORY_TRIGGER_TOKENS, DEFAULT_HISTORY_TARGET_TOKENS
-    trigger = max(1, context_window - output_reserve - buffer)
-    target = max(1, int(trigger * target_ratio))
+    trigger = max(2, context_window - output_reserve - buffer)
+    target = max(1, min(trigger - 1, int(trigger * target_ratio)))
     return trigger, target
 
 
