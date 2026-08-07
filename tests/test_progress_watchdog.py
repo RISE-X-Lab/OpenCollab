@@ -41,6 +41,7 @@ from session_run_test_support import (
 )
 from tool_execution_test_support import build_sensor_use_case as _use_case
 
+from opencollab.application.event_bus import EventBus
 from opencollab.application.session_run import (
     DEFAULT_LOW_YIELD_M,
     DEFAULT_WATCHDOG_K,
@@ -52,6 +53,7 @@ from opencollab.application.submit_findings import (
     SubmitFindingsTool,
     commitment_terminus_payload,
 )
+from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase, SessionState
 
@@ -130,6 +132,61 @@ def test_t1_watchdog_trips_with_budget_remaining_and_forces_commit():
         wind_down_token_mark=state.wind_down_token_mark, artifact="x",
     )
     assert payload["terminus"] == "forced"
+
+
+def test_watchdog_trips_after_three_malformed_tool_steps():
+    capture_done = asyncio.Event()
+    submit = SubmitFindingsTool(on_capture=capture_done.set)
+    agent = Agent(name="scout", system_prompt="s", tools=[_ReadStub(), submit])
+    state = SessionState(
+        messages=[{"role": "user", "content": "investigate"}],
+        used_tokens=1_000,
+    )
+    malformed = [
+        llm_response(
+            tool_calls=[
+                tool_call(
+                    call_id=f"broken-{index}",
+                    name="file_read",
+                    arguments='{"path":',
+                )
+            ],
+            finish_reason="tool_calls",
+        )
+        for index in range(DEFAULT_WATCHDOG_K)
+    ]
+    final = llm_response(
+        tool_calls=[
+            tool_call(
+                call_id="submit",
+                arguments=json.dumps(_captured()),
+            )
+        ],
+        finish_reason="tool_calls",
+    )
+    llm = FakeLLM([*malformed, final])
+    tool_execution = ToolExecutionUseCase(
+        agent=agent,
+        environment=None,
+        state=state,
+        event_publisher=EventBus(None),
+    )
+    runner = build_runner(
+        state=state,
+        agent=agent,
+        llm=llm,
+        tool_execution=tool_execution,
+        max_budget_tokens=100_000,
+        commit_reserve=25_000,
+        enforcement_strength=ENFORCEMENT_ON,
+    )
+
+    run(runner.run_loop(capture_done))
+
+    assert len(llm.calls) == DEFAULT_WATCHDOG_K + 1
+    assert llm.calls[-1]["tool_choice"] == _FORCED_SUBMIT_CHOICE
+    assert state.wind_down_done is True
+    assert submit.captured is not None
 
 
 def test_t1_watchdog_just_below_k_does_not_trip():

@@ -361,7 +361,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
         a loop warning rather than executing. Nothing is applied to session
         state here; the caller applies the returned ``ToolProcessingResult``.
         """
-        result = ToolProcessingResult()
+        result = ToolProcessingResult(tool_step_attempted=bool(tool_calls))
         preflight_errors = (
             self.preflight_tool_batch(tool_calls)
             if len(tool_calls) > 1
@@ -638,7 +638,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
         preflight_errors: list[str],
     ) -> ToolProcessingResult:
         """Build ordered no-side-effect responses for a rejected batch."""
-        result = ToolProcessingResult()
+        result = ToolProcessingResult(tool_step_attempted=bool(tool_calls))
         summary = "; ".join(
             f"call {index}: {error}"
             for index, error in enumerate(preflight_errors)
