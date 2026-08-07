@@ -24,6 +24,8 @@ from opencollab.application.shaping.pipeline import (
     is_complete_tool_exchange,
     matched_tool_result_occurrences,
     pinned_free_region,
+    require_nonnegative_int,
+    require_positive_int,
     span_is_safe_to_compact,
 )
 
@@ -60,6 +62,11 @@ class _ReactiveHistoryShaper:
         target_tokens: int = DEFAULT_HISTORY_TARGET_TOKENS,
         keep_recent_groups: int = DEFAULT_HISTORY_KEEP_RECENT_GROUPS,
     ):
+        require_positive_int(trigger_tokens, "trigger_tokens")
+        require_positive_int(target_tokens, "target_tokens")
+        if target_tokens >= trigger_tokens:
+            raise ValueError("target_tokens must be smaller than trigger_tokens")
+        require_nonnegative_int(keep_recent_groups, "keep_recent_groups")
         self._estimate = estimate_tokens
         self.trigger_tokens = trigger_tokens
         self.target_tokens = target_tokens
@@ -103,9 +110,10 @@ class ToolOutputClearShaper(_ReactiveHistoryShaper):
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
+        require_positive_int(keep_recent, "keep_recent")
         self.compactable_tools = compactable_tools
         self.cleared_content = cleared_content
-        self.keep_recent = max(1, keep_recent)  # never clear the most recent result
+        self.keep_recent = keep_recent
 
     def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not self._over_trigger(messages):
@@ -231,8 +239,9 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
+        require_nonnegative_int(summary_cache_size, "summary_cache_size")
         self.summarizer = summarizer
-        self._summary_cache_size = max(0, int(summary_cache_size))
+        self._summary_cache_size = summary_cache_size
         self._summary_cache: OrderedDict[str, str] = OrderedDict()
 
     def _summary_cache_key(self, segment: list[dict[str, Any]]) -> str:
