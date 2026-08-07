@@ -55,6 +55,16 @@ class _FakeLLM:
         raise AssertionError("FakeLLM.complete should not be called")
 
 
+class _ForkableEnvironment:
+    workspace = "."
+    host_workspace = "."
+    source_workspace = "."
+    local_filesystem = False
+
+    def fork_snapshot(self):
+        return _ForkableEnvironment()
+
+
 def _new_session(**overrides) -> Session:
     kwargs = dict(agent=_FakeAgent(), llm=_FakeLLM())
     kwargs.update(overrides)
@@ -144,7 +154,7 @@ def test_session_user_message_appended_triggers_autosave(tmp_path):
 
 def test_session_snapshot_returns_independent_session_without_autosave(tmp_path):
     path = tmp_path / "auto.jsonl"
-    session = _new_session(auto_save_path=str(path))
+    session = _new_session(auto_save_path=str(path), env=_ForkableEnvironment())
     session.messages.extend([
         {"role": "user", "content": "hello"},
         {"role": "assistant", "content": "world"},
@@ -182,7 +192,7 @@ def test_session_snapshot_preserves_external_sink():
     async def sink(event):
         seen.append(event)
 
-    session = _new_session(event_sink=sink)
+    session = _new_session(event_sink=sink, env=_ForkableEnvironment())
     snap = snapshot_session(session)
 
     # External subscribers are never silently shared with a runnable snapshot.
