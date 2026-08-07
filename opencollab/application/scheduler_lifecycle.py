@@ -136,7 +136,7 @@ class LifecycleMixin:
                 parent_lease = self._release_turn_lease(parent_aid)
                 if parent_lease is not None:
                     self._track_review_parent_lease_release(parent_aid, 1)
-            self._reserve_inflight(aid, role, task)
+            self._reserve_inflight(aid, parent_aid, role, task, context)
             budget = self._reserve_child_budget(aid)
             if budget <= 0:
                 raise RuntimeError(
