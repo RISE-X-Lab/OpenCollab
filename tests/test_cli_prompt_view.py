@@ -84,6 +84,27 @@ def test_agent_prompt_render_failure_falls_back_to_plain_input():
     assert _plain_prompt(prompt) == "> "
 
 
+def test_agent_prompt_history_cache_evicts_old_revisions():
+    tui = _FakeTUI()
+    tui.selected_aid = 1
+    prompt = build_agent_prompt(tui, "> ")
+
+    for revision in range(17):
+        tui.revisions[1] = revision
+        tui.history[1] = f"revision {revision}"
+        assert f"revision {revision}" in _plain_prompt(prompt)
+
+    assert tui.render_calls == 17
+    tui.revisions[1] = 0
+    tui.history[1] = "revision zero rerendered"
+    assert "revision zero rerendered" in _plain_prompt(prompt)
+    assert tui.render_calls == 18
+
+    tui.revisions[1] = 16
+    assert "revision 16" in _plain_prompt(prompt)
+    assert tui.render_calls == 18
+
+
 def test_cli_prompt_session_erases_managed_viewport(monkeypatch):
     captured = {}
     session = object()
