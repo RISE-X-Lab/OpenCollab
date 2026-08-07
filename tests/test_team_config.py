@@ -220,6 +220,20 @@ def test_entry_prefers_lead_role_when_unset(tmp_path, monkeypatch):
     assert load_team_config(str(tmp_path)).entry == "lead"
 
 
+def test_entry_prefers_case_normalized_lead_role_when_unset(tmp_path):
+    config = tmp_path / "team.yaml"
+    config.write_text(
+        "roles:\n"
+        "  analyst:\n"
+        "    prompt: Analyst prompt.\n"
+        "  Lead:\n"
+        "    prompt: Lead prompt.\n",
+        encoding="utf-8",
+    )
+
+    assert load_team_config(str(tmp_path), path=config).entry == "Lead"
+
+
 def test_entry_falls_back_to_first_role_without_lead(tmp_path, monkeypatch):
     yaml_text = """\
 roles:
