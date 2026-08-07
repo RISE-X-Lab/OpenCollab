@@ -93,6 +93,7 @@ class SubmitFindingsTool:
         self._on_capture = on_capture
         self.parameters = SUBMIT_FINDINGS_SCHEMA
         self.captured: dict[str, Any] | None = None
+        self.terminal_capture_accepted = False
 
     def to_openai_schema(self) -> dict[str, Any]:
         return {
@@ -105,6 +106,7 @@ class SubmitFindingsTool:
         }
 
     async def execute_with_runtime(self, params: dict[str, Any], runtime: ToolRuntime) -> str:
+        self.terminal_capture_accepted = False
         errors = validate(params, SUBMIT_FINDINGS_SCHEMA)
         if errors:
             joined = "; ".join(errors)
@@ -129,6 +131,7 @@ class SubmitFindingsTool:
                 "verified=false, then call submit_findings again. Do NOT fabricate an anchor."
             )
         self.captured = params
+        self.terminal_capture_accepted = True
         if self._on_capture is not None:
             self._on_capture()
         return "Recorded. Findings accepted. Your reconnaissance is complete."

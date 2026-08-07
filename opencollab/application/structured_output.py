@@ -53,6 +53,7 @@ class StructuredOutputTool:
         self._on_capture = on_capture
         self.parameters = schema
         self.captured: dict[str, Any] | None = None
+        self.terminal_capture_accepted = False
 
     def to_openai_schema(self) -> dict[str, Any]:
         return {
@@ -69,6 +70,7 @@ class StructuredOutputTool:
         params: dict[str, Any],
         runtime: ToolRuntime,
     ) -> str:
+        self.terminal_capture_accepted = False
         errors = validate(params, self._schema)
         if errors:
             joined = "; ".join(errors)
@@ -77,6 +79,7 @@ class StructuredOutputTool:
                 f"Fix and call {self.name} again. Errors: {joined}"
             )
         self.captured = params
+        self.terminal_capture_accepted = True
         if self._on_capture is not None:
             self._on_capture()
         return "Recorded. Structured output accepted. Your task is complete."
