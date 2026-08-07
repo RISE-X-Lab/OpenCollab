@@ -194,6 +194,25 @@ def test_spawn_with_review_waits_for_nested_coder_terminal_result():
     assert "final implementation from analysis" in result
     assert "delegating" not in result
 
+
+@pytest.mark.parametrize("phase", (SessionPhase.ERROR, SessionPhase.STOPPED))
+def test_spawn_with_review_rejects_noncompleted_coder_despite_reviewer_pass(phase):
+    async def incomplete_coder(session: ScriptedSession) -> str:
+        session.state.set_phase(phase)
+        return f"coder ended in {phase.value}"
+
+    lead = ScriptedSession("lead", [])
+    coder = ScriptedSession("coder", [incomplete_coder])
+    reviewer = ScriptedSession("reviewer", [terminal("VERDICT: PASS")])
+    scheduler, _ = build_scheduler(lead, [coder, reviewer])
+
+    result = run(scheduler.spawn_with_review(0, "implement safely", max_iterations=1))
+
+    assert result.startswith("[Self-Collaboration: FAILED")
+    assert f"Coder terminal phase: {phase.value}" in result
+    assert "PASSED" not in result
+    assert len(scheduler.table.entries) == 2
+
 def test_wake_unknown_tool_call_id_raises():
     lead = ScriptedSession("lead", [])
     scheduler, _ = build_scheduler(lead, [])
