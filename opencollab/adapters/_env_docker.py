@@ -12,7 +12,12 @@ import uuid
 from collections.abc import Callable
 from typing import NoReturn
 
-from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES, Environment, ExecResult
+from opencollab.adapters._env_base import (
+    ENV_FILE_WRITE_LIMIT_BYTES,
+    Environment,
+    ExecResult,
+    TextFileRange,
+)
 from opencollab.adapters._env_process import (
     PROCESS_OUTPUT_CAPTURE_BYTES,
     ProcessCleanupError,
@@ -426,6 +431,54 @@ class DockerEnvironment(Environment):
         if result.stdout_truncated:
             raise OSError(f"docker read exceeded capture limit for {path}")
         return result.stdout
+
+    async def read_text_range(
+        self,
+        path: str,
+        *,
+        offset: int,
+        limit: int,
+        max_chars: int,
+    ) -> TextFileRange:
+        if (
+            isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or offset < 1
+            or isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or limit < 1
+            or isinstance(max_chars, bool)
+            or not isinstance(max_chars, int)
+            or max_chars < 1
+        ):
+            raise ValueError("offset, limit, and max_chars must be positive integers")
+        final_line = offset + limit
+        byte_cap = max_chars * 4 + limit + 1
+        quoted_path = shlex.quote(path)
+        command = (
+            f"[ -f {quoted_path} ] && [ -r {quoted_path} ] || exit 66; "
+            "command -v sed >/dev/null && command -v head >/dev/null || exit 127; "
+            f"sed -n '{offset},{final_line}p;{final_line}q' < {quoted_path} "
+            f"| head -c {byte_cap}"
+        )
+        result = await self.exec_cmd(command)
+        if result.returncode != 0:
+            raise FileNotFoundError(result.stderr)
+        lines = result.stdout.splitlines()
+        has_more = len(lines) > limit
+        selected = lines[:limit]
+        joined = "\n".join(selected)
+        chars_truncated = len(joined) > max_chars or result.stdout_truncated
+        if chars_truncated:
+            selected = joined[:max_chars].split("\n")
+            has_more = True
+        return TextFileRange(
+            selected,
+            offset,
+            None,
+            has_more,
+            chars_truncated=chars_truncated,
+        )
 
     async def write_file(self, path: str, content: str) -> None:
         self._ensure_active()

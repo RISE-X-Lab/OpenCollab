@@ -9,7 +9,12 @@ import uuid
 from collections.abc import Callable
 from typing import TypeVar
 
-from opencollab.adapters._env_base import ENV_FILE_WRITE_LIMIT_BYTES, Environment, ExecResult
+from opencollab.adapters._env_base import (
+    ENV_FILE_WRITE_LIMIT_BYTES,
+    Environment,
+    ExecResult,
+    TextFileRange,
+)
 from opencollab.adapters._env_process import (
     PROCESS_OUTPUT_CAPTURE_BYTES,
     ProcessCleanupError,
@@ -19,6 +24,7 @@ from opencollab.adapters._env_process import (
 from opencollab.adapters.safe_files import (
     create_regular_bytes_atomic,
     read_regular_bytes,
+    read_regular_text_range,
     unlink_regular_file_durable,
     write_regular_bytes_atomic,
 )
@@ -114,6 +120,22 @@ class LocalEnvironment(Environment):
             max_bytes=LOCAL_FILE_READ_LIMIT_BYTES,
         )
         return payload.decode("utf-8")
+
+    async def read_text_range(
+        self,
+        path: str,
+        *,
+        offset: int,
+        limit: int,
+        max_chars: int,
+    ) -> TextFileRange:
+        return await self._run_file_operation(
+            read_regular_text_range,
+            self._full_path(path),
+            offset=offset,
+            limit=limit,
+            max_chars=max_chars,
+        )
 
     async def write_file(self, path: str, content: str) -> None:
         self._ensure_active()

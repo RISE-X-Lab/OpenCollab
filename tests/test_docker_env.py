@@ -236,6 +236,32 @@ async def test_exec_preserves_bounded_output_metadata(monkeypatch) -> None:
     assert result.stderr_dropped_bytes == 3
 
 
+async def test_docker_text_range_requests_only_window_plus_probe(monkeypatch) -> None:
+    env = DockerEnvironment(container_id=CONTAINER_ID)
+    commands: list[str] = []
+
+    async def fake_exec(command, timeout=120.0):
+        commands.append(command)
+        return docker_module.ExecResult(0, "first\nsecond\nthird\n", "")
+
+    monkeypatch.setattr(env, "exec_cmd", fake_exec)
+
+    window = await env.read_text_range(
+        "/repo/large.txt",
+        offset=10,
+        limit=2,
+        max_chars=100,
+    )
+
+    assert window.lines == ["first", "second"]
+    assert window.start_line == 10
+    assert window.total_lines is None
+    assert window.has_more
+    assert not window.chars_truncated
+    assert "10,12p;12q" in commands[0]
+    assert "head -c" in commands[0]
+
+
 async def test_user_exit_125_does_not_destroy_owned_container(monkeypatch) -> None:
     exec_attempts = 0
 
