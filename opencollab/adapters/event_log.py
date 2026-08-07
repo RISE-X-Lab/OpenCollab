@@ -20,7 +20,6 @@ class JsonlEventSink(EventPublisherPort):
     def __init__(self, path: str):
         self._path = path
         self._write_error: str | None = None
-        self._initialization_error: str | None = None
         self._dropped_events = 0
         self._write_lock = asyncio.Lock()
         parent = os.path.dirname(path)
@@ -30,10 +29,9 @@ class JsonlEventSink(EventPublisherPort):
             except Exception as exc:
                 error = f"{type(exc).__name__}: {exc}"
                 self._write_error = error
-                self._initialization_error = error
 
     async def emit(self, event: Any) -> None:
-        if self._initialization_error is not None:
+        if self._write_error is not None:
             self._dropped_events += 1
             return
         try:
