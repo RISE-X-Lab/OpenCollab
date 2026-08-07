@@ -176,6 +176,107 @@ def test_last_child_completion_in_parent_return_tail_still_resumes():
     assert scheduler.table.get(0).result == "resumed: done"
     assert len(event_types(events, "agent_resumed")) == 1
 
+
+def test_targeted_cancel_closes_nested_wake_gates_before_leaf_delivery():
+    grandchild_started = asyncio.Event()
+    release_grandchild = asyncio.Event()
+    intermediate_resumed = asyncio.Event()
+    release_intermediate_resume = asyncio.Event()
+
+    class CancelAwareSession(ScriptedSession):
+        async def add_user_message(self, content: str) -> None:
+            await super().add_user_message(content)
+            self.state.reset_for_user_turn()
+
+        async def run_loop(self, cancel_event=None) -> str:
+            step = self._steps.pop(0)
+            return await step(self, cancel_event)
+
+    def suspend_on(role: str, task: str, tool_call_id: str):
+        async def step(sess, _cancel_event):
+            child_aid = await sess.scheduler.spawn(
+                sess.state.aid,
+                role,
+                task,
+                tool_call_id=tool_call_id,
+            )
+            sess.state.pending_events.add(
+                PendingRow(
+                    tool_call_id=tool_call_id,
+                    kind=RowKind.CHILD_AGENT,
+                    order=0,
+                    ref=child_aid,
+                )
+            )
+            sess.state.set_phase(SessionPhase.AWAITING_EVENTS)
+            return ""
+
+        return step
+
+    async def unexpected_intermediate_resume(sess, _cancel_event):
+        intermediate_resumed.set()
+        await release_intermediate_resume.wait()
+        sess.state.cancel("parent turn interrupted by user")
+        return ""
+
+    async def blocked_grandchild(sess, _cancel_event):
+        grandchild_started.set()
+        await release_grandchild.wait()
+        sess.state.mark_done()
+        return "late grandchild result"
+
+    lead = CancelAwareSession(
+        "lead",
+        [suspend_on("manager", "nested task", "lead-child")],
+    )
+    child = CancelAwareSession(
+        "manager",
+        [
+            suspend_on("coder", "blocked leaf", "child-grandchild"),
+            unexpected_intermediate_resume,
+        ],
+    )
+    grandchild = CancelAwareSession("coder", [blocked_grandchild])
+    scheduler, _ = build_scheduler(lead, [child, grandchild])
+
+    async def scenario():
+        cancel_event = asyncio.Event()
+        call = asyncio.create_task(
+            scheduler.run("delegate deeply", cancel_event=cancel_event)
+        )
+        await asyncio.wait_for(grandchild_started.wait(), timeout=0.5)
+
+        cancel_event.set()
+        done, _pending = await asyncio.wait({call}, timeout=0.15)
+        finished_before_release = call in done
+        resumed_before_release = intermediate_resumed.is_set()
+        live_before_release = [
+            task
+            for task in (
+                *scheduler._tasks.values(),
+                *scheduler._startup_tasks.values(),
+                *scheduler._message_delivery_tasks.values(),
+            )
+            if not task.done()
+        ]
+
+        release_grandchild.set()
+        release_intermediate_resume.set()
+        with pytest.raises(SchedulerTurnError, match="interrupted by user"):
+            await asyncio.wait_for(call, timeout=0.5)
+
+        assert finished_before_release is True
+        assert resumed_before_release is False
+        assert live_before_release == []
+        assert all(
+            scheduler.table.get(descendant).state.phase is SessionPhase.STOPPED
+            for descendant in (0, 1, 2)
+        )
+        assert scheduler._shutting_down is False
+
+    run(scenario())
+
+
 def test_nested_delegation_resumes_up_the_tree():
     lead = ScriptedSession(
         "lead",
