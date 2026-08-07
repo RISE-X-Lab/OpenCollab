@@ -109,6 +109,14 @@ def _parse_thinking_params(value: str | None) -> dict[str, Any]:
     return parsed
 
 
+def _validate_thinking_params(value: dict[str, Any]) -> dict[str, Any]:
+    try:
+        json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("thinking_params must be JSON-serializable") from exc
+    return value
+
+
 class OpenCollabConfig(BaseModel):
     """Runtime configuration for OpenCollab."""
 
@@ -159,9 +167,11 @@ class OpenCollabConfig(BaseModel):
         # A JSON object string (from env/.env) parses to a dict. Invalid values
         # fail during configuration instead of silently changing model behavior.
         if isinstance(value, str):
-            return _parse_thinking_params(value)
+            return _validate_thinking_params(_parse_thinking_params(value))
         if value is None:
             return dict(DEFAULT_THINKING_PARAMS)
+        if isinstance(value, dict):
+            return _validate_thinking_params(value)
         return value
 
     @field_validator("model", "provider", mode="before")

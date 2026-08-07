@@ -191,6 +191,21 @@ def test_role_temperature_rejects_invalid_values(tmp_path, temperature):
         load_team_config(str(tmp_path), path=config)
 
 
+def test_role_thinking_params_reject_yaml_native_dates(tmp_path):
+    config = tmp_path / "team.yaml"
+    config.write_text(
+        "roles:\n"
+        "  lead:\n"
+        "    prompt: Lead prompt.\n"
+        "    thinking_params:\n"
+        "      cutoff: 2026-08-07\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="JSON-serializable"):
+        load_team_config(str(tmp_path), path=config)
+
+
 def test_prompt_file_is_resolved_relative_to_team_file(tmp_path, monkeypatch):
     _write_team(tmp_path, monkeypatch, coder_prompt="Resolved coder body.")
     cfg = load_team_config(str(tmp_path))
