@@ -90,6 +90,21 @@ def test_format_strips_analysis_and_unwraps_summary():
     assert out == "Summary:\nthe real summary"
 
 
+def test_format_preserves_backslashes_as_literal_summary_text():
+    raw = r"<summary>Use C:\code\app.py, then keep \1 and \g<1> literal.</summary>"
+    assert format_compact_summary(raw) == (
+        "Summary:\n"
+        r"Use C:\code\app.py, then keep \1 and \g<1> literal."
+    )
+
+
+def test_format_keeps_each_summary_block_distinct():
+    raw = "<summary>original draft</summary>\nBETWEEN\n<summary>corrected draft</summary>"
+    assert format_compact_summary(raw) == (
+        "Summary:\noriginal draft\nBETWEEN\nSummary:\ncorrected draft"
+    )
+
+
 def test_format_collapses_blank_lines_and_trims():
     raw = "<summary>line1\n\n\n\nline2</summary>"
     out = format_compact_summary(raw)

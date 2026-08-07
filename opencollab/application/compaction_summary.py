@@ -95,11 +95,11 @@ class ReadTimeSummarizer:
         request = build_summary_request(segment, custom_instructions=self._custom_instructions)
         try:
             response = run_coro_blocking(lambda: self._acomplete(request))
+            raw = getattr(response, "content", None) or ""
+            summary = format_compact_summary(raw)
         except Exception:
             return self._fallback(segment)
 
-        raw = getattr(response, "content", None) or ""
-        summary = format_compact_summary(raw)
         if not summary:
             return self._fallback(segment)
         if self._transcript_path:
