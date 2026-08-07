@@ -133,7 +133,11 @@ def build_scheduler(
     # (the coordination-ready seam for a future ``agent`` executor). Subscribing
     # appends to the same bus, leaving the TUI sink at target[0] untouched.
     if enable_hooks and team_cfg.hooks:
-        runner = ShellHookRunner(team_cfg.hooks, scheduler=scheduler)
+        runner = ShellHookRunner(
+            team_cfg.hooks,
+            scheduler=scheduler,
+            workspace=ctx.workspace,
+        )
         event_bus.subscribe(HookEventSubscriber(runner))
 
     # Persist a team.json manifest from the live roster on every roster change.
