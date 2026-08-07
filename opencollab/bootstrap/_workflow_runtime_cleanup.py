@@ -8,6 +8,7 @@ from typing import Any, Literal, TypeVar
 
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import TracePort
+from opencollab.application.session_lifecycle import close_session_resources
 from opencollab.application.workflow import WorkflowContext
 from opencollab.bootstrap._workflow_runtime_manifest import (
     _workflow_manifest_payload,
@@ -158,9 +159,10 @@ async def _quiesce_and_finalize_workflow_context(
         ctx,
         timeout=timeout,
     )
+    resources_closed = await close_session_resources(ctx.sessions, timeout=timeout)
     return (
         final_quiesced,
-        succeeded and enqueued and final_succeeded,
+        succeeded and enqueued and final_succeeded and resources_closed,
         (*lingering, *final_lingering),
     )
 

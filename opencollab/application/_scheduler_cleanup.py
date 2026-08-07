@@ -14,6 +14,7 @@ from opencollab.application.async_timeout import (
     cancel_tasks_and_wait,
     consume_task_result,
 )
+from opencollab.application.session_lifecycle import close_session_resources
 from opencollab.domain.pending import PendingRowError, RowStatus
 
 logger = logging.getLogger(__name__)
@@ -151,7 +152,14 @@ class SchedulerCleanupMixin:
         if persistence_errors:
             failures.append("session persistence failed")
 
-        release_safe = not pending and environments_aborted and persistence_quiesced
+        session_resources_closed = await close_session_resources(
+            self._persistence_sessions(persistence_sessions),
+            timeout=timeout,
+        )
+        if not session_resources_closed:
+            failures.append("session resource close failed or timed out")
+
+        release_safe = not pending and environments_aborted and persistence_quiesced and session_resources_closed
         worktrees_released = release_safe and await self._release_worktree_pool_bounded(timeout=timeout)
         if not worktrees_released:
             failures.append(

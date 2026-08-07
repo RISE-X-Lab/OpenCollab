@@ -262,6 +262,28 @@ def test_cleanup_autosaves_live_sessions(monkeypatch, tmp_path):
     assert saved["messages"][-1]["content"] == "latest state"
 
 
+def test_cleanup_closes_session_resources_once():
+    class ClosableLead(_FakeLeadSession):
+        def __init__(self):
+            super().__init__()
+            self.close_calls = 0
+
+        async def aclose(self):
+            self.close_calls += 1
+
+    scheduler = Scheduler(
+        session_factory=_FakeSessionFactory({}),
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(),
+    )
+    lead = ClosableLead()
+    scheduler.register_lead(lead)
+
+    run(scheduler.cleanup())
+
+    assert lead.close_calls == 1
+
+
 def test_cleanup_drains_queued_autosaves_before_final_snapshot(tmp_path):
     first_started = threading.Event()
     second_started = threading.Event()
