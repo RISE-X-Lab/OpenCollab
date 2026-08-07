@@ -240,6 +240,11 @@ class DockerEnvironment(Environment):
             return self._container_id
         if self._container_id is not None:
             return self._container_id
+        host_mount: str | None = None
+        if mount_dir is not None:
+            host_mount = os.path.realpath(os.path.abspath(mount_dir))
+            if not os.path.isdir(host_mount):
+                raise NotADirectoryError(host_mount)
         self._container_name = f"opencollab-{uuid.uuid4().hex[:16]}"
         args = [
             "run",
@@ -252,8 +257,8 @@ class DockerEnvironment(Environment):
             "--label",
             f"{DOCKER_OWNER_LABEL}={self._owner_token}",
         ]
-        if mount_dir:
-            args.extend(("-v", f"{os.path.abspath(mount_dir)}:{self.workspace}"))
+        if host_mount is not None:
+            args.extend(("-v", f"{host_mount}:{self.workspace}"))
         args.extend(("-w", self.workspace, self._image, "sleep", "infinity"))
         try:
             result = await self._docker(*args, timeout=DOCKER_SETUP_TIMEOUT_SECONDS)
@@ -268,6 +273,7 @@ class DockerEnvironment(Environment):
                 )
             )
         self._container_id = candidate.lower()
+        self.host_workspace = host_mount
         return self._container_id
 
     async def _discard_failed_setup(self, failure: BaseException) -> NoReturn:
