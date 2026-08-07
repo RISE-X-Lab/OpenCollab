@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import uuid
 from typing import Any, Optional
 
@@ -74,6 +75,40 @@ def _get_prompt_session() -> Any:
     return _prompt_session
 
 
+async def _read_console_line(prompt_text: str) -> str:
+    """Read a terminal line without leaving an executor thread on cancellation."""
+    loop = asyncio.get_running_loop()
+    try:
+        stdin_fd = sys.stdin.fileno()
+    except (AttributeError, OSError) as exc:
+        raise RuntimeError("console input fallback requires a selectable stdin") from exc
+
+    console.print(prompt_text, end="")
+    result: asyncio.Future[str] = loop.create_future()
+
+    def on_readable() -> None:
+        if result.done():
+            return
+        try:
+            line = sys.stdin.readline()
+        except BaseException as exc:
+            result.set_exception(exc)
+            return
+        if line == "":
+            result.set_exception(EOFError())
+            return
+        result.set_result(line.rstrip("\r\n"))
+
+    try:
+        loop.add_reader(stdin_fd, on_readable)
+    except (AttributeError, NotImplementedError) as exc:
+        raise RuntimeError("console input fallback is unavailable on this event loop") from exc
+    try:
+        return await result
+    finally:
+        loop.remove_reader(stdin_fd)
+
+
 async def _read_line(
     prompt_text: Any,
     bottom_toolbar: Any = None,
@@ -94,9 +129,8 @@ async def _read_line(
             key_bindings=key_bindings,
         )
     except Exception:
-        loop = asyncio.get_running_loop()
         fallback = prompt_text if isinstance(prompt_text, str) else "> "
-        return await loop.run_in_executor(None, lambda: console.input(fallback))
+        return await _read_console_line(fallback)
 
 
 @app.callback(invoke_without_command=True)
