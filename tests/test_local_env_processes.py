@@ -6,6 +6,7 @@ import asyncio
 import os
 import shlex
 import sys
+import threading
 
 import pytest
 
@@ -380,6 +381,62 @@ async def test_local_file_operations_reject_symlink_and_escape(tmp_path) -> None
     with pytest.raises(PermissionError):
         await env.write_file("../escape", "changed")
     assert outside.read_text(encoding="utf-8") == "outside"
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+async def test_local_file_io_does_not_block_event_loop(
+    tmp_path,
+    monkeypatch,
+    operation,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_file_io(*_args, **_kwargs):
+        started.set()
+        assert release.wait(1.0)
+        return b"payload"
+
+    env = LocalEnvironment(str(tmp_path))
+    if operation == "read":
+        monkeypatch.setattr(local_module, "read_regular_bytes", slow_file_io)
+        owner = asyncio.create_task(env.read_file("value"))
+    else:
+        monkeypatch.setattr(local_module, "write_regular_bytes_atomic", slow_file_io)
+        owner = asyncio.create_task(env.write_file("value", "payload"))
+    timer = threading.Timer(0.15, release.set)
+    timer.start()
+    try:
+        await asyncio.sleep(0.02)
+        assert started.is_set()
+        assert not owner.done()
+    finally:
+        release.set()
+        timer.cancel()
+        await owner
+
+
+async def test_local_cleanup_waits_for_cancelled_file_io(tmp_path, monkeypatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_write(*_args, **_kwargs) -> None:
+        started.set()
+        assert release.wait(1.0)
+
+    monkeypatch.setattr(local_module, "write_regular_bytes_atomic", slow_write)
+    env = LocalEnvironment(str(tmp_path))
+    writer = asyncio.create_task(env.write_file("value", "payload"))
+    assert await asyncio.to_thread(started.wait, 1.0)
+    writer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await writer
+
+    cleanup = asyncio.create_task(env.cleanup())
+    await asyncio.sleep(0.02)
+    assert not cleanup.done()
+    release.set()
+    await cleanup
 
 
 async def test_local_temp_files_have_owned_cleanup(tmp_path) -> None:
