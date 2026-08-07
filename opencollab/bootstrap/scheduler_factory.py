@@ -63,6 +63,9 @@ def build_scheduler(
     shell commands fire on lifecycle events. Disable (e.g. under eval) to keep
     runs free of hook side effects.
     """
+    if session_file is not None and not Path(session_file).is_file():
+        raise ValueError(f"session file does not exist: {session_file}")
+
     cfg = ctx.config
     team_cfg = load_team_config(ctx.workspace, path=team_config_path)
     event_bus = EventBus(ctx.event_sink)
