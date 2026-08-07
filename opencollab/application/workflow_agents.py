@@ -291,12 +291,10 @@ class WorkflowAgentsMixin:
         """Trace one ``dead_scout_synthesis`` event (no-op without a tracer) so the
         rare salvage is auditable: how big the ledger was, whether a payload was
         captured, and the anchor count of the salvaged findings."""
-        if self._tracer is None:
-            return
         findings = (captured or {}).get("findings") or []
-        self._tracer.log_step(
-            step_type="dead_scout_synthesis",
-            payload={
+        self._trace_step(
+            "dead_scout_synthesis",
+            {
                 "role": label,
                 "ledger_size": len(ledger),
                 "salvaged": salvaged,
@@ -337,8 +335,6 @@ class WorkflowAgentsMixin:
     ) -> None:
         """Emit one ``commitment_terminus`` event per scout to orchestration.jsonl
         (no-op when no tracer is wired)."""
-        if self._tracer is None:
-            return
         state = getattr(session, "state", None)
         payload = commitment_terminus_payload(
             role=label,
@@ -349,4 +345,4 @@ class WorkflowAgentsMixin:
             wind_down_token_mark=int(getattr(state, "wind_down_token_mark", 0) or 0),
             artifact=report or "",
         )
-        self._tracer.log_step(step_type="commitment_terminus", payload=payload)
+        self._trace_step("commitment_terminus", payload)
