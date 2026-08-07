@@ -49,6 +49,7 @@ def test_summarizer_parses_summary_block():
     out = s(SEGMENT)
     assert "scratch" not in out
     assert out == "Summary:\nthe gist"
+    assert s.last_call_cacheable is True
 
 
 def test_summarizer_sends_the_segment_plus_prompt():
@@ -71,6 +72,7 @@ def test_summarizer_falls_back_on_llm_error():
     out = s(SEGMENT)
     assert "[user]: build the thing" in out  # bounded raw excerpt
     assert "Summary:" not in out
+    assert s.last_call_cacheable is False
 
 
 def test_summarizer_falls_back_when_no_summary_block():
@@ -78,6 +80,7 @@ def test_summarizer_falls_back_when_no_summary_block():
     s = _summarizer("<analysis>only thinking, forgot the summary</analysis>")
     out = s(SEGMENT)
     assert "[assistant]: working on it" in out
+    assert s.last_call_cacheable is False
 
 
 def test_summarizer_fallback_is_bounded_and_never_empty():
