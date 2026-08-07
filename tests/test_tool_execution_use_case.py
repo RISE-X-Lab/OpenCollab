@@ -288,6 +288,58 @@ def test_tool_execution_use_case_preserves_argument_errors(arguments, expected_e
     assert publisher.events == []
 
 
+@pytest.mark.parametrize(
+    "failure",
+    ["invalid-json", "non-object", "unknown-tool", "schema"],
+)
+def test_short_circuited_tool_steps_advance_progress_watchdog(failure):
+    state = SessionState(messages=[])
+    if failure == "unknown-tool":
+        use_case, _ = build_use_case(state=state)
+        call = tool_call(name="missing", arguments="{}")
+    elif failure == "schema":
+        use_case, _ = build_use_case(
+            agent=FakeAgent(tools=[SideEffectTool()]),
+            state=state,
+        )
+        call = tool_call(arguments="{}")
+    else:
+        use_case, _ = build_use_case(
+            agent=FakeAgent(tools=[RuntimeNativeTool()]),
+            state=state,
+        )
+        arguments = "{not-json" if failure == "invalid-json" else "[]"
+        call = tool_call(arguments=arguments)
+
+    for _ in range(3):
+        result = run(use_case.process([call]))
+        result.apply_to(state)
+        assert result.messages_to_append[0]["tool_call_id"] == "call-1"
+
+    assert state.turn.steps_since_progress == 3
+
+
+def test_rejected_batch_advances_progress_watchdog_once():
+    state = SessionState(messages=[])
+    use_case, _ = build_use_case(
+        agent=FakeAgent(tools=[RuntimeNativeTool()]),
+        state=state,
+    )
+    calls = [
+        tool_call(call_id="valid", arguments="{}"),
+        tool_call(call_id="broken", arguments="{not-json"),
+    ]
+
+    result = run(use_case.process(calls))
+    result.apply_to(state)
+
+    assert state.turn.steps_since_progress == 1
+    assert [message["tool_call_id"] for message in result.messages_to_append] == [
+        "valid",
+        "broken",
+    ]
+
+
 def test_tool_execution_use_case_handles_non_string_and_preparsed_arguments():
     tool = RuntimeNativeTool()
     use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))

@@ -92,6 +92,11 @@ class ToolProcessingResult:
     # this so a write resets only the reads that precede it; the aggregate fields
     # above remain as a compatibility fallback for older/custom executors.
     read_write_signals: list[str] = field(default_factory=list)
+    # A provider-issued tool step occurred even if every call short-circuited
+    # before execution (malformed args, unknown tool, schema/preflight error).
+    # The progress watchdog counts such a step as no progress instead of letting
+    # repeated malformed calls bypass it indefinitely.
+    tool_step_attempted: bool = False
     # STEP 1 information-gain sensor: one ``(content_hash, call_hash,
     # intrinsic_low_yield)`` tuple per EXECUTED tool result, in call order. Folded
     # into SessionState's novelty counters by ``apply_evidence_counter_to``.
@@ -169,12 +174,13 @@ class ToolProcessingResult:
             )
         if self.evidence_signals:
             made_progress = (
-                self.write_succeeded or state.turn.distinct_evidence_count > distinct_before
+                self.write_succeeded
+                or state.turn.distinct_evidence_count > distinct_before
             )
-            if made_progress:
-                state.turn.steps_since_progress = 0
-            else:
-                state.turn.steps_since_progress += 1
+        if made_progress:
+            state.turn.steps_since_progress = 0
+        elif self.evidence_signals or self.tool_step_attempted:
+            state.turn.steps_since_progress += 1
         if made_progress:
             state.turn.loop_blocked_since_progress = 0
         elif self.loop_detections:
