@@ -105,6 +105,9 @@ class QueuedTeammateMessage:
     xml: str
     sent_at: str = ""
     message_id: str = ""
+    from_role: str = ""
+    to_role: str = ""
+    restored: bool = False
 
 
 __all__ = [
