@@ -62,6 +62,7 @@ class LLMClient:
             anthropic_kwargs: dict[str, Any] = {
                 "api_key": api_key or os.environ.get("ANTHROPIC_API_KEY"),
                 "timeout": request_timeout,
+                "max_retries": 0,
             }
             if self.base_url:
                 anthropic_kwargs["base_url"] = self.base_url
@@ -73,6 +74,7 @@ class LLMClient:
                 api_key=api_key or os.environ.get("OPENAI_API_KEY"),
                 base_url=self.base_url,
                 timeout=request_timeout,
+                max_retries=0,
             )
             self._anthropic = None
 
