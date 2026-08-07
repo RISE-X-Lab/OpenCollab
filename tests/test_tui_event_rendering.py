@@ -499,14 +499,30 @@ def test_terminal_agent_summaries_have_a_global_bound():
     assert tui.terminal_agent_summaries_omitted == 10
 
 
-def test_terminal_provider_entries_cannot_recreate_evicted_render_states():
+@pytest.mark.parametrize(
+    ("event_type", "provider_phase"),
+    [
+        ("agent_completed", "done"),
+        ("agent_failed", "error"),
+        ("agent_cancelled", "stopped"),
+    ],
+)
+def test_terminal_provider_entries_cannot_recreate_evicted_render_states(
+    event_type,
+    provider_phase,
+):
     tui = TUI(Console(file=StringIO(), width=100, color_system=None))
     tui._live_paused = True
     total = renderer_mod.MAX_TERMINAL_AGENT_STATES + 300
     roster = [
         {"aid": 0, "role": "lead", "phase": "idle", "busy": False},
         *[
-            {"aid": aid, "role": "worker", "phase": "done", "busy": False}
+            {
+                "aid": aid,
+                "role": "worker",
+                "phase": provider_phase,
+                "busy": False,
+            }
             for aid in range(1, total + 1)
         ],
     ]
@@ -514,8 +530,13 @@ def test_terminal_provider_entries_cannot_recreate_evicted_render_states():
     for aid in range(1, total + 1):
         tui.event_handler(
             SchedulerEvent(
-                "agent_completed",
-                {"aid": aid, "role": "worker", "latency": 0.1},
+                event_type,
+                {
+                    "aid": aid,
+                    "role": "worker",
+                    "latency": 0.1,
+                    "error": "boom",
+                },
             )
         )
 
