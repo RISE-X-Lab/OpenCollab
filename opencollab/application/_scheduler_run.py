@@ -232,12 +232,21 @@ class SchedulerRunMixin:
 
         reason = "interrupted by user"
         failure = f"Error: {reason}"
-        # Close the wake gate before cancelling children, so their cancellation
-        # deliveries cannot schedule a resume driver that races this finalizer.
+        descendants = self._turn_descendant_aids(aid)
+        # Close every wake gate in the subtree before cancelling any producer.
+        # A leaf cancellation is delivered to its immediate parent first; if
+        # only the public target were terminal, that delivery could resume an
+        # intermediate suspended parent and create an untracked replacement
+        # task while this finalizer awaited the original owners.
+        for child_aid in descendants:
+            child = self.table.get(child_aid)
+            if child is not None and not child.state.phase.is_terminal():
+                child.state.cancel("parent turn interrupted by user")
+                if not child.result:
+                    child.result = failure
         target.state.cancel(reason)
         target.result = failure
 
-        descendants = self._turn_descendant_aids(aid)
         owned_tasks = {
             task
             for child_aid in descendants
