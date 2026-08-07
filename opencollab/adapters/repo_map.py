@@ -271,13 +271,13 @@ async def build_repo_map_via_env(
         result = await env.exec_cmd(cmd)
     except Exception:
         return ""
-    if result.returncode != 0:
+    if result.returncode != 0 or result.stderr.strip():
         return ""
-    paths = [
+    paths = sorted(
         line[2:] if line.startswith("./") else line
         for line in result.stdout.splitlines()
         if line.strip() and line.strip() != "."
-    ]
+    )
     if not paths:
         return ""
     truncated = len(paths) > max_entries or result.stdout_truncated
