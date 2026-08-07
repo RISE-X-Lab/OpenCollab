@@ -168,6 +168,12 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
     state.turn.scout_ledger = [{"tool": "grep", "outcome": "hit"}]
     state.turn.steps_since_progress = 1
     state.turn.loop_blocked_since_progress = 4
+    state.pending_external_user_turn = {
+        "turn_id": "queued-turn",
+        "status": "queued",
+        "content": "retry after restore",
+        "message_index": 1,
+    }
     # A session-lifetime latch is deliberately NOT part of the per-turn snapshot.
     state.wind_down_done = True
 
@@ -181,6 +187,7 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
     state.turn.scout_ledger.append({"tool": "read", "outcome": "duplicate"})
     state.turn.steps_since_progress = 99
     state.turn.loop_blocked_since_progress = 99
+    state.pending_external_user_turn = None
     state.wind_down_done = False
 
     state.restore_user_turn(checkpoint)
@@ -193,6 +200,12 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
     assert state.turn.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
     assert state.turn.steps_since_progress == 1
     assert state.turn.loop_blocked_since_progress == 4
+    assert state.pending_external_user_turn == {
+        "turn_id": "queued-turn",
+        "status": "queued",
+        "content": "retry after restore",
+        "message_index": 1,
+    }
     # The lifetime latch is not touched by a per-turn restore.
     assert state.wind_down_done is False
 

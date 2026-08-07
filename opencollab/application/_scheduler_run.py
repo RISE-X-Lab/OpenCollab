@@ -74,6 +74,15 @@ class SchedulerRunMixin:
                 self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
             await self.wait_until_terminal(aid)
 
+        # A snapshot can capture the durable gap after an external user message
+        # was accepted but before its driver task began. Finish that queued turn
+        # before accepting another external message, so restore never fuses two
+        # unrelated user requests into one provider prompt.
+        if getattr(session.state, "pending_external_user_turn", None) is not None:
+            self._reserve_turn_lease(aid)
+            self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
+            await self.wait_until_terminal(aid)
+
         # Restored teammate messages are scheduler-owned turns. Deliver and
         # finish them before accepting the new external user turn.
         if self._message_inbox.get(aid):
