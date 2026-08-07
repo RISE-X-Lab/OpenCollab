@@ -162,6 +162,70 @@ class _NamedTool:
             },
         }
 
+@pytest.mark.parametrize(
+    ("schema", "value", "error_fragment"),
+    [
+        (
+            {
+                "type": ["object", "null"],
+                "required": ["name"],
+                "properties": {"name": {"type": "string"}},
+            },
+            {},
+            "$.name: required property is missing",
+        ),
+        (
+            {
+                "type": ["null", "object"],
+                "properties": {"name": {"type": "string"}},
+            },
+            {"name": 7},
+            "$.name: expected type 'string'",
+        ),
+        (
+            {
+                "type": ["array", "null"],
+                "items": {"type": "integer"},
+            },
+            [1, "two"],
+            "$[1]: expected type 'integer'",
+        ),
+    ],
+)
+def test_validate_union_type_still_applies_container_constraints(
+    schema, value, error_fragment
+):
+    errors = validate(value, schema)
+    assert any(error_fragment in error for error in errors)
+    assert validate(None, schema) == []
+
+
+@pytest.mark.parametrize("value", [1, 1.0, -0.0])
+def test_validate_integer_accepts_mathematically_integral_numbers(value):
+    assert validate(value, {"type": "integer"}) == []
+
+
+@pytest.mark.parametrize("value", [1.5, True, False])
+def test_validate_integer_rejects_non_integral_or_boolean_values(value):
+    assert validate(value, {"type": "integer"})
+
+
+@pytest.mark.parametrize(
+    ("value", "enum", "matches"),
+    [
+        (1, [True], False),
+        (0, [False], False),
+        (True, [1], False),
+        (False, [0], False),
+        (1.0, [1], True),
+        ({"x": 1}, [{"x": True}], False),
+        ([0], [[False]], False),
+    ],
+)
+def test_validate_enum_uses_json_type_aware_equality(value, enum, matches):
+    errors = validate(value, {"enum": enum})
+    assert (errors == []) is matches
+
 
 # --------------------------------------------------------------------------- #
 # StructuredOutputTool
