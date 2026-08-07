@@ -432,6 +432,89 @@ def test_shutdown_after_append_dequeues_and_restore_skips_committed_message():
     assert resumed.added == []
 
 
+@pytest.mark.parametrize(
+    (
+        "from_aid",
+        "from_role",
+        "stored_to_role",
+        "current_to_role",
+        "topology",
+        "should_deliver",
+    ),
+    [
+        (7, "analyst", "coder", "coder", Topology(allow_all=True), False),
+        (0, "lead", "coder", "reviewer", Topology(allow_all=True), False),
+        (
+            0,
+            "lead",
+            "coder",
+            "coder",
+            Topology(edges={"lead": frozenset({"reviewer"})}),
+            False,
+        ),
+        (
+            0,
+            "lead",
+            "coder",
+            "coder",
+            Topology(edges={"lead": frozenset({"coder"})}),
+            True,
+        ),
+    ],
+)
+def test_restored_message_revalidates_current_roster_and_topology(
+    from_aid,
+    from_role,
+    stored_to_role,
+    current_to_role,
+    topology,
+    should_deliver,
+):
+    target = RespondingFakeSession(["handled"], role=current_to_role)
+    target.state.set_phase(SessionPhase.DONE)
+    scheduler, events = _build_scheduler(target, topology=topology)
+    _register_child(scheduler, target)
+    message_id = "a" * 32
+    xml = scheduler._format_teammate_message(
+        from_aid,
+        "restored",
+        "durable message",
+        message_id=message_id,
+    )
+    target.state.pending_user_messages = [
+        {
+            "role": "user",
+            "content": xml,
+            "message_content": "durable message",
+            "from_aid": from_aid,
+            "to_aid": 1,
+            "from_role": from_role,
+            "to_role": stored_to_role,
+            "summary": "restored",
+            "message_id": message_id,
+            "timestamp": "2026-08-07T00:00:00+00:00",
+            "delivery_status": "pending",
+        }
+    ]
+    scheduler._restore_message_inbox(1, target.state)
+
+    run(scheduler._drain_message_inbox(1))
+
+    event_types = [event.type for event in _scheduler_events(events)]
+    if should_deliver:
+        assert target.added == [xml]
+        assert target.state.pending_user_messages == []
+        assert "agent_message_delivered" in event_types
+        assert "agent_message_rejected_on_restore" not in event_types
+    else:
+        assert target.added == []
+        assert scheduler._message_inbox.get(1) == []
+        assert target.state.pending_user_messages[0]["delivery_status"] == "rejected"
+        assert target.state.pending_user_messages[0]["rejection_reason"]
+        assert "agent_message_rejected_on_restore" in event_types
+        assert "agent_message_delivered" not in event_types
+
+
 def test_add_user_message_failure_rolls_back_partial_state_and_restores_budget():
     class FailingAdd(FakeSession):
         async def add_user_message(self, content):
