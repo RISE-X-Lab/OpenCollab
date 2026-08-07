@@ -59,7 +59,42 @@ class _OneShotAsyncBarrier:
 async def test_pool_without_worktrees_returns_local_environment(tmp_path) -> None:
     pool = WorktreePool(str(tmp_path), use_worktrees=False)
     env = await pool.acquire("coder")
+    temporary = await env.write_temp_file("owned", prefix="pool-", suffix=".tmp")
+
     assert isinstance(env, LocalEnvironment)
+    assert pool._envs == [env]
+
+    await pool.release_env(env)
+
+    assert pool._envs == []
+    assert env.revoked is True
+    assert not os.path.exists(temporary)
+
+
+async def test_pool_retains_failed_local_cleanup_for_retry(
+    tmp_path, monkeypatch
+) -> None:
+    class RetriableLocalEnvironment:
+        def __init__(self, workspace):
+            self.workspace = workspace
+            self.cleanup_calls = 0
+
+        async def cleanup(self):
+            self.cleanup_calls += 1
+            if self.cleanup_calls == 1:
+                raise OSError("local cleanup failed")
+
+    monkeypatch.setattr(
+        pool_module, "LocalEnvironment", RetriableLocalEnvironment
+    )
+    pool = WorktreePool(str(tmp_path), use_worktrees=False)
+    env = await pool.acquire("coder")
+
+    with pytest.raises(OSError, match="local cleanup failed"):
+        await pool.release_env(env)
+    assert pool._envs == [env]
+
+    await pool.release_env(env)
     assert pool._envs == []
 
 
