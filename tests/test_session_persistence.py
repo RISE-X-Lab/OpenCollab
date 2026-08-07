@@ -190,6 +190,152 @@ def test_store_rejects_complete_invalid_journal_record(tmp_path) -> None:
             {"messages": [{"role": "tool", "content": "result"}]},
             "tool_call_id",
         ),
+        (
+            {"messages": [{"role": "user", "content": [42]}]},
+            "content part 1.*object",
+        ),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [{"type": "text"}],
+                    }
+                ]
+            },
+            "content part 1.*text",
+        ),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [42],
+                    }
+                ]
+            },
+            "tool call 1.*object",
+        ),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "type": "function",
+                                "function": {
+                                    "name": "grep",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+            "tool call 1.*id",
+        ),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "custom",
+                                "function": {
+                                    "name": "grep",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+            "tool call 1.*type.*function",
+        ),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {},
+                            }
+                        ],
+                    }
+                ]
+            },
+            "tool call 1.*function.*name",
+        ),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {
+                                    "name": " ",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+            "tool call 1.*name",
+        ),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {"name": "grep"},
+                            }
+                        ],
+                    }
+                ]
+            },
+            "tool call 1.*arguments",
+        ),
+        (
+            {
+                "messages": [
+                    {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call-1",
+                                "type": "function",
+                                "function": {
+                                    "name": "grep",
+                                    "arguments": {},
+                                },
+                            }
+                        ],
+                    }
+                ]
+            },
+            "tool call 1.*arguments",
+        ),
     ],
 )
 def test_store_rejects_malformed_snapshot_message_shapes(
@@ -217,6 +363,28 @@ def test_store_accepts_assistant_tool_call_and_matching_result(tmp_path) -> None
             ],
         },
         {"role": "tool", "tool_call_id": "call-1", "content": "done"},
+    ]
+    SessionStore().save(str(path), messages)
+
+    assert SessionStore().load_messages(str(path), "fallback") == messages
+
+
+def test_store_accepts_provider_content_part_shapes(tmp_path) -> None:
+    path = tmp_path / "content-parts.json"
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "inspect this image"},
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/png;base64,AA==",
+                        "detail": "low",
+                    },
+                },
+            ],
+        }
     ]
     SessionStore().save(str(path), messages)
 
