@@ -266,35 +266,12 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
         """
         result = ToolProcessingResult()
         preflight_errors = (
-            self._preflight_tool_batch(tool_calls)
+            self.preflight_tool_batch(tool_calls)
             if len(tool_calls) > 1
             else [""] * len(tool_calls)
         )
         if any(preflight_errors):
-            summary = "; ".join(
-                f"call {index}: {error}"
-                for index, error in enumerate(preflight_errors)
-                if error
-            )[:2_000]
-            for index, tc in enumerate(tool_calls):
-                tool_id = (
-                    tc.get("id")
-                    if isinstance(tc, dict) and isinstance(tc.get("id"), str)
-                    else f"invalid-tool-call-{index}"
-                )
-                result.messages_to_append.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tool_id,
-                        "content": (
-                            preflight_errors[index]
-                            if len(tool_calls) == 1
-                            else "Error: entire tool-call batch rejected before execution: "
-                            + summary
-                        ),
-                    }
-                )
-            return result
+            return self.preflight_rejection_result(tool_calls, preflight_errors)
         recent_call_hashes = list(self.state.turn.recent_call_hashes)
 
         for index, tc in enumerate(tool_calls):
@@ -475,7 +452,8 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
 
         return result
 
-    def _preflight_tool_batch(self, tool_calls: object) -> list[str]:
+    def preflight_tool_batch(self, tool_calls: object) -> list[str]:
+        """Validate a complete provider batch before any call can start."""
         if not isinstance(tool_calls, list):
             raise ValueError("tool_calls must be a list")
         if len(tool_calls) > MAX_TOOL_CALLS_PER_BATCH:
@@ -540,6 +518,38 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                         schema_errors
                     )[:1_000]
         return errors
+
+    @staticmethod
+    def preflight_rejection_result(
+        tool_calls: list[dict],
+        preflight_errors: list[str],
+    ) -> ToolProcessingResult:
+        """Build ordered no-side-effect responses for a rejected batch."""
+        result = ToolProcessingResult()
+        summary = "; ".join(
+            f"call {index}: {error}"
+            for index, error in enumerate(preflight_errors)
+            if error
+        )[:2_000]
+        for index, tc in enumerate(tool_calls):
+            tool_id = (
+                tc.get("id")
+                if isinstance(tc, dict) and isinstance(tc.get("id"), str)
+                else f"invalid-tool-call-{index}"
+            )
+            result.messages_to_append.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": tool_id,
+                    "content": (
+                        preflight_errors[index]
+                        if len(tool_calls) == 1
+                        else "Error: entire tool-call batch rejected before execution: "
+                        + summary
+                    ),
+                }
+            )
+        return result
 
     def parse_tool_args(self, func: dict) -> dict:
         args_str = func.get("arguments", "")
