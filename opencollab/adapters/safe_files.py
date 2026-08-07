@@ -6,6 +6,7 @@ import errno
 import fcntl
 import os
 import stat
+import sys
 import time
 import uuid
 from collections.abc import Callable
@@ -14,13 +15,30 @@ from typing import BinaryIO, TextIO
 
 _LOCK_TIMEOUT_SECONDS = 10.0
 _READ_CHUNK_BYTES = 1024 * 1024
+_MACOS_SYSTEM_ALIASES = (
+    (Path("/tmp"), Path("/private/tmp")),
+    (Path("/var"), Path("/private/var")),
+)
+
+
+def _canonicalize_system_alias(path: Path) -> Path:
+    if sys.platform != "darwin":
+        return path
+    for alias, canonical in _MACOS_SYSTEM_ALIASES:
+        try:
+            relative = path.relative_to(alias)
+        except ValueError:
+            continue
+        if Path(os.path.realpath(alias)) == canonical and canonical.is_dir():
+            return canonical / relative
+    return path
 
 
 def _absolute(path: str | os.PathLike[str]) -> Path:
     value = os.fspath(path)
     if not value or "\0" in value:
         raise ValueError("path must be non-empty text without NUL bytes")
-    return Path(os.path.abspath(value))
+    return _canonicalize_system_alias(Path(os.path.abspath(value)))
 
 
 def _require_limit(max_bytes: int) -> int:
