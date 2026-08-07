@@ -25,11 +25,14 @@ class SchedulerRunMixin:
         is finished only when no task is running, no pending table is
         outstanding, and every session is terminal or idle (``_quiescent``).
         """
+        if isinstance(aid, bool) or not isinstance(aid, int) or aid < 0:
+            raise ValueError("Agent aid must be a non-negative integer.")
         current_task = asyncio.current_task()
         if current_task is not None:
             self._active_run_tasks[current_task] = aid
         try:
-            async with self._run_lock:
+            lock = self._run_locks.setdefault(aid, asyncio.Lock())
+            async with lock:
                 return await self._run_turn_exclusive(aid, user_message)
         except asyncio.CancelledError:
             # The public caller owns the whole team turn. Do not leave its target
@@ -46,9 +49,7 @@ class SchedulerRunMixin:
                     self._active_run_tasks.pop(current_task, None)
 
     async def _run_turn_exclusive(self, aid: int, user_message: str) -> str:
-        """Drive one externally visible agent turn under ``_run_lock``."""
-        if isinstance(aid, bool) or not isinstance(aid, int) or aid < 0:
-            raise ValueError("Agent aid must be a non-negative integer.")
+        """Drive one externally visible agent turn under its per-aid lock."""
         session = self._sessions.get(aid)
         scb = self.table.get(aid)
         if session is None or scb is None:
@@ -107,7 +108,9 @@ class SchedulerRunMixin:
 
         while True:
             for done_aid in [a for a, t in self._tasks.items() if t.done()]:
-                task = self._tasks.pop(done_aid)
+                task = self._tasks.pop(done_aid, None)
+                if task is None:
+                    continue
                 try:
                     task.result()
                 except asyncio.CancelledError:

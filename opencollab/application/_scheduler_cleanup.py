@@ -121,6 +121,7 @@ class SchedulerCleanupMixin:
             self.table.entries.pop(aid, None)
             self._sessions.pop(aid, None)
             self._locks.pop(aid, None)
+            self._run_locks.pop(aid, None)
             self._message_inbox.pop(aid, None)
 
         self._startup_tasks.clear()
