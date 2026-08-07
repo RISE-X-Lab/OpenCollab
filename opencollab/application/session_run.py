@@ -510,6 +510,20 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         if response.content:
             await self.event_publisher.emit(self.event_factory.text_delta(response.content))
 
+        if response.finish_reason in {"length", "max_tokens"}:
+            reason = "output truncated: provider reached its generation limit"
+            self.state.append_message(
+                {
+                    "role": "system",
+                    "content": "[Output truncated by the provider. Partial response preserved; session stopped.]",
+                }
+            )
+            await self.event_publisher.emit(self.event_factory.error(reason))
+            await self.finish_step(pending.latency)
+            self.clear_pending_step()
+            self.state.transition_to(SessionPhase.STOPPED, reason=reason)
+            return
+
         if response.tool_calls:
             self.state.transition_to(SessionPhase.EXECUTING_TOOLS)
             return
