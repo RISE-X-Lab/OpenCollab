@@ -151,6 +151,12 @@ class DockerEnvironment(Environment):
         super().__init__()
         if container_id is not None and backing_environment is not None:
             raise ValueError("an attached Docker environment cannot own a backing environment")
+        if (
+            isinstance(timeout_returncode, bool)
+            or not isinstance(timeout_returncode, int)
+            or timeout_returncode == 0
+        ):
+            raise ValueError("timeout_returncode must be a non-zero integer")
         self._image = _validate_image(image)
         self.workspace = workspace
         self._attached = container_id is not None
