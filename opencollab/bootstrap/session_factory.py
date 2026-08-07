@@ -287,6 +287,8 @@ def _fork_snapshot_environment(environment: Any) -> Environment:
         snapshot_environment = fork()
     except Exception as exc:  # noqa: BLE001 - preserve the fork boundary
         raise SnapshotSessionError("cannot fork environment for an independent snapshot") from exc
+    if inspect.iscoroutine(snapshot_environment):
+        snapshot_environment.close()
     if (
         inspect.isawaitable(snapshot_environment)
         or snapshot_environment is environment
@@ -466,6 +468,7 @@ __all__ = [
     "WORKFLOW_MANIFEST_FILENAME",
     "WORKFLOW_RUN_PREFIX",
     "DefaultSessionFactory",
+    "SnapshotSessionError",
     "agent_save_path",
     "build_session",
     "build_spawn_session",
