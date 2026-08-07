@@ -450,6 +450,28 @@ def test_anthropic_top_p_omitted_when_none():
     assert "top_p" not in kwargs
 
 
+def test_anthropic_keeps_compaction_record_in_conversation_order():
+    identity = "global identity"
+    compacted = "[Context auto-compacted]: earlier work"
+    system_parts, messages = convert_to_anthropic_messages(
+        [
+            {"role": "system", "content": identity},
+            {"role": "user", "content": "old request"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "system", "content": compacted, "compacted": True},
+            {"role": "user", "content": "new request"},
+        ]
+    )
+
+    assert system_parts == [identity]
+    assert [message["content"] for message in messages] == [
+        "old request",
+        [{"type": "text", "text": "old answer"}],
+        compacted,
+        "new request",
+    ]
+
+
 def test_max_output_tokens_reaches_both_provider_payloads():
     messages = [{"role": "user", "content": "hi"}]
 
