@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from opencollab.application.scheduler_types import SchedulerTurnError
+from opencollab.application.scheduler_types import SchedulerStalledError, SchedulerTurnError
 from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
@@ -107,11 +107,7 @@ class SchedulerRunMixin:
             if not pending:
                 if self._quiescent():
                     break
-                # All tasks drained but a wake's resume task may be mid-creation
-                # (or a pending table is still open) — yield and re-check rather
-                # than exit early. Non-empty pending tables keep us looping
-                # without busy-spinning.
-                await asyncio.sleep(0)
+                await self._wait_for_scheduler_progress(aid)
                 continue
             await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
@@ -147,6 +143,13 @@ class SchedulerRunMixin:
             )
             if not task.done() and task is not current
         }
+
+    async def _wait_for_scheduler_progress(self, aid: int) -> None:
+        """Block for a producer completion or report a state with no producer."""
+        producers = self._active_scheduler_tasks()
+        if not producers:
+            raise SchedulerStalledError(aid)
+        await asyncio.wait(producers, return_when=asyncio.FIRST_COMPLETED)
 
     def _quiescent(self) -> bool:
         """True when no session is mid-flight: none is awaiting events, none has

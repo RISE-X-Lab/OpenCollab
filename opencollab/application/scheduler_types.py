@@ -32,6 +32,14 @@ class SchedulerTurnError(RuntimeError):
         super().__init__(f"Agent aid {aid} {phase.value}: {reason}")
 
 
+class SchedulerStalledError(RuntimeError):
+    """No scheduler-owned task can advance a non-terminal session."""
+
+    def __init__(self, aid: int) -> None:
+        self.aid = aid
+        super().__init__(f"Scheduler stalled for aid {aid}: no active producer can advance it")
+
+
 class RosterEntry(TypedDict):
     """One row of a team roster (``Scheduler.team_snapshot``/``team_roster``).
 
@@ -92,6 +100,7 @@ __all__ = [
     "LaunchSpec",
     "QueuedTeammateMessage",
     "RosterEntry",
+    "SchedulerStalledError",
     "SchedulerTurnError",
     "roster_display_state",
 ]
