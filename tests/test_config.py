@@ -283,6 +283,21 @@ def test_missing_explicit_config_file_fails_fast(monkeypatch, tmp_path):
         build_config()
 
 
+def test_empty_high_priority_file_value_does_not_hide_lower_value(
+    monkeypatch,
+    tmp_path,
+):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / ".env").write_text("OPENCOLLAB_MODEL=\n", encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        "OPENCOLLAB_MODEL=lower-priority-model\n",
+        encoding="utf-8",
+    )
+
+    assert build_config(str(tmp_path)).model == "lower-priority-model"
+
+
 def test_api_key_env_precedence_is_provider_and_endpoint_specific():
     assert api_key_env_precedence("openai") == (
         "OPENCOLLAB_API_KEY",
