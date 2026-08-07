@@ -12,6 +12,7 @@ from scheduler_awaiting_test_support import (
     terminal,
 )
 
+from opencollab.application.scheduler import SchedulerStalledError
 from opencollab.domain.session import SessionPhase, SessionState
 
 
@@ -67,6 +68,14 @@ def test_cleanup_rejects_invalid_timeout_before_any_side_effect(invalid_timeout)
     run(scenario())
 
 
+def test_wait_until_terminal_fails_without_active_producer():
+    lead = ScriptedSession("lead", [])
+    scheduler, _ = build_scheduler(lead, [])
+
+    with pytest.raises(SchedulerStalledError, match="aid 0"):
+        run(scheduler.wait_until_terminal(0))
+
+
 def test_active_startup_prevents_quiescence_until_child_finishes():
     class BlockingAcquirePool:
         def __init__(self):
@@ -103,7 +112,6 @@ def test_active_startup_prevents_quiescence_until_child_finishes():
         assert scheduler.table.get(aid).state.phase is SessionPhase.DONE
 
     run(scenario())
-
 
 def test_wait_until_terminal_follows_message_replacement_created_by_finishing_task():
     class BlockingDiff:
