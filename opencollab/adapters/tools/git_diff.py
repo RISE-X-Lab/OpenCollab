@@ -92,7 +92,7 @@ class GitDiffTool(Tool):
         include_status = params.get("include_status", True)
         env = runtime.environment
 
-        if not env:
+        if env is None:
             return "Error: no execution environment available."
 
         pathspec = f" -- {shlex.quote(path)}" if path else ""
