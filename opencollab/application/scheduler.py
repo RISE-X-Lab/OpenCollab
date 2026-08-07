@@ -138,7 +138,9 @@ class Scheduler(
         self._sessions: dict[int, Any] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._run_lock = asyncio.Lock()
-        self._active_run_tasks: set[asyncio.Task[Any]] = set()
+        # A public run_turn owner must retain its addressed aid through cleanup:
+        # cancelling a child turn must never terminalize the Lead by default.
+        self._active_run_tasks: dict[asyncio.Task[Any], int] = {}
         self._lead_session: Any | None = None
         # child aid -> (parent aid, tool_call_id) for deferred spawns: lets a
         # child's completion fill the exact pending row that suspended its
