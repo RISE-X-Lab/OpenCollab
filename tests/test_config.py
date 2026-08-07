@@ -275,6 +275,14 @@ def test_config_repr_does_not_include_api_key(monkeypatch):
     assert "secret-key" not in repr(build_config())
 
 
+def test_missing_explicit_config_file_fails_fast(monkeypatch, tmp_path):
+    missing = tmp_path / "missing.env"
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(missing))
+
+    with pytest.raises(ValueError, match="explicit config env path does not exist"):
+        build_config()
+
+
 def test_api_key_env_precedence_is_provider_and_endpoint_specific():
     assert api_key_env_precedence("openai") == (
         "OPENCOLLAB_API_KEY",
