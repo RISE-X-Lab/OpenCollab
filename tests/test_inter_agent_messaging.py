@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -101,6 +103,16 @@ def _scheduler_events(events):
     return [e for e in events if isinstance(e, SchedulerEvent)]
 
 
+def _assert_teammate_envelope(delivery, *, sender, summary, content):
+    root = ET.fromstring(delivery)
+    assert root.tag == "teammate-message"
+    assert root.attrib["teammate_id"] == sender
+    assert root.attrib["summary"] == summary
+    assert len(root.attrib["message_id"]) == 32
+    assert root.text == f"\n{content}\n"
+    return root
+
+
 def _register_child(scheduler, session, *, aid: int = 1) -> None:
     session.state.aid = aid
     scheduler.table.add(
@@ -194,10 +206,11 @@ def test_send_message_queues_xml_and_returns_ack():
     aid, ack = run(scenario())
 
     assert ack == f"Message queued to aid {aid}."
-    assert teammate.added[-1] == (
-        '<teammate-message teammate_id="A0" summary="follow up">\n'
-        "check &lt;this&gt; &amp; report\n"
-        "</teammate-message>"
+    _assert_teammate_envelope(
+        teammate.added[-1],
+        sender="A0",
+        summary="follow up",
+        content="check <this> & report",
     )
     assert scheduler.table.get(aid).result == "message result"
 
@@ -321,11 +334,13 @@ def test_send_message_to_busy_target_autosaves_pending_xml(tmp_path):
     with open(path) as f:
         saved = json.load(f)
     assert saved["messages"] == []
-    assert saved["pending_messages"][0]["content"] == (
-        '<teammate-message teammate_id="A0" summary="follow up">\n'
-        "check &lt;this&gt; &amp; report\n"
-        "</teammate-message>"
+    root = _assert_teammate_envelope(
+        saved["pending_messages"][0]["content"],
+        sender="A0",
+        summary="follow up",
+        content="check <this> & report",
     )
+    assert saved["pending_messages"][0]["message_id"] == root.attrib["message_id"]
 
 
 def test_delivery_final_autosave_commits_message_and_removes_pending_sidecar(tmp_path):
@@ -378,9 +393,11 @@ def test_shutdown_after_append_dequeues_and_restore_skips_committed_message():
         def __init__(self):
             super().__init__(["must not run"], role="coder")
             self.scheduler = None
+            self.stale_pending: list[dict] = []
 
         async def add_user_message(self, content):
             await super().add_user_message(content)
+            self.stale_pending = copy.deepcopy(self.state.pending_user_messages)
             self.scheduler._shutting_down = True
 
     teammate = ShutdownAfterAppend()
@@ -397,7 +414,20 @@ def test_shutdown_after_append_dequeues_and_restore_skips_committed_message():
     assert len(teammate.state.messages) == 1
     assert teammate.state.pending_user_messages == []
     assert scheduler._message_inbox.get(1) == []
-    assert 1 not in scheduler._tasks
+    assert teammate.stale_pending
+
+    resumed = RespondingFakeSession(["must not run"], role="coder")
+    resumed.state.messages = copy.deepcopy(teammate.state.messages)
+    resumed.state.pending_user_messages = teammate.stale_pending
+    resumed.state.set_phase(SessionPhase.DONE)
+    resumed_scheduler, _ = _build_scheduler(resumed)
+    _register_child(resumed_scheduler, resumed)
+
+    resumed_scheduler._restore_message_inbox(1, resumed.state)
+
+    assert resumed.state.pending_user_messages == []
+    assert resumed_scheduler._message_inbox.get(1) in (None, [])
+    assert resumed.added == []
 
 
 def test_add_user_message_failure_rolls_back_partial_state_and_restores_budget():

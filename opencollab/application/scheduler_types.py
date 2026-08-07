@@ -94,6 +94,7 @@ class QueuedTeammateMessage:
     content: str
     xml: str
     sent_at: str = ""
+    message_id: str = ""
 
 
 __all__ = [

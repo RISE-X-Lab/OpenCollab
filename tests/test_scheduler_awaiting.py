@@ -401,11 +401,11 @@ def test_queued_message_delivers_after_target_awaiting_events_resumes():
 
     run(scenario())
 
-    assert target.added == [
-        '<teammate-message teammate_id="A0" summary="follow up">\n'
-        "are you there?\n"
-        "</teammate-message>"
-    ]
+    assert len(target.added) == 1
+    assert target.added[0].startswith(
+        '<teammate-message teammate_id="A0" summary="follow up" message_id="'
+    )
+    assert "are you there?\n</teammate-message>" in target.added[0]
     assert scheduler.table.get(1).result == "message handled"
 
 def test_child_message_to_suspended_parent_does_not_stall_turn():
@@ -435,11 +435,10 @@ def test_child_message_to_suspended_parent_does_not_stall_turn():
 
     assert result == "progress message handled"
     assert scheduler._message_inbox.get(0) == []
-    assert lead.added[-1] == (
-        '<teammate-message teammate_id="A1" summary="progress">\n'
-        "analysis started\n"
-        "</teammate-message>"
+    assert lead.added[-1].startswith(
+        '<teammate-message teammate_id="A1" summary="progress" message_id="'
     )
+    assert "analysis started\n</teammate-message>" in lead.added[-1]
     assert len(event_types(events, "agent_message_sent")) == 1
     assert len(event_types(events, "agent_message_delivered")) == 1
 
