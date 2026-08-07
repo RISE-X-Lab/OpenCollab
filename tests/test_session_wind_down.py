@@ -371,6 +371,17 @@ def test_harvest_chop_before_submit_yields_partial_not_scout_died():
     assert "scout died" not in report
 
 
+def test_harvest_bounds_large_raw_transcript_and_reports_omissions():
+    messages = [
+        {"role": "tool", "tool_call_id": f"call-{index}", "content": f"{index}:" + "x" * 500}
+        for index in range(10_000)
+    ]
+    report = harvest_findings(None, fallback_text="", messages=messages)
+    assert len(report) <= 16_000
+    assert "omitted" in report
+    assert "9999:" in report
+
+
 def test_harvest_falls_back_to_text_when_no_capture():
     report = harvest_findings(None, fallback_text="here is my prose report", messages=[])
     assert report == "here is my prose report"

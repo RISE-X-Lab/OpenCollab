@@ -149,7 +149,12 @@ class WorkflowAgentsMixin:
         """
         ledger = self._scout_ledger(dead_session)
         messages = self._session_messages(dead_session)
-        prompt = build_dead_scout_synthesis_prompt(ledger, messages)
+        prompt_chars = max(2_000, min(16_000, commit_reserve * 4))
+        prompt = build_dead_scout_synthesis_prompt(
+            ledger,
+            messages,
+            max_chars=prompt_chars,
+        )
         capture_done = asyncio.Event()
         submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
         synth_label = f"{label}:synth" if label else "synth"
