@@ -243,6 +243,44 @@ async def test_attached_timeout_revokes_when_inner_cancel_fails(monkeypatch) -> 
     assert all(call[0][1] != "rm" for call in fake.calls)
 
 
+async def test_attached_abort_cancels_and_waits_for_all_active_execs(monkeypatch) -> None:
+    started = [asyncio.Event(), asyncio.Event()]
+    release = asyncio.Event()
+    cancellations: list[tuple[str, ...]] = []
+    command_count = 0
+
+    async def fake_docker(*args, **_kwargs):
+        nonlocal command_count
+        if docker_module._EXEC_WRAPPER in args:
+            index = command_count
+            command_count += 1
+            started[index].set()
+            await release.wait()
+            return _result()
+        if docker_module._EXEC_CANCEL in args:
+            cancellations.append(args)
+            if len(cancellations) == 2:
+                release.set()
+            return _result()
+        raise AssertionError(args)
+
+    env = DockerEnvironment(container_id=CONTAINER_ID)
+    env._attached_bound = True
+    monkeypatch.setattr(env, "_docker", fake_docker)
+    first = asyncio.create_task(env.exec_cmd("sleep 20"))
+    second = asyncio.create_task(env.exec_cmd("sleep 20"))
+    await asyncio.gather(*(event.wait() for event in started))
+
+    await env.abort()
+
+    assert env.revoked
+    assert len(cancellations) == 2
+    assert first.done() and second.done()
+    await asyncio.gather(first, second)
+    with pytest.raises(RuntimeError, match="aborted"):
+        await env.exec_cmd("echo after-abort")
+
+
 async def test_double_cancellation_cannot_interrupt_container_recovery(monkeypatch) -> None:
     fake = FakeDocker(
         lambda command, _kwargs: _result(stdout=f"{CONTAINER_ID}\n".encode())
