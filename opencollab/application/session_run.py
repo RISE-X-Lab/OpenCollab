@@ -93,7 +93,9 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.state = state
         self.llm = llm
         self.event_publisher = event_publisher
-        self.event_factory = event_factory or default_session_event_factory(state.aid)
+        self.event_factory = event_factory or default_session_event_factory(
+            lambda: state.aid
+        )
         self.tool_execution = tool_execution
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens

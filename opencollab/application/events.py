@@ -33,28 +33,37 @@ class SessionEventFactory:
     tool_end: Callable[[str, float], Any]
 
 
-def default_session_event_factory(aid: int = -1) -> SessionEventFactory:
+def default_session_event_factory(
+    aid: int | Callable[[], int] = -1,
+) -> SessionEventFactory:
+    def current_aid() -> int:
+        return aid() if callable(aid) else aid
+
     return SessionEventFactory(
         step_start=lambda step: SessionRuntimeEvent(
-            type="step_start", data={"step": step, "aid": aid}
+            type="step_start", data={"step": step, "aid": current_aid()}
         ),
         step_end=lambda step, latency: SessionRuntimeEvent(
-            type="step_end", data={"step": step, "latency": latency, "aid": aid}
+            type="step_end",
+            data={"step": step, "latency": latency, "aid": current_aid()},
         ),
         text_delta=lambda content: SessionRuntimeEvent(
-            type="text_delta", data={"content": content, "aid": aid}
+            type="text_delta", data={"content": content, "aid": current_aid()}
         ),
         error=lambda reason: SessionRuntimeEvent(
-            type="error", data={"reason": reason, "aid": aid}
+            type="error", data={"reason": reason, "aid": current_aid()}
         ),
         loop_detected=lambda tool, count: SessionRuntimeEvent(
-            type="loop_detected", data={"tool": tool, "count": count, "aid": aid}
+            type="loop_detected",
+            data={"tool": tool, "count": count, "aid": current_aid()},
         ),
         tool_start=lambda tool, args: SessionRuntimeEvent(
-            type="tool_start", data={"tool": tool, "args": args, "aid": aid}
+            type="tool_start",
+            data={"tool": tool, "args": args, "aid": current_aid()},
         ),
         tool_end=lambda tool, latency: SessionRuntimeEvent(
-            type="tool_end", data={"tool": tool, "latency": latency, "aid": aid}
+            type="tool_end",
+            data={"tool": tool, "latency": latency, "aid": current_aid()},
         ),
     )
 
