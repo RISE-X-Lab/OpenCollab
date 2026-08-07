@@ -23,6 +23,21 @@ MAX_ENTRIES_PER_DIR = 30
 # Bulky generated/vendored dirs that never help orientation. Hidden entries
 # (".git", ".venv", ...) are skipped by their dot prefix.
 SKIP_DIR_NAMES = frozenset({"__pycache__", "node_modules", "dist", "build", "venv"})
+VISIBLE_DOT_NAMES = frozenset(
+    {
+        ".devcontainer",
+        ".dockerignore",
+        ".editorconfig",
+        ".env.example",
+        ".gitattributes",
+        ".github",
+        ".gitignore",
+        ".pre-commit-config.yaml",
+        ".python-version",
+        ".ruby-version",
+        ".tool-versions",
+    }
+)
 ROOT_PRIORITY_FILES = frozenset(
     {
         "Cargo.toml",
@@ -42,7 +57,13 @@ _TRUNCATED_MARKER = "... (repository map truncated; traversal budget reached)"
 
 
 def _keep(name: str) -> bool:
-    return not name.startswith(".") and name not in SKIP_DIR_NAMES
+    if name in SKIP_DIR_NAMES:
+        return False
+    return not name.startswith(".") or name in VISIBLE_DOT_NAMES
+
+
+def _keep_relative_path(path: str) -> bool:
+    return all(_keep(part) for part in path.split("/") if part and part != ".")
 
 
 def _render_bounded_lines(lines: list[str], max_chars: int) -> str:
@@ -253,8 +274,13 @@ async def build_repo_map_via_env(
     Uses one ``find`` so it works wherever the workspace actually lives
     (e.g. inside a Docker container with no local mount).
     """
+    allowed_hidden = " ".join(
+        f"! -name '{name}'" for name in sorted(VISIBLE_DOT_NAMES)
+    )
+    hidden_prune = rf"\( -name '.*' {allowed_hidden} \)"
     prunes = " -o ".join(
-        ["-name '.*'"] + [f"-name '{name}'" for name in sorted(SKIP_DIR_NAMES)]
+        [hidden_prune]
+        + [f"-name '{name}'" for name in sorted(SKIP_DIR_NAMES)]
     )
     # -mindepth 1 keeps "." itself out of the prune tests — without it the
     # '.*' pattern matches the root and prunes the entire tree.
@@ -277,6 +303,7 @@ async def build_repo_map_via_env(
         line[2:] if line.startswith("./") else line
         for line in result.stdout.splitlines()
         if line.strip() and line.strip() != "."
+        and _keep_relative_path(line)
     )
     if not paths:
         return ""
