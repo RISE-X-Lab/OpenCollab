@@ -42,6 +42,24 @@ def test_openai_keeps_real_content_over_reasoning():
     assert result.reasoning == "scratch work"  # kept for trajectory observability
 
 
+def test_openai_treats_whitespace_only_content_as_empty():
+    resp = _openai_resp_with_reasoning(
+        content=" \t\n",
+        reasoning_content="reasoned answer",
+    )
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+    assert result.content == "reasoned answer"
+
+
+def test_openai_preserves_nonempty_content_bytes():
+    resp = _openai_resp_with_reasoning(
+        content="  real answer  ",
+        reasoning_content="scratch work",
+    )
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+    assert result.content == "  real answer  "
+
+
 def test_openai_does_not_harvest_reasoning_on_tool_call_turn():
     """A tool-call turn legitimately has empty content; don't inject reasoning."""
     tc = SimpleNamespace(id="c1", function=SimpleNamespace(name="run", arguments="{}"))
