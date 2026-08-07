@@ -25,6 +25,7 @@ from opencollab.application.submit_findings import SubmitFindingsTool
 from opencollab.application.tool_execution import (
     MAX_TOOL_CALLS_PER_BATCH,
     ToolExecutionUseCase,
+    _bash_likely_mutates,
 )
 from opencollab.domain.session import SessionState
 from opencollab.domain.tools import LoopDetection
@@ -567,6 +568,56 @@ def _named_runtime_tool(name: str, output: str = "ok"):
     tool = RuntimeNativeTool(output=output)
     tool.name = name
     return tool
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("python -c 'print(1 > 0)'", False),
+        ("echo guarantee output", False),
+        ("printf '%s' '>'", False),
+        ("cat input 2>&1", False),
+        ("cat input >/dev/null", False),
+        ("cp source target", True),
+        ("mv source target", True),
+        ("install source target", True),
+        ("git apply change.patch", True),
+        ("perl -pi -e 's/old/new/' target", True),
+        ("cat input | tee output", True),
+        ("sed -i.bak 's/old/new/' target", True),
+        ("printf x > target", True),
+    ],
+)
+def test_bash_mutation_detection_uses_shell_tokens(command, expected):
+    assert _bash_likely_mutates({"command": command}) is expected
+
+
+@pytest.mark.parametrize(
+    ("command", "output", "expected_reads"),
+    [
+        ("python -c 'print(1 > 0)'", "True", 5),
+        ("cp source target", "copied", 0),
+        ("cp source target", "Error: copy failed", 5),
+    ],
+)
+def test_only_successful_mutating_bash_resets_read_counter(
+    command, output, expected_reads
+):
+    state = SessionState(messages=[])
+    state.turn.reads_since_last_edit = 5
+    use_case, _ = build_use_case(
+        agent=FakeAgent(tools=[_bash_tool(output)]),
+        state=state,
+    )
+
+    result = run(
+        use_case.process(
+            [tool_call(name="bash", arguments={"command": command})]
+        )
+    )
+    result.apply_read_write_counter_to(state)
+
+    assert state.turn.reads_since_last_edit == expected_reads
 
 
 def test_failed_read_does_not_advance_read_without_write_counter():
