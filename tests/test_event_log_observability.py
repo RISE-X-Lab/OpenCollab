@@ -76,3 +76,4 @@ def test_jsonl_event_sink_retains_first_write_error(tmp_path, monkeypatch):
 
     assert sink.write_error == "OSError: failure 1"
     assert sink.dropped_events == 2
+    assert attempts == 1
