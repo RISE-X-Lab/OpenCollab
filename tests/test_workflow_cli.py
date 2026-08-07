@@ -118,7 +118,7 @@ def test_workflow_run_prints_event_and_result_markup_literally(monkeypatch):
 
     reg = Registry()
     reg.register(literal.__workflow_spec__)
-    monkeypatch.setattr(workflow_cli, "load_registry", lambda: reg)
+    monkeypatch.setattr(workflow_cli, "load_registry", lambda _workspace=".": reg)
     monkeypatch.setattr(workflow_cli, "missing_api_key_for", lambda *a, **k: False)
 
     async def fake_run_workflow(_spec, _args, **kwargs):
