@@ -384,6 +384,9 @@ class Session:
         self.state.turn.reads_since_last_edit = _snapshot_nonnegative_int(
             raw_state.get("reads_since_last_edit")
         )
+        self.state.turn.has_landed_write = bool(
+            raw_state.get("has_landed_write", False)
+        )
         self.state.turn.low_yield_since_progress = _snapshot_nonnegative_int(
             raw_state.get("low_yield_since_progress")
         )
@@ -561,6 +564,7 @@ class Session:
                 "markup_recovered": self.state.markup_recovered,
                 "recent_call_hashes": list(self.state.turn.recent_call_hashes),
                 "reads_since_last_edit": self.state.turn.reads_since_last_edit,
+                "has_landed_write": self.state.turn.has_landed_write,
                 "low_yield_since_progress": self.state.turn.low_yield_since_progress,
                 "distinct_evidence_count": self.state.turn.distinct_evidence_count,
                 "seen_result_hashes": sorted(self.state.turn.seen_result_hashes),

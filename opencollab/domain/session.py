@@ -111,7 +111,7 @@ class InvalidPhaseTransition(Exception):
 class TurnEnforcementState:
     """The per-turn enforcement window — the brake panel's per-turn half.
 
-    These eight fields are the unit that ``checkpoint_user_turn`` /
+    These nine fields are the unit that ``checkpoint_user_turn`` /
     ``restore_user_turn`` snapshot and roll back as a whole, and that
     ``reset_for_user_turn`` clears on a fresh user turn. They live in their own
     record — rather than smeared flat on ``SessionState`` — precisely because
@@ -133,6 +133,11 @@ class TurnEnforcementState:
     # the last successful edit. Drives the reads-without-write nudge/escalation;
     # reset to 0 on a successful write.
     reads_since_last_edit: int = 0
+    # Obligation state for agents that can both edit files and submit structured
+    # output. Once an edit lands, the hard steering gate switches from requiring
+    # another write to requiring the structured submission. Reset with the rest
+    # of the per-turn window.
+    has_landed_write: bool = False
     # Information-gain sensor (STEP 1): consecutive low-yield results since the
     # last informative one (reset to 0 on any informative result). A result is
     # "informative" when NOVEL (unseen content OR unseen path-normalized call
