@@ -338,6 +338,145 @@ async def test_verified_write_threads_stdin_and_digest(monkeypatch) -> None:
     await env.write_file("/workspace/result.txt", "hello")
 
 
+async def test_write_half_input_failure_keeps_old_target_and_cleans_temp(monkeypatch) -> None:
+    old = b"old content"
+    files = {"/repo/result.txt": old}
+    partial_temp: list[bytes] = []
+    cleaned: list[str] = []
+
+    async def fake_docker(*args, input_bytes=None, **_kwargs):
+        if docker_module._EXEC_WRAPPER in args:
+            assert input_bytes is not None
+            if 'cat > "$target"' in args[-1]:
+                files["/repo/result.txt"] = input_bytes[:2]
+            else:
+                partial_temp.append(input_bytes[:2])
+                assert 'cat > "$temporary"' in args[-1]
+                assert 'mv -f -- "$temporary" "$target"' in args[-1]
+            return _result(returncode=1, stderr=b"stdin closed")
+        if args[:2] == ("exec", "--"):
+            cleaned.append(args[-1])
+            return _result()
+        raise AssertionError(args)
+
+    env = DockerEnvironment(container_id=CONTAINER_ID)
+    env._attached_bound = True
+    monkeypatch.setattr(env, "_docker", fake_docker)
+
+    with pytest.raises(OSError, match="verification failed"):
+        await env.write_file("/repo/result.txt", "new content")
+
+    assert files["/repo/result.txt"] == old
+    assert partial_temp == [b"ne"]
+    assert len(cleaned) == 1
+    assert ".opencollab-write-" in cleaned[0]
+
+
+async def test_write_timeout_keeps_old_target_and_cleans_temp(monkeypatch) -> None:
+    old = b"old content"
+    files = {"/repo/result.txt": old}
+    cleaned: list[str] = []
+
+    async def fake_docker(*args, input_bytes=None, **_kwargs):
+        if docker_module._EXEC_WRAPPER in args:
+            assert input_bytes is not None
+            if 'cat > "$target"' in args[-1]:
+                files["/repo/result.txt"] = input_bytes[:2]
+            raise asyncio.TimeoutError()
+        if docker_module._EXEC_CANCEL in args:
+            return _result()
+        if args[:2] == ("exec", "--"):
+            cleaned.append(args[-1])
+            return _result()
+        raise AssertionError(args)
+
+    env = DockerEnvironment(container_id=CONTAINER_ID)
+    env._attached_bound = True
+    monkeypatch.setattr(env, "_docker", fake_docker)
+
+    with pytest.raises(OSError, match="verification failed"):
+        await env.write_file("/repo/result.txt", "new content")
+
+    assert files["/repo/result.txt"] == old
+    assert len(cleaned) == 1
+    assert ".opencollab-write-" in cleaned[0]
+
+
+async def test_cancelled_write_keeps_old_target_and_cleans_temp(monkeypatch) -> None:
+    old = b"old content"
+    files = {"/repo/result.txt": old}
+    started = asyncio.Event()
+    cleaned: list[str] = []
+
+    async def fake_docker(*args, input_bytes=None, **_kwargs):
+        if docker_module._EXEC_WRAPPER in args:
+            assert input_bytes is not None
+            if 'cat > "$target"' in args[-1]:
+                files["/repo/result.txt"] = input_bytes[:2]
+            started.set()
+            await asyncio.Event().wait()
+        if docker_module._EXEC_CANCEL in args:
+            return _result()
+        if args[:2] == ("exec", "--"):
+            cleaned.append(args[-1])
+            return _result()
+        raise AssertionError(args)
+
+    env = DockerEnvironment(container_id=CONTAINER_ID)
+    env._attached_bound = True
+    monkeypatch.setattr(env, "_docker", fake_docker)
+    owner = asyncio.create_task(env.write_file("/repo/result.txt", "new content"))
+    await started.wait()
+    owner.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+
+    assert files["/repo/result.txt"] == old
+    assert len(cleaned) == 1
+    assert ".opencollab-write-" in cleaned[0]
+
+
+async def test_concurrent_same_container_path_writes_are_serialized(monkeypatch) -> None:
+    target = b"old"
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    active = 0
+    max_active = 0
+
+    async def fake_docker(*args, input_bytes=None, **_kwargs):
+        nonlocal target, active, max_active
+        if docker_module._EXEC_WRAPPER not in args:
+            raise AssertionError(args)
+        assert input_bytes is not None
+        active += 1
+        max_active = max(max_active, active)
+        if not first_started.is_set():
+            first_started.set()
+            await release_first.wait()
+        target = input_bytes
+        active -= 1
+        digest = __import__("hashlib").sha256(input_bytes).hexdigest()
+        return _result(stdout=f"{len(input_bytes)}\t{digest}\n".encode())
+
+    first = DockerEnvironment(container_id=CONTAINER_ID)
+    second = DockerEnvironment(container_id=CONTAINER_ID)
+    first._attached_bound = True
+    second._attached_bound = True
+    monkeypatch.setattr(first, "_docker", fake_docker)
+    monkeypatch.setattr(second, "_docker", fake_docker)
+    first_write = asyncio.create_task(first.write_file("/repo/result.txt", "A" * 2000))
+    await first_started.wait()
+    second_write = asyncio.create_task(second.write_file("/repo/./result.txt", "B" * 2000))
+    await asyncio.sleep(0)
+    assert max_active == 1
+    release_first.set()
+    await asyncio.gather(first_write, second_write)
+
+    assert max_active == 1
+    assert target in {b"A" * 2000, b"B" * 2000}
+
+
 async def test_only_docker_declares_os_process_isolation(tmp_path) -> None:
     assert DockerEnvironment().process_isolated
     assert not LocalEnvironment(str(tmp_path)).process_isolated

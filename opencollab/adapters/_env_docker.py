@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import posixpath
 import re
 import shlex
 import uuid
@@ -28,6 +29,7 @@ DOCKER_WRITE_TIMEOUT_SECONDS = 120.0
 _IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$")
 _FULL_ID_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+_WRITE_LOCKS: dict[str, asyncio.Lock] = {}
 
 _EXEC_WRAPPER = r"""
 pidfile=$1
@@ -373,20 +375,85 @@ class DockerEnvironment(Environment):
         return result.stdout
 
     async def write_file(self, path: str, content: str) -> None:
+        self._ensure_active()
+        await self._bind_attached()
+        container_id = self._container_id
+        if container_id is None:
+            raise RuntimeError("Container not started. Call setup() first.")
+        target = self._normalize_container_path(path)
+        lock = _WRITE_LOCKS.setdefault(f"{container_id}\0{target}", asyncio.Lock())
+        async with lock:
+            self._ensure_active()
+            await self._write_file_atomic(target, content)
+
+    @staticmethod
+    def _normalize_container_path(path: str) -> str:
+        if not isinstance(path, str) or not path or "\0" in path:
+            raise ValueError("container file path must be non-empty text without NUL bytes")
+        normalized = posixpath.normpath(path)
+        if normalized in (".", "/") or posixpath.basename(normalized) in (".", ".."):
+            raise ValueError("container file path must name a file")
+        return normalized
+
+    async def _write_file_atomic(self, target: str, content: str) -> None:
         payload = content.encode("utf-8")
         digest = hashlib.sha256(payload).hexdigest()
-        command = (
-            'target=$1; mkdir -p -- "$(dirname -- "$target")" && cat > "$target" && '
-            'bytes=$(wc -c < "$target") && '
-            'digest=$(sha256sum -- "$target" 2>/dev/null | awk \'{print $1}\' || '
-            'shasum -a 256 -- "$target" | awk \'{print $1}\') && '
-            'printf "%s\\t%s\\n" "$bytes" "$digest"'
+        directory, filename = posixpath.split(target)
+        temporary = posixpath.join(
+            directory or ".",
+            f".{filename}.opencollab-write-{uuid.uuid4().hex}.tmp",
         )
-        wrapped = f"bash -c {shlex.quote(command)} opencollab-write {shlex.quote(path)}"
-        result = await self._exec(wrapped, timeout=DOCKER_WRITE_TIMEOUT_SECONDS, input_bytes=payload)
-        expected = f"{len(payload)}\t{digest}"
-        if result.returncode != 0 or result.stdout.strip() != expected:
-            raise OSError(f"docker write verification failed for {path}")
+        command = (
+            'target=$1; temporary=$2; expected_bytes=$3; expected_digest=$4; '
+            'cleanup() { rm -f -- "$temporary"; }; trap cleanup EXIT HUP INT TERM; '
+            'mkdir -p -- "$(dirname -- "$target")" && '
+            '(umask 077; set -C; : > "$temporary") && '
+            'cat > "$temporary" && '
+            'bytes=$(wc -c < "$temporary") && '
+            'digest=$(sha256sum -- "$temporary" 2>/dev/null | awk \'{print $1}\' || '
+            'shasum -a 256 -- "$temporary" | awk \'{print $1}\') && '
+            '[ "$bytes" = "$expected_bytes" ] && [ "$digest" = "$expected_digest" ] && '
+            'mv -f -- "$temporary" "$target" && '
+            'trap - EXIT HUP INT TERM && printf "%s\\t%s\\n" "$bytes" "$digest"'
+        )
+        wrapped = (
+            f"bash -c {shlex.quote(command)} opencollab-write {shlex.quote(target)} "
+            f"{shlex.quote(temporary)} {len(payload)} {digest}"
+        )
+        committed = False
+        try:
+            result = await self._exec(
+                wrapped,
+                timeout=DOCKER_WRITE_TIMEOUT_SECONDS,
+                input_bytes=payload,
+            )
+            expected = f"{len(payload)}\t{digest}"
+            if result.returncode != 0 or result.stdout.strip() != expected:
+                raise OSError(f"docker write verification failed for {target}")
+            committed = True
+        finally:
+            if not committed:
+                await await_owned_operation(
+                    self._discard_write_temporary(temporary),
+                    propagate_cancellation=False,
+                )
+
+    async def _discard_write_temporary(self, temporary: str) -> None:
+        container_id = self._container_id
+        if container_id is None:
+            return
+        try:
+            await self._docker(
+                "exec",
+                "--",
+                container_id,
+                "rm",
+                "-f",
+                "--",
+                temporary,
+            )
+        except BaseException:
+            pass
 
     async def write_temp_file(
         self,
