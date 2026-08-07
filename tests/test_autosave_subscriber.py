@@ -11,7 +11,7 @@ import pytest
 
 # Reuse the fakes from the characterization test file (same tests/ directory,
 # added to sys.path by pytest's rootdir discovery).
-from test_session_characterization import FakeAgent, FakeLLMClient
+from test_session_characterization import FakeAgent, FakeLLMClient, llm_response
 
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import SAVE_TRIGGERS, AutoSaveSubscriber
@@ -335,6 +335,45 @@ def test_session_with_auto_save_path_writes_on_user_message(tmp_path):
     assert path.exists()
     contents = path.read_text()
     assert "hello" in contents
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_phase"),
+    [("done", "done"), ("stopped", "stopped"), ("error", "error")],
+)
+def test_terminal_phase_is_committed_by_final_autosave(
+    tmp_path, mode, expected_phase
+):
+    class TerminalLLM:
+        async def complete(self, **_kwargs):
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+    path = tmp_path / f"{mode}.json"
+    response = (
+        RuntimeError("provider failed")
+        if mode == "error"
+        else llm_response(content="done")
+    )
+    session = Session(
+        agent=FakeAgent(),
+        llm=TerminalLLM(),
+        auto_save_path=str(path),
+        max_budget_tokens=100,
+    )
+    asyncio.run(session.add_user_message("go"))
+    if mode == "stopped":
+        session.state.set_used_tokens(100)
+
+    if mode == "error":
+        with pytest.raises(RuntimeError, match="provider failed"):
+            asyncio.run(session.run_loop())
+    else:
+        asyncio.run(session.run_loop())
+
+    snapshot = json.loads(path.read_text(encoding="utf-8"))
+    assert snapshot["session_state"]["phase"] == expected_phase
 
 
 def test_session_without_auto_save_path_does_not_subscribe():

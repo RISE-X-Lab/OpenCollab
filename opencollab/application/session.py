@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
+from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import (
@@ -269,7 +270,16 @@ class Session:
         if self._turn_lock.locked() or self.runner.pending_cleanup_tasks:
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            return await self.runner.run_loop(cancel_event)
+            try:
+                return await self.runner.run_loop(cancel_event)
+            finally:
+                if self.state.phase.is_terminal():
+                    owner = self.enqueue_auto_save()
+                    if owner is not None:
+                        await await_owned_operation(
+                            owner,
+                            propagate_cancellation=True,
+                        )
 
     async def add_user_message(self, content: str) -> None:
         if (
