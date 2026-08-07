@@ -41,6 +41,35 @@ def test_single_deferred_spawn_round_trip():
     assert len(event_types(events, "agent_resumed")) == 1
     assert len(event_types(events, "agent_completed")) == 2  # child + lead
 
+
+def test_deferred_parent_completion_latency_includes_child_wait():
+    async def delayed_child(sess: ScriptedSession) -> str:
+        await asyncio.sleep(0.03)
+        sess.state.set_phase(SessionPhase.DONE)
+        sess.state.append_message({"role": "assistant", "content": "child output"})
+        return "child output"
+
+    lead = ScriptedSession(
+        "lead",
+        [
+            suspend_spawning([("coder", "do it", "tc-1")]),
+            resume_done(lambda results: f"final: {results[0]}"),
+        ],
+    )
+    child = ScriptedSession("coder", [delayed_child])
+    scheduler, events = build_scheduler(lead, [child])
+
+    assert run(scheduler.run("please delegate")) == "final: child output"
+
+    lead_completions = [
+        event
+        for event in event_types(events, "agent_completed")
+        if event.data["aid"] == 0
+    ]
+    assert len(lead_completions) == 1
+    assert lead_completions[0].data["latency"] >= 0.02
+
+
 def test_multiple_parallel_children_resume_exactly_once():
     lead = ScriptedSession(
         "lead",

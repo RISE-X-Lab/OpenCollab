@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from opencollab.domain.pending import PendingRow, RowKind, RowStatus
@@ -74,6 +75,16 @@ def _snapshot_nonnegative_int(value: object) -> int:
         return 0
 
 
+def _snapshot_nonnegative_float(value: object) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if math.isfinite(parsed) and parsed >= 0 else None
+
+
 def _snapshot_int(value: object, *, default: int) -> int:
     try:
         return int(value)
@@ -124,4 +135,3 @@ def _restore_pending_row(value: object) -> PendingRow | None:
         started_at=value.get("started_at"),
         finished_at=finished_at,
     )
-
