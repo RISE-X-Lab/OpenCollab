@@ -48,6 +48,14 @@ def test_filter_messages_falsy_env_values(monkeypatch, raw):
     assert build_config().filter_messages is False
 
 
+@pytest.mark.parametrize("raw", ["enabled", "truth", "tru", "00"])
+def test_thinking_rejects_unknown_boolean_tokens(monkeypatch, raw):
+    monkeypatch.setenv("OPENCOLLAB_THINKING", raw)
+
+    with pytest.raises(ValueError, match="boolean configuration"):
+        build_config()
+
+
 def test_filter_messages_surfaces_in_get_config_dict(monkeypatch):
     from opencollab.bootstrap.config import get_config
 
