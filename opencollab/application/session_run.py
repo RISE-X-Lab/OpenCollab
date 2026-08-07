@@ -166,13 +166,17 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._turn_start_message_index: int | None = None
         self._provider_tasks: set[asyncio.Task[Any]] = set()
         self._llm_step_started = False
+        self._draining_provider_tasks: set[asyncio.Task[Any]] = set()
         # Successful responses that arrived only after their caller timeout.
         # They count against the budget but never enter a later turn's history.
         self._late_provider_usage: tuple[int, ...] = ()
 
     @property
     def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
-        return tuple(task for task in self._provider_tasks if not task.done())
+        return tuple(
+            set(task for task in self._provider_tasks if not task.done())
+            | self._draining_provider_tasks
+        )
 
     @property
     def late_provider_usage(self) -> tuple[int, ...]:
@@ -182,6 +186,9 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
     def _track_provider_task(self, task: asyncio.Task[Any]) -> None:
         self._provider_tasks.add(task)
         task.add_done_callback(self._provider_task_done)
+
+    def _mark_provider_task_draining(self, task: asyncio.Task[Any]) -> None:
+        self._draining_provider_tasks.add(task)
 
     def _provider_task_done(self, task: asyncio.Task[Any]) -> None:
         self._provider_tasks.discard(task)
@@ -201,6 +208,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             self.state.add_used_tokens(total_tokens)
         except BaseException:
             pass
+        finally:
+            self._draining_provider_tasks.discard(task)
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
@@ -209,6 +218,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         unexpected exception the session is marked failed and the exception
         re-raised; cancellation flushes the tracer before propagating.
         """
+        if self.pending_cleanup_tasks:
+            raise RuntimeError("prior provider generation is still draining")
         try:
             self._prepare_turn()
             while not self._should_suspend():
