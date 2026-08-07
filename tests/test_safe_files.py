@@ -8,6 +8,7 @@ import stat
 
 import pytest
 
+import opencollab.adapters.safe_files as safe_files
 from opencollab.adapters.safe_files import (
     append_regular_text,
     create_regular_bytes_atomic,
@@ -149,6 +150,79 @@ def test_durable_unlink_removes_regular_file_and_reports_missing(tmp_path) -> No
     assert unlink_regular_file_durable(path)
     assert not path.exists()
     assert unlink_regular_file_durable(path) is False
+
+
+def test_atomic_replace_fsyncs_parent_after_publish(tmp_path, monkeypatch) -> None:
+    events: list[str] = []
+    original_fsync = os.fsync
+    original_replace = os.replace
+
+    def record_fsync(fd: int) -> None:
+        kind = "directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"
+        events.append(f"fsync:{kind}")
+        original_fsync(fd)
+
+    def record_replace(source, target) -> None:
+        events.append("replace")
+        original_replace(source, target)
+
+    monkeypatch.setattr(safe_files.os, "fsync", record_fsync)
+    monkeypatch.setattr(safe_files.os, "replace", record_replace)
+
+    write_regular_bytes_atomic(tmp_path / "state", b"new")
+
+    assert events[:3] == ["fsync:file", "replace", "fsync:directory"]
+
+
+def test_atomic_create_fsyncs_parent_after_link_and_unlink(tmp_path, monkeypatch) -> None:
+    events: list[str] = []
+    original_fsync = os.fsync
+    original_link = os.link
+    original_unlink = os.unlink
+
+    def record_fsync(fd: int) -> None:
+        kind = "directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"
+        events.append(f"fsync:{kind}")
+        original_fsync(fd)
+
+    def record_link(source, target, *, follow_symlinks=True) -> None:
+        events.append("link")
+        original_link(source, target, follow_symlinks=follow_symlinks)
+
+    def record_unlink(path) -> None:
+        events.append("unlink")
+        original_unlink(path)
+
+    monkeypatch.setattr(safe_files.os, "fsync", record_fsync)
+    monkeypatch.setattr(safe_files.os, "link", record_link)
+    monkeypatch.setattr(safe_files.os, "unlink", record_unlink)
+
+    create_regular_bytes_atomic(tmp_path / "state", b"new")
+
+    assert events[:4] == ["fsync:file", "link", "unlink", "fsync:directory"]
+
+
+def test_durable_unlink_fsyncs_parent_after_removal(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "owned"
+    path.write_bytes(b"owned")
+    events: list[str] = []
+    original_fsync = os.fsync
+    original_unlink = os.unlink
+
+    def record_fsync(fd: int) -> None:
+        kind = "directory" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file"
+        events.append(f"fsync:{kind}")
+        original_fsync(fd)
+
+    def record_unlink(target) -> None:
+        events.append("unlink")
+        original_unlink(target)
+
+    monkeypatch.setattr(safe_files.os, "fsync", record_fsync)
+    monkeypatch.setattr(safe_files.os, "unlink", record_unlink)
+
+    assert unlink_regular_file_durable(path)
+    assert events == ["unlink", "fsync:directory"]
 
 
 def test_durable_unlink_rejects_symlinked_parent(tmp_path) -> None:
