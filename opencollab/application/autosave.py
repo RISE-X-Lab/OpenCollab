@@ -13,6 +13,7 @@ SaveOperation = Callable[[], None]
 PrepareSave = Callable[[], SaveOperation | None]
 
 SAVE_TRIGGERS = frozenset({"user_message_appended", "step_end"})
+AUTOSAVE_DEBOUNCE_SECONDS = 0.05
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,7 @@ class AutoSaveSubscriber(EventPublisherPort):
         self._last_error: Exception | None = None
         self._failure_count = 0
         self._pending = False
+        self._wake: asyncio.Event | None = None
 
     @property
     def last_error(self) -> Exception | None:
@@ -77,13 +79,17 @@ class AutoSaveSubscriber(EventPublisherPort):
     async def emit(self, event: SessionEvent) -> None:
         if event.type not in SAVE_TRIGGERS:
             return
-        self.enqueue()
+        self._enqueue(force=False)
         # Let the owned worker freeze the first pending generation before the
         # caller continues mutating session state, without waiting for I/O.
         await asyncio.sleep(0)
 
     def enqueue(self) -> asyncio.Task[None] | None:
-        """Queue the latest generation without waiting for persistence."""
+        """Force the latest generation into the owned persistence worker."""
+        return self._enqueue(force=True)
+
+    def _enqueue(self, *, force: bool) -> asyncio.Task[None]:
+        """Queue one generation, optionally ending the debounce window."""
         loop = asyncio.get_running_loop()
         self._pending = True
         owner = self._tail
@@ -94,7 +100,12 @@ class AutoSaveSubscriber(EventPublisherPort):
                 raise error
             owner = None
         if owner is not None and not owner.done():
+            if force and self._wake is not None:
+                self._wake.set()
             return owner
+        self._wake = asyncio.Event()
+        if force:
+            self._wake.set()
         owner = loop.create_task(self._drain_latest())
         self._tail = owner
         self._owners.add(owner)
@@ -112,16 +123,30 @@ class AutoSaveSubscriber(EventPublisherPort):
 
     async def _drain_latest(self) -> None:
         cancelled = False
-        while self._pending:
+        while True:
             self._pending = False
             operation = self._prepare_operation()
-            if operation is None:
-                continue
-            write = asyncio.create_task(asyncio.to_thread(_run_save, operation))
-            cancelled = await self._wait_owned(write) or cancelled
-            error = write.result()
-            if error is not None:
-                self._record_failure(error)
+            if operation is not None:
+                write = asyncio.create_task(asyncio.to_thread(_run_save, operation))
+                cancelled = await self._wait_owned(write) or cancelled
+                error = write.result()
+                if error is not None:
+                    self._record_failure(error)
+
+            wake = self._wake
+            if not cancelled and wake is not None:
+                try:
+                    await asyncio.wait_for(
+                        wake.wait(),
+                        timeout=AUTOSAVE_DEBOUNCE_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    pass
+                except asyncio.CancelledError:
+                    cancelled = True
+                wake.clear()
+            if not self._pending:
+                break
         if cancelled:
             raise asyncio.CancelledError
 
@@ -149,5 +174,6 @@ class AutoSaveSubscriber(EventPublisherPort):
         self._owners.discard(owner)
         if self._tail is owner:
             self._tail = None
+            self._wake = None
         if not owner.cancelled():
             owner.exception()

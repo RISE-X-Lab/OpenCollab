@@ -140,6 +140,36 @@ def test_autosave_coalesces_pending_generations_without_blocking_emit():
     assert saved == ["0", "9"]
 
 
+def test_autosave_bounds_checkpoint_growth_and_flushes_latest(monkeypatch):
+    current = {"generation": 0}
+    saved_sizes: list[int] = []
+
+    async def immediate_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", immediate_to_thread)
+
+    def prepare():
+        frozen_size = current["generation"]
+        return lambda: saved_sizes.append(frozen_size)
+
+    subscriber = AutoSaveSubscriber(lambda: None, prepare_fn=prepare)
+
+    async def scenario():
+        for generation in range(1, 1001):
+            current["generation"] = generation
+            await subscriber.emit(SessionEvent(type="step_end"))
+        final = subscriber.enqueue()
+        assert final is not None
+        await final
+
+    asyncio.run(scenario())
+
+    assert saved_sizes[-1] == 1000
+    assert len(saved_sizes) <= 3
+    assert sum(saved_sizes) <= 3000
+
+
 def test_cancelling_owned_worker_finishes_submitted_save():
     prepared = asyncio.Event()
     saved: list[str] = []
