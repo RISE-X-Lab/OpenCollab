@@ -20,6 +20,35 @@ from opencollab.adapters.llm.types import (
     rescue_empty_turn,
 )
 
+# ``extra_body`` is merged into the OpenAI SDK's request payload after the
+# explicit keyword arguments. Provider-native thinking settings must therefore
+# not replace fields whose values are set by OpenCollab for this request.
+_FRAMEWORK_CONTROLLED_THINKING_FIELDS = frozenset({
+    "max_completion_tokens",
+    "max_tokens",
+    "messages",
+    "model",
+    "stream",
+    "stream_options",
+    "temperature",
+    "tool_choice",
+    "tools",
+    "top_p",
+})
+
+
+def _validated_thinking_params(thinking_params: dict | None) -> dict:
+    """Reject provider extensions that overwrite OpenCollab request fields."""
+    if not isinstance(thinking_params, dict):
+        raise ValueError("thinking_params must be an object")
+    protected = sorted(_FRAMEWORK_CONTROLLED_THINKING_FIELDS & thinking_params.keys())
+    if protected:
+        raise ValueError(
+            "thinking_params cannot override framework-controlled request field(s): "
+            + ", ".join(protected)
+        )
+    return dict(thinking_params)
+
 
 def _build_request_kwargs(
     model: str,
@@ -59,7 +88,7 @@ def _build_request_kwargs(
     # extra_body rather than clobbering it.
     if thinking and thinking_params:
         extra_body = dict(kwargs.get("extra_body") or {})
-        extra_body.update(thinking_params)
+        extra_body.update(_validated_thinking_params(thinking_params))
         kwargs["extra_body"] = extra_body
     return kwargs
 
