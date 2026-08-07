@@ -63,6 +63,25 @@ def test_build_repo_map_skips_hidden_and_junk_dirs(tmp_path):
     assert "__pycache__" not in result
 
 
+def test_build_repo_map_keeps_common_hidden_project_configuration(tmp_path):
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "ci.yml").write_text("", encoding="utf-8")
+    (tmp_path / ".devcontainer").mkdir()
+    (tmp_path / ".devcontainer" / "devcontainer.json").write_text("", encoding="utf-8")
+    (tmp_path / ".pre-commit-config.yaml").write_text("", encoding="utf-8")
+    (tmp_path / ".env").write_text("SECRET=hidden\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+
+    result = build_repo_map(str(tmp_path))
+
+    assert ".github/" in result
+    assert "ci.yml" in result
+    assert ".devcontainer/" in result
+    assert ".pre-commit-config.yaml" in result
+    assert ".env" not in result
+    assert not any(line.strip().startswith(".git/") for line in result.splitlines())
+
+
 def test_build_repo_map_respects_max_depth(tmp_path):
     result = build_repo_map(str(_workspace(tmp_path)), max_depth=2)
 
@@ -233,6 +252,24 @@ def test_build_repo_map_via_env_rejects_find_diagnostics():
     )
 
     assert run(build_repo_map_via_env(env)) == ""
+
+
+def test_build_repo_map_via_env_filters_hidden_paths_consistently():
+    env = _FakeEnv(
+        stdout=(
+            "./.github\n"
+            "./.github/workflows\n"
+            "./.github/workflows/ci.yml\n"
+            "./.env\n"
+            "./.git/HEAD\n"
+        )
+    )
+
+    result = run(build_repo_map_via_env(env))
+
+    assert ".github/workflows/ci.yml" in result
+    assert ".env" not in result
+    assert not any(line.strip().startswith(".git/") for line in result.splitlines())
 
 
 def test_build_repo_map_via_env_failure_or_empty_returns_empty():
