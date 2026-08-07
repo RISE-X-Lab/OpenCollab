@@ -27,13 +27,12 @@ from opencollab.domain.skill import SkillManifest
 
 logger = logging.getLogger(__name__)
 
-# Single cap site for skills. No global tool-guardrails char-cap constant exists
-# on this branch (each tool defines its own, e.g. ``MAX_OUTPUT_CHARS``), so this
-# is a local default in the spirit of those. The shared ``truncate`` helper
-# (head+tail with a "… truncated …" marker) does the actual capping.
+# Single cap site for skills. A skill body is either available in full or is
+# skipped: returning a silently truncated instruction set would violate the
+# ``use_skill`` tool contract.
 SKILL_BODY_MAX_CHARS = 8000
 SKILL_DESCRIPTION_MAX_CHARS = 500
-MAX_SKILL_FILE_BYTES = 4 * 1024 * 1024
+MAX_SKILL_FILE_BYTES = 64 * 1024
 MAX_SKILL_PACKAGES = 256
 MAX_SKILL_ROOT_ENTRIES = 4_096
 
@@ -129,6 +128,14 @@ class FileSkillStore:
             logger.debug("skipping malformed skill %s: bad frontmatter", skill_md)
             return
         name, description, body = parsed
+        if len(body) > SKILL_BODY_MAX_CHARS:
+            logger.debug(
+                "skipping skill %r at %s: body exceeds %s characters",
+                name,
+                skill_md,
+                SKILL_BODY_MAX_CHARS,
+            )
+            return
         if name in self._bodies:
             logger.debug("skipping duplicate skill name %r at %s", name, skill_md)
             return
@@ -138,7 +145,7 @@ class FileSkillStore:
                 description=truncate(description, SKILL_DESCRIPTION_MAX_CHARS),
             )
         )
-        self._bodies[name] = truncate(body, SKILL_BODY_MAX_CHARS)
+        self._bodies[name] = body
 
     def list_manifests(self) -> tuple[SkillManifest, ...]:
         return tuple(self._manifests)
