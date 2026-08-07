@@ -169,8 +169,18 @@ def test_build_repo_map_missing_or_empty_workspace_returns_empty(tmp_path):
 
 
 class _FakeEnv:
-    def __init__(self, stdout: str = "", returncode: int = 0, raises: bool = False):
-        self._result = ExecResult(returncode=returncode, stdout=stdout, stderr="")
+    def __init__(
+        self,
+        stdout: str = "",
+        returncode: int = 0,
+        raises: bool = False,
+        stderr: str = "",
+    ):
+        self._result = ExecResult(
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+        )
         self._raises = raises
         self.cmds: list[str] = []
 
@@ -205,6 +215,24 @@ def test_build_repo_map_via_env_limits_enumeration_work() -> None:
     assert "truncated" in result
     assert "| head -n 6" in env.cmds[0]
     assert "| sort" not in env.cmds[0]
+
+
+def test_build_repo_map_via_env_checks_find_before_sorting():
+    env = _FakeEnv(stdout="./zeta.py\n./alpha.py\n")
+
+    result = run(build_repo_map_via_env(env))
+
+    assert "| sort" not in env.cmds[0]
+    assert result.index("alpha.py") < result.index("zeta.py")
+
+
+def test_build_repo_map_via_env_rejects_find_diagnostics():
+    env = _FakeEnv(
+        stdout="./visible.py\n",
+        stderr="find: unreadable directory",
+    )
+
+    assert run(build_repo_map_via_env(env)) == ""
 
 
 def test_build_repo_map_via_env_failure_or_empty_returns_empty():
