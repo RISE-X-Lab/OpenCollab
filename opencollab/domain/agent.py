@@ -61,7 +61,12 @@ class Agent:
         self._validate_tool_names()
 
     def _validate_tool_names(self) -> None:
-        validate_unique_tool_names([tool.name for tool in self.tools])
+        names = [
+            name
+            for tool in self.tools
+            if isinstance((name := getattr(tool, "name", None)), str)
+        ]
+        validate_unique_tool_names(names)
 
     def tool_schemas(self) -> list[dict]:
         """Generate OpenAI-format tool schemas for LLM function calling."""
