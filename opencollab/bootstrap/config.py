@@ -62,13 +62,22 @@ DEFAULT_THINKING_PARAMS: dict[str, Any] = {"enable_thinking": True}
 
 # Truthy string tokens for boolean env vars ("1/true/yes/on").
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off"})
 
 
 def _parse_bool(value: str | None, *, default: bool = False) -> bool:
-    """Parse a truthy env string ("1/true/yes/on") to bool; default on absence."""
+    """Parse a supported boolean env string; default only on absence."""
     if value is None:
         return default
-    return value.strip().lower() in _TRUTHY
+    normalized = value.strip().lower()
+    if normalized in _TRUTHY:
+        return True
+    if normalized in _FALSY:
+        return False
+    raise ValueError(
+        "boolean configuration must be one of "
+        "1/true/yes/on or 0/false/no/off"
+    )
 
 
 def _parse_top_p(value: str | None) -> float | None:
