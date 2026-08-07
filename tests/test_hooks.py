@@ -96,6 +96,28 @@ def test_subscriber_splits_completed_by_parent():
     assert _emit(SchedulerEvent(type="agent_completed", data={"aid": 5, "parent_aid": 0}))[0][0] == "SubagentStop"
 
 
+@pytest.mark.parametrize(
+    ("event_type", "aid", "expected_hook", "expected_disposition"),
+    [
+        ("agent_failed", 0, "Stop", "failed"),
+        ("agent_cancelled", 0, "Stop", "cancelled"),
+        ("agent_failed", 5, "SubagentStop", "failed"),
+        ("agent_cancelled", 5, "SubagentStop", "cancelled"),
+    ],
+)
+def test_subscriber_maps_all_terminal_dispositions(
+    event_type,
+    aid,
+    expected_hook,
+    expected_disposition,
+):
+    calls = _emit(SchedulerEvent(type=event_type, data={"aid": aid, "role": "coder"}))
+
+    assert len(calls) == 1
+    assert calls[0][0] == expected_hook
+    assert calls[0][1]["disposition"] == expected_disposition
+
+
 def test_subscriber_ignores_unmapped_events():
     assert _emit(SessionRuntimeEvent(type="step_end", data={"step": 1})) == []
     assert _emit(SessionRuntimeEvent(type="text_delta", data={"content": "x"})) == []
