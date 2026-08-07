@@ -197,9 +197,9 @@ def test_cli_resolved_config_keeps_max_output_tokens(monkeypatch, tmp_path):
     assert cfg["max_output_tokens"] == 32_768
 
 
-def test_dashscope_api_key_is_supported_as_fallback(monkeypatch):
+def test_dashscope_key_is_not_used_without_dashscope_endpoint(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")
-    assert build_config().api_key == "dashscope-key"
+    assert build_config().api_key is None
 
 
 def test_dashscope_base_url_prefers_dashscope_key(monkeypatch):
@@ -276,11 +276,17 @@ def test_config_repr_does_not_include_api_key(monkeypatch):
 
 
 def test_api_key_env_precedence_is_provider_and_endpoint_specific():
-    assert api_key_env_precedence("openai")[0] == "OPENCOLLAB_API_KEY"
-    assert api_key_env_precedence("anthropic")[0] == "ANTHROPIC_API_KEY"
+    assert api_key_env_precedence("openai") == (
+        "OPENCOLLAB_API_KEY",
+        "OPENAI_API_KEY",
+    )
+    assert api_key_env_precedence("anthropic") == (
+        "ANTHROPIC_API_KEY",
+        "OPENCOLLAB_API_KEY",
+    )
     assert api_key_env_precedence(
         "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    )[0] == "DASHSCOPE_API_KEY"
+    ) == ("DASHSCOPE_API_KEY", "OPENCOLLAB_API_KEY")
 
 
 def test_accepted_api_key_envs_reproduces_hint_order():
@@ -288,7 +294,7 @@ def test_accepted_api_key_envs_reproduces_hint_order():
     assert accepted_api_key_envs("anthropic") == ["OPENCOLLAB_API_KEY", "ANTHROPIC_API_KEY"]
     assert accepted_api_key_envs(
         "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    ) == ["OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "DASHSCOPE_API_KEY"]
+    ) == ["OPENCOLLAB_API_KEY", "DASHSCOPE_API_KEY"]
 
 
 def test_missing_api_key_true_when_no_key_anywhere(monkeypatch):
@@ -327,6 +333,28 @@ def test_missing_api_key_honors_dashscope_endpoint(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")
     base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert missing_api_key("openai", None, base_url) is False
+
+
+@pytest.mark.parametrize(
+    ("provider", "foreign_key"),
+    [
+        ("openai", "ANTHROPIC_API_KEY"),
+        ("openai", "DASHSCOPE_API_KEY"),
+        ("anthropic", "OPENAI_API_KEY"),
+        ("anthropic", "DASHSCOPE_API_KEY"),
+    ],
+)
+def test_foreign_provider_keys_do_not_satisfy_selected_provider(
+    monkeypatch,
+    provider,
+    foreign_key,
+):
+    monkeypatch.setenv(foreign_key, "foreign-key")
+
+    config = build_config(overrides={"provider": provider})
+
+    assert config.api_key is None
+    assert missing_api_key(provider, config.api_key) is True
 
 
 _ISOLATED_OUTPUT_ENV_NAMES = (
