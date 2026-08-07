@@ -30,6 +30,17 @@ OVERWRITE_GUARD_MIN_CHARS = 1_000
 OVERWRITE_GUARD_SHRINK_RATIO = 0.5
 
 
+def _count_overlapping(text: str, needle: str) -> int:
+    count = 0
+    start = 0
+    while True:
+        match = text.find(needle, start)
+        if match < 0:
+            return count
+        count += 1
+        start = match + 1
+
+
 class FileReadTool(Tool):
     """Read file content with optional line range."""
 
@@ -254,7 +265,7 @@ class FileWriteTool(Tool):
         current = await env.read_file(path)
 
         # Check uniqueness (ref: claude-code Edit — must be unique)
-        count = current.count(old_str)
+        count = _count_overlapping(current, old_str)
         if count == 0:
             return (
                 f"Error: old_str not found in {path}. Make sure the text matches "
