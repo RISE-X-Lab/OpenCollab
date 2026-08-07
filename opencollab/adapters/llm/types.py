@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -138,13 +139,23 @@ def model_matches_family(model: str | None, family: str) -> bool:
     )
 
 
+def _canonical_model_id(model: str) -> str:
+    leaf = model.strip().lower().rsplit("/", 1)[-1]
+    if leaf in _EXACT_MODEL_CAPABILITIES:
+        return leaf
+    for known in _EXACT_MODEL_CAPABILITIES:
+        if re.fullmatch(rf"{re.escape(known)}-\d{{4}}(?:-\d{{2}}){{0,2}}", leaf):
+            return known
+    return leaf
+
+
 def model_capabilities(model: str | None) -> ModelCapabilities:
     """Return exact capability metadata plus a best-effort context window."""
     if not model:
         return ModelCapabilities()
-    lowered = model.lower()
-    if lowered in _EXACT_MODEL_CAPABILITIES:
-        return _EXACT_MODEL_CAPABILITIES[lowered]
+    canonical = _canonical_model_id(model)
+    if canonical in _EXACT_MODEL_CAPABILITIES:
+        return _EXACT_MODEL_CAPABILITIES[canonical]
     for key, window in MODEL_CONTEXT_WINDOWS.items():
         if model_matches_family(model, key):
             return ModelCapabilities(context_window=window)
