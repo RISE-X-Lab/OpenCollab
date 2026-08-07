@@ -613,51 +613,87 @@ class DockerEnvironment(Environment):
         if failures:
             raise RuntimeError("Docker cleanup failed") from failures[0]
 
+    async def _cleanup_attached_resources(self) -> None:
+        container_id = self._container_id
+        if container_id is None:
+            if self._temporary_files:
+                raise RuntimeError("attached Docker temporary files cannot be reached")
+            return
+        failures: list[BaseException] = []
+        for path in tuple(self._temporary_files):
+            try:
+                removed = await self._docker(
+                    "exec",
+                    "--",
+                    container_id,
+                    "rm",
+                    "-f",
+                    "--",
+                    path,
+                )
+            except BaseException as exc:
+                failures.append(exc)
+                continue
+            if removed.returncode != 0:
+                failures.append(
+                    OSError(f"failed to remove container temporary file: {path}")
+                )
+                continue
+            self._temporary_files.discard(path)
+        if failures:
+            raise OSError(
+                "failed to remove one or more attached Docker temporary files"
+            ) from failures[0]
+
     async def cleanup(self) -> None:
         async with self._lifecycle_lock:
+            await self._abort_resources_locked()
             if self._attached:
+                await await_owned_operation(
+                    self._cleanup_attached_resources(),
+                    propagate_cancellation=True,
+                )
                 return
-            self.revoke()
+
+    async def abort(self) -> None:
+        async with self._lifecycle_lock:
+            await self._abort_resources_locked()
+
+    async def _abort_resources_locked(self) -> None:
+        """Abort resources while the lifecycle lock is already held."""
+        self.revoke()
+        if not self._attached:
             await await_owned_operation(
                 self._cleanup_resources(),
                 propagate_cancellation=True,
             )
-
-    async def abort(self) -> None:
-        async with self._lifecycle_lock:
-            self.revoke()
-            if not self._attached:
-                await await_owned_operation(
-                    self._cleanup_resources(),
-                    propagate_cancellation=True,
-                )
-                return
-            async with self._active_exec_lock:
-                active = dict(self._active_execs)
-            if not active:
-                return
-            cancelled = await asyncio.gather(
-                *(self._cancel_inner(token) for token in active),
-                return_exceptions=True,
+            return
+        async with self._active_exec_lock:
+            active = dict(self._active_execs)
+        if not active:
+            return
+        cancelled = await asyncio.gather(
+            *(self._cancel_inner(token) for token in active),
+            return_exceptions=True,
+        )
+        current = asyncio.current_task()
+        pending = {
+            task
+            for task in active.values()
+            if task is not None and task is not current and not task.done()
+        }
+        if pending:
+            _done, pending = await asyncio.wait(
+                pending,
+                timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
             )
-            current = asyncio.current_task()
-            pending = {
-                task
-                for task in active.values()
-                if task is not None and task is not current and not task.done()
-            }
-            if pending:
-                _done, pending = await asyncio.wait(
-                    pending,
-                    timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
-                )
-            failed_cancellations = any(
-                result is not True and (task is None or not task.done())
-                for result, task in zip(cancelled, active.values())
+        failed_cancellations = any(
+            result is not True and (task is None or not task.done())
+            for result, task in zip(cancelled, active.values())
+        )
+        if failed_cancellations or pending:
+            raise ProcessCleanupError(
+                "attached container commands did not quiesce during abort"
             )
-            if failed_cancellations or pending:
-                raise ProcessCleanupError(
-                    "attached container commands did not quiesce during abort"
-                )
 
 __all__ = ["DockerEnvironment"]
