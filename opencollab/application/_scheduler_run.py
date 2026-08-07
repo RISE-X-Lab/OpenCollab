@@ -103,7 +103,7 @@ class SchedulerRunMixin:
                     logger.debug("background task for aid %s was cancelled", done_aid)
                 except Exception as exc:
                     logger.error("background task for aid %s failed: %s", done_aid, exc)
-            pending = list(self._tasks.values())
+            pending = self._active_scheduler_tasks()
             if not pending:
                 if self._quiescent():
                     break
@@ -135,10 +135,32 @@ class SchedulerRunMixin:
             )
         return partial_answer
 
+    def _active_scheduler_tasks(self) -> set[asyncio.Task]:
+        """Return live scheduler-owned producers, excluding the current waiter."""
+        current = asyncio.current_task()
+        return {
+            task
+            for task in (
+                *self._tasks.values(),
+                *self._startup_tasks.values(),
+                *self._message_delivery_tasks.values(),
+            )
+            if not task.done() and task is not current
+        }
+
     def _quiescent(self) -> bool:
         """True when no session is mid-flight: none is awaiting events, none has
         an outstanding pending table, and every phase is terminal or idle.
         """
+        if any(
+            not task.done()
+            for task in (
+                *self._tasks.values(),
+                *self._startup_tasks.values(),
+                *self._message_delivery_tasks.values(),
+            )
+        ):
+            return False
         for scb in self.table.entries.values():
             if self._message_inbox.get(scb.aid):
                 return False
