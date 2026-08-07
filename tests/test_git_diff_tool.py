@@ -77,6 +77,29 @@ def test_git_diff_path_filter_can_skip_status(repo):
     assert "other.py" not in result.split("diff vs HEAD:")[1]
 
 
+@pytest.mark.parametrize("stat_only", [False, True])
+def test_git_diff_supports_unborn_repository_with_staged_file(tmp_path, stat_only):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "first.py").write_text("value = 1\n", encoding="utf-8")
+    _git(repo, "add", "first.py")
+
+    result = run(
+        GitDiffTool().execute_with_runtime(
+            {"stat_only": stat_only},
+            _runtime(repo),
+        )
+    )
+
+    assert "diff vs empty tree" in result
+    assert "first.py" in result
+    if stat_only:
+        assert "1 file changed" in result
+    else:
+        assert "+value = 1" in result
+
+
 def test_git_diff_reports_environment_errors(tmp_path):
     no_env = run(
         GitDiffTool().execute_with_runtime(

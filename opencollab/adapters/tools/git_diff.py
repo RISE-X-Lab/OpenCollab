@@ -93,10 +93,33 @@ class GitDiffTool(Tool):
         pathspec = f" -- {shlex.quote(path)}" if path else ""
 
         diff_cmd = "git --no-pager diff"
+        baseline_label = "HEAD"
         if staged:
             diff_cmd += " --cached"
         else:
-            diff_cmd += " HEAD"
+            head = await env.exec_cmd("git rev-parse --verify HEAD", timeout=30)
+            if head.returncode == 0:
+                baseline = "HEAD"
+            else:
+                inside = await env.exec_cmd(
+                    "git rev-parse --is-inside-work-tree",
+                    timeout=30,
+                )
+                if inside.returncode != 0 or inside.stdout.strip() != "true":
+                    return "Error: not a git repository."
+                empty_tree = await env.exec_cmd(
+                    "git hash-object -t tree /dev/null",
+                    timeout=30,
+                )
+                baseline = empty_tree.stdout.strip()
+                if empty_tree.returncode != 0 or not baseline:
+                    error = (empty_tree.stderr or empty_tree.stdout).strip()
+                    return (
+                        "Error: could not determine Git empty-tree baseline: "
+                        + truncate(error, self.max_status_chars)
+                    )
+                baseline_label = "empty tree"
+            diff_cmd += f" {baseline}"
         if stat_only:
             diff_cmd += " --stat"
         diff_cmd += pathspec
@@ -119,7 +142,14 @@ class GitDiffTool(Tool):
             )
 
         diff = diff_result.stdout.strip()
-        label = "diff --stat" if stat_only else ("staged diff" if staged else "diff vs HEAD")
+        if stat_only:
+            label = (
+                "diff --stat"
+                if staged or baseline_label == "HEAD"
+                else "diff vs empty tree --stat"
+            )
+        else:
+            label = "staged diff" if staged else f"diff vs {baseline_label}"
         if diff:
             parts.append(f"{label}:\n" + truncate(diff, self.max_diff_chars))
         else:
