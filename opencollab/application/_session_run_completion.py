@@ -284,7 +284,24 @@ class _SessionRunCompletionMixin:
         top_p = getattr(self.agent, "top_p", None)
         if top_p is not None:
             extra["top_p"] = top_p
-        max_output_tokens = getattr(self.agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)
+        configured_output_tokens = getattr(
+            self.agent,
+            "max_tokens_per_step",
+            DEFAULT_MAX_TOKENS_PER_STEP,
+        )
+        remaining_budget = max(
+            1,
+            int(self.max_budget_tokens) - int(self.state.used_tokens),
+        )
+        # Precheck guarantees positive headroom before entering this call. Clamp
+        # the provider's output ceiling to that live remainder so one otherwise
+        # valid generation cannot overshoot the session/team lease by thousands
+        # of output tokens. Providers report input-token accounting only after
+        # the response; the next precheck still stops on any resulting overrun.
+        max_output_tokens = min(
+            max(1, int(configured_output_tokens)),
+            remaining_budget,
+        )
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
             extra["max_output_tokens"] = max_output_tokens
         if not getattr(self.agent, "thinking", False):

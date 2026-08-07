@@ -53,6 +53,44 @@ def test_run_loop_budget_exceeded_emits_error_and_sets_phase():
     }
     assert events == [("error", {"reason": "budget exceeded: 10 tokens used", "aid": -1})]
 
+
+def test_remaining_budget_caps_next_model_output_request():
+    state = SessionState(
+        messages=[{"role": "system", "content": "sys"}],
+        used_tokens=9,
+    )
+    llm = FakeLLM([llm_response(content="done", total_tokens=1)])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        max_budget_tokens=10,
+    )
+
+    assert run(runner.run_loop()) == "done"
+    assert llm.calls[0]["max_output_tokens"] == 1
+    assert state.used_tokens == 10
+
+
+def test_remaining_budget_caps_configured_per_step_output_limit():
+    agent = FakeAgent()
+    agent.max_tokens_per_step = 100
+    state = SessionState(
+        messages=[{"role": "system", "content": "sys"}],
+        used_tokens=13,
+    )
+    llm = FakeLLM([llm_response(content="done", total_tokens=7)])
+    runner = build_runner(
+        state=state,
+        agent=agent,
+        llm=llm,
+        max_budget_tokens=20,
+    )
+
+    run(runner.run_loop())
+
+    assert llm.calls[0]["max_output_tokens"] == 7
+
+
 def test_run_loop_team_aggregate_ceiling_stops_under_own_cap():
     # Per-session cap is generous (1_000_000) and the session has spent nothing,
     # so the per-session check passes — but the injected team-aggregate predicate
