@@ -135,6 +135,7 @@ def _parse_hunks(patch: str) -> tuple[list[dict] | None, str]:
                 "new_start": new_start,
                 "new_len": new_len,
                 "lines": [],
+                "no_newline_after": set(),
             }
             hunks.append(cur)
             continue
@@ -147,8 +148,14 @@ def _parse_hunks(patch: str) -> tuple[list[dict] | None, str]:
         if tag in " +-":
             cur["lines"].append(raw)
         elif tag == "\\":
-            # "\ No newline at end of file" — metadata, not content.
-            continue
+            if raw != "\\ No newline at end of file":
+                return None, f"hunk on patch line {line_number} has unknown metadata."
+            if not cur["lines"]:
+                return None, f"hunk on patch line {line_number} has orphan newline metadata."
+            previous = len(cur["lines"]) - 1
+            if previous in cur["no_newline_after"]:
+                return None, f"hunk on patch line {line_number} repeats newline metadata."
+            cur["no_newline_after"].add(previous)
         else:
             return None, f"hunk on patch line {line_number} has an unknown line prefix."
     if not seen_header:
@@ -220,11 +227,14 @@ def _apply_unified_diff(source: str, patch: str) -> tuple[str | None, str]:
     src_lines, ended_nl = _split_lines(source)
     result: list[str] = []
     src_idx = 0  # how far through src_lines we've consumed
+    target_ended_nl = ended_nl
 
     for n, hunk in enumerate(hunks, 1):
         old_block: list[str] = []
         new_block: list[str] = []
-        for line in hunk["lines"]:
+        old_no_newline_positions: list[int] = []
+        new_no_newline_positions: list[int] = []
+        for line_index, line in enumerate(hunk["lines"]):
             tag, content = line[0], line[1:]
             if tag == " ":
                 old_block.append(content)
@@ -233,6 +243,11 @@ def _apply_unified_diff(source: str, patch: str) -> tuple[str | None, str]:
                 old_block.append(content)
             elif tag == "+":
                 new_block.append(content)
+            if line_index in hunk["no_newline_after"]:
+                if tag in " -":
+                    old_no_newline_positions.append(len(old_block) - 1)
+                if tag in " +":
+                    new_no_newline_positions.append(len(new_block) - 1)
 
         expected_idx = hunk["old_start"] if hunk["old_len"] == 0 else hunk["old_start"] - 1
         pos = _find_block(src_lines, old_block, expected_idx, src_idx)
@@ -242,9 +257,29 @@ def _apply_unified_diff(source: str, patch: str) -> tuple[str | None, str]:
                 f"hunk #{n} (near line {hunk['old_start']}) did not match the file. "
                 f"The context/removed lines were not found:\n{snippet}"
             )
+        if hunk["no_newline_after"]:
+            if n != len(hunks) or pos + len(old_block) != len(src_lines):
+                return None, (
+                    f"hunk #{n} has 'No newline at end of file' metadata away from EOF."
+                )
+            if (
+                len(old_no_newline_positions) > 1
+                or old_no_newline_positions
+                and old_no_newline_positions[0] != len(old_block) - 1
+                or len(new_no_newline_positions) > 1
+                or new_no_newline_positions
+                and new_no_newline_positions[0] != len(new_block) - 1
+            ):
+                return None, f"hunk #{n} has newline metadata on a non-final line."
+            old_has_no_newline = bool(old_no_newline_positions)
+            if ended_nl == old_has_no_newline:
+                return None, (
+                    f"hunk #{n} newline metadata does not match the source EOF."
+                )
+            target_ended_nl = not bool(new_no_newline_positions)
         result.extend(src_lines[src_idx:pos])
         result.extend(new_block)
         src_idx = pos + len(old_block)
 
     result.extend(src_lines[src_idx:])
-    return _join_lines(result, ended_nl if result else False), ""
+    return _join_lines(result, target_ended_nl if result else False), ""

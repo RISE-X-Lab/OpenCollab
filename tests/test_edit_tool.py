@@ -234,6 +234,38 @@ def test_unified_diff_pure_insertions_use_header_position(tmp_path, header, expe
     assert target.read_text(encoding="utf-8") == expected
 
 
+@pytest.mark.parametrize(
+    ("source", "patch", "expected"),
+    [
+        (
+            "old\n",
+            "@@ -1 +1 @@\n-old\n+new\n\\ No newline at end of file\n",
+            "new",
+        ),
+        (
+            "old",
+            "@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n",
+            "new\n",
+        ),
+    ],
+)
+def test_unified_diff_applies_eof_newline_metadata(tmp_path, source, patch, expected):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text(source, encoding="utf-8")
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {"path": "f.py", "mode": "unified_diff", "patch": patch},
+            _runtime(ws),
+        )
+    )
+
+    assert "Applied unified_diff" in result
+    assert target.read_text(encoding="utf-8") == expected
+
+
 def test_apply_patch_reports_file_and_workspace_errors(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
