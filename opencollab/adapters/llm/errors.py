@@ -57,6 +57,9 @@ def _error_code_of(error: Exception) -> str:
         return code.lower()
     body = getattr(error, "body", None)
     if isinstance(body, dict):
+        body_code = body.get("code")
+        if isinstance(body_code, str):
+            return body_code.lower()
         inner = body.get("error")
         if isinstance(inner, dict):
             inner_code = inner.get("code")
