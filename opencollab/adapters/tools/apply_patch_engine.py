@@ -12,11 +12,30 @@ from typing import Any
 
 # A hunk header: @@ -<old_start>[,<old_len>] +<new_start>[,<new_len>] @@ [heading]
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+_NEWLINE_RE = re.compile(r"\r\n|\r|\n")
+_MIXED_NEWLINES = "mixed"
 
 
 # ---------------------------------------------------------------------------
 # Line helpers — split/join while preserving a trailing-newline flag.
 # ---------------------------------------------------------------------------
+
+
+def _detect_newline_style(text: str) -> str:
+    styles = set(_NEWLINE_RE.findall(text))
+    if len(styles) > 1:
+        return _MIXED_NEWLINES
+    return next(iter(styles), "\n")
+
+
+def _normalize_newlines(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _restore_newlines(text: str, style: str) -> str:
+    if style == "\n":
+        return text
+    return text.replace("\n", style)
 
 
 def _split_lines(text: str) -> tuple[list[str], bool]:
@@ -55,6 +74,17 @@ def _apply_line_replace(source: str, params: dict[str, Any]) -> tuple[str | None
 
     Returns ``(updated_text, "")`` on success or ``(None, error)`` on failure.
     """
+    newline_style = _detect_newline_style(source)
+    if newline_style == _MIXED_NEWLINES:
+        return None, (
+            "source uses mixed newline styles; refusing to normalize it implicitly."
+        )
+    source = _normalize_newlines(source)
+    params = dict(params)
+    for key in ("new_str", "expected_str"):
+        if key in params and params[key] is not None:
+            params[key] = _normalize_newlines(params[key])
+
     if "start_line" not in params or "end_line" not in params:
         return None, "start_line and end_line are required for line_replace mode."
     start_line = params["start_line"]
@@ -95,7 +125,8 @@ def _apply_line_replace(source: str, params: dict[str, Any]) -> tuple[str | None
     # newline is normalised away since we re-split it into lines.
     new_lines, _ = _split_lines(new_str if new_str.endswith("\n") or new_str == "" else new_str + "\n")
     result = lines[:start_idx] + new_lines + lines[end_idx:]
-    return _join_lines(result, ended_nl if result else False), ""
+    updated = _join_lines(result, ended_nl if result else False)
+    return _restore_newlines(updated, newline_style), ""
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +250,13 @@ def _apply_unified_diff(source: str, patch: str) -> tuple[str | None, str]:
 
     Returns ``(updated_text, "")`` on success or ``(None, error)`` on failure.
     """
+    newline_style = _detect_newline_style(source)
+    if newline_style == _MIXED_NEWLINES:
+        return None, (
+            "source uses mixed newline styles; refusing to normalize it implicitly."
+        )
+    source = _normalize_newlines(source)
+    patch = _normalize_newlines(patch)
     hunks, err = _parse_hunks(patch)
     if err:
         return None, err
@@ -282,4 +320,5 @@ def _apply_unified_diff(source: str, patch: str) -> tuple[str | None, str]:
         src_idx = pos + len(old_block)
 
     result.extend(src_lines[src_idx:])
-    return _join_lines(result, target_ended_nl if result else False), ""
+    updated = _join_lines(result, target_ended_nl if result else False)
+    return _restore_newlines(updated, newline_style), ""
