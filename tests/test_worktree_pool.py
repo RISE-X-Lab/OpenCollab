@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -63,6 +64,7 @@ async def test_non_git_source_uses_independent_directory_copy(tmp_path) -> None:
     await env.write_file("note.txt", "child")
     assert (source / "note.txt").read_text(encoding="utf-8") == "source"
     assert await env.read_file("note.txt") == "child"
+    assert "child" in await env.get_diff()
     await env.cleanup()
     assert not os.path.exists(workspace)
 
@@ -86,6 +88,33 @@ async def test_non_git_copy_preserves_file_and_directory_symlinks(tmp_path) -> N
     with pytest.raises(OSError):
         await env.read_file("dir-link/secret.txt")
     await env.cleanup()
+
+
+async def test_non_git_copy_exports_changes_before_cleanup(tmp_path) -> None:
+    source = tmp_path / "plain"
+    source.mkdir()
+    (source / "changed.txt").write_text("before\n", encoding="utf-8")
+    (source / "removed.txt").write_text("remove me\n", encoding="utf-8")
+    env = WorktreeEnvironment(str(source), branch_name="plain-export")
+    workspace = await env.setup()
+    await env.write_file("changed.txt", "after\n")
+    (Path(workspace) / "removed.txt").unlink()
+    (Path(workspace) / "added.txt").write_text("added\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="unexported non-Git worktree changes"):
+        await env.cleanup()
+    assert os.path.exists(workspace)
+
+    diff = await env.get_diff()
+    assert "changed.txt" in diff
+    assert "removed.txt" in diff
+    assert "added.txt" in diff
+    assert "-before" in diff
+    assert "+after" in diff
+    assert "opencollab-cp-" not in diff
+
+    await env.cleanup()
+    assert not os.path.exists(workspace)
 
 
 async def test_git_worktree_reports_committed_and_untracked_changes(tmp_path) -> None:
