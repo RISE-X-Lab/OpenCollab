@@ -445,14 +445,15 @@ class Session:
             # provider protocol; keeping the stale sidecar rows would make the
             # scheduler's quiescence check wait forever after the resumed turn.
             self.state.pending_events.clear()
-        self.state.terminal_reason = (
-            str(raw_state["terminal_reason"])
-            if raw_state.get("terminal_reason") is not None
-            else None
-        )
         if self.state.phase is SessionPhase.AWAITING_EVENTS and self.state.pending_events.is_empty():
             self.state.set_phase(SessionPhase.IDLE)
             self._append_restore_results_for_open_tool_calls()
+        self.state.terminal_reason = (
+            str(raw_state["terminal_reason"])
+            if self.state.phase.is_terminal()
+            and raw_state.get("terminal_reason") is not None
+            else None
+        )
         self._restore_auto_save_tracking(snapshot)
         self._checkpoint_restored_auto_save_target(path)
 
