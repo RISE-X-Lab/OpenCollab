@@ -11,6 +11,7 @@ children and for agent 0 (the lead), delegating role -> Agent assembly to a
 from __future__ import annotations
 
 import copy
+import inspect
 import os
 import re
 import uuid
@@ -231,16 +232,19 @@ def snapshot_session(
     *,
     event_sink: EventPublisherPort | None = None,
 ) -> Session:
-    """Build a snapshot with isolated mutable runtime state.
+    """Build an isolated state snapshot from a forkable session environment.
 
     Snapshots never inherit autosave or external event subscribers: callers who
-    want observation must explicitly supply ``event_sink``. Environment ownership
-    remains unchanged in this layer.
+    want observation must explicitly supply ``event_sink``. The environment must
+    implement a synchronous ``fork_snapshot()`` that returns a distinct owner;
+    silently sharing a workspace would make the resulting sessions unsafe to run
+    concurrently.
     """
     agent = _clone_snapshot_component(session.agent, label="agent")
+    environment = _fork_snapshot_environment(session.env)
     new = build_session(
         agent=agent,
-        env=session.env,
+        env=environment,
         max_budget_tokens=session.max_budget_tokens,
         max_steps=session.max_steps,
         event_sink=event_sink,
@@ -271,6 +275,27 @@ def _clone_snapshot_component(value: Any, *, label: str) -> Any:
         return copy.deepcopy(value)
     except Exception as exc:  # noqa: BLE001 - snapshot must not share mutable state
         raise SnapshotSessionError(f"cannot clone {label} for an independent snapshot") from exc
+
+
+def _fork_snapshot_environment(environment: Any) -> Environment:
+    fork = getattr(environment, "fork_snapshot", None)
+    if not callable(fork):
+        raise SnapshotSessionError(
+            "independent session snapshots require environment.fork_snapshot()"
+        )
+    try:
+        snapshot_environment = fork()
+    except Exception as exc:  # noqa: BLE001 - preserve the fork boundary
+        raise SnapshotSessionError("cannot fork environment for an independent snapshot") from exc
+    if (
+        inspect.isawaitable(snapshot_environment)
+        or snapshot_environment is environment
+        or not hasattr(snapshot_environment, "workspace")
+    ):
+        raise SnapshotSessionError(
+            "environment.fork_snapshot() must synchronously return a distinct environment"
+        )
+    return snapshot_environment
 
 
 def build_spawn_session(
