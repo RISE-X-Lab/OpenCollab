@@ -11,18 +11,22 @@ useful can be produced — callers inject the map only when non-empty.
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass, field
 
 from opencollab.adapters.env import Environment
 from opencollab.adapters.tools._output import truncate
 
 MAX_MAP_CHARS = 4_000
 MAX_MAP_DEPTH = 3
+MAX_MAP_ENTRIES = 300
+MAX_MAP_DIRS = 100
 MAX_ENTRIES_PER_DIR = 30
 # Bulky generated/vendored dirs that never help orientation. Hidden entries
 # (".git", ".venv", ...) are skipped by their dot prefix.
 SKIP_DIR_NAMES = frozenset({"__pycache__", "node_modules", "dist", "build", "venv"})
 
 MAP_HEADER = "## Repository layout"
+_TRUNCATED_MARKER = "... (repository map truncated; traversal budget reached)"
 
 
 def _keep(name: str) -> bool:
@@ -34,35 +38,120 @@ def build_repo_map(
     *,
     max_depth: int = MAX_MAP_DEPTH,
     max_chars: int = MAX_MAP_CHARS,
+    max_entries: int = MAX_MAP_ENTRIES,
+    max_dirs: int = MAX_MAP_DIRS,
+    max_scanned_entries: int | None = None,
 ) -> str:
     """A depth- and size-bounded tree of ``workspace``, or ``""``."""
     if not workspace or not os.path.isdir(workspace):
         return ""
-    lines: list[str] = []
-    _walk(workspace, 0, max_depth, lines)
-    if not lines:
+    scanned_limit = (
+        max_scanned_entries
+        if max_scanned_entries is not None
+        else max(MAX_ENTRIES_PER_DIR + 2, max_entries * 4)
+    )
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 1
+        for value in (
+            max_depth,
+            max_chars,
+            max_entries,
+            max_dirs,
+            scanned_limit,
+        )
+    ):
+        raise ValueError("repo-map budgets must be positive integers")
+    budget = _WalkBudget(
+        max_depth=max_depth,
+        max_chars=max_chars,
+        max_entries=max_entries,
+        max_dirs=max_dirs,
+        max_scanned_entries=scanned_limit,
+    )
+    _walk(workspace, 0, budget)
+    if not budget.lines and not budget.truncated:
         return ""
-    return f"{MAP_HEADER}\n\n" + truncate("\n".join(lines), max_chars)
+    return _render_map(budget.lines, max_chars=max_chars, truncated=budget.truncated)
 
 
-def _walk(path: str, depth: int, max_depth: int, lines: list[str]) -> None:
+@dataclass(slots=True)
+class _WalkBudget:
+    max_depth: int
+    max_chars: int
+    max_entries: int
+    max_dirs: int
+    max_scanned_entries: int
+    lines: list[str] = field(default_factory=list)
+    shown_entries: int = 0
+    scanned_entries: int = 0
+    scanned_dirs: int = 0
+    body_chars: int = 0
+    truncated: bool = False
+
+    def append(self, line: str) -> bool:
+        separator = 1 if self.lines else 0
+        if (
+            self.shown_entries >= self.max_entries
+            or self.body_chars + separator + len(line) > self.max_chars
+        ):
+            self.truncated = True
+            return False
+        self.lines.append(line)
+        self.shown_entries += 1
+        self.body_chars += separator + len(line)
+        return True
+
+
+def _render_map(lines: list[str], *, max_chars: int, truncated: bool) -> str:
+    body = "\n".join(lines)
+    if truncated:
+        body = f"{body}\n{_TRUNCATED_MARKER}" if body else _TRUNCATED_MARKER
+    return f"{MAP_HEADER}\n\n" + truncate(body, max_chars)
+
+
+def _walk(path: str, depth: int, budget: _WalkBudget) -> None:
+    if budget.truncated:
+        return
+    if budget.scanned_dirs >= budget.max_dirs:
+        budget.truncated = True
+        return
+    budget.scanned_dirs += 1
+    candidates: list[os.DirEntry[str]] = []
+    kept_entries = 0
+    completed_scan = True
     try:
         with os.scandir(path) as it:
-            entries = sorted(it, key=lambda e: (not e.is_dir(), e.name))
+            iterator = iter(it)
+            while budget.scanned_entries < budget.max_scanned_entries:
+                try:
+                    entry = next(iterator)
+                except StopIteration:
+                    break
+                budget.scanned_entries += 1
+                if not _keep(entry.name):
+                    continue
+                kept_entries += 1
+                if len(candidates) < MAX_ENTRIES_PER_DIR:
+                    candidates.append(entry)
+            else:
+                budget.truncated = True
+                completed_scan = False
     except OSError:
         return
-    entries = [e for e in entries if _keep(e.name)]
-    shown = entries[:MAX_ENTRIES_PER_DIR]
+    candidates.sort(key=lambda entry: (not entry.is_dir(), entry.name))
     indent = "  " * depth
-    for entry in shown:
+    for entry in candidates:
         if entry.is_dir(follow_symlinks=False):
-            lines.append(f"{indent}{entry.name}/")
-            if depth + 1 < max_depth:
-                _walk(entry.path, depth + 1, max_depth, lines)
+            if not budget.append(f"{indent}{entry.name}/"):
+                return
+            if depth + 1 < budget.max_depth:
+                _walk(entry.path, depth + 1, budget)
         else:
-            lines.append(f"{indent}{entry.name}")
-    if len(entries) > len(shown):
-        lines.append(f"{indent}... ({len(entries) - len(shown)} more)")
+            if not budget.append(f"{indent}{entry.name}"):
+                return
+    omitted = kept_entries - len(candidates)
+    if completed_scan and omitted > 0:
+        budget.append(f"{indent}... ({omitted} more)")
 
 
 async def build_repo_map_via_env(
@@ -70,6 +159,7 @@ async def build_repo_map_via_env(
     *,
     max_depth: int = MAX_MAP_DEPTH,
     max_chars: int = MAX_MAP_CHARS,
+    max_entries: int = MAX_MAP_ENTRIES,
 ) -> str:
     """A bounded path listing of the environment's workspace, or ``""``.
 
@@ -81,9 +171,14 @@ async def build_repo_map_via_env(
     )
     # -mindepth 1 keeps "." itself out of the prune tests — without it the
     # '.*' pattern matches the root and prunes the entire tree.
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) or value < 1
+        for value in (max_depth, max_chars, max_entries)
+    ):
+        raise ValueError("repo-map budgets must be positive integers")
     cmd = (
         rf"find . -mindepth 1 -maxdepth {max_depth} "
-        rf"\( {prunes} \) -prune -o -print | sort"
+        rf"\( {prunes} \) -prune -o -print | head -n {max_entries + 1}"
     )
     try:
         result = await env.exec_cmd(cmd)
@@ -98,13 +193,20 @@ async def build_repo_map_via_env(
     ]
     if not paths:
         return ""
-    return f"{MAP_HEADER}\n\n" + truncate("\n".join(paths), max_chars)
+    truncated = len(paths) > max_entries or result.stdout_truncated
+    return _render_map(
+        paths[:max_entries],
+        max_chars=max_chars,
+        truncated=truncated,
+    )
 
 
 __all__ = [
     "MAP_HEADER",
     "MAX_MAP_CHARS",
     "MAX_MAP_DEPTH",
+    "MAX_MAP_DIRS",
+    "MAX_MAP_ENTRIES",
     "build_repo_map",
     "build_repo_map_via_env",
 ]

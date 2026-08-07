@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
+from opencollab.adapters import repo_map as repo_map_module
 from opencollab.adapters.env import ExecResult, LocalEnvironment
 from opencollab.adapters.repo_map import (
     MAP_HEADER,
@@ -88,6 +89,47 @@ def test_build_repo_map_caps_entries_per_dir(tmp_path):
     assert "... (10 more)" in result
 
 
+def test_build_repo_map_stops_scanning_when_global_budget_is_exhausted(
+    tmp_path,
+    monkeypatch,
+):
+    for index in range(500):
+        (tmp_path / f"entry-{index:04}.txt").write_text("")
+    real_scandir = repo_map_module.os.scandir
+    scanned = 0
+
+    class CountingScandir:
+        def __init__(self, path):
+            self._inner = real_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            self._inner.close()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal scanned
+            entry = next(self._inner)
+            scanned += 1
+            return entry
+
+    monkeypatch.setattr(repo_map_module.os, "scandir", CountingScandir)
+
+    result = build_repo_map(
+        str(tmp_path),
+        max_entries=5,
+        max_dirs=2,
+        max_scanned_entries=32,
+    )
+
+    assert scanned <= 32
+    assert "truncated" in result
+
+
 def test_build_repo_map_missing_or_empty_workspace_returns_empty(tmp_path):
     assert build_repo_map(str(tmp_path / "nope")) == ""
     empty = tmp_path / "empty"
@@ -121,6 +163,20 @@ def test_build_repo_map_via_env_formats_find_output():
     assert "README.md" in result
     assert "\n.\n" not in result
     assert "find . -mindepth 1 -maxdepth" in env.cmds[0]
+
+
+def test_build_repo_map_via_env_limits_enumeration_work() -> None:
+    env = _FakeEnv(
+        stdout="\n".join(f"./path-{index:03}" for index in range(20)) + "\n"
+    )
+
+    result = run(build_repo_map_via_env(env, max_entries=5))
+
+    assert "path-004" in result
+    assert "path-005" not in result
+    assert "truncated" in result
+    assert "| head -n 6" in env.cmds[0]
+    assert "| sort" not in env.cmds[0]
 
 
 def test_build_repo_map_via_env_failure_or_empty_returns_empty():
