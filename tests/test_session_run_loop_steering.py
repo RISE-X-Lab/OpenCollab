@@ -26,9 +26,10 @@ from opencollab.domain.tools import ToolProcessingResult
 
 
 class _ProviderRequestError(Exception):
-    def __init__(self, message: str, *, status_code: int):
+    def __init__(self, message: str, *, status_code: int, body=None):
         super().__init__(message)
         self.status_code = status_code
+        self.body = body
 
 
 class _RaisingFakeLLM(FakeLLM):
@@ -176,6 +177,75 @@ def test_unrelated_bad_request_does_not_retry_forced_choice():
         status_code=400,
     )
     llm = _RaisingFakeLLM([error, llm_response(content="should not retry")])
+    agent = _agent_with_tool_schemas("file_write")
+    agent.tool_choice = "required"
+    runner = build_runner(llm=llm, agent=agent)
+
+    with pytest.raises(_ProviderRequestError) as captured:
+        run(runner.run_loop())
+
+    assert captured.value is error
+    assert [call["tool_choice"] for call in llm.calls] == ["required"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "invalid model id; request={'tool_choice':'required'}",
+        "invalid tools schema; request included tool choice required",
+        "tool_choice echoed in request; invalid temperature",
+    ],
+)
+def test_request_echo_does_not_misclassify_tool_choice_rejection(message):
+    error = _ProviderRequestError(message, status_code=400)
+    llm = _RaisingFakeLLM([error, llm_response(content="must not retry")])
+    agent = _agent_with_tool_schemas("file_write")
+    agent.tool_choice = "required"
+    runner = build_runner(llm=llm, agent=agent)
+
+    with pytest.raises(_ProviderRequestError) as captured:
+        run(runner.run_loop())
+
+    assert captured.value is error
+    assert [call["tool_choice"] for call in llm.calls] == ["required"]
+
+
+def test_structured_tool_choice_path_takes_precedence_over_generic_text():
+    llm = _RaisingFakeLLM(
+        [
+            _ProviderRequestError(
+                "invalid request",
+                status_code=400,
+                body={
+                    "error": {
+                        "path": ["request", "tool_choice"],
+                        "code": "invalid_parameter",
+                    }
+                },
+            ),
+            llm_response(content="done"),
+        ]
+    )
+    agent = _agent_with_tool_schemas("file_write")
+    agent.tool_choice = "required"
+    runner = build_runner(llm=llm, agent=agent)
+
+    assert run(runner.run_loop()) == "done"
+    assert [call["tool_choice"] for call in llm.calls] == ["required", "auto"]
+
+
+def test_structured_unrelated_param_blocks_tool_choice_text_fallback():
+    error = _ProviderRequestError(
+        "tool_choice is not supported in request echo; invalid temperature",
+        status_code=400,
+        body={
+            "error": {
+                "param": "temperature",
+                "code": "invalid_parameter",
+            }
+        },
+    )
+    llm = _RaisingFakeLLM([error, llm_response(content="must not retry")])
     agent = _agent_with_tool_schemas("file_write")
     agent.tool_choice = "required"
     runner = build_runner(llm=llm, agent=agent)
