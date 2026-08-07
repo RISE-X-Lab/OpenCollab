@@ -219,6 +219,8 @@ def _candidate_env_paths(workspace: str | None = None) -> list[str]:
     """Return config file candidates in priority order."""
     explicit = os.environ.get("OPENCOLLAB_CONFIG_FILE")
     if explicit:
+        if not Path(explicit).exists():
+            raise ValueError(f"explicit config env path does not exist: {explicit}")
         return [explicit]
 
     bases: list[Path] = []
