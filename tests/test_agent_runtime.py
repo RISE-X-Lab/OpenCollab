@@ -222,6 +222,50 @@ async def test_agent_runtime_caller_cancellation_leaves_caller_environment_activ
     assert environment.abort_calls == 0
 
 
+async def test_agent_runtime_caller_cancellation_rejects_lingering_owner(monkeypatch) -> None:
+    class StubbornSession(Session):
+        def __init__(self):
+            super().__init__(outcome="block")
+            self.cancel_seen = asyncio.Event()
+            self.release = asyncio.Event()
+            self.finished = asyncio.Event()
+
+        async def run_loop(self) -> str:
+            self.started.set()
+            while not self.release.is_set():
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:
+                    self.cancel_seen.set()
+            self.finished.set()
+            return "late"
+
+    session = StubbornSession()
+    _patch_session(monkeypatch, session)
+    task = asyncio.create_task(
+        agent_runtime.run_agent(
+            agent=_agent(),
+            environment=Environment(),
+            prompt="run",
+            max_tokens=100,
+            max_steps=5,
+            timeout_seconds=None,
+            cleanup_timeout_seconds=0.01,
+            transcript_path=None,
+        )
+    )
+    await session.started.wait()
+    task.cancel()
+    try:
+        with pytest.raises(AgentRuntimeLifecycleError, match="cancelled agent"):
+            await task
+        assert session.cancel_seen.is_set()
+        assert not session.finished.is_set()
+    finally:
+        session.release.set()
+        await asyncio.wait_for(session.finished.wait(), timeout=0.2)
+
+
 async def test_agent_runtime_double_cancellation_finishes_abort_and_save(monkeypatch) -> None:
     session = Session(outcome="block")
     _patch_session(monkeypatch, session)
