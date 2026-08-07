@@ -8,6 +8,11 @@ import json
 import pytest
 
 from opencollab.adapters.worktree_pool import WorktreePool
+from opencollab.application._scheduler_constants import (
+    MAX_TEAMMATE_INBOX_BYTES,
+    MAX_TEAMMATE_INBOX_MESSAGES,
+    MAX_TEAMMATE_MESSAGE_BYTES,
+)
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
 from opencollab.domain.events import SchedulerEvent
@@ -485,6 +490,59 @@ def test_multiple_queued_messages_are_delivered_as_one_timestamped_user_turn():
         event for event in _scheduler_events(events) if event.type == "agent_message_delivered"
     ]
     assert len(delivered) == 2
+
+
+def test_busy_target_applies_count_backpressure_before_persisting_message():
+    teammate = FakeSession([], role="coder")
+    scheduler, _ = _build_scheduler(teammate)
+    teammate.state.set_phase(SessionPhase.AWAITING_EVENTS)
+    _register_child(scheduler, teammate)
+
+    async def scenario():
+        acknowledgements = [
+            await scheduler.send_message(0, 1, f"message-{index}", "small")
+            for index in range(MAX_TEAMMATE_INBOX_MESSAGES + 1)
+        ]
+        return acknowledgements
+
+    acknowledgements = run(scenario())
+
+    assert all("queued" in ack for ack in acknowledgements[:-1])
+    assert "backpressure" in acknowledgements[-1]
+    assert len(scheduler._message_inbox[1]) == MAX_TEAMMATE_INBOX_MESSAGES
+    assert len(teammate.state.pending_user_messages) == MAX_TEAMMATE_INBOX_MESSAGES
+
+
+def test_busy_target_applies_byte_backpressure_and_rejects_oversized_message():
+    teammate = FakeSession([], role="coder")
+    scheduler, _ = _build_scheduler(teammate)
+    teammate.state.set_phase(SessionPhase.AWAITING_EVENTS)
+    _register_child(scheduler, teammate)
+    large_body = "x" * (MAX_TEAMMATE_MESSAGE_BYTES - 256)
+
+    async def scenario():
+        responses = []
+        for index in range(MAX_TEAMMATE_INBOX_MESSAGES):
+            response = await scheduler.send_message(0, 1, f"large-{index}", large_body)
+            responses.append(response)
+            if "backpressure" in response:
+                break
+        oversized = await scheduler.send_message(
+            0,
+            1,
+            "oversized",
+            "x" * MAX_TEAMMATE_MESSAGE_BYTES,
+        )
+        return responses, oversized
+
+    responses, oversized = run(scenario())
+
+    assert "backpressure" in responses[-1]
+    assert "byte limit" in oversized
+    assert sum(len(message.xml.encode("utf-8")) for message in scheduler._message_inbox[1]) <= (
+        MAX_TEAMMATE_INBOX_BYTES
+    )
+    assert len(teammate.state.pending_user_messages) == len(scheduler._message_inbox[1])
 
 
 def test_send_message_to_self_is_rejected():
