@@ -8,7 +8,7 @@ pending-row / wake machinery.
 The context exposes a handful of primitives:
 
 * ``agent`` — run one one-shot session, return its final assistant text.
-* ``parallel`` — fan out thunks through a shared concurrency semaphore.
+* ``parallel`` — fan out thunks through a bounded task-worker pool.
 * ``pipeline`` — flow each item through ordered stages with no inter-stage
   barrier (item A may be in stage 2 while item B is still in stage 1).
 * ``phase`` / ``log`` — observability, no-ops when no sink/tracer is wired.
@@ -80,6 +80,18 @@ Thunk = Callable[[], Awaitable[Any]]
 
 # A pipeline stage receives (previous result, original item, item index).
 Stage = Callable[[Any, Any, int], Awaitable[Any]]
+
+
+def _positive_concurrency(value: object, name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be a positive integer")
+    try:
+        parsed = operator.index(value)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a positive integer") from exc
+    if parsed < 1:
+        raise ValueError(f"{name} must be a positive integer")
+    return parsed
 
 
 class WorkflowBudgetExceeded(Exception):
@@ -156,12 +168,35 @@ class _ConcurrencyPermit:
     pending_cleanup_tasks: list[asyncio.Task[Any]]
 
 
+@dataclass
+class _TaskPermitState:
+    """Shared state for one context-wide task-concurrency slot."""
+
+    borrowers: int
+    borrowers_done: asyncio.Event
+
+
+@dataclass
+class _TaskConcurrencyPermit:
+    """A task slot view that may be re-entered or serially borrowed by children."""
+
+    owner: asyncio.Task[Any] | None
+    state: _TaskPermitState
+    child_lock: asyncio.Lock
+    closed: bool = False
+
+
 class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
     """Primitives a workflow function uses to orchestrate agent sessions.
 
     One of two Strategies driving ``session.run_loop()``: this deterministic,
     code-driven regime and the event-driven, LLM-supervised ``Scheduler`` are
     interchangeable over the identical Session process primitive.
+
+    ``max_concurrency`` limits active agent sessions only. ``task_concurrency``
+    limits active ``parallel`` and ``pipeline`` units across this context and
+    inherits ``max_concurrency`` when omitted. The limits are independent, so
+    mixed work may have up to their sum active at once.
     """
 
     def __init__(
@@ -171,25 +206,31 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         event_sink: EventPublisherPort | None = None,
         tracer: TracePort | None = None,
         max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+        task_concurrency: int | None = None,
         budget_total: int | None = None,
         tree_probe: WorkingTreeProbe | None = None,
         deadline_monotonic: float | None = None,
         deadline_margin_seconds: float = DEFAULT_DEADLINE_MARGIN_SECONDS,
         workspace_root: str | None = None,
     ) -> None:
-        if isinstance(max_concurrency, bool):
-            raise ValueError("max_concurrency must be a positive integer")
-        try:
-            max_concurrency = operator.index(max_concurrency)
-        except TypeError as exc:
-            raise ValueError("max_concurrency must be a positive integer") from exc
-        if max_concurrency < 1:
-            raise ValueError("max_concurrency must be a positive integer")
+        max_concurrency = _positive_concurrency(
+            max_concurrency,
+            "max_concurrency",
+        )
+        if task_concurrency is None:
+            task_concurrency = max_concurrency
+        else:
+            task_concurrency = _positive_concurrency(
+                task_concurrency,
+                "task_concurrency",
+            )
         self._factory = factory
         self._event_sink = event_sink
         self._tracer = tracer
         self._max_concurrency = max_concurrency
+        self._task_concurrency = task_concurrency
         self._semaphore = asyncio.Semaphore(max_concurrency)
+        self._task_semaphore = asyncio.Semaphore(task_concurrency)
         self._sessions: list[Any] = []
         self.budget = WorkflowBudget(budget_total, self._sessions)
         self._budget_lock = asyncio.Lock()
@@ -203,6 +244,9 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         self._active_concurrency_permit: contextvars.ContextVar[
             _ConcurrencyPermit | None
         ] = contextvars.ContextVar("workflow_concurrency_permit", default=None)
+        self._active_task_concurrency_permit: contextvars.ContextVar[
+            _TaskConcurrencyPermit | None
+        ] = contextvars.ContextVar("workflow_task_concurrency_permit", default=None)
         self._pending_cleanup_tasks: set[asyncio.Task[Any]] = set()
         self._active_call_tasks: set[asyncio.Task[Any]] = set()
         self._active_session_tasks: set[asyncio.Task[Any]] = set()
@@ -622,6 +666,77 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
             if not handed_to_cleanup:
                 self._semaphore.release()
 
+    async def _release_task_slot_after_borrowers(
+        self,
+        state: _TaskPermitState,
+    ) -> None:
+        await state.borrowers_done.wait()
+        self._task_semaphore.release()
+
+    async def _run_with_task_concurrency_permit(
+        self,
+        operation: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Run one collection unit under a context-wide, task-reentrant slot."""
+        current = asyncio.current_task()
+        active = self._active_task_concurrency_permit.get()
+        if active is not None and not active.closed:
+            if active.owner is current:
+                return await operation()
+
+            # ContextVars are copied into child Tasks. Let one child at a time
+            # borrow the parent's live slot, which keeps nested gather()
+            # compositions deadlock-free at task_concurrency=1 without
+            # multiplying the effective limit. Each borrower gets its own view
+            # so direct nesting remains task-owner reentrant.
+            async with active.child_lock:
+                if not active.closed:
+                    state = active.state
+                    state.borrowers += 1
+                    state.borrowers_done.clear()
+                    borrowed = _TaskConcurrencyPermit(
+                        owner=current,
+                        state=state,
+                        child_lock=asyncio.Lock(),
+                    )
+                    token = self._active_task_concurrency_permit.set(borrowed)
+                    try:
+                        return await operation()
+                    finally:
+                        borrowed.closed = True
+                        self._active_task_concurrency_permit.reset(token)
+                        state.borrowers -= 1
+                        if state.borrowers == 0:
+                            state.borrowers_done.set()
+
+        await self._task_semaphore.acquire()
+        borrowers_done = asyncio.Event()
+        borrowers_done.set()
+        state = _TaskPermitState(
+            borrowers=0,
+            borrowers_done=borrowers_done,
+        )
+        permit = _TaskConcurrencyPermit(
+            owner=current,
+            state=state,
+            child_lock=asyncio.Lock(),
+        )
+        token = self._active_task_concurrency_permit.set(permit)
+        try:
+            return await operation()
+        finally:
+            # Close before releasing so a child Task that inherited this view
+            # cannot reuse it after the owning unit has finished.
+            permit.closed = True
+            self._active_task_concurrency_permit.reset(token)
+            if state.borrowers:
+                release_task = asyncio.create_task(
+                    self._release_task_slot_after_borrowers(state)
+                )
+                self._track_pending_cleanup(release_task)
+            else:
+                self._task_semaphore.release()
+
     def _track_pending_cleanup(self, task: asyncio.Task[Any]) -> None:
         """Own a background cleanup task and always consume its final result."""
         if task.done():
@@ -859,7 +974,7 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         size: int,
         run_unit: Callable[[int], Awaitable[Any]],
     ) -> list[Any]:
-        """Run indexed units with O(max_concurrency) live asyncio tasks."""
+        """Run indexed units with O(task_concurrency) live asyncio tasks."""
         if size == 0:
             return []
 
@@ -880,7 +995,9 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
                 # consume an agent-session semaphore slot here: a thunk may
                 # create child Tasks with asyncio.gather(), and those children
                 # must acquire the shared session slots themselves.
-                results[index] = await run_unit(index)
+                results[index] = await self._run_with_task_concurrency_permit(
+                    lambda: run_unit(index)
+                )
             except asyncio.CancelledError:
                 raise
             except BaseException as exc:  # preserve terminal workflow signals
@@ -897,10 +1014,14 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
                     return
                 await execute(index)
 
-        active = self._active_concurrency_permit.get()
-        if active is not None and active.owner is asyncio.current_task():
-            # A nested collection already owns the only slot it may need. Run
-            # inline to preserve reentrancy even when max_concurrency is one.
+        active = self._active_task_concurrency_permit.get()
+        if (
+            active is not None
+            and not active.closed
+            and active.owner is asyncio.current_task()
+        ):
+            # A direct nested collection can reuse its owning unit's slot. Run
+            # inline so task_concurrency=1 cannot deadlock on child workers.
             while not terminal:
                 try:
                     index = next(next_index)
@@ -910,7 +1031,7 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         else:
             workers = [
                 asyncio.create_task(worker())
-                for _ in range(min(size, self._max_concurrency))
+                for _ in range(min(size, self._task_concurrency))
             ]
             await asyncio.gather(*workers)
 
@@ -923,7 +1044,7 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         return results
 
     async def parallel(self, thunks: Sequence[Thunk]) -> list[Any]:
-        """Run thunks concurrently behind the shared semaphore.
+        """Run thunks concurrently behind the task-worker limit.
 
         A thunk that raises yields ``None`` in its slot, except a budget stop
         which is re-raised after every started slot has settled. Result order
@@ -956,8 +1077,9 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         There is NO barrier between stages: item A may be in stage 2 while item
         B is still in stage 1. A stage raising drops that item's result to
         ``None`` and skips its remaining stages; other items are unaffected.
-        Result order matches input order. A budget stop is re-raised only after
-        every started item has settled.
+        At most ``task_concurrency`` items run at once. Result order matches
+        input order. A budget stop is re-raised only after every started item
+        has settled.
         """
 
         async def flow(item: Any, idx: int) -> Any:

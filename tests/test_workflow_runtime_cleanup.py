@@ -185,6 +185,7 @@ async def test_run_workflow_quiesces_late_session_before_manifest_and_tracer_clo
             OneSessionFactory(session),
             tracer=kwargs["tracer"],
             max_concurrency=kwargs["max_concurrency"],
+            task_concurrency=kwargs["task_concurrency"],
             budget_total=kwargs["budget"],
         )
 
@@ -554,6 +555,7 @@ async def test_run_workflow_waits_for_orphaned_background_agent(monkeypatch):
         return WorkflowContext(
             Factory(),
             max_concurrency=kwargs["max_concurrency"],
+            task_concurrency=kwargs["task_concurrency"],
             budget_total=kwargs["budget"],
         )
 
@@ -649,6 +651,7 @@ async def test_owned_tracer_closes_when_cleanup_fails(
             Factory(session),
             tracer=kwargs["tracer"],
             max_concurrency=kwargs["max_concurrency"],
+            task_concurrency=kwargs["task_concurrency"],
             budget_total=kwargs["budget"],
         )
         holder["context"] = context

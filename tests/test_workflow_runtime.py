@@ -184,6 +184,28 @@ async def test_run_workflow_invokes_fn_with_context_and_args(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_workflow_threads_independent_concurrency_caps(monkeypatch):
+    _patch_build_session(monkeypatch)
+    seen: dict[str, int] = {}
+
+    async def fn(ctx, _args):
+        seen["agent"] = ctx._max_concurrency
+        seen["task"] = ctx._task_concurrency
+        return "ok"
+
+    result = await workflow_runtime.run_workflow(
+        fn,
+        {},
+        cfg=_cfg(),
+        max_concurrency=2,
+        task_concurrency=5,
+    )
+
+    assert result == "ok"
+    assert seen == {"agent": 2, "task": 5}
+
+
+@pytest.mark.asyncio
 async def test_run_workflow_aggregates_session_metrics(monkeypatch):
     from workflow_runtime_test_support import _FakeSession
 
