@@ -9,6 +9,7 @@ import pytest
 
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application._scheduler_constants import (
+    MAX_TEAMMATE_DELIVERY_BYTES,
     MAX_TEAMMATE_INBOX_BYTES,
     MAX_TEAMMATE_INBOX_MESSAGES,
     MAX_TEAMMATE_MESSAGE_BYTES,
@@ -543,6 +544,35 @@ def test_busy_target_applies_byte_backpressure_and_rejects_oversized_message():
         MAX_TEAMMATE_INBOX_BYTES
     )
     assert len(teammate.state.pending_user_messages) == len(scheduler._message_inbox[1])
+
+
+def test_message_inbox_drains_fifo_batches_under_delivery_byte_limit():
+    teammate = FakeSession(["first batch", "second batch"], role="coder")
+    scheduler, _ = _build_scheduler(teammate)
+    teammate.state.set_phase(SessionPhase.AWAITING_EVENTS)
+    _register_child(scheduler, teammate)
+    body = "x" * (MAX_TEAMMATE_DELIVERY_BYTES // 2 - 1024)
+
+    async def scenario():
+        for summary in ("first", "second", "third"):
+            assert "queued" in await scheduler.send_message(0, 1, summary, body)
+        teammate.state.set_phase(SessionPhase.DONE)
+        await scheduler._drain_message_inbox(1)
+        seen: set[asyncio.Task] = set()
+        while (task := scheduler._tasks.get(1)) is not None and task not in seen:
+            seen.add(task)
+            await task
+
+    run(scenario())
+
+    assert len(teammate.added) == 2
+    assert all(len(delivery.encode("utf-8")) <= MAX_TEAMMATE_DELIVERY_BYTES for delivery in teammate.added)
+    assert "summary=\"first\"" in teammate.added[0]
+    assert "summary=\"second\"" in teammate.added[0]
+    assert "summary=\"third\"" not in teammate.added[0]
+    assert "summary=\"third\"" in teammate.added[1]
+    assert teammate.state.pending_user_messages == []
+    assert scheduler._message_inbox.get(1) == []
 
 
 def test_send_message_to_self_is_rejected():
