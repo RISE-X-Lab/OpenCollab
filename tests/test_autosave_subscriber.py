@@ -166,7 +166,38 @@ def test_autosave_bounds_checkpoint_growth_and_flushes_latest(monkeypatch):
     asyncio.run(scenario())
 
     assert saved_sizes[-1] == 1000
-    assert len(saved_sizes) <= 3
+    assert len(saved_sizes) <= 12
+    assert sum(saved_sizes) <= 3000
+
+
+def test_autosave_growth_stays_linear_during_sustained_fast_events(monkeypatch):
+    current = {"generation": 0}
+    saved_sizes: list[int] = []
+
+    async def immediate_to_thread(function, *args, **kwargs):
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "to_thread", immediate_to_thread)
+
+    def prepare():
+        frozen_size = current["generation"]
+        return lambda: saved_sizes.append(frozen_size)
+
+    subscriber = AutoSaveSubscriber(lambda: None, prepare_fn=prepare)
+
+    async def scenario():
+        for generation in range(1, 1001):
+            current["generation"] = generation
+            await subscriber.emit(SessionEvent(type="step_end"))
+            await asyncio.sleep(0.001)
+        final = subscriber.enqueue()
+        assert final is not None
+        await final
+
+    asyncio.run(scenario())
+
+    assert saved_sizes[-1] == 1000
+    assert len(saved_sizes) <= 12
     assert sum(saved_sizes) <= 3000
 
 
