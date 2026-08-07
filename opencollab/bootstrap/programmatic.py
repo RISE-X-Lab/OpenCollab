@@ -476,6 +476,7 @@ async def run_workflow(
                 max_steps=max_steps,
                 system_prompt=system_prompt or WORKFLOW_AGENT_PROMPT,
                 return_details=True,
+                cleanup_environment=owned_environment,
             )
         except WorkflowDeadlineExceeded as exc:
             bootstrap_stopped_environment = True

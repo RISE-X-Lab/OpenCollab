@@ -87,6 +87,7 @@ async def run_workflow(
     deadline_monotonic: float | None = None,
     deadline_margin_seconds: float = 120.0,
     return_details: bool = False,
+    cleanup_environment: bool = True,
 ) -> Any:
     """Run one workflow and return only after cleanup and evidence persistence."""
     cleanup_timeout = _positive_cleanup_timeout(cleanup_timeout)
@@ -121,6 +122,7 @@ async def run_workflow(
             deadline_monotonic=deadline_monotonic,
             deadline_margin_seconds=deadline_margin_seconds,
         )
+        ctx._cleanup_environment = cleanup_environment
     except BaseException as exc:
         close_failure = _close_tracer_capture(tracer) if owns_tracer else None
         _note_failure(exc, "owned workflow tracer close also failed", close_failure)
