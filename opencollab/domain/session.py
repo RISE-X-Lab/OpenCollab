@@ -164,6 +164,9 @@ class _UserTurnCheckpoint:
     pending_external_user_turn: dict[str, Any] | None
     # The per-turn enforcement window, snapshotted and rolled back as one unit.
     turn: TurnEnforcementState
+    wind_down_done: bool
+    wind_down_attempts: int
+    wind_down_token_mark: int
 
 
 @dataclass
@@ -188,14 +191,14 @@ class SessionState:
     # ``reset_for_user_turn`` as one unit, which is why it lives in its own record
     # rather than smeared flat here.
     turn: TurnEnforcementState = field(default_factory=TurnEnforcementState)
-    # === enforcement: session-lifetime latches (NOT reset per user turn) ===
+    # === enforcement: durable current-turn latches ===
     # ``wind_down_done`` flips True the first time the enforcement precheck forces
     # a scout into its single protected submit turn — the latch that grants
     # EXACTLY ONE more CALLING_LLM and then routes to a terminal.
     # ``wind_down_token_mark`` records ``used_tokens`` at the trip so the
     # commitment-terminus metric can report ``submit_turn_cost``. Both are inert
     # unless ``enforcement_strength`` is on, so a self-regulating run never touches
-    # them. Unlike the per-turn window they survive a user-turn boundary.
+    # them. They survive persistence within a turn but reset for a new user turn.
     wind_down_done: bool = False
     # Counts protected provider calls allocated by the wind-down gate. It is
     # durable so a restore cannot re-grant the one compatibility retry.
@@ -405,6 +408,9 @@ class SessionState:
             pending_external_user_turn=copy.deepcopy(self.pending_external_user_turn),
             # Deep-copy the whole per-turn window as one pristine, reusable unit.
             turn=copy.deepcopy(self.turn),
+            wind_down_done=self.wind_down_done,
+            wind_down_attempts=self.wind_down_attempts,
+            wind_down_token_mark=self.wind_down_token_mark,
         )
 
     def restore_user_turn(self, checkpoint: _UserTurnCheckpoint) -> None:
@@ -418,6 +424,9 @@ class SessionState:
         )
         # A fresh copy each restore, so the checkpoint stays reusable.
         self.turn = copy.deepcopy(checkpoint.turn)
+        self.wind_down_done = checkpoint.wind_down_done
+        self.wind_down_attempts = checkpoint.wind_down_attempts
+        self.wind_down_token_mark = checkpoint.wind_down_token_mark
 
     def reset_for_user_turn(self) -> None:
         """Prepare an existing session to accept a new user turn.
@@ -427,11 +436,13 @@ class SessionState:
         intentionally preserved — both ``max_steps`` and ``max_budget_tokens``
         are session-lifetime caps, so a long-lived interactive/messaged session
         keeps accumulating across turns rather than getting a fresh allowance.
-        The session-lifetime latches (``wind_down_done`` / ``wind_down_token_mark``)
-        are likewise preserved.
+        Durable wind-down latches are current-turn state and reset here.
         """
         self.resume_to_idle()
         self.turn = TurnEnforcementState()
+        self.wind_down_done = False
+        self.wind_down_attempts = 0
+        self.wind_down_token_mark = 0
 
     def record_evidence_signal(
         self,

@@ -282,6 +282,7 @@ class Session:
         async with self._turn_lock:
             self.state.append_queued_external_user_turn(content)
             self.state.reset_for_user_turn()
+            self.runner.reset_runtime_for_user_turn()
             await self.event_bus.emit(SessionEvent(type="user_message_appended"))
 
     def apply_launch(self, launch: "LaunchSpec") -> None:
