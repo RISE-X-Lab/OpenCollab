@@ -23,8 +23,42 @@ from opencollab.adapters.safe_files import (
     write_locked_text,
 )
 
+_TRACE_RECOVERY_TAIL_BYTES = 1024 * 1024
 _TRACE_QUEUE_MAX_RECORDS = 1024
 _CLOSE_WRITER = object()
+
+
+def _recover_trace_tail(path: str) -> tuple[int, bool]:
+    """Return the largest recent step and whether append needs a line boundary."""
+    fd = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        size = os.fstat(fd).st_size
+        if size == 0:
+            return 0, False
+        start = max(0, size - _TRACE_RECOVERY_TAIL_BYTES)
+        os.lseek(fd, start, os.SEEK_SET)
+        tail = os.read(fd, size - start)
+    finally:
+        os.close(fd)
+
+    lines = tail.splitlines()
+    if start and lines:
+        lines = lines[1:]
+    latest_step = 0
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        step = record.get("step") if isinstance(record, dict) else None
+        if isinstance(step, int) and not isinstance(step, bool) and step > latest_step:
+            latest_step = step
+    return latest_step, not tail.endswith(b"\n")
 
 
 @dataclass(slots=True)
@@ -143,7 +177,9 @@ class Tracer:
         self._path = os.path.join(output_dir, trace_filename)
         ensure_directory_no_symlinks(output_dir)
         self._file = open_regular_text_append(self._path)
-        self._step_counter = 0
+        self._step_counter, needs_line_boundary = _recover_trace_tail(self._path)
+        if needs_line_boundary:
+            write_locked_text(self._file, "\n")
         self._state = _TraceWriterState(self._file)
         self._state_lock = self._state.lock
         self._lifecycle_lock = threading.Lock()
