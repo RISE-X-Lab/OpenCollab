@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -9,6 +10,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any
 
 from opencollab.adapters.safe_files import append_regular_text, ensure_directory_no_symlinks
+from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.ports import EventPublisherPort
 
 
@@ -20,6 +22,7 @@ class JsonlEventSink(EventPublisherPort):
         self._write_error: str | None = None
         self._initialization_error: str | None = None
         self._dropped_events = 0
+        self._write_lock = asyncio.Lock()
         parent = os.path.dirname(path)
         if parent:
             try:
@@ -42,10 +45,12 @@ class JsonlEventSink(EventPublisherPort):
                     "data": getattr(event, "data", {}),
                 }
             payload.setdefault("timestamp", time.time())
-            append_regular_text(
-                self._path,
-                json.dumps(payload, ensure_ascii=False, default=str) + "\n",
-            )
+            line = json.dumps(payload, ensure_ascii=False, default=str) + "\n"
+            async with self._write_lock:
+                await await_owned_operation(
+                    asyncio.to_thread(append_regular_text, self._path, line),
+                    propagate_cancellation=True,
+                )
         except Exception as exc:
             if self._write_error is None:
                 self._write_error = f"{type(exc).__name__}: {exc}"

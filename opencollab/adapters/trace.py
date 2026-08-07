@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import json
 import os
+import queue
+import threading
 import time
 import unicodedata
+from dataclasses import dataclass, field
 from typing import Any
 
 from opencollab.adapters.safe_files import (
@@ -19,6 +22,78 @@ from opencollab.adapters.safe_files import (
     open_regular_text_append,
     write_locked_text,
 )
+
+_TRACE_QUEUE_MAX_RECORDS = 1024
+_CLOSE_WRITER = object()
+
+
+@dataclass(slots=True)
+class _FlushRequest:
+    done: threading.Event = field(default_factory=threading.Event)
+
+
+@dataclass(slots=True)
+class _TraceWriterState:
+    handle: Any
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    write_error: str | None = None
+    dropped_steps: int = 0
+    close_error: BaseException | None = None
+
+
+def _latch_write_error(
+    state: _TraceWriterState,
+    exc: BaseException,
+    *,
+    dropped: int = 0,
+) -> None:
+    with state.lock:
+        if state.write_error is None:
+            state.write_error = f"{type(exc).__name__}: {exc}"
+        state.dropped_steps += dropped
+
+
+def _trace_writer_loop(
+    records: queue.Queue[object],
+    state: _TraceWriterState,
+) -> None:
+    while True:
+        item = records.get()
+        try:
+            if item is _CLOSE_WRITER:
+                try:
+                    if not state.handle.closed:
+                        state.handle.close()
+                except BaseException as exc:
+                    state.close_error = exc
+                    _latch_write_error(state, exc)
+                return
+            if isinstance(item, _FlushRequest):
+                try:
+                    if not state.handle.closed:
+                        state.handle.flush()
+                except BaseException as exc:
+                    _latch_write_error(state, exc)
+                finally:
+                    item.done.set()
+                continue
+            assert isinstance(item, str)
+            with state.lock:
+                failed = state.write_error is not None
+                if failed:
+                    state.dropped_steps += 1
+            if failed:
+                continue
+            try:
+                write_locked_text(state.handle, item)
+            except BaseException as exc:
+                _latch_write_error(state, exc, dropped=1)
+                try:
+                    state.handle.close()
+                except BaseException:
+                    pass
+        finally:
+            records.task_done()
 
 
 class Tracer:
@@ -69,8 +144,20 @@ class Tracer:
         ensure_directory_no_symlinks(output_dir)
         self._file = open_regular_text_append(self._path)
         self._step_counter = 0
-        self._write_error: str | None = None
-        self._dropped_steps = 0
+        self._state = _TraceWriterState(self._file)
+        self._state_lock = self._state.lock
+        self._lifecycle_lock = threading.Lock()
+        self._records: queue.Queue[object] = queue.Queue(
+            maxsize=_TRACE_QUEUE_MAX_RECORDS
+        )
+        self._closed = False
+        self._writer = threading.Thread(
+            target=_trace_writer_loop,
+            args=(self._records, self._state),
+            name=f"opencollab-tracer-{run_id}",
+            daemon=True,
+        )
+        self._writer.start()
 
     def log_step(
         self,
@@ -80,18 +167,17 @@ class Tracer:
         latency: float = 0.0,
     ) -> None:
         """Record a single step. step_type: llm_call | tool_exec | delegate | compaction | error."""
-        self._step_counter += 1
+        with self._state_lock:
+            self._step_counter += 1
+            step = self._step_counter
         record = {
             "timestamp": time.time(),
-            "step": self._step_counter,
+            "step": step,
             "run_id": self.run_id,
             "type": step_type,
             "payload": payload,
             "metrics": {"tokens": tokens, "latency_s": round(latency, 4)},
         }
-        if self._write_error is not None:
-            self._dropped_steps += 1
-            return
         try:
             line = json.dumps(record, ensure_ascii=False, default=str) + "\n"
         except Exception as exc:
@@ -100,29 +186,40 @@ class Tracer:
                 "payload_type": type(payload).__name__,
             }
             line = json.dumps(record, ensure_ascii=False) + "\n"
-        try:
-            write_locked_text(self._file, line)
-        except Exception as exc:
-            self._write_error = f"{type(exc).__name__}: {exc}"
-            self._dropped_steps += 1
+        with self._state_lock:
+            if self._closed or self._state.write_error is not None:
+                self._state.dropped_steps += 1
+                return
             try:
-                self._file.close()
-            except Exception:
-                pass
+                self._records.put_nowait(line)
+            except queue.Full:
+                self._state.write_error = "BufferError: trajectory queue is full"
+                self._state.dropped_steps += 1
 
     def flush(self) -> None:
         """Force flush to disk."""
-        f = getattr(self, "_file", None)
-        if f and not f.closed:
-            try:
-                f.flush()
-            except Exception as exc:
-                self._write_error = f"{type(exc).__name__}: {exc}"
+        with self._lifecycle_lock:
+            self._records.join()
+            with self._state_lock:
+                if self._closed:
+                    return
+            request = _FlushRequest()
+            self._records.put(request)
+            request.done.wait()
 
     def close(self) -> None:
-        f = getattr(self, "_file", None)
-        if f and not f.closed:
-            f.close()
+        with self._lifecycle_lock:
+            with self._state_lock:
+                if self._closed:
+                    error = self._state.close_error
+                    if error is not None:
+                        raise error
+                    return
+                self._closed = True
+            self._records.put(_CLOSE_WRITER)
+            self._writer.join()
+            if self._state.close_error is not None:
+                raise self._state.close_error
 
     @property
     def path(self) -> str:
@@ -130,11 +227,13 @@ class Tracer:
 
     @property
     def write_error(self) -> str | None:
-        return self._write_error
+        with self._state_lock:
+            return self._state.write_error
 
     @property
     def dropped_steps(self) -> int:
-        return self._dropped_steps
+        with self._state_lock:
+            return self._state.dropped_steps
 
     def __del__(self):
         try:
