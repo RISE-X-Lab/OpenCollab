@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import shlex
 import shutil
 import tempfile
 import uuid
@@ -38,6 +39,8 @@ class WorktreeEnvironment(Environment):
         if not _BRANCH_RE.fullmatch(self._branch):
             raise ValueError("worktree branch name must be one safe Git ref component")
         self._worktree_dir: str | None = None
+        self._copy_baseline_dir: str | None = None
+        self._copy_exported_diff: str | None = None
         self._local_env: LocalEnvironment | None = None
         self._base_commit: str | None = None
         self._git_mode = False
@@ -144,7 +147,14 @@ class WorktreeEnvironment(Environment):
         self._worktree_registered = True
 
     def _setup_directory_copy(self) -> None:
+        self._copy_baseline_dir = tempfile.mkdtemp(prefix="opencollab-cp-baseline-")
         self._worktree_dir = tempfile.mkdtemp(prefix="opencollab-cp-")
+        shutil.copytree(
+            self._source,
+            self._copy_baseline_dir,
+            dirs_exist_ok=True,
+            symlinks=True,
+        )
         shutil.copytree(
             self._source,
             self._worktree_dir,
@@ -168,8 +178,12 @@ class WorktreeEnvironment(Environment):
 
     async def get_diff(self) -> str:
         self._ensure_active()
-        if self._local_env is None or not self._git_mode:
+        if self._local_env is None:
             return ""
+        if not self._git_mode:
+            diff = await self._directory_copy_diff()
+            self._copy_exported_diff = diff
+            return diff
         if self._base_commit is None:
             raise RuntimeError("worktree base commit is unavailable")
         result = await self._local_env.exec_cmd(
@@ -181,6 +195,38 @@ class WorktreeEnvironment(Environment):
             detail = result.stderr.strip() or f"git exited with status {result.returncode}"
             raise RuntimeError(f"worktree diff extraction failed: {detail}")
         return result.stdout
+
+    async def _directory_copy_diff(self) -> str:
+        if self._copy_baseline_dir is None or self._worktree_dir is None:
+            raise RuntimeError("non-Git worktree baseline is unavailable")
+        command = (
+            "git diff --no-index --binary --no-ext-diff -- "
+            f"{shlex.quote(self._copy_baseline_dir)} {shlex.quote(self._worktree_dir)}"
+        )
+        assert self._local_env is not None
+        result = await self._local_env.exec_cmd(command)
+        if result.stdout_truncated or result.stderr_truncated:
+            raise RuntimeError("non-Git worktree diff exceeded capture limit")
+        if result.returncode not in (0, 1):
+            detail = result.stderr.strip() or f"git exited with status {result.returncode}"
+            raise RuntimeError(f"non-Git worktree diff extraction failed: {detail}")
+        return (
+            result.stdout
+            .replace(f"a{self._copy_baseline_dir}/", "a/")
+            .replace(f"a{self._worktree_dir}/", "a/")
+            .replace(f"b{self._copy_baseline_dir}/", "b/")
+            .replace(f"b{self._worktree_dir}/", "b/")
+        )
+
+    async def _ensure_directory_copy_changes_exported(self) -> None:
+        if self._git_mode or self._copy_baseline_dir is None or self._worktree_dir is None:
+            return
+        current = await self._directory_copy_diff()
+        if current != (self._copy_exported_diff or ""):
+            raise RuntimeError(
+                "refusing to clean unexported non-Git worktree changes; "
+                "call get_diff() and deliver its artifact first"
+            )
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         self._ensure_active()
@@ -244,6 +290,15 @@ class WorktreeEnvironment(Environment):
                 failures.append(exc)
             else:
                 self._worktree_dir = None
+        if self._worktree_dir is None and self._copy_baseline_dir is not None:
+            try:
+                shutil.rmtree(self._copy_baseline_dir)
+            except FileNotFoundError:
+                self._copy_baseline_dir = None
+            except BaseException as exc:
+                failures.append(exc)
+            else:
+                self._copy_baseline_dir = None
         if self._git_mode and self._branch_owned and self._worktree_dir is None:
             expected_oid = self._owned_branch_oid
             if expected_oid is None:
@@ -268,6 +323,7 @@ class WorktreeEnvironment(Environment):
             raise RuntimeError("worktree cleanup failed") from failures[0]
 
     async def cleanup(self) -> None:
+        await self._ensure_directory_copy_changes_exported()
         self.revoke()
         await await_owned_operation(
             self._cleanup_resources(),
