@@ -8,6 +8,9 @@ Ref: tracer design with fine-grained steps for debugging agent failures.
 
 from __future__ import annotations
 
+import errno
+import fcntl
+import hashlib
 import json
 import os
 import queue
@@ -28,6 +31,29 @@ _TRACE_QUEUE_MAX_RECORDS = 1024
 _CLOSE_WRITER = object()
 
 
+def _acquire_trace_lease(output_dir: str, trace_filename: str) -> Any:
+    digest = hashlib.sha256(trace_filename.encode("utf-8")).hexdigest()
+    lease_path = os.path.join(output_dir, f".trace-{digest}.lock")
+    handle = open_regular_text_append(lease_path)
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as exc:
+        handle.close()
+        if exc.errno in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
+            raise RuntimeError(
+                f"trace {trace_filename!r} already has an active writer"
+            ) from exc
+        raise
+    return handle
+
+
+def _release_trace_lease(handle: Any) -> None:
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
+
+
 def _recover_trace_tail(path: str) -> tuple[int, bool]:
     """Return the largest recent step and whether append needs a line boundary."""
     fd = os.open(
@@ -41,15 +67,20 @@ def _recover_trace_tail(path: str) -> tuple[int, bool]:
         if size == 0:
             return 0, False
         start = max(0, size - _TRACE_RECOVERY_TAIL_BYTES)
+        starts_at_boundary = True
+        if start:
+            os.lseek(fd, start - 1, os.SEEK_SET)
+            starts_at_boundary = os.read(fd, 1) == b"\n"
         os.lseek(fd, start, os.SEEK_SET)
         tail = os.read(fd, size - start)
     finally:
         os.close(fd)
 
     lines = tail.splitlines()
-    if start and lines:
+    if start and not starts_at_boundary and lines:
         lines = lines[1:]
     latest_step = 0
+    found_step = False
     for line in lines:
         try:
             record = json.loads(line)
@@ -58,6 +89,11 @@ def _recover_trace_tail(path: str) -> tuple[int, bool]:
         step = record.get("step") if isinstance(record, dict) else None
         if isinstance(step, int) and not isinstance(step, bool) and step > latest_step:
             latest_step = step
+            found_step = True
+    if not found_step:
+        raise OSError(
+            "cannot safely recover trace step from the bounded file tail"
+        )
     return latest_step, not tail.endswith(b"\n")
 
 
@@ -176,10 +212,18 @@ class Tracer:
             raise ValueError("trace filename must be one safe path component")
         self._path = os.path.join(output_dir, trace_filename)
         ensure_directory_no_symlinks(output_dir)
-        self._file = open_regular_text_append(self._path)
-        self._step_counter, needs_line_boundary = _recover_trace_tail(self._path)
-        if needs_line_boundary:
-            write_locked_text(self._file, "\n")
+        self._lease = _acquire_trace_lease(output_dir, trace_filename)
+        try:
+            self._file = open_regular_text_append(self._path)
+            self._step_counter, needs_line_boundary = _recover_trace_tail(self._path)
+            if needs_line_boundary:
+                write_locked_text(self._file, "\n")
+        except BaseException:
+            file_handle = getattr(self, "_file", None)
+            if file_handle is not None:
+                file_handle.close()
+            _release_trace_lease(self._lease)
+            raise
         self._state = _TraceWriterState(self._file)
         self._state_lock = self._state.lock
         self._lifecycle_lock = threading.Lock()
@@ -254,8 +298,15 @@ class Tracer:
                 self._closed = True
             self._records.put(_CLOSE_WRITER)
             self._writer.join()
-            if self._state.close_error is not None:
-                raise self._state.close_error
+            error = self._state.close_error
+            try:
+                _release_trace_lease(self._lease)
+            except BaseException as exc:
+                if error is None:
+                    error = exc
+                    self._state.close_error = exc
+            if error is not None:
+                raise error
 
     @property
     def path(self) -> str:

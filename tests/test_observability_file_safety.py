@@ -81,6 +81,34 @@ def test_tracer_reopen_continues_step_sequence(tmp_path) -> None:
     assert [row["step"] for row in rows] == [1, 2, 3]
 
 
+def test_tracer_rejects_overlapping_writer_for_the_same_file(tmp_path) -> None:
+    active = Tracer("run", output_dir=str(tmp_path))
+    try:
+        with pytest.raises(RuntimeError, match="already has an active writer"):
+            Tracer("run", output_dir=str(tmp_path))
+    finally:
+        active.close()
+
+    resumed = Tracer("run", output_dir=str(tmp_path))
+    resumed.log_step("after-release", {})
+    resumed.close()
+    row = json.loads((tmp_path / "run.jsonl").read_text(encoding="utf-8"))
+    assert row["step"] == 1
+
+
+def test_tracer_refuses_to_restart_when_bounded_tail_has_no_complete_step(
+    tmp_path,
+) -> None:
+    path = tmp_path / "run.jsonl"
+    oversized_record = json.dumps(
+        {"step": 7, "payload": "x" * (1024 * 1024 + 100)}
+    )
+    path.write_text(f"{oversized_record}\n", encoding="utf-8")
+
+    with pytest.raises(OSError, match="cannot safely recover trace step"):
+        Tracer("run", output_dir=str(tmp_path))
+
+
 def test_tracer_reopen_separates_an_unterminated_tail(tmp_path) -> None:
     path = tmp_path / "run.jsonl"
     path.write_text('{"step": 7}\n{"damaged":', encoding="utf-8")
