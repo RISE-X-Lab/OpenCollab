@@ -98,7 +98,7 @@ def test_cli_rejects_both_prompt_inputs_even_when_prompt_is_empty(tmp_path):
 
 
 def test_cli_preserves_nonblank_unicode_prompt():
-    assert cli_main._resolve_one_shot_prompt(" 你好，世界 ", None) == " 你好，世界 "
+    assert cli_main._resolve_one_shot_prompt(" Grüß dich 🌍 ", None) == " Grüß dich 🌍 "
 
 
 class FakeConsole:
