@@ -40,8 +40,12 @@ def build_sensor_use_case(state, tool):
         text_delta=factory.text_delta,
         error=factory.error,
         loop_detected=lambda tool, count: SimpleNamespace(type="loop_detected", data={}),
-        tool_start=lambda tool, args: SimpleNamespace(type="tool_start", data={}),
-        tool_end=lambda tool, latency: SimpleNamespace(type="tool_end", data={}),
+        tool_start=lambda tool, args, tool_call_id: SimpleNamespace(
+            type="tool_start", data={}
+        ),
+        tool_end=lambda tool, latency, tool_call_id: SimpleNamespace(
+            type="tool_end", data={}
+        ),
     )
     return ToolExecutionUseCase(
         agent=FakeAgent(tools=[tool]),

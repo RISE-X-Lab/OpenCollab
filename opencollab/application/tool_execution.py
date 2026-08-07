@@ -382,6 +382,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 lambda: self.event_factory.tool_start(
                     tool_name,
                     observation_args,
+                    tool_id,
                 ),
                 label="tool_start",
             )
@@ -443,6 +444,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                         tool_name,
                         observation_args,
                         tool_output,
+                        tool_call_id=tool_id,
                     ),
                     tokens=0,
                     latency=tool_latency,
@@ -450,7 +452,9 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
 
             result.messages_to_append.append(self.tool_result_message(tool_id, tool_output))
             await self._emit_observation(
-                lambda: self.event_factory.tool_end(tool_name, tool_latency),
+                lambda: self.event_factory.tool_end(
+                    tool_name, tool_latency, tool_id
+                ),
                 label="tool_end",
             )
             if getattr(tool, "terminal_capture_accepted", False):

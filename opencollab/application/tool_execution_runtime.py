@@ -468,7 +468,9 @@ class ToolExecutionRuntimeMixin:
 
         observation_args = sanitize_observation_args(args)
         await self._emit_observation(
-            lambda: self.event_factory.tool_start(tool_name, observation_args),
+            lambda: self.event_factory.tool_start(
+                tool_name, observation_args, tc["id"]
+            ),
             label="tool_start",
         )
 
@@ -477,7 +479,7 @@ class ToolExecutionRuntimeMixin:
             outcome, latency = await self.execute_tool(tool, args, tool_id=tc["id"])
         finally:
             await self._emit_observation(
-                lambda: self.event_factory.tool_end(tool_name, latency),
+                lambda: self.event_factory.tool_end(tool_name, latency, tc["id"]),
                 label="tool_end",
             )
 
@@ -520,19 +522,29 @@ class ToolExecutionRuntimeMixin:
         except Exception as exc:
             logger.error("tool trace failed: %s", exc)
 
-    def trace_payload(self, tool_name: str, args: dict, tool_output: str) -> dict[str, Any]:
+    def trace_payload(
+        self,
+        tool_name: str,
+        args: dict,
+        tool_output: str,
+        *,
+        tool_call_id: str | None = None,
+    ) -> dict[str, Any]:
         # Cap result in trace to 4k to keep trajectory files manageable.
         trace_result = (
             tool_output
             if len(tool_output) <= 4096
             else tool_output[:2048] + "\n...[truncated]...\n" + tool_output[-2048:]
         )
-        return {
+        payload = {
             "tool": tool_name,
             "args": args,
             "result_len": len(tool_output),
             "result": trace_result,
         }
+        if tool_call_id is not None:
+            payload["tool_call_id"] = tool_call_id
+        return payload
 
     def tool_result_message(self, tool_id: str, result: str) -> dict[str, str]:
         return {"role": "tool", "tool_call_id": tool_id, "content": result}
