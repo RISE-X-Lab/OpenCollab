@@ -644,6 +644,23 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             raise RuntimeError("Cannot execute tools before calling LLM")
 
         original_tool_calls = list(pending.response.tool_calls)
+        preflight = getattr(self.tool_execution, "preflight_tool_batch", None)
+        rejected_batch = getattr(
+            self.tool_execution,
+            "preflight_rejection_result",
+            None,
+        )
+        if callable(preflight) and callable(rejected_batch):
+            preflight_errors = preflight(original_tool_calls)
+            if any(preflight_errors):
+                rejected_batch(
+                    original_tool_calls,
+                    preflight_errors,
+                ).apply_to(self.state)
+                self._pending_tool_allowlist = None
+                self._pending_tool_gate_label = None
+                self.state.transition_to(SessionPhase.AUTOSAVING)
+                return
         tool_calls, blocked_messages = self._apply_pending_tool_allowlist(original_tool_calls)
         immediate, deferred = self._split_tool_calls(tool_calls)
 
