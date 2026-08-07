@@ -581,6 +581,7 @@ async def test_team_is_first_class_and_passes_explicit_config(
     result = await OpenCollab(tmp_path, config={"budget": 90}).team(
         "solve it",
         config=config,
+        cleanup_timeout=3.0,
         use_worktrees=False,
     )
 
@@ -588,7 +589,29 @@ async def test_team_is_first_class_and_passes_explicit_config(
     assert result.tokens == 11
     assert captured["team_config_path"] == config.resolve()
     assert captured["max_tokens"] == 90
+    assert captured["cleanup_timeout"] == 3.0
     assert captured["use_worktrees"] is False
+
+
+async def test_team_rejects_invalid_cleanup_timeout_before_delegating(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    async def should_not_run(**_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(sdk_client, "run_team", should_not_run)
+
+    with pytest.raises(ValueError, match="cleanup_timeout"):
+        await OpenCollab(tmp_path).team(
+            "solve it",
+            cleanup_timeout=float("nan"),
+        )
+
+    assert not called
 
 
 async def test_shared_team_runtime_always_cleans_scheduler(
@@ -598,6 +621,7 @@ async def test_shared_team_runtime_always_cleans_scheduler(
     class FakeScheduler:
         def __init__(self) -> None:
             self.cleaned = False
+            self.cleanup_timeout = None
             self.used_tokens = 8
             self.table = SimpleNamespace(entries={0: object()})
             self.lead_session = SimpleNamespace(
@@ -611,7 +635,7 @@ async def test_shared_team_runtime_always_cleans_scheduler(
             return "done"
 
         async def cleanup(self, *, cleanup_timeout: float) -> None:
-            assert cleanup_timeout > 0
+            self.cleanup_timeout = cleanup_timeout
             self.cleaned = True
 
     scheduler = FakeScheduler()
@@ -623,12 +647,14 @@ async def test_shared_team_runtime_always_cleans_scheduler(
         team_config_path=None,
         max_tokens=50,
         timeout=None,
+        cleanup_timeout=3.0,
         artifacts=None,
         trace=False,
         use_worktrees=False,
     )
 
     assert scheduler.cleaned
+    assert scheduler.cleanup_timeout == 3.0
     assert result.status == "completed"
     assert result.tokens == 8
     assert result.metrics == {"steps": 2, "sessions": 1}
