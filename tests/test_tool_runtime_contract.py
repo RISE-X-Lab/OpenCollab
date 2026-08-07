@@ -125,6 +125,26 @@ def test_bash_rejects_invalid_output_limits_at_construction(value):
         BashTool(max_output_chars=value)
 
 
+@pytest.mark.parametrize(
+    ("tool_type", "parameter"),
+    [
+        (FileReadTool, "max_read_chars"),
+        (GrepTool, "max_grep_chars"),
+        (GitDiffTool, "max_diff_chars"),
+        (GitDiffTool, "max_status_chars"),
+        (RunTestsTool, "max_traceback_chars"),
+    ],
+)
+@pytest.mark.parametrize("value", [0, -1, False, 1.5])
+def test_public_tools_reject_invalid_output_limits_at_construction(
+    tool_type,
+    parameter,
+    value,
+):
+    with pytest.raises(ValueError, match="positive integer"):
+        tool_type(**{parameter: value})
+
+
 def test_bash_tool_without_env_returns_existing_error():
     runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
 

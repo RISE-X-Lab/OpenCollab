@@ -29,7 +29,7 @@ import re
 import shlex
 from typing import Any
 
-from opencollab.adapters.tools._output import truncate
+from opencollab.adapters.tools._output import require_positive_int, truncate
 from opencollab.adapters.tools._run_tests_go import (
     GO_PATH_PREFIX as GO_PATH_PREFIX,
 )
@@ -188,7 +188,9 @@ class RunTestsTool(Tool):
         allow_extra_args: bool = True,
         require_process_isolation: bool = False,
     ):
-        self.max_traceback_chars = max_traceback_chars
+        self.max_traceback_chars = require_positive_int(
+            max_traceback_chars, "max_traceback_chars"
+        )
         self.allow_runner_override = allow_runner_override
         self.allow_extra_args = allow_extra_args
         self.require_process_isolation = require_process_isolation
