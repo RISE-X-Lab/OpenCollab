@@ -20,6 +20,25 @@ from opencollab.application.exception_notes import add_exception_note
 WORKTREE_GIT_TIMEOUT_SECONDS = 30.0
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,180}$")
 _ZERO_OID = "0" * 40
+_PORCELAIN_STATUS_CHARS = frozenset(" MADRCU?!")
+
+
+def _dirty_path_preview(output: str, *, limit: int = 12) -> str:
+    paths: list[str] = []
+    for record in filter(None, output.split("\0")):
+        if (
+            len(record) >= 4
+            and record[0] in _PORCELAIN_STATUS_CHARS
+            and record[1] in _PORCELAIN_STATUS_CHARS
+            and record[2] == " "
+        ):
+            paths.append(record[3:])
+        else:
+            paths.append(record)
+    preview = ", ".join(repr(path) for path in paths[:limit])
+    if len(paths) > limit:
+        preview += f", ... ({len(paths) - limit} more)"
+    return preview
 
 
 class WorktreeEnvironment(Environment):
@@ -104,6 +123,23 @@ class WorktreeEnvironment(Environment):
         return self._worktree_dir
 
     async def _setup_git_worktree(self) -> None:
+        status = await self._git(
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+        )
+        if (
+            status.returncode != 0
+            or status.stdout_truncated
+            or status.stderr_truncated
+        ):
+            raise RuntimeError("cannot verify that the source workspace is clean")
+        if status.stdout:
+            raise RuntimeError(
+                "source workspace has uncommitted changes: "
+                f"{_dirty_path_preview(status.stdout)}"
+            )
         branch_probe = await self._git(
             "show-ref",
             "--verify",
