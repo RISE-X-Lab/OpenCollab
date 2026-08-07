@@ -5,6 +5,7 @@ import hashlib
 import json
 import logging
 import math
+import shlex
 from typing import Any, Awaitable, Callable
 
 from opencollab.application.async_timeout import (
@@ -155,48 +156,141 @@ def _intrinsic_low_yield(tool_name: str, output: str) -> bool:
     return False
 
 
-def _bash_likely_mutates(args: dict) -> bool:
-    """Heuristic: does this bash command write to a file on disk? Narrow allow-list so
-    repros/reads do not falsely reset the reads-without-write counter.
+def _has_unquoted_output_redirect(command: str) -> bool:
+    quote: str | None = None
+    escaped = False
+    index = 0
+    while index < len(command):
+        char = command[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\" and quote != "'":
+            escaped = True
+            index += 1
+            continue
+        if quote is not None:
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if char != ">":
+            index += 1
+            continue
 
-    The coder lands real source edits via bash (``python -c`` read-modify-write,
-    ``sed -i``), which never trips the ``_WRITE_TOOLS`` reset, so the
-    reads-without-write counter climbs forever and the hard "STOP reading" nudge
-    mis-fires at a model already writing. Detecting these mutating shapes lets the
-    existing reset path zero the counter. Pure stdlib string inspection — no I/O,
-    no re-parsing/executing bash.
+        cursor = index + 1
+        if cursor < len(command) and command[cursor] in {">", "|"}:
+            cursor += 1
+        if cursor < len(command) and command[cursor] == "&":
+            cursor += 1
+            while cursor < len(command) and command[cursor].isspace():
+                cursor += 1
+            end = cursor
+            while end < len(command) and (
+                command[end].isdigit() or command[end] == "-"
+            ):
+                end += 1
+            if end > cursor:
+                index = end
+                continue
+
+        suffix = command[cursor:].lstrip()
+        try:
+            target = shlex.split(suffix, posix=True)[0] if suffix else ""
+        except ValueError:
+            target = ""
+        if target == "/dev/null":
+            index = cursor + 1
+            continue
+        return True
+    return False
+
+
+def _bash_likely_mutates(args: dict) -> bool:
+    """Conservatively classify shell commands that write to the workspace.
+
+    Shell tokenization keeps quoted comparisons and words such as ``guarantee``
+    from being mistaken for operators or ``tee``. This is still a heuristic, but
+    it is deliberately command-token based rather than a raw substring scan.
     """
     cmd = (args or {}).get("command", "") or ""
     if not isinstance(cmd, str) or not cmd:
         return False
-    # ``sed -i`` (in-place edit) and ``tee <path>`` both write to disk.
-    if "sed -i" in cmd:
+
+    lexer = shlex.shlex(cmd, posix=True, punctuation_chars="|&;()<>")
+    lexer.whitespace_split = True
+    lexer.commenters = ""
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return False
+
+    if _has_unquoted_output_redirect(cmd):
         return True
-    if "tee " in cmd:
-        return True
-    # Output redirection to a path (``>`` / ``>>``), but NOT the read-only shapes
-    # ``2>&1`` (fd duplication) or a redirect to ``/dev/null`` (discard).
-    for token in (">>", ">"):
-        idx = cmd.find(token)
-        while idx != -1:
-            # ``2>&1`` style fd-dup: the char after ``>`` is ``&``.
-            after = cmd[idx + len(token):].lstrip()
-            prev = cmd[idx - 1] if idx > 0 else ""
-            is_fd_dup = after.startswith("&") or (token == ">" and prev.isdigit() and after.startswith("&"))
-            is_devnull = after.startswith("/dev/null")
-            if not is_fd_dup and not is_devnull:
+
+    controls = {"|", "||", "&&", ";", "&", "(", ")"}
+    mutating_commands = {"cp", "mv", "install", "patch"}
+    start = True
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token in controls:
+            start = True
+            index += 1
+            continue
+        if not start:
+            index += 1
+            continue
+        if "=" in token and not token.startswith(("/", "./", "../")):
+            name, _, _value = token.partition("=")
+            if name.replace("_", "").isalnum():
+                index += 1
+                continue
+
+        command = token.rsplit("/", 1)[-1]
+        end = index + 1
+        while end < len(tokens) and tokens[end] not in controls:
+            end += 1
+        command_args = tokens[index + 1 : end]
+        start = False
+
+        if command in mutating_commands or command == "tee":
+            return True
+        if command == "git":
+            subcommand = next(
+                (value for value in command_args if not value.startswith("-")),
+                "",
+            )
+            if subcommand == "apply":
                 return True
-            idx = cmd.find(token, idx + len(token))
-    # A python ``-c`` / heredoc body that opens a file for writing or calls a
-    # write method — the read-modify-write source-edit shape. Covers the file
-    # ``.write(`` call and the idiomatic pathlib ``Path(...).write_text(...)`` /
-    # ``.write_bytes(...)`` shapes.
-    if ".write(" in cmd or ".write_text(" in cmd or ".write_bytes(" in cmd:
-        return True
-    # builtin ``open(..., 'w')`` and pathlib ``Path(...).open('w')`` (``open(``
-    # is a substring of ``.open(``) with a write/append mode token present.
-    if "open(" in cmd and ("'w'" in cmd or '"w"' in cmd or "'a'" in cmd or '"a"' in cmd):
-        return True
+        if command in {"sed", "perl"} and any(
+            option == "--in-place"
+            or option.startswith("--in-place=")
+            or (
+                option.startswith("-")
+                and not option.startswith("--")
+                and "i" in option[1:]
+            )
+            for option in command_args
+        ):
+            return True
+        if command.startswith("python"):
+            code = " ".join(command_args)
+            if any(
+                marker in code
+                for marker in (".write(", ".write_text(", ".write_bytes(")
+            ):
+                return True
+            if "open(" in code and any(
+                mode in code for mode in ("'w'", '"w"', "'a'", '"a"')
+            ):
+                return True
+        index = end
     return False
 
 
