@@ -115,6 +115,8 @@ class DockerEnvironment(Environment):
         self._container_id = self._attached_reference if self._attached else None
         self._attached_bound = False
         self._attach_lock = asyncio.Lock()
+        self._active_exec_lock = asyncio.Lock()
+        self._active_execs: dict[str, asyncio.Task | None] = {}
         self._container_name: str | None = None
         self._owner_token = None if self._attached else uuid.uuid4().hex
         self._exec_workdir = exec_workdir
@@ -340,6 +342,9 @@ class DockerEnvironment(Environment):
         if self._container_id is None:
             raise RuntimeError("Container not started. Call setup() first.")
         token = uuid.uuid4().hex
+        async with self._active_exec_lock:
+            self._ensure_active()
+            self._active_execs[token] = asyncio.current_task()
         try:
             result = await self._docker(
                 *self._exec_argv(cmd, token, interactive=input_bytes is not None),
@@ -361,6 +366,9 @@ class DockerEnvironment(Environment):
             if not await await_owned_operation(self._recover_inner(token)):
                 add_exception_note(exc, "cancelled container command did not quiesce")
             raise
+        finally:
+            async with self._active_exec_lock:
+                self._active_execs.pop(token, None)
         return result.to_exec_result()
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
@@ -499,5 +507,36 @@ class DockerEnvironment(Environment):
             self._cleanup_resources(),
             propagate_cancellation=True,
         )
+
+    async def abort(self) -> None:
+        self.revoke()
+        if not self._attached:
+            await self.cleanup()
+            return
+        async with self._active_exec_lock:
+            active = dict(self._active_execs)
+        if not active:
+            return
+        cancelled = await asyncio.gather(
+            *(self._cancel_inner(token) for token in active),
+            return_exceptions=True,
+        )
+        current = asyncio.current_task()
+        pending = {
+            task
+            for task in active.values()
+            if task is not None and task is not current and not task.done()
+        }
+        if pending:
+            _done, pending = await asyncio.wait(
+                pending,
+                timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
+            )
+        failed_cancellations = any(
+            result is not True and (task is None or not task.done())
+            for result, task in zip(cancelled, active.values())
+        )
+        if failed_cancellations or pending:
+            raise ProcessCleanupError("attached container commands did not quiesce during abort")
 
 __all__ = ["DockerEnvironment"]
