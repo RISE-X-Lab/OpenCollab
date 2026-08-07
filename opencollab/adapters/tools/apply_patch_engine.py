@@ -188,15 +188,23 @@ def _find_block(
             return None
         return expected_idx
     n = len(old_block)
-    matches = [
-        start
-        for start in range(min_idx, len(src_lines) - n + 1)
-        if src_lines[start : start + n] == old_block
-    ]
-    if not matches:
-        return None
-    matches.sort(key=lambda s: abs(s - expected_idx))
-    return matches[0]
+    best_start: int | None = None
+    best_distance: int | None = None
+    for start in range(min_idx, len(src_lines) - n + 1):
+        if src_lines[start] != old_block[0]:
+            continue
+        if any(
+            src_lines[start + offset] != old_block[offset]
+            for offset in range(1, n)
+        ):
+            continue
+        distance = abs(start - expected_idx)
+        if best_distance is None or distance < best_distance:
+            best_start = start
+            best_distance = distance
+            if distance == 0:
+                break
+    return best_start
 
 
 def _apply_unified_diff(source: str, patch: str) -> tuple[str | None, str]:

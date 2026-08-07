@@ -1,4 +1,5 @@
 import asyncio
+import tracemalloc
 from hashlib import sha256
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
+from opencollab.adapters.tools.apply_patch_engine import _find_block
 from opencollab.adapters.tools.fs import FileWriteTool
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -103,6 +105,33 @@ def test_unified_diff_matches_by_content_despite_line_drift(tmp_path):
 
     assert "Applied unified_diff" in result
     assert target.read_text(encoding="utf-8") == "extra0\nextra1\nlineA\nlineB_fixed\nlineC\n"
+
+
+def test_fuzzy_block_search_uses_constant_auxiliary_memory():
+    # Roughly 4 MiB of repeated source text. Every position matches, so the old
+    # collect-and-sort implementation allocated hundreds of thousands of ints.
+    source = ["repeated-line"] * 350_000
+    tracemalloc.start()
+    try:
+        position = _find_block(
+            source,
+            ["repeated-line"],
+            expected_idx=175_000,
+            min_idx=0,
+        )
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert position == 175_000
+    assert peak_bytes < 1_000_000
+
+
+def test_fuzzy_block_search_preserves_nearest_then_earliest_tie_break():
+    source = ["x", "target", "x", "target", "x"]
+
+    assert _find_block(source, ["target"], expected_idx=2, min_idx=0) == 1
+    assert _find_block(source, ["target"], expected_idx=3, min_idx=0) == 3
 
 
 def test_unified_diff_failed_hunk_writes_nothing(tmp_path):
