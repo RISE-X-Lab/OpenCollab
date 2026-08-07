@@ -8,6 +8,7 @@ from collections.abc import Callable
 import pytest
 
 from opencollab.adapters import _env_docker as docker_module
+from opencollab.adapters._env_local import LOCAL_FILE_WRITE_LIMIT_BYTES
 from opencollab.adapters._env_process import ProcessCleanupError, ProcessResult
 from opencollab.adapters.env import DockerEnvironment, LocalEnvironment
 
@@ -513,6 +514,32 @@ async def test_concurrent_same_container_path_writes_are_serialized(monkeypatch)
 
     assert max_active == 1
     assert target in {b"A" * 2000, b"B" * 2000}
+
+
+@pytest.mark.parametrize("temporary", [False, True])
+async def test_docker_writes_reject_oversize_utf8_before_transport(
+    monkeypatch,
+    temporary,
+) -> None:
+    calls = 0
+
+    async def fake_docker(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _result()
+
+    env = DockerEnvironment(container_id=CONTAINER_ID)
+    env._attached_bound = True
+    monkeypatch.setattr(env, "_docker", fake_docker)
+    content = "é" * (LOCAL_FILE_WRITE_LIMIT_BYTES // 2 + 1)
+
+    with pytest.raises(OSError, match="write limit"):
+        if temporary:
+            await env.write_temp_file(content, prefix="probe-")
+        else:
+            await env.write_file("/repo/result.txt", content)
+
+    assert calls == 0
 
 
 async def test_only_docker_declares_os_process_isolation(tmp_path) -> None:

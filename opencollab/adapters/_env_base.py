@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+ENV_FILE_WRITE_LIMIT_BYTES = 4 * 1024 * 1024
+
 
 @dataclass(slots=True)
 class ExecResult:
@@ -75,4 +77,4 @@ class Environment:
         await self.cleanup()
 
 
-__all__ = ["Environment", "ExecResult"]
+__all__ = ["ENV_FILE_WRITE_LIMIT_BYTES", "Environment", "ExecResult"]
