@@ -86,6 +86,12 @@ class BashTool(Tool):
         *,
         require_process_isolation: bool = False,
     ):
+        if (
+            isinstance(max_output_chars, bool)
+            or not isinstance(max_output_chars, int)
+            or max_output_chars <= 0
+        ):
+            raise ValueError("max_output_chars must be a positive integer")
         self.max_output_chars = max_output_chars
         self.require_process_isolation = require_process_isolation
 
