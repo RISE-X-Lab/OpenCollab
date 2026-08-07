@@ -140,6 +140,20 @@ class OpenCollabConfig(BaseModel):
     llm_timeout: float = Field(default=600.0, gt=0, allow_inf_nan=False)
     filter_messages: bool = Field(default=False)
 
+    @field_validator(
+        "budget",
+        "temperature",
+        "top_p",
+        "max_output_tokens",
+        "llm_timeout",
+        mode="before",
+    )
+    @classmethod
+    def _reject_boolean_numbers(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("numeric configuration values must not be booleans")
+        return value
+
     @field_validator("top_p", mode="before")
     @classmethod
     def _coerce_top_p(cls, value: Any) -> Any:
@@ -157,13 +171,6 @@ class OpenCollabConfig(BaseModel):
         # real bool, mirroring how temperature accepts its string form.
         if isinstance(value, str):
             return _parse_bool(value)
-        return value
-
-    @field_validator("llm_timeout", mode="before")
-    @classmethod
-    def _reject_boolean_llm_timeout(cls, value: Any) -> Any:
-        if isinstance(value, bool):
-            raise ValueError("llm_timeout must be a finite positive number")
         return value
 
     @field_validator("thinking_params", mode="before")
