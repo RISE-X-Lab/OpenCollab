@@ -118,15 +118,22 @@ async def run_spawn_with_review(
 
         # Spawn reviewer and wait
         review_prompt = (
-            f"Review the following implementation for task: '{task}'\n\n"
-            f"Implementation result:\n{code_result}\n\n"
+            "Review the artifact against the original task and required context.\n\n"
+            f"Original task:\n{task}\n\n"
+            f"Required context:\n{context or '(none provided)'}\n\n"
+            f"Artifact to review:\n{code_result}\n\n"
             f"Your response MUST end with a verdict line in exactly this format:\n"
             f"VERDICT: PASS\n"
             f"or\n"
             f"VERDICT: FAIL\n\n"
             f"If FAIL, provide detailed fix instructions before the verdict line."
         )
-        reviewer_aid = await scheduler.spawn(parent_aid, "reviewer", review_prompt)
+        reviewer_aid = await scheduler.spawn(
+            parent_aid,
+            "reviewer",
+            review_prompt,
+            context,
+        )
         await scheduler.wait_until_terminal(reviewer_aid)
         reviewer_scb = scheduler.table.get(reviewer_aid)
         review_result = reviewer_scb.result if reviewer_scb else ""
