@@ -80,6 +80,28 @@ def test_restore_of_unknown_or_retired_phase_string_falls_back_to_idle(tmp_path,
 
     loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
     assert loaded.state.phase is SessionPhase.IDLE
+    assert loaded.state.terminal_reason is None
+
+
+@pytest.mark.parametrize("phase_string", ["idle", "calling_llm"])
+def test_restore_clears_terminal_reason_from_nonterminal_phase(
+    tmp_path, phase_string
+):
+    agent = FakeAgent()
+    session = Session(agent=agent, llm=FakeLLMClient())
+    session.state.set_phase(SessionPhase.STOPPED)
+    session.state.terminal_reason = "stale terminal detail"
+    path = tmp_path / "nonterminal.json"
+    session.save(str(path))
+
+    snapshot = json.loads(path.read_text())
+    snapshot["session_state"]["phase"] = phase_string
+    path.write_text(json.dumps(snapshot))
+
+    loaded = load_session(str(path), agent=agent, llm=FakeLLMClient())
+
+    assert loaded.state.phase is SessionPhase.IDLE
+    assert loaded.state.terminal_reason is None
 
 
 @pytest.mark.parametrize("operation", ["restore", "save"])
