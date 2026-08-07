@@ -450,19 +450,23 @@ class _SessionRunCompletionMixin:
             )
 
     def append_assistant_message(self, response: CompletionResponse) -> None:
+        has_content = (
+            isinstance(response.content, str)
+            and bool(response.content.strip())
+        )
         # A provider-limit response may contain an incomplete tool call. Never
         # persist that structure: a later turn would send an orphaned call back
         # to the provider, and the run loop must not execute partial arguments.
         # Preserve only user-visible partial text; the full raw response remains
         # available in the trace for diagnosis.
         if response.finish_reason in {"length", "max_tokens"}:
-            if response.content:
+            if has_content:
                 self.state.append_message({"role": "assistant", "content": response.content})
             return
         # An empty-stop turn (no content, no tool calls) would append a bare
         # ``{"role": "assistant"}`` message that some providers reject on the
         # next request. Skip it — handle_pending_response decides retry-vs-DONE.
-        if not response.content and not response.tool_calls:
+        if not has_content and not response.tool_calls:
             return
         assistant_msg: dict[str, Any] = {"role": "assistant"}
         reasoning = getattr(response, "reasoning", None)
@@ -471,7 +475,7 @@ class _SessionRunCompletionMixin:
         provider_state = getattr(response, "provider_state", None)
         if provider_state:
             assistant_msg["provider_state"] = provider_state
-        if response.content:
+        if has_content:
             assistant_msg["content"] = response.content
         if response.tool_calls:
             assistant_msg["tool_calls"] = response.tool_calls

@@ -575,7 +575,11 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             raise RuntimeError("Cannot handle assistant response before calling LLM")
         response = pending.response
 
-        if response.content:
+        has_content = (
+            isinstance(response.content, str)
+            and bool(response.content.strip())
+        )
+        if has_content:
             await self.event_publisher.emit(self.event_factory.text_delta(response.content))
 
         if response.finish_reason in {"length", "max_tokens"}:
@@ -603,7 +607,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # AUTOSAVING handler finishes the step and loops back to PRECHECK.
         # ``finish_reason`` is gated to "stop": a "length" truncation will only
         # truncate again, so a nudge cannot help there.
-        empty_stop = not response.content and not response.tool_calls
+        empty_stop = not has_content and not response.tool_calls
         if empty_stop and response.finish_reason in (None, "stop") and not self._empty_stop_retried:
             self._empty_stop_retried = True
             # Record the retry to the trajectory so empty-stops are measurable

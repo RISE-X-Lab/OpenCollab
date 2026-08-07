@@ -390,6 +390,26 @@ def test_empty_stop_retries_once_with_nudge_then_succeeds():
     )
     assert state.messages[-1] == {"role": "assistant", "content": "recovered"}
 
+
+def test_whitespace_only_stop_uses_empty_turn_rescue():
+    state = SessionState(messages=_convo())
+    llm = FakeLLM(
+        [
+            llm_response(content=" \t\n"),
+            llm_response(content="recovered", total_tokens=4),
+        ]
+    )
+    runner = build_runner(state=state, llm=llm)
+
+    assert run(runner.run_loop()) == "recovered"
+    assert len(llm.calls) == 2
+    assert not any(
+        message.get("role") == "assistant"
+        and message.get("content") == " \t\n"
+        for message in state.messages
+    )
+    assert state.messages[-1] == {"role": "assistant", "content": "recovered"}
+
 def test_empty_stop_retries_at_most_once_then_gives_up():
     # Two consecutive empty-stops: retry fires once, then the session finishes
     # cleanly rather than looping. A 3rd LLM call would make FakeLLM raise.
