@@ -149,7 +149,7 @@ def test_max_output_tokens_defaults_and_reads_env(monkeypatch):
     assert build_config().max_output_tokens == 32768
 
 
-def test_provider_override_reselects_file_first_api_key(monkeypatch, tmp_path):
+def test_provider_override_reselects_provider_specific_api_key(monkeypatch, tmp_path):
     cfg_file = tmp_path / "provider.env"
     cfg_file.write_text(
         "OPENCOLLAB_PROVIDER=openai\n"
@@ -228,7 +228,7 @@ def test_dashscope_file_key_beats_generic_export(monkeypatch, tmp_path):
     assert build_config().api_key == "dashscope-key"
 
 
-def test_dashscope_file_key_beats_same_name_stale_export(monkeypatch, tmp_path):
+def test_dashscope_export_beats_same_name_file_value(monkeypatch, tmp_path):
     cfg_file = tmp_path / "dashscope.env"
     cfg_file.write_text(
         "\n".join(
@@ -241,7 +241,16 @@ def test_dashscope_file_key_beats_same_name_stale_export(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(cfg_file))
     monkeypatch.setenv("DASHSCOPE_API_KEY", "stale-shell-key")
 
-    assert build_config().api_key == "real-file-key"
+    assert build_config().api_key == "stale-shell-key"  # pragma: allowlist secret
+
+
+def test_environment_key_beats_same_name_config_file_value(monkeypatch, tmp_path):
+    cfg_file = tmp_path / "openai.env"
+    cfg_file.write_text("OPENAI_API_KEY=file-key\n", encoding="utf-8")
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(cfg_file))
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
+
+    assert build_config().api_key == "environment-key"  # pragma: allowlist secret
 
 
 def test_anthropic_file_key_beats_generic_export(monkeypatch, tmp_path):
