@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from session_characterization_test_support import (
     FakeAgent,
     FakeLLMClient,
@@ -11,6 +13,31 @@ from session_characterization_test_support import (
 
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import load_session
+
+
+def test_session_closes_only_composition_owned_llm(monkeypatch):
+    from opencollab.bootstrap import container as session_module
+
+    class ClosableLLM(FakeLLMClient):
+        def __init__(self):
+            super().__init__()
+            self.close_calls = 0
+
+        async def close(self):
+            self.close_calls += 1
+
+    owned = ClosableLLM()
+    monkeypatch.setattr(session_module, "LLMClient", lambda **_kwargs: owned)
+    owned_session = Session(agent=FakeAgent())
+    asyncio.run(owned_session.aclose())
+    asyncio.run(owned_session.aclose())
+
+    injected = ClosableLLM()
+    injected_session = Session(agent=FakeAgent(), llm=injected)
+    asyncio.run(injected_session.aclose())
+
+    assert owned.close_calls == 1
+    assert injected.close_calls == 0
 
 
 def test_session_runtime_config_mutations_update_all_runtime_consumers():
