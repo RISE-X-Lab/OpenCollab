@@ -94,6 +94,89 @@ def test_hygiene_rejects_python_module_over_line_limit(tmp_path):
     assert "801 lines" in result.stdout
 
 
+def _committed_module(repository: Path, name: str, lines: int) -> str:
+    (repository / name).write_text("pass\n" * lines, encoding="utf-8")
+    _git(repository, "add", name)
+    _git(repository, "commit", "-m", f"write {name}")
+    return _git(repository, "rev-parse", "HEAD")
+
+
+def test_hygiene_rejects_a_change_that_grows_a_module_past_the_line_limit(tmp_path):
+    repository, _base = _repository(tmp_path)
+    base = _committed_module(repository, "module.py", 700)
+    _committed_module(repository, "module.py", 801)
+
+    result = _run(repository, base, "HEAD")
+
+    assert result.returncode == 1
+    assert "801 lines" in result.stdout
+    assert "grown past the limit by this change" in result.stdout
+
+
+def test_hygiene_accepts_a_change_that_keeps_a_module_under_the_line_limit(tmp_path):
+    repository, _base = _repository(tmp_path)
+    base = _committed_module(repository, "module.py", 700)
+    _committed_module(repository, "module.py", 799)
+
+    result = _run(repository, base, "HEAD")
+
+    assert result.returncode == 0
+    assert "checks passed" in result.stdout
+
+
+def test_hygiene_leaves_a_module_that_was_already_oversized_to_the_main_tree_check(tmp_path):
+    repository, _base = _repository(tmp_path)
+    base = _committed_module(repository, "module.py", 900)
+    _committed_module(repository, "module.py", 910)
+
+    result = _run(repository, base, "HEAD")
+
+    assert result.returncode == 0
+    assert "checks passed" in result.stdout
+
+
+def test_hygiene_still_rejects_an_already_oversized_module_on_the_complete_tree(tmp_path):
+    repository, _base = _repository(tmp_path)
+    _committed_module(repository, "module.py", 900)
+    empty_tree = _git(repository, "hash-object", "-t", "tree", "/dev/null")
+
+    result = _run(repository, empty_tree, "HEAD", "--require-files")
+
+    assert result.returncode == 1
+    assert "900 lines" in result.stdout
+
+
+def test_hygiene_rejects_a_change_that_grows_a_file_past_the_byte_limit(tmp_path):
+    repository, _base = _repository(tmp_path)
+    (repository / "asset.bin").write_bytes(b"x" * 400_000)
+    _git(repository, "add", "asset.bin")
+    _git(repository, "commit", "-m", "add asset")
+    base = _git(repository, "rev-parse", "HEAD")
+    (repository / "asset.bin").write_bytes(b"x" * 512_001)
+    _git(repository, "add", "asset.bin")
+    _git(repository, "commit", "-m", "grow asset")
+
+    result = _run(repository, base, "HEAD")
+
+    assert result.returncode == 1
+    assert "512001 bytes" in result.stdout
+    assert "grown past the limit by this change" in result.stdout
+
+
+def test_hygiene_measures_a_module_renamed_and_grown_in_one_step(tmp_path):
+    repository, _base = _repository(tmp_path)
+    base = _committed_module(repository, "module.py", 700)
+    (repository / "module.py").unlink()
+    (repository / "renamed.py").write_text("pass\n" * 801, encoding="utf-8")
+    _git(repository, "add", "-A")
+    _git(repository, "commit", "-m", "rename and grow")
+
+    result = _run(repository, base, "HEAD")
+
+    assert result.returncode == 1
+    assert "801 lines" in result.stdout
+
+
 def test_hygiene_fails_when_git_diff_cannot_be_computed(tmp_path):
     repository, _base = _repository(tmp_path)
 
