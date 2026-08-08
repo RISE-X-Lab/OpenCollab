@@ -7,6 +7,7 @@ drive the Typer commands through ``CliRunner`` and assert on stdout.
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -147,7 +148,8 @@ def test_workflow_run_prints_event_and_result_markup_literally(monkeypatch):
 
 def test_workflow_run_help_distinguishes_concurrency_caps():
     result = runner.invoke(workflow_cli.app, ["run", "--help"])
-    normalized = " ".join(result.stdout.replace("│", " ").split())
+    without_ansi = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", result.stdout)
+    normalized = " ".join(without_ansi.replace("│", " ").split())
 
     assert result.exit_code == 0
     assert "Max concurrent agent sessions" in normalized
