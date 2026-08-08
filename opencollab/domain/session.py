@@ -117,9 +117,9 @@ class TurnEnforcementState:
     record — rather than smeared flat on ``SessionState`` — precisely because
     one mechanism (the user-turn boundary) saves, restores, and resets them
     together, the same reason a kernel PCB carves its saved-register set into a
-    dedicated ``struct``. Session-*lifetime* latches (``wind_down_done`` /
-    ``wind_down_token_mark``) have a different reset discipline and stay flat on
-    ``SessionState``; they are not part of this snapshot.
+    dedicated ``struct``. The durable wind-down latches stay flat on
+    ``SessionState`` because they also survive persistence and rollback within
+    the current turn; a fresh user turn resets them alongside this record.
 
     All eight are maintained ALWAYS (cheap, observational); only the precheck
     brakes that READ them are gated behind ``enforcement_strength``, so a
