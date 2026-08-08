@@ -12,10 +12,16 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   example with both a team configuration and a hard-gated workflow.
 - Added a public maintainer release procedure covering exact-SHA validation,
   artifact construction, signed tagging, publication, and failure handling.
+- Added explicit lifecycle exceptions for rejected concurrent turns,
+  scheduler turn failures/stalls, and unavailable isolated snapshots. See the
+  0.5.0 migration guide for import paths and recovery actions.
 
 ### Changed
 - Replaced changelog links that depended on the absent remote `v0.1.0` tag with
   exact historical commit links.
+- Scheduler and session boundaries now preserve terminal failures, ownership,
+  budgets, deadlines, and snapshot isolation instead of silently treating
+  partial work as success.
 
 ### Fixed
 - Capped structured-output corrective retries at 60 seconds while preserving
@@ -23,6 +29,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
   consume the caller's full role budget.
 - Honored native Anthropic manual and adaptive thinking settings, including
   provider-compatible sampling, tool selection, and signed thinking continuity.
+- Prevented truncated provider output, stale restored turns, unbounded teammate
+  delivery, deferred-tool contract bypasses, and reviewer PASS results from
+  masking failed or incomplete work.
 
 ## [0.4.1] - 2026-07-31
 
