@@ -363,8 +363,7 @@ def test_autocompact_does_not_mutate_input():
     assert messages == snapshot
 
 
-@pytest.mark.parametrize("summary_size", [1_000, 3_000])
-def test_autocompact_rejects_summary_that_misses_target_or_grows_view(summary_size):
+def test_autocompact_rejects_summary_that_grows_view():
     class CountingSummarizer:
         cache_key = "oversized"
         last_call_cacheable = True
@@ -374,7 +373,7 @@ def test_autocompact_rejects_summary_that_misses_target_or_grows_view(summary_si
 
         def __call__(self, _segment):
             self.calls += 1
-            return "s" * summary_size
+            return "s" * 3_000
 
     summarizer = CountingSummarizer()
     messages = [
@@ -389,6 +388,23 @@ def test_autocompact_rejects_summary_that_misses_target_or_grows_view(summary_si
     assert shaper.shape(messages) is messages
     assert shaper.shape(messages) is messages
     assert summarizer.calls == 1
+
+
+def test_autocompact_accepts_strict_reduction_that_misses_target():
+    messages = [
+        _sys(),
+        _user(),
+        _text("x" * 1_000),
+        _text("y" * 1_000),
+        _text("recent"),
+    ]
+    shaper = _autocompact(summarizer=lambda _segment: "s" * 1_000)
+
+    out = shaper.shape(messages)
+
+    assert out is not messages
+    assert _chars(out) < _chars(messages)
+    assert _chars(out) > shaper.target_tokens
 
 
 def test_autocompact_reuses_summary_for_unchanged_segment():
