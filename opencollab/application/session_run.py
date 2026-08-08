@@ -230,13 +230,29 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         except BaseException:
             pass
 
-    def _record_late_provider_result(self, task: asyncio.Future[Any]) -> None:
+    def _mark_budget_reserve_consumed(self, *, protected_call: bool | None = None) -> None:
+        """Keep late and ordinary protected-call accounting on one invariant."""
+        if protected_call is None:
+            protected_call = self.state.wind_down_done
+        if (
+            protected_call
+            and self.state.used_tokens >= self.max_budget_tokens - self._commit_reserve
+        ):
+            self.state.budget_reserve_consumed = True
+
+    def _record_late_provider_result(
+        self,
+        task: asyncio.Future[Any],
+        *,
+        protected_call: bool = False,
+    ) -> None:
         """Charge a provider response that survived cancellation after timeout."""
         try:
             response = task.result()
             _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
             self._late_provider_usage += (total_tokens,)
             self.state.add_used_tokens(total_tokens)
+            self._mark_budget_reserve_consumed(protected_call=protected_call)
         except BaseException:
             pass
         finally:
@@ -578,11 +594,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         latency = time.monotonic() - start
         input_tokens, total_tokens = _normalize_completion_usage(response.usage)
         self.state.add_used_tokens(total_tokens)
-        if (
-            self.state.wind_down_done
-            and self.state.used_tokens >= self.max_budget_tokens - self._commit_reserve
-        ):
-            self.state.budget_reserve_consumed = True
+        self._mark_budget_reserve_consumed()
         self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
         self.state.set_context_tokens(input_tokens)
 
