@@ -52,15 +52,15 @@ def _extract(
     )
 
 
-def test_patch_respects_gitignore_but_keeps_tracked_changes(tmp_path):
+def test_patch_blocks_ignored_untracked_files_without_leaking_content(tmp_path):
     repo = _repo(tmp_path)
     (repo / "tracked.txt").write_text("new\n", encoding="utf-8")
     (repo / "secret.txt").write_text("api-token\n", encoding="utf-8")
 
     result = _extract(repo)
 
-    assert result.returncode == 0, result.stderr
-    assert "tracked.txt" in result.stdout
+    assert result.returncode == 125
+    assert "ignored untracked files" in result.stderr
     assert "secret.txt" not in result.stdout
     assert "api-token" not in result.stdout
     assert _git(repo, "diff", "--cached", "--quiet").returncode == 0

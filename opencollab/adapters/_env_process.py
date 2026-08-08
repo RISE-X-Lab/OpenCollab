@@ -15,6 +15,7 @@ from opencollab.application.async_timeout import await_owned_operation
 PROCESS_OUTPUT_CAPTURE_BYTES = 1024 * 1024
 PROCESS_TERM_GRACE_SECONDS = 0.05
 PROCESS_KILL_GRACE_SECONDS = 2.0
+_BACKGROUND_SPAWN_CLEANUPS: set[asyncio.Task[None]] = set()
 
 
 class ProcessCleanupError(RuntimeError):
@@ -48,17 +49,25 @@ async def _read_bounded(
 ) -> tuple[bytes, int]:
     if stream is None:
         return b"", 0
-    retained = bytearray()
-    dropped = 0
+    head_limit = (limit + 1) // 2
+    tail_limit = limit - head_limit
+    head = bytearray()
+    tail = bytearray()
+    total = 0
     while True:
         chunk = await stream.read(64 * 1024)
         if not chunk:
             break
-        available = max(0, limit - len(retained))
-        kept = chunk[:available]
-        retained.extend(kept)
-        dropped += len(chunk) - len(kept)
-    return bytes(retained), dropped
+        total += len(chunk)
+        available = max(0, head_limit - len(head))
+        head.extend(chunk[:available])
+        remainder = chunk[available:]
+        if tail_limit and remainder:
+            tail.extend(remainder)
+            if len(tail) > tail_limit:
+                del tail[:-tail_limit]
+    retained = bytes(head + tail)
+    return retained, max(0, total - len(retained))
 
 
 def _group_exists(group_id: int) -> bool:
@@ -174,7 +183,15 @@ class ProcessRegistry:
     async def _abort_owned(self) -> None:
         async with self._condition:
             self._revoked = True
-            await self._condition.wait_for(lambda: self._handoffs == 0)
+            try:
+                await asyncio.wait_for(
+                    self._condition.wait_for(lambda: self._handoffs == 0),
+                    timeout=PROCESS_KILL_GRACE_SECONDS,
+                )
+            except asyncio.TimeoutError as exc:
+                raise ProcessCleanupError(
+                    "subprocess spawn handoff did not quiesce"
+                ) from exc
             processes = tuple(self._processes)
         results = await asyncio.gather(
             *(terminate_process(process) for process in processes),
@@ -206,6 +223,64 @@ async def _spawn_owned(
         raise cancellation
 
 
+def _retain_spawn_cleanup(task: asyncio.Task[None]) -> None:
+    """Keep a late spawn reaper alive and consume its terminal result."""
+    _BACKGROUND_SPAWN_CLEANUPS.add(task)
+
+    def finish(completed: asyncio.Task[None]) -> None:
+        _BACKGROUND_SPAWN_CLEANUPS.discard(completed)
+        try:
+            completed.result()
+        except BaseException:
+            pass
+
+    task.add_done_callback(finish)
+
+
+async def _reap_late_spawn(
+    spawn_owner: asyncio.Task[asyncio.subprocess.Process],
+    registry: ProcessRegistry | None,
+) -> None:
+    """Terminate a process that appears after its caller stopped waiting."""
+    try:
+        process = await spawn_owner
+    except BaseException:
+        return
+    await _require_process_exit(
+        process,
+        "late subprocess spawn did not quiesce",
+        propagate=False,
+    )
+    if registry is not None:
+        registry.discard(process)
+
+
+async def _spawn_before_deadline(
+    spawn_awaitable: Awaitable[asyncio.subprocess.Process],
+    *,
+    deadline: float,
+    registry: ProcessRegistry | None,
+) -> asyncio.subprocess.Process:
+    """Bound the spawn handoff while preserving ownership of late processes."""
+    spawn_owner = asyncio.create_task(spawn_awaitable)
+    remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+    try:
+        done, _pending = await asyncio.wait({spawn_owner}, timeout=remaining)
+    except asyncio.CancelledError:
+        spawn_owner.cancel()
+        _retain_spawn_cleanup(
+            asyncio.create_task(_reap_late_spawn(spawn_owner, registry))
+        )
+        raise
+    if spawn_owner not in done:
+        spawn_owner.cancel()
+        _retain_spawn_cleanup(
+            asyncio.create_task(_reap_late_spawn(spawn_owner, registry))
+        )
+        raise asyncio.TimeoutError("subprocess spawn exceeded command timeout")
+    return spawn_owner.result()
+
+
 async def run_process(
     command: str | Sequence[str],
     *,
@@ -222,6 +297,8 @@ async def run_process(
         raise ValueError("timeout must be a positive number")
     if not isinstance(output_limit, int) or isinstance(output_limit, bool) or output_limit < 0:
         raise ValueError("output_limit must be a non-negative integer")
+    timeout_seconds = float(timeout)
+    deadline = asyncio.get_running_loop().time() + timeout_seconds
     process_kwargs: dict[str, Any] = {
         "cwd": cwd,
         "env": env,
@@ -241,7 +318,11 @@ async def run_process(
             raise TypeError("exec commands must be a sequence")
         return await asyncio.create_subprocess_exec(*command, **process_kwargs)
 
-    process = await (registry.spawn(spawn) if registry is not None else _spawn_owned(spawn))
+    process = await _spawn_before_deadline(
+        registry.spawn(spawn) if registry is not None else _spawn_owned(spawn),
+        deadline=deadline,
+        registry=registry,
+    )
 
     stdout_task = asyncio.create_task(_read_bounded(process.stdout, output_limit))
     stderr_task = asyncio.create_task(_read_bounded(process.stderr, output_limit))
@@ -264,7 +345,8 @@ async def run_process(
 
     try:
         try:
-            await asyncio.wait_for(write_input_and_wait(), timeout=float(timeout))
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            await asyncio.wait_for(write_input_and_wait(), timeout=remaining)
         except asyncio.TimeoutError as exc:
             await _require_process_exit(process, "timed out command did not quiesce", exc)
             quiesced = True

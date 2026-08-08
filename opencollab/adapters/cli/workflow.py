@@ -18,6 +18,7 @@ from typing import Any, Optional
 
 import typer
 from rich.console import Console
+from rich.text import Text
 
 from opencollab.adapters.cli.config_resolve import (
     missing_api_key_for,
@@ -36,13 +37,15 @@ console = Console()
 DEFAULT_WORKFLOWS_DIR = "workflows"
 
 
-def load_registry() -> Registry:
+def load_registry(workspace: str = ".") -> Registry:
     """Discover workflows from the workflows directory.
 
-    The directory is ``OPENCOLLAB_WORKFLOWS_DIR`` when set, else ``workflows/``
-    relative to the current working directory.
+    Relative paths, including the default ``workflows/``, are resolved from
+    ``workspace``. An absolute ``OPENCOLLAB_WORKFLOWS_DIR`` remains absolute.
     """
     directory = os.environ.get("OPENCOLLAB_WORKFLOWS_DIR", DEFAULT_WORKFLOWS_DIR)
+    if not os.path.isabs(directory):
+        directory = os.path.join(workspace, directory)
     return discover_workflows(directory)
 
 
@@ -56,13 +59,15 @@ class _ConsoleEventSink:
         kind = getattr(event, "kind", "log")
         message = getattr(event, "message", str(event))
         marker = "==" if kind == "phase" else "--"
-        self._console.print(f"[dim]{marker} {message}[/dim]")
+        self._console.print(Text(f"{marker} {message}", style="dim"))
 
 
 @app.command(name="list")
-def list_cmd() -> None:
+def list_cmd(
+    workspace: str = typer.Option(".", "--workspace", "-w", help="Working directory"),
+) -> None:
     """List the registered workflows with their descriptions."""
-    registry = load_registry()
+    registry = load_registry(workspace)
     specs = registry.list_specs()
     if not specs:
         console.print("[dim]No workflows found.[/dim]")
@@ -99,7 +104,7 @@ def run_cmd(
     ),
 ) -> None:
     """Run a workflow and print its result as JSON."""
-    registry = load_registry()
+    registry = load_registry(workspace)
     try:
         spec = registry.get(name)
     except KeyError:
@@ -149,7 +154,7 @@ def run_cmd(
         if trace:
             trace_path = os.path.join(save_dir, "orchestration.jsonl")
             console.print(f"[dim]== orchestration at {trace_path}[/dim]")
-    console.print(json.dumps(result, indent=2, default=str))
+    typer.echo(json.dumps(result, indent=2, default=str))
 
 
 __all__ = ["app", "load_registry", "run_workflow"]

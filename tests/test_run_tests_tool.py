@@ -146,6 +146,33 @@ def test_run_tests_accepts_plain_pytest_q_summary():
     assert "Verdict: GREEN" in result
 
 
+def test_run_tests_accepts_pass_proof_from_retained_capture_tail():
+    class TruncatedOutputEnv(FakeEnv):
+        async def exec_cmd(self, cmd: str, timeout: float = 120.0):
+            self.exec_calls.append((cmd, timeout))
+            return SimpleNamespace(
+                returncode=0,
+                stdout="captured head\n" + PLAIN_PASS_OUTPUT,
+                stderr="",
+                stdout_truncated=True,
+                stderr_truncated=False,
+                stdout_dropped_bytes=1_000_000,
+                stderr_dropped_bytes=0,
+            )
+
+    runtime = runtime_for(TruncatedOutputEnv())
+
+    result = run(
+        RunTestsTool().execute_with_runtime(
+            {"target": "tests/test_x.py::test_one"},
+            runtime,
+        )
+    )
+
+    assert "passed=1" in result
+    assert "Verdict: GREEN" in result
+
+
 def test_run_tests_directory_target_requires_a_descendant_pass():
     output = PLAIN_PASS_OUTPUT.replace(
         "tests/test_x.py::test_one",
@@ -375,6 +402,36 @@ def test_run_tests_falls_back_to_native_runner_when_pytest_missing():
     assert "Verdict: RED" in result
     assert "Command: not executed" in result
     assert "without an executed-target proof parser" in result
+
+
+def test_run_tests_does_not_fallback_from_a_green_pytest_message():
+    env = FakeEnv(
+        stdout=PLAIN_PASS_OUTPUT + "\nNo module named pytest\n",
+        returncode=0,
+    )
+    target = "tests/test_x.py::test_one"
+
+    result = run(
+        RunTestsTool().execute_with_runtime(
+            {"target": target},
+            runtime_for(env),
+        )
+    )
+
+    assert "Verdict: GREEN" in result
+    assert len(env.exec_calls) == 1
+
+
+def test_run_tests_does_not_fallback_from_failed_test_output_text():
+    env = FakeEnv(
+        stdout=FAIL_OUTPUT + "\nNo module named pytest\n",
+        returncode=1,
+    )
+
+    result = run(RunTestsTool().execute_with_runtime({}, runtime_for(env)))
+
+    assert "Verdict: RED" in result
+    assert len(env.exec_calls) == 1
 
 
 def test_run_tests_falls_back_to_go_runner_when_pytest_missing():
@@ -685,6 +742,69 @@ def test_run_tests_records_only_parser_backed_green_targets():
 
     assert "Verdict: GREEN" in result
     assert tool.verified_targets == frozenset({target})
+
+
+def test_run_tests_invalidates_old_green_before_a_new_attempt_can_raise():
+    target = "tests/test_x.py::test_one"
+
+    class GreenThenError:
+        def __init__(self):
+            self.calls = 0
+
+        async def exec_cmd(self, _cmd, timeout=120.0):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=PLAIN_PASS_OUTPUT,
+                    stderr="",
+                )
+            raise RuntimeError("runner unavailable")
+
+    tool = RunTestsTool()
+    runtime = runtime_for(GreenThenError())
+    assert "Verdict: GREEN" in run(
+        tool.execute_with_runtime({"target": target}, runtime)
+    )
+    assert tool.verified_targets == frozenset({target})
+
+    with pytest.raises(RuntimeError, match="runner unavailable"):
+        run(tool.execute_with_runtime({"target": target}, runtime))
+
+    assert tool.verified_targets == frozenset()
+
+
+@pytest.mark.parametrize("broad_target", ["tests/test_x.py", "./tests/test_x.py"])
+def test_run_tests_broader_attempt_invalidates_narrower_green_before_error(
+    broad_target,
+):
+    narrow_target = "tests/test_x.py::test_one"
+
+    class GreenThenError:
+        def __init__(self):
+            self.calls = 0
+
+        async def exec_cmd(self, _cmd, timeout=120.0):
+            self.calls += 1
+            if self.calls == 1:
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=PLAIN_PASS_OUTPUT,
+                    stderr="",
+                )
+            raise RuntimeError("runner unavailable")
+
+    tool = RunTestsTool()
+    runtime = runtime_for(GreenThenError())
+    assert "Verdict: GREEN" in run(
+        tool.execute_with_runtime({"target": narrow_target}, runtime)
+    )
+    assert tool.verified_targets == frozenset({narrow_target})
+
+    with pytest.raises(RuntimeError, match="runner unavailable"):
+        run(tool.execute_with_runtime({"target": broad_target}, runtime))
+
+    assert tool.verified_targets == frozenset()
 
 
 def test_run_tests_requires_named_target_pass_proof():
