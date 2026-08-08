@@ -10,7 +10,9 @@ registered-but-deferred source (the pre-existing behavior).
 from __future__ import annotations
 
 import asyncio
+import os
 
+from opencollab.adapters import repo_map as repo_map_module
 from opencollab.adapters.env import ExecResult, LocalEnvironment
 from opencollab.adapters.repo_map import (
     MAP_HEADER,
@@ -62,6 +64,25 @@ def test_build_repo_map_skips_hidden_and_junk_dirs(tmp_path):
     assert "__pycache__" not in result
 
 
+def test_build_repo_map_keeps_common_hidden_project_configuration(tmp_path):
+    (tmp_path / ".github" / "workflows").mkdir(parents=True)
+    (tmp_path / ".github" / "workflows" / "ci.yml").write_text("", encoding="utf-8")
+    (tmp_path / ".devcontainer").mkdir()
+    (tmp_path / ".devcontainer" / "devcontainer.json").write_text("", encoding="utf-8")
+    (tmp_path / ".pre-commit-config.yaml").write_text("", encoding="utf-8")
+    (tmp_path / ".env").write_text("SECRET=hidden\n", encoding="utf-8")
+    (tmp_path / ".git").mkdir()
+
+    result = build_repo_map(str(tmp_path))
+
+    assert ".github/" in result
+    assert "ci.yml" in result
+    assert ".devcontainer/" in result
+    assert ".pre-commit-config.yaml" in result
+    assert ".env" not in result
+    assert not any(line.strip().startswith(".git/") for line in result.splitlines())
+
+
 def test_build_repo_map_respects_max_depth(tmp_path):
     result = build_repo_map(str(_workspace(tmp_path)), max_depth=2)
 
@@ -79,6 +100,20 @@ def test_build_repo_map_caps_total_chars(tmp_path):
     assert len(result) < 800
 
 
+def test_build_repo_map_truncates_only_at_complete_lines(tmp_path):
+    names = {f"module_with_a_long_name_{index:03}.py" for index in range(40)}
+    for name in names:
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    result = build_repo_map(str(tmp_path), max_chars=300)
+
+    for line in result.splitlines()[2:]:
+        entry = line.strip()
+        if not entry or "truncated" in entry:
+            continue
+        assert entry in names or entry.startswith("... (")
+
+
 def test_build_repo_map_caps_entries_per_dir(tmp_path):
     for i in range(40):
         (tmp_path / f"f{i:02}.py").write_text("")
@@ -86,6 +121,91 @@ def test_build_repo_map_caps_entries_per_dir(tmp_path):
     result = build_repo_map(str(tmp_path))
 
     assert "... (10 more)" in result
+
+
+def test_build_repo_map_stops_scanning_when_global_budget_is_exhausted(
+    tmp_path,
+    monkeypatch,
+):
+    for index in range(500):
+        (tmp_path / f"entry-{index:04}.txt").write_text("")
+    real_scandir = repo_map_module.os.scandir
+    scanned = 0
+
+    class CountingScandir:
+        def __init__(self, path):
+            self._inner = real_scandir(path)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            self._inner.close()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal scanned
+            entry = next(self._inner)
+            scanned += 1
+            return entry
+
+    monkeypatch.setattr(repo_map_module.os, "scandir", CountingScandir)
+
+    result = build_repo_map(
+        str(tmp_path),
+        max_entries=5,
+        max_dirs=2,
+        max_scanned_entries=32,
+    )
+
+    assert scanned <= 32
+    assert "truncated" in result
+
+
+def test_build_repo_map_reserves_root_budget_for_project_files(tmp_path):
+    for index in range(31):
+        (tmp_path / f"directory-{index:02}").mkdir()
+    for name in ("README.md", "pyproject.toml", "team.yaml"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    result = build_repo_map(str(tmp_path))
+
+    assert "README.md" in result
+    assert "pyproject.toml" in result
+    assert "team.yaml" in result
+    assert "directory-00/" in result
+
+
+def test_build_repo_map_balances_root_directories_and_other_files(tmp_path):
+    for index in range(31):
+        (tmp_path / f"directory-{index:02}").mkdir()
+    for name in ("AGENTS.md", "Makefile", "requirements.txt", "uv.lock"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    result = build_repo_map(str(tmp_path))
+
+    for name in ("AGENTS.md", "Makefile", "requirements.txt", "uv.lock"):
+        assert name in result
+    assert "directory-00/" in result
+    assert "directories" in result
+    assert "files omitted" in result
+
+
+def test_build_repo_map_reserves_root_siblings_before_directory_children(tmp_path):
+    for index in range(31):
+        directory = tmp_path / f"directory-{index:02}"
+        directory.mkdir()
+        (directory / "child.py").write_text("", encoding="utf-8")
+    root_files = ("AGENTS.md", "Makefile", "requirements.txt", "uv.lock")
+    for name in root_files:
+        (tmp_path / name).write_text("", encoding="utf-8")
+
+    result = build_repo_map(str(tmp_path), max_entries=35)
+
+    for name in root_files:
+        assert f"\n{name}\n" in f"\n{result}\n"
 
 
 def test_build_repo_map_missing_or_empty_workspace_returns_empty(tmp_path):
@@ -99,8 +219,22 @@ def test_build_repo_map_missing_or_empty_workspace_returns_empty(tmp_path):
 
 
 class _FakeEnv:
-    def __init__(self, stdout: str = "", returncode: int = 0, raises: bool = False):
-        self._result = ExecResult(returncode=returncode, stdout=stdout, stderr="")
+    def __init__(
+        self,
+        stdout: str = "",
+        returncode: int = 0,
+        raises: bool = False,
+        stderr: str = "",
+        stdout_truncated: bool = False,
+        stderr_truncated: bool = False,
+    ):
+        self._result = ExecResult(
+            returncode=returncode,
+            stdout=stdout,
+            stderr=stderr,
+            stdout_truncated=stdout_truncated,
+            stderr_truncated=stderr_truncated,
+        )
         self._raises = raises
         self.cmds: list[str] = []
 
@@ -123,6 +257,67 @@ def test_build_repo_map_via_env_formats_find_output():
     assert "find . -mindepth 1 -maxdepth" in env.cmds[0]
 
 
+def test_build_repo_map_via_env_limits_enumeration_work() -> None:
+    env = _FakeEnv(
+        stdout="\n".join(f"./path-{index:03}" for index in range(20)) + "\n"
+    )
+
+    result = run(build_repo_map_via_env(env, max_entries=5))
+
+    assert "path-004" in result
+    assert "path-005" not in result
+    assert "truncated" in result
+    assert "mkfifo" in env.cmds[0]
+    assert "head -n 6" in env.cmds[0]
+    assert "| head" not in env.cmds[0]
+    assert "| sort" not in env.cmds[0]
+
+
+def test_build_repo_map_via_env_checks_find_before_sorting():
+    env = _FakeEnv(stdout="./zeta.py\n./alpha.py\n")
+
+    result = run(build_repo_map_via_env(env))
+
+    assert "| sort" not in env.cmds[0]
+    assert result.index("alpha.py") < result.index("zeta.py")
+
+
+def test_build_repo_map_via_env_rejects_find_diagnostics():
+    env = _FakeEnv(
+        stdout="./visible.py\n",
+        stderr="find: unreadable directory",
+    )
+
+    assert run(build_repo_map_via_env(env)) == ""
+
+
+def test_build_repo_map_via_env_rejects_truncated_traversal_output():
+    env = _FakeEnv(
+        stdout="./visible.py\n",
+        stdout_truncated=True,
+    )
+
+    assert run(build_repo_map_via_env(env)) == ""
+
+
+def test_build_repo_map_via_env_filters_hidden_paths_consistently():
+    env = _FakeEnv(
+        stdout=(
+            "./.github\n"
+            "./.github/workflows\n"
+            "./.github/workflows/ci.yml\n"
+            "./.env\n"
+            "./.git/HEAD\n"
+        )
+    )
+
+    result = run(build_repo_map_via_env(env))
+
+    assert ".github/workflows/ci.yml" in result
+    assert ".env" not in result
+    assert not any(line.strip().startswith(".git/") for line in result.splitlines())
+
+
 def test_build_repo_map_via_env_failure_or_empty_returns_empty():
     assert run(build_repo_map_via_env(_FakeEnv(returncode=1, stdout="x"))) == ""
     assert run(build_repo_map_via_env(_FakeEnv(stdout=".\n"))) == ""
@@ -137,6 +332,45 @@ def test_build_repo_map_via_env_works_against_local_environment(tmp_path):
 
     assert "src/pkg/core.py" in result
     assert ".git" not in result
+
+
+def test_build_repo_map_via_env_accepts_find_sigpipe_at_the_entry_limit(tmp_path):
+    for index in range(100):
+        (tmp_path / f"entry-{index:03}.py").write_text("", encoding="utf-8")
+
+    result = run(
+        build_repo_map_via_env(LocalEnvironment(str(tmp_path)), max_entries=5)
+    )
+
+    assert "repository map truncated" in result
+    assert len(
+        [
+            line
+            for line in result.splitlines()
+            if line.startswith("entry-")
+        ]
+    ) == 5
+
+
+def test_build_repo_map_via_env_preserves_a_silent_find_failure(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_find = fake_bin / "find"
+    fake_find.write_text(
+        "#!/bin/sh\nprintf './visible.py\\n'\nexit 7\n",
+        encoding="utf-8",
+    )
+    fake_find.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+
+    result = run(build_repo_map_via_env(LocalEnvironment(str(workspace))))
+
+    assert result == ""
 
 
 # --- injection into the PROJECT context layer --------------------------------

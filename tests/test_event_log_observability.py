@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections import UserDict
 from types import SimpleNamespace
 
 import opencollab.adapters.event_log as event_log
@@ -22,6 +23,33 @@ def test_jsonl_event_sink_serializes_custom_event_data(tmp_path):
     row = json.loads(path.read_text(encoding="utf-8"))
     assert row["type"] == "custom"
     assert row["data"]["value"] == "custom-object"
+
+
+def test_jsonl_event_sink_preserves_plain_mapping_payload(tmp_path):
+    path = tmp_path / "events.jsonl"
+    sink = JsonlEventSink(str(path))
+
+    asyncio.run(sink.emit({"type": "custom", "data": {"value": 7}, "sequence": 3}))
+
+    row = json.loads(path.read_text(encoding="utf-8"))
+    assert row["type"] == "custom"
+    assert row["data"] == {"value": 7}
+    assert row["sequence"] == 3
+
+
+def test_jsonl_event_sink_preserves_generic_mapping_payload(tmp_path):
+    path = tmp_path / "events.jsonl"
+    sink = JsonlEventSink(str(path))
+    event = UserDict(
+        {"type": "custom", "data": {"value": 11}, "sequence": 5}
+    )
+
+    asyncio.run(sink.emit(event))
+
+    row = json.loads(path.read_text(encoding="utf-8"))
+    assert row["type"] == "custom"
+    assert row["data"] == {"value": 11}
+    assert row["sequence"] == 5
 
 
 def test_jsonl_event_sink_remains_passive_when_parent_cannot_be_created(tmp_path):
@@ -64,3 +92,4 @@ def test_jsonl_event_sink_retains_first_write_error(tmp_path, monkeypatch):
 
     assert sink.write_error == "OSError: failure 1"
     assert sink.dropped_events == 2
+    assert attempts == 1

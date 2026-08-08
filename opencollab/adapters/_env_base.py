@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+ENV_FILE_WRITE_LIMIT_BYTES = 4 * 1024 * 1024
+
 
 @dataclass(slots=True)
 class ExecResult:
@@ -14,6 +16,15 @@ class ExecResult:
     stderr_truncated: bool = False
     stdout_dropped_bytes: int = 0
     stderr_dropped_bytes: int = 0
+
+
+@dataclass(slots=True)
+class TextFileRange:
+    lines: list[str]
+    start_line: int
+    total_lines: int | None
+    has_more: bool
+    chars_truncated: bool = False
 
 
 class Environment:
@@ -52,6 +63,31 @@ class Environment:
     async def read_file(self, path: str) -> str:
         raise NotImplementedError
 
+    async def read_text_range(
+        self,
+        path: str,
+        *,
+        offset: int,
+        limit: int,
+        max_chars: int,
+    ) -> TextFileRange:
+        content = await self.read_file(path)
+        lines = content.splitlines()
+        start = max(0, offset - 1)
+        end = min(len(lines), start + limit)
+        selected = lines[start:end]
+        joined = "\n".join(selected)
+        chars_truncated = len(joined) > max_chars
+        if chars_truncated:
+            selected = joined[:max_chars].split("\n")
+        return TextFileRange(
+            lines=selected,
+            start_line=start + 1,
+            total_lines=len(lines),
+            has_more=end < len(lines) or chars_truncated,
+            chars_truncated=chars_truncated,
+        )
+
     async def write_file(self, path: str, content: str) -> None:
         raise NotImplementedError
 
@@ -75,4 +111,4 @@ class Environment:
         await self.cleanup()
 
 
-__all__ = ["Environment", "ExecResult"]
+__all__ = ["ENV_FILE_WRITE_LIMIT_BYTES", "Environment", "ExecResult", "TextFileRange"]

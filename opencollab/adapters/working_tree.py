@@ -14,6 +14,30 @@ import shlex
 from collections.abc import Sequence
 from typing import Any
 
+MAX_WORKING_TREE_DIFF_CHARS = 1_000_000
+
+
+def _require_complete_result(
+    result: Any,
+    operation: str,
+    *,
+    allowed_returncodes: tuple[int, ...] = (0,),
+) -> None:
+    if (
+        bool(getattr(result, "stdout_truncated", False))
+        or bool(getattr(result, "stderr_truncated", False))
+        or int(getattr(result, "stdout_dropped_bytes", 0) or 0) > 0
+        or int(getattr(result, "stderr_dropped_bytes", 0) or 0) > 0
+    ):
+        raise RuntimeError(f"{operation} exceeded capture limit")
+    returncode = int(getattr(result, "returncode", 0))
+    if returncode not in allowed_returncodes:
+        detail = str(getattr(result, "stderr", "") or "").strip()
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(
+            f"{operation} failed with git status {returncode}{suffix}"
+        )
+
 
 class EnvWorkingTreeProbe:
     """``WorkingTreeProbe`` backed by an :class:`Environment`.
@@ -34,6 +58,7 @@ class EnvWorkingTreeProbe:
     async def changed(self) -> bool:
         cmd = f"git -C {shlex.quote(self._workspace)} status --porcelain"
         result = await self._env.exec_cmd(cmd, timeout=30)
+        _require_complete_result(result, "working-tree status")
         return bool(result.stdout.strip())
 
     async def changed_excluding(self, paths: Sequence[str]) -> bool:
@@ -54,12 +79,73 @@ class EnvWorkingTreeProbe:
             f"--untracked-files=all -- . {excludes}"
         )
         result = await self._env.exec_cmd(cmd, timeout=30)
+        _require_complete_result(result, "working-tree status")
         return bool(result.stdout.strip())
 
     async def diff(self) -> str:
-        cmd = f"git -C {shlex.quote(self._workspace)} diff"
-        result = await self._env.exec_cmd(cmd, timeout=30)
-        return result.stdout
+        workspace = shlex.quote(self._workspace)
+        status_result = await self._env.exec_cmd(
+            f"git -C {workspace} status --porcelain=v1 --untracked-files=all",
+            timeout=30,
+        )
+        _require_complete_result(status_result, "working-tree status")
+
+        tracked_result = await self._env.exec_cmd(
+            f"git -C {workspace} --no-pager diff HEAD --binary --no-ext-diff --",
+            timeout=30,
+        )
+        _require_complete_result(tracked_result, "tracked diff")
+
+        untracked_result = await self._env.exec_cmd(
+            f"git -C {workspace} ls-files --others --exclude-standard -z --",
+            timeout=30,
+        )
+        _require_complete_result(untracked_result, "untracked file listing")
+        untracked_paths = [
+            path
+            for path in untracked_result.stdout.split("\0")
+            if path
+        ]
+
+        parts: list[str] = []
+        total_chars = 0
+
+        def append_complete(part: str) -> None:
+            nonlocal total_chars
+            separator_chars = 2 if parts else 0
+            if total_chars + separator_chars + len(part) > MAX_WORKING_TREE_DIFF_CHARS:
+                raise RuntimeError(
+                    "working-tree diff exceeded aggregate evidence limit"
+                )
+            parts.append(part)
+            total_chars += separator_chars + len(part)
+
+        status = status_result.stdout.rstrip("\n")
+        append_complete(f"[Working tree status]\n{status or '(clean)'}")
+
+        tracked = tracked_result.stdout.rstrip("\n")
+        if tracked:
+            append_complete(f"[Tracked changes vs HEAD]\n{tracked}")
+
+        for path in untracked_paths:
+            result = await self._env.exec_cmd(
+                "git -C "
+                f"{workspace} --no-pager diff --no-index --binary --no-ext-diff "
+                f"-- /dev/null {shlex.quote(path)}",
+                timeout=30,
+            )
+            _require_complete_result(
+                result,
+                f"untracked diff for {path!r}",
+                allowed_returncodes=(0, 1),
+            )
+            patch = result.stdout.rstrip("\n")
+            append_complete(
+                f"[Untracked file: {path}]\n"
+                f"{patch or '(empty file; no content diff)'}"
+            )
+
+        return "\n\n".join(parts)
 
 
 __all__ = ["EnvWorkingTreeProbe"]
