@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -181,6 +182,59 @@ def test_secret_history_accepts_clean_commits_and_special_names(tmp_path):
     (repository / name).write_text("safe\n", encoding="utf-8")
     _git(repository, "add", name)
     _git(repository, "commit", "-m", "add clean file")
+
+    result = _run(repository, base, "HEAD", scanner)
+
+    assert result.returncode == 0
+    assert "checks passed" in result.stdout
+
+
+def test_secret_history_accepts_line_metadata_only_baseline_refresh(tmp_path):
+    repository, _base, _scanner = _repository(tmp_path)
+    baseline = {
+        "version": "1.5.0",
+        "results": {
+            "code.py": [
+                {
+                    "type": "Secret Keyword",
+                    "filename": "code.py",
+                    "hashed_secret": "stable-hash",
+                    "line_number": 3,
+                    "is_secret": False,
+                }
+            ]
+        },
+        "generated_at": "before",
+    }
+    (repository / ".secrets.baseline").write_text(
+        json.dumps(baseline) + "\n",
+        encoding="utf-8",
+    )
+    _git(repository, "add", ".secrets.baseline")
+    _git(repository, "commit", "-m", "seed audited baseline")
+    base = _git(repository, "rev-parse", "HEAD")
+    (repository / "code.py").write_text("safe = True\n", encoding="utf-8")
+    _git(repository, "add", "code.py")
+    _git(repository, "commit", "-m", "shift source lines")
+
+    scanner = tmp_path / "metadata-refresh-scanner.py"
+    scanner.write_text(
+        """#!/usr/bin/env python3
+import json
+from pathlib import Path
+
+path = Path(".secrets.baseline")
+data = json.loads(path.read_text())
+for findings in data["results"].values():
+    for finding in findings:
+        finding["line_number"] += 8
+data["generated_at"] = "after"
+path.write_text(json.dumps(data) + "\\n")
+raise SystemExit(3)
+""",
+        encoding="utf-8",
+    )
+    scanner.chmod(0o755)
 
     result = _run(repository, base, "HEAD", scanner)
 
