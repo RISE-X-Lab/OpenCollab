@@ -28,6 +28,40 @@ from opencollab.domain.session import SessionPhase
 logger = logging.getLogger(__name__)
 
 
+def _is_tool_choice_rejection(exc: Exception) -> bool:
+    """Return whether a provider validation error specifically rejects choice."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status is not None and status not in {400, 422}:
+        return False
+
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        detail = body.get("error", body)
+        if isinstance(detail, dict):
+            field = detail.get("param") or detail.get("field")
+            code = detail.get("code")
+            if field in {"tool_choice", "tool choice"}:
+                return True
+            if code in {"invalid_tool_choice", "unsupported_tool_choice"}:
+                return True
+
+    message = str(exc).lower()
+    names_choice = "tool_choice" in message or "tool choice" in message
+    rejects_choice = any(
+        marker in message
+        for marker in (
+            "invalid",
+            "not supported",
+            "unsupported",
+            "not allowed",
+            "unknown",
+            "unrecognized",
+            "unexpected",
+        )
+    )
+    return names_choice and rejects_choice
+
+
 class _SessionRunCompletionMixin:
     """Implementation details composed into ``SessionRunUseCase``."""
 
@@ -95,8 +129,12 @@ class _SessionRunCompletionMixin:
         filtered = [spec for spec in tools if spec.get("function", {}).get("name") in names]
         return filtered or tools
 
-    def _hard_steering_tools(self) -> tuple[frozenset[str], str]:
+    def _hard_steering_tools(
+        self, tool_choice_override: Any | None
+    ) -> tuple[frozenset[str], str]:
         tool_names = {getattr(t, "name", None) for t in getattr(self.agent, "tools", []) or []}
+        if tool_choice_override == _submit_tool_choice(_STRUCTURED_OUTPUT_TOOL):
+            return frozenset({_STRUCTURED_OUTPUT_TOOL}), "hard structured-output gate"
         if tool_names & _WRITE_TOOLS:
             return _WRITE_TOOLS, "hard write gate"
         if _STRUCTURED_OUTPUT_TOOL in tool_names:
@@ -181,6 +219,7 @@ class _SessionRunCompletionMixin:
             has_write=bool(tool_names & _WRITE_TOOLS),
             has_structured_output=_STRUCTURED_OUTPUT_TOOL in tool_names,
             structured_override=_submit_tool_choice(_STRUCTURED_OUTPUT_TOOL),
+            write_landed=self.state.turn.has_landed_write,
         )
         self._maybe_trace_steering(steering_level)
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
@@ -190,7 +229,7 @@ class _SessionRunCompletionMixin:
         if steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
-            hard_tools, gate_label = self._hard_steering_tools()
+            hard_tools, gate_label = self._hard_steering_tools(tool_choice_override)
             self._pending_tool_allowlist = hard_tools
             self._pending_tool_gate_label = gate_label
             tools = self._tool_schemas_with_names(tools, hard_tools)
@@ -217,7 +256,11 @@ class _SessionRunCompletionMixin:
         )
         await self.event_publisher.emit(self.event_factory.error("context_overflow_recompacted"))
         try:
-            return await self._complete(forced, tools)
+            return await self._complete(
+                forced,
+                tools,
+                tool_choice_override,
+            )
         except Exception as exc:
             if self._is_context_overflow(exc):
                 raise _ContextOverflowStop() from exc
@@ -250,9 +293,7 @@ class _SessionRunCompletionMixin:
             # identically, so re-raise it instead of masking a real fault behind
             # a second call. Duck-typed so the application layer needs no
             # provider-specific exception imports.
-            status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
-            msg = str(exc).lower()
-            if status != 400 and "tool_choice" not in msg and "tool choice" not in msg:
+            if not _is_tool_choice_rejection(exc):
                 raise
             logger.warning(
                 "tool_choice=%r rejected on aid=%s (%s); retrying once with 'auto'",
@@ -260,7 +301,15 @@ class _SessionRunCompletionMixin:
                 self.state.aid,
                 type(exc).__name__,
             )
-            return await self._complete_with_choice(messages, tools, "auto")
+            try:
+                return await self._complete_with_choice(messages, tools, "auto")
+            except Exception as fallback_exc:
+                if hasattr(exc, "add_note"):
+                    exc.add_note(
+                        "Retrying with tool_choice='auto' also failed: "
+                        f"{type(fallback_exc).__name__}: {fallback_exc}"
+                    )
+                raise exc from fallback_exc
 
     async def _complete_with_choice(
         self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None
@@ -450,19 +499,23 @@ class _SessionRunCompletionMixin:
             )
 
     def append_assistant_message(self, response: CompletionResponse) -> None:
+        has_content = (
+            isinstance(response.content, str)
+            and bool(response.content.strip())
+        )
         # A provider-limit response may contain an incomplete tool call. Never
         # persist that structure: a later turn would send an orphaned call back
         # to the provider, and the run loop must not execute partial arguments.
         # Preserve only user-visible partial text; the full raw response remains
         # available in the trace for diagnosis.
         if response.finish_reason in {"length", "max_tokens"}:
-            if response.content:
+            if has_content:
                 self.state.append_message({"role": "assistant", "content": response.content})
             return
         # An empty-stop turn (no content, no tool calls) would append a bare
         # ``{"role": "assistant"}`` message that some providers reject on the
         # next request. Skip it — handle_pending_response decides retry-vs-DONE.
-        if not response.content and not response.tool_calls:
+        if not has_content and not response.tool_calls:
             return
         assistant_msg: dict[str, Any] = {"role": "assistant"}
         reasoning = getattr(response, "reasoning", None)
@@ -471,7 +524,7 @@ class _SessionRunCompletionMixin:
         provider_state = getattr(response, "provider_state", None)
         if provider_state:
             assistant_msg["provider_state"] = provider_state
-        if response.content:
+        if has_content:
             assistant_msg["content"] = response.content
         if response.tool_calls:
             assistant_msg["tool_calls"] = response.tool_calls

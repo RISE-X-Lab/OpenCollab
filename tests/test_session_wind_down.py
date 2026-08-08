@@ -122,6 +122,51 @@ def test_t1_default_enforcement_is_off():
     assert llm.calls == []
 
 
+@pytest.mark.parametrize(
+    ("used_tokens", "team_budget_exhausted", "reason"),
+    [
+        (100, None, "budget exceeded: 100 tokens used"),
+        (
+            90,
+            lambda: True,
+            "team budget exceeded: aggregate spend reached the global cap",
+        ),
+    ],
+)
+def test_hard_budget_preempts_new_turn_wind_down(
+    used_tokens,
+    team_budget_exhausted,
+    reason,
+):
+    state = SessionState(
+        messages=[{"role": "system", "content": "sys"}],
+        used_tokens=used_tokens,
+        wind_down_done=True,
+        wind_down_attempts=1,
+        wind_down_token_mark=80,
+        phase=SessionPhase.DONE,
+    )
+    state.reset_for_user_turn()
+    llm = FakeLLM([llm_response(content="must not run")])
+    runner = build_runner(
+        state=state,
+        agent=_agent_with_submit(),
+        llm=llm,
+        max_budget_tokens=100,
+        enforcement_strength=ENFORCEMENT_ON,
+        commit_reserve=20,
+        team_budget_exhausted=team_budget_exhausted,
+    )
+
+    result = run(runner.run_loop())
+
+    assert result == ""
+    assert llm.calls == []
+    assert state.phase is SessionPhase.STOPPED
+    assert state.terminal_reason == reason
+    assert state.wind_down_done is False
+
+
 # --------------------------------------------------------------------------- #
 # T2 — WIND-DOWN BEHAVIOR.
 # --------------------------------------------------------------------------- #

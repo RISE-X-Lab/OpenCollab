@@ -88,6 +88,15 @@ class ToolProcessingResult:
     # ``reads_since_last_edit``; otherwise the reads accumulate onto it.
     reads_executed: int = 0
     write_succeeded: bool = False
+    # Successful read/write signals in execution order. New producers populate
+    # this so a write resets only the reads that precede it; the aggregate fields
+    # above remain as a compatibility fallback for older/custom executors.
+    read_write_signals: list[str] = field(default_factory=list)
+    # A provider-issued tool step occurred even if every call short-circuited
+    # before execution (malformed args, unknown tool, schema/preflight error).
+    # The progress watchdog counts such a step as no progress instead of letting
+    # repeated malformed calls bypass it indefinitely.
+    tool_step_attempted: bool = False
     # STEP 1 information-gain sensor: one ``(content_hash, call_hash,
     # intrinsic_low_yield)`` tuple per EXECUTED tool result, in call order. Folded
     # into SessionState's novelty counters by ``apply_evidence_counter_to``.
@@ -119,8 +128,17 @@ class ToolProcessingResult:
         edit adds its read calls so the steering layer can escalate when the
         model keeps reading without writing.
         """
+        if self.read_write_signals:
+            for signal in self.read_write_signals:
+                if signal == "write":
+                    state.turn.reads_since_last_edit = 0
+                    state.turn.has_landed_write = True
+                elif signal == "read":
+                    state.turn.reads_since_last_edit += 1
+            return
         if self.write_succeeded:
             state.turn.reads_since_last_edit = 0
+            state.turn.has_landed_write = True
         else:
             state.turn.reads_since_last_edit += self.reads_executed
 
@@ -156,12 +174,13 @@ class ToolProcessingResult:
             )
         if self.evidence_signals:
             made_progress = (
-                self.write_succeeded or state.turn.distinct_evidence_count > distinct_before
+                self.write_succeeded
+                or state.turn.distinct_evidence_count > distinct_before
             )
-            if made_progress:
-                state.turn.steps_since_progress = 0
-            else:
-                state.turn.steps_since_progress += 1
+        if made_progress:
+            state.turn.steps_since_progress = 0
+        elif self.evidence_signals or self.tool_step_attempted:
+            state.turn.steps_since_progress += 1
         if made_progress:
             state.turn.loop_blocked_since_progress = 0
         elif self.loop_detections:

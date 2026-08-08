@@ -177,6 +177,52 @@ def test_store_rejects_complete_invalid_journal_record(tmp_path) -> None:
         store.load_snapshot(str(path), "fallback")
 
 
+@pytest.mark.parametrize(
+    ("document", "error"),
+    [
+        ({"message": [{"role": "user", "content": "lost"}]}, "messages"),
+        ({"messages": None}, "messages.*list"),
+        ({"messages": "not-a-list"}, "messages.*list"),
+        ({"messages": []}, "at least one message"),
+        ([], "at least one message"),
+        ({"messages": [{"role": "user"}]}, "content"),
+        (
+            {"messages": [{"role": "tool", "content": "result"}]},
+            "tool_call_id",
+        ),
+    ],
+)
+def test_store_rejects_malformed_snapshot_message_shapes(
+    tmp_path, document, error
+) -> None:
+    path = tmp_path / "malformed.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=error):
+        SessionStore().load_snapshot(str(path), "fallback")
+
+
+def test_store_accepts_assistant_tool_call_and_matching_result(tmp_path) -> None:
+    path = tmp_path / "tools.json"
+    messages = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call-1",
+                    "type": "function",
+                    "function": {"name": "grep", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "done"},
+    ]
+    SessionStore().save(str(path), messages)
+
+    assert SessionStore().load_messages(str(path), "fallback") == messages
+
+
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
 def test_store_rejects_fifo_without_blocking(tmp_path) -> None:
     path = tmp_path / "snapshot.fifo"

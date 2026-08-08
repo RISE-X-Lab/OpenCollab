@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
 
+from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
 from opencollab.application.ports import (
@@ -83,7 +84,8 @@ class Session:
         self._permission_policy = permission_policy
         self._safety_policy = safety_policy
         self._auto_save_path = auto_save_path
-        self._launch_applied = False
+        self._launch_state = "not_applied"
+        self._applied_launch: object | None = None
         # The public facade owns turn admission. The runner protects its own
         # cleanup, but callers can otherwise interleave a new message or a
         # second run with the same mutable FSM.
@@ -268,7 +270,16 @@ class Session:
         if self._turn_lock.locked() or self.runner.pending_cleanup_tasks:
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
-            return await self.runner.run_loop(cancel_event)
+            try:
+                return await self.runner.run_loop(cancel_event)
+            finally:
+                if self.state.phase.is_terminal():
+                    owner = self.enqueue_auto_save()
+                    if owner is not None:
+                        await await_owned_operation(
+                            owner,
+                            propagate_cancellation=True,
+                        )
 
     async def add_user_message(self, content: str) -> None:
         if (
@@ -281,6 +292,7 @@ class Session:
         async with self._turn_lock:
             self.state.append_queued_external_user_turn(content)
             self.state.reset_for_user_turn()
+            self.runner.reset_runtime_for_user_turn()
             await self.event_bus.emit(SessionEvent(type="user_message_appended"))
 
     def apply_launch(self, launch: "LaunchSpec") -> None:
@@ -292,23 +304,37 @@ class Session:
         re-truncated. The ongoing per-event ``AutoSaveSubscriber`` (wired at
         construction) is a separate concern and unaffected.
         """
-        if self._launch_applied:
+        if self._launch_state == "applied":
+            if launch != self._applied_launch:
+                raise ValueError(
+                    "session already applied a different launch specification"
+                )
             return
-        self._launch_applied = True
-        resumable = bool(
-            launch.session_file
-            and (
-                os.path.exists(launch.session_file)
-                or (
-                    isinstance(self.store, JournalSnapshotStorePort)
-                    and self.store.has_snapshot(launch.session_file)
+        if self._launch_state == "applying":
+            raise SessionBusyError("session launch persistence is already applying")
+
+        self._launch_state = "applying"
+        try:
+            resumable = bool(
+                launch.session_file
+                and (
+                    os.path.exists(launch.session_file)
+                    or (
+                        isinstance(self.store, JournalSnapshotStorePort)
+                        and self.store.has_snapshot(launch.session_file)
+                    )
                 )
             )
-        )
-        if launch.session_file and resumable:
-            self.restore(launch.session_file)
-        elif launch.auto_save_path:
-            self.save(launch.auto_save_path)
+            if launch.session_file and resumable:
+                self.restore(launch.session_file)
+            elif launch.auto_save_path:
+                self.save(launch.auto_save_path)
+        except BaseException:
+            self._launch_state = "not_applied"
+            raise
+        else:
+            self._applied_launch = launch
+            self._launch_state = "applied"
 
     def restore(self, path: str) -> None:
         """Restore a complete snapshot while accepting legacy message-only stores."""
@@ -367,6 +393,9 @@ class Session:
         )
         self.state.turn.reads_since_last_edit = _snapshot_nonnegative_int(
             raw_state.get("reads_since_last_edit")
+        )
+        self.state.turn.has_landed_write = bool(
+            raw_state.get("has_landed_write", False)
         )
         self.state.turn.low_yield_since_progress = _snapshot_nonnegative_int(
             raw_state.get("low_yield_since_progress")
@@ -429,14 +458,15 @@ class Session:
             # provider protocol; keeping the stale sidecar rows would make the
             # scheduler's quiescence check wait forever after the resumed turn.
             self.state.pending_events.clear()
-        self.state.terminal_reason = (
-            str(raw_state["terminal_reason"])
-            if raw_state.get("terminal_reason") is not None
-            else None
-        )
         if self.state.phase is SessionPhase.AWAITING_EVENTS and self.state.pending_events.is_empty():
             self.state.set_phase(SessionPhase.IDLE)
             self._append_restore_results_for_open_tool_calls()
+        self.state.terminal_reason = (
+            str(raw_state["terminal_reason"])
+            if self.state.phase.is_terminal()
+            and raw_state.get("terminal_reason") is not None
+            else None
+        )
         self._restore_auto_save_tracking(snapshot)
 
     def _restore_auto_save_tracking(self, snapshot: dict[str, Any]) -> None:
@@ -544,6 +574,7 @@ class Session:
                 "markup_recovered": self.state.markup_recovered,
                 "recent_call_hashes": list(self.state.turn.recent_call_hashes),
                 "reads_since_last_edit": self.state.turn.reads_since_last_edit,
+                "has_landed_write": self.state.turn.has_landed_write,
                 "low_yield_since_progress": self.state.turn.low_yield_since_progress,
                 "distinct_evidence_count": self.state.turn.distinct_evidence_count,
                 "seen_result_hashes": sorted(self.state.turn.seen_result_hashes),

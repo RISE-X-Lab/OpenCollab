@@ -25,6 +25,7 @@ from opencollab.application.submit_findings import SubmitFindingsTool
 from opencollab.application.tool_execution import (
     MAX_TOOL_CALLS_PER_BATCH,
     ToolExecutionUseCase,
+    _bash_likely_mutates,
 )
 from opencollab.domain.session import SessionState
 from opencollab.domain.tools import LoopDetection
@@ -224,13 +225,17 @@ def event_factory() -> SessionEventFactory:
             type="loop_detected",
             data={"tool": tool, "count": count},
         ),
-        tool_start=lambda tool, args: SimpleNamespace(
+        tool_start=lambda tool, args, tool_call_id: SimpleNamespace(
             type="tool_start",
-            data={"tool": tool, "args": args},
+            data={"tool": tool, "args": args, "tool_call_id": tool_call_id},
         ),
-        tool_end=lambda tool, latency: SimpleNamespace(
+        tool_end=lambda tool, latency, tool_call_id: SimpleNamespace(
             type="tool_end",
-            data={"tool": tool, "latency": latency},
+            data={
+                "tool": tool,
+                "latency": latency,
+                "tool_call_id": tool_call_id,
+            },
         ),
     )
 
@@ -285,6 +290,58 @@ def test_tool_execution_use_case_preserves_argument_errors(arguments, expected_e
         }
     ]
     assert publisher.events == []
+
+
+@pytest.mark.parametrize(
+    "failure",
+    ["invalid-json", "non-object", "unknown-tool", "schema"],
+)
+def test_short_circuited_tool_steps_advance_progress_watchdog(failure):
+    state = SessionState(messages=[])
+    if failure == "unknown-tool":
+        use_case, _ = build_use_case(state=state)
+        call = tool_call(name="missing", arguments="{}")
+    elif failure == "schema":
+        use_case, _ = build_use_case(
+            agent=FakeAgent(tools=[SideEffectTool()]),
+            state=state,
+        )
+        call = tool_call(arguments="{}")
+    else:
+        use_case, _ = build_use_case(
+            agent=FakeAgent(tools=[RuntimeNativeTool()]),
+            state=state,
+        )
+        arguments = "{not-json" if failure == "invalid-json" else "[]"
+        call = tool_call(arguments=arguments)
+
+    for _ in range(3):
+        result = run(use_case.process([call]))
+        result.apply_to(state)
+        assert result.messages_to_append[0]["tool_call_id"] == "call-1"
+
+    assert state.turn.steps_since_progress == 3
+
+
+def test_rejected_batch_advances_progress_watchdog_once():
+    state = SessionState(messages=[])
+    use_case, _ = build_use_case(
+        agent=FakeAgent(tools=[RuntimeNativeTool()]),
+        state=state,
+    )
+    calls = [
+        tool_call(call_id="valid", arguments="{}"),
+        tool_call(call_id="broken", arguments="{not-json"),
+    ]
+
+    result = run(use_case.process(calls))
+    result.apply_to(state)
+
+    assert state.turn.steps_since_progress == 1
+    assert [message["tool_call_id"] for message in result.messages_to_append] == [
+        "valid",
+        "broken",
+    ]
 
 
 def test_tool_execution_use_case_handles_non_string_and_preparsed_arguments():
@@ -549,9 +606,112 @@ def test_tool_execution_use_case_executes_runtime_native_tool_and_events():
     assert runtime.safety_policy is safety_policy
     assert runtime.permission_policy is permission_policy
     assert publisher.events[0].type == "tool_start"
-    assert publisher.events[0].data == {"tool": "fake_tool", "args": {"value": 1}}
+    assert publisher.events[0].data == {
+        "tool": "fake_tool",
+        "args": {"value": 1},
+        "tool_call_id": "call-1",
+    }
     assert publisher.events[1].type == "tool_end"
     assert publisher.events[1].data["tool"] == "fake_tool"
+    assert publisher.events[1].data["tool_call_id"] == "call-1"
+
+
+def _named_runtime_tool(name: str, output: str = "ok"):
+    tool = RuntimeNativeTool(output=output)
+    tool.name = name
+    return tool
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("python -c 'print(1 > 0)'", False),
+        ("echo guarantee output", False),
+        ("printf '%s' '>'", False),
+        ("cat input 2>&1", False),
+        ("cat input >/dev/null", False),
+        ("cp source target", True),
+        ("mv source target", True),
+        ("install source target", True),
+        ("git apply change.patch", True),
+        ("perl -pi -e 's/old/new/' target", True),
+        ("cat input | tee output", True),
+        ("sed -i.bak 's/old/new/' target", True),
+        ("printf x > target", True),
+    ],
+)
+def test_bash_mutation_detection_uses_shell_tokens(command, expected):
+    assert _bash_likely_mutates({"command": command}) is expected
+
+
+@pytest.mark.parametrize(
+    ("command", "output", "expected_reads"),
+    [
+        ("python -c 'print(1 > 0)'", "True", 5),
+        ("cp source target", "copied", 0),
+        ("cp source target", "Error: copy failed", 5),
+    ],
+)
+def test_only_successful_mutating_bash_resets_read_counter(
+    command, output, expected_reads
+):
+    state = SessionState(messages=[])
+    state.turn.reads_since_last_edit = 5
+    use_case, _ = build_use_case(
+        agent=FakeAgent(tools=[_bash_tool(output)]),
+        state=state,
+    )
+
+    result = run(
+        use_case.process(
+            [tool_call(name="bash", arguments={"command": command})]
+        )
+    )
+    result.apply_read_write_counter_to(state)
+
+    assert state.turn.reads_since_last_edit == expected_reads
+
+
+def test_failed_read_does_not_advance_read_without_write_counter():
+    state = SessionState(messages=[])
+    state.turn.reads_since_last_edit = 5
+    read = _named_runtime_tool("file_read", "Error: file unavailable")
+    use_case, _ = build_use_case(
+        agent=FakeAgent(tools=[read]),
+        state=state,
+    )
+
+    result = run(use_case.process([tool_call(name="file_read")]))
+    result.apply_read_write_counter_to(state)
+
+    assert state.turn.reads_since_last_edit == 5
+
+
+@pytest.mark.parametrize(
+    ("names", "expected_reads"),
+    [
+        (["file_read", "file_write"], 0),
+        (["file_write", "file_read", "file_read"], 2),
+        (["file_read", "file_write", "file_read"], 1),
+        (["file_write", "file_read", "file_write"], 0),
+    ],
+)
+def test_read_write_counter_replays_successful_batch_order(names, expected_reads):
+    state = SessionState(messages=[])
+    tools = [_named_runtime_tool(name) for name in set(names)]
+    use_case, _ = build_use_case(
+        agent=FakeAgent(tools=tools),
+        state=state,
+    )
+    calls = [
+        tool_call(name=name, call_id=f"call-{index}")
+        for index, name in enumerate(names)
+    ]
+
+    result = run(use_case.process(calls))
+    result.apply_read_write_counter_to(state)
+
+    assert state.turn.reads_since_last_edit == expected_reads
 
 
 @pytest.mark.parametrize("fail_type", ["tool_start", "tool_end"])
@@ -604,6 +764,7 @@ def test_tool_execution_use_case_preserves_trace_payload_capping():
     assert len(tracer.steps) == 1
     payload = tracer.steps[0]["payload"]
     assert payload["tool"] == "fake_tool"
+    assert payload["tool_call_id"] == "call-1"
     assert payload["args"] == {"value": 1}
     assert payload["result_len"] == len(raw_output)
     assert "\n...[truncated]...\n" in payload["result"]

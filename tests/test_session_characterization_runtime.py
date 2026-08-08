@@ -167,6 +167,7 @@ def test_save_and_load_round_trip_restores_control_flow_latches(tmp_path):
     session = Session(agent=agent, llm=FakeLLMClient())
     state = session.state
     state.turn.reads_since_last_edit = 7
+    state.turn.has_landed_write = True
     state.turn.low_yield_since_progress = 3
     state.turn.distinct_evidence_count = 4
     state.turn.seen_result_hashes = {"content-hash", "call-hash"}
@@ -182,6 +183,7 @@ def test_save_and_load_round_trip_restores_control_flow_latches(tmp_path):
 
     restored = loaded.state
     assert restored.turn.reads_since_last_edit == 7
+    assert restored.turn.has_landed_write is True
     assert restored.turn.low_yield_since_progress == 3
     assert restored.turn.distinct_evidence_count == 4
     assert restored.turn.seen_result_hashes == {"content-hash", "call-hash"}
@@ -213,7 +215,7 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
         "content": "retry after restore",
         "message_index": 1,
     }
-    # A session-lifetime latch is deliberately NOT part of the per-turn snapshot.
+    # The durable current-turn latch is part of the user-turn transaction.
     state.wind_down_done = True
 
     checkpoint = state.checkpoint_user_turn()
@@ -245,8 +247,8 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
         "content": "retry after restore",
         "message_index": 1,
     }
-    # The lifetime latch is not touched by a per-turn restore.
-    assert state.wind_down_done is False
+    # Rollback restores the prior turn's latch along with its counters.
+    assert state.wind_down_done is True
 
     # The checkpoint is an independent snapshot: mutating restored state and
     # restoring a second time still yields the checkpoint values.

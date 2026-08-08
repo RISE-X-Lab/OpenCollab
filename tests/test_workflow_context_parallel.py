@@ -59,6 +59,87 @@ async def test_concurrency_cap_honored():
     assert sorted(results) == [str(i) for i in range(n)]
     assert high_water <= 2
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_concurrency", [1, 2, 4])
+async def test_parallel_caps_arbitrary_thunks(max_concurrency):
+    running = 0
+    high_water = 0
+    admitted = asyncio.Event()
+    release = asyncio.Event()
+
+    async def thunk() -> str:
+        nonlocal running, high_water
+        running += 1
+        high_water = max(high_water, running)
+        if running == max_concurrency:
+            admitted.set()
+        try:
+            await release.wait()
+            return "ok"
+        finally:
+            running -= 1
+
+    ctx = WorkflowContext(FakeFactory([]), max_concurrency=max_concurrency)
+    task = asyncio.create_task(ctx.parallel([thunk for _ in range(8)]))
+    try:
+        await asyncio.wait_for(admitted.wait(), timeout=0.5)
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert high_water == max_concurrency
+    finally:
+        release.set()
+    assert await task == ["ok"] * 8
+
+
+@pytest.mark.asyncio
+async def test_parallel_nested_agent_reuses_single_concurrency_permit():
+    ctx = WorkflowContext(
+        FakeFactory([FakeSession(reply="nested")]),
+        max_concurrency=1,
+    )
+
+    result = await asyncio.wait_for(
+        ctx.parallel([lambda: ctx.agent("inside thunk")]),
+        timeout=0.5,
+    )
+
+    assert result == ["nested"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_task_creation_is_bounded_by_concurrency():
+    release = asyncio.Event()
+    admitted = asyncio.Event()
+    running = 0
+
+    async def blocked(index: int) -> int:
+        nonlocal running
+        running += 1
+        if running == 3:
+            admitted.set()
+        try:
+            await release.wait()
+            return index
+        finally:
+            running -= 1
+
+    ctx = WorkflowContext(FakeFactory([]), max_concurrency=3)
+    baseline = len(asyncio.all_tasks())
+    task = asyncio.create_task(
+        ctx.parallel([lambda i=i: blocked(i) for i in range(2_000)])
+    )
+    try:
+        await asyncio.wait_for(admitted.wait(), timeout=0.5)
+        # The caller plus a fixed worker set may exist, but there must not be
+        # one live asyncio Task per queued thunk.
+        assert len(asyncio.all_tasks()) - baseline <= 5
+    finally:
+        release.set()
+
+    assert await task == list(range(2_000))
+
+
 @pytest.mark.asyncio
 async def test_draft_findings_uses_the_shared_concurrency_cap():
     first_gate = asyncio.Event()
@@ -172,6 +253,46 @@ async def test_pipeline_stage_exception_drops_item_and_skips_rest():
     # The failed item never reaches stage 2.
     assert "bad" not in seen_stage2
     assert sorted(seen_stage2) == ["fine", "good"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stops_after_agent_failure_returns_none():
+    ctx = WorkflowContext(FakeFactory([FakeSession(boom=True)]))
+    later_inputs: list[Any] = []
+
+    async def agent_stage(_previous: Any, _item: str, _idx: int) -> Any:
+        return await ctx.agent("fail")
+
+    async def later_stage(previous: Any, _item: str, _idx: int) -> str:
+        later_inputs.append(previous)
+        return "unexpected"
+
+    assert await ctx.pipeline(["item"], agent_stage, later_stage) == [None]
+    assert later_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_pipeline_can_explicitly_continue_after_business_none():
+    seen: list[Any] = []
+
+    async def returns_none(_previous: Any, _item: str, _idx: int) -> None:
+        return None
+
+    async def consume_none(previous: Any, _item: str, _idx: int) -> str:
+        seen.append(previous)
+        return "continued"
+
+    ctx = WorkflowContext(FakeFactory([]))
+    result = await ctx.pipeline(
+        ["item"],
+        returns_none,
+        consume_none,
+        stop_on_none=False,
+    )
+
+    assert result == ["continued"]
+    assert seen == [None]
+
 
 @pytest.mark.asyncio
 async def test_pipeline_passes_index_and_original_item():

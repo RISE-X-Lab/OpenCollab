@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import math
 import time
 from typing import Any, Callable
@@ -58,6 +59,31 @@ __all__ = [
 ]
 
 
+def _nonnegative_usage_int(value: Any, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"provider usage {field} must be a non-negative integer")
+    return value
+
+
+def _normalize_completion_usage(usage: Any) -> tuple[int, int]:
+    """Validate provider counters atomically and prevent total undercharging."""
+    input_tokens = _nonnegative_usage_int(
+        getattr(usage, "input_tokens", None),
+        "input_tokens",
+    )
+    reported_total = _nonnegative_usage_int(
+        getattr(usage, "total_tokens", None),
+        "total_tokens",
+    )
+    raw_output = getattr(usage, "output_tokens", None)
+    output_tokens = (
+        max(0, reported_total - input_tokens)
+        if raw_output is None
+        else _nonnegative_usage_int(raw_output, "output_tokens")
+    )
+    return input_tokens, max(reported_total, input_tokens + output_tokens)
+
+
 class SessionRunUseCase(_SessionRunCompletionMixin):
     """Application use case for the session run loop.
 
@@ -90,10 +116,16 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         low_yield_m: int = DEFAULT_LOW_YIELD_M,
     ):
         self.agent = agent
+        self._initial_agent_tools = tuple(getattr(agent, "tools", ()) or ())
+        self._initial_agent_tool_choice = copy.deepcopy(
+            getattr(agent, "tool_choice", None)
+        )
         self.state = state
         self.llm = llm
         self.event_publisher = event_publisher
-        self.event_factory = event_factory or default_session_event_factory(state.aid)
+        self.event_factory = event_factory or default_session_event_factory(
+            lambda: state.aid
+        )
         self.tool_execution = tool_execution
         self.tracer = tracer
         self.max_budget_tokens = max_budget_tokens
@@ -165,6 +197,13 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # They count against the budget but never enter a later turn's history.
         self._late_provider_usage: tuple[int, ...] = ()
 
+    def reset_runtime_for_user_turn(self) -> None:
+        """Restore agent capabilities narrowed by the previous turn."""
+        self.agent.tools = list(self._initial_agent_tools)
+        self.agent.tool_choice = copy.deepcopy(self._initial_agent_tool_choice)
+        self._pending_tool_allowlist = None
+        self._pending_tool_gate_label = None
+
     @property
     def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
         return tuple(
@@ -195,9 +234,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         """Charge a provider response that survived cancellation after timeout."""
         try:
             response = task.result()
-            total_tokens = response.usage.total_tokens
-            if isinstance(total_tokens, bool) or not isinstance(total_tokens, int) or total_tokens < 0:
-                return
+            _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
             self._late_provider_usage += (total_tokens,)
             self.state.add_used_tokens(total_tokens)
         except BaseException:
@@ -486,9 +523,6 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             await self._stop_precheck(reason)
             return
 
-        if await self._apply_enforcement_gate():
-            return
-
         if self.state.used_tokens >= self.max_budget_tokens:
             reason = f"budget exceeded: {self.state.used_tokens} tokens used"
             await self._stop_precheck(reason)
@@ -501,6 +535,9 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         if self._team_budget_exhausted is not None and self._team_budget_exhausted():
             reason = "team budget exceeded: aggregate spend reached the global cap"
             await self._stop_precheck(reason)
+            return
+
+        if await self._apply_enforcement_gate():
             return
 
         if self.state.step_count >= self.max_steps:
@@ -531,9 +568,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             await self._stop_on_context_overflow()
             return
         latency = time.monotonic() - start
-        self.state.add_used_tokens(response.usage.total_tokens)
+        input_tokens, total_tokens = _normalize_completion_usage(response.usage)
+        self.state.add_used_tokens(total_tokens)
         self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
-        self.state.set_context_tokens(response.usage.input_tokens)
+        self.state.set_context_tokens(input_tokens)
 
         self.record_llm_trace(response, latency)
         self.append_assistant_message(response)
@@ -549,7 +587,11 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             raise RuntimeError("Cannot handle assistant response before calling LLM")
         response = pending.response
 
-        if response.content:
+        has_content = (
+            isinstance(response.content, str)
+            and bool(response.content.strip())
+        )
+        if has_content:
             await self.event_publisher.emit(self.event_factory.text_delta(response.content))
 
         if response.finish_reason in {"length", "max_tokens"}:
@@ -577,7 +619,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # AUTOSAVING handler finishes the step and loops back to PRECHECK.
         # ``finish_reason`` is gated to "stop": a "length" truncation will only
         # truncate again, so a nudge cannot help there.
-        empty_stop = not response.content and not response.tool_calls
+        empty_stop = not has_content and not response.tool_calls
         if empty_stop and response.finish_reason in (None, "stop") and not self._empty_stop_retried:
             self._empty_stop_retried = True
             # Record the retry to the trajectory so empty-stops are measurable
@@ -638,7 +680,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
                 self.state.transition_to(SessionPhase.AUTOSAVING)
                 return
         tool_calls, blocked_messages = self._apply_pending_tool_allowlist(original_tool_calls)
-        immediate, deferred = self._split_tool_calls(tool_calls)
+        _immediate, deferred = self._split_tool_calls(tool_calls)
 
         # Fast path, unchanged: every tool is synchronous — run them, append
         # results, and autosave the step.
@@ -662,46 +704,39 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         table = self.state.pending_events
         order = {tc["id"]: i for i, tc in enumerate(original_tool_calls)}
         completed_messages = list(blocked_messages)
-        terminal_capture_tools = {"structured_output", self._submit_tool_name}
-        terminal_capture_in_batch = any(
-            tc.get("function", {}).get("name") in terminal_capture_tools
-            for tc in tool_calls
-        )
-        if terminal_capture_in_batch:
-            terminal_capture_accepted = False
-            for tc in tool_calls:
-                if terminal_capture_accepted:
-                    completed_messages.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tc["id"],
-                            "content": TERMINAL_CAPTURE_SKIP_MESSAGE,
-                        }
-                    )
-                    continue
-                if tc.get("function", {}).get("name") in self.deferrable_tool_names:
-                    await self._execute_deferred_tools(table, order, [tc])
-                    continue
-                proc = await self.tool_execution.process([tc])
-                proc.apply_hashes_to(self.state)
-                proc.apply_read_write_counter_to(self.state)
-                proc.apply_evidence_counter_to(self.state)
-                completed_messages.extend(proc.messages_to_append)
-                terminal_capture_accepted = proc.terminal_capture_accepted
-        elif immediate:
-            proc = await self.tool_execution.process(immediate)
+        observations = ToolProcessingResult()
+        terminal_capture_accepted = False
+        for tc in tool_calls:
+            if terminal_capture_accepted:
+                completed_messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": TERMINAL_CAPTURE_SKIP_MESSAGE,
+                    }
+                )
+                continue
+            if tc.get("function", {}).get("name") in self.deferrable_tool_names:
+                await self._execute_deferred_tools(table, order, [tc])
+                continue
+
+            proc = await self.tool_execution.process([tc])
             proc.apply_hashes_to(self.state)  # hashes now; messages buffered
-            # The reads/edit steering counter must still fold in even though the
-            # result MESSAGES are buffered into the pending table (a mixed batch of
-            # immediate reads + a deferred spawn would otherwise lose its reads).
-            proc.apply_read_write_counter_to(self.state)
-            # Likewise the STEP 1 information-gain counters: a buffered immediate
-            # result is still a real tool result and must register its novelty.
-            proc.apply_evidence_counter_to(self.state)
-            completed_messages = [*proc.messages_to_append, *completed_messages]
+            observations.reads_executed += proc.reads_executed
+            observations.write_succeeded |= proc.write_succeeded
+            observations.read_write_signals.extend(proc.read_write_signals)
+            observations.evidence_signals.extend(proc.evidence_signals)
+            observations.evidence_cards.extend(proc.evidence_cards)
+            observations.loop_detections.extend(proc.loop_detections)
+            observations.tool_step_attempted |= proc.tool_step_attempted
+            completed_messages.extend(proc.messages_to_append)
+            terminal_capture_accepted = proc.terminal_capture_accepted
+
+        # Fold the provider batch once so the progress watchdog remains per-step,
+        # while read/write and evidence signals replay in declared call order.
+        observations.apply_read_write_counter_to(self.state)
+        observations.apply_evidence_counter_to(self.state)
         self._buffer_completed_rows(table, order, completed_messages)
-        if not terminal_capture_in_batch:
-            await self._execute_deferred_tools(table, order, deferred)
 
         self._pending_tool_allowlist = None
         self._pending_tool_gate_label = None
