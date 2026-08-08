@@ -523,9 +523,6 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             await self._stop_precheck(reason)
             return
 
-        if await self._apply_enforcement_gate():
-            return
-
         if self.state.used_tokens >= self.max_budget_tokens:
             reason = f"budget exceeded: {self.state.used_tokens} tokens used"
             await self._stop_precheck(reason)
@@ -538,6 +535,9 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         if self._team_budget_exhausted is not None and self._team_budget_exhausted():
             reason = "team budget exceeded: aggregate spend reached the global cap"
             await self._stop_precheck(reason)
+            return
+
+        if await self._apply_enforcement_gate():
             return
 
         if self.state.step_count >= self.max_steps:
