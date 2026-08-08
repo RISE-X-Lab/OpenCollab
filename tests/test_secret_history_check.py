@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -37,7 +38,14 @@ def _repository(tmp_path: Path) -> tuple[Path, str, Path]:
     _git(repository, "init")
     _git(repository, "config", "user.name", "Security Test")
     _git(repository, "config", "user.email", "security@example.invalid")
-    (repository / ".secrets.baseline").write_text("{}\n", encoding="utf-8")
+    audited = {
+        "results": {
+            "fixtures.py": [
+                {"type": "Secret Keyword", "hashed_secret": "abc123", "line_number": 4}  # pragma: allowlist secret
+            ]
+        }
+    }
+    (repository / ".secrets.baseline").write_text(json.dumps(audited) + "\n", encoding="utf-8")
     (repository / "base.txt").write_text("base\n", encoding="utf-8")
     _git(repository, "add", ".")
     _git(repository, "commit", "-m", "base")
@@ -45,6 +53,7 @@ def _repository(tmp_path: Path) -> tuple[Path, str, Path]:
     scanner = tmp_path / "fake-scanner.py"
     scanner.write_text(
         """#!/usr/bin/env python3
+import json
 import pathlib
 import subprocess
 import sys
@@ -57,9 +66,27 @@ subprocess.run(
 if sys.argv[sys.argv.index("--baseline") + 1] != ".secrets.baseline":
     raise SystemExit(2)
 paths = [name for name in sys.argv[sys.argv.index("--baseline") + 2:] if name != "--"]
+baseline = pathlib.Path(".secrets.baseline")
 for name in paths:
-    if b"DEMO_SECRET" in pathlib.Path(name).read_bytes():
+    body = pathlib.Path(name).read_bytes()
+    # A real detection: reported to the operator, baseline left untouched.
+    if b"DEMO_SECRET" in body:
         raise SystemExit(1)
+    if b"DEMO_CORRUPT_BASELINE" in body:
+        baseline.write_text("not json", encoding="utf-8")
+        raise SystemExit(3)
+    # detect-secrets rewrites the baseline and exits 3 once anything about a
+    # recorded entry no longer matches the tree it is scanning.
+    if b"DEMO_MOVED" in body or b"DEMO_UNAUDITED" in body:
+        document = json.loads(baseline.read_text(encoding="utf-8"))
+        entries = document["results"]["fixtures.py"]
+        entries[0]["line_number"] += 10
+        if b"DEMO_UNAUDITED" in body:
+            entries.append(
+                {"type": "AWS Access Key", "hashed_secret": "def456", "line_number": 9}  # pragma: allowlist secret
+            )
+        baseline.write_text(json.dumps(document), encoding="utf-8")
+        raise SystemExit(3)
 """,
         encoding="utf-8",
     )
@@ -125,6 +152,43 @@ def test_secret_history_scans_secret_removed_by_later_commit(tmp_path):
 
     assert result.returncode == 1
     assert "Secret scan failed for proposed commit" in result.stdout
+
+
+def test_secret_history_accepts_an_audited_secret_that_only_moved(tmp_path):
+    repository, base, scanner = _repository(tmp_path)
+    (repository / "fixtures.py").write_text("DEMO_MOVED\n", encoding="utf-8")
+    _git(repository, "add", "fixtures.py")
+    _git(repository, "commit", "-m", "shift an audited fixture down its file")
+
+    result = _run(repository, base, "HEAD", scanner)
+
+    assert result.returncode == 0
+    assert "only moved already-audited secrets" in result.stdout
+
+
+def test_secret_history_rejects_a_secret_absent_from_the_trusted_baseline(tmp_path):
+    repository, base, scanner = _repository(tmp_path)
+    (repository / "fixtures.py").write_text("DEMO_UNAUDITED\n", encoding="utf-8")
+    _git(repository, "add", "fixtures.py")
+    _git(repository, "commit", "-m", "record an unaudited secret")
+
+    result = _run(repository, base, "HEAD", scanner)
+
+    assert result.returncode == 3
+    assert "AWS Access Key is not present in the trusted baseline" in result.stdout
+    assert "Secret scan failed for proposed commit" in result.stdout
+
+
+def test_secret_history_rejects_a_baseline_it_cannot_read_after_scanning(tmp_path):
+    repository, base, scanner = _repository(tmp_path)
+    (repository / "fixtures.py").write_text("DEMO_CORRUPT_BASELINE\n", encoding="utf-8")
+    _git(repository, "add", "fixtures.py")
+    _git(repository, "commit", "-m", "leave an unreadable baseline behind")
+
+    result = _run(repository, base, "HEAD", scanner)
+
+    assert result.returncode == 3
+    assert "Unreadable baseline" in result.stdout
 
 
 def test_secret_history_rejects_baseline_change(tmp_path):
