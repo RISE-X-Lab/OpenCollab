@@ -247,6 +247,8 @@ def load_config_env(workspace: str | None = None) -> dict[str, str]:
     values: dict[str, str] = {}
     for path in _candidate_env_paths(workspace):
         for key, value in load_dotenv(path).items():
+            if not value.strip():
+                continue
             values.setdefault(key, value)
     return values
 
