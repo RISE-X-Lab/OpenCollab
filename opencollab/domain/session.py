@@ -210,6 +210,10 @@ class SessionState:
     # durable so a restore cannot re-grant the one compatibility retry.
     wind_down_attempts: int = 0
     wind_down_token_mark: int = 0
+    # Session-lifetime latch for the protected call carved from the hard token
+    # budget. Per-turn watchdog/low-yield wind-down state resets between user
+    # turns, but the same lifetime reserve must never be allocated twice.
+    budget_reserve_consumed: bool = field(default=False, kw_only=True)
     phase: SessionPhase = SessionPhase.IDLE
     # Human-readable detail for the current terminal phase (e.g. the exception
     # for ERROR, the token/step counts for the resource caps). ``None`` while
@@ -448,7 +452,8 @@ class SessionState:
         intentionally preserved — both ``max_steps`` and ``max_budget_tokens``
         are session-lifetime caps, so a long-lived interactive/messaged session
         keeps accumulating across turns rather than getting a fresh allowance.
-        Durable wind-down latches are current-turn state and reset here.
+        Durable wind-down latches are current-turn state and reset here. The
+        session-lifetime budget-reserve latch is intentionally preserved.
         """
         self.resume_to_idle()
         self.turn = TurnEnforcementState()

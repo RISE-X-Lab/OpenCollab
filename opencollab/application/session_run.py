@@ -36,6 +36,7 @@ from opencollab.application.tool_execution import (
     TERMINAL_CAPTURE_SKIP_MESSAGE,
     ToolExecutionUseCase,
 )
+from opencollab.domain.events import SessionRuntimeEvent
 from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
 from opencollab.domain.tools import ToolProcessingResult
@@ -230,13 +231,29 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         except BaseException:
             pass
 
-    def _record_late_provider_result(self, task: asyncio.Future[Any]) -> None:
+    def _mark_budget_reserve_consumed(self, *, protected_call: bool | None = None) -> None:
+        """Keep late and ordinary protected-call accounting on one invariant."""
+        if protected_call is None:
+            protected_call = self.state.wind_down_done
+        if (
+            protected_call
+            and self.state.used_tokens >= self.max_budget_tokens - self._commit_reserve
+        ):
+            self.state.budget_reserve_consumed = True
+
+    def _record_late_provider_result(
+        self,
+        task: asyncio.Future[Any],
+        *,
+        protected_call: bool = False,
+    ) -> None:
         """Charge a provider response that survived cancellation after timeout."""
         try:
             response = task.result()
             _input_tokens, total_tokens = _normalize_completion_usage(response.usage)
             self._late_provider_usage += (total_tokens,)
             self.state.add_used_tokens(total_tokens)
+            self._mark_budget_reserve_consumed(protected_call=protected_call)
         except BaseException:
             pass
         finally:
@@ -499,8 +516,25 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         brake = budget_spent or watchdog_tripped or low_yield_tripped
         if not brake or not self.state.pending_events.is_empty():
             return False
+        if budget_spent and self.state.budget_reserve_consumed:
+            await self._stop_precheck(
+                "budget reserve exhausted: protected commit turn already used"
+            )
+            return True
 
         self._trace_brake_trip(budget_spent, watchdog_tripped, low_yield_tripped)
+        if budget_spent:
+            self.state.budget_reserve_consumed = True
+            await self.event_publisher.emit(
+                SessionRuntimeEvent(
+                    type="budget_reserve_allocated",
+                    data={
+                        "aid": self.state.aid,
+                        "used_tokens": self.state.used_tokens,
+                        "reserve": self._commit_reserve,
+                    },
+                )
+            )
         self._enter_wind_down()
         self.state.transition_to(SessionPhase.CALLING_LLM)
         return True
@@ -571,6 +605,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         latency = time.monotonic() - start
         input_tokens, total_tokens = _normalize_completion_usage(response.usage)
         self.state.add_used_tokens(total_tokens)
+        self._mark_budget_reserve_consumed()
         self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
         self.state.set_context_tokens(input_tokens)
 

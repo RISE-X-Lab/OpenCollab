@@ -415,12 +415,16 @@ class _SessionRunCompletionMixin:
         if self._per_call_timeout is None:
             return await self.llm.complete(**kwargs)
         try:
+            protected_call = self.state.wind_down_done
             return await abandon_on_timeout(
                 self.llm.complete(**kwargs),
                 self._per_call_timeout,
                 task_tracker=self._track_provider_task,
                 late_task_tracker=self._mark_provider_task_draining,
-                late_result_handler=self._record_late_provider_result,
+                late_result_handler=lambda task: self._record_late_provider_result(
+                    task,
+                    protected_call=protected_call,
+                ),
             )
         except CallerTimeoutError as exc:
             raise GenerationTimeoutError(
