@@ -316,6 +316,60 @@ async def test_workflow_uses_real_runtime_and_returns_live_metrics(
     assert manifest["evidence_complete"] is True
 
 
+async def test_workflow_manifest_stays_incomplete_until_owned_environment_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "workflow-cleanup-failure"
+    observed_during_cleanup = {}
+
+    class CleanupFailingEnvironment:
+        def __init__(self, workspace: str) -> None:
+            self.workspace = workspace
+            self.source_workspace = workspace
+            self.revoked = False
+
+        async def cleanup(self) -> None:
+            observed_during_cleanup.update(
+                json.loads((artifacts / "workflow.json").read_text())
+            )
+            raise OSError("cleanup-secondary")
+
+    monkeypatch.setattr(
+        programmatic,
+        "LocalEnvironment",
+        CleanupFailingEnvironment,
+    )
+
+    async def plain(_ctx, _inputs):
+        return {"ok": True}
+
+    with pytest.raises(
+        ProgrammaticLifecycleError,
+        match="workflow-owned environment cleanup failed",
+    ):
+        await programmatic.run_workflow(
+            workflow=plain,
+            inputs={},
+            config={"model": "model", "provider": "openai", "budget": 50},
+            workspace=str(tmp_path),
+            max_tokens=50,
+            max_concurrency=1,
+            timeout=None,
+            max_steps=1,
+            system_prompt=None,
+            cleanup_timeout=0.1,
+            artifacts=artifacts,
+            trace=False,
+        )
+
+    assert observed_during_cleanup["evidence_complete"] is False
+    manifest = json.loads((artifacts / "workflow.json").read_text())
+    assert manifest["status"] == "failed"
+    assert manifest["reason"] == "environment_cleanup_failed"
+    assert manifest["evidence_complete"] is False
+
+
 async def test_workflow_rejects_non_json_inputs_before_claiming_artifacts(
     tmp_path: Path,
 ) -> None:
@@ -559,6 +613,23 @@ async def test_artifact_directory_must_be_new_or_empty(tmp_path: Path) -> None:
     assert (artifacts / "keep.txt").read_text() == "user data"
 
 
+async def test_team_config_preflight_does_not_claim_artifact_directory(
+    tmp_path: Path,
+) -> None:
+    artifacts = tmp_path / "team-run"
+
+    with pytest.raises(ValueError, match="team config does not exist"):
+        await OpenCollab(tmp_path).team(
+            "solve it",
+            config=tmp_path / "missing-team.yaml",
+            artifacts=artifacts,
+            trace=False,
+            use_worktrees=False,
+        )
+
+    assert not artifacts.exists() or not any(artifacts.iterdir())
+
+
 async def test_team_is_first_class_and_passes_explicit_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -581,6 +652,7 @@ async def test_team_is_first_class_and_passes_explicit_config(
     result = await OpenCollab(tmp_path, config={"budget": 90}).team(
         "solve it",
         config=config,
+        cleanup_timeout=3.0,
         use_worktrees=False,
     )
 
@@ -588,7 +660,29 @@ async def test_team_is_first_class_and_passes_explicit_config(
     assert result.tokens == 11
     assert captured["team_config_path"] == config.resolve()
     assert captured["max_tokens"] == 90
+    assert captured["cleanup_timeout"] == 3.0
     assert captured["use_worktrees"] is False
+
+
+async def test_team_rejects_invalid_cleanup_timeout_before_delegating(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    called = False
+
+    async def should_not_run(**_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(sdk_client, "run_team", should_not_run)
+
+    with pytest.raises(ValueError, match="cleanup_timeout"):
+        await OpenCollab(tmp_path).team(
+            "solve it",
+            cleanup_timeout=float("nan"),
+        )
+
+    assert not called
 
 
 async def test_shared_team_runtime_always_cleans_scheduler(
@@ -598,6 +692,7 @@ async def test_shared_team_runtime_always_cleans_scheduler(
     class FakeScheduler:
         def __init__(self) -> None:
             self.cleaned = False
+            self.cleanup_timeout = None
             self.used_tokens = 8
             self.table = SimpleNamespace(entries={0: object()})
             self.lead_session = SimpleNamespace(
@@ -611,7 +706,7 @@ async def test_shared_team_runtime_always_cleans_scheduler(
             return "done"
 
         async def cleanup(self, *, cleanup_timeout: float) -> None:
-            assert cleanup_timeout > 0
+            self.cleanup_timeout = cleanup_timeout
             self.cleaned = True
 
     scheduler = FakeScheduler()
@@ -623,15 +718,130 @@ async def test_shared_team_runtime_always_cleans_scheduler(
         team_config_path=None,
         max_tokens=50,
         timeout=None,
+        cleanup_timeout=3.0,
         artifacts=None,
         trace=False,
         use_worktrees=False,
     )
 
     assert scheduler.cleaned
+    assert scheduler.cleanup_timeout == 3.0
     assert result.status == "completed"
     assert result.tokens == 8
     assert result.metrics == {"steps": 2, "sessions": 1}
+
+
+async def test_team_result_exposes_sanitized_child_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    child = SimpleNamespace(
+        agent=SimpleNamespace(name="reviewer"),
+        state=SimpleNamespace(
+            phase=SimpleNamespace(value="error"),
+            terminal_reason="ProviderFailure: private provider detail",
+        ),
+    )
+
+    class FakeScheduler:
+        used_tokens = 8
+        table = SimpleNamespace(entries={0: object(), 1: child})
+        lead_session = SimpleNamespace(
+            phase=SimpleNamespace(value="done"),
+            state=SimpleNamespace(terminal_reason="completed"),
+            step_count=2,
+        )
+
+        async def run(self, _prompt: str) -> str:
+            return "done"
+
+        async def cleanup(self, *, cleanup_timeout: float) -> None:
+            assert cleanup_timeout > 0
+
+    monkeypatch.setattr(
+        programmatic,
+        "build_scheduler",
+        lambda *_args, **_kwargs: FakeScheduler(),
+    )
+
+    internal = await programmatic.run_team(
+        prompt="solve",
+        config={"model": "model", "provider": "openai", "budget": 50},
+        workspace=str(tmp_path),
+        team_config_path=None,
+        max_tokens=50,
+        timeout=None,
+        artifacts=None,
+        trace=False,
+        use_worktrees=False,
+    )
+    public = sdk_client._public_result(internal)
+
+    assert public.status == "completed"
+    assert public.agent_failures == (
+        {
+            "label": "reviewer",
+            "exception_type": "ProviderFailure",
+            "status_code": None,
+            "provider_error_type": None,
+        },
+    )
+    assert "private provider detail" not in repr(public)
+
+
+@pytest.mark.parametrize(
+    ("cleanup_fails", "trace_fails"),
+    ((True, False), (False, True), (True, True)),
+)
+async def test_team_lifecycle_failure_preserves_execution_root_cause(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    cleanup_fails: bool,
+    trace_fails: bool,
+) -> None:
+    primary = ValueError("run-root-cause")
+    cleanup_failure = OSError("cleanup-secondary")
+    trace_failure = RuntimeError("trace-secondary")
+
+    class FakeScheduler:
+        async def run(self, _prompt: str) -> str:
+            raise primary
+
+        async def cleanup(self, *, cleanup_timeout: float) -> None:
+            assert cleanup_timeout > 0
+            if cleanup_fails:
+                raise cleanup_failure
+
+    monkeypatch.setattr(
+        programmatic,
+        "build_scheduler",
+        lambda *_args, **_kwargs: FakeScheduler(),
+    )
+    monkeypatch.setattr(
+        programmatic,
+        "_close_tracer",
+        lambda _tracer: trace_failure if trace_fails else None,
+    )
+
+    with pytest.raises(ProgrammaticLifecycleError) as caught:
+        await programmatic.run_team(
+            prompt="solve",
+            config={"model": "model", "provider": "openai", "budget": 50},
+            workspace=str(tmp_path),
+            team_config_path=None,
+            max_tokens=50,
+            timeout=None,
+            artifacts=None,
+            trace=False,
+            use_worktrees=False,
+        )
+
+    assert caught.value.__cause__ is primary
+    notes = getattr(primary, "__notes__", ())
+    if cleanup_fails:
+        assert any("cleanup-secondary" in note for note in notes)
+    if trace_fails:
+        assert any("trace-secondary" in note for note in notes)
 
 
 def test_tool_presets_are_small_fresh_and_named() -> None:

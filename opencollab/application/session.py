@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import inspect
 import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable
@@ -49,6 +50,7 @@ class SessionRuntime:
     runner: SessionRunUseCase
     auto_save_path: str | None
     auto_save_subscriber: AutoSaveSubscriber | None = None
+    owns_llm: bool = False
 
 
 class Session:
@@ -95,6 +97,9 @@ class Session:
         self.tool_execution = runtime.tool_execution
         self.runner = runtime.runner
         self._auto_save_subscriber = runtime.auto_save_subscriber
+        self._owns_llm = runtime.owns_llm
+        self._llm_closed = False
+        self._llm_close_error: BaseException | None = None
         # The env attribute mirrors the runtime's tool_execution env so
         # downstream readers (snapshot, characterization tests) still see
         # the same Environment instance.
@@ -176,6 +181,25 @@ class Session:
             if isinstance(error, Exception):
                 errors.append(error)
         return tuple(errors)
+
+    async def aclose(self) -> None:
+        """Close the model transport when this session created and owns it."""
+        if self._llm_close_error is not None:
+            raise self._llm_close_error
+        if not self._owns_llm or self._llm_closed:
+            return
+        self._llm_closed = True
+        close = getattr(self._llm, "close", None)
+        if not callable(close):
+            close = getattr(self._llm, "aclose", None)
+        if callable(close):
+            try:
+                outcome = close()
+                if inspect.isawaitable(outcome):
+                    await outcome
+            except BaseException as exc:
+                self._llm_close_error = exc
+                raise
 
     @property
     def messages(self) -> list[dict]:

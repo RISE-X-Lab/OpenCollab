@@ -71,6 +71,7 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "config",
             "budget",
             "timeout",
+            "cleanup_timeout",
             "artifacts",
             "trace",
             "use_worktrees",

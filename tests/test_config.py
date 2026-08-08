@@ -12,6 +12,7 @@ from opencollab.bootstrap.config import (
     api_key_env_precedence,
     build_config,
     missing_api_key,
+    resolve_thinking_params,
 )
 
 _FILTER_ENV = "OPENCOLLAB_FILTER_MESSAGES"
@@ -149,7 +150,7 @@ def test_max_output_tokens_defaults_and_reads_env(monkeypatch):
     assert build_config().max_output_tokens == 32768
 
 
-def test_provider_override_reselects_file_first_api_key(monkeypatch, tmp_path):
+def test_provider_override_reselects_provider_specific_api_key(monkeypatch, tmp_path):
     cfg_file = tmp_path / "provider.env"
     cfg_file.write_text(
         "OPENCOLLAB_PROVIDER=openai\n"
@@ -197,9 +198,9 @@ def test_cli_resolved_config_keeps_max_output_tokens(monkeypatch, tmp_path):
     assert cfg["max_output_tokens"] == 32_768
 
 
-def test_dashscope_api_key_is_supported_as_fallback(monkeypatch):
+def test_dashscope_key_is_not_used_without_dashscope_endpoint(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")
-    assert build_config().api_key == "dashscope-key"
+    assert build_config().api_key is None
 
 
 def test_dashscope_base_url_prefers_dashscope_key(monkeypatch):
@@ -228,7 +229,7 @@ def test_dashscope_file_key_beats_generic_export(monkeypatch, tmp_path):
     assert build_config().api_key == "dashscope-key"
 
 
-def test_dashscope_file_key_beats_same_name_stale_export(monkeypatch, tmp_path):
+def test_dashscope_export_beats_same_name_file_value(monkeypatch, tmp_path):
     cfg_file = tmp_path / "dashscope.env"
     cfg_file.write_text(
         "\n".join(
@@ -241,7 +242,16 @@ def test_dashscope_file_key_beats_same_name_stale_export(monkeypatch, tmp_path):
     monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(cfg_file))
     monkeypatch.setenv("DASHSCOPE_API_KEY", "stale-shell-key")
 
-    assert build_config().api_key == "real-file-key"
+    assert build_config().api_key == "stale-shell-key"  # pragma: allowlist secret
+
+
+def test_environment_key_beats_same_name_config_file_value(monkeypatch, tmp_path):
+    cfg_file = tmp_path / "openai.env"
+    cfg_file.write_text("OPENAI_API_KEY=file-key\n", encoding="utf-8")
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(cfg_file))
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
+
+    assert build_config().api_key == "environment-key"  # pragma: allowlist secret
 
 
 def test_anthropic_file_key_beats_generic_export(monkeypatch, tmp_path):
@@ -266,12 +276,46 @@ def test_config_repr_does_not_include_api_key(monkeypatch):
     assert "secret-key" not in repr(build_config())
 
 
+def test_missing_explicit_config_file_fails_fast(monkeypatch, tmp_path):
+    missing = tmp_path / "missing.env"
+    monkeypatch.setenv("OPENCOLLAB_CONFIG_FILE", str(missing))
+
+    with pytest.raises(ValueError, match="explicit config env path does not exist"):
+        build_config()
+
+
+def test_empty_high_priority_file_value_does_not_hide_lower_value(
+    monkeypatch,
+    tmp_path,
+):
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    (configs / ".env").write_text("OPENCOLLAB_MODEL=\n", encoding="utf-8")
+    (tmp_path / ".env").write_text(
+        "OPENCOLLAB_MODEL=lower-priority-model\n",  # pragma: allowlist secret
+        encoding="utf-8",
+    )
+
+    assert build_config(str(tmp_path)).model == "lower-priority-model"
+
+
+def test_unknown_override_key_fails_fast():
+    with pytest.raises(Exception, match="modle"):
+        build_config(overrides={"modle": "gpt-4o-mini"})
+
+
 def test_api_key_env_precedence_is_provider_and_endpoint_specific():
-    assert api_key_env_precedence("openai")[0] == "OPENCOLLAB_API_KEY"
-    assert api_key_env_precedence("anthropic")[0] == "ANTHROPIC_API_KEY"
+    assert api_key_env_precedence("openai") == (
+        "OPENCOLLAB_API_KEY",
+        "OPENAI_API_KEY",
+    )
+    assert api_key_env_precedence("anthropic") == (
+        "ANTHROPIC_API_KEY",
+        "OPENCOLLAB_API_KEY",
+    )
     assert api_key_env_precedence(
         "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    )[0] == "DASHSCOPE_API_KEY"
+    ) == ("DASHSCOPE_API_KEY", "OPENCOLLAB_API_KEY")
 
 
 def test_accepted_api_key_envs_reproduces_hint_order():
@@ -279,7 +323,7 @@ def test_accepted_api_key_envs_reproduces_hint_order():
     assert accepted_api_key_envs("anthropic") == ["OPENCOLLAB_API_KEY", "ANTHROPIC_API_KEY"]
     assert accepted_api_key_envs(
         "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1"
-    ) == ["OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "DASHSCOPE_API_KEY"]
+    ) == ["OPENCOLLAB_API_KEY", "DASHSCOPE_API_KEY"]
 
 
 def test_missing_api_key_true_when_no_key_anywhere(monkeypatch):
@@ -320,6 +364,28 @@ def test_missing_api_key_honors_dashscope_endpoint(monkeypatch):
     assert missing_api_key("openai", None, base_url) is False
 
 
+@pytest.mark.parametrize(
+    ("provider", "foreign_key"),
+    [
+        ("openai", "ANTHROPIC_API_KEY"),
+        ("openai", "DASHSCOPE_API_KEY"),
+        ("anthropic", "OPENAI_API_KEY"),
+        ("anthropic", "DASHSCOPE_API_KEY"),
+    ],
+)
+def test_foreign_provider_keys_do_not_satisfy_selected_provider(
+    monkeypatch,
+    provider,
+    foreign_key,
+):
+    monkeypatch.setenv(foreign_key, "foreign-key")
+
+    config = build_config(overrides={"provider": provider})
+
+    assert config.api_key is None
+    assert missing_api_key(provider, config.api_key) is True
+
+
 _ISOLATED_OUTPUT_ENV_NAMES = (
     "OPENCOLLAB_TOP_P",
     "OPENCOLLAB_MAX_OUTPUT_TOKENS",
@@ -341,6 +407,18 @@ def test_thinking_reads_provider_native_parameters(monkeypatch):
     assert config.thinking_params == {
         "thinking": {"type": "enabled", "budget_tokens": 16_000}
     }
+
+
+def test_thinking_params_override_rejects_non_json_values():
+    from datetime import date
+
+    with pytest.raises(ValueError, match="JSON-serializable"):
+        build_config(overrides={"thinking_params": {"cutoff": date(2026, 8, 7)}})
+
+
+def test_resolve_thinking_params_preserves_explicit_empty_mapping():
+    assert resolve_thinking_params({}) == {}
+    assert resolve_thinking_params(None) == {"enable_thinking": True}
 
 
 @pytest.mark.parametrize("raw", ["not-json", "[]"])

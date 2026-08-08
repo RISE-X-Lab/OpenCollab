@@ -109,10 +109,23 @@ def _parse_thinking_params(value: str | None) -> dict[str, Any]:
     return parsed
 
 
+def _validate_thinking_params(value: dict[str, Any]) -> dict[str, Any]:
+    try:
+        json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("thinking_params must be JSON-serializable") from exc
+    return value
+
+
+def resolve_thinking_params(value: dict[str, Any] | None) -> dict[str, Any]:
+    """Copy explicit provider parameters, defaulting only when absent."""
+    return dict(DEFAULT_THINKING_PARAMS if value is None else value)
+
+
 class OpenCollabConfig(BaseModel):
     """Runtime configuration for OpenCollab."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     model: str = Field(default="gpt-4o", min_length=1)
     provider: str = Field(default="openai", min_length=1)
@@ -159,9 +172,11 @@ class OpenCollabConfig(BaseModel):
         # A JSON object string (from env/.env) parses to a dict. Invalid values
         # fail during configuration instead of silently changing model behavior.
         if isinstance(value, str):
-            return _parse_thinking_params(value)
+            return _validate_thinking_params(_parse_thinking_params(value))
         if value is None:
             return dict(DEFAULT_THINKING_PARAMS)
+        if isinstance(value, dict):
+            return _validate_thinking_params(value)
         return value
 
     @field_validator("model", "provider", mode="before")
@@ -219,6 +234,8 @@ def _candidate_env_paths(workspace: str | None = None) -> list[str]:
     """Return config file candidates in priority order."""
     explicit = os.environ.get("OPENCOLLAB_CONFIG_FILE")
     if explicit:
+        if not Path(explicit).exists():
+            raise ValueError(f"explicit config env path does not exist: {explicit}")
         return [explicit]
 
     bases: list[Path] = []
@@ -245,6 +262,8 @@ def load_config_env(workspace: str | None = None) -> dict[str, str]:
     values: dict[str, str] = {}
     for path in _candidate_env_paths(workspace):
         for key, value in load_dotenv(path).items():
+            if not value.strip():
+                continue
             values.setdefault(key, value)
     return values
 
@@ -262,10 +281,10 @@ def api_key_env_precedence(provider: str | None, base_url: str | None = None) ->
     endpoint (DashScope) or to the native Anthropic path.
     """
     if _is_dashscope_base_url(base_url):
-        return ("DASHSCOPE_API_KEY", "OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+        return ("DASHSCOPE_API_KEY", "OPENCOLLAB_API_KEY")
     if is_anthropic(provider):
-        return ("ANTHROPIC_API_KEY", "OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "DASHSCOPE_API_KEY")
-    return ("OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY")
+        return ("ANTHROPIC_API_KEY", "OPENCOLLAB_API_KEY")
+    return ("OPENCOLLAB_API_KEY", "OPENAI_API_KEY")
 
 
 def accepted_api_key_envs(provider: str | None, base_url: str | None = None) -> list[str]:
@@ -274,9 +293,10 @@ def accepted_api_key_envs(provider: str | None, base_url: str | None = None) -> 
     ``OPENCOLLAB_API_KEY`` plus the provider-specific key, with
     ``DASHSCOPE_API_KEY`` appended for a DashScope-compatible endpoint.
     """
-    names = ["OPENCOLLAB_API_KEY", required_env_key(provider)]
     if _is_dashscope_base_url(base_url):
-        names.append("DASHSCOPE_API_KEY")
+        names = ["OPENCOLLAB_API_KEY", "DASHSCOPE_API_KEY"]
+    else:
+        names = ["OPENCOLLAB_API_KEY", required_env_key(provider)]
     return list(dict.fromkeys(names))
 
 
@@ -322,19 +342,12 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
                 return val
         return default
 
-    def resolve_ordered(
-        *keys: str, default: str | None = None, file_first: bool = False
-    ) -> str | None:
+    def resolve_ordered(*keys: str, default: str | None = None) -> str | None:
         # For provider-specific secrets, key specificity matters more than
         # source. This prevents a generic exported OPENAI_API_KEY from being sent
         # to a provider-specific compatible endpoint such as DashScope.
-        #
-        # With file_first, the env FILE value of each key beats a shell export of
-        # the same key. A stale shell ANTHROPIC_API_KEY/OPENAI_API_KEY then cannot
-        # shadow the real provider key written to configs/.env.
         for key in keys:
-            sources = (dotenv, os.environ) if file_first else (os.environ, dotenv)
-            for source in sources:
+            for source in (os.environ, dotenv):
                 val = source.get(key)
                 if val:
                     return val
@@ -355,7 +368,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         else resolve("OPENCOLLAB_BASE_URL", provider_base_url_key)
     )
     api_key_value = selected_overrides.get("api_key") or resolve_ordered(
-        *api_key_env_precedence(provider_value, base_url_value), file_first=True
+        *api_key_env_precedence(provider_value, base_url_value)
     )
 
     values: dict[str, Any] = {

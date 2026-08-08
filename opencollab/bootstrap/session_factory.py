@@ -360,23 +360,27 @@ class DefaultSessionFactory:
     ):
         self._cfg = cfg
         self._team = team_cfg or default_team_config()
-        # Resolve the workspace's skills/ directory (FileSkillStore) or fall back
-        # to a NullSkillStore. Shared by the builder for both catalog injection
-        # and binding the use_skill dispatcher; repos without skills/ are
-        # unaffected (empty store → no catalog, no tool offered).
-        skill_store = build_skill_store(lead_workspace)
-        # One repo map for the whole team: children work in the lead's
-        # workspace (or worktree copies of it), so the lead's map orients all.
-        project_context = build_repo_map(lead_workspace) if lead_workspace else None
-        self._context_builder = ContextBuilder(
-            self._team, cfg, skill_store=skill_store, project_context=project_context
-        )
         self._lead_workspace = lead_workspace
         self._interactive = interactive
         self._allow_unisolated_child_tests = allow_unisolated_child_tests
         # Run folder where every agent's transcript is persisted. When set,
         # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
         self._save_dir = save_dir
+
+    def _fresh_context_builder(self) -> ContextBuilder:
+        """Snapshot bounded workspace context at the new session's start."""
+        skill_store = build_skill_store(self._lead_workspace)
+        project_context = (
+            build_repo_map(self._lead_workspace)
+            if self._lead_workspace
+            else None
+        )
+        return ContextBuilder(
+            self._team,
+            self._cfg,
+            skill_store=skill_store,
+            project_context=project_context,
+        )
 
     def build_spawn_session(
         self,
@@ -397,8 +401,9 @@ class DefaultSessionFactory:
             if cfg.safety_policy_factory is not None
             else None
         )
-        plan = self._context_builder.build_plan(role, task=task, context=context)
-        agent = self._context_builder.build_agent(
+        context_builder = self._fresh_context_builder()
+        plan = context_builder.build_plan(role, task=task, context=context)
+        agent = context_builder.build_agent(
             role,
             scheduler=scheduler,
             interactive=False,
@@ -447,8 +452,9 @@ class DefaultSessionFactory:
         """
         cfg = self._cfg
         env = LocalEnvironment(self._lead_workspace)
-        plan = self._context_builder.build_plan(self._team.entry)
-        agent = self._context_builder.build_agent(
+        context_builder = self._fresh_context_builder()
+        plan = context_builder.build_plan(self._team.entry)
+        agent = context_builder.build_agent(
             self._team.entry,
             scheduler=scheduler,
             interactive=self._interactive,

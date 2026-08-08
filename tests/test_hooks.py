@@ -267,6 +267,47 @@ def test_runner_delegates_to_shared_process_supervisor(monkeypatch):
     assert calls[0][1]["env"]["OPENCOLLAB_AID"] == "9"
 
 
+def test_runner_passes_workspace_cwd_to_process_supervisor(monkeypatch, tmp_path):
+    calls = []
+    workspace = tmp_path / "workspace with spaces"
+    workspace.mkdir()
+
+    async def fake_run_process(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(hooks_adapter, "run_process", fake_run_process)
+    runner = ShellHookRunner(
+        (_spec(event="Stop", command="./scripts/check.sh"),),
+        workspace=str(workspace),
+    )
+
+    asyncio.run(runner.fire("Stop", {"hook_event_name": "Stop"}))
+
+    assert calls[0][1]["cwd"] == str(workspace.resolve())
+
+
+def test_runner_resolves_relative_hook_outputs_in_workspace(tmp_path):
+    workspace = tmp_path / "workspace with spaces"
+    workspace.mkdir()
+    runner = ShellHookRunner(
+        (
+            _spec(
+                event="Stop",
+                command='pwd > hook-cwd.txt; printf "ok" > relative-output.txt',
+            ),
+        ),
+        workspace=str(workspace),
+    )
+
+    asyncio.run(runner.fire("Stop", {"hook_event_name": "Stop"}))
+
+    assert (workspace / "hook-cwd.txt").read_text().strip() == str(
+        workspace.resolve()
+    )
+    assert (workspace / "relative-output.txt").read_text() == "ok"
+
+
 def test_runner_swallows_shared_supervisor_timeout(monkeypatch):
     async def fake_run_process(*_args, **_kwargs):
         raise asyncio.TimeoutError
@@ -454,6 +495,39 @@ def test_wiring_fires_hook_on_team_bus(tmp_path, monkeypatch):
 
     asyncio.run(bus.emit(SchedulerEvent(type="agent_completed", data={"aid": 0, "parent_aid": None})))
     assert sentinel.exists()
+
+
+def test_wiring_runs_relative_hook_in_runtime_workspace(tmp_path, monkeypatch):
+    workspace = tmp_path / "target workspace"
+    launch_directory = tmp_path / "launcher"
+    workspace.mkdir()
+    launch_directory.mkdir()
+    monkeypatch.chdir(launch_directory)
+    team = (
+        "roles:\n  lead:\n    tools: [bash]\n    prompt: x\n"
+        "hooks:\n  Stop:\n    - command: 'touch relative-stop-fired'\n"
+    )
+    _write_team(workspace, monkeypatch, team)
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    scheduler = build_scheduler(
+        ctx,
+        use_worktrees=False,
+        interactive=False,
+        auto_save=False,
+        enable_hooks=True,
+    )
+
+    asyncio.run(
+        scheduler._event_sink.emit(
+            SchedulerEvent(
+                type="agent_completed",
+                data={"aid": 0, "parent_aid": None},
+            )
+        )
+    )
+
+    assert (workspace / "relative-stop-fired").exists()
+    assert not (launch_directory / "relative-stop-fired").exists()
 
 
 def test_wiring_disabled_when_enable_hooks_false(tmp_path, monkeypatch):

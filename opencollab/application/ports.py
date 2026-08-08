@@ -91,7 +91,7 @@ class WorkingTreeProbe(Protocol):
         ...
 
     async def diff(self) -> str:
-        """The current working-tree diff (best-effort, may be empty)."""
+        """Complete current-tree evidence, or raise when it cannot be proven."""
         ...
 
 
