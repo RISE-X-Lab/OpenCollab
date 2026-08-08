@@ -127,3 +127,40 @@ def test_summarizer_fallback_keeps_non_text_only_messages_visible():
     segment = [{"role": "user", "content": [{"type": "image_url", "image_url": "..."}]}]
     out = _summarizer(RuntimeError("boom"))(segment)
     assert out == "[user]: [image_url block]"
+
+
+def test_composed_summarizer_closes_each_ephemeral_client(monkeypatch):
+    from opencollab.bootstrap import container
+
+    clients = []
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.close_calls = 0
+            clients.append(self)
+
+        async def complete(self, _request, *, temperature):
+            assert temperature == 0.0
+            return SimpleNamespace(content="<summary>closed cleanly</summary>")
+
+        async def close(self):
+            self.close_calls += 1
+
+    monkeypatch.setattr(container, "LLMClient", FakeClient)
+    agent = SimpleNamespace(
+        model="model",
+        api_key="key",  # pragma: allowlist secret
+        base_url=None,
+        provider="openai",
+    )
+    summarizer = container._build_summarizer(
+        agent,
+        None,
+        resolved_llm=object(),
+        llm_timeout=1.0,
+        auto_save_path=None,
+    )
+
+    assert summarizer(SEGMENT) == "Summary:\nclosed cleanly"
+    assert len(clients) == 1
+    assert clients[0].close_calls == 1

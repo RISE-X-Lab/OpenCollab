@@ -86,6 +86,7 @@ class Session:
         self.step_count = 2
         self.started = asyncio.Event()
         self.save_calls = 0
+        self.close_calls = 0
 
     async def add_user_message(self, _prompt: str) -> None:
         return None
@@ -105,6 +106,9 @@ class Session:
         if self.auto_save_path is None:
             return None
         return asyncio.create_task(asyncio.sleep(0))
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
 
 
 def _agent() -> Agent:
@@ -166,6 +170,7 @@ async def test_agent_runtime_returns_metrics_after_final_save(monkeypatch) -> No
     assert result.environment_cleanup_quiesced is True
     assert result.environment_quiesced is True
     assert environment.cleanup_calls == 1
+    assert session.close_calls == 1
 
 
 async def test_agent_runtime_returns_quiescent_execution_failure(monkeypatch) -> None:
