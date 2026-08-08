@@ -41,9 +41,7 @@ from opencollab.bootstrap.agent_runtime import (
     run_agent as _run_agent,
 )
 from opencollab.bootstrap.config import resolve_thinking_params
-from opencollab.bootstrap.runtime_context import build_runtime_context
-from opencollab.bootstrap.scheduler_factory import build_scheduler
-from opencollab.bootstrap.team_config import load_team_config
+from opencollab.bootstrap.scheduler_factory import build_scheduler  # noqa: F401
 from opencollab.bootstrap.tool_registry import build_tools_for_role
 from opencollab.bootstrap.workflow_runtime import (
     WORKFLOW_AGENT_PROMPT,
@@ -683,131 +681,19 @@ async def run_team(
     use_worktrees: bool,
 ) -> ProgrammaticResult:
     """Run the scheduler regime once, including bounded team cleanup."""
-    run_config = dict(config)
-    run_config["budget"] = max_tokens
-    context = build_runtime_context(workspace, run_config, trace=False)
-    team_config = load_team_config(workspace, path=team_config_path)
-    _claim_artifacts(artifacts)
-    if artifacts is not None and trace:
-        context.tracer = Tracer(
-            run_id="team",
-            output_dir=str(artifacts),
-            filename="trajectory.jsonl",
-        )
-    try:
-        scheduler = build_scheduler(
-            context,
-            use_worktrees=use_worktrees,
-            interactive=False,
-            auto_save=artifacts is not None,
-            team_config_path=team_config_path,
-            resolved_team_config=team_config,
-            save_dir=artifacts,
-        )
-    except BaseException as exc:
-        tracer_failure = _close_tracer(context.tracer)
-        if tracer_failure is not None:
-            add_exception_note(
-                exc,
-                "team tracer close also failed: "
-                f"{type(tracer_failure).__name__}: {tracer_failure}",
-            )
-        raise
-    output: str | None = None
-    status: Literal["completed", "stopped", "failed"] = "completed"
-    reason: str | None = None
-    failure: BaseException | None = None
-    cancellation: asyncio.CancelledError | None = None
-    try:
-        try:
-            if timeout is None:
-                output = await scheduler.run(prompt)
-            else:
-                output = await asyncio.wait_for(scheduler.run(prompt), timeout=timeout)
-        except TimeoutError as exc:
-            status = "stopped"
-            reason = "timeout"
-            failure = exc
-        except asyncio.CancelledError as exc:
-            cancellation = exc
-        except Exception as exc:
-            status = "failed"
-            reason = str(exc) or type(exc).__name__
-            failure = exc
-        if status == "completed":
-            lead = scheduler.lead_session
-            phase = getattr(getattr(lead, "phase", None), "value", None)
-            terminal_reason = getattr(getattr(lead, "state", None), "terminal_reason", None)
-            if phase == "stopped":
-                status = "stopped"
-                reason = terminal_reason
-            elif phase == "error":
-                status = "failed"
-                reason = terminal_reason or "team failed"
-    finally:
-        cleanup_failure: BaseException | None = None
-        try:
-            await scheduler.cleanup(cleanup_timeout=cleanup_timeout)
-        except BaseException as exc:
-            cleanup_failure = exc
-        tracer_failure = _close_tracer(context.tracer)
-        if cancellation is not None:
-            if cleanup_failure is not None:
-                add_exception_note(
-                    cancellation,
-                    "team cleanup also failed: "
-                    f"{type(cleanup_failure).__name__}: {cleanup_failure}"
-                )
-            if tracer_failure is not None:
-                add_exception_note(
-                    cancellation,
-                    "team trace also failed: "
-                    f"{type(tracer_failure).__name__}: {tracer_failure}"
-                )
-            raise cancellation
-        lifecycle_failure = cleanup_failure or tracer_failure
-        if lifecycle_failure is not None:
-            cause = lifecycle_failure
-            if failure is not None:
-                cause = failure
-                if cleanup_failure is not None:
-                    add_exception_note(
-                        failure,
-                        "team cleanup also failed: "
-                        f"{type(cleanup_failure).__name__}: {cleanup_failure}",
-                    )
-                if tracer_failure is not None:
-                    add_exception_note(
-                        failure,
-                        "team trace also failed: "
-                        f"{type(tracer_failure).__name__}: {tracer_failure}",
-                    )
-            elif cleanup_failure is not None and tracer_failure is not None:
-                add_exception_note(
-                    cleanup_failure,
-                    "team trace also failed: "
-                    f"{type(tracer_failure).__name__}: {tracer_failure}",
-                )
-            raise ProgrammaticLifecycleError(
-                "team cleanup or trajectory persistence failed"
-            ) from cause
+    from opencollab.bootstrap.programmatic_team import run_team as _run_team
 
-    _verify_artifact_claim(artifacts)
-    if artifacts is not None:
-        _require_json_object(artifacts / "team.json", "team manifest")
-    lead = scheduler.lead_session
-    return ProgrammaticResult(
-        output=output,
-        status=status,
-        reason=reason,
-        tokens=scheduler.used_tokens,
+    return await _run_team(
+        prompt=prompt,
+        config=config,
+        workspace=workspace,
+        team_config_path=team_config_path,
+        max_tokens=max_tokens,
+        timeout=timeout,
+        cleanup_timeout=cleanup_timeout,
         artifacts=artifacts,
-        error=failure,
-        metrics={
-            "steps": int(getattr(lead, "step_count", 0)),
-            "sessions": len(scheduler.table.entries),
-        },
-        agent_failures=_team_agent_failures(scheduler),
+        trace=trace,
+        use_worktrees=use_worktrees,
     )
 
 
