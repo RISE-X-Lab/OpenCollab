@@ -106,7 +106,7 @@ def test_golden_startup_user_messages_is_the_task_alone_with_ctx_tag():
         {
             "role": "user",
             "content": task_body,
-            "_ctx": {"layer": "task", "priority": 80},
+            "_ctx": {"name": "task", "layer": "task", "priority": 80},
         }
     ]
 

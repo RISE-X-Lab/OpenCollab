@@ -48,6 +48,14 @@ def test_filter_messages_falsy_env_values(monkeypatch, raw):
     assert build_config().filter_messages is False
 
 
+@pytest.mark.parametrize("raw", ["enabled", "truth", "tru", "00"])
+def test_thinking_rejects_unknown_boolean_tokens(monkeypatch, raw):
+    monkeypatch.setenv("OPENCOLLAB_THINKING", raw)
+
+    with pytest.raises(ValueError, match="boolean configuration"):
+        build_config()
+
+
 def test_filter_messages_surfaces_in_get_config_dict(monkeypatch):
     from opencollab.bootstrap.config import get_config
 
@@ -155,6 +163,23 @@ def test_provider_override_reselects_file_first_api_key(monkeypatch, tmp_path):
 
     assert cfg.provider == "anthropic"
     assert cfg.api_key == "file-anthropic"
+
+
+def test_anthropic_does_not_inherit_openai_base_url(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_PROVIDER", "anthropic")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://openai-proxy.invalid/v1")
+    monkeypatch.delenv("OPENCOLLAB_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+
+    assert build_config().base_url is None
+
+
+def test_anthropic_uses_its_provider_specific_base_url(monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_PROVIDER", "anthropic")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://openai-proxy.invalid/v1")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://anthropic-proxy.invalid")
+
+    assert build_config().base_url == "https://anthropic-proxy.invalid"
 
 
 def test_cli_resolved_config_keeps_max_output_tokens(monkeypatch, tmp_path):

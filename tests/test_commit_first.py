@@ -163,6 +163,25 @@ def test_t2_dead_scout_falls_back_to_draft():
     assert out == "DRAFT-ANCHORS"
 
 
+def test_enforced_scout_build_failure_preserves_existing_fallback():
+    class FailingFactory:
+        def build_workflow_session(self, **_kwargs):
+            raise OSError("provider unavailable")
+
+    ctx = _ctx(FailingFactory())
+    out = run(
+        ctx.agent(
+            "scout",
+            tools=[_ReadStub()],
+            label="scout:0",
+            enforcement_strength=ENFORCEMENT_ON,
+            harvest_fallback="DRAFT-ANCHORS",
+        )
+    )
+    assert out == "DRAFT-ANCHORS"
+    assert ctx.agent_failures[0]["exception_type"] == "OSError"
+
+
 def test_t2_dead_scout_with_reads_prefers_grounded_synth_over_draft():
     # A dead scout that DID read (ledger) -> the grounded synth overrides the draft.
     ledger = [{"tool": "grep", "target": "slice", "outcome": "hit", "snippet": "fs.py:42"}]

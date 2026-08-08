@@ -12,11 +12,12 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from opencollab.application.schema_validate import validate
+from opencollab.application.schema_validate import validate, validate_schema
 from opencollab.application.structured_output import StructuredOutputTool
 from opencollab.application.tool_execution import ToolRuntime
 from opencollab.application.workflow import (
@@ -61,6 +62,18 @@ def test_validate_enum_violation():
     errors = validate({"color": "blue"}, schema)
     assert errors
     assert any("color" in e for e in errors)
+
+
+@pytest.mark.parametrize("enum", ["abc", 3, {"x": 1}, [], [float("nan")]])
+def test_validate_schema_rejects_malformed_enum(enum):
+    errors = validate_schema({"type": "string", "enum": enum})
+    assert errors
+    assert any("enum" in error for error in errors)
+
+
+def test_validate_schema_accepts_nonempty_json_enum():
+    schema = {"enum": ["red", 3, None, {"kind": "nested"}, ["x"]]}
+    assert validate_schema(schema) == []
 
 
 def test_validate_nested_object_and_array():
@@ -132,6 +145,24 @@ def test_validate_union_type_list():
     assert validate({"x": 7}, schema)
 
 
+class _NamedTool:
+    description = "test"
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def to_openai_schema(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
 # --------------------------------------------------------------------------- #
 # StructuredOutputTool
 # --------------------------------------------------------------------------- #
@@ -178,6 +209,20 @@ async def test_tool_schema_surface():
     assert openai["function"]["name"] == "structured_output"
     # the tool's parameters expose the caller's schema as the input shape
     assert openai["function"]["parameters"] == schema
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"type": "array", "items": {"type": "string"}},
+        {"type": "string"},
+        {"type": ["object", "null"]},
+        {"properties": {}},
+    ],
+)
+def test_tool_rejects_non_object_top_level_schema(schema):
+    with pytest.raises(ValueError, match="top-level type must be 'object'"):
+        StructuredOutputTool(schema)
 
 
 # --------------------------------------------------------------------------- #
@@ -339,6 +384,19 @@ class ScriptedFactory:
         return session
 
 
+class TransientFailureFactory(ScriptedFactory):
+    """First structured session raises; the single corrective session captures."""
+
+    def build_workflow_session(self, **kwargs):
+        session = super().build_workflow_session(**kwargs)
+        if len(self.sessions) == 1:
+            async def fail_once(cancel_event=None):
+                raise OSError("temporary provider failure")
+
+            session.run_loop = fail_once
+        return session
+
+
 SCHEMA = {"type": "object", "required": ["x"], "properties": {"x": {"type": "integer"}}}
 
 
@@ -371,6 +429,18 @@ async def test_agent_schema_retries_once_then_succeeds():
     assert len(factory.sessions) == 2
     assert factory.sessions[0].run_count == 1
     assert factory.sessions[1].run_count == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_schema_retries_once_after_transient_first_pass_error():
+    factory = TransientFailureFactory(payloads=[{"x": 17}])
+    ctx = WorkflowContext(factory)
+
+    result = await ctx.agent("give me x", schema=SCHEMA, label="solver")
+
+    assert result == {"x": 17}
+    assert len(factory.sessions) == 2
+    assert ctx.agent_failures[0]["exception_type"] == "OSError"
 
 
 @pytest.mark.asyncio
@@ -616,6 +686,40 @@ async def test_non_structured_agent_leaves_thinking_default():
     assert factory.builds[0]["thinking"] is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reserved_name",
+    [
+        "structured_output",
+        "STRUCTURED_OUTPUT",
+        "submit_findings",
+        "ｓｕｂｍｉｔ＿ｆｉｎｄｉｎｇｓ",
+    ],
+)
+async def test_agent_rejects_reserved_external_tool_before_build(reserved_name):
+    factory = ScriptedFactory(payloads=[])
+    ctx = WorkflowContext(factory)
+
+    with pytest.raises(ValueError, match="reserved tool name"):
+        await ctx.agent("go", tools=[_NamedTool(reserved_name)])
+
+    assert factory.builds == []
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_normalized_duplicate_tools_before_build():
+    factory = ScriptedFactory(payloads=[])
+    ctx = WorkflowContext(factory)
+
+    with pytest.raises(ValueError, match="duplicate tool names"):
+        await ctx.agent(
+            "go",
+            tools=[_NamedTool("custom_tool"), _NamedTool("ＣＵＳＴＯＭ＿ＴＯＯＬ")],
+        )
+
+    assert factory.builds == []
+
+
 # --------------------------------------------------------------------------- #
 # wall-clock deadline (time_low / seconds_left)
 # --------------------------------------------------------------------------- #
@@ -684,3 +788,16 @@ def test_schema_satisfied_predicate():
     assert _schema_satisfied("not a dict", schema) is False
     # no required keys: any captured dict (even {}) is an accepted commit
     assert _schema_satisfied({}, {"type": "object"}) is True
+
+
+def test_structured_retry_carries_history_through_declared_state_port():
+    prior_messages = [
+        {"role": "assistant", "tool_calls": [{"id": "read-1"}]},
+        {"role": "tool", "tool_call_id": "read-1", "content": "evidence"},
+    ]
+    prior = SimpleNamespace(state=SimpleNamespace(messages=prior_messages))
+    retry = SimpleNamespace(state=SimpleNamespace(messages=[]))
+
+    assert WorkflowContext._carry_exploration(prior, retry) is True
+    assert retry.state.messages == prior_messages
+    assert retry.state.messages is not prior_messages
