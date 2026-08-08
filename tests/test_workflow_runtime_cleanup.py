@@ -70,6 +70,38 @@ async def test_cleanup_cancels_tasks_without_aborting_caller_environment():
 
 
 @pytest.mark.asyncio
+async def test_workflow_finalization_closes_session_resources():
+    class ClosableSession:
+        pending_cleanup_tasks = ()
+        persistence_errors = ()
+
+        def __init__(self):
+            self.close_calls = 0
+
+        def enqueue_auto_save(self):
+            return None
+
+        async def aclose(self):
+            self.close_calls += 1
+
+    session = ClosableSession()
+    ctx = WorkflowContext(factory=object())
+    ctx._track_session(session)
+
+    quiesced, succeeded, lingering = (
+        await workflow_cleanup._quiesce_and_finalize_workflow_context(
+            ctx,
+            timeout=0.1,
+        )
+    )
+
+    assert quiesced
+    assert succeeded
+    assert not lingering
+    assert session.close_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_run_workflow_quiesces_late_session_before_manifest_and_tracer_close(
     monkeypatch,
     tmp_path,

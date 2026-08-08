@@ -21,6 +21,7 @@ order acyclic regardless of which module is imported first.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -36,6 +37,7 @@ from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.compaction_summary import ReadTimeSummarizer
 from opencollab.application.event_bus import EventBus
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import (
     AskUserPort,
     EventPublisherPort,
@@ -137,9 +139,11 @@ def _build_summarizer(
     reused as-is.
     """
     if llm is not None:
+
         async def _summary_complete(request: list[dict[str, Any]]) -> Any:
             return await resolved_llm.complete(request, temperature=0.0)
     else:
+
         async def _summary_complete(request: list[dict[str, Any]]) -> Any:
             client = LLMClient(
                 model=agent.model,
@@ -148,7 +152,26 @@ def _build_summarizer(
                 provider=agent.provider,
                 request_timeout=llm_timeout,
             )
-            return await client.complete(request, temperature=0.0)
+            primary_failure: BaseException | None = None
+            try:
+                return await client.complete(request, temperature=0.0)
+            except BaseException as exc:
+                primary_failure = exc
+                raise
+            finally:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    try:
+                        outcome = close()
+                        if inspect.isawaitable(outcome):
+                            await outcome
+                    except BaseException as close_failure:
+                        if primary_failure is None:
+                            raise
+                        add_exception_note(
+                            primary_failure,
+                            f"summary client close also failed: {type(close_failure).__name__}: {close_failure}",
+                        )
 
     return ReadTimeSummarizer(_summary_complete, transcript_path=auto_save_path)
 
@@ -304,6 +327,7 @@ def build_session_runtime(
         runner=runner,
         auto_save_path=auto_save_path,
         auto_save_subscriber=auto_save_subscriber,
+        owns_llm=llm is None,
     )
 
 
