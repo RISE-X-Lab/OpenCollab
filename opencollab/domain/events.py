@@ -36,6 +36,7 @@ SessionEventType = Literal[
     "step_end",
     "loop_detected",
     "budget_warning",
+    "budget_reserve_allocated",
     "error",
     "user_message_appended",
 ]

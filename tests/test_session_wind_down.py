@@ -242,6 +242,28 @@ def test_t2_winddown_forces_tool_choice_and_commits_in_one_turn():
     assert state.phase.is_terminal()
 
 
+def test_budget_wind_down_persists_allocation_before_provider_call():
+    events, bus = collect_events()
+    state = SessionState(
+        messages=[{"role": "user", "content": "investigate"}],
+        used_tokens=80_000,
+    )
+    runner = build_runner(
+        state=state,
+        agent=_agent_with_submit(),
+        llm=FakeLLM([llm_response(content="done")]),
+        event_bus=bus,
+        max_budget_tokens=100_000,
+        commit_reserve=20_000,
+        enforcement_strength=ENFORCEMENT_ON,
+    )
+
+    run(runner.run_loop())
+
+    assert state.budget_reserve_consumed is True
+    assert any(event_type == "budget_reserve_allocated" for event_type, _ in events)
+
+
 def test_t2_winddown_retries_once_on_wrong_tool_then_commits_forced():
     # Provider IGNORES the forced tool_choice (DashScope 400->auto): turn 1 calls a
     # now-unknown tool. FIX #2: one retry is issued (not terminated), and on the
