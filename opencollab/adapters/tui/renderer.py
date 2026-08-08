@@ -26,7 +26,23 @@ from rich.text import Text
 from opencollab.adapters.tui.brand_motion import MARK_HEX, PulseDot
 from opencollab.adapters.tui.keyboard import TabKeyNavigator
 from opencollab.adapters.tui.renderer_display import _RendererDisplayMixin
-from opencollab.adapters.tui.renderer_events import _RendererEventsMixin
+from opencollab.adapters.tui.renderer_events import (
+    MAX_TIMELINE_BLOCKS,
+    _RendererEventsMixin,
+)
+from opencollab.domain.session import TERMINAL_PHASES
+
+MAX_HISTORY_BLOCKS_PER_AGENT = 400
+MAX_TERMINAL_AGENT_STATES = 128
+MAX_TERMINAL_AGENT_SUMMARIES = 256
+_TERMINAL_RENDER_STATES = frozenset(
+    {
+        "idle",
+        "failed",
+        "cancelled",
+        *(phase.value for phase in TERMINAL_PHASES),
+    }
+)
 
 
 @dataclass
@@ -37,6 +53,7 @@ class _AgentRenderState:
     active_tools: dict[str, dict] = field(default_factory=dict)
     status_lines: list[Text] = field(default_factory=list)
     history_blocks: list[Any] = field(default_factory=list)
+    history_omitted_blocks: int = 0
     timeline_blocks: list[Any] = field(default_factory=list)
     turn_history_start: int = 0
     history_revision: int = 0
@@ -67,6 +84,10 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         self._agent_states: dict[int, _AgentRenderState] = {}
         # aid -> {"role": str, "state": str} for the live team roster panel.
         self._roster: dict[int, dict] = {}
+        self._terminal_agent_order: list[int] = []
+        self._terminal_agent_summaries: dict[int, dict[str, Any]] = {}
+        self._terminal_summary_order: list[int] = []
+        self._terminal_summaries_omitted = 0
         # Brand motion (single pulsing dot). ``_motion`` is the shared,
         # seconds-less tool-execution spinner. Each agent owns its own LLM-wait
         # indicator so hidden streams remain intact while another agent is selected.
@@ -92,6 +113,62 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
     def _state_for(self, aid: int) -> _AgentRenderState:
         """Return one agent's render state, creating it on first observation."""
         return self._agent_states.setdefault(aid, _AgentRenderState())
+
+    def _append_history_block(self, state: _AgentRenderState, block: Any) -> None:
+        state.history_blocks.append(block)
+        overflow = len(state.history_blocks) - MAX_HISTORY_BLOCKS_PER_AGENT
+        if overflow > 0:
+            del state.history_blocks[:overflow]
+            state.history_omitted_blocks += overflow
+            state.turn_history_start = max(0, state.turn_history_start - overflow)
+
+    def _append_timeline_block(self, state: _AgentRenderState, block: Any) -> None:
+        state.timeline_blocks.append(block)
+        overflow = len(state.timeline_blocks) - MAX_TIMELINE_BLOCKS
+        if overflow > 0:
+            del state.timeline_blocks[:overflow]
+
+    def _track_agent_render_lifecycle(self, aid: int, state: str) -> None:
+        if aid in self._terminal_summary_order:
+            self._terminal_summary_order.remove(aid)
+        self._terminal_agent_summaries.pop(aid, None)
+        if aid in self._terminal_agent_order:
+            self._terminal_agent_order.remove(aid)
+        if aid != 0 and state in _TERMINAL_RENDER_STATES:
+            self._terminal_agent_order.append(aid)
+        while len(self._terminal_agent_order) > MAX_TERMINAL_AGENT_STATES:
+            victim = next(
+                (
+                    candidate
+                    for candidate in self._terminal_agent_order
+                    if candidate != self._selected_aid
+                ),
+                None,
+            )
+            if victim is None:
+                break
+            self._terminal_agent_order.remove(victim)
+            render_state = self._agent_states.pop(victim, None)
+            roster = self._roster.pop(victim, {})
+            self._terminal_agent_summaries[victim] = {
+                "aid": victim,
+                "role": str(roster.get("role", "agent")),
+                "state": str(roster.get("state", "idle")),
+                "step": render_state.step if render_state is not None else 0,
+                "retained_history_blocks": (
+                    len(render_state.history_blocks) if render_state is not None else 0
+                ),
+                "omitted_history_blocks": (
+                    render_state.history_omitted_blocks
+                    if render_state is not None
+                    else 0
+                ),
+            }
+            self._terminal_summary_order.append(victim)
+            while len(self._terminal_summary_order) > MAX_TERMINAL_AGENT_SUMMARIES:
+                forgotten = self._terminal_summary_order.pop(0)
+                self._terminal_agent_summaries.pop(forgotten, None)
+                self._terminal_summaries_omitted += 1
 
     def _event_aid(self, aid: Any) -> int:
         """Normalize legacy events without an aid to agent 0, independent of focus."""
@@ -151,8 +228,12 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
 
     @_timeline_blocks.setter
     def _timeline_blocks(self, value: list[Any]) -> None:
-        self._selected_state.timeline_blocks = value
-        self._selected_state.history_blocks = list(value)
+        blocks = list(value)
+        self._selected_state.timeline_blocks = blocks[-MAX_TIMELINE_BLOCKS:]
+        self._selected_state.history_blocks = blocks[-MAX_HISTORY_BLOCKS_PER_AGENT:]
+        self._selected_state.history_omitted_blocks = max(
+            0, len(blocks) - MAX_HISTORY_BLOCKS_PER_AGENT
+        )
         self._selected_state.history_revision += 1
 
     @property
@@ -185,6 +266,19 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         return self._selected_aid
 
     @property
+    def terminal_agent_summaries(self) -> tuple[dict[str, Any], ...]:
+        """Bounded summaries for terminal agents evicted from detailed TUI state."""
+        return tuple(
+            dict(self._terminal_agent_summaries[aid])
+            for aid in self._terminal_summary_order
+        )
+
+    @property
+    def terminal_agent_summaries_omitted(self) -> int:
+        """Number of oldest summaries omitted to retain a stable memory bound."""
+        return self._terminal_summaries_omitted
+
+    @property
     def selected_role(self) -> str | None:
         """Compatibility view: configured-only roles are not input targets."""
         return None
@@ -203,9 +297,15 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         """
         live_roles: dict[int, str] = {}
 
-        for aid, role, _state in self._team_entries():
+        for aid, role, state in self._team_entries():
             role = str(role)
-            if isinstance(aid, int) and aid >= 0:
+            if not isinstance(aid, int) or aid < 0:
+                continue
+            if (
+                aid == 0
+                or aid in self._agent_states
+                or state not in _TERMINAL_RENDER_STATES
+            ):
                 live_roles.setdefault(aid, role)
 
         for aid in self._agent_states:
@@ -262,8 +362,8 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         state = self._state_for(aid)
         self._flush_current_text_to_timeline(state)
         block = self._user_block(content)
-        state.history_blocks.append(block)
-        state.timeline_blocks.append(block)
+        self._append_history_block(state, block)
+        self._append_timeline_block(state, block)
         state.history_revision += 1
 
     def _refresh(self) -> None:
@@ -346,11 +446,13 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         self._keyboard_resume_pending = False
 
     def stop_live(self, *, persist: bool = False, aid: int | None = None) -> None:
-        """Stop the live HUD while retaining every agent transcript in memory.
+        """Stop the live HUD while retaining each bounded recent transcript.
 
-        Interactive transcripts stay inside the redrawable Prompt Toolkit view so
-        Tab can replace them cleanly. One-shot callers opt into ``persist`` to
-        print the target's settled turn to ordinary terminal scrollback.
+        Interactive transcripts stay inside the redrawable Prompt Toolkit view
+        with an explicit marker when older blocks were omitted. Full history
+        remains owned by the persistent transcript/trace. One-shot callers opt
+        into ``persist`` to print the target's settled turn to ordinary terminal
+        scrollback.
         """
         set_quit_callback = getattr(self._keyboard_controller, "set_quit_callback", None)
         if callable(set_quit_callback):

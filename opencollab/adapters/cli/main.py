@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys
 import uuid
 from typing import Any, Optional
 
@@ -26,6 +27,7 @@ import typer
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.styles import Style
 from rich.console import Console
+from rich.text import Text
 
 from opencollab.adapters.cli.config_resolve import (
     missing_api_key_for,
@@ -74,6 +76,40 @@ def _get_prompt_session() -> Any:
     return _prompt_session
 
 
+async def _read_console_line(prompt_text: str) -> str:
+    """Read a terminal line without leaving an executor thread on cancellation."""
+    loop = asyncio.get_running_loop()
+    try:
+        stdin_fd = sys.stdin.fileno()
+    except (AttributeError, OSError) as exc:
+        raise RuntimeError("console input fallback requires a selectable stdin") from exc
+
+    console.print(prompt_text, end="")
+    result: asyncio.Future[str] = loop.create_future()
+
+    def on_readable() -> None:
+        if result.done():
+            return
+        try:
+            line = sys.stdin.readline()
+        except BaseException as exc:
+            result.set_exception(exc)
+            return
+        if line == "":
+            result.set_exception(EOFError())
+            return
+        result.set_result(line.rstrip("\r\n"))
+
+    try:
+        loop.add_reader(stdin_fd, on_readable)
+    except (AttributeError, NotImplementedError) as exc:
+        raise RuntimeError("console input fallback is unavailable on this event loop") from exc
+    try:
+        return await result
+    finally:
+        loop.remove_reader(stdin_fd)
+
+
 async def _read_line(
     prompt_text: Any,
     bottom_toolbar: Any = None,
@@ -94,9 +130,8 @@ async def _read_line(
             key_bindings=key_bindings,
         )
     except Exception:
-        loop = asyncio.get_running_loop()
         fallback = prompt_text if isinstance(prompt_text, str) else "> "
-        return await loop.run_in_executor(None, lambda: console.input(fallback))
+        return await _read_console_line(fallback)
 
 
 @app.callback(invoke_without_command=True)
@@ -167,9 +202,11 @@ def main_callback(
 
 
 def _resolve_one_shot_prompt(prompt: str | None, prompt_file: str | None) -> str | None:
-    if prompt and prompt_file:
+    if prompt is not None and prompt_file is not None:
         raise typer.BadParameter("--prompt and --prompt-file are mutually exclusive.")
-    if prompt_file:
+    if prompt_file is not None:
+        if not prompt_file.strip():
+            raise typer.BadParameter("--prompt-file path must not be empty.")
         try:
             text = read_regular_text(
                 prompt_file,
@@ -180,7 +217,9 @@ def _resolve_one_shot_prompt(prompt: str | None, prompt_file: str | None) -> str
         if not text.strip():
             raise typer.BadParameter(f"--prompt-file is empty: {prompt_file}")
         return text
-    if prompt:
+    if prompt is not None:
+        if not prompt.strip():
+            raise typer.BadParameter("--prompt must not be empty.")
         return prompt
     return None
 
@@ -224,7 +263,15 @@ def _dispatch_repl_command(line: str, lead: Any) -> bool:
     if command in _EXIT_COMMANDS:
         return False
     if command == "/save":
-        _save_session(lead)
+        try:
+            _save_session(lead)
+        except Exception as exc:
+            console.print(
+                Text(
+                    f"Session save failed: {type(exc).__name__}: {exc}",
+                    style="red",
+                )
+            )
         return True
     raise KeyError(line)
 
@@ -308,9 +355,11 @@ async def _run(
 
     event_sink = TuiEventSink(tui)
     events_file = os.environ.get("OPENCOLLAB_EVENTS_FILE")
+    file_event_sink: JsonlEventSink | None = None
     if events_file:
         bus = EventBus(event_sink)
-        bus.subscribe(JsonlEventSink(events_file))
+        file_event_sink = JsonlEventSink(events_file)
+        bus.subscribe(file_event_sink)
         event_sink = bus
 
     ctx = build_runtime_context(
@@ -403,6 +452,27 @@ async def _run(
                     )
                 except BaseException as exc:
                     tracer_failure = exc
+    if file_event_sink is not None:
+        try:
+            event_write_error = file_event_sink.write_error
+            dropped_events = file_event_sink.dropped_events
+        except BaseException as exc:
+            event_write_error = (
+                "event sink diagnostics unavailable: "
+                f"{type(exc).__name__}: {exc}"
+            )
+            dropped_events = 0
+        if event_write_error is not None or dropped_events:
+            safe_error = " ".join(str(event_write_error or "unknown error").splitlines())
+            try:
+                print(
+                    "Warning: event log persistence degraded for "
+                    f"{events_file!r}; first error: {safe_error[:1000]}; "
+                    f"dropped events: {dropped_events}",
+                    file=sys.stderr,
+                )
+            except BaseException:
+                pass
     if primary_failure is not None:
         if repeated_cancellation is not None:
             add_exception_note(

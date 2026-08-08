@@ -78,6 +78,29 @@ def test_cli_prompt_file_rejects_unsafe_or_oversized_input(
         cli_main._resolve_one_shot_prompt(None, str(prompt))
 
 
+@pytest.mark.parametrize("prompt", ["", "   ", "\t\n"])
+def test_cli_rejects_explicit_blank_prompt(prompt):
+    with pytest.raises(typer.BadParameter, match="--prompt must not be empty"):
+        cli_main._resolve_one_shot_prompt(prompt, None)
+
+
+def test_cli_rejects_empty_prompt_file_path():
+    with pytest.raises(typer.BadParameter, match="--prompt-file path must not be empty"):
+        cli_main._resolve_one_shot_prompt(None, "")
+
+
+def test_cli_rejects_both_prompt_inputs_even_when_prompt_is_empty(tmp_path):
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("from file", encoding="utf-8")
+
+    with pytest.raises(typer.BadParameter, match="mutually exclusive"):
+        cli_main._resolve_one_shot_prompt("", str(prompt_file))
+
+
+def test_cli_preserves_nonblank_unicode_prompt():
+    assert cli_main._resolve_one_shot_prompt(" Grüß dich 🌍 ", None) == " Grüß dich 🌍 "
+
+
 class FakeConsole:
     def print(self, *args, **kwargs):
         return None
@@ -322,6 +345,54 @@ async def test_cli_successful_one_shot_holds_before_stopping_and_cleanup(
 
     assert events == ["run", "hold", "stop", "cleanup"]
     assert tracer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_cli_warns_when_event_log_persistence_is_degraded(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("occupied", encoding="utf-8")
+    monkeypatch.setenv(
+        "OPENCOLLAB_EVENTS_FILE",
+        str(blocker / "events.jsonl"),
+    )
+
+    class Scheduler:
+        used_tokens = 0
+        lead_session = SimpleNamespace(auto_save_path=None, step_count=0)
+
+        def team_roster(self):
+            return []
+
+        async def run_turn(self, aid, line):
+            assert (aid, line) == (0, "do work")
+
+        def agent_step_count(self, aid):
+            return 0
+
+        async def cleanup(self):
+            return None
+
+    tracer = FakeTracer()
+    install_cli_fakes(monkeypatch, Scheduler(), tracer)
+
+    await cli_main._run(
+        str(tmp_path),
+        config(),
+        None,
+        True,
+        True,
+        False,
+        one_shot_prompt="do work",
+    )
+
+    warning = capsys.readouterr().err
+    assert "event log persistence degraded" in warning
+    assert "dropped events: 0" in warning
+    assert str(blocker / "events.jsonl") in warning
 
 
 @pytest.mark.asyncio

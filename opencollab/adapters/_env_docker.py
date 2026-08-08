@@ -5,13 +5,19 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import posixpath
 import re
 import shlex
 import uuid
 from collections.abc import Callable
 from typing import NoReturn
 
-from opencollab.adapters._env_base import Environment, ExecResult
+from opencollab.adapters._env_base import (
+    ENV_FILE_WRITE_LIMIT_BYTES,
+    Environment,
+    ExecResult,
+    TextFileRange,
+)
 from opencollab.adapters._env_process import (
     PROCESS_OUTPUT_CAPTURE_BYTES,
     ProcessCleanupError,
@@ -28,27 +34,52 @@ DOCKER_WRITE_TIMEOUT_SECONDS = 120.0
 _IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$")
 _FULL_ID_RE = re.compile(r"^[0-9a-fA-F]{64}$")
+_WRITE_LOCKS: dict[str, asyncio.Lock] = {}
 
 _EXEC_WRAPPER = r"""
 pidfile=$1
 shellflag=$2
 command=$3
 cleanup() { rm -f -- "$pidfile"; }
-terminate() {
-    kill -TERM -- "-$child" 2>/dev/null || true
-    sleep 0.1
-    kill -KILL -- "-$child" 2>/dev/null || true
+group_alive() {
+    [ -n "$child" ] && kill -0 -- "-$child" 2>/dev/null
 }
-trap 'terminate; cleanup; exit 143' TERM INT HUP
+wait_for_group_exit() {
+    attempts=0
+    while group_alive; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -ge 20 ] && return 1
+        sleep 0.05
+    done
+    return 0
+}
+terminate() {
+    if ! group_alive; then
+        return 0
+    fi
+    kill -TERM -- "-$child" 2>/dev/null || true
+    if wait_for_group_exit; then
+        return 0
+    fi
+    kill -KILL -- "-$child" 2>/dev/null || true
+    wait_for_group_exit
+}
+cancel_and_exit() {
+    if terminate; then
+        cleanup
+        exit 143
+    fi
+    exit 125
+}
+child=
+trap cancel_and_exit TERM INT HUP
 set -m
 bash "$shellflag" "$command" &
 child=$!
-printf '%s\n' "$child" > "$pidfile" || { terminate; cleanup; exit 125; }
+printf '%s\n' "$child" > "$pidfile" || { terminate || true; cleanup; exit 125; }
 wait "$child"
 status=$?
-if kill -0 -- "-$child" 2>/dev/null; then
-    terminate
-    cleanup
+if group_alive && ! terminate; then
     exit 125
 fi
 cleanup
@@ -61,11 +92,27 @@ if ! read -r child < "$pidfile" 2>/dev/null; then
     exit 124
 fi
 case "$child" in ''|*[!0-9]*) exit 125 ;; esac
+group_alive() {
+    kill -0 -- "-$child" 2>/dev/null
+}
+wait_for_group_exit() {
+    attempts=0
+    while group_alive; do
+        attempts=$((attempts + 1))
+        [ "$attempts" -ge 20 ] && return 1
+        sleep 0.05
+    done
+    return 0
+}
 kill -TERM -- "-$child" 2>/dev/null || true
-sleep 0.1
-kill -KILL -- "-$child" 2>/dev/null || true
-rm -f -- "$pidfile"
-exit 0
+if ! wait_for_group_exit; then
+    kill -KILL -- "-$child" 2>/dev/null || true
+    if ! wait_for_group_exit; then
+        exit 125
+    fi
+fi
+rm -f -- "$pidfile" && exit 0
+exit 125
 """.strip()
 
 
@@ -104,6 +151,12 @@ class DockerEnvironment(Environment):
         super().__init__()
         if container_id is not None and backing_environment is not None:
             raise ValueError("an attached Docker environment cannot own a backing environment")
+        if (
+            isinstance(timeout_returncode, bool)
+            or not isinstance(timeout_returncode, int)
+            or timeout_returncode == 0
+        ):
+            raise ValueError("timeout_returncode must be a non-zero integer")
         self._image = _validate_image(image)
         self.workspace = workspace
         self._attached = container_id is not None
@@ -113,6 +166,9 @@ class DockerEnvironment(Environment):
         self._container_id = self._attached_reference if self._attached else None
         self._attached_bound = False
         self._attach_lock = asyncio.Lock()
+        self._lifecycle_lock = asyncio.Lock()
+        self._active_exec_lock = asyncio.Lock()
+        self._active_execs: dict[str, asyncio.Task | None] = {}
         self._container_name: str | None = None
         self._owner_token = None if self._attached else uuid.uuid4().hex
         self._exec_workdir = exec_workdir
@@ -173,6 +229,10 @@ class DockerEnvironment(Environment):
             self._attached_bound = True
 
     async def setup(self, mount_dir: str | None = None) -> str:
+        async with self._lifecycle_lock:
+            return await self._setup_locked(mount_dir)
+
+    async def _setup_locked(self, mount_dir: str | None) -> str:
         self._ensure_active()
         if self._attached:
             await self._bind_attached()
@@ -180,6 +240,11 @@ class DockerEnvironment(Environment):
             return self._container_id
         if self._container_id is not None:
             return self._container_id
+        host_mount: str | None = None
+        if mount_dir is not None:
+            host_mount = os.path.realpath(os.path.abspath(mount_dir))
+            if not os.path.isdir(host_mount):
+                raise NotADirectoryError(host_mount)
         self._container_name = f"opencollab-{uuid.uuid4().hex[:16]}"
         args = [
             "run",
@@ -192,8 +257,8 @@ class DockerEnvironment(Environment):
             "--label",
             f"{DOCKER_OWNER_LABEL}={self._owner_token}",
         ]
-        if mount_dir:
-            args.extend(("-v", f"{os.path.abspath(mount_dir)}:{self.workspace}"))
+        if host_mount is not None:
+            args.extend(("-v", f"{host_mount}:{self.workspace}"))
         args.extend(("-w", self.workspace, self._image, "sleep", "infinity"))
         try:
             result = await self._docker(*args, timeout=DOCKER_SETUP_TIMEOUT_SECONDS)
@@ -208,6 +273,7 @@ class DockerEnvironment(Environment):
                 )
             )
         self._container_id = candidate.lower()
+        self.host_workspace = host_mount
         return self._container_id
 
     async def _discard_failed_setup(self, failure: BaseException) -> NoReturn:
@@ -338,6 +404,9 @@ class DockerEnvironment(Environment):
         if self._container_id is None:
             raise RuntimeError("Container not started. Call setup() first.")
         token = uuid.uuid4().hex
+        async with self._active_exec_lock:
+            self._ensure_active()
+            self._active_execs[token] = asyncio.current_task()
         try:
             result = await self._docker(
                 *self._exec_argv(cmd, token, interactive=input_bytes is not None),
@@ -359,6 +428,9 @@ class DockerEnvironment(Environment):
             if not await await_owned_operation(self._recover_inner(token)):
                 add_exception_note(exc, "cancelled container command did not quiesce")
             raise
+        finally:
+            async with self._active_exec_lock:
+                self._active_execs.pop(token, None)
         return result.to_exec_result()
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
@@ -372,21 +444,138 @@ class DockerEnvironment(Environment):
             raise OSError(f"docker read exceeded capture limit for {path}")
         return result.stdout
 
-    async def write_file(self, path: str, content: str) -> None:
-        payload = content.encode("utf-8")
-        digest = hashlib.sha256(payload).hexdigest()
+    async def read_text_range(
+        self,
+        path: str,
+        *,
+        offset: int,
+        limit: int,
+        max_chars: int,
+    ) -> TextFileRange:
+        if (
+            isinstance(offset, bool)
+            or not isinstance(offset, int)
+            or offset < 1
+            or isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or limit < 1
+            or isinstance(max_chars, bool)
+            or not isinstance(max_chars, int)
+            or max_chars < 1
+        ):
+            raise ValueError("offset, limit, and max_chars must be positive integers")
+        final_line = offset + limit
+        byte_cap = max_chars * 4 + limit + 1
+        quoted_path = shlex.quote(path)
         command = (
-            'target=$1; mkdir -p -- "$(dirname -- "$target")" && cat > "$target" && '
-            'bytes=$(wc -c < "$target") && '
-            'digest=$(sha256sum -- "$target" 2>/dev/null | awk \'{print $1}\' || '
-            'shasum -a 256 -- "$target" | awk \'{print $1}\') && '
-            'printf "%s\\t%s\\n" "$bytes" "$digest"'
+            f"[ -f {quoted_path} ] && [ -r {quoted_path} ] || exit 66; "
+            "command -v sed >/dev/null && command -v head >/dev/null || exit 127; "
+            f"sed -n '{offset},{final_line}p;{final_line}q' < {quoted_path} "
+            f"| head -c {byte_cap}"
         )
-        wrapped = f"bash -c {shlex.quote(command)} opencollab-write {shlex.quote(path)}"
-        result = await self._exec(wrapped, timeout=DOCKER_WRITE_TIMEOUT_SECONDS, input_bytes=payload)
-        expected = f"{len(payload)}\t{digest}"
-        if result.returncode != 0 or result.stdout.strip() != expected:
-            raise OSError(f"docker write verification failed for {path}")
+        result = await self.exec_cmd(command)
+        if result.returncode != 0:
+            raise FileNotFoundError(result.stderr)
+        lines = result.stdout.splitlines()
+        has_more = len(lines) > limit
+        selected = lines[:limit]
+        joined = "\n".join(selected)
+        chars_truncated = len(joined) > max_chars or result.stdout_truncated
+        if chars_truncated:
+            selected = joined[:max_chars].split("\n")
+            has_more = True
+        return TextFileRange(
+            selected,
+            offset,
+            None,
+            has_more,
+            chars_truncated=chars_truncated,
+        )
+
+    async def write_file(self, path: str, content: str) -> None:
+        self._ensure_active()
+        await self._bind_attached()
+        container_id = self._container_id
+        if container_id is None:
+            raise RuntimeError("Container not started. Call setup() first.")
+        target = self._normalize_container_path(path)
+        lock = _WRITE_LOCKS.setdefault(f"{container_id}\0{target}", asyncio.Lock())
+        async with lock:
+            self._ensure_active()
+            await self._write_file_atomic(target, content)
+
+    @staticmethod
+    def _normalize_container_path(path: str) -> str:
+        if not isinstance(path, str) or not path or "\0" in path:
+            raise ValueError("container file path must be non-empty text without NUL bytes")
+        normalized = posixpath.normpath(path)
+        if normalized in (".", "/") or posixpath.basename(normalized) in (".", ".."):
+            raise ValueError("container file path must name a file")
+        return normalized
+
+    async def _write_file_atomic(self, target: str, content: str) -> None:
+        payload = content.encode("utf-8")
+        if len(payload) > ENV_FILE_WRITE_LIMIT_BYTES:
+            raise OSError(
+                f"docker file exceeds write limit of {ENV_FILE_WRITE_LIMIT_BYTES} bytes: {target}"
+            )
+        digest = hashlib.sha256(payload).hexdigest()
+        directory, filename = posixpath.split(target)
+        temporary = posixpath.join(
+            directory or ".",
+            f".{filename}.opencollab-write-{uuid.uuid4().hex}.tmp",
+        )
+        command = (
+            'target=$1; temporary=$2; expected_bytes=$3; expected_digest=$4; '
+            'cleanup() { rm -f -- "$temporary"; }; trap cleanup EXIT HUP INT TERM; '
+            'mkdir -p -- "$(dirname -- "$target")" && '
+            '(umask 077; set -C; : > "$temporary") && '
+            'cat > "$temporary" && '
+            'bytes=$(wc -c < "$temporary") && '
+            'digest=$(sha256sum -- "$temporary" 2>/dev/null | awk \'{print $1}\' || '
+            'shasum -a 256 -- "$temporary" | awk \'{print $1}\') && '
+            '[ "$bytes" = "$expected_bytes" ] && [ "$digest" = "$expected_digest" ] && '
+            'mv -f -- "$temporary" "$target" && '
+            'trap - EXIT HUP INT TERM && printf "%s\\t%s\\n" "$bytes" "$digest"'
+        )
+        wrapped = (
+            f"bash -c {shlex.quote(command)} opencollab-write {shlex.quote(target)} "
+            f"{shlex.quote(temporary)} {len(payload)} {digest}"
+        )
+        committed = False
+        try:
+            result = await self._exec(
+                wrapped,
+                timeout=DOCKER_WRITE_TIMEOUT_SECONDS,
+                input_bytes=payload,
+            )
+            expected = f"{len(payload)}\t{digest}"
+            if result.returncode != 0 or result.stdout.strip() != expected:
+                raise OSError(f"docker write verification failed for {target}")
+            committed = True
+        finally:
+            if not committed:
+                await await_owned_operation(
+                    self._discard_write_temporary(temporary),
+                    propagate_cancellation=False,
+                )
+
+    async def _discard_write_temporary(self, temporary: str) -> None:
+        container_id = self._container_id
+        if container_id is None:
+            return
+        try:
+            await self._docker(
+                "exec",
+                "--",
+                container_id,
+                "rm",
+                "-f",
+                "--",
+                temporary,
+            )
+        except BaseException:
+            pass
 
     async def write_temp_file(
         self,
@@ -413,7 +602,7 @@ class DockerEnvironment(Environment):
     async def _cleanup_resources(self) -> None:
         failures: list[BaseException] = []
         if not await self._remove_container_if_owned():
-            failures.append(RuntimeError("owned Docker container could not be removed"))
+            raise RuntimeError("owned Docker container could not be removed")
         if self._backing_environment is not None:
             try:
                 await self._backing_environment.cleanup()
@@ -424,13 +613,87 @@ class DockerEnvironment(Environment):
         if failures:
             raise RuntimeError("Docker cleanup failed") from failures[0]
 
-    async def cleanup(self) -> None:
-        if self._attached:
+    async def _cleanup_attached_resources(self) -> None:
+        container_id = self._container_id
+        if container_id is None:
+            if self._temporary_files:
+                raise RuntimeError("attached Docker temporary files cannot be reached")
             return
+        failures: list[BaseException] = []
+        for path in tuple(self._temporary_files):
+            try:
+                removed = await self._docker(
+                    "exec",
+                    "--",
+                    container_id,
+                    "rm",
+                    "-f",
+                    "--",
+                    path,
+                )
+            except BaseException as exc:
+                failures.append(exc)
+                continue
+            if removed.returncode != 0:
+                failures.append(
+                    OSError(f"failed to remove container temporary file: {path}")
+                )
+                continue
+            self._temporary_files.discard(path)
+        if failures:
+            raise OSError(
+                "failed to remove one or more attached Docker temporary files"
+            ) from failures[0]
+
+    async def cleanup(self) -> None:
+        async with self._lifecycle_lock:
+            await self._abort_resources_locked()
+            if self._attached:
+                await await_owned_operation(
+                    self._cleanup_attached_resources(),
+                    propagate_cancellation=True,
+                )
+                return
+
+    async def abort(self) -> None:
+        async with self._lifecycle_lock:
+            await self._abort_resources_locked()
+
+    async def _abort_resources_locked(self) -> None:
+        """Abort resources while the lifecycle lock is already held."""
         self.revoke()
-        await await_owned_operation(
-            self._cleanup_resources(),
-            propagate_cancellation=True,
+        if not self._attached:
+            await await_owned_operation(
+                self._cleanup_resources(),
+                propagate_cancellation=True,
+            )
+            return
+        async with self._active_exec_lock:
+            active = dict(self._active_execs)
+        if not active:
+            return
+        cancelled = await asyncio.gather(
+            *(self._cancel_inner(token) for token in active),
+            return_exceptions=True,
         )
+        current = asyncio.current_task()
+        pending = {
+            task
+            for task in active.values()
+            if task is not None and task is not current and not task.done()
+        }
+        if pending:
+            _done, pending = await asyncio.wait(
+                pending,
+                timeout=DOCKER_CONTROL_TIMEOUT_SECONDS,
+            )
+        failed_cancellations = any(
+            result is not True and (task is None or not task.done())
+            for result, task in zip(cancelled, active.values())
+        )
+        if failed_cancellations or pending:
+            raise ProcessCleanupError(
+                "attached container commands did not quiesce during abort"
+            )
 
 __all__ = ["DockerEnvironment"]

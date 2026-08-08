@@ -15,6 +15,8 @@ from rich.console import Console
 from rich.text import Text
 
 from opencollab.adapters.tui import TUI
+from opencollab.adapters.tui import renderer as renderer_mod
+from opencollab.adapters.tui import renderer_events as renderer_events_mod
 from opencollab.domain.events import SchedulerEvent, SessionRuntimeEvent
 
 
@@ -330,6 +332,8 @@ def test_compat_filter_setting_keeps_scheduler_roster_visible():
 
 def test_agent_selection_wraps_through_live_agents_only():
     tui = TUI()
+    tui._state_for(2)
+    tui._state_for(5)
     tui.set_team_provider(lambda: [
         {"aid": 0, "role": "lead", "phase": "idle", "busy": False},
         {"aid": None, "role": "analyst", "phase": "available", "busy": False},
@@ -411,6 +415,138 @@ def test_live_timeline_cap_does_not_truncate_complete_agent_history():
     history = tui.render_selected_history()
     assert "activity 0" in history
     assert "activity 99" in history
+
+
+def test_all_timeline_append_paths_share_one_global_bound():
+    tui = TUI(Console(file=StringIO(), width=100, color_system=None))
+    state = tui._state_for(1)
+
+    for index in range(renderer_events_mod.MAX_TIMELINE_BLOCKS * 3):
+        tui.event_handler(
+            SessionRuntimeEvent(
+                "text_delta",
+                {"content": f"assistant {index}", "aid": 1},
+            )
+        )
+        tui.event_handler(
+            SessionRuntimeEvent("error", {"reason": f"failure {index}", "aid": 1})
+        )
+        tui.record_user_message(1, f"user {index}")
+
+    assert len(state.timeline_blocks) == renderer_events_mod.MAX_TIMELINE_BLOCKS
+
+
+def test_agent_history_has_a_global_per_agent_bound():
+    tui = TUI(Console(file=StringIO(), width=100, color_system=None))
+    state = tui._state_for(1)
+
+    for index in range(renderer_mod.MAX_HISTORY_BLOCKS_PER_AGENT + 20):
+        tui._append_activity(
+            (f"bounded activity {index}", tui._STYLE_MUTED),
+            state=state,
+        )
+
+    assert len(state.history_blocks) == renderer_mod.MAX_HISTORY_BLOCKS_PER_AGENT
+    tui.select_agent(1)
+    history = tui.render_selected_history()
+    assert "bounded activity 0" not in history
+    assert "20 older history blocks omitted" in history
+    assert f"bounded activity {renderer_mod.MAX_HISTORY_BLOCKS_PER_AGENT + 19}" in history
+
+
+def test_completed_agent_render_states_have_a_global_bound():
+    tui = TUI()
+
+    for aid in range(1, renderer_mod.MAX_TERMINAL_AGENT_STATES + 10):
+        tui.event_handler(
+            SchedulerEvent(
+                "agent_completed",
+                {"aid": aid, "role": "worker", "latency": 0.1},
+            )
+        )
+
+    retained_children = {aid for aid in tui._agent_states if aid != 0}
+    assert len(retained_children) <= renderer_mod.MAX_TERMINAL_AGENT_STATES
+    assert 1 not in retained_children
+    assert renderer_mod.MAX_TERMINAL_AGENT_STATES + 9 in retained_children
+    summaries = {summary["aid"]: summary for summary in tui.terminal_agent_summaries}
+    assert summaries[1]["role"] == "worker"
+    assert summaries[1]["state"] == "idle"
+    assert summaries[1]["retained_history_blocks"] > 0
+
+
+def test_terminal_agent_summaries_have_a_global_bound():
+    tui = TUI(Console(file=StringIO(), width=100, color_system=None))
+    tui._live_paused = True
+    total = (
+        renderer_mod.MAX_TERMINAL_AGENT_STATES
+        + renderer_mod.MAX_TERMINAL_AGENT_SUMMARIES
+        + 10
+    )
+
+    for aid in range(1, total + 1):
+        tui.event_handler(
+            SchedulerEvent(
+                "agent_completed",
+                {"aid": aid, "role": "worker", "latency": 0.1},
+            )
+        )
+
+    assert (
+        len(tui.terminal_agent_summaries)
+        == renderer_mod.MAX_TERMINAL_AGENT_SUMMARIES
+    )
+    assert tui.terminal_agent_summaries_omitted == 10
+
+
+@pytest.mark.parametrize(
+    ("event_type", "provider_phase"),
+    [
+        ("agent_completed", "done"),
+        ("agent_failed", "error"),
+        ("agent_cancelled", "stopped"),
+    ],
+)
+def test_terminal_provider_entries_cannot_recreate_evicted_render_states(
+    event_type,
+    provider_phase,
+):
+    tui = TUI(Console(file=StringIO(), width=100, color_system=None))
+    tui._live_paused = True
+    total = renderer_mod.MAX_TERMINAL_AGENT_STATES + 300
+    roster = [
+        {"aid": 0, "role": "lead", "phase": "idle", "busy": False},
+        *[
+            {
+                "aid": aid,
+                "role": "worker",
+                "phase": provider_phase,
+                "busy": False,
+            }
+            for aid in range(1, total + 1)
+        ],
+    ]
+    tui.set_team_provider(lambda: roster)
+    for aid in range(1, total + 1):
+        tui.event_handler(
+            SchedulerEvent(
+                event_type,
+                {
+                    "aid": aid,
+                    "role": "worker",
+                    "latency": 0.1,
+                    "error": "boom",
+                },
+            )
+        )
+
+    retained = len(tui._agent_states)
+    for aid in range(1, total + 1):
+        tui.select_agent(aid)
+        tui.render_selected_history()
+
+    assert retained <= renderer_mod.MAX_TERMINAL_AGENT_STATES + 1
+    assert len(tui._agent_states) == retained
 
 
 def test_user_message_is_recorded_only_in_target_history_and_revises_cache_key():

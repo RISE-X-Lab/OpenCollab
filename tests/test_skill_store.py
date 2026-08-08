@@ -67,6 +67,44 @@ def test_file_store_get_body_miss_returns_none(tmp_path):
     assert store.get_body("nonexistent") is None
 
 
+def test_file_store_parses_yaml_frontmatter_scalars(tmp_path):
+    skill_dir = tmp_path / "package"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        """\
+---
+name: "review:code"
+description: >-
+  Review code carefully
+  and preserve evidence.
+---
+Run the review.
+""",
+        encoding="utf-8",
+    )
+
+    store = FileSkillStore(tmp_path)
+
+    assert store.list_manifests() == (
+        SkillManifest(
+            name="review:code",
+            description="Review code carefully and preserve evidence.",
+        ),
+    )
+    assert store.get_body("review:code") == "Run the review."
+
+
+def test_file_store_skips_non_mapping_yaml_frontmatter(tmp_path):
+    skill_dir = tmp_path / "package"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        "---\n- name\n- not-a-mapping\n---\nbody\n",
+        encoding="utf-8",
+    )
+
+    assert FileSkillStore(tmp_path).list_manifests() == ()
+
+
 # --- FileSkillStore: robustness ---------------------------------------------
 
 
@@ -114,15 +152,46 @@ def test_file_store_skips_dir_without_skill_md(tmp_path):
 # --- FileSkillStore: size cap (single cap site) -----------------------------
 
 
-def test_file_store_caps_oversized_body(tmp_path):
+def test_file_store_rejects_oversized_body_instead_of_returning_partial_instructions(
+    tmp_path,
+    caplog,
+):
     big_body = "x" * (SKILL_BODY_MAX_CHARS + 5_000)
     _write_skill(tmp_path, "huge", description="Huge.", body=big_body)
     store = FileSkillStore(tmp_path)
-    body = store.get_body("huge")
-    assert body is not None
-    assert len(body) <= SKILL_BODY_MAX_CHARS + 200  # cap + truncation marker
-    assert len(body) < len(big_body)
-    assert "truncated" in body
+    assert store.get_body("huge") is None
+    assert store.list_manifests() == ()
+    assert store.load_diagnostics == (
+        f"skill 'huge' rejected: body exceeds {SKILL_BODY_MAX_CHARS} characters",
+    )
+    assert "skill 'huge' rejected" in caplog.text
+
+
+def test_file_store_returns_a_maximum_length_body_verbatim(tmp_path):
+    body = "x" * SKILL_BODY_MAX_CHARS
+    _write_skill(tmp_path, "maximum", description="Maximum.", body=body)
+
+    store = FileSkillStore(tmp_path)
+
+    assert store.get_body("maximum") == body
+
+
+def test_file_store_rejects_large_files_at_a_bounded_read_limit(tmp_path, monkeypatch):
+    _write_skill(tmp_path, "huge", description="Huge.", body="x" * 100_000)
+    observed_limits: list[int] = []
+    original = skill_store_mod.read_regular_text
+
+    def observe_limit(path, *, max_bytes, encoding="utf-8"):
+        observed_limits.append(max_bytes)
+        return original(path, max_bytes=max_bytes, encoding=encoding)
+
+    monkeypatch.setattr(skill_store_mod, "read_regular_text", observe_limit)
+
+    store = FileSkillStore(tmp_path)
+
+    assert store.list_manifests() == ()
+    assert observed_limits
+    assert max(observed_limits) <= 64 * 1024
 
 
 def test_file_store_does_not_cap_small_body(tmp_path):

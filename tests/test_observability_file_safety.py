@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
+import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -61,6 +64,68 @@ def test_tracer_records_valid_jsonl_and_flushes(tmp_path) -> None:
     assert row["metrics"] == {"tokens": 3, "latency_s": 0.25}
 
 
+def test_tracer_reopen_continues_step_sequence(tmp_path) -> None:
+    first = Tracer("run", output_dir=str(tmp_path))
+    first.log_step("first", {})
+    first.log_step("second", {})
+    first.close()
+
+    resumed = Tracer("run", output_dir=str(tmp_path))
+    resumed.log_step("third", {})
+    resumed.close()
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "run.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["step"] for row in rows] == [1, 2, 3]
+
+
+def test_tracer_rejects_overlapping_writer_for_the_same_file(tmp_path) -> None:
+    active = Tracer("run", output_dir=str(tmp_path))
+    try:
+        with pytest.raises(RuntimeError, match="already has an active writer"):
+            Tracer("run", output_dir=str(tmp_path))
+    finally:
+        active.close()
+
+    resumed = Tracer("run", output_dir=str(tmp_path))
+    resumed.log_step("after-release", {})
+    resumed.close()
+    row = json.loads((tmp_path / "run.jsonl").read_text(encoding="utf-8"))
+    assert row["step"] == 1
+
+
+def test_tracer_refuses_to_restart_when_bounded_tail_has_no_complete_step(
+    tmp_path,
+) -> None:
+    path = tmp_path / "run.jsonl"
+    oversized_record = json.dumps(
+        {"step": 7, "payload": "x" * (1024 * 1024 + 100)}
+    )
+    path.write_text(f"{oversized_record}\n", encoding="utf-8")
+
+    with pytest.raises(OSError, match="cannot safely recover trace step"):
+        Tracer("run", output_dir=str(tmp_path))
+
+
+def test_tracer_reopen_separates_an_unterminated_tail(tmp_path) -> None:
+    path = tmp_path / "run.jsonl"
+    path.write_text('{"step": 7}\n{"damaged":', encoding="utf-8")
+
+    resumed = Tracer("run", output_dir=str(tmp_path))
+    resumed.log_step("after-damage", {})
+    resumed.close()
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["step"] for line in lines] == [8]
+    quarantined = list(tmp_path.glob("run.jsonl.corrupt-*"))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding="utf-8") == (
+        '{"step": 7}\n{"damaged":'
+    )
+
+
 def test_tracer_write_failure_is_sticky(tmp_path, monkeypatch) -> None:
     tracer = Tracer("run", output_dir=str(tmp_path))
 
@@ -70,8 +135,49 @@ def test_tracer_write_failure_is_sticky(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("opencollab.adapters.trace.write_locked_text", fail)
     tracer.log_step("first", {})
     tracer.log_step("second", {})
+    tracer.flush()
     assert tracer.write_error == "OSError: disk full"
     assert tracer.dropped_steps == 2
+
+
+def test_tracer_slow_write_does_not_block_log_step(tmp_path, monkeypatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_write(*_args, **_kwargs) -> None:
+        started.set()
+        assert release.wait(1.0)
+
+    monkeypatch.setattr("opencollab.adapters.trace.write_locked_text", slow_write)
+    tracer = Tracer("run", output_dir=str(tmp_path))
+    timer = threading.Timer(0.15, release.set)
+    timer.start()
+    try:
+        before = time.monotonic()
+        tracer.log_step("slow", {})
+        elapsed = time.monotonic() - before
+        assert elapsed < 0.05
+    finally:
+        release.set()
+        timer.cancel()
+        tracer.close()
+
+
+def test_tracer_serialization_fallback_does_not_disable_later_steps(tmp_path) -> None:
+    tracer = Tracer("run", output_dir=str(tmp_path))
+
+    tracer.log_step("path", {"workspace": Path("src")})
+    tracer.log_step("later", {"ok": True})
+    tracer.close()
+
+    rows = [
+        json.loads(line)
+        for line in (tmp_path / "run.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["type"] for row in rows] == ["path", "later"]
+    assert rows[0]["payload"]["workspace"] == "src"
+    assert tracer.write_error is None
+    assert tracer.dropped_steps == 0
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO requires POSIX")
@@ -104,3 +210,29 @@ async def test_event_sink_concurrent_records_remain_whole_json_lines(tmp_path) -
     rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     assert {row["data"]["index"] for row in rows} == set(range(30))
     assert sink.write_error is None
+
+
+async def test_event_sink_slow_write_does_not_block_event_loop(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_append(*_args, **_kwargs) -> None:
+        started.set()
+        assert release.wait(1.0)
+
+    monkeypatch.setattr("opencollab.adapters.event_log.append_regular_text", slow_append)
+    sink = JsonlEventSink(str(tmp_path / "events.jsonl"))
+    owner = asyncio.create_task(sink.emit(SimpleNamespace(type="event", data={})))
+    timer = threading.Timer(0.15, release.set)
+    timer.start()
+    try:
+        await asyncio.sleep(0.02)
+        assert started.is_set()
+        assert not owner.done()
+    finally:
+        release.set()
+        timer.cancel()
+        await owner

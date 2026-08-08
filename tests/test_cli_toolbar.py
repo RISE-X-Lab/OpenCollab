@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from io import StringIO
+
 import pytest
 from prompt_toolkit.formatted_text import to_formatted_text
+from rich.console import Console
 
+from opencollab.adapters.cli import main as cli_main
 from opencollab.adapters.cli.main import _PROMPT_STYLE, _dispatch_repl_command
 from opencollab.adapters.cli.toolbar import format_team_toolbar
 
@@ -111,6 +115,23 @@ def test_repl_save_command_saves_lead_and_continues():
     assert _dispatch_repl_command("/save", lead) is True
     assert lead.saved_to is not None and lead.saved_to.startswith("session-")
     assert lead.saved_to.endswith(".jsonl")
+
+
+def test_repl_save_failure_is_reported_and_keeps_the_session_alive(monkeypatch):
+    output = StringIO()
+    monkeypatch.setattr(
+        cli_main,
+        "console",
+        Console(file=output, color_system=None),
+    )
+
+    class FailingLead:
+        def save(self, _path):
+            raise OSError("disk full")
+
+    assert _dispatch_repl_command("/save", FailingLead()) is True
+    assert "Session save failed" in output.getvalue()
+    assert "disk full" in output.getvalue()
 
 
 def test_repl_non_command_signals_passthrough():
