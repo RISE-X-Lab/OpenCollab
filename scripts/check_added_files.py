@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-"""Enforce size and line-count limits for files added by a Git change."""
+"""Enforce size and line-count limits on the files a Git change touches.
+
+A change is rejected when it pushes a file *past* a ceiling: either it adds a
+file that is already too large, or it grows a compliant file until it is not.
+Appending to an existing module is the way these limits actually get broken, so
+"was the file created here" is not the question worth asking.
+
+A file that already broke a ceiling before the change stays that way without
+failing every later pull request that happens to touch it. Those are caught by
+the complete-tree run on ``main`` instead, which measures every file absolutely.
+"""
 
 from __future__ import annotations
 
@@ -15,13 +25,19 @@ MAX_BYTES = 512_000
 MAX_PY_LINES = 800
 
 
-def _added_paths(repository: Path, base: str, head: str) -> list[str]:
+def _changed_paths(repository: Path, base: str, head: str) -> list[str]:
+    """Return every regular path the change adds or modifies.
+
+    Renames are reported as an add plus a delete, so a module that is renamed
+    and grown past a ceiling in one step is still measured.
+    """
     with tempfile.TemporaryFile() as paths_file:
         subprocess.run(
             [
                 "git",
                 "diff",
-                "--diff-filter=A",
+                "--diff-filter=AM",
+                "--no-renames",
                 "--name-only",
                 "-z",
                 base,
@@ -38,6 +54,40 @@ def _added_paths(repository: Path, base: str, head: str) -> list[str]:
             for raw_path in paths_file.read().split(b"\0")
             if raw_path
         ]
+
+
+def _blob_at(repository: Path, revision: str, relative: str) -> bytes | None:
+    """Return the file's bytes at ``revision``, or ``None`` when absent there."""
+    completed = subprocess.run(
+        ["git", "cat-file", "blob", f"{revision}:{relative}"],
+        cwd=repository,
+        check=False,
+        capture_output=True,
+    )
+    if completed.returncode:
+        return None
+    return completed.stdout
+
+
+def _line_count(payload: bytes) -> int:
+    """Count lines the way iterating a file does: only ``\\n`` ends one."""
+    return payload.count(b"\n") + (1 if payload and not payload.endswith(b"\n") else 0)
+
+
+def _exceeded_limits(
+    size: int,
+    line_count: int | None,
+    *,
+    max_bytes: int,
+    max_py_lines: int,
+) -> dict[str, str]:
+    """Map each broken ceiling to the phrase describing how it was broken."""
+    exceeded: dict[str, str] = {}
+    if size > max_bytes:
+        exceeded["bytes"] = f"file is {size} bytes, limit is {max_bytes}"
+    if line_count is not None and line_count > max_py_lines:
+        exceeded["lines"] = f"Python module is {line_count} lines, limit is {max_py_lines}"
+    return exceeded
 
 
 def _command_property(value: str) -> str:
@@ -70,12 +120,12 @@ def check_added_files(
     max_py_lines: int = MAX_PY_LINES,
     require_files: bool = False,
 ) -> list[str]:
-    """Return human-readable violations for regular files added by the change."""
+    """Return human-readable violations for ceilings this change breaks."""
     violations: list[str] = []
-    added_paths = _added_paths(repository, base, head)
-    if require_files and not added_paths:
+    changed_paths = _changed_paths(repository, base, head)
+    if require_files and not changed_paths:
         return ["repository: no files were available for the complete-tree check"]
-    for relative in added_paths:
+    for relative in changed_paths:
         path = repository / relative
         try:
             metadata = path.lstat()
@@ -83,17 +133,29 @@ def check_added_files(
             continue
         if not stat.S_ISREG(metadata.st_mode):
             continue
-        if metadata.st_size > max_bytes:
-            violations.append(
-                f"{relative}: new file is {metadata.st_size} bytes, limit is {max_bytes}"
+        head_lines = _line_count(path.read_bytes()) if path.suffix == ".py" else None
+        broken = _exceeded_limits(
+            metadata.st_size,
+            head_lines,
+            max_bytes=max_bytes,
+            max_py_lines=max_py_lines,
+        )
+        if not broken:
+            continue
+        previous = _blob_at(repository, base, relative)
+        already_broken: dict[str, str] = {}
+        if previous is not None:
+            already_broken = _exceeded_limits(
+                len(previous),
+                _line_count(previous) if path.suffix == ".py" else None,
+                max_bytes=max_bytes,
+                max_py_lines=max_py_lines,
             )
-        if path.suffix == ".py":
-            with path.open("rb") as handle:
-                lines = sum(1 for _line in handle)
-            if lines > max_py_lines:
-                violations.append(
-                    f"{relative}: new Python module is {lines} lines, limit is {max_py_lines}"
-                )
+        origin = "added by" if previous is None else "grown past the limit by"
+        for limit, description in broken.items():
+            if limit in already_broken:
+                continue
+            violations.append(f"{relative}: {description} ({origin} this change)")
     return violations
 
 
@@ -115,7 +177,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"git diff failed with exit code {exc.returncode}", file=sys.stderr)
         return 2
     if not violations:
-        print("Added-file hygiene checks passed.")
+        print("File hygiene checks passed.")
         return 0
     for violation in violations:
         path, _separator, message = violation.partition(": ")
