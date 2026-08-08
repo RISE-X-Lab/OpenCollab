@@ -417,42 +417,38 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         controlled way inside the workflow (its on-disk edits survive) rather than
         being truncated by the outer wall.
         """
+        if isolation:
+            raise ValueError("workflow agent isolation is not available")
         timeout = self._normalize_timeout(timeout)
         call_task = asyncio.current_task()
         if call_task is not None:
             self._active_call_tasks.add(call_task)
         slot_acquired = False
         slot_handed_to_cleanup = False
+        lease: _BudgetLease | None = None
+        token = None
         try:
+            # Reserve before the concurrency gate so every agent declared in a
+            # parallel fan-out registers with the shared allocator, even when
+            # only one of them may run at a time.
+            lease = await self._acquire_budget_lease(
+                budget,
+                over_budget_ok=over_budget_ok,
+            )
+            token = self._active_budget_lease.set(lease)
             await self._semaphore.acquire()
             slot_acquired = True
-            lease = await self._acquire_budget_lease(budget, over_budget_ok=over_budget_ok)
-            token = self._active_budget_lease.set(lease)
-            try:
-                if schema is not None:
-                    return await self._run_structured_agent(
-                        prompt, schema=schema, label=label, tools=tools,
-                        isolation=isolation, timeout=timeout, budget=budget,
-                    )
-                # Enforcement wind-down (STEP 0): the scout path injects submit_findings
-                # and the structural commit brake. OFF (the default) routes to the
-                # unchanged ``_run_agent``, so every existing caller is byte-for-byte
-                # identical — the new path is reachable only when explicitly requested.
-                if enforcement_strength != ENFORCEMENT_OFF:
-                    return await self._run_enforced_agent(
-                        prompt,
-                        label=label,
-                        tools=tools,
-                        isolation=isolation,
-                        tool_choice=tool_choice,
-                        thinking=thinking,
-                        timeout=timeout,
-                        budget=budget,
-                        enforcement_strength=enforcement_strength,
-                        commit_reserve=commit_reserve,
-                        harvest_fallback=harvest_fallback,
-                    )
-                return await self._run_agent(
+            if schema is not None:
+                return await self._run_structured_agent(
+                    prompt, schema=schema, label=label, tools=tools,
+                    isolation=isolation, timeout=timeout, budget=budget,
+                )
+            # Enforcement wind-down (STEP 0): the scout path injects submit_findings
+            # and the structural commit brake. OFF (the default) routes to the
+            # unchanged ``_run_agent``, so every existing caller is byte-for-byte
+            # identical — the new path is reachable only when explicitly requested.
+            if enforcement_strength != ENFORCEMENT_OFF:
+                return await self._run_enforced_agent(
                     prompt,
                     label=label,
                     tools=tools,
@@ -461,11 +457,25 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
                     thinking=thinking,
                     timeout=timeout,
                     budget=budget,
+                    enforcement_strength=enforcement_strength,
+                    commit_reserve=commit_reserve,
+                    harvest_fallback=harvest_fallback,
                 )
-            finally:
-                self._active_budget_lease.reset(token)
-                slot_handed_to_cleanup = self._release_lease_when_quiescent(lease)
+            return await self._run_agent(
+                prompt,
+                label=label,
+                tools=tools,
+                isolation=isolation,
+                tool_choice=tool_choice,
+                thinking=thinking,
+                timeout=timeout,
+                budget=budget,
+            )
         finally:
+            if token is not None:
+                self._active_budget_lease.reset(token)
+            if lease is not None:
+                slot_handed_to_cleanup = self._release_lease_when_quiescent(lease)
             if slot_acquired and not slot_handed_to_cleanup:
                 self._semaphore.release()
             if call_task is not None:
@@ -719,17 +729,32 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
     async def parallel(self, thunks: Sequence[Thunk]) -> list[Any]:
         """Run thunks concurrently behind the shared semaphore.
 
-        A thunk that raises yields ``None`` in its slot; the gather always
-        completes. Result order matches input order.
+        A thunk that raises yields ``None`` in its slot, except a budget stop
+        which is re-raised after every started slot has settled. Result order
+        matches input order.
         """
 
         async def guard(thunk: Thunk) -> Any:
             try:
                 return await thunk()
+            except WorkflowBudgetExceeded:
+                raise
             except Exception:  # noqa: BLE001 — failures localize to one slot
                 return None
 
-        return list(await asyncio.gather(*(guard(t) for t in thunks)))
+        results = list(
+            await asyncio.gather(
+                *(guard(thunk) for thunk in thunks),
+                return_exceptions=True,
+            )
+        )
+        for result in results:
+            if isinstance(result, WorkflowBudgetExceeded):
+                raise result
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return results
 
     # -- pipeline ---------------------------------------------------------- #
 
@@ -739,7 +764,8 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         There is NO barrier between stages: item A may be in stage 2 while item
         B is still in stage 1. A stage raising drops that item's result to
         ``None`` and skips its remaining stages; other items are unaffected.
-        Result order matches input order.
+        Result order matches input order. A budget stop is re-raised only after
+        every started item has settled.
         """
 
         async def flow(item: Any, idx: int) -> Any:
@@ -747,13 +773,25 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
             for stage in stages:
                 try:
                     result = await stage(result, item, idx)
+                except WorkflowBudgetExceeded:
+                    raise
                 except Exception:  # noqa: BLE001 — drop this item, skip its rest
                     return None
             return result
 
-        return list(
-            await asyncio.gather(*(flow(item, i) for i, item in enumerate(items)))
+        results = list(
+            await asyncio.gather(
+                *(flow(item, i) for i, item in enumerate(items)),
+                return_exceptions=True,
+            )
         )
+        for result in results:
+            if isinstance(result, WorkflowBudgetExceeded):
+                raise result
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return results
 
     # -- observability ----------------------------------------------------- #
 

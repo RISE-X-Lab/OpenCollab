@@ -31,7 +31,10 @@ from opencollab.application.ports import (
     ShaperPort,
     TracePort,
 )
-from opencollab.application.tool_execution import ToolExecutionUseCase
+from opencollab.application.tool_execution import (
+    TERMINAL_CAPTURE_SKIP_MESSAGE,
+    ToolExecutionUseCase,
+)
 from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase, SessionState
 from opencollab.domain.tools import ToolProcessingResult
@@ -603,7 +606,33 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         table = self.state.pending_events
         order = {tc["id"]: i for i, tc in enumerate(original_tool_calls)}
         completed_messages = list(blocked_messages)
-        if immediate:
+        terminal_capture_tools = {"structured_output", self._submit_tool_name}
+        terminal_capture_in_batch = any(
+            tc.get("function", {}).get("name") in terminal_capture_tools
+            for tc in tool_calls
+        )
+        if terminal_capture_in_batch:
+            terminal_capture_accepted = False
+            for tc in tool_calls:
+                if terminal_capture_accepted:
+                    completed_messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": TERMINAL_CAPTURE_SKIP_MESSAGE,
+                        }
+                    )
+                    continue
+                if tc.get("function", {}).get("name") in self.deferrable_tool_names:
+                    await self._execute_deferred_tools(table, order, [tc])
+                    continue
+                proc = await self.tool_execution.process([tc])
+                proc.apply_hashes_to(self.state)
+                proc.apply_read_write_counter_to(self.state)
+                proc.apply_evidence_counter_to(self.state)
+                completed_messages.extend(proc.messages_to_append)
+                terminal_capture_accepted = proc.terminal_capture_accepted
+        elif immediate:
             proc = await self.tool_execution.process(immediate)
             proc.apply_hashes_to(self.state)  # hashes now; messages buffered
             # The reads/edit steering counter must still fold in even though the
@@ -615,7 +644,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             proc.apply_evidence_counter_to(self.state)
             completed_messages = [*proc.messages_to_append, *completed_messages]
         self._buffer_completed_rows(table, order, completed_messages)
-        await self._execute_deferred_tools(table, order, deferred)
+        if not terminal_capture_in_batch:
+            await self._execute_deferred_tools(table, order, deferred)
 
         self._pending_tool_allowlist = None
         self._pending_tool_gate_label = None

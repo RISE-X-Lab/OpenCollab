@@ -40,6 +40,14 @@ class FakeEnv:
         raise AssertionError("write_file was not expected")
 
 
+class FalseyFakeEnv(FakeEnv):
+    def __bool__(self) -> bool:
+        return False
+
+    async def read_file(self, path: str) -> str:
+        return "contents\n"
+
+
 class SpySafetyPolicy:
     def __init__(self):
         self.cmd_calls = []
@@ -153,6 +161,16 @@ def test_bash_tool_without_env_returns_existing_error():
     assert result == "Error: no execution environment available."
 
 
+def test_bash_tool_accepts_falsey_environment():
+    env = FalseyFakeEnv(stdout="ok\n")
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(BashTool().execute_with_runtime({"command": "echo ok"}, runtime))
+
+    assert env.exec_calls == [("echo ok", 120.0)]
+    assert "stdout:\nok" in result
+
+
 def test_bash_tool_passes_permission_confirm_fn_to_safety_check():
     env = FakeEnv(stdout="ok\n")
     safety = SpySafetyPolicy()
@@ -251,6 +269,15 @@ def test_file_read_requires_environment():
     result = run(FileReadTool().execute_with_runtime({"path": "missing.txt"}, runtime))
 
     assert result == "Error: no execution environment available."
+
+
+def test_file_read_accepts_falsey_environment():
+    env = FalseyFakeEnv()
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(FileReadTool().execute_with_runtime({"path": "note.txt"}, runtime))
+
+    assert "contents" in result
 
 
 def test_file_read_preserves_file_not_found(tmp_path):

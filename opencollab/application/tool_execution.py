@@ -76,6 +76,9 @@ _WRITE_TOOLS = frozenset({"file_write", "apply_patch"})
 # these prefixes — see execute_tool's PermissionError/Exception mapping and the
 # tools' own "Error: ..." returns.
 _TOOL_ERROR_PREFIXES = ("Error", "Tool execution error", "Permission denied")
+TERMINAL_CAPTURE_SKIP_MESSAGE = (
+    "Skipped: terminal structured output accepted earlier in this batch."
+)
 
 # Information-gain sensor (STEP 1). Each EXECUTED tool result is classified as
 # informative vs low-yield so later brakes can key on information GAIN, not raw
@@ -294,7 +297,7 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
             return result
         recent_call_hashes = list(self.state.turn.recent_call_hashes)
 
-        for tc in tool_calls:
+        for index, tc in enumerate(tool_calls):
             func = tc["function"]
             tool_name = func["name"]
             tool_id = tc["id"]
@@ -375,6 +378,25 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 })
                 continue
 
+            schema = getattr(tool, "parameters", None)
+            if isinstance(schema, dict):
+                schema_errors = validate(args, schema)
+                if schema_errors:
+                    detail = "; ".join(schema_errors)[:1_000]
+                    self._trace_short_circuit(
+                        "tool_error",
+                        tool_name,
+                        {"error": "schema_validation_failed", "args": args},
+                    )
+                    result.messages_to_append.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_id,
+                            "content": "Error: schema validation failed: " + detail,
+                        }
+                    )
+                    continue
+
             await self._emit_observation(
                 lambda: self.event_factory.tool_start(tool_name, args),
                 label="tool_start",
@@ -439,6 +461,17 @@ class ToolExecutionUseCase(ToolExecutionRuntimeMixin):
                 lambda: self.event_factory.tool_end(tool_name, tool_latency),
                 label="tool_end",
             )
+            if getattr(tool, "terminal_capture_accepted", False):
+                result.terminal_capture_accepted = True
+                for skipped in tool_calls[index + 1 :]:
+                    result.messages_to_append.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": skipped["id"],
+                            "content": TERMINAL_CAPTURE_SKIP_MESSAGE,
+                        }
+                    )
+                break
 
         return result
 

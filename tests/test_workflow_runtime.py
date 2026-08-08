@@ -53,6 +53,40 @@ async def test_built_context_agent_runs_session_with_resolved_llm(monkeypatch):
     # The per-session budget is the remaining workflow budget.
     assert calls[0]["max_budget_tokens"] == 100_000
 
+
+class _FalseyEnvironment:
+    def __bool__(self) -> bool:
+        return False
+
+
+@pytest.mark.asyncio
+async def test_built_context_preserves_falsey_injected_environment(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    environment = _FalseyEnvironment()
+    ctx = workflow_runtime.build_workflow_context(cfg=_cfg(), env=environment)
+
+    await ctx.agent("solve this")
+
+    assert calls[0]["env"] is environment
+    assert ctx._tree_probe._env is environment
+
+
+def test_concrete_factory_rejects_unsupported_isolation_before_building_session(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    cfg = _cfg()
+    factory = workflow_runtime.WorkflowSessionFactory(
+        model=cfg["model"],
+        provider=cfg["provider"],
+        api_key=cfg["api_key"],
+        base_url=cfg["base_url"],
+    )
+
+    with pytest.raises(ValueError, match="isolation is not available"):
+        factory.build_workflow_session(prompt="solve", budget=1, isolation=True)
+
+    assert calls == []
+
+
 @pytest.mark.asyncio
 async def test_built_context_injects_sampling_and_output_limits(monkeypatch):
     calls = _patch_build_session(monkeypatch)
@@ -232,6 +266,34 @@ async def test_run_workflow_reports_live_spend_on_budget_exceeded(monkeypatch):
     assert result["budget_total"] == 1000
     assert result["tokens_spent"] == 0  # _FakeSession.used_tokens == 0
     assert len(calls) == 1  # the agent did build+run before the raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("composition", ("parallel", "pipeline"))
+async def test_run_workflow_marks_collection_budget_exhaustion_stopped(
+    monkeypatch,
+    composition,
+):
+    _patch_build_session(monkeypatch)
+
+    async def fn(ctx, args):
+        if composition == "parallel":
+            return await ctx.parallel([lambda: ctx.agent("exhausted")])
+
+        async def agent_stage(_previous, _item, _index):
+            return await ctx.agent("exhausted")
+
+        return await ctx.pipeline(["item"], agent_stage)
+
+    details = await workflow_runtime.run_workflow(
+        fn,
+        {},
+        cfg=_cfg(budget=0),
+        return_details=True,
+    )
+
+    assert details.stop_reason == "budget_exceeded"
+    assert details.output["status"] == "budget_exceeded"
 
 @pytest.mark.asyncio
 async def test_run_workflow_other_exceptions_propagate(monkeypatch):
