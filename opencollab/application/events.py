@@ -29,32 +29,51 @@ class SessionEventFactory:
     error: Callable[[str], Any]
     # tool execution
     loop_detected: Callable[[str, int], Any]
-    tool_start: Callable[[str, dict[str, Any]], Any]
-    tool_end: Callable[[str, float], Any]
+    tool_start: Callable[[str, dict[str, Any], str | None], Any]
+    tool_end: Callable[[str, float, str | None], Any]
 
 
-def default_session_event_factory(aid: int = -1) -> SessionEventFactory:
+def default_session_event_factory(
+    aid: int | Callable[[], int] = -1,
+) -> SessionEventFactory:
+    def current_aid() -> int:
+        return aid() if callable(aid) else aid
+
     return SessionEventFactory(
         step_start=lambda step: SessionRuntimeEvent(
-            type="step_start", data={"step": step, "aid": aid}
+            type="step_start", data={"step": step, "aid": current_aid()}
         ),
         step_end=lambda step, latency: SessionRuntimeEvent(
-            type="step_end", data={"step": step, "latency": latency, "aid": aid}
+            type="step_end",
+            data={"step": step, "latency": latency, "aid": current_aid()},
         ),
         text_delta=lambda content: SessionRuntimeEvent(
-            type="text_delta", data={"content": content, "aid": aid}
+            type="text_delta", data={"content": content, "aid": current_aid()}
         ),
         error=lambda reason: SessionRuntimeEvent(
-            type="error", data={"reason": reason, "aid": aid}
+            type="error", data={"reason": reason, "aid": current_aid()}
         ),
         loop_detected=lambda tool, count: SessionRuntimeEvent(
-            type="loop_detected", data={"tool": tool, "count": count, "aid": aid}
+            type="loop_detected",
+            data={"tool": tool, "count": count, "aid": current_aid()},
         ),
-        tool_start=lambda tool, args: SessionRuntimeEvent(
-            type="tool_start", data={"tool": tool, "args": args, "aid": aid}
+        tool_start=lambda tool, args, tool_call_id=None: SessionRuntimeEvent(
+            type="tool_start",
+            data={
+                "tool": tool,
+                "args": args,
+                "tool_call_id": tool_call_id,
+                "aid": current_aid(),
+            },
         ),
-        tool_end=lambda tool, latency: SessionRuntimeEvent(
-            type="tool_end", data={"tool": tool, "latency": latency, "aid": aid}
+        tool_end=lambda tool, latency, tool_call_id=None: SessionRuntimeEvent(
+            type="tool_end",
+            data={
+                "tool": tool,
+                "latency": latency,
+                "tool_call_id": tool_call_id,
+                "aid": current_aid(),
+            },
         ),
     )
 
@@ -70,6 +89,7 @@ class SchedulerEventFactory:
     # teammate messaging
     agent_message_sent: Callable[[int, int, str, str], SchedulerEvent]
     agent_message_delivered: Callable[[int, int, str, int], SchedulerEvent]
+    agent_message_rejected_on_restore: Callable[[int, int, str], SchedulerEvent]
     # review loop
     review_started: Callable[[int, int], SchedulerEvent]
     review_completed: Callable[[int, bool], SchedulerEvent]
@@ -121,6 +141,14 @@ def default_scheduler_event_factory() -> SchedulerEventFactory:
                 "to_aid": to_aid,
                 "summary": summary,
                 "content_len": content_len,
+            },
+        ),
+        agent_message_rejected_on_restore=lambda from_aid, to_aid, reason: SchedulerEvent(
+            type="agent_message_rejected_on_restore",
+            data={
+                "from_aid": from_aid,
+                "to_aid": to_aid,
+                "reason": reason,
             },
         ),
         review_started=lambda iteration, maximum: SchedulerEvent(

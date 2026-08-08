@@ -122,6 +122,81 @@ def test_t1_default_enforcement_is_off():
     assert llm.calls == []
 
 
+@pytest.mark.parametrize(
+    ("used_tokens", "team_budget_exhausted", "reason"),
+    [
+        (100, None, "budget exceeded: 100 tokens used"),
+        (
+            90,
+            lambda: True,
+            "team budget exceeded: aggregate spend reached the global cap",
+        ),
+    ],
+)
+def test_hard_budget_preempts_new_turn_wind_down(
+    used_tokens,
+    team_budget_exhausted,
+    reason,
+):
+    state = SessionState(
+        messages=[{"role": "system", "content": "sys"}],
+        used_tokens=used_tokens,
+        wind_down_done=True,
+        wind_down_attempts=1,
+        wind_down_token_mark=80,
+        phase=SessionPhase.DONE,
+    )
+    state.reset_for_user_turn()
+    llm = FakeLLM([llm_response(content="must not run")])
+    runner = build_runner(
+        state=state,
+        agent=_agent_with_submit(),
+        llm=llm,
+        max_budget_tokens=100,
+        enforcement_strength=ENFORCEMENT_ON,
+        commit_reserve=20,
+        team_budget_exhausted=team_budget_exhausted,
+    )
+
+    result = run(runner.run_loop())
+
+    assert result == ""
+    assert llm.calls == []
+    assert state.phase is SessionPhase.STOPPED
+    assert state.terminal_reason == reason
+    assert state.wind_down_done is False
+
+
+def test_budget_wind_down_is_not_regranted_on_a_new_user_turn():
+    state = SessionState(
+        messages=[{"role": "user", "content": "first"}],
+        used_tokens=80,
+    )
+    llm = FakeLLM([llm_response(content="first protected answer", total_tokens=5)])
+    runner = build_runner(
+        state=state,
+        agent=_agent_with_submit(),
+        llm=llm,
+        max_budget_tokens=100,
+        enforcement_strength=ENFORCEMENT_ON,
+        commit_reserve=20,
+    )
+
+    run(runner.run_loop())
+    assert len(llm.calls) == 1
+    assert state.used_tokens == 85
+
+    state.reset_for_user_turn()
+    runner.reset_runtime_for_user_turn()
+    state.append_message({"role": "user", "content": "again"})
+
+    run(runner.run_loop())
+
+    assert len(llm.calls) == 1
+    assert state.phase is SessionPhase.STOPPED
+    assert state.terminal_reason == "budget reserve exhausted: protected commit turn already used"
+
+
 # --------------------------------------------------------------------------- #
 # T2 — WIND-DOWN BEHAVIOR.
 # --------------------------------------------------------------------------- #
@@ -165,6 +240,28 @@ def test_t2_winddown_forces_tool_choice_and_commits_in_one_turn():
     assert len(llm.calls) == 1
     assert submit.captured is not None
     assert state.phase.is_terminal()
+
+
+def test_budget_wind_down_persists_allocation_before_provider_call():
+    events, bus = collect_events()
+    state = SessionState(
+        messages=[{"role": "user", "content": "investigate"}],
+        used_tokens=80_000,
+    )
+    runner = build_runner(
+        state=state,
+        agent=_agent_with_submit(),
+        llm=FakeLLM([llm_response(content="done")]),
+        event_bus=bus,
+        max_budget_tokens=100_000,
+        commit_reserve=20_000,
+        enforcement_strength=ENFORCEMENT_ON,
+    )
+
+    run(runner.run_loop())
+
+    assert state.budget_reserve_consumed is True
+    assert any(event_type == "budget_reserve_allocated" for event_type, _ in events)
 
 
 def test_t2_winddown_retries_once_on_wrong_tool_then_commits_forced():
@@ -282,6 +379,7 @@ def test_legacy_wind_down_snapshot_without_attempts_stops_conservatively(tmp_pat
     session.save(str(path))
     snapshot = json.loads(path.read_text())
     del snapshot["session_state"]["wind_down_attempts"]
+    del snapshot["session_state"]["budget_reserve_consumed"]
     path.write_text(json.dumps(snapshot))
 
     restored_llm = FakeLLM()
@@ -294,6 +392,7 @@ def test_legacy_wind_down_snapshot_without_attempts_stops_conservatively(tmp_pat
     run(restored.run_loop())
 
     assert restored.state.wind_down_attempts == 2
+    assert restored.state.budget_reserve_consumed is True
     assert restored_llm.calls == []
 
 
@@ -304,6 +403,7 @@ def test_t2_winddown_not_entered_while_a_tool_result_is_pending():
     from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 
     state = SessionState(messages=[{"role": "user", "content": "x"}], used_tokens=80_000)
+    state.budget_reserve_consumed = True
     state.pending_events.add(
         PendingRow(tool_call_id="t1", kind=RowKind.CHILD_AGENT, order=0, status=RowStatus.PENDING)
     )
@@ -371,6 +471,17 @@ def test_harvest_chop_before_submit_yields_partial_not_scout_died():
     assert "scout died" not in report
 
 
+def test_harvest_bounds_large_raw_transcript_and_reports_omissions():
+    messages = [
+        {"role": "tool", "tool_call_id": f"call-{index}", "content": f"{index}:" + "x" * 500}
+        for index in range(10_000)
+    ]
+    report = harvest_findings(None, fallback_text="", messages=messages)
+    assert len(report) <= 16_000
+    assert "omitted" in report
+    assert "9999:" in report
+
+
 def test_harvest_falls_back_to_text_when_no_capture():
     report = harvest_findings(None, fallback_text="here is my prose report", messages=[])
     assert report == "here is my prose report"
@@ -419,6 +530,29 @@ def test_submit_findings_accepts_insufficient_evidence_abstention():
     out = _exec(tool, _captured(insufficient=True, findings=[]))
     assert tool.captured is not None  # abstaining is a valid, non-penalized outcome
     assert "accepted" in out.lower()
+
+
+def test_submit_findings_rejects_empty_non_abstaining_report():
+    captured_flag = {"hit": False}
+    tool = SubmitFindingsTool(on_capture=lambda: captured_flag.__setitem__("hit", True))
+    out = _exec(
+        tool,
+        {"findings": [], "summary": "", "insufficient_evidence": False},
+    )
+    assert tool.captured is None
+    assert tool.terminal_capture_accepted is False
+    assert captured_flag["hit"] is False
+    assert "at least one finding" in out.lower()
+
+
+def test_submit_findings_requires_explanation_when_abstaining():
+    tool = SubmitFindingsTool()
+    out = _exec(
+        tool,
+        {"findings": [], "summary": "   ", "insufficient_evidence": True},
+    )
+    assert tool.captured is None
+    assert "explain" in out.lower()
 
 
 def test_submit_findings_abstention_cannot_bypass_verified_anchor():
@@ -550,6 +684,29 @@ def test_enforced_agent_injects_submit_configures_runner_harvests_and_emits_metr
     assert payload["role"] == "scout:0:bug-origin"
     assert payload["evidence_anchor_count"] == 1
     assert payload["artifact_nonempty"] is True
+
+
+def test_commitment_trace_failure_does_not_overturn_harvested_result():
+    class ThrowingTracer:
+        def log_step(self, **_kwargs):
+            raise OSError("trace sink unavailable")
+
+    session = _EnforcedFakeSession(capture=_captured(), reply="")
+    ctx = _ctx_with(_EnforcedFakeFactory(session), ThrowingTracer())
+
+    result = run(
+        ctx.agent(
+            "scout the bug",
+            tools=[_ReadStub()],
+            label="scout:0",
+            enforcement_strength=ENFORCEMENT_ON,
+        )
+    )
+
+    assert "root cause located" in result
+    assert ctx.trace_failures == (
+        {"step_type": "commitment_terminus", "exception_type": "OSError"},
+    )
 
 
 def test_off_default_does_not_inject_submit_or_emit_metric():

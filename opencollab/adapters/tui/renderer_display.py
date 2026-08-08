@@ -252,9 +252,10 @@ class _RendererDisplayMixin:
             parts.append(Text("Running", style=self._STYLE_HEADING))
             for label, data in self._active_tools.items():
                 args_preview = self._args_preview(data, limit=60, code=True)
+                display_label = data.get("_display_label", label)
 
                 label_text = Text.assemble(
-                    (label, self._STYLE_ACCENT),        # tool name carries the accent
+                    (display_label, self._STYLE_ACCENT),  # tool name carries the accent
                     (args_preview, self._STYLE_MUTED),  # preview stays dim (" `ls -la`")
                 )
                 row = Table.grid(padding=(0, 1))

@@ -22,8 +22,8 @@ from opencollab.application.scheduler import LaunchSpec, Scheduler
 from opencollab.bootstrap.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_THINKING,
-    DEFAULT_THINKING_PARAMS,
     DEFAULT_TOP_P,
+    resolve_thinking_params,
 )
 from opencollab.bootstrap.container import RuntimeContext, build_workspace_safety_policy
 from opencollab.bootstrap.context_builder import SpawnConfig
@@ -32,7 +32,11 @@ from opencollab.bootstrap.session_factory import (
     agent_save_path,
     make_run_dir,
 )
-from opencollab.bootstrap.team_config import load_team_config, resolve_team_file
+from opencollab.bootstrap.team_config import (
+    TeamConfig,
+    load_team_config,
+    resolve_team_file,
+)
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 
 
@@ -45,6 +49,7 @@ def build_scheduler(
     auto_save: bool = True,
     enable_hooks: bool = True,
     team_config_path: str | os.PathLike[str] | None = None,
+    resolved_team_config: TeamConfig | None = None,
     save_dir: str | os.PathLike[str] | None = None,
     allow_unisolated_child_tests: bool = False,
 ) -> Scheduler:
@@ -63,8 +68,15 @@ def build_scheduler(
     shell commands fire on lifecycle events. Disable (e.g. under eval) to keep
     runs free of hook side effects.
     """
+    if session_file is not None and not Path(session_file).is_file():
+        raise ValueError(f"session file does not exist: {session_file}")
+
     cfg = ctx.config
-    team_cfg = load_team_config(ctx.workspace, path=team_config_path)
+    team_cfg = (
+        resolved_team_config
+        if resolved_team_config is not None
+        else load_team_config(ctx.workspace, path=team_config_path)
+    )
     event_bus = EventBus(ctx.event_sink)
 
     # Per-run folder: every agent's transcript plus a team.json manifest land
@@ -91,7 +103,7 @@ def build_scheduler(
                 "max_output_tokens", DEFAULT_MAX_TOKENS_PER_STEP
             ),
             thinking=cfg.get("thinking", DEFAULT_THINKING),
-            thinking_params=cfg.get("thinking_params") or dict(DEFAULT_THINKING_PARAMS),
+            thinking_params=resolve_thinking_params(cfg.get("thinking_params")),
             tracer=ctx.tracer,
             event_bus=event_bus,
             permission_policy=ctx.permission_policy,
@@ -121,7 +133,12 @@ def build_scheduler(
     # (the coordination-ready seam for a future ``agent`` executor). Subscribing
     # appends to the same bus, leaving the TUI sink at target[0] untouched.
     if enable_hooks and team_cfg.hooks:
-        runner = ShellHookRunner(team_cfg.hooks, scheduler=scheduler)
+        runner = ShellHookRunner(
+            team_cfg.hooks,
+            scheduler=scheduler,
+            workspace=ctx.workspace,
+        )
+        scheduler.register_lifecycle_resource(runner, description="hook processes")
         event_bus.subscribe(HookEventSubscriber(runner))
 
     # Persist a team.json manifest from the live roster on every roster change.

@@ -24,7 +24,7 @@ from opencollab.workflows import WorkflowContext
 
 def test_root_and_sdk_export_one_small_surface() -> None:
     expected = ["OpenCollab", "RunError", "RunResult", "workflow"]
-    assert opencollab.__version__ == "0.4.1"
+    assert opencollab.__version__ == "0.5.0"
     assert opencollab.__all__ == expected
     assert sdk.__all__ == expected
     assert all(getattr(opencollab, name) is getattr(sdk, name) for name in expected)
@@ -71,6 +71,7 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "config",
             "budget",
             "timeout",
+            "cleanup_timeout",
             "artifacts",
             "trace",
             "use_worktrees",
@@ -81,6 +82,7 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "inputs",
             "budget",
             "concurrency",
+            "task_concurrency",
             "timeout",
             "max_steps",
             "system_prompt",

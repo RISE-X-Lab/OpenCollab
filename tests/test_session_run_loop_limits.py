@@ -12,6 +12,7 @@ from session_run_loop_test_support import (
     FakeOverflowError,
     OverflowThenOkLLM,
     SlowLLM,
+    _agent_with_tools,
     _is_overflow,
     build_runner,
     collect_events,
@@ -20,11 +21,14 @@ from session_run_loop_test_support import (
 )
 
 from opencollab.application.session_run import (
+    ENFORCEMENT_ON,
     GenerationTimeoutError,
 )
+from opencollab.application.steering import READS_NUDGE_HARD
 from opencollab.domain.session import (
     SessionPhase,
     SessionState,
+    TurnEnforcementState,
 )
 
 
@@ -63,6 +67,38 @@ def test_call_llm_recompacts_and_retries_once_on_overflow():
         {"role": "assistant", "content": "b" * 4000},
     ]
     assert state.messages[-1] == {"role": "assistant", "content": "recovered"}
+
+
+def test_overflow_retry_preserves_hard_steering_tool_choice():
+    class RecordingOverflowThenOk:
+        def __init__(self):
+            self.calls = []
+
+        async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+            self.calls.append(kwargs.get("tool_choice"))
+            if len(self.calls) == 1:
+                raise FakeOverflowError("prompt is too long")
+            return llm_response(content="recovered")
+
+    llm = RecordingOverflowThenOk()
+    state = SessionState(
+        messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "task"},
+        ],
+        turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
+    )
+    runner = build_runner(
+        state=state,
+        agent=_agent_with_tools("file_write"),
+        llm=llm,
+        shaper=FakeForcedShaper(),
+        is_context_overflow=_is_overflow,
+    )
+
+    assert run(runner.run_loop()) == "recovered"
+    assert llm.calls == ["required", "required"]
+
 
 def test_call_llm_emits_recompaction_event_on_overflow():
     events, bus = collect_events()
@@ -233,6 +269,33 @@ def test_timeout_quarantines_late_success_and_records_its_usage():
                 await asyncio.sleep(0)
 
     run(scenario())
+
+
+def test_late_protected_provider_usage_consumes_budget_reserve():
+    async def scenario():
+        state = SessionState(
+            messages=[],
+            used_tokens=79,
+            wind_down_done=True,
+        )
+        runner = build_runner(
+            state=state,
+            llm=SlowLLM(llm_response(content="unused"), 0),
+            max_budget_tokens=100,
+            commit_reserve=20,
+            enforcement_strength=ENFORCEMENT_ON,
+        )
+        late = asyncio.get_running_loop().create_future()
+        late.set_result(llm_response(content="late", total_tokens=5))
+
+        # The provider call was protected before the caller reset the turn.
+        runner._record_late_provider_result(late, protected_call=True)
+
+        assert state.used_tokens == 84
+        assert state.budget_reserve_consumed is True
+
+    run(scenario())
+
 
 def test_provider_timeout_is_not_relabelled_as_generation_ceiling():
 

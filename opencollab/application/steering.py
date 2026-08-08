@@ -29,6 +29,7 @@ def build_steering_block(
     has_write: bool,
     has_structured_output: bool,
     structured_override: Any,
+    write_landed: bool = False,
 ) -> tuple[dict[str, Any], Any | None, str | None]:
     """Build the per-turn steering message + any ``tool_choice`` force.
 
@@ -53,21 +54,18 @@ def build_steering_block(
     override: Any | None = None
     level: str | None = None
     extra = ""
-    if has_write and reads >= READS_NUDGE_HARD:
+    needs_write = has_write and not write_landed
+    needs_structured_submit = has_structured_output and (
+        write_landed or not has_write
+    )
+    if needs_write and reads >= READS_NUDGE_HARD:
         extra = (
             f" You have read {reads} times without making an edit. STOP reading"
             " — your next action MUST be a file_write or apply_patch edit."
         )
         override = "required"
         level = "hard"
-    elif has_write and reads >= READS_NUDGE_SOFT:
-        extra = (
-            f" You have read {reads} times without making an edit. If"
-            " you can describe the fix, make it now with file_write or"
-            " apply_patch before reading more."
-        )
-        level = "soft"
-    elif has_structured_output and reads >= READS_NUDGE_SOFT:
+    elif needs_structured_submit and reads >= READS_NUDGE_SOFT:
         extra = (
             f" You have read {reads} times without submitting structured output."
             " STOP reading — your next action MUST be structured_output using"
@@ -75,6 +73,13 @@ def build_steering_block(
         )
         override = structured_override
         level = "hard"
+    elif needs_write and reads >= READS_NUDGE_SOFT:
+        extra = (
+            f" You have read {reads} times without making an edit. If"
+            " you can describe the fix, make it now with file_write or"
+            " apply_patch before reading more."
+        )
+        level = "soft"
     return {"role": "user", "content": status + extra}, override, level
 
 

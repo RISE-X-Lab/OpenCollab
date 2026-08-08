@@ -12,7 +12,9 @@ from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 SaveOperation = Callable[[], None]
 PrepareSave = Callable[[], SaveOperation | None]
 
-SAVE_TRIGGERS = frozenset({"user_message_appended", "step_end"})
+SAVE_TRIGGERS = frozenset(
+    {"user_message_appended", "step_end", "budget_reserve_allocated"}
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +35,13 @@ class AutoSaveSubscriber(EventPublisherPort):
     """Freeze-then-flush persistence of session snapshots (Command + Memento).
 
     Two phases keep the write off the hot path without tearing the snapshot:
-    *freeze* runs ``prepare_fn`` synchronously on the event loop to capture a
-    self-consistent copy of mutable session state, then *flush* runs the file
-    I/O off-thread via ``asyncio.to_thread``. Saves chain in strict submission
-    order — each flush awaits the previous tail before writing — so a later
-    snapshot never overtakes an earlier one.
+    *freeze* runs ``prepare_fn`` on the event loop to capture a self-consistent
+    copy of mutable session state, then *flush* runs the file I/O off-thread via
+    ``asyncio.to_thread``. Production session operations append an incremental
+    journal record and periodically compact it into an atomic base snapshot.
+    A single worker also coalesces generations that have not started yet, so a
+    slow sink writes the latest pending state instead of replaying every
+    obsolete intermediate state.
 
     Ordering is guaranteed by *single-subscriber ownership*, not by any key:
     one subscriber owns every queued task, so caller cancellation cannot
@@ -58,6 +62,7 @@ class AutoSaveSubscriber(EventPublisherPort):
         self._owners: set[asyncio.Task[None]] = set()
         self._last_error: Exception | None = None
         self._failure_count = 0
+        self._pending = False
 
     @property
     def last_error(self) -> Exception | None:
@@ -76,24 +81,29 @@ class AutoSaveSubscriber(EventPublisherPort):
     async def emit(self, event: SessionEvent) -> None:
         if event.type not in SAVE_TRIGGERS:
             return
-        owner = self.enqueue()
-        if owner is not None:
-            await asyncio.shield(owner)
+        self._enqueue()
+        # Let the owned worker freeze the first pending generation before the
+        # caller continues mutating session state, without waiting for I/O.
+        await asyncio.sleep(0)
 
     def enqueue(self) -> asyncio.Task[None] | None:
-        """Freeze and queue one save without waiting for earlier snapshots."""
-        operation = self._prepare_operation()
-        if operation is None:
-            return None
+        """Flush the latest generation through the owned persistence worker."""
+        return self._enqueue()
+
+    def _enqueue(self) -> asyncio.Task[None]:
+        """Queue one generation, coalescing it behind an active write."""
         loop = asyncio.get_running_loop()
-        previous = self._tail
-        if previous is not None and previous.get_loop() is not loop:
-            if not previous.done():
+        self._pending = True
+        owner = self._tail
+        if owner is not None and owner.get_loop() is not loop:
+            if not owner.done():
                 error = RuntimeError("auto-save subscriber cannot span active event loops")
                 self._record_failure(error)
                 raise error
-            previous = None
-        owner = loop.create_task(self._save_after(previous, operation))
+            owner = None
+        if owner is not None and not owner.done():
+            return owner
+        owner = loop.create_task(self._drain_latest())
         self._tail = owner
         self._owners.add(owner)
         owner.add_done_callback(self._save_done)
@@ -108,19 +118,17 @@ class AutoSaveSubscriber(EventPublisherPort):
             self._record_failure(exc)
             return None
 
-    async def _save_after(
-        self,
-        previous: asyncio.Task[None] | None,
-        operation: SaveOperation,
-    ) -> None:
+    async def _drain_latest(self) -> None:
         cancelled = False
-        if previous is not None:
-            cancelled = await self._wait_owned(previous)
-        write = asyncio.create_task(asyncio.to_thread(_run_save, operation))
-        cancelled = await self._wait_owned(write) or cancelled
-        error = write.result()
-        if error is not None:
-            self._record_failure(error)
+        while self._pending:
+            self._pending = False
+            operation = self._prepare_operation()
+            if operation is not None:
+                write = asyncio.create_task(asyncio.to_thread(_run_save, operation))
+                cancelled = await self._wait_owned(write) or cancelled
+                error = write.result()
+                if error is not None:
+                    self._record_failure(error)
         if cancelled:
             raise asyncio.CancelledError
 

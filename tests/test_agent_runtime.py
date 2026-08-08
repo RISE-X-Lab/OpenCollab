@@ -12,6 +12,24 @@ from opencollab.bootstrap.agent_runtime import AgentRuntimeLifecycleError
 from opencollab.domain.agent import Agent
 
 
+class NamedTool:
+    description = "test"
+    parameters = {"type": "object", "properties": {}}
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    def to_openai_schema(self):
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
 class Environment:
     def __init__(
         self,
@@ -68,6 +86,7 @@ class Session:
         self.step_count = 2
         self.started = asyncio.Event()
         self.save_calls = 0
+        self.close_calls = 0
 
     async def add_user_message(self, _prompt: str) -> None:
         return None
@@ -88,6 +107,9 @@ class Session:
             return None
         return asyncio.create_task(asyncio.sleep(0))
 
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
 
 def _agent() -> Agent:
     return Agent(name="agent", system_prompt="prompt", model="model", provider="provider")
@@ -95,6 +117,34 @@ def _agent() -> Agent:
 
 def _patch_session(monkeypatch, session: Session) -> None:
     monkeypatch.setattr(agent_runtime, "build_session", lambda **_kwargs: session)
+
+
+def test_agent_rejects_duplicate_normalized_tool_names() -> None:
+    with pytest.raises(ValueError, match="duplicate tool names"):
+        Agent(
+            name="agent",
+            system_prompt="prompt",
+            tools=[NamedTool("reader"), NamedTool("ＲＥＡＤＥＲ")],
+        )
+
+
+def test_agent_lookup_uses_same_normalization_as_uniqueness_check() -> None:
+    tool = NamedTool("ＲＥＡＤＥＲ")
+    agent = Agent(name="agent", system_prompt="prompt", tools=[tool])
+
+    assert agent.find_tool("reader") is tool
+
+
+def test_agent_revalidates_tool_names_before_provider_schema_build() -> None:
+    agent = Agent(
+        name="agent",
+        system_prompt="prompt",
+        tools=[NamedTool("reader")],
+    )
+    agent.tools.append(NamedTool("READER"))
+
+    with pytest.raises(ValueError, match="duplicate tool names"):
+        agent.tool_schemas()
 
 
 async def test_agent_runtime_returns_metrics_after_final_save(monkeypatch) -> None:
@@ -120,6 +170,7 @@ async def test_agent_runtime_returns_metrics_after_final_save(monkeypatch) -> No
     assert result.environment_cleanup_quiesced is True
     assert result.environment_quiesced is True
     assert environment.cleanup_calls == 1
+    assert session.close_calls == 1
 
 
 async def test_agent_runtime_returns_quiescent_execution_failure(monkeypatch) -> None:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from session_characterization_test_support import (
     FakeAgent,
     FakeLLMClient,
@@ -11,6 +13,31 @@ from session_characterization_test_support import (
 
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import load_session
+
+
+def test_session_closes_only_composition_owned_llm(monkeypatch):
+    from opencollab.bootstrap import container as session_module
+
+    class ClosableLLM(FakeLLMClient):
+        def __init__(self):
+            super().__init__()
+            self.close_calls = 0
+
+        async def close(self):
+            self.close_calls += 1
+
+    owned = ClosableLLM()
+    monkeypatch.setattr(session_module, "LLMClient", lambda **_kwargs: owned)
+    owned_session = Session(agent=FakeAgent())
+    asyncio.run(owned_session.aclose())
+    asyncio.run(owned_session.aclose())
+
+    injected = ClosableLLM()
+    injected_session = Session(agent=FakeAgent(), llm=injected)
+    asyncio.run(injected_session.aclose())
+
+    assert owned.close_calls == 1
+    assert injected.close_calls == 0
 
 
 def test_session_runtime_config_mutations_update_all_runtime_consumers():
@@ -140,13 +167,15 @@ def test_save_and_load_round_trip_restores_control_flow_latches(tmp_path):
     session = Session(agent=agent, llm=FakeLLMClient())
     state = session.state
     state.turn.reads_since_last_edit = 7
+    state.turn.has_landed_write = True
     state.turn.low_yield_since_progress = 3
     state.turn.distinct_evidence_count = 4
     state.turn.seen_result_hashes = {"content-hash", "call-hash"}
     state.turn.scout_ledger = [{"tool": "grep", "outcome": "hit"}]
     state.turn.steps_since_progress = 2
-    state.wind_down_done = True
+    state.wind_down_done = False
     state.wind_down_token_mark = 123
+    state.budget_reserve_consumed = True
     state.turn.loop_blocked_since_progress = 2
     path = tmp_path / "control-state.json"
 
@@ -155,13 +184,15 @@ def test_save_and_load_round_trip_restores_control_flow_latches(tmp_path):
 
     restored = loaded.state
     assert restored.turn.reads_since_last_edit == 7
+    assert restored.turn.has_landed_write is True
     assert restored.turn.low_yield_since_progress == 3
     assert restored.turn.distinct_evidence_count == 4
     assert restored.turn.seen_result_hashes == {"content-hash", "call-hash"}
     assert restored.turn.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
     assert restored.turn.steps_since_progress == 2
-    assert restored.wind_down_done is True
+    assert restored.wind_down_done is False
     assert restored.wind_down_token_mark == 123
+    assert restored.budget_reserve_consumed is True
     assert restored.turn.loop_blocked_since_progress == 2
 
 def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
@@ -186,8 +217,10 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
         "content": "retry after restore",
         "message_index": 1,
     }
-    # A session-lifetime latch is deliberately NOT part of the per-turn snapshot.
+    # The wind-down latch is part of the current-turn transaction; the budget
+    # reserve is session-lifetime state and must survive a rollback.
     state.wind_down_done = True
+    state.budget_reserve_consumed = False
 
     checkpoint = state.checkpoint_user_turn()
 
@@ -201,6 +234,7 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
     state.turn.loop_blocked_since_progress = 99
     state.pending_external_user_turn = None
     state.wind_down_done = False
+    state.budget_reserve_consumed = True
 
     state.restore_user_turn(checkpoint)
 
@@ -218,8 +252,10 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
         "content": "retry after restore",
         "message_index": 1,
     }
-    # The lifetime latch is not touched by a per-turn restore.
-    assert state.wind_down_done is False
+    # Rollback restores the prior turn's latch while retaining the lifetime
+    # budget reserve consumption.
+    assert state.wind_down_done is True
+    assert state.budget_reserve_consumed is True
 
     # The checkpoint is an independent snapshot: mutating restored state and
     # restoring a second time still yields the checkpoint values.

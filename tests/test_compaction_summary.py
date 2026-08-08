@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+import opencollab.application.compaction_summary as compaction_summary
 from opencollab.application.compaction_summary import ReadTimeSummarizer, run_coro_blocking
 
 SEGMENT = [
@@ -83,8 +84,83 @@ def test_summarizer_falls_back_when_no_summary_block():
     assert s.last_call_cacheable is False
 
 
+def test_summarizer_falls_back_when_summary_formatting_fails(monkeypatch):
+    def broken_formatter(_raw):
+        raise ValueError("broken parser")
+
+    monkeypatch.setattr(compaction_summary, "format_compact_summary", broken_formatter)
+    s = _summarizer("<summary>valid provider response</summary>")
+    out = s(SEGMENT)
+    assert "[user]: build the thing" in out
+    assert s.last_call_cacheable is False
+
+
 def test_summarizer_fallback_is_bounded_and_never_empty():
     big = [{"role": "user", "content": "x" * 100_000}]
     s = _summarizer(RuntimeError("boom"))
     out = s(big)
-    assert 0 < len(out) <= 4_010  # fallback_chars budget (+ role prefix slack)
+    assert 0 < len(out) <= 4_000
+
+
+def test_summarizer_fallback_preserves_supported_content_blocks():
+    segment = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "critical requirement"},
+                {"type": "image", "source": {"data": "..."}},
+                {"type": "input_text", "text": "second requirement"},
+                {"type": "custom_attachment", "payload": "..."},
+            ],
+        },
+        {"role": "assistant", "content": ["plain list text"]},
+    ]
+    out = _summarizer(RuntimeError("boom"))(segment)
+    assert "critical requirement" in out
+    assert "second requirement" in out
+    assert "[image block]" in out
+    assert "[custom_attachment block]" in out
+    assert "plain list text" in out
+
+
+def test_summarizer_fallback_keeps_non_text_only_messages_visible():
+    segment = [{"role": "user", "content": [{"type": "image_url", "image_url": "..."}]}]
+    out = _summarizer(RuntimeError("boom"))(segment)
+    assert out == "[user]: [image_url block]"
+
+
+def test_composed_summarizer_closes_each_ephemeral_client(monkeypatch):
+    from opencollab.bootstrap import container
+
+    clients = []
+
+    class FakeClient:
+        def __init__(self, **_kwargs):
+            self.close_calls = 0
+            clients.append(self)
+
+        async def complete(self, _request, *, temperature):
+            assert temperature == 0.0
+            return SimpleNamespace(content="<summary>closed cleanly</summary>")
+
+        async def close(self):
+            self.close_calls += 1
+
+    monkeypatch.setattr(container, "LLMClient", FakeClient)
+    agent = SimpleNamespace(
+        model="model",
+        api_key="key",  # pragma: allowlist secret
+        base_url=None,
+        provider="openai",
+    )
+    summarizer = container._build_summarizer(
+        agent,
+        None,
+        resolved_llm=object(),
+        llm_timeout=1.0,
+        auto_save_path=None,
+    )
+
+    assert summarizer(SEGMENT) == "Summary:\nclosed cleanly"
+    assert len(clients) == 1
+    assert clients[0].close_calls == 1

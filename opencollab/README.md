@@ -91,7 +91,8 @@ three return `RunResult`. Import optional authoring contracts from
 Treat other package paths as internal. An `artifacts` directory, when supplied,
 must be new or empty because each run claims it for executable evidence.
 `team(...)` uses the built-in lead-only configuration unless its `config=`
-argument names a team YAML file.
+argument names a team YAML file. Its `cleanup_timeout` bounds scheduler
+shutdown and must be a finite positive number.
 
 `OpenCollab.configuration` is a read-only snapshot of effective model,
 provider, budget, timeout, sampling, output-token, and thinking settings.
@@ -101,6 +102,10 @@ fingerprint without exposing credentials embedded in a URL. Agent runs accept
 `max_steps` and `cleanup_timeout`. The older `steps` spelling remains a supported
 alias.
 Workflow runs accept `max_steps`, `system_prompt`, and `cleanup_timeout`.
+Their `concurrency` option limits agent sessions only. `task_concurrency`
+separately limits active `parallel` and `pipeline` units across the workflow;
+omitting it inherits `concurrency`. The two limits are independent, so mixed
+agent and task work may peak at their sum.
 Completed, stopped, and failed workflow results report aggregate session,
 step, token, and markup-recovery metrics. Sanitized child-provider failures are
 available through `RunResult.agent_failures`.

@@ -41,6 +41,7 @@ from opencollab.application.ports import (
 from opencollab.application.scheduler_dedup import InflightDedupMixin
 from opencollab.application.scheduler_lifecycle import LifecycleMixin
 from opencollab.application.scheduler_messaging import MessagingMixin
+from opencollab.application.scheduler_types import DuplicateSpawnError as DuplicateSpawnError
 from opencollab.application.scheduler_types import LaunchSpec as LaunchSpec
 from opencollab.application.scheduler_types import QueuedTeammateMessage as QueuedTeammateMessage
 from opencollab.application.scheduler_types import SchedulerStalledError as SchedulerStalledError
@@ -129,6 +130,12 @@ class Scheduler(
 
         self.table = SessionTable()
         self._tasks: dict[int, asyncio.Task] = {}
+        # Monotonic start of the current agent turn. A deferred suspend keeps
+        # this entry so terminal latency includes child wait and resume work.
+        self._turn_started_at: dict[int, float] = {}
+        # Optional cooperative cancellation token owned by the current public
+        # turn for each aid. Deferred resume drivers reuse the same token.
+        self._turn_cancel_events: dict[int, asyncio.Event] = {}
         # ``spawn`` owns resources before the child driver exists. Track that
         # pre-driver window separately so cleanup can cancel/abort/finalize an
         # external spawn blocked in worktree setup or lifecycle event delivery.
@@ -137,7 +144,10 @@ class Scheduler(
         self._startup_origin: dict[int, tuple[int, str]] = {}
         self._sessions: dict[int, Any] = {}
         self._locks: dict[int, asyncio.Lock] = {}
-        self._run_lock = asyncio.Lock()
+        # Public turns serialize per addressed session, not across the whole
+        # team. Independent aids may make progress concurrently while repeat
+        # turns for one aid remain strictly ordered.
+        self._run_locks: dict[int, asyncio.Lock] = {}
         # A public run_turn owner must retain its addressed aid through cleanup:
         # cancelling a child turn must never terminalize the Lead by default.
         self._active_run_tasks: dict[asyncio.Task[Any], int] = {}
@@ -180,6 +190,9 @@ class Scheduler(
         self._cleanup_task: asyncio.Task[None] | None = None
         self._fallback_autosavers: dict[int, AutoSaveSubscriber] = {}
         self._scheduler_persistence_errors: list[Exception] = []
+        # Bootstrap-owned resources whose process/persistence state must be
+        # proven quiescent before scheduler cleanup may release worktrees.
+        self._lifecycle_resources: list[tuple[str, Any]] = []
         # A synchronous review loop temporarily yields its caller's turn lease
         # through ordinary ``spawn`` calls. Context-local accounting records only
         # leases actually released by this review invocation, so an external API
@@ -189,7 +202,18 @@ class Scheduler(
             tuple[int, dict[str, int]] | None
         ] = contextvars.ContextVar("review_parent_lease_tracker", default=None)
 
+    def register_lifecycle_resource(
+        self,
+        resource: Any,
+        *,
+        description: str,
+    ) -> None:
+        """Make an externally owned resource part of final cleanup evidence."""
+        self._lifecycle_resources.append((description, resource))
+
+
 __all__ = [
+    "DuplicateSpawnError",
     "LaunchSpec",
     "QueuedTeammateMessage",
     "Scheduler",

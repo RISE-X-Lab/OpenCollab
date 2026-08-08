@@ -70,6 +70,38 @@ async def test_cleanup_cancels_tasks_without_aborting_caller_environment():
 
 
 @pytest.mark.asyncio
+async def test_workflow_finalization_closes_session_resources():
+    class ClosableSession:
+        pending_cleanup_tasks = ()
+        persistence_errors = ()
+
+        def __init__(self):
+            self.close_calls = 0
+
+        def enqueue_auto_save(self):
+            return None
+
+        async def aclose(self):
+            self.close_calls += 1
+
+    session = ClosableSession()
+    ctx = WorkflowContext(factory=object())
+    ctx._track_session(session)
+
+    quiesced, succeeded, lingering = (
+        await workflow_cleanup._quiesce_and_finalize_workflow_context(
+            ctx,
+            timeout=0.1,
+        )
+    )
+
+    assert quiesced
+    assert succeeded
+    assert not lingering
+    assert session.close_calls == 1
+
+
+@pytest.mark.asyncio
 async def test_run_workflow_quiesces_late_session_before_manifest_and_tracer_close(
     monkeypatch,
     tmp_path,
@@ -153,6 +185,7 @@ async def test_run_workflow_quiesces_late_session_before_manifest_and_tracer_clo
             OneSessionFactory(session),
             tracer=kwargs["tracer"],
             max_concurrency=kwargs["max_concurrency"],
+            task_concurrency=kwargs["task_concurrency"],
             budget_total=kwargs["budget"],
         )
 
@@ -237,18 +270,14 @@ async def test_workflow_cleanup_marks_cancelled_blocking_autosave_nonquiescent()
     second_waiter = asyncio.create_task(
         event_bus.emit(SessionRuntimeEvent(type="step_end"))
     )
-    while len(subscriber.pending_tasks) < 2:
-        await asyncio.sleep(0)
-    first_waiter.cancel()
-    second_waiter.cancel()
     waiter_results = await asyncio.gather(
         first_waiter,
         second_waiter,
         return_exceptions=True,
     )
-    assert all(isinstance(result, asyncio.CancelledError) for result in waiter_results)
+    assert waiter_results == [None, None]
     owners = subscriber.pending_tasks
-    assert len(owners) == 2
+    assert len(owners) == 1
     assert event_bus.pending_tasks == owners
 
     cleanup = asyncio.create_task(
@@ -290,7 +319,9 @@ async def test_workflow_cleanup_reports_completed_autosave_failure():
     event_bus = EventBus(subscriber)
 
     class SessionWithFailedAutosave:
-        pending_cleanup_tasks = ()
+        @property
+        def pending_cleanup_tasks(self):
+            return event_bus.pending_tasks
 
         @property
         def persistence_errors(self):
@@ -524,6 +555,7 @@ async def test_run_workflow_waits_for_orphaned_background_agent(monkeypatch):
         return WorkflowContext(
             Factory(),
             max_concurrency=kwargs["max_concurrency"],
+            task_concurrency=kwargs["task_concurrency"],
             budget_total=kwargs["budget"],
         )
 
@@ -619,6 +651,7 @@ async def test_owned_tracer_closes_when_cleanup_fails(
             Factory(session),
             tracer=kwargs["tracer"],
             max_concurrency=kwargs["max_concurrency"],
+            task_concurrency=kwargs["task_concurrency"],
             budget_total=kwargs["budget"],
         )
         holder["context"] = context

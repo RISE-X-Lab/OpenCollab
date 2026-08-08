@@ -24,6 +24,11 @@ _DIRECT_EVENT_MAP: dict[str, str] = {
     "agent_spawned": "SessionStart",
     "error": "Notification",
 }
+_TERMINAL_DISPOSITIONS = {
+    "agent_completed": "completed",
+    "agent_failed": "failed",
+    "agent_cancelled": "cancelled",
+}
 
 
 class HookEventSubscriber(EventPublisherPort):
@@ -35,6 +40,9 @@ class HookEventSubscriber(EventPublisherPort):
         if hook_event is None:
             return
         payload = {"hook_event_name": hook_event, **dict(event.data)}
+        disposition = _TERMINAL_DISPOSITIONS.get(event.type)
+        if disposition is not None:
+            payload["disposition"] = disposition
         await self._runner.fire(hook_event, payload)
 
     def _hook_event_for(self, event: Any) -> str | None:
@@ -42,6 +50,8 @@ class HookEventSubscriber(EventPublisherPort):
             # parent_aid is None only for agent 0 (the lead): that completion is
             # the whole team stopping; a child completing is a SubagentStop.
             return "Stop" if event.data.get("parent_aid") is None else "SubagentStop"
+        if event.type in {"agent_failed", "agent_cancelled"}:
+            return "Stop" if event.data.get("aid") == 0 else "SubagentStop"
         return _DIRECT_EVENT_MAP.get(event.type)
 
 

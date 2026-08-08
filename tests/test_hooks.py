@@ -96,6 +96,28 @@ def test_subscriber_splits_completed_by_parent():
     assert _emit(SchedulerEvent(type="agent_completed", data={"aid": 5, "parent_aid": 0}))[0][0] == "SubagentStop"
 
 
+@pytest.mark.parametrize(
+    ("event_type", "aid", "expected_hook", "expected_disposition"),
+    [
+        ("agent_failed", 0, "Stop", "failed"),
+        ("agent_cancelled", 0, "Stop", "cancelled"),
+        ("agent_failed", 5, "SubagentStop", "failed"),
+        ("agent_cancelled", 5, "SubagentStop", "cancelled"),
+    ],
+)
+def test_subscriber_maps_all_terminal_dispositions(
+    event_type,
+    aid,
+    expected_hook,
+    expected_disposition,
+):
+    calls = _emit(SchedulerEvent(type=event_type, data={"aid": aid, "role": "coder"}))
+
+    assert len(calls) == 1
+    assert calls[0][0] == expected_hook
+    assert calls[0][1]["disposition"] == expected_disposition
+
+
 def test_subscriber_ignores_unmapped_events():
     assert _emit(SessionRuntimeEvent(type="step_end", data={"step": 1})) == []
     assert _emit(SessionRuntimeEvent(type="text_delta", data={"content": "x"})) == []
@@ -267,6 +289,47 @@ def test_runner_delegates_to_shared_process_supervisor(monkeypatch):
     assert calls[0][1]["env"]["OPENCOLLAB_AID"] == "9"
 
 
+def test_runner_passes_workspace_cwd_to_process_supervisor(monkeypatch, tmp_path):
+    calls = []
+    workspace = tmp_path / "workspace with spaces"
+    workspace.mkdir()
+
+    async def fake_run_process(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(hooks_adapter, "run_process", fake_run_process)
+    runner = ShellHookRunner(
+        (_spec(event="Stop", command="./scripts/check.sh"),),
+        workspace=str(workspace),
+    )
+
+    asyncio.run(runner.fire("Stop", {"hook_event_name": "Stop"}))
+
+    assert calls[0][1]["cwd"] == str(workspace.resolve())
+
+
+def test_runner_resolves_relative_hook_outputs_in_workspace(tmp_path):
+    workspace = tmp_path / "workspace with spaces"
+    workspace.mkdir()
+    runner = ShellHookRunner(
+        (
+            _spec(
+                event="Stop",
+                command='pwd > hook-cwd.txt; printf "ok" > relative-output.txt',
+            ),
+        ),
+        workspace=str(workspace),
+    )
+
+    asyncio.run(runner.fire("Stop", {"hook_event_name": "Stop"}))
+
+    assert (workspace / "hook-cwd.txt").read_text().strip() == str(
+        workspace.resolve()
+    )
+    assert (workspace / "relative-output.txt").read_text() == "ok"
+
+
 def test_runner_swallows_shared_supervisor_timeout(monkeypatch):
     async def fake_run_process(*_args, **_kwargs):
         raise asyncio.TimeoutError
@@ -412,14 +475,28 @@ def test_config_rejects_unbounded_or_nonpositive_hook_timeout(
         load_team_config(str(tmp_path))
 
 
-def test_config_reserved_action_type_parses(tmp_path, monkeypatch):
+@pytest.mark.parametrize("timeout", ["true", "false", "yes", "no"])
+def test_config_rejects_boolean_hook_timeout(tmp_path, monkeypatch, timeout):
+    team = (
+        "roles:\n  lead:\n    tools: [bash]\n    prompt: x\n"
+        f"hooks:\n  Stop:\n    - command: echo\n      timeout: {timeout}\n"
+    )
+    _write_team(tmp_path, monkeypatch, team)
+    with pytest.raises(Exception, match="must not be a boolean"):
+        load_team_config(str(tmp_path))
+
+
+@pytest.mark.parametrize("action_type", ["prompt", "agent"])
+def test_config_rejects_reserved_action_types_until_runner_supports_them(
+    tmp_path, monkeypatch, action_type
+):
     team = (
         "roles:\n  lead:\n    tools: [bash]\n    prompt: x\n"
         "hooks:\n  Stop:\n    - command: echo\n      type: agent\n"
-    )
+    ).replace("type: agent", f"type: {action_type}")
     _write_team(tmp_path, monkeypatch, team)
-    cfg = load_team_config(str(tmp_path))
-    assert cfg.hooks[0].action_type == "agent"
+    with pytest.raises(ValueError, match="not implemented"):
+        load_team_config(str(tmp_path))
 
 
 def test_config_without_hooks_is_empty(tmp_path, monkeypatch):
@@ -454,6 +531,69 @@ def test_wiring_fires_hook_on_team_bus(tmp_path, monkeypatch):
 
     asyncio.run(bus.emit(SchedulerEvent(type="agent_completed", data={"aid": 0, "parent_aid": None})))
     assert sentinel.exists()
+
+
+def test_wiring_runs_relative_hook_in_runtime_workspace(tmp_path, monkeypatch):
+    workspace = tmp_path / "target workspace"
+    launch_directory = tmp_path / "launcher"
+    workspace.mkdir()
+    launch_directory.mkdir()
+    monkeypatch.chdir(launch_directory)
+    team = (
+        "roles:\n  lead:\n    tools: [bash]\n    prompt: x\n"
+        "hooks:\n  Stop:\n    - command: 'touch relative-stop-fired'\n"
+    )
+    _write_team(workspace, monkeypatch, team)
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    scheduler = build_scheduler(
+        ctx,
+        use_worktrees=False,
+        interactive=False,
+        auto_save=False,
+        enable_hooks=True,
+    )
+
+    asyncio.run(
+        scheduler._event_sink.emit(
+            SchedulerEvent(
+                type="agent_completed",
+                data={"aid": 0, "parent_aid": None},
+            )
+        )
+    )
+
+    assert (workspace / "relative-stop-fired").exists()
+    assert not (launch_directory / "relative-stop-fired").exists()
+
+
+def test_hook_process_cleanup_failure_reaches_scheduler_cleanup(tmp_path, monkeypatch):
+    cleanup_error = hooks_adapter.ProcessCleanupError("descendant remained alive")
+
+    async def fake_run_process(*_args, **_kwargs):
+        raise cleanup_error
+
+    monkeypatch.setattr(hooks_adapter, "run_process", fake_run_process)
+    scheduler, _sentinel = _scheduler_with_stop_hook(
+        tmp_path,
+        monkeypatch,
+        enable_hooks=True,
+    )
+
+    asyncio.run(
+        scheduler._event_sink.emit(
+            SchedulerEvent(
+                type="agent_completed",
+                data={"aid": 0, "parent_aid": None},
+            )
+        )
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="technical scheduler cleanup failed: hook processes did not quiesce",
+    ) as caught:
+        asyncio.run(scheduler.cleanup())
+    assert caught.value.__cause__ is cleanup_error
 
 
 def test_wiring_disabled_when_enable_hooks_false(tmp_path, monkeypatch):

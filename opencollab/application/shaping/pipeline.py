@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -32,6 +33,18 @@ DEFAULT_COMPACT_BUFFER_TOKENS = 13_000  # safety margin below the effective wind
 HISTORY_TARGET_RATIO = 0.75
 
 
+def require_nonnegative_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return value
+
+
+def require_positive_int(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"{name} must be a positive integer")
+    return value
+
+
 def history_trigger_target(
     context_window: int | None,
     *,
@@ -46,10 +59,23 @@ def history_trigger_target(
     window is unknown (``None``/non-positive), so an unrecognised model still
     gets sane behaviour.
     """
+    require_nonnegative_int(output_reserve, "output_reserve")
+    require_nonnegative_int(buffer, "buffer")
+    if (
+        isinstance(target_ratio, bool)
+        or not isinstance(target_ratio, (int, float))
+        or not math.isfinite(target_ratio)
+        or not 0 < target_ratio < 1
+    ):
+        raise ValueError("target_ratio must be finite and satisfy 0 < target_ratio < 1")
+    if context_window is not None and (
+        isinstance(context_window, bool) or not isinstance(context_window, int)
+    ):
+        raise ValueError("context_window must be an integer or None")
     if not context_window or context_window <= 0:
         return DEFAULT_HISTORY_TRIGGER_TOKENS, DEFAULT_HISTORY_TARGET_TOKENS
-    trigger = max(1, context_window - output_reserve - buffer)
-    target = max(1, int(trigger * target_ratio))
+    trigger = max(2, context_window - output_reserve - buffer)
+    target = max(1, min(trigger - 1, int(trigger * target_ratio)))
     return trigger, target
 
 
@@ -145,6 +171,91 @@ def _group_spans(messages: list[dict[str, Any]]) -> list[tuple[int, int]]:
                 i += 1
         spans.append((start, i))
     return spans
+
+
+def matched_tool_result_occurrences(
+    messages: list[dict[str, Any]],
+) -> list[tuple[int, str, str, Any]]:
+    """Return unambiguous tool-result occurrences in assistant issue order.
+
+    Each tuple is ``(result_index, call_id, tool_name, arguments)``. Pairing is
+    local to one assistant turn, so providers that reuse an id in later turns
+    cannot cause an old compaction decision to affect the newest result. A
+    malformed group (missing, unknown, or duplicate ids) is skipped entirely.
+    """
+    matched: list[tuple[int, str, str, Any]] = []
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant" or not message.get("tool_calls"):
+            continue
+        calls = list(message.get("tool_calls") or ())
+        call_ids = [call.get("id") for call in calls]
+        if (
+            any(not isinstance(call_id, str) or not call_id for call_id in call_ids)
+            or len(set(call_ids)) != len(call_ids)
+        ):
+            continue
+
+        end = index + 1
+        while end < len(messages) and messages[end].get("role") == "tool":
+            end += 1
+        results = list(enumerate(messages[index + 1 : end], start=index + 1))
+        result_ids = [result.get("tool_call_id") for _, result in results]
+        if (
+            any(not isinstance(result_id, str) or not result_id for result_id in result_ids)
+            or len(set(result_ids)) != len(result_ids)
+            or set(result_ids) != set(call_ids)
+        ):
+            continue
+        result_index = {
+            result.get("tool_call_id"): result_i for result_i, result in results
+        }
+        for call in calls:
+            function = call.get("function") or {}
+            matched.append(
+                (
+                    result_index[call["id"]],
+                    call["id"],
+                    function.get("name"),
+                    function.get("arguments"),
+                )
+            )
+    return matched
+
+
+def is_complete_tool_exchange(
+    messages: list[dict[str, Any]], span: tuple[int, int]
+) -> bool:
+    """Whether a tool-leading span has a one-to-one local call/result pairing."""
+    start, end = span
+    leader = messages[start]
+    if leader.get("role") != "assistant" or not leader.get("tool_calls"):
+        return False
+    call_ids = [call.get("id") for call in leader.get("tool_calls") or ()]
+    result_ids = [
+        messages[index].get("tool_call_id")
+        for index in range(start + 1, end)
+        if messages[index].get("role") == "tool"
+    ]
+    return bool(call_ids) and (
+        all(isinstance(call_id, str) and call_id for call_id in call_ids)
+        and all(isinstance(result_id, str) and result_id for result_id in result_ids)
+        and len(call_ids) == len(set(call_ids))
+        and len(result_ids) == len(set(result_ids))
+        and set(call_ids) == set(result_ids)
+    )
+
+
+def span_is_safe_to_compact(
+    messages: list[dict[str, Any]], span: tuple[int, int]
+) -> bool:
+    """Reject malformed protocol fragments from deletion or summarization."""
+    start, _end = span
+    leader = messages[start]
+    if leader.get("role") == "tool":
+        return False
+    if leader.get("role") == "assistant" and leader.get("tool_calls"):
+        return is_complete_tool_exchange(messages, span)
+    return True
 
 
 def _droppable_region(

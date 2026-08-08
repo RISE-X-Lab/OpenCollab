@@ -43,8 +43,16 @@ OPENCOLLAB_API_KEY=<your-api-key>
 OPENCOLLAB_LLM_TIMEOUT=600
 ```
 
-For DashScope-compatible mode, `DASHSCOPE_API_KEY` is also accepted and is
-preferred over generic API-key variables for DashScope base URLs.
+API-key fallback is provider and endpoint specific:
+
+| Route | Resolution order |
+| --- | --- |
+| OpenAI-compatible, non-DashScope | `OPENCOLLAB_API_KEY`, then `OPENAI_API_KEY` |
+| Native Anthropic | `ANTHROPIC_API_KEY`, then `OPENCOLLAB_API_KEY` |
+| DashScope-compatible base URL | `DASHSCOPE_API_KEY`, then `OPENCOLLAB_API_KEY` |
+
+Keys from another provider are not used as fallbacks. Process-environment
+values beat the same variable in an env file, and blank values are ignored.
 
 ## Model capability metadata
 
@@ -155,6 +163,7 @@ selected team file, the built-in `lead` may spawn any ad-hoc role. See
 The final resolved configuration is validated by a Pydantic model. `budget`
 must be a positive integer. `llm_timeout` must be a positive number of seconds.
 `temperature` must be within `0.0`–`2.0`. Blank `api_key` and `base_url` values
-are treated as unset.
+are treated as unset. Unknown configuration and team-schema keys are rejected
+instead of being silently ignored.
 
 Do not commit `configs/.env` or any file containing real API keys.

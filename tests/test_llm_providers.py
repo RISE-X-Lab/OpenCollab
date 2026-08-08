@@ -636,6 +636,35 @@ def test_llm_client_disables_openai_sdk_retries(monkeypatch):
     assert captured["max_retries"] == 0
 
 
+@pytest.mark.asyncio
+async def test_llm_client_closes_provider_once(monkeypatch):
+    from opencollab.adapters.llm import client as client_module
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **_kwargs):
+            self.close_calls = 0
+
+        async def close(self):
+            self.close_calls += 1
+
+    provider_client = FakeAsyncOpenAI()
+    monkeypatch.setattr(
+        client_module.openai,
+        "AsyncOpenAI",
+        lambda **_kwargs: provider_client,
+    )
+    client = client_module.LLMClient(
+        provider="openai",
+        model="gpt-test",
+        api_key="test-key",  # pragma: allowlist secret
+    )
+
+    await client.close()
+    await client.close()
+
+    assert provider_client.close_calls == 1
+
+
 def test_openai_estimates_output_from_tool_calls_when_no_content():
     """Output estimate falls back to tool-call args when content is empty."""
     tool_call = SimpleNamespace(
@@ -694,6 +723,24 @@ def test_openai_keeps_real_content_over_reasoning():
     result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
     assert result.content == "real answer"
     assert result.reasoning == "scratch work"  # kept for trajectory observability
+
+
+def test_openai_treats_whitespace_only_content_as_empty():
+    resp = _openai_resp_with_reasoning(
+        content=" \t\n",
+        reasoning_content="reasoned answer",
+    )
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+    assert result.content == "reasoned answer"
+
+
+def test_openai_preserves_nonempty_content_bytes():
+    resp = _openai_resp_with_reasoning(
+        content="  real answer  ",
+        reasoning_content="scratch work",
+    )
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+    assert result.content == "  real answer  "
 
 
 def test_openai_does_not_harvest_reasoning_on_tool_call_turn():

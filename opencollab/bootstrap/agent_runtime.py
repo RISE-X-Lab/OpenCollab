@@ -14,6 +14,7 @@ from opencollab.application.async_timeout import (
     force_task_terminal,
 )
 from opencollab.application.ports import LLMPort, TracePort
+from opencollab.application.session_lifecycle import close_session_resources
 from opencollab.bootstrap.container import build_workspace_safety_policy
 from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
@@ -130,11 +131,13 @@ async def _finalize_session(
         "cleanup",
         timeout,
     )
+    llm_quiesced = await close_session_resources((session,), timeout=timeout)
     return (
         quiesced
         and persistence_ready
         and persistence_quiesced
         and cleanup_quiesced
+        and llm_quiesced
         and not session.persistence_errors
     )
 

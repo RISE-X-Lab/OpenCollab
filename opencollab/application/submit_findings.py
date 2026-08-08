@@ -114,6 +114,19 @@ class SubmitFindingsTool:
                 "Validation failed; the output does not conform to the schema. Fix and call "
                 f"{self.name} again. Errors: {joined}"
             )
+        findings = params.get("findings") or []
+        summary = str(params.get("summary") or "").strip()
+        if not findings:
+            if not params.get("insufficient_evidence"):
+                return (
+                    "Empty report rejected: provide at least one finding, or set "
+                    "insufficient_evidence=true and explain the evidence gap in summary."
+                )
+            if not summary:
+                return (
+                    "Abstention rejected: explain why evidence is insufficient in summary, "
+                    "then call submit_findings again."
+                )
         # Abstention describes the report as a whole; it never turns an uncited
         # verified claim into evidence. Mixed payloads may retain partial cited
         # findings while abstaining on the remaining dimension.
@@ -165,9 +178,27 @@ def format_findings_report(captured: dict[str, Any]) -> str:
 # Cap on how much of each salvaged tool result / interim text the partial blob
 # keeps, so a chopped scout's harvest can never itself blow the planner's context.
 _PARTIAL_SNIPPET_CHARS = 600
+_PARTIAL_MAX_MESSAGES = 64
+_PARTIAL_MAX_CHARS = 16_000
+_LEDGER_FIELD_CHARS = 240
+_LEDGER_MAX_CARDS = 64
+_LEDGER_MAX_CHARS = 12_000
 
 
-def format_evidence_ledger(cards: list[dict[str, Any]] | None) -> str:
+def _with_omission_marker(text: str, marker: str, max_chars: int) -> str:
+    if not marker:
+        return text[:max_chars]
+    separator = "\n" if text else ""
+    keep = max(0, max_chars - len(separator) - len(marker))
+    return f"{text[:keep]}{separator}{marker}"[:max_chars]
+
+
+def format_evidence_ledger(
+    cards: list[dict[str, Any]] | None,
+    *,
+    max_cards: int = _LEDGER_MAX_CARDS,
+    max_chars: int = _LEDGER_MAX_CHARS,
+) -> str:
     """Render the runtime-authored evidence ledger as compact, labelled
     lines: one ``- [outcome] tool target: snippet`` per executed scout tool call.
 
@@ -175,15 +206,23 @@ def format_evidence_ledger(cards: list[dict[str, Any]] | None) -> str:
     so this is a faithful, deterministic record of what the scout actually saw —
     used both by the harvest backstop and as the dead-scout synthesizer's input.
     """
+    all_cards = list(cards or [])
     lines: list[str] = []
-    for card in cards or []:
-        tool = str(card.get("tool") or "").strip()
-        target = str(card.get("target") or "").strip()
-        outcome = str(card.get("outcome") or "").strip()
-        snippet = str(card.get("snippet") or "").strip()
+    for card in all_cards[:max_cards]:
+        tool = str(card.get("tool") or "").strip()[:_LEDGER_FIELD_CHARS]
+        target = str(card.get("target") or "").strip()[:_LEDGER_FIELD_CHARS]
+        outcome = str(card.get("outcome") or "").strip()[:_LEDGER_FIELD_CHARS]
+        snippet = str(card.get("snippet") or "").strip()[:_LEDGER_FIELD_CHARS]
         head = f"- [{outcome}] {tool} {target}".rstrip()
-        lines.append(f"{head}: {snippet}" if snippet else head)
-    return "\n".join(lines)
+        line = f"{head}: {snippet}" if snippet else head
+        candidate = "\n".join([*lines, line])
+        if len(candidate) > max_chars:
+            break
+        lines.append(line)
+    omitted = len(all_cards) - len(lines)
+    body = "\n".join(lines)
+    marker = f"- [omitted] {omitted} evidence cards" if omitted else ""
+    return _with_omission_marker(body, marker, max_chars)
 
 
 def harvest_findings(
@@ -226,25 +265,39 @@ def harvest_findings(
             return f"(partial — scout chopped; {len(ledger)} evidence cards)\n{body}"
     msgs = messages or []
     tool_results = [m for m in msgs if m.get("role") == "tool"]
-    interim = [
-        str(m.get("content"))
-        for m in msgs
-        if m.get("role") == "assistant" and m.get("content")
+    candidates = [
+        str(message.get("content") or "")[:_PARTIAL_SNIPPET_CHARS]
+        for message in msgs
+        if (
+            message.get("role") == "tool"
+            or (message.get("role") == "assistant" and message.get("content"))
+        )
     ]
-    if not tool_results and not interim:
+    if not candidates:
         return ""
-    parts = [f"(partial — scout chopped; {len(tool_results)} tool results)"]
-    for m in tool_results:
-        parts.append(str(m.get("content") or "")[:_PARTIAL_SNIPPET_CHARS])
-    for text in interim:
-        parts.append(text[:_PARTIAL_SNIPPET_CHARS])
-    return "\n\n".join(parts)
+    header = f"(partial — scout chopped; {len(tool_results)} tool results)"
+    full = "\n\n".join([header, *candidates])
+    if len(candidates) <= _PARTIAL_MAX_MESSAGES and len(full) <= _PARTIAL_MAX_CHARS:
+        return full
+
+    parts = [header]
+    selected = list(reversed(candidates[-_PARTIAL_MAX_MESSAGES:]))
+    for text in selected:
+        candidate = "\n\n".join([*parts, text])
+        if len(candidate) > _PARTIAL_MAX_CHARS:
+            break
+        parts.append(text)
+    omitted = len(candidates) - (len(parts) - 1)
+    body = "\n\n".join(parts)
+    marker = f"[omitted {omitted} earlier transcript messages]" if omitted else ""
+    return _with_omission_marker(body, marker, _PARTIAL_MAX_CHARS)
 
 
 # Cap on the raw tool-result block fed into the dead-scout synthesizer prompt, so
 # the single bounded salvage call can never itself overflow the model window.
 _SYNTH_RESULT_CHARS = 800
 _SYNTH_MAX_RESULTS = 12
+DEFAULT_SYNTH_PROMPT_MAX_CHARS = 16_000
 
 # The dead-scout synthesizer's instruction (STEP 2 part b). It is a transcript-ONLY
 # salvage: the model is given the evidence the scout already gathered and the single
@@ -267,23 +320,34 @@ Raw tool results captured during the scout's run:
 {results}"""
 
 
-def _format_tool_results_for_synth(messages: list[dict[str, Any]] | None) -> str:
+def _format_tool_results_for_synth(
+    messages: list[dict[str, Any]] | None,
+    *,
+    max_chars: int,
+) -> str:
     """Compact, bounded rendering of the scout's raw tool results for the
     synthesizer prompt — capped in count and per-result length so the single
     salvage call cannot overflow the model window."""
     results = [m for m in (messages or []) if m.get("role") == "tool"]
     if not results:
         return "(no raw tool results captured)"
+    selected = results[:_SYNTH_MAX_RESULTS]
     rendered = [
         str(m.get("content") or "")[:_SYNTH_RESULT_CHARS]
-        for m in results[:_SYNTH_MAX_RESULTS]
+        for m in selected
     ]
-    return "\n---\n".join(r for r in rendered if r.strip()) or "(no raw tool results captured)"
+    body = "\n---\n".join(r for r in rendered if r.strip())
+    omitted = len(results) - len(selected)
+    marker = f"[omitted {omitted} raw tool results]" if omitted else ""
+    bounded = _with_omission_marker(body, marker, max_chars)
+    return bounded or "(no raw tool results captured)"[:max_chars]
 
 
 def build_dead_scout_synthesis_prompt(
     ledger: list[dict[str, Any]] | None,
     messages: list[dict[str, Any]] | None,
+    *,
+    max_chars: int = DEFAULT_SYNTH_PROMPT_MAX_CHARS,
 ) -> str:
     """Seed prompt for the transcript-only dead-scout synthesizer (STEP 2 part b).
 
@@ -291,10 +355,24 @@ def build_dead_scout_synthesis_prompt(
     tool results — never a directive to explore further. The single allowed tool is
     submit_findings (forced + cite-or-abstain), so the salvage cannot fabricate.
     """
-    ledger_text = format_evidence_ledger(ledger) or "(empty ledger)"
-    return _DEAD_SCOUT_SYNTH_PROMPT.format(
-        ledger=ledger_text, results=_format_tool_results_for_synth(messages)
+    fixed = _DEAD_SCOUT_SYNTH_PROMPT.format(ledger="", results="")
+    if max_chars <= len(fixed):
+        return fixed[:max_chars]
+    evidence_budget = max_chars - len(fixed)
+    ledger_budget = max(1, evidence_budget * 2 // 3)
+    result_budget = max(1, evidence_budget - ledger_budget)
+    ledger_text = (
+        format_evidence_ledger(ledger, max_chars=ledger_budget)
+        or "(empty ledger)"[:ledger_budget]
     )
+    results_text = _format_tool_results_for_synth(
+        messages,
+        max_chars=result_budget,
+    )
+    return _DEAD_SCOUT_SYNTH_PROMPT.format(
+        ledger=ledger_text,
+        results=results_text,
+    )[:max_chars]
 
 
 def commitment_terminus_payload(

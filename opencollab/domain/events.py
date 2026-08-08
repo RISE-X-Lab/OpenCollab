@@ -36,6 +36,7 @@ SessionEventType = Literal[
     "step_end",
     "loop_detected",
     "budget_warning",
+    "budget_reserve_allocated",
     "error",
     "user_message_appended",
 ]
@@ -57,6 +58,7 @@ SchedulerEventType = Literal[
     "agent_cancelled",
     "agent_message_sent",
     "agent_message_delivered",
+    "agent_message_rejected_on_restore",
     "review_started",
     "review_completed",
 ]

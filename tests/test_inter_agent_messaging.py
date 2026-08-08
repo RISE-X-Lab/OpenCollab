@@ -229,7 +229,7 @@ def test_send_message_to_idle_target_schedules_background_run():
     scheduler._sessions[1] = teammate
     async def scenario():
         ack = await scheduler.send_message(0, 1, "hello", "please review")
-        await scheduler._tasks[1]
+        await scheduler.wait_until_terminal(1)
         return ack
 
     ack = run(scenario())
@@ -260,7 +260,7 @@ def test_message_events_cannot_strand_a_durable_delivery():
 
     async def scenario():
         ack = await scheduler.send_message(0, 1, "hello", "please review")
-        await scheduler._tasks[1]
+        await scheduler.wait_until_terminal(1)
         return ack
 
     assert run(scenario()) == "Message queued to aid 1."
@@ -370,7 +370,9 @@ def test_delivery_final_autosave_commits_message_and_removes_pending_sidecar(tmp
 
     async def scenario():
         await scheduler.send_message(0, 1, "once", "deliver exactly once")
-        await scheduler._tasks[1]
+        driver = scheduler._tasks.get(1)
+        if driver is not None:
+            await driver
         await asyncio.gather(
             *scheduler._fallback_autosavers[1].pending_tasks,
             return_exceptions=True,
@@ -428,6 +430,140 @@ def test_shutdown_after_append_dequeues_and_restore_skips_committed_message():
     assert resumed.state.pending_user_messages == []
     assert resumed_scheduler._message_inbox.get(1) in (None, [])
     assert resumed.added == []
+
+
+@pytest.mark.parametrize(
+    (
+        "from_aid",
+        "from_role",
+        "stored_to_role",
+        "current_to_role",
+        "topology",
+        "should_deliver",
+    ),
+    [
+        (7, "analyst", "coder", "coder", Topology(allow_all=True), False),
+        (0, "lead", "coder", "reviewer", Topology(allow_all=True), False),
+        (
+            0,
+            "lead",
+            "coder",
+            "coder",
+            Topology(edges={"lead": frozenset({"reviewer"})}),
+            False,
+        ),
+        (
+            0,
+            "lead",
+            "coder",
+            "coder",
+            Topology(edges={"lead": frozenset({"coder"})}),
+            True,
+        ),
+    ],
+)
+def test_restored_message_revalidates_current_roster_and_topology(
+    from_aid,
+    from_role,
+    stored_to_role,
+    current_to_role,
+    topology,
+    should_deliver,
+):
+    target = RespondingFakeSession(["handled"], role=current_to_role)
+    target.state.set_phase(SessionPhase.DONE)
+    scheduler, events = _build_scheduler(target, topology=topology)
+    _register_child(scheduler, target)
+    message_id = "a" * 32
+    xml = scheduler._format_teammate_message(
+        from_aid,
+        "restored",
+        "durable message",
+        message_id=message_id,
+    )
+    target.state.pending_user_messages = [
+        {
+            "role": "user",
+            "content": xml,
+            "message_content": "durable message",
+            "from_aid": from_aid,
+            "to_aid": 1,
+            "from_role": from_role,
+            "to_role": stored_to_role,
+            "summary": "restored",
+            "message_id": message_id,
+            "timestamp": "2026-08-07T00:00:00+00:00",
+            "delivery_status": "pending",
+        }
+    ]
+    scheduler._restore_message_inbox(1, target.state)
+
+    run(scheduler._drain_message_inbox(1))
+
+    event_types = [event.type for event in _scheduler_events(events)]
+    if should_deliver:
+        assert target.added == [xml]
+        assert target.state.pending_user_messages == []
+        assert "agent_message_delivered" in event_types
+        assert "agent_message_rejected_on_restore" not in event_types
+    else:
+        assert target.added == []
+        assert scheduler._message_inbox.get(1) == []
+        assert target.state.pending_user_messages[0]["delivery_status"] == "rejected"
+        assert target.state.pending_user_messages[0]["rejection_reason"]
+        assert "agent_message_rejected_on_restore" in event_types
+        assert "agent_message_delivered" not in event_types
+
+
+def test_ready_inboxes_drain_independent_targets_concurrently():
+    async def scenario():
+        first_started = asyncio.Event()
+        release_first = asyncio.Event()
+        second_started = asyncio.Event()
+
+        class SignallingSession(FakeSession):
+            def __init__(self, role, started, release=None):
+                super().__init__(["handled"], role=role)
+                self._started = started
+                self._release = release
+
+            async def add_user_message(self, content):
+                self._started.set()
+                if self._release is not None:
+                    await self._release.wait()
+                await super().add_user_message(content)
+
+        first = SignallingSession("coder", first_started, release_first)
+        second = SignallingSession("reviewer", second_started)
+        scheduler, _ = _build_scheduler(first)
+        _register_child(scheduler, first, aid=1)
+        _register_child(scheduler, second, aid=2)
+        first.state.set_phase(SessionPhase.AWAITING_EVENTS)
+        second.state.set_phase(SessionPhase.AWAITING_EVENTS)
+        await scheduler.send_message(0, 1, "first", "message one")
+        await scheduler.send_message(0, 2, "second", "message two")
+        first.state.set_phase(SessionPhase.DONE)
+        second.state.set_phase(SessionPhase.DONE)
+
+        drain = asyncio.create_task(scheduler._drain_ready_message_inboxes())
+        await first_started.wait()
+        try:
+            await asyncio.wait_for(second_started.wait(), timeout=0.2)
+            second_started_before_release = True
+        except TimeoutError:
+            second_started_before_release = False
+        finally:
+            release_first.set()
+            await drain
+            await _wait_agent_idle(scheduler, 1)
+            await _wait_agent_idle(scheduler, 2)
+        return second_started_before_release, first, second
+
+    second_started_before_release, first, second = run(scenario())
+
+    assert second_started_before_release is True
+    assert len(first.added) == 1
+    assert len(second.added) == 1
 
 
 def test_add_user_message_failure_rolls_back_partial_state_and_restores_budget():
@@ -532,7 +668,7 @@ def test_multiple_queued_messages_are_delivered_as_one_timestamped_user_turn():
         sent_at = [message.sent_at for message in scheduler._message_inbox[1]]
         teammate.state.set_phase(SessionPhase.DONE)
         await scheduler._drain_message_inbox(1)
-        await scheduler._tasks[1]
+        await scheduler.wait_until_terminal(1)
         return sent_at
 
     sent_at = run(scenario())

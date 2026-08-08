@@ -51,13 +51,407 @@ async def test_concurrency_cap_honored():
         for i in range(n)
     ]
     factory = FakeFactory(sessions)
-    ctx = WorkflowContext(factory, max_concurrency=2)
+    ctx = WorkflowContext(
+        factory,
+        max_concurrency=2,
+        task_concurrency=n,
+    )
 
     thunks = [(lambda i=i: ctx.agent(f"p{i}")) for i in range(n)]
     results = await ctx.parallel(thunks)
 
     assert sorted(results) == [str(i) for i in range(n)]
     assert high_water <= 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("composition", ["parallel", "pipeline"])
+@pytest.mark.parametrize("task_concurrency", [1, 2, 4])
+async def test_collections_cap_arbitrary_units(composition, task_concurrency):
+    running = 0
+    high_water = 0
+    admitted = asyncio.Event()
+    release = asyncio.Event()
+
+    async def unit(value: int) -> int:
+        nonlocal running, high_water
+        running += 1
+        high_water = max(high_water, running)
+        if running == task_concurrency:
+            admitted.set()
+        try:
+            await release.wait()
+            return value
+        finally:
+            running -= 1
+
+    ctx = WorkflowContext(
+        FakeFactory([]),
+        max_concurrency=8,
+        task_concurrency=task_concurrency,
+    )
+    if composition == "parallel":
+        operation = ctx.parallel([lambda i=i: unit(i) for i in range(8)])
+    else:
+
+        async def stage(_previous, item, _index):
+            return await unit(item)
+
+        operation = ctx.pipeline(list(range(8)), stage)
+    task = asyncio.create_task(operation)
+    try:
+        await asyncio.wait_for(admitted.wait(), timeout=0.5)
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert high_water == task_concurrency
+    finally:
+        release.set()
+    assert await task == list(range(8))
+
+
+@pytest.mark.asyncio
+async def test_task_and_agent_concurrency_caps_are_independent():
+    task_running = 0
+    agent_running = 0
+    task_high_water = 0
+    agent_high_water = 0
+    combined_high_water = 0
+    tasks_admitted = asyncio.Event()
+    agents_admitted = asyncio.Event()
+    release = asyncio.Event()
+
+    def record_high_water() -> None:
+        nonlocal task_high_water, agent_high_water, combined_high_water
+        task_high_water = max(task_high_water, task_running)
+        agent_high_water = max(agent_high_water, agent_running)
+        combined_high_water = max(
+            combined_high_water,
+            task_running + agent_running,
+        )
+
+    async def agent_entered() -> None:
+        nonlocal agent_running
+        agent_running += 1
+        record_high_water()
+        if agent_running == 2:
+            agents_admitted.set()
+        try:
+            await release.wait()
+        finally:
+            agent_running -= 1
+
+    sessions = [
+        FakeSession(reply=str(index), on_enter=agent_entered)
+        for index in range(3)
+    ]
+    ctx = WorkflowContext(
+        FakeFactory(sessions),
+        max_concurrency=2,
+        task_concurrency=3,
+    )
+
+    async def task_unit(index: int) -> str | None:
+        nonlocal task_running
+        task_running += 1
+        record_high_water()
+        if task_running == 3:
+            tasks_admitted.set()
+        try:
+            return await ctx.agent(f"agent {index}")
+        finally:
+            task_running -= 1
+
+    task = asyncio.create_task(
+        ctx.parallel([lambda i=i: task_unit(i) for i in range(3)])
+    )
+    try:
+        await asyncio.wait_for(tasks_admitted.wait(), timeout=0.5)
+        await asyncio.wait_for(agents_admitted.wait(), timeout=0.5)
+        assert task_high_water == 3
+        assert agent_high_water == 2
+        assert combined_high_water == 5
+    finally:
+        release.set()
+
+    assert await task == ["0", "1", "2"]
+
+
+@pytest.mark.asyncio
+async def test_concurrent_collections_share_the_task_concurrency_cap():
+    running = 0
+    high_water = 0
+    admitted = asyncio.Event()
+    release = asyncio.Event()
+
+    async def unit(value: int) -> int:
+        nonlocal running, high_water
+        running += 1
+        high_water = max(high_water, running)
+        if running == 2:
+            admitted.set()
+        try:
+            await release.wait()
+            return value
+        finally:
+            running -= 1
+
+    async def stage(_previous, item, _index):
+        return await unit(item)
+
+    ctx = WorkflowContext(
+        FakeFactory([]),
+        max_concurrency=8,
+        task_concurrency=2,
+    )
+    task = asyncio.gather(
+        ctx.parallel([lambda i=i: unit(i) for i in range(4)]),
+        ctx.pipeline(list(range(4, 8)), stage),
+    )
+    try:
+        await asyncio.wait_for(admitted.wait(), timeout=0.5)
+        for _ in range(10):
+            await asyncio.sleep(0)
+    finally:
+        release.set()
+
+    parallel_result, pipeline_result = await task
+    assert high_water == 2
+    assert parallel_result == list(range(4))
+    assert pipeline_result == list(range(4, 8))
+
+
+@pytest.mark.asyncio
+async def test_direct_nested_collection_reuses_task_permit_at_single_concurrency():
+    ctx = WorkflowContext(
+        FakeFactory([]),
+        max_concurrency=1,
+        task_concurrency=1,
+    )
+
+    async def nested():
+        return await ctx.parallel(
+            [
+                lambda: asyncio.sleep(0, result="first"),
+                lambda: asyncio.sleep(0, result="second"),
+            ]
+        )
+
+    result = await asyncio.wait_for(
+        ctx.parallel([nested]),
+        timeout=0.5,
+    )
+
+    assert result == [["first", "second"]]
+
+
+@pytest.mark.asyncio
+async def test_gathered_nested_collections_borrow_one_task_permit_serially():
+    running = 0
+    high_water = 0
+
+    async def unit(value: str) -> str:
+        nonlocal running, high_water
+        running += 1
+        high_water = max(high_water, running)
+        try:
+            await asyncio.sleep(0)
+            return value
+        finally:
+            running -= 1
+
+    async def nested():
+        async def stage(_previous, item, _index):
+            return await unit(item)
+
+        return await asyncio.gather(
+            ctx.parallel([lambda: unit("parallel")]),
+            ctx.pipeline(["pipeline"], stage),
+        )
+
+    ctx = WorkflowContext(
+        FakeFactory([]),
+        max_concurrency=1,
+        task_concurrency=1,
+    )
+    result = await asyncio.wait_for(
+        ctx.parallel([nested]),
+        timeout=0.5,
+    )
+
+    assert result == [[["parallel"], ["pipeline"]]]
+    assert high_water == 1
+
+
+@pytest.mark.asyncio
+async def test_task_permit_released_after_unit_exception():
+    entered = asyncio.Event()
+
+    async def raises() -> None:
+        raise RuntimeError("unit failed")
+
+    async def succeeds() -> str:
+        entered.set()
+        return "ok"
+
+    ctx = WorkflowContext(
+        FakeFactory([]),
+        task_concurrency=1,
+    )
+
+    assert await ctx.parallel([raises]) == [None]
+    assert await asyncio.wait_for(
+        ctx.parallel([succeeds]),
+        timeout=0.5,
+    ) == ["ok"]
+    assert entered.is_set()
+
+
+@pytest.mark.asyncio
+async def test_task_permit_released_after_collection_cancellation():
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+
+    async def waits_forever() -> None:
+        started.set()
+        await blocked.wait()
+
+    ctx = WorkflowContext(
+        FakeFactory([]),
+        task_concurrency=1,
+    )
+    cancelled = asyncio.create_task(ctx.parallel([waits_forever]))
+    await asyncio.wait_for(started.wait(), timeout=0.5)
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+
+    assert await asyncio.wait_for(
+        ctx.parallel([lambda: asyncio.sleep(0, result="next")]),
+        timeout=0.5,
+    ) == ["next"]
+
+
+@pytest.mark.asyncio
+async def test_inherited_closed_task_permit_is_not_reused_by_stale_child():
+    child_release = asyncio.Event()
+    child_entered = asyncio.Event()
+    blocker_started = asyncio.Event()
+    blocker_release = asyncio.Event()
+
+    async def stale_child() -> list[str]:
+        await child_release.wait()
+
+        async def enter() -> str:
+            child_entered.set()
+            return "child"
+
+        return await ctx.parallel([enter])
+
+    async def create_stale_child() -> asyncio.Task[list[str]]:
+        return asyncio.create_task(stale_child())
+
+    async def blocker() -> str:
+        blocker_started.set()
+        await blocker_release.wait()
+        return "blocker"
+
+    ctx = WorkflowContext(
+        FakeFactory([]),
+        task_concurrency=1,
+    )
+    [child_task] = await ctx.parallel([create_stale_child])
+    blocker_task = asyncio.create_task(ctx.parallel([blocker]))
+    await asyncio.wait_for(blocker_started.wait(), timeout=0.5)
+
+    child_release.set()
+    for _ in range(10):
+        await asyncio.sleep(0)
+    assert child_entered.is_set() is False
+
+    blocker_release.set()
+    assert await blocker_task == ["blocker"]
+    assert await asyncio.wait_for(child_task, timeout=0.5) == ["child"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_nested_agent_reuses_single_concurrency_permit():
+    ctx = WorkflowContext(
+        FakeFactory([FakeSession(reply="nested")]),
+        max_concurrency=1,
+        task_concurrency=1,
+    )
+
+    result = await asyncio.wait_for(
+        ctx.parallel([lambda: ctx.agent("inside thunk")]),
+        timeout=0.5,
+    )
+
+    assert result == ["nested"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_thunk_can_gather_agents_at_single_concurrency():
+    ctx = WorkflowContext(
+        FakeFactory(
+            [
+                FakeSession(reply="first"),
+                FakeSession(reply="second"),
+            ]
+        ),
+        max_concurrency=1,
+        task_concurrency=1,
+    )
+
+    async def gather_agents():
+        return await asyncio.gather(
+            ctx.agent("first nested agent"),
+            ctx.agent("second nested agent"),
+        )
+
+    result = await asyncio.wait_for(
+        ctx.parallel([gather_agents]),
+        timeout=0.5,
+    )
+
+    assert result == [["first", "second"]]
+
+
+@pytest.mark.asyncio
+async def test_parallel_task_creation_is_bounded_by_concurrency():
+    release = asyncio.Event()
+    admitted = asyncio.Event()
+    running = 0
+
+    async def blocked(index: int) -> int:
+        nonlocal running
+        running += 1
+        if running == 3:
+            admitted.set()
+        try:
+            await release.wait()
+            return index
+        finally:
+            running -= 1
+
+    ctx = WorkflowContext(
+        FakeFactory([]),
+        max_concurrency=8,
+        task_concurrency=3,
+    )
+    baseline = len(asyncio.all_tasks())
+    task = asyncio.create_task(
+        ctx.parallel([lambda i=i: blocked(i) for i in range(2_000)])
+    )
+    try:
+        await asyncio.wait_for(admitted.wait(), timeout=0.5)
+        # The caller plus a fixed worker set may exist, but there must not be
+        # one live asyncio Task per queued thunk.
+        assert len(asyncio.all_tasks()) - baseline <= 5
+    finally:
+        release.set()
+
+    assert await task == list(range(2_000))
+
 
 @pytest.mark.asyncio
 async def test_draft_findings_uses_the_shared_concurrency_cap():
@@ -172,6 +566,46 @@ async def test_pipeline_stage_exception_drops_item_and_skips_rest():
     # The failed item never reaches stage 2.
     assert "bad" not in seen_stage2
     assert sorted(seen_stage2) == ["fine", "good"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_stops_after_agent_failure_returns_none():
+    ctx = WorkflowContext(FakeFactory([FakeSession(boom=True)]))
+    later_inputs: list[Any] = []
+
+    async def agent_stage(_previous: Any, _item: str, _idx: int) -> Any:
+        return await ctx.agent("fail")
+
+    async def later_stage(previous: Any, _item: str, _idx: int) -> str:
+        later_inputs.append(previous)
+        return "unexpected"
+
+    assert await ctx.pipeline(["item"], agent_stage, later_stage) == [None]
+    assert later_inputs == []
+
+
+@pytest.mark.asyncio
+async def test_pipeline_can_explicitly_continue_after_business_none():
+    seen: list[Any] = []
+
+    async def returns_none(_previous: Any, _item: str, _idx: int) -> None:
+        return None
+
+    async def consume_none(previous: Any, _item: str, _idx: int) -> str:
+        seen.append(previous)
+        return "continued"
+
+    ctx = WorkflowContext(FakeFactory([]))
+    result = await ctx.pipeline(
+        ["item"],
+        returns_none,
+        consume_none,
+        stop_on_none=False,
+    )
+
+    assert result == ["continued"]
+    assert seen == [None]
+
 
 @pytest.mark.asyncio
 async def test_pipeline_passes_index_and_original_item():
