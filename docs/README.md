@@ -11,6 +11,8 @@ interfaces. The [configuration guide](../configs/README.md) covers providers,
 models, and team files. The [skills guide](../skills/README.md) explains
 on-demand agent skills. Contribution checks and vulnerability reporting are in
 [CONTRIBUTING.md](../CONTRIBUTING.md) and [SECURITY.md](../SECURITY.md).
+The [0.5.0 migration guide](migrations/0.5.0.md) lists the explicit lifecycle,
+isolation, scheduler, and workflow-contract changes currently under review.
 
 ## Design records
 
