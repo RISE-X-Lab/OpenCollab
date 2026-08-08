@@ -108,15 +108,19 @@ class WorkflowAgentsMixin:
         # triggers ONE bounded transcript-only synthesizer call (submit_findings
         # only, forced, cite-or-abstain). With STEP 0's wind-down live this fires
         # seldom (scouts are force-committed at ~80%); it salvages the chopped /
-        # errored / strayed tail. Gated by construction: this method only runs when
-        # enforcement is on.
+        # errored / strayed tail. The original caller deadline still bounds the
+        # recovery. Gated by construction: this method only runs when enforcement
+        # is on.
         if (
             submit_tool.captured is None
             and ledger
             and not self._active_call_has_pending_cleanup()
         ):
             synthesized = await self._synthesize_dead_scout(
-                session, label, commit_reserve=commit_reserve
+                session,
+                label,
+                commit_reserve=commit_reserve,
+                caller_deadline=deadline,
             )
             if synthesized and synthesized.strip():
                 report = synthesized
@@ -124,7 +128,12 @@ class WorkflowAgentsMixin:
         return report if report else text
 
     async def _synthesize_dead_scout(
-        self, dead_session: Any, label: str | None, *, commit_reserve: int
+        self,
+        dead_session: Any,
+        label: str | None,
+        *,
+        commit_reserve: int,
+        caller_deadline: float | None,
     ) -> str | None:
         """Salvage a dead/empty scout with ONE bounded transcript-only LLM call.
 
@@ -135,7 +144,8 @@ class WorkflowAgentsMixin:
         findings (or a valid ``insufficient_evidence`` abstention) on a successful
         capture, else ``None`` so the caller keeps the harvested partial. Bounded by
         ``commit_reserve`` (the reserve sized for a single submit turn) and clamped
-        to the live global remaining.
+        to the live global remaining. A caller-supplied absolute deadline is
+        clamped with the internal commit cap, never replaced by it.
         """
         ledger = self._scout_ledger(dead_session)
         messages = self._session_messages(dead_session)
@@ -161,6 +171,8 @@ class WorkflowAgentsMixin:
         self._track_session(session)
         try:
             deadline = self._internal_commit_deadline()
+            if caller_deadline is not None:
+                deadline = min(deadline, caller_deadline)
             await self._run_session_turn(
                 session,
                 prompt,

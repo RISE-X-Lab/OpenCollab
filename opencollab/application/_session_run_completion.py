@@ -284,7 +284,24 @@ class _SessionRunCompletionMixin:
         top_p = getattr(self.agent, "top_p", None)
         if top_p is not None:
             extra["top_p"] = top_p
-        max_output_tokens = getattr(self.agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)
+        configured_output_tokens = getattr(
+            self.agent,
+            "max_tokens_per_step",
+            DEFAULT_MAX_TOKENS_PER_STEP,
+        )
+        remaining_budget = max(
+            1,
+            int(self.max_budget_tokens) - int(self.state.used_tokens),
+        )
+        # Precheck guarantees positive headroom before entering this call. Clamp
+        # the provider's output ceiling to that live remainder so one otherwise
+        # valid generation cannot overshoot the session/team lease by thousands
+        # of output tokens. Providers report input-token accounting only after
+        # the response; the next precheck still stops on any resulting overrun.
+        max_output_tokens = min(
+            max(1, int(configured_output_tokens)),
+            remaining_budget,
+        )
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
             extra["max_output_tokens"] = max_output_tokens
         if not getattr(self.agent, "thinking", False):
@@ -321,6 +338,8 @@ class _SessionRunCompletionMixin:
                 self.llm.complete(**kwargs),
                 self._per_call_timeout,
                 task_tracker=self._track_provider_task,
+                late_task_tracker=self._mark_provider_task_draining,
+                late_result_handler=self._record_late_provider_result,
             )
         except CallerTimeoutError as exc:
             raise GenerationTimeoutError(
@@ -431,6 +450,15 @@ class _SessionRunCompletionMixin:
             )
 
     def append_assistant_message(self, response: CompletionResponse) -> None:
+        # A provider-limit response may contain an incomplete tool call. Never
+        # persist that structure: a later turn would send an orphaned call back
+        # to the provider, and the run loop must not execute partial arguments.
+        # Preserve only user-visible partial text; the full raw response remains
+        # available in the trace for diagnosis.
+        if response.finish_reason in {"length", "max_tokens"}:
+            if response.content:
+                self.state.append_message({"role": "assistant", "content": response.content})
+            return
         # An empty-stop turn (no content, no tool calls) would append a bare
         # ``{"role": "assistant"}`` message that some providers reject on the
         # next request. Skip it — handle_pending_response decides retry-vs-DONE.

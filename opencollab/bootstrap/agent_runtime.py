@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from opencollab.application.async_timeout import (
     await_owned_operation,
+    cancel_tasks_and_wait,
     consume_task_result,
     force_task_terminal,
 )
@@ -89,6 +90,23 @@ async def _wait_session_tasks(session: Any, timeout: float) -> bool:
     if pending:
         _done, pending = await asyncio.wait(pending, timeout=timeout)
     return not pending and not session.pending_cleanup_tasks
+
+
+async def _terminate_session_tasks(session: Any, timeout: float) -> bool:
+    """Cancel overdue session owners and wait one bounded phase for quiescence."""
+    pending = {
+        task
+        for task in session.pending_cleanup_tasks
+        if not task.done() and task is not asyncio.current_task()
+    }
+    if pending:
+        pending = await await_owned_operation(
+            cancel_tasks_and_wait(pending, timeout=timeout),
+            propagate_cancellation=True,
+        )
+    return not pending and not any(
+        not task.done() for task in session.pending_cleanup_tasks
+    )
 
 
 async def _finalize_session(
@@ -174,26 +192,77 @@ async def run_agent(
         llm_timeout=llm_timeout_seconds,
     )
     owner = asyncio.create_task(_run_session(session, prompt))
-    finalization_attempted = False
-    finalization_result = False
+    finalization_task: asyncio.Task[bool] | None = None
+    finalization_succeeded = False
+    finalization_attempts = 0
+    max_finalization_attempts = 2
     stop_task: asyncio.Task[tuple[bool, bool, bool]] | None = None
 
-    async def finalize_once() -> bool:
-        nonlocal finalization_attempted, finalization_result
-        if not finalization_attempted:
-            finalization_attempted = True
-            finalization_result = await _finalize_session(
-                session,
-                environment,
-                timeout=cleanup_timeout_seconds,
-                cleanup_environment=cleanup_environment,
+    def record_finalization_result(task: asyncio.Task[bool]) -> bool:
+        nonlocal finalization_task, finalization_succeeded
+        try:
+            succeeded = task.result()
+        except BaseException:
+            succeeded = False
+        if succeeded:
+            finalization_succeeded = True
+        elif finalization_task is task:
+            finalization_task = None
+        return succeeded
+
+    async def finalize_attempt() -> bool:
+        nonlocal finalization_task, finalization_attempts
+        if finalization_succeeded:
+            return True
+        if finalization_task is None:
+            if finalization_attempts >= max_finalization_attempts:
+                return False
+            finalization_attempts += 1
+            finalization_task = asyncio.create_task(
+                _finalize_session(
+                    session,
+                    environment,
+                    timeout=cleanup_timeout_seconds,
+                    cleanup_environment=cleanup_environment,
+                )
             )
-        return finalization_result
+        task = finalization_task
+        try:
+            await await_owned_operation(task, propagate_cancellation=True)
+        except asyncio.CancelledError:
+            if task.done():
+                record_finalization_result(task)
+            raise
+        except BaseException:
+            if task.done():
+                record_finalization_result(task)
+            return False
+        return record_finalization_result(task)
+
+    async def finalize_with_retry() -> bool:
+        if finalization_succeeded:
+            return True
+        while not finalization_succeeded:
+            if (
+                finalization_task is None
+                and finalization_attempts >= max_finalization_attempts
+            ):
+                break
+            if await finalize_attempt():
+                return True
+            await _terminate_session_tasks(session, cleanup_timeout_seconds)
+        await _terminate_session_tasks(session, cleanup_timeout_seconds)
+        return False
 
     async def stop_owned() -> tuple[bool, bool, bool]:
-        aborted = await revoke_and_abort_environment(environment, cleanup_timeout_seconds)
+        aborted = True
+        if cleanup_environment:
+            aborted = await revoke_and_abort_environment(
+                environment,
+                cleanup_timeout_seconds,
+            )
         terminal = await force_task_terminal(owner, timeout=cleanup_timeout_seconds)
-        finalized = await finalize_once()
+        finalized = await finalize_with_retry()
         return aborted, terminal, finalized
 
     async def stop_once(*, propagate_cancellation: bool) -> tuple[bool, bool, bool]:
@@ -226,9 +295,11 @@ async def run_agent(
         try:
             output = owner.result()
         except Exception as exc:
-            finalized = await finalize_once()
+            finalized = await finalize_with_retry()
             if not finalized:
-                raise AgentRuntimeLifecycleError("failed agent cleanup or persistence did not quiesce") from exc
+                raise AgentRuntimeLifecycleError(
+                    "failed agent cleanup or persistence did not quiesce"
+                ) from exc
             return _result(
                 session,
                 output=None,
@@ -237,7 +308,7 @@ async def run_agent(
                 cleanup_quiesced=True,
                 cleanup_environment=cleanup_environment,
             )
-        finalized = await finalize_once()
+        finalized = await finalize_with_retry()
         if not finalized:
             raise AgentRuntimeLifecycleError("agent cleanup or persistence did not quiesce")
         return _result(
@@ -248,15 +319,20 @@ async def run_agent(
             cleanup_quiesced=True,
             cleanup_environment=cleanup_environment,
         )
-    except asyncio.CancelledError:
-        await stop_once(propagate_cancellation=False)
+    except asyncio.CancelledError as cancellation:
+        aborted, terminated, finalized = await stop_once(
+            propagate_cancellation=False
+        )
+        if not aborted or not terminated or not finalized:
+            raise AgentRuntimeLifecycleError(
+                "cancelled agent did not reach a quiescent terminal state"
+            ) from cancellation
         raise
     except Exception:
-        if not finalization_attempted:
-            if not owner.done():
-                await stop_once(propagate_cancellation=False)
-            else:
-                await finalize_once()
+        if not owner.done():
+            await stop_once(propagate_cancellation=False)
+        elif not finalization_succeeded:
+            await finalize_with_retry()
         raise
 
 

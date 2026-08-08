@@ -47,6 +47,8 @@ from opencollab.application.submit_findings import (
     commitment_terminus_payload,
     harvest_findings,
 )
+from opencollab.bootstrap import build_session as Session
+from opencollab.bootstrap import load_session
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionPhase, SessionState
 
@@ -248,6 +250,51 @@ def test_t2_winddown_retry_capped_at_one_then_terminal_strayed():
         wind_down_token_mark=state.wind_down_token_mark, artifact="",
     )
     assert payload["terminus"] == "strayed"
+
+
+def test_restored_wind_down_does_not_regrant_an_already_allocated_retry(tmp_path):
+    session = Session(agent=_agent_with_submit(), llm=FakeLLM())
+    session.state.wind_down_done = True
+    # This is the durable checkpoint immediately after the sole retry was
+    # allocated and before its provider call could complete.
+    session.state.wind_down_attempts = 2
+    path = tmp_path / "wind-down-retry.json"
+    session.save(str(path))
+
+    restored_llm = FakeLLM()
+    restored = load_session(path, agent=_agent_with_submit(), llm=restored_llm)
+    restored.runner.configure_enforcement(
+        enforcement_strength=ENFORCEMENT_ON,
+        commit_reserve=25_000,
+    )
+
+    run(restored.run_loop())
+
+    assert restored.state.wind_down_attempts == 2
+    assert restored_llm.calls == []
+    assert restored.state.phase is SessionPhase.STOPPED
+
+
+def test_legacy_wind_down_snapshot_without_attempts_stops_conservatively(tmp_path):
+    session = Session(agent=_agent_with_submit(), llm=FakeLLM())
+    session.state.wind_down_done = True
+    path = tmp_path / "legacy-wind-down.json"
+    session.save(str(path))
+    snapshot = json.loads(path.read_text())
+    del snapshot["session_state"]["wind_down_attempts"]
+    path.write_text(json.dumps(snapshot))
+
+    restored_llm = FakeLLM()
+    restored = load_session(path, agent=_agent_with_submit(), llm=restored_llm)
+    restored.runner.configure_enforcement(
+        enforcement_strength=ENFORCEMENT_ON,
+        commit_reserve=25_000,
+    )
+
+    run(restored.run_loop())
+
+    assert restored.state.wind_down_attempts == 2
+    assert restored_llm.calls == []
 
 
 def test_t2_winddown_not_entered_while_a_tool_result_is_pending():

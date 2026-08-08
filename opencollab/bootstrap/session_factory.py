@@ -11,6 +11,7 @@ children and for agent 0 (the lead), delegating role -> Agent assembly to a
 from __future__ import annotations
 
 import copy
+import inspect
 import os
 import re
 import uuid
@@ -22,7 +23,6 @@ from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.repo_map import build_repo_map
 from opencollab.adapters.safe_files import ensure_directory_no_symlinks
 from opencollab.adapters.trace import Tracer
-from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.ports import (
     AskUserPort,
     EventPublisherPort,
@@ -41,6 +41,10 @@ from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
 from opencollab.bootstrap.team_config import TeamConfig, default_team_config
 from opencollab.domain.agent import Agent
 from opencollab.domain.identity import role_storage_slug, validate_role_identity
+
+
+class SnapshotSessionError(RuntimeError):
+    """An independent session snapshot could not be created safely."""
 
 
 def _team_budget_guard(scheduler: SchedulerPort | None) -> Callable[[], bool] | None:
@@ -223,32 +227,77 @@ def load_session(
     return session
 
 
-def snapshot_session(session: Session) -> Session:
-    """Build an independent ``Session`` sharing the source's state.
+def snapshot_session(
+    session: Session,
+    *,
+    event_sink: EventPublisherPort | None = None,
+) -> Session:
+    """Build an isolated state snapshot from a forkable session environment.
 
-    Drops the original session's internal ``AutoSaveSubscriber`` but
-    re-attaches any external subscriber on the bus so external observers
-    keep seeing events.
+    Snapshots never inherit autosave or external event subscribers: callers who
+    want observation must explicitly supply ``event_sink``. The environment must
+    implement a synchronous ``fork_snapshot()`` that returns a distinct owner;
+    silently sharing a workspace would make the resulting sessions unsafe to run
+    concurrently.
     """
-    external_sink: EventPublisherPort | None = None
-    for target in session.event_bus.subscribers:
-        if not isinstance(target, AutoSaveSubscriber):
-            external_sink = target  # type: ignore[assignment]
-            break
+    agent = _clone_snapshot_component(session.agent, label="agent")
+    environment = _fork_snapshot_environment(session.env)
     new = build_session(
-        agent=session.agent,
-        env=session.env,
-        tracer=session.tracer,
+        agent=agent,
+        env=environment,
         max_budget_tokens=session.max_budget_tokens,
         max_steps=session.max_steps,
-        event_sink=external_sink,
-        permission_policy=session.permission_policy,
-        safety_policy=session.tool_execution.safety_policy,
+        event_sink=event_sink,
+        permission_policy=_clone_snapshot_component(
+            session.permission_policy,
+            label="permission policy",
+        ),
+        ask_policy=_clone_snapshot_component(
+            session.tool_execution.ask_policy,
+            label="ask policy",
+        ),
+        safety_policy=_clone_snapshot_component(
+            session.tool_execution.safety_policy,
+            label="safety policy",
+        ),
+        llm=session._llm,
+        aid=session.state.aid,
     )
-    new.messages = copy.deepcopy(session.messages)
-    new.used_tokens = session.used_tokens
-    new.step_count = session.step_count
+    state = _clone_snapshot_component(session.state, label="session state")
+    new.state = state
+    new.runner.state = state
+    new.tool_execution.state = state
     return new
+
+
+def _clone_snapshot_component(value: Any, *, label: str) -> Any:
+    try:
+        return copy.deepcopy(value)
+    except Exception as exc:  # noqa: BLE001 - snapshot must not share mutable state
+        raise SnapshotSessionError(f"cannot clone {label} for an independent snapshot") from exc
+
+
+def _fork_snapshot_environment(environment: Any) -> Environment:
+    fork = getattr(environment, "fork_snapshot", None)
+    if not callable(fork):
+        raise SnapshotSessionError(
+            "independent session snapshots require environment.fork_snapshot()"
+        )
+    try:
+        snapshot_environment = fork()
+    except Exception as exc:  # noqa: BLE001 - preserve the fork boundary
+        raise SnapshotSessionError("cannot fork environment for an independent snapshot") from exc
+    if inspect.iscoroutine(snapshot_environment):
+        snapshot_environment.close()
+    if (
+        inspect.isawaitable(snapshot_environment)
+        or snapshot_environment is environment
+        or not hasattr(snapshot_environment, "workspace")
+    ):
+        raise SnapshotSessionError(
+            "environment.fork_snapshot() must synchronously return a distinct environment"
+        )
+    return snapshot_environment
 
 
 def build_spawn_session(
@@ -419,6 +468,7 @@ __all__ = [
     "WORKFLOW_MANIFEST_FILENAME",
     "WORKFLOW_RUN_PREFIX",
     "DefaultSessionFactory",
+    "SnapshotSessionError",
     "agent_save_path",
     "build_session",
     "build_spawn_session",

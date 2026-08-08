@@ -200,6 +200,16 @@ def _verify_artifact_claim(path: Path | None) -> None:
         )
 
 
+def _require_json_workflow_inputs(inputs: Mapping[str, Any]) -> None:
+    """Reject inputs that the workflow artifact manifest could not persist."""
+    try:
+        json.dumps(inputs)
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
+        raise ValueError(
+            "workflow inputs must be JSON-serializable when artifacts are enabled"
+        ) from exc
+
+
 def _require_json_object(path: Path, description: str) -> dict[str, Any]:
     try:
         value = json.loads(read_regular_text(path, max_bytes=64 * 1024 * 1024))
@@ -308,7 +318,9 @@ async def run_agent(
     )
     _claim_artifacts(artifacts)
     owned_environment = environment is None
-    resolved_environment = environment or LocalEnvironment(workspace)
+    resolved_environment = (
+        environment if environment is not None else LocalEnvironment(workspace)
+    )
     transcript_path = None if artifacts is None else artifacts / "agent.json"
     tracer = None
     if artifacts is not None and trace:
@@ -426,9 +438,14 @@ async def run_workflow(
     environment: Any | None = None,
 ) -> ProgrammaticResult:
     """Run one workflow and return its live metrics directly."""
+    workflow_inputs = dict(inputs)
+    if artifacts is not None:
+        _require_json_workflow_inputs(workflow_inputs)
     _claim_artifacts(artifacts)
     owned_environment = environment is None
-    resolved_environment = environment or LocalEnvironment(workspace)
+    resolved_environment = (
+        environment if environment is not None else LocalEnvironment(workspace)
+    )
     workdir, source_root = _environment_paths(resolved_environment, workspace)
     deadline = (
         None
@@ -445,7 +462,7 @@ async def run_workflow(
         try:
             details = await _run_workflow(
                 workflow,
-                dict(inputs),
+                workflow_inputs,
                 cfg=dict(config),
                 workspace=workdir,
                 budget=max_tokens,
@@ -459,6 +476,7 @@ async def run_workflow(
                 max_steps=max_steps,
                 system_prompt=system_prompt or WORKFLOW_AGENT_PROMPT,
                 return_details=True,
+                cleanup_environment=owned_environment,
             )
         except WorkflowDeadlineExceeded as exc:
             bootstrap_stopped_environment = True

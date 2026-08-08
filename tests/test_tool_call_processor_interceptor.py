@@ -64,15 +64,25 @@ def test_direct_session_does_not_derive_safety_policy_from_env(tmp_path):
 
 
 def test_snapshot_preserves_explicit_safety_policy(tmp_path):
+    class ForkableEnvironment:
+        workspace = str(tmp_path / "ws")
+        host_workspace = workspace
+        source_workspace = workspace
+        local_filesystem = False
+
+        def fork_snapshot(self):
+            return ForkableEnvironment()
+
     ws = tmp_path / "ws"
     ws.mkdir()
-    env = LocalEnvironment(str(ws))
+    env = ForkableEnvironment()
     safety_policy = SandboxInterceptor(str(ws))
     session = session_mod.build_session(agent=FakeAgent(), env=env, safety_policy=safety_policy, llm=object())
 
     snap = session_mod.snapshot_session(session)
 
-    assert snap.tool_execution.safety_policy is safety_policy
+    assert snap.tool_execution.safety_policy is not safety_policy
+    assert snap.tool_execution.safety_policy.root == safety_policy.root
 
 
 def test_tool_execution_accepts_explicit_safety_policy(tmp_path):
