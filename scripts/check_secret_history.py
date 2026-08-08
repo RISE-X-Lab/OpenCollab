@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
@@ -11,6 +12,11 @@ import tempfile
 from pathlib import Path, PurePosixPath
 
 BASELINE_PATH = ".secrets.baseline"
+# ``detect-secrets-hook`` reserves this exit code for "I rewrote the baseline",
+# which it does whenever a baselined secret moved to a different line. That is
+# bookkeeping, not a finding; a real detection exits 1 and never rewrites the
+# baseline. The two are told apart in ``_scan_materialized_tree``.
+BASELINE_UPDATED_EXIT = 3
 
 
 def _git(repository: Path, *args: str) -> bytes:
@@ -55,6 +61,28 @@ def _materialize_tree(repository: Path, commit: str, destination: Path) -> list[
     return paths
 
 
+def _secret_fingerprints(payload: bytes) -> set[tuple[str, str, str]]:
+    """Identify every baselined secret as (file, detector, hashed secret).
+
+    Line numbers are deliberately excluded. Where an audited fixture sits in its
+    file is not a security property, so a commit that inserts lines above one
+    must not read as a new finding.
+    """
+    results = json.loads(payload.decode("utf-8")).get("results") or {}
+    if not isinstance(results, dict):
+        raise ValueError("baseline results must be an object")
+    return {
+        (str(filename), str(entry.get("type", "")), str(entry.get("hashed_secret", "")))
+        for filename, entries in results.items()
+        for entry in entries
+    }
+
+
+def _introduced_secrets(trusted_baseline: bytes, scanned_baseline: Path) -> set[tuple[str, str, str]]:
+    """Fingerprints the scanner recorded that the trusted baseline does not hold."""
+    return _secret_fingerprints(scanned_baseline.read_bytes()) - _secret_fingerprints(trusted_baseline)
+
+
 def _scan_materialized_tree(
     repository: Path,
     commit: str,
@@ -88,8 +116,25 @@ def _scan_materialized_tree(
         cwd=tree,
         check=False,
     )
-    if completed.returncode:
-        print(f"::error::Secret scan failed for proposed commit {commit}.")
+    if not completed.returncode:
+        return 0
+    if completed.returncode == BASELINE_UPDATED_EXIT:
+        try:
+            introduced = _introduced_secrets(trusted_baseline, baseline)
+        except (OSError, ValueError) as exc:
+            print(f"::error::Unreadable baseline after scanning commit {commit}: {exc}")
+            return completed.returncode
+        if not introduced:
+            print(
+                f"Commit {commit} only moved already-audited secrets; "
+                "no new secret was introduced."
+            )
+            return 0
+        for filename, detector, _hashed in sorted(introduced):
+            print(
+                f"::error file={filename}::{detector} is not present in the trusted baseline."
+            )
+    print(f"::error::Secret scan failed for proposed commit {commit}.")
     return completed.returncode
 
 
