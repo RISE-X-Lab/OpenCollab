@@ -619,6 +619,22 @@ def test_openai_estimates_output_from_tool_calls_when_no_content():
     assert result.usage.estimated is True
 
 
+def test_openai_usage_fallback_tolerates_null_tool_arguments():
+    """A gateway's partial tool call must not crash usage estimation."""
+    tool_call = SimpleNamespace(
+        id="call_1",
+        function=SimpleNamespace(name="structured_output", arguments=None),
+    )
+    messages = [{"role": "user", "content": "commit the structured result"}]
+    resp = _openai_resp(usage=None, content=None, tool_calls=[tool_call])
+
+    result = parse_openai_response(resp, messages)
+
+    assert result.usage.output_tokens > 0
+    assert result.usage.estimated is True
+    assert result.tool_calls[0]["function"]["arguments"] == ""
+
+
 # ---------------------------------------------------------------------------
 # reasoning_content harvest — rescue a genuinely empty thinking turn
 # ---------------------------------------------------------------------------
