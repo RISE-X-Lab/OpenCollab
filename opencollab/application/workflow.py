@@ -31,7 +31,6 @@ import math
 import operator
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from opencollab.application.async_timeout import (
@@ -52,6 +51,7 @@ from opencollab.application.structured_output import TOOL_NAME as STRUCTURED_OUT
 from opencollab.application.submit_findings import SUBMIT_TOOL_NAME
 from opencollab.application.workflow_agents import WorkflowAgentsMixin
 from opencollab.application.workflow_budget import WorkflowBudget, _BudgetLease
+from opencollab.application.workflow_events import WorkflowEvent
 from opencollab.application.workflow_structured import (
     WorkflowStructuredMixin,
 )
@@ -87,17 +87,6 @@ class WorkflowBudgetExceeded(Exception):
     """Raised by ``WorkflowContext.agent`` when the shared budget is exhausted
     before a session is started. The only exception a primitive lets escape.
     """
-
-
-@dataclass(frozen=True)
-class WorkflowEvent:
-    """Lightweight observability event emitted by ``phase`` / ``log``.
-
-    ``kind`` is ``"phase"`` or ``"log"``; ``message`` is the title/text.
-    """
-
-    kind: str
-    message: str
 
 
 class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
