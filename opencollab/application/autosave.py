@@ -12,7 +12,9 @@ from opencollab.domain.events import SessionRuntimeEvent as SessionEvent
 SaveOperation = Callable[[], None]
 PrepareSave = Callable[[], SaveOperation | None]
 
-SAVE_TRIGGERS = frozenset({"user_message_appended", "step_end"})
+SAVE_TRIGGERS = frozenset(
+    {"user_message_appended", "step_end", "budget_reserve_allocated"}
+)
 
 logger = logging.getLogger(__name__)
 

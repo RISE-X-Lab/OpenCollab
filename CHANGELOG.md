@@ -31,7 +31,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - Configuration and team schemas reject unknown keys, API-key fallback is
   provider/endpoint specific, watchdog/low-yield wind-down latches reset per
   user turn while the hard budget and its protected reserve remain
-  session-lifetime, and useful partial compaction is retained.
+  session-lifetime (with an allocation-time autosave), and useful partial
+  compaction is retained.
 
 ### Fixed
 - Capped structured-output corrective retries at 60 seconds while preserving
