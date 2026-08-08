@@ -13,6 +13,7 @@ Pure application layer: stdlib only.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Sequence
@@ -26,7 +27,12 @@ _TYPE_CHECKS = {
     "array": lambda v: isinstance(v, list),
     "string": lambda v: isinstance(v, str),
     "boolean": lambda v: isinstance(v, bool),
-    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    "integer": lambda v: (
+        isinstance(v, (int, float))
+        and not isinstance(v, bool)
+        and math.isfinite(v)
+        and float(v).is_integer()
+    ),
     "number": lambda v: (
         isinstance(v, (int, float))
         and not isinstance(v, bool)
@@ -118,6 +124,15 @@ def _validate_schema(schema: Any, path: str, errors: list[str]) -> None:
             )
         elif not isinstance(additional_properties, bool):
             errors.append(f"{path}.additionalProperties: must be a boolean or schema object")
+    if "enum" in schema:
+        enum = schema["enum"]
+        if not isinstance(enum, list) or not enum:
+            errors.append(f"{path}.enum: must be a non-empty array of JSON values")
+        else:
+            try:
+                json.dumps(enum, allow_nan=False)
+            except (TypeError, ValueError):
+                errors.append(f"{path}.enum: entries must be valid JSON values")
     for keyword in ("minLength", "maxLength", "minItems", "maxItems"):
         if keyword in schema:
             _validate_nonnegative_integer(schema[keyword], f"{path}.{keyword}", errors)
@@ -155,7 +170,7 @@ def _validate(value: Any, schema: dict[str, Any], path: str, errors: list[str]) 
         return
 
     enum = schema.get("enum")
-    if enum is not None and value not in enum:
+    if enum is not None and not any(_json_equal(value, member) for member in enum):
         errors.append(f"{path}: value {value!r} not in enum {enum!r}")
 
     one_of = schema.get("oneOf")
@@ -177,9 +192,12 @@ def _validate(value: Any, schema: dict[str, Any], path: str, errors: list[str]) 
     if _is_number(value):
         _validate_number(value, schema, path, errors)
 
-    if expected_type == "object" or (expected_type is None and isinstance(value, dict)):
+    # Container constraints apply according to the accepted instance type, not
+    # the literal shape of ``type``.  In particular, ``["object", "null"]``
+    # still needs to validate properties when the instance is an object.
+    if isinstance(value, dict):
         _validate_object(value, schema, path, errors)
-    elif expected_type == "array" or (expected_type is None and isinstance(value, list)):
+    elif isinstance(value, list):
         _validate_array(value, schema, path, errors)
 
 
@@ -252,6 +270,33 @@ def _is_number(value: Any) -> bool:
         and not isinstance(value, bool)
         and math.isfinite(value)
     )
+
+
+def _json_equal(left: Any, right: Any) -> bool:
+    """Return JSON-Schema equality without Python's bool/int aliasing."""
+    if isinstance(left, bool) or isinstance(right, bool):
+        return isinstance(left, bool) and isinstance(right, bool) and left is right
+    if _is_number(left) or _is_number(right):
+        return _is_number(left) and _is_number(right) and left == right
+    if left is None or right is None:
+        return left is None and right is None
+    if isinstance(left, str) or isinstance(right, str):
+        return isinstance(left, str) and isinstance(right, str) and left == right
+    if isinstance(left, list) or isinstance(right, list):
+        return (
+            isinstance(left, list)
+            and isinstance(right, list)
+            and len(left) == len(right)
+            and all(_json_equal(a, b) for a, b in zip(left, right, strict=True))
+        )
+    if isinstance(left, dict) or isinstance(right, dict):
+        return (
+            isinstance(left, dict)
+            and isinstance(right, dict)
+            and left.keys() == right.keys()
+            and all(_json_equal(left[key], right[key]) for key in left)
+        )
+    return type(left) is type(right) and left == right
 
 
 def _check_type(value: Any, expected_type: Any) -> bool:

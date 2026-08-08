@@ -201,7 +201,7 @@ def test_spawn_lifecycle_slow_autosave_keeps_event_loop_responsive(tmp_path):
         assert owners
         release.set()
         await asyncio.gather(*owners, return_exceptions=True)
-        await scheduler._tasks[aid]
+        await scheduler.wait_until_terminal(aid)
         await scheduler.cleanup()
 
     run(scenario())
@@ -262,6 +262,28 @@ def test_cleanup_autosaves_live_sessions(monkeypatch, tmp_path):
     assert saved["messages"][-1]["content"] == "latest state"
 
 
+def test_cleanup_closes_session_resources_once():
+    class ClosableLead(_FakeLeadSession):
+        def __init__(self):
+            super().__init__()
+            self.close_calls = 0
+
+        async def aclose(self):
+            self.close_calls += 1
+
+    scheduler = Scheduler(
+        session_factory=_FakeSessionFactory({}),
+        worktree_pool=WorktreePool(".", use_worktrees=False),
+        event_sink=EventBus(),
+    )
+    lead = ClosableLead()
+    scheduler.register_lead(lead)
+
+    run(scheduler.cleanup())
+
+    assert lead.close_calls == 1
+
+
 def test_cleanup_drains_queued_autosaves_before_final_snapshot(tmp_path):
     first_started = threading.Event()
     second_started = threading.Event()
@@ -316,11 +338,8 @@ def test_cleanup_drains_queued_autosaves_before_final_snapshot(tmp_path):
         second_waiter = asyncio.create_task(
             lead.event_bus.emit(SessionRuntimeEvent(type="step_end"))
         )
-        while len(subscriber.pending_tasks) < 2:
-            await asyncio.sleep(0)
-        first_waiter.cancel()
-        second_waiter.cancel()
-        await asyncio.gather(first_waiter, second_waiter, return_exceptions=True)
+        await asyncio.gather(first_waiter, second_waiter)
+        assert len(subscriber.pending_tasks) == 1
 
         cleanup = asyncio.create_task(scheduler.cleanup(cleanup_timeout=1.0))
         await asyncio.sleep(0.02)
@@ -406,9 +425,7 @@ def test_cleanup_reports_nonquiescent_autosave_before_late_release(tmp_path):
             lead.event_bus.emit(SessionRuntimeEvent(type="step_end"))
         )
         assert await asyncio.to_thread(started.wait, 1.0)
-        waiter.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await waiter
+        await waiter
 
         with pytest.raises(
             RuntimeError,
@@ -707,6 +724,87 @@ def test_spawn_with_review_iterates_when_reviewer_fails(monkeypatch):
     second_coder_task = [task for role, task in factory.built_tasks if role == "coder"][1]
     assert "v1 impl" in second_coder_task
     assert "Reapply the previous implementation" in second_coder_task
+
+
+def test_spawn_with_review_retains_final_reviewer_feedback(monkeypatch):
+    scheduler, _ = _build_scheduler(
+        monkeypatch,
+        {
+            "coder": ["final implementation"],
+            "reviewer": ["Critical race remains.\nVERDICT: FAIL"],
+        },
+    )
+
+    result = run(scheduler.spawn_with_review(0, "write fn", max_iterations=1))
+
+    assert "final implementation" in result
+    assert "Last reviewer feedback:\nCritical race remains.\nVERDICT: FAIL" in result
+
+
+def test_spawn_with_review_returns_artifact_when_reviewer_spawn_fails(monkeypatch):
+    scheduler, events = _build_scheduler(
+        monkeypatch,
+        {"coder": ["recoverable implementation"]},
+    )
+    real_spawn = scheduler.spawn
+
+    async def fail_reviewer(parent_aid, role, task, context="", **kwargs):
+        if role == "reviewer":
+            raise RuntimeError("reviewer infrastructure unavailable")
+        return await real_spawn(parent_aid, role, task, context, **kwargs)
+
+    monkeypatch.setattr(scheduler, "spawn", fail_reviewer)
+
+    result = run(scheduler.spawn_with_review(0, "write fn", max_iterations=1))
+
+    assert "recoverable implementation" in result
+    assert "Failure stage: reviewer_spawn" in result
+    assert "reviewer infrastructure unavailable" in result
+    review_events = [
+        event.type
+        for event in _scheduler_events(events)
+        if event.type.startswith("review_")
+    ]
+    assert review_events == ["review_started", "review_completed"]
+
+
+@pytest.mark.parametrize("failure_mode", ["wait", "terminal"])
+def test_spawn_with_review_retains_prior_artifact_when_next_coder_is_empty(
+    monkeypatch,
+    failure_mode,
+):
+    scheduler, _ = _build_scheduler(
+        monkeypatch,
+        {
+            "coder": ["best first implementation", ""],
+            "reviewer": ["Needs another fix.\nVERDICT: FAIL"],
+        },
+    )
+    real_wait = scheduler.wait_until_terminal
+    coder_waits = 0
+
+    async def fail_empty_second_coder(aid):
+        nonlocal coder_waits
+        scb = scheduler.table.get(aid)
+        is_coder = scb is not None and scb.agent.name == "coder"
+        if is_coder:
+            coder_waits += 1
+        await real_wait(aid)
+        if not is_coder or coder_waits != 2:
+            return
+        assert scb is not None
+        scb.result = ""
+        if failure_mode == "wait":
+            raise RuntimeError("second coder wait failed")
+        scb.state.fail("second coder terminal failed")
+
+    monkeypatch.setattr(scheduler, "wait_until_terminal", fail_empty_second_coder)
+
+    result = run(scheduler.spawn_with_review(0, "write fn", max_iterations=2))
+
+    assert f"Failure stage: coder_{failure_mode}" in result
+    assert "Last implementation:\nbest first implementation" in result
+    assert "Last reviewer feedback:\nNeeds another fix.\nVERDICT: FAIL" in result
 
 
 def test_spawn_with_review_passes_context_and_constraints_to_reviewer(monkeypatch):

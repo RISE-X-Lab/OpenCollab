@@ -87,6 +87,15 @@ def test_overflow_code_in_nested_body_is_overflow():
     assert is_context_overflow_error(err) is True
 
 
+def test_overflow_code_at_top_level_body_is_overflow():
+    err = FakeProviderError(
+        "bad request",
+        status_code=400,
+        body={"code": "context_length_exceeded"},
+    )
+    assert is_context_overflow_error(err) is True
+
+
 def test_status_on_response_object_is_overflow():
     err = FakeErrorWithResponse(
         "input is too long: too many tokens for the context window", 400

@@ -103,6 +103,18 @@ async def test_built_context_injects_sampling_and_output_limits(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_built_context_preserves_explicit_empty_thinking_params(monkeypatch):
+    calls = _patch_build_session(monkeypatch)
+    ctx = workflow_runtime.build_workflow_context(
+        cfg=_cfg(thinking=True, thinking_params={})
+    )
+
+    await ctx.agent("solve")
+
+    assert calls[0]["agent"].thinking_params == {}
+
+
+@pytest.mark.asyncio
 async def test_built_context_threads_session_limits_and_system_prompt(monkeypatch):
     calls = _patch_build_session(monkeypatch)
     ctx = workflow_runtime.build_workflow_context(
@@ -169,6 +181,28 @@ async def test_run_workflow_invokes_fn_with_context_and_args(monkeypatch):
     assert result == {"echo": 42}
     assert isinstance(seen["ctx"], WorkflowContext)
     assert seen["args"] == {"x": 42}
+
+
+@pytest.mark.asyncio
+async def test_run_workflow_threads_independent_concurrency_caps(monkeypatch):
+    _patch_build_session(monkeypatch)
+    seen: dict[str, int] = {}
+
+    async def fn(ctx, _args):
+        seen["agent"] = ctx._max_concurrency
+        seen["task"] = ctx._task_concurrency
+        return "ok"
+
+    result = await workflow_runtime.run_workflow(
+        fn,
+        {},
+        cfg=_cfg(),
+        max_concurrency=2,
+        task_concurrency=5,
+    )
+
+    assert result == "ok"
+    assert seen == {"agent": 2, "task": 5}
 
 
 @pytest.mark.asyncio

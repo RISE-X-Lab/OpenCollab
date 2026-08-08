@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from session_run_loop_test_support import (
     CompletingBeforeReturnToolExecution,
     FakeLLM,
     FakeToolExecutionDeferred,
     build_runner,
+    collect_events,
     llm_response,
     run,
     tool_call,
@@ -44,6 +46,73 @@ class DeferredSideEffectTool:
     async def execute_with_runtime(self, args, _runtime):
         self.runtime_calls.append(args)
         return "spawned"
+
+
+class OrderedMixedToolExecution(FakeToolExecutionDeferred):
+    def __init__(self):
+        super().__init__()
+        self.execution_order: list[str] = []
+
+    async def process(self, tool_calls):
+        self.process_calls.append(tool_calls)
+        self.execution_order.extend(
+            call["function"]["name"] for call in tool_calls
+        )
+        return ToolProcessingResult(
+            messages_to_append=[
+                {
+                    "role": "tool",
+                    "tool_call_id": call["id"],
+                    "content": f"{call['function']['name']} done",
+                }
+                for call in tool_calls
+            ],
+            tool_step_attempted=True,
+        )
+
+    async def execute_deferred(self, tool_call_data):
+        self.deferred_calls.append(tool_call_data)
+        self.execution_order.append(tool_call_data["function"]["name"])
+        return 9, None
+
+
+@pytest.mark.parametrize(
+    "names",
+    [
+        ["spawn_agent", "file_write"],
+        ["file_write", "spawn_agent"],
+        ["file_read", "spawn_agent", "file_write"],
+    ],
+)
+def test_mixed_batch_executes_side_effects_in_declared_order(names):
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    state.phase = SessionPhase.EXECUTING_TOOLS
+    batch = [
+        tool_call(call_id=f"call-{index}", name=name, arguments="{}")
+        for index, name in enumerate(names)
+    ]
+    executor = OrderedMixedToolExecution()
+    runner = build_runner(state=state, tool_execution=executor)
+    runner._pending = PendingStep(
+        response=llm_response(
+            content="mixed",
+            tool_calls=batch,
+            finish_reason="tool_calls",
+        ),
+        latency=0.0,
+    )
+
+    run(runner.execute_pending_tools())
+
+    assert executor.execution_order == names
+    assert state.phase is SessionPhase.AWAITING_EVENTS
+    for call in batch:
+        if call["function"]["name"] == "spawn_agent":
+            state.pending_events.fill(call["id"], result="spawn done")
+    assert [
+        message["tool_call_id"]
+        for message in state.pending_events.ordered_results()
+    ] == [call["id"] for call in batch]
 
 
 def test_deferred_batch_is_admitted_before_split_or_spawn():
@@ -141,6 +210,58 @@ def test_deferred_spawn_suspends_then_resumes_after_fill():
     # The resumed LLM call saw the child result as a proper tool result.
     second_call_msgs = llm.calls[1]["messages"]
     assert {"role": "tool", "tool_call_id": "s1", "content": "child result"} in second_call_msgs
+
+
+def test_deferred_step_emits_original_nonzero_latency_once_after_resume():
+    class DelayedSequenceLLM(FakeLLM):
+        async def complete(self, messages, tools=None, temperature=0.0, **kwargs):
+            await asyncio.sleep(0.01)
+            return await super().complete(
+                messages,
+                tools=tools,
+                temperature=temperature,
+                **kwargs,
+            )
+
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    llm = DelayedSequenceLLM(
+        [
+            llm_response(
+                content="spawning",
+                tool_calls=[
+                    tool_call(
+                        call_id="s1",
+                        name="spawn_agent",
+                        arguments="{}",
+                    )
+                ],
+                finish_reason="tool_calls",
+            ),
+            llm_response(content="done after child", total_tokens=4),
+        ]
+    )
+    events, bus = collect_events()
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        event_bus=bus,
+        tool_execution=FakeToolExecutionDeferred(
+            deferred_outcomes={"s1": (7, None)}
+        ),
+    )
+
+    assert run(runner.run_loop()) == "spawning"
+    state.pending_events.fill("s1", result="child result")
+    assert run(runner.run_loop()) == "done after child"
+
+    first_step_ends = [
+        data
+        for event_type, data in events
+        if event_type == "step_end" and data["step"] == 1
+    ]
+    assert len(first_step_ends) == 1
+    assert first_step_ends[0]["latency"] >= 0.008
+
 
 def test_deferred_row_exists_before_fast_child_can_complete():
     state = SessionState(messages=[{"role": "system", "content": "sys"}])

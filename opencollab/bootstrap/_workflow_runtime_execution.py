@@ -77,6 +77,7 @@ async def run_workflow(
     event_sink: EventPublisherPort | None = None,
     budget: int | None = None,
     max_concurrency: int = 4,
+    task_concurrency: int | None = None,
     max_steps: int = 100,
     system_prompt: str = WORKFLOW_AGENT_PROMPT,
     save_dir: str | None = None,
@@ -88,6 +89,7 @@ async def run_workflow(
     deadline_margin_seconds: float = 120.0,
     return_details: bool = False,
     cleanup_environment: bool = True,
+    defer_manifest_completion: bool = False,
 ) -> Any:
     """Run one workflow and return only after cleanup and evidence persistence."""
     cleanup_timeout = _positive_cleanup_timeout(cleanup_timeout)
@@ -114,6 +116,7 @@ async def run_workflow(
             event_sink=event_sink,
             budget=budget,
             max_concurrency=max_concurrency,
+            task_concurrency=task_concurrency,
             max_steps=max_steps,
             system_prompt=system_prompt,
             save_dir=save_dir,
@@ -207,7 +210,10 @@ async def run_workflow(
             status=terminal_status,
             reason=terminal_reason,
             failure_type=failure_type,
-            evidence_complete=pre_manifest_evidence_complete,
+            evidence_complete=(
+                pre_manifest_evidence_complete
+                and not defer_manifest_completion
+            ),
         )
 
     evidence_complete = (

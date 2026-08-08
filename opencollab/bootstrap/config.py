@@ -9,7 +9,8 @@ Supported variables:
     OPENCOLLAB_PROVIDER   — LLM provider ("openai", "anthropic")
     OPENCOLLAB_API_KEY    — API key (also reads OPENAI_API_KEY /
                             ANTHROPIC_API_KEY / DASHSCOPE_API_KEY)
-    OPENCOLLAB_BASE_URL   — API base URL (also reads OPENAI_BASE_URL)
+    OPENCOLLAB_BASE_URL   — API base URL (also reads the selected provider's
+                            OPENAI_BASE_URL or ANTHROPIC_BASE_URL)
     OPENCOLLAB_BUDGET     — default token budget
     OPENCOLLAB_TEMPERATURE — LLM sampling temperature (default 0.2)
     OPENCOLLAB_TOP_P      — LLM nucleus-sampling top_p (0..1; unset/empty → None,
@@ -62,13 +63,22 @@ DEFAULT_THINKING_PARAMS: dict[str, Any] = {"enable_thinking": True}
 
 # Truthy string tokens for boolean env vars ("1/true/yes/on").
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"0", "false", "no", "off"})
 
 
 def _parse_bool(value: str | None, *, default: bool = False) -> bool:
-    """Parse a truthy env string ("1/true/yes/on") to bool; default on absence."""
+    """Parse a supported boolean env string; default only on absence."""
     if value is None:
         return default
-    return value.strip().lower() in _TRUTHY
+    normalized = value.strip().lower()
+    if normalized in _TRUTHY:
+        return True
+    if normalized in _FALSY:
+        return False
+    raise ValueError(
+        "boolean configuration must be one of "
+        "1/true/yes/on or 0/false/no/off"
+    )
 
 
 def _parse_top_p(value: str | None) -> float | None:
@@ -99,10 +109,23 @@ def _parse_thinking_params(value: str | None) -> dict[str, Any]:
     return parsed
 
 
+def _validate_thinking_params(value: dict[str, Any]) -> dict[str, Any]:
+    try:
+        json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("thinking_params must be JSON-serializable") from exc
+    return value
+
+
+def resolve_thinking_params(value: dict[str, Any] | None) -> dict[str, Any]:
+    """Copy explicit provider parameters, defaulting only when absent."""
+    return dict(DEFAULT_THINKING_PARAMS if value is None else value)
+
+
 class OpenCollabConfig(BaseModel):
     """Runtime configuration for OpenCollab."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     model: str = Field(default="gpt-4o", min_length=1)
     provider: str = Field(default="openai", min_length=1)
@@ -116,6 +139,20 @@ class OpenCollabConfig(BaseModel):
     thinking_params: dict[str, Any] = Field(default_factory=lambda: dict(DEFAULT_THINKING_PARAMS))
     llm_timeout: float = Field(default=600.0, gt=0, allow_inf_nan=False)
     filter_messages: bool = Field(default=False)
+
+    @field_validator(
+        "budget",
+        "temperature",
+        "top_p",
+        "max_output_tokens",
+        "llm_timeout",
+        mode="before",
+    )
+    @classmethod
+    def _reject_boolean_numbers(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("numeric configuration values must not be booleans")
+        return value
 
     @field_validator("top_p", mode="before")
     @classmethod
@@ -136,22 +173,17 @@ class OpenCollabConfig(BaseModel):
             return _parse_bool(value)
         return value
 
-    @field_validator("llm_timeout", mode="before")
-    @classmethod
-    def _reject_boolean_llm_timeout(cls, value: Any) -> Any:
-        if isinstance(value, bool):
-            raise ValueError("llm_timeout must be a finite positive number")
-        return value
-
     @field_validator("thinking_params", mode="before")
     @classmethod
     def _coerce_thinking_params(cls, value: Any) -> Any:
         # A JSON object string (from env/.env) parses to a dict. Invalid values
         # fail during configuration instead of silently changing model behavior.
         if isinstance(value, str):
-            return _parse_thinking_params(value)
+            return _validate_thinking_params(_parse_thinking_params(value))
         if value is None:
             return dict(DEFAULT_THINKING_PARAMS)
+        if isinstance(value, dict):
+            return _validate_thinking_params(value)
         return value
 
     @field_validator("model", "provider", mode="before")
@@ -209,6 +241,8 @@ def _candidate_env_paths(workspace: str | None = None) -> list[str]:
     """Return config file candidates in priority order."""
     explicit = os.environ.get("OPENCOLLAB_CONFIG_FILE")
     if explicit:
+        if not Path(explicit).exists():
+            raise ValueError(f"explicit config env path does not exist: {explicit}")
         return [explicit]
 
     bases: list[Path] = []
@@ -235,6 +269,8 @@ def load_config_env(workspace: str | None = None) -> dict[str, str]:
     values: dict[str, str] = {}
     for path in _candidate_env_paths(workspace):
         for key, value in load_dotenv(path).items():
+            if not value.strip():
+                continue
             values.setdefault(key, value)
     return values
 
@@ -252,10 +288,10 @@ def api_key_env_precedence(provider: str | None, base_url: str | None = None) ->
     endpoint (DashScope) or to the native Anthropic path.
     """
     if _is_dashscope_base_url(base_url):
-        return ("DASHSCOPE_API_KEY", "OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY")
+        return ("DASHSCOPE_API_KEY", "OPENCOLLAB_API_KEY")
     if is_anthropic(provider):
-        return ("ANTHROPIC_API_KEY", "OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "DASHSCOPE_API_KEY")
-    return ("OPENCOLLAB_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "DASHSCOPE_API_KEY")
+        return ("ANTHROPIC_API_KEY", "OPENCOLLAB_API_KEY")
+    return ("OPENCOLLAB_API_KEY", "OPENAI_API_KEY")
 
 
 def accepted_api_key_envs(provider: str | None, base_url: str | None = None) -> list[str]:
@@ -264,9 +300,10 @@ def accepted_api_key_envs(provider: str | None, base_url: str | None = None) -> 
     ``OPENCOLLAB_API_KEY`` plus the provider-specific key, with
     ``DASHSCOPE_API_KEY`` appended for a DashScope-compatible endpoint.
     """
-    names = ["OPENCOLLAB_API_KEY", required_env_key(provider)]
     if _is_dashscope_base_url(base_url):
-        names.append("DASHSCOPE_API_KEY")
+        names = ["OPENCOLLAB_API_KEY", "DASHSCOPE_API_KEY"]
+    else:
+        names = ["OPENCOLLAB_API_KEY", required_env_key(provider)]
     return list(dict.fromkeys(names))
 
 
@@ -312,19 +349,12 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
                 return val
         return default
 
-    def resolve_ordered(
-        *keys: str, default: str | None = None, file_first: bool = False
-    ) -> str | None:
+    def resolve_ordered(*keys: str, default: str | None = None) -> str | None:
         # For provider-specific secrets, key specificity matters more than
         # source. This prevents a generic exported OPENAI_API_KEY from being sent
         # to a provider-specific compatible endpoint such as DashScope.
-        #
-        # With file_first, the env FILE value of each key beats a shell export of
-        # the same key. A stale shell ANTHROPIC_API_KEY/OPENAI_API_KEY then cannot
-        # shadow the real provider key written to configs/.env.
         for key in keys:
-            sources = (dotenv, os.environ) if file_first else (os.environ, dotenv)
-            for source in sources:
+            for source in (os.environ, dotenv):
                 val = source.get(key)
                 if val:
                     return val
@@ -336,13 +366,16 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
     provider_value = selected_overrides.get("provider") or resolve(
         "OPENCOLLAB_PROVIDER", default="openai"
     )
+    provider_base_url_key = (
+        "ANTHROPIC_BASE_URL" if is_anthropic(provider_value) else "OPENAI_BASE_URL"
+    )
     base_url_value = (
         selected_overrides["base_url"]
         if "base_url" in selected_overrides
-        else resolve("OPENCOLLAB_BASE_URL", "OPENAI_BASE_URL")
+        else resolve("OPENCOLLAB_BASE_URL", provider_base_url_key)
     )
     api_key_value = selected_overrides.get("api_key") or resolve_ordered(
-        *api_key_env_precedence(provider_value, base_url_value), file_first=True
+        *api_key_env_precedence(provider_value, base_url_value)
     )
 
     values: dict[str, Any] = {

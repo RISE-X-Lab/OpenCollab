@@ -91,7 +91,7 @@ class WorkingTreeProbe(Protocol):
         ...
 
     async def diff(self) -> str:
-        """The current working-tree diff (best-effort, may be empty)."""
+        """Complete current-tree evidence, or raise when it cannot be proven."""
         ...
 
 
@@ -433,6 +433,37 @@ class SnapshotStorePort(Protocol):
         path: str,
         system_prompt: str,
     ) -> dict[str, Any]:
+        ...
+
+
+@runtime_checkable
+class JournalSnapshotStorePort(Protocol):
+    """Optional incremental autosave writer with atomic compaction."""
+
+    def has_snapshot(self, path: str) -> bool:
+        ...
+
+    def append_snapshot_delta(
+        self,
+        path: str,
+        *,
+        sequence: int,
+        replace_from: int,
+        messages: list[dict[str, Any]],
+        meta: dict[str, Any],
+        seen_result_hashes_reset: bool = False,
+        seen_result_hashes_added: list[str] | None = None,
+    ) -> None:
+        ...
+
+    def checkpoint_snapshot(
+        self,
+        path: str,
+        messages: list[dict[str, Any]],
+        *,
+        meta: dict[str, Any],
+        sequence: int,
+    ) -> None:
         ...
 
 

@@ -34,6 +34,7 @@ _FRAMEWORK_CONTROLLED_THINKING_FIELDS = frozenset({
     "tools",
     "top_p",
 })
+_OPENAI_REASONING_MODEL_RE = re.compile(r"^o(?:1|3)(?:$|[-.])")
 
 
 def _validated_thinking_params(thinking_params: dict | None) -> dict:
@@ -49,6 +50,11 @@ def _validated_thinking_params(thinking_params: dict | None) -> dict:
     return dict(thinking_params)
 
 
+def _uses_reasoning_request_fields(model: str) -> bool:
+    leaf = model.strip().lower().rsplit("/", 1)[-1]
+    return _OPENAI_REASONING_MODEL_RE.match(leaf) is not None
+
+
 def _build_request_kwargs(
     model: str,
     messages: list[dict],
@@ -60,17 +66,20 @@ def _build_request_kwargs(
     top_p: float | None = None,
     max_output_tokens: int | None = None,
 ) -> dict[str, Any]:
+    reasoning_model = _uses_reasoning_request_fields(model)
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": _normalize_request_messages(messages),
-        "temperature": temperature,
     }
+    if not reasoning_model:
+        kwargs["temperature"] = temperature
     # Nucleus sampling rides along ONLY when explicitly set; when None the key is
     # omitted so the request is byte-for-byte identical to today's behavior.
-    if top_p is not None:
+    if top_p is not None and not reasoning_model:
         kwargs["top_p"] = top_p
     if max_output_tokens is not None:
-        kwargs["max_tokens"] = int(max_output_tokens)
+        token_field = "max_completion_tokens" if reasoning_model else "max_tokens"
+        kwargs[token_field] = int(max_output_tokens)
     if tools:
         kwargs["tools"] = tools
         choice = tool_choice or "auto"
@@ -152,33 +161,46 @@ def _extract_markup_tool_calls(
     if not content or _MARKUP_SECTION_BEGIN not in content:
         return [], content
 
+    if (
+        content.count(_MARKUP_SECTION_BEGIN) != 1
+        or content.count(_MARKUP_SECTION_END) != 1
+    ):
+        return [], content
+    start = content.index(_MARKUP_SECTION_BEGIN)
+    section_start = start + len(_MARKUP_SECTION_BEGIN)
+    end_idx = content.index(_MARKUP_SECTION_END, section_start)
+    section = content[section_start:end_idx]
+
     tool_calls: list[dict[str, Any]] = []
-    for match in _MARKUP_CALL_RE.finditer(content):
+    seen_ids: set[str] = set()
+    cursor = 0
+    for match in _MARKUP_CALL_RE.finditer(section):
+        if section[cursor:match.start()].strip():
+            return [], content
         raw_args = match.group("args").strip()
         try:
             json.loads(raw_args)
         except (ValueError, TypeError):
-            continue  # not valid JSON args -> skip this malformed block
+            return [], content
+        call_id = match.group("id")
+        if call_id in seen_ids:
+            return [], content
+        seen_ids.add(call_id)
         tool_calls.append({
-            "id": match.group("id"),
+            "id": call_id,
             "type": "function",
             "function": {
                 "name": match.group("name"),
                 "arguments": raw_args,
             },
         })
+        cursor = match.end()
 
-    if not tool_calls:
-        return [], content  # no well-formed block found -> fall back
+    if not tool_calls or section[cursor:].strip():
+        return [], content
 
-    # Strip the whole markup section (begin..end inclusive) from the prose. The
-    # end marker may be absent on a truncated stream; strip from begin onward.
-    start = content.index(_MARKUP_SECTION_BEGIN)
-    end_idx = content.find(_MARKUP_SECTION_END)
-    if end_idx == -1:
-        cleaned = content[:start]
-    else:
-        cleaned = content[:start] + content[end_idx + len(_MARKUP_SECTION_END):]
+    # Strip the validated markup section while preserving surrounding prose.
+    cleaned = content[:start] + content[end_idx + len(_MARKUP_SECTION_END):]
     cleaned = cleaned.strip()
     return tool_calls, (cleaned or None)
 

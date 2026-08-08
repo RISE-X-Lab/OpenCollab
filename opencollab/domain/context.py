@@ -99,6 +99,21 @@ class ContextPlan:
         """The assembled system message body (identity + team + …, in order)."""
         return "\n\n".join(s.content for s in self._startup(ContextPosition.SYSTEM))
 
+    def startup_system_messages(self) -> list[dict[str, Any]]:
+        """System fragments with provenance retained for live-session shaping."""
+        return [
+            {
+                "role": "system",
+                "content": source.content,
+                "_ctx": {
+                    "name": source.name,
+                    "layer": source.layer.value,
+                    "priority": source.effective_priority,
+                },
+            }
+            for source in self._startup(ContextPosition.SYSTEM)
+        ]
+
     def startup_user_messages(self) -> list[dict[str, Any]]:
         """Startup user-context sources as provider-shaped user messages.
 
@@ -112,7 +127,11 @@ class ContextPlan:
             {
                 "role": "user",
                 "content": s.content,
-                "_ctx": {"layer": s.layer.value, "priority": s.effective_priority},
+                "_ctx": {
+                    "name": s.name,
+                    "layer": s.layer.value,
+                    "priority": s.effective_priority,
+                },
             }
             for s in self._startup(ContextPosition.USER_CONTEXT)
         ]

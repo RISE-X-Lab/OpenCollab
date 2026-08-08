@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from opencollab.adapters._env_base import ExecResult
 from opencollab.adapters.working_tree import EnvWorkingTreeProbe
 
 
@@ -38,6 +39,17 @@ class RecordingEnv:
     async def exec_cmd(self, cmd: str, timeout: float = 120.0):
         self.commands.append(cmd)
         return SimpleNamespace(stdout=self._stdout)
+
+
+class ScriptedEnv:
+    def __init__(self, results, *, workspace: str = "/ws") -> None:
+        self.workspace = workspace
+        self._results = list(results)
+        self.commands: list[str] = []
+
+    async def exec_cmd(self, cmd: str, timeout: float = 120.0):
+        self.commands.append(cmd)
+        return self._results.pop(0)
 
 
 def test_changed_excluding_issues_exclude_pathspec_and_returns_bool():
@@ -89,6 +101,41 @@ def test_changed_excluding_empty_falls_back_to_plain_status():
     ]
 
 
+@pytest.mark.parametrize(
+    "result",
+    [
+        ExecResult(1, "partial", "failed"),
+        ExecResult(0, "partial", "", stdout_truncated=True),
+        ExecResult(0, "partial", "", stdout_dropped_bytes=9),
+        ExecResult(0, "", "partial", stderr_truncated=True),
+    ],
+)
+def test_diff_rejects_incomplete_status_evidence(result):
+    probe = EnvWorkingTreeProbe(ScriptedEnv([result]), workspace="/ws")
+
+    with pytest.raises(RuntimeError, match="working-tree status"):
+        run(probe.diff())
+
+
+def test_diff_rejects_truncated_tracked_patch():
+    env = ScriptedEnv(
+        [
+            ExecResult(0, " M source.py\n", ""),
+            ExecResult(
+                0,
+                "diff --git a/source.py b/source.py\n",
+                "",
+                stdout_truncated=True,
+                stdout_dropped_bytes=128,
+            ),
+        ]
+    )
+    probe = EnvWorkingTreeProbe(env, workspace="/ws")
+
+    with pytest.raises(RuntimeError, match="tracked diff exceeded capture limit"):
+        run(probe.diff())
+
+
 # --------------------------------------------------------------------------- #
 # real-git integration (skipped where git is unavailable)
 # --------------------------------------------------------------------------- #
@@ -104,7 +151,7 @@ class _RealEnv:
         proc = subprocess.run(
             cmd, shell=True, capture_output=True, text=True
         )
-        return SimpleNamespace(stdout=proc.stdout, stderr=proc.stderr)
+        return ExecResult(proc.returncode, proc.stdout, proc.stderr)
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -158,3 +205,54 @@ def test_real_git_source_edit_alongside_injected_is_detected(tmp_path: Path):
     assert run(probe.changed()) is True
     # Excluding only the injected test still sees the source edit -> True.
     assert run(probe.changed_excluding([inj])) is True
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+def test_real_git_diff_covers_staged_unstaged_and_untracked_changes(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "unstaged.py").write_text("unstaged = 1\n")
+    (repo / "staged.py").write_text("staged = 1\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "base")
+
+    (repo / "unstaged.py").write_text("unstaged = 2\n")
+    (repo / "staged.py").write_text("staged = 2\n")
+    _git(repo, "add", "staged.py")
+    (repo / "new file.py").write_text("untracked = 3\n")
+
+    probe = EnvWorkingTreeProbe(_RealEnv(str(repo)), workspace=str(repo))
+    evidence = run(probe.diff())
+
+    assert run(probe.changed()) is True
+    assert " M unstaged.py" in evidence
+    assert "M  staged.py" in evidence
+    assert "?? \"new file.py\"" in evidence
+    assert "-unstaged = 1" in evidence
+    assert "+unstaged = 2" in evidence
+    assert "-staged = 1" in evidence
+    assert "+staged = 2" in evidence
+    assert "+untracked = 3" in evidence
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not available")
+def test_real_git_untracked_empty_file_remains_visible_in_diff_evidence(tmp_path: Path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.email", "t@t")
+    _git(repo, "config", "user.name", "t")
+    (repo / "tracked.py").write_text("x = 1\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "base")
+    (repo / "empty.txt").touch()
+
+    evidence = run(
+        EnvWorkingTreeProbe(_RealEnv(str(repo)), workspace=str(repo)).diff()
+    )
+
+    assert "?? empty.txt" in evidence
+    assert "[Untracked file: empty.txt]" in evidence

@@ -75,6 +75,7 @@ async def run_workflow(
     event_sink: EventPublisherPort | None = None,
     budget: int | None = None,
     max_concurrency: int = 4,
+    task_concurrency: int | None = None,
     max_steps: int = 100,
     system_prompt: str = WORKFLOW_AGENT_PROMPT,
     save_dir: str | None = None,
@@ -86,6 +87,7 @@ async def run_workflow(
     deadline_margin_seconds: float = 120.0,
     return_details: bool = False,
     cleanup_environment: bool | None = None,
+    defer_manifest_completion: bool = False,
 ) -> Any:
     """Run through one owned lifecycle with an optional wall-clock deadline."""
     if cleanup_environment is None:
@@ -106,6 +108,7 @@ async def run_workflow(
                 event_sink=event_sink,
                 budget=budget,
                 max_concurrency=max_concurrency,
+                task_concurrency=task_concurrency,
                 max_steps=max_steps,
                 system_prompt=system_prompt,
                 save_dir=save_dir,
@@ -117,6 +120,7 @@ async def run_workflow(
                 deadline_margin_seconds=deadline_margin_seconds,
                 return_details=return_details,
                 cleanup_environment=cleanup_environment,
+                defer_manifest_completion=defer_manifest_completion,
             )
         except asyncio.CancelledError as cancellation:
             attached = getattr(cancellation, "runtime_result", None)

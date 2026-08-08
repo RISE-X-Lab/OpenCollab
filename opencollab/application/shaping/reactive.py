@@ -21,7 +21,12 @@ from opencollab.application.shaping.pipeline import (
     DEFAULT_HISTORY_TRIGGER_TOKENS,
     _droppable_region,
     approx_messages_tokens,
+    is_complete_tool_exchange,
+    matched_tool_result_occurrences,
     pinned_free_region,
+    require_nonnegative_int,
+    require_positive_int,
+    span_is_safe_to_compact,
 )
 
 # Tool-output clearing (ToolOutputClearShaper). Old results from these bulky,
@@ -57,6 +62,11 @@ class _ReactiveHistoryShaper:
         target_tokens: int = DEFAULT_HISTORY_TARGET_TOKENS,
         keep_recent_groups: int = DEFAULT_HISTORY_KEEP_RECENT_GROUPS,
     ):
+        require_positive_int(trigger_tokens, "trigger_tokens")
+        require_positive_int(target_tokens, "target_tokens")
+        if target_tokens >= trigger_tokens:
+            raise ValueError("target_tokens must be smaller than trigger_tokens")
+        require_nonnegative_int(keep_recent_groups, "keep_recent_groups")
         self._estimate = estimate_tokens
         self.trigger_tokens = trigger_tokens
         self.target_tokens = target_tokens
@@ -100,23 +110,24 @@ class ToolOutputClearShaper(_ReactiveHistoryShaper):
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
+        require_positive_int(keep_recent, "keep_recent")
         self.compactable_tools = compactable_tools
         self.cleared_content = cleared_content
-        self.keep_recent = max(1, keep_recent)  # never clear the most recent result
+        self.keep_recent = keep_recent
 
     def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not self._over_trigger(messages):
             return messages
-        clear_ids = self._ids_to_clear(messages)
-        if not clear_ids:
+        clear_indices = self._indices_to_clear(messages)
+        if not clear_indices:
             return messages
 
         out: list[dict[str, Any]] = []
         changed = False
-        for message in messages:
+        for index, message in enumerate(messages):
             if (
                 message.get("role") == "tool"
-                and message.get("tool_call_id") in clear_ids
+                and index in clear_indices
                 and message.get("content") != self.cleared_content
             ):
                 out.append({**message, "content": self.cleared_content})
@@ -125,23 +136,26 @@ class ToolOutputClearShaper(_ReactiveHistoryShaper):
                 out.append(message)
         return out if changed else messages
 
-    def _ids_to_clear(self, messages: list[dict[str, Any]]) -> set[str]:
-        """Compactable tool_call_ids older than the last ``keep_recent``.
+    def _indices_to_clear(self, messages: list[dict[str, Any]]) -> set[int]:
+        """Exact compactable result occurrences older than ``keep_recent``.
 
-        Order is taken from the assistant ``tool_calls`` that issued them (the
-        tool *name* lives on the call, not the ``role:"tool"`` answer).
+        Pairing is local to each assistant turn, so reused ids cannot clear a
+        newer result. Replacing a short body with a longer marker is forbidden.
         """
-        compactable_ids: list[str] = []
-        for message in messages:
-            if message.get("role") != "assistant":
-                continue
-            for call in message.get("tool_calls") or ():
-                name = call.get("function", {}).get("name")
-                if name in self.compactable_tools and call.get("id"):
-                    compactable_ids.append(call["id"])
-        if len(compactable_ids) <= self.keep_recent:
+        compactable = [
+            result_index
+            for result_index, _call_id, name, _arguments
+            in matched_tool_result_occurrences(messages)
+            if name in self.compactable_tools
+        ]
+        if len(compactable) <= self.keep_recent:
             return set()
-        return set(compactable_ids[: -self.keep_recent])
+        return {
+            result_index
+            for result_index in compactable[: -self.keep_recent]
+            if isinstance(messages[result_index].get("content"), str)
+            and len(self.cleared_content) < len(messages[result_index]["content"])
+        }
 
 
 class OldHistorySnipShaper(_ReactiveHistoryShaper):
@@ -166,19 +180,42 @@ class OldHistorySnipShaper(_ReactiveHistoryShaper):
 
         running = self._estimate(messages)
         drop: set[int] = set()
+        replacements: dict[int, dict[str, Any]] = {}
         for gi in range(lo, hi):
             start, end = spans[gi]
             leader = messages[start]
             if not (leader.get("role") == "assistant" and leader.get("tool_calls")):
                 continue  # preserve user / assistant-text turns
-            drop.update(range(start, end))
-            running -= self._estimate(messages[start:end])
+            if not is_complete_tool_exchange(messages, spans[gi]):
+                continue
+
+            content = leader.get("content")
+            reasoning = leader.get("reasoning_content") or leader.get("reasoning")
+            if reasoning and not content:
+                continue  # cannot safely split provider-signed reasoning
+            replacement = None
+            if content:
+                replacement = {
+                    key: value for key, value in leader.items() if key != "tool_calls"
+                }
+                replacements[start] = replacement
+                drop.update(range(start + 1, end))
+            else:
+                drop.update(range(start, end))
+
+            removed = self._estimate(messages[start:end])
+            retained = self._estimate([replacement]) if replacement is not None else 0
+            running -= max(0, removed - retained)
             if running <= self.target_tokens:
                 break
 
         if not drop:
             return messages
-        return [m for i, m in enumerate(messages) if i not in drop]
+        return [
+            replacements.get(index, message)
+            for index, message in enumerate(messages)
+            if index not in drop
+        ]
 
 
 class AutoCompactShaper(_ReactiveHistoryShaper):
@@ -202,8 +239,9 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
         **kwargs: Any,
     ):
         super().__init__(**kwargs)
+        require_nonnegative_int(summary_cache_size, "summary_cache_size")
         self.summarizer = summarizer
-        self._summary_cache_size = max(0, int(summary_cache_size))
+        self._summary_cache_size = summary_cache_size
         self._summary_cache: OrderedDict[str, str] = OrderedDict()
 
     def _summary_cache_key(self, segment: list[dict[str, Any]]) -> str:
@@ -250,6 +288,12 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
         spans, lo, hi = _droppable_region(messages, self.keep_recent_groups)
         # Never fold a pinned source (identity/team/task) into the summary.
         lo, hi = pinned_free_region(messages, spans, lo, hi)
+        while lo < hi and not span_is_safe_to_compact(messages, spans[lo]):
+            lo += 1
+        safe_end = lo
+        while safe_end < hi and span_is_safe_to_compact(messages, spans[safe_end]):
+            safe_end += 1
+        hi = safe_end
         if lo >= hi:
             return messages
         start, end = spans[lo][0], spans[hi - 1][1]
@@ -264,4 +308,9 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
             ),
             "compacted": True,
         }
-        return [*messages[:start], marker, *messages[end:]]
+        candidate = [*messages[:start], marker, *messages[end:]]
+        before = self._estimate(messages)
+        after = self._estimate(candidate)
+        if after >= before or after > self.target_tokens:
+            return messages
+        return candidate

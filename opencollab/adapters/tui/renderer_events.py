@@ -15,10 +15,42 @@ from opencollab.domain.events import SchedulerEvent
 
 # Cap on retained timeline blocks so long sessions don't grow render cost.
 MAX_TIMELINE_BLOCKS = 80
+MAX_STATUS_LINES = 40
 
 
 class _RendererEventsMixin:
     """Consumes runtime/scheduler events and updates the TUI's render state."""
+
+    @staticmethod
+    def _tool_start_key(state: Any, label: str, data: dict[str, Any]) -> str:
+        tool_call_id = data.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            return f"{label}#{tool_call_id}"
+        prefix = f"{label}#legacy-"
+        has_legacy = any(key.startswith(prefix) for key in state.active_tools)
+        if label not in state.active_tools and not has_legacy:
+            return label
+
+        if label in state.active_tools:
+            existing = state.active_tools.pop(label)
+            state.active_tools[f"{label}#legacy-1"] = existing
+        sequence = 1
+        while f"{prefix}{sequence}" in state.active_tools:
+            sequence += 1
+        return f"{prefix}{sequence}"
+
+    @staticmethod
+    def _tool_end_key(state: Any, label: str, data: dict[str, Any]) -> str | None:
+        tool_call_id = data.get("tool_call_id")
+        if isinstance(tool_call_id, str) and tool_call_id:
+            return f"{label}#{tool_call_id}"
+        if label in state.active_tools:
+            return label
+        prefix = f"{label}#legacy-"
+        return next(
+            (key for key in state.active_tools if key.startswith(prefix)),
+            None,
+        )
 
     def event_handler(self, event: Any) -> None:
         """Synchronous event handler — subscribed to the Session event bus.
@@ -53,7 +85,8 @@ class _RendererEventsMixin:
             if not role and tool == "spawn_agent" and isinstance(args, dict):
                 role = str(args.get("role", ""))
             label = f"{agent_label}:{tool}"
-            state.active_tools[label] = event.data
+            key = self._tool_start_key(state, label, event.data)
+            state.active_tools[key] = {**event.data, "_display_label": label}
             preview = self._args_preview(event.data)
             self._append_activity(
                 (f"{label} started", self._STYLE_ACCENT),
@@ -71,7 +104,9 @@ class _RendererEventsMixin:
         elif etype == "tool_end":
             tool = event.data.get("tool", "?")
             label = f"{agent_label}:{tool}"
-            state.active_tools.pop(label, None)
+            key = self._tool_end_key(state, label, event.data)
+            if key is not None:
+                state.active_tools.pop(key, None)
             latency = event.data.get("latency", 0.0)
             self._append_activity(
                 (f"{label} finished", self._STYLE_SUCCESS),
@@ -123,7 +158,7 @@ class _RendererEventsMixin:
         if etype == "agent_spawned":
             state = self._state_for(aid)
             self._clear_thinking_status(state)
-            self._roster[aid] = {"role": role or "agent", "state": "running"}
+            self._mark_roster(aid, role, "running")
             # aid 0 is the lead/turn itself, not a spawned teammate — no chrome.
             if aid != 0:
                 label = f"{agent_label}:spawn"
@@ -250,6 +285,7 @@ class _RendererEventsMixin:
         entry["state"] = state
         if role:
             entry["role"] = role
+        self._track_agent_render_lifecycle(aid, state)
 
     def _emit_status(
         self,
@@ -263,10 +299,13 @@ class _RendererEventsMixin:
         target = state or self._selected_state
         if preserve:
             self._flush_current_text_to_timeline(target)
-            target.history_blocks.append(status)
+            self._append_history_block(target, status)
             target.history_revision += 1
         if self._live or self._live_paused:
             target.status_lines.append(status)
+            overflow = len(target.status_lines) - MAX_STATUS_LINES
+            if overflow > 0:
+                del target.status_lines[:overflow]
             self._refresh()
             return
         self.console.print(status)
@@ -284,13 +323,9 @@ class _RendererEventsMixin:
         styled_segments: list[tuple[str, str]] = [marker or self._MARK_DOT]
         styled_segments.extend((text, style) for text, style in segments if text)
         line = Text.assemble(*styled_segments)
-        target.history_blocks.append(line)
-        target.timeline_blocks.append(line)
+        self._append_history_block(target, line)
+        self._append_timeline_block(target, line)
         target.history_revision += 1
-        # Keep recent timeline blocks bounded.
-        overflow = len(target.timeline_blocks) - MAX_TIMELINE_BLOCKS
-        if overflow > 0:
-            target.timeline_blocks = target.timeline_blocks[overflow:]
 
     def _flush_current_text_to_timeline(self, state: Any | None = None) -> None:
         """Commit accumulated assistant text so later events appear in-order."""
@@ -298,8 +333,8 @@ class _RendererEventsMixin:
         if not target.current_text:
             return
         block = self._assistant_block(Markdown(target.current_text))
-        target.history_blocks.append(block)
-        target.timeline_blocks.append(block)
+        self._append_history_block(target, block)
+        self._append_timeline_block(target, block)
         target.current_text = ""
         target.history_revision += 1
 

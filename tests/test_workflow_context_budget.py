@@ -124,7 +124,35 @@ async def test_uncapped_parallel_agents_split_budget_before_concurrency_admissio
 
 
 @pytest.mark.asyncio
-async def test_parallel_cancellation_releases_presemaphore_budget_leases():
+async def test_collection_never_starts_zero_budget_sessions():
+    release = asyncio.Event()
+    sessions = [
+        FakeSession(reply=str(index), tokens=1, gate=release)
+        for index in range(3)
+    ]
+    factory = FakeFactory(sessions)
+    ctx = WorkflowContext(factory, budget_total=2, max_concurrency=3)
+    task = asyncio.create_task(
+        ctx.parallel([lambda i=i: ctx.agent(f"agent {i}") for i in range(3)])
+    )
+    try:
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if len(factory.builds) >= 2:
+                break
+    finally:
+        release.set()
+
+    with pytest.raises(WorkflowBudgetExceeded):
+        await task
+
+    grants = [build["budget"] for build in factory.builds]
+    assert grants == [1, 1]
+    assert sum(grants) == 2
+
+
+@pytest.mark.asyncio
+async def test_parallel_cancellation_releases_bounded_worker_budget_lease():
     started = asyncio.Event()
     gate = asyncio.Event()
 
@@ -137,7 +165,12 @@ async def test_parallel_cancellation_releases_presemaphore_budget_leases():
         FakeSession(),
         FakeSession(),
     ]
-    ctx = WorkflowContext(FakeFactory(sessions), budget_total=90, max_concurrency=1)
+    ctx = WorkflowContext(
+        FakeFactory(sessions),
+        budget_total=90,
+        max_concurrency=3,
+        task_concurrency=1,
+    )
     task = asyncio.create_task(
         ctx.parallel([lambda i=i: ctx.agent(f"agent {i}") for i in range(3)])
     )
@@ -145,10 +178,10 @@ async def test_parallel_cancellation_releases_presemaphore_budget_leases():
     await started.wait()
     for _ in range(20):
         await asyncio.sleep(0)
-        if len(ctx.budget._leases) == 3:
-            break
-    assert len(ctx.budget._leases) == 3
-    assert ctx.budget.remaining() == 0
+    # Bounded collection scheduling starts only one task worker,
+    # while preserving the planned one-third budget grant.
+    assert len(ctx.budget._leases) == 1
+    assert ctx.budget.remaining() == 60
 
     task.cancel()
     with pytest.raises(asyncio.CancelledError):

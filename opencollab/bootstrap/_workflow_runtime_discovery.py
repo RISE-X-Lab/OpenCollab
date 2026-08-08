@@ -107,7 +107,11 @@ def load_workflow_specs(path: str) -> list[WorkflowSpec]:
         seen: set[int] = set()
         for value in vars(module).values():
             wf_spec = getattr(value, "__workflow_spec__", None)
-            if isinstance(wf_spec, WorkflowSpec) and id(wf_spec) not in seen:
+            if (
+                isinstance(wf_spec, WorkflowSpec)
+                and wf_spec.fn.__module__ == module.__name__
+                and id(wf_spec) not in seen
+            ):
                 seen.add(id(wf_spec))
                 found.append(wf_spec)
         return found

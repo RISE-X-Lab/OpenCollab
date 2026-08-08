@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import threading
 import time
@@ -51,6 +52,7 @@ class LLMClient:
         self.provider = provider
         self.max_retries = max(0, max_retries)
         self.request_timeout = request_timeout
+        self._closed = False
 
         warn_provider_near_miss(provider)
         if is_anthropic(provider):
@@ -60,6 +62,7 @@ class LLMClient:
             anthropic_kwargs: dict[str, Any] = {
                 "api_key": api_key or os.environ.get("ANTHROPIC_API_KEY"),
                 "timeout": request_timeout,
+                "max_retries": 0,
             }
             if self.base_url:
                 anthropic_kwargs["base_url"] = self.base_url
@@ -71,8 +74,29 @@ class LLMClient:
                 api_key=api_key or os.environ.get("OPENAI_API_KEY"),
                 base_url=self.base_url,
                 timeout=request_timeout,
+                max_retries=0,
             )
             self._anthropic = None
+
+    async def close(self) -> None:
+        """Close the owned provider transport exactly once."""
+        if self._closed:
+            return
+        self._closed = True
+        provider_client = self._anthropic if self._anthropic is not None else self._openai
+        close = getattr(provider_client, "close", None)
+        if not callable(close):
+            close = getattr(provider_client, "aclose", None)
+        if callable(close):
+            outcome = close()
+            if inspect.isawaitable(outcome):
+                await outcome
+
+    async def __aenter__(self) -> LLMClient:
+        return self
+
+    async def __aexit__(self, *_exc_info: Any) -> None:
+        await self.close()
 
     def context_window(self) -> int | None:
         """The model's context window in tokens, or ``None`` if unknown."""

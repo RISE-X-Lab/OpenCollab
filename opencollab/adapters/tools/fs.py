@@ -14,8 +14,15 @@ from __future__ import annotations
 import shlex
 from typing import Any
 
-from opencollab.adapters.tools._output import truncate
+from opencollab.adapters._env_base import TextFileRange
+from opencollab.adapters.tools._output import require_positive_int, truncate
 from opencollab.adapters.tools._paths import checked_path
+from opencollab.adapters.tools.apply_patch_engine import (
+    _MIXED_NEWLINES,
+    _detect_newline_style,
+    _normalize_newlines,
+    _restore_newlines,
+)
 from opencollab.adapters.tools.base import Tool, host_write_lock
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -28,6 +35,17 @@ MAX_GREP_CHARS = 10_000
 # smaller one — the classic "model rewrote a truncated copy" failure.
 OVERWRITE_GUARD_MIN_CHARS = 1_000
 OVERWRITE_GUARD_SHRINK_RATIO = 0.5
+
+
+def _count_overlapping(text: str, needle: str) -> int:
+    count = 0
+    start = 0
+    while True:
+        match = text.find(needle, start)
+        if match < 0:
+            return count
+        count += 1
+        start = match + 1
 
 
 class FileReadTool(Tool):
@@ -63,7 +81,9 @@ class FileReadTool(Tool):
     }
 
     def __init__(self, max_read_chars: int = MAX_READ_CHARS):
-        self.max_read_chars = max_read_chars
+        self.max_read_chars = require_positive_int(
+            max_read_chars, "max_read_chars"
+        )
 
     async def execute_with_runtime(
         self,
@@ -81,7 +101,25 @@ class FileReadTool(Tool):
         path = checked_path(runtime, path)
 
         try:
-            content = await env.read_file(path)
+            range_reader = getattr(env, "read_text_range", None)
+            if callable(range_reader):
+                window = await range_reader(
+                    path,
+                    offset=offset,
+                    limit=limit,
+                    max_chars=self.max_read_chars,
+                )
+            else:
+                content = await env.read_file(path)
+                lines = content.splitlines()
+                start = max(0, offset - 1)
+                end = min(len(lines), start + limit)
+                window = TextFileRange(
+                    lines=lines[start:end],
+                    start_line=start + 1,
+                    total_lines=len(lines),
+                    has_more=end < len(lines),
+                )
         except FileNotFoundError:
             return f"Error: file not found: {path}"
         except PermissionError as e:
@@ -89,25 +127,36 @@ class FileReadTool(Tool):
         except UnicodeDecodeError as e:
             return f"Error: file is not valid UTF-8: invalid UTF-8 at byte {e.start}."
 
-        lines = content.splitlines()
-        total = len(lines)
-
-        # Apply line range
-        start = max(0, offset - 1)
-        end = min(total, start + limit)
-        selected = lines[start:end]
+        selected = window.lines
+        start = window.start_line - 1
+        end = start + len(selected)
 
         # Format with line numbers (ref: claude-code cat -n format)
         numbered = [f"{start + i + 1}\t{line}" for i, line in enumerate(selected)]
-        header = f"File: {params['path']} ({total} lines total, showing {start + 1}-{end})"
+        if window.total_lines is None:
+            total_description = "total not scanned"
+        else:
+            total_description = f"{window.total_lines} lines total"
+        header = (
+            f"File: {params['path']} ({total_description}, "
+            f"showing {start + 1}-{end})"
+        )
         body = header + "\n" + truncate("\n".join(numbered), self.max_read_chars)
+        if window.chars_truncated:
+            body += (
+                f"\n... requested content reached the {self.max_read_chars}-character "
+                "read limit."
+            )
         # Loud footer when lines remain below the shown range — otherwise a
         # default read silently stops at the limit and the tail is lost.
-        if end < total:
+        if window.has_more:
+            if window.total_lines is None:
+                remaining = "more lines below (total not scanned)"
+            else:
+                remaining = f"{window.total_lines - end} more lines below"
             body += (
-                f"\n... {total - end} more lines below (showing {start + 1}-{end} "
-                f"of {total}). Continue with offset={end + 1}, or use the grep "
-                f"tool to jump to a symbol."
+                f"\n... {remaining} (showing {start + 1}-{end}). Continue with "
+                f"offset={end + 1}, or use the grep tool to jump to a symbol."
             )
         return body
 
@@ -185,6 +234,8 @@ class FileWriteTool(Tool):
                 "Error: file creation disabled in this phase; edit the existing "
                 "target via str_replace (or apply_patch for a content-anchored diff)."
             )
+        if mode == "create" and "content" not in params:
+            return "Error: content is required for create mode."
 
         path = checked_path(runtime, path)
 
@@ -252,9 +303,29 @@ class FileWriteTool(Tool):
             )
 
         current = await env.read_file(path)
+        newline_style = _detect_newline_style(current)
+        if newline_style == _MIXED_NEWLINES:
+            if any(character in old_str + new_str for character in ("\r", "\n")):
+                return (
+                    f"Error: {path} uses mixed newline styles; refusing to "
+                    "normalize a multiline replacement implicitly."
+                )
+            normalized_current = current
+            normalized_old = old_str
+            normalized_new = new_str
+        else:
+            normalized_current = _normalize_newlines(current)
+            normalized_old = _normalize_newlines(old_str)
+            normalized_new = _normalize_newlines(new_str)
+
+        if normalized_new == normalized_old:
+            return (
+                f"Error: str_replace was a no-op — old_str and new_str are "
+                f"logically identical; nothing changed in {path}."
+            )
 
         # Check uniqueness (ref: claude-code Edit — must be unique)
-        count = current.count(old_str)
+        count = _count_overlapping(normalized_current, normalized_old)
         if count == 0:
             return (
                 f"Error: old_str not found in {path}. Make sure the text matches "
@@ -264,7 +335,9 @@ class FileWriteTool(Tool):
         if count > 1:
             return f"Error: old_str found {count} times in {path}. Provide more context to make it unique."
 
-        updated = current.replace(old_str, new_str, 1)
+        updated = normalized_current.replace(normalized_old, normalized_new, 1)
+        if newline_style != _MIXED_NEWLINES:
+            updated = _restore_newlines(updated, newline_style)
         if updated == current:
             # Defensive: old_str matched but the resulting content is byte-for-byte
             # identical (e.g. a degenerate overlap). Report no change rather than a
@@ -312,7 +385,9 @@ class GrepTool(Tool):
     }
 
     def __init__(self, max_grep_chars: int = MAX_GREP_CHARS):
-        self.max_grep_chars = max_grep_chars
+        self.max_grep_chars = require_positive_int(
+            max_grep_chars, "max_grep_chars"
+        )
 
     async def execute_with_runtime(
         self,
@@ -339,24 +414,39 @@ class GrepTool(Tool):
 
         quoted_pattern = shlex.quote(pattern)
         quoted_search_path = shlex.quote(search_path)
-        rg_cmd = f"rg -n --max-count {max_results} "
-        if glob_pattern:
-            rg_cmd += f"-g {shlex.quote(glob_pattern)} "
-        rg_cmd += f"-- {quoted_pattern} {quoted_search_path} 2>/dev/null"
-        # Fallback when rg is missing from PATH: grep MUST use -E (ERE) so that
-        # `a|b|c` alternation works. Plain grep is BRE, where `|` is a literal
-        # character — an alternation pattern then silently matches nothing. Also
-        # exclude VCS/venv and the .opencollab session dir so the fallback can't
-        # "match" its own logged pattern strings instead of real source.
-        rg_cmd += (
-            " || grep -rEn"
-            " --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.opencollab "
+        rg_cmd = (
+            "rg -n --hidden "
+            "-g '!.git/**' -g '!.venv/**' -g '!.opencollab/**' "
+            "-g '!**/.git/**' -g '!**/.venv/**' -g '!**/.opencollab/**' "
         )
         if glob_pattern:
-            rg_cmd += f"--include={shlex.quote(glob_pattern)} "
-        rg_cmd += f"-- {quoted_pattern} {quoted_search_path} 2>/dev/null | head -n {max_results}"
+            rg_cmd += f"-g {shlex.quote(glob_pattern)} "
+        rg_cmd += f"-- {quoted_pattern} {quoted_search_path}"
 
+        backend = "rg"
         result = await env.exec_cmd(rg_cmd, timeout=30)
+        if result.returncode == 127:
+            # Fallback only when rg is unavailable. A normal rg no-match uses
+            # return code 1 and must not scan the same tree a second time.
+            grep_cmd = (
+                "grep -rEn"
+                " --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.opencollab "
+            )
+            if glob_pattern:
+                grep_cmd += f"--include={shlex.quote(glob_pattern)} "
+            grep_cmd += f"-- {quoted_pattern} {quoted_search_path}"
+            backend = "grep"
+            result = await env.exec_cmd(grep_cmd, timeout=30)
+        if result.returncode == 1:
+            return f"No matches found for pattern: {pattern}"
+        if result.returncode != 0:
+            diagnostic = (result.stderr or result.stdout).strip()
+            if not diagnostic:
+                diagnostic = f"exit code {result.returncode}"
+            if getattr(result, "stderr_truncated", False):
+                diagnostic += " (stderr truncated)"
+            return f"Error: {backend} search failed: {truncate(diagnostic, 1000)}"
         if result.stdout.strip():
-            return truncate(result.stdout.strip(), self.max_grep_chars)
+            matches = result.stdout.strip().splitlines()[:max_results]
+            return truncate("\n".join(matches), self.max_grep_chars)
         return f"No matches found for pattern: {pattern}"

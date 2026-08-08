@@ -91,6 +91,65 @@ def test_remaining_budget_caps_configured_per_step_output_limit():
     assert llm.calls[0]["max_output_tokens"] == 7
 
 
+@pytest.mark.parametrize(
+    ("input_tokens", "output_tokens", "total_tokens"),
+    [
+        (-1, 2, 1),
+        (1, -1, 0),
+        (True, 1, 2),
+        (1, False, 1),
+        (1.5, 1, 2),
+        (1, 1.5, 2),
+        (1, 1, -1),
+        (1, 1, True),
+    ],
+)
+def test_invalid_provider_usage_does_not_change_token_counters(
+    input_tokens, output_tokens, total_tokens
+):
+    state = SessionState(
+        messages=[{"role": "system", "content": "sys"}],
+        used_tokens=9,
+        context_tokens=4,
+    )
+    llm = FakeLLM(
+        [
+            llm_response(
+                content="bad usage",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                total_tokens=total_tokens,
+            )
+        ]
+    )
+    runner = build_runner(state=state, llm=llm, max_budget_tokens=100)
+
+    with pytest.raises(ValueError, match="usage"):
+        run(runner.run_loop())
+
+    assert state.used_tokens == 9
+    assert state.context_tokens == 4
+
+
+def test_inconsistent_reported_total_cannot_undercharge_usage():
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    llm = FakeLLM(
+        [
+            llm_response(
+                content="done",
+                input_tokens=4,
+                output_tokens=3,
+                total_tokens=1,
+            )
+        ]
+    )
+    runner = build_runner(state=state, llm=llm, max_budget_tokens=100)
+
+    assert run(runner.run_loop()) == "done"
+    assert state.used_tokens == 7
+    assert state.context_tokens == 4
+
+
 def test_run_loop_team_aggregate_ceiling_stops_under_own_cap():
     # Per-session cap is generous (1_000_000) and the session has spent nothing,
     # so the per-session check passes — but the injected team-aggregate predicate
@@ -328,6 +387,26 @@ def test_empty_stop_retries_once_with_nudge_then_succeeds():
     assert all(
         not (m["role"] == "assistant" and not m.get("content") and not m.get("tool_calls"))
         for m in state.messages
+    )
+    assert state.messages[-1] == {"role": "assistant", "content": "recovered"}
+
+
+def test_whitespace_only_stop_uses_empty_turn_rescue():
+    state = SessionState(messages=_convo())
+    llm = FakeLLM(
+        [
+            llm_response(content=" \t\n"),
+            llm_response(content="recovered", total_tokens=4),
+        ]
+    )
+    runner = build_runner(state=state, llm=llm)
+
+    assert run(runner.run_loop()) == "recovered"
+    assert len(llm.calls) == 2
+    assert not any(
+        message.get("role") == "assistant"
+        and message.get("content") == " \t\n"
+        for message in state.messages
     )
     assert state.messages[-1] == {"role": "assistant", "content": "recovered"}
 

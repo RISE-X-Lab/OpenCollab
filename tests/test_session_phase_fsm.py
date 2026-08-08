@@ -68,7 +68,7 @@ def test_legal_edges_transition(src: SessionPhase, dst: SessionPhase):
         (SessionPhase.DONE, SessionPhase.PRECHECK),
         (SessionPhase.STOPPED, SessionPhase.PRECHECK),
         (SessionPhase.AWAITING_EVENTS, SessionPhase.DONE),
-        (SessionPhase.AWAITING_EVENTS, SessionPhase.AUTOSAVING),
+        (SessionPhase.AWAITING_EVENTS, SessionPhase.PRECHECK),
         (SessionPhase.EXECUTING_TOOLS, SessionPhase.PRECHECK),
     ],
 )
@@ -136,12 +136,12 @@ def test_clear_done_is_noop_when_not_done():
     assert s.phase is SessionPhase.PRECHECK
 
 
-def test_awaiting_events_is_non_terminal_and_resumes_to_precheck():
+def test_awaiting_events_is_non_terminal_and_resumes_to_autosaving():
     assert SessionPhase.AWAITING_EVENTS not in TERMINAL_PHASES
     s = state(SessionPhase.EXECUTING_TOOLS)
     s.transition_to(SessionPhase.AWAITING_EVENTS)
-    s.transition_to(SessionPhase.PRECHECK)
-    assert s.phase is SessionPhase.PRECHECK
+    s.transition_to(SessionPhase.AUTOSAVING)
+    assert s.phase is SessionPhase.AUTOSAVING
 
 
 def test_reset_for_user_turn_clears_done_and_hashes():

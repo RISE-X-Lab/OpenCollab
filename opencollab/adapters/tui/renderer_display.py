@@ -252,9 +252,10 @@ class _RendererDisplayMixin:
             parts.append(Text("Running", style=self._STYLE_HEADING))
             for label, data in self._active_tools.items():
                 args_preview = self._args_preview(data, limit=60, code=True)
+                display_label = data.get("_display_label", label)
 
                 label_text = Text.assemble(
-                    (label, self._STYLE_ACCENT),        # tool name carries the accent
+                    (display_label, self._STYLE_ACCENT),  # tool name carries the accent
                     (args_preview, self._STYLE_MUTED),  # preview stays dim (" `ls -la`")
                 )
                 row = Table.grid(padding=(0, 1))
@@ -318,6 +319,15 @@ class _RendererDisplayMixin:
     def _build_history_display(self, state: Any, *, start: int = 0) -> Any | None:
         """Build the requested slice of one agent's history without live chrome."""
         blocks = list(state.history_blocks[start:])
+        if start == 0 and state.history_omitted_blocks:
+            blocks.insert(
+                0,
+                Text(
+                    f"... {state.history_omitted_blocks} older history blocks "
+                    "omitted; full history remains in the run trace.",
+                    style=self._STYLE_MUTED,
+                ),
+            )
         if state.current_text:
             blocks.append(self._assistant_block(Markdown(state.current_text)))
         if not blocks:

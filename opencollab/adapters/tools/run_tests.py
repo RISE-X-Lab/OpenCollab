@@ -24,11 +24,12 @@ Ref:
 
 from __future__ import annotations
 
+import posixpath
 import re
 import shlex
 from typing import Any
 
-from opencollab.adapters.tools._output import truncate
+from opencollab.adapters.tools._output import require_positive_int, truncate
 from opencollab.adapters.tools._run_tests_go import (
     GO_PATH_PREFIX as GO_PATH_PREFIX,
 )
@@ -93,6 +94,38 @@ _PYTEST_NO_TESTS_RE = re.compile(
     r"no tests ran in \d+(?:\.\d+)?s(?:\s+\([^)]+\))?",
     re.IGNORECASE,
 )
+_PYTEST_MISSING_RE = re.compile(
+    r"(?:(?:\S*/)?(?:python(?:\d+(?:\.\d+)*)?|pypy\d*): )?"
+    r"No module named pytest"
+)
+
+
+def _normalize_verification_target(target: str) -> str:
+    path, separator, selectors = target.partition("::")
+    normalized_path = posixpath.normpath(path)
+    if separator:
+        return f"{normalized_path}::{selectors}"
+    return normalized_path
+
+
+def _verification_target_covers(parent: str, child: str) -> bool:
+    normalized_parent = _normalize_verification_target(parent)
+    normalized_child = _normalize_verification_target(child)
+    if normalized_parent == ".":
+        return True
+    if normalized_parent == normalized_child:
+        return True
+    if normalized_child.startswith(f"{normalized_parent}::"):
+        return True
+    parent_path, parent_separator, _ = normalized_parent.partition("::")
+    child_path, _, _ = normalized_child.partition("::")
+    return not parent_separator and child_path.startswith(f"{parent_path}/")
+
+
+def _verification_targets_overlap(left: str, right: str) -> bool:
+    return _verification_target_covers(
+        left, right
+    ) or _verification_target_covers(right, left)
 
 
 class RunTestsTool(Tool):
@@ -155,7 +188,9 @@ class RunTestsTool(Tool):
         allow_extra_args: bool = True,
         require_process_isolation: bool = False,
     ):
-        self.max_traceback_chars = max_traceback_chars
+        self.max_traceback_chars = require_positive_int(
+            max_traceback_chars, "max_traceback_chars"
+        )
         self.allow_runner_override = allow_runner_override
         self.allow_extra_args = allow_extra_args
         self.require_process_isolation = require_process_isolation
@@ -165,12 +200,21 @@ class RunTestsTool(Tool):
         # the eval toolset), so this survives across run_tests calls.
         self._consecutive_fail: dict[str, int] = {}
 
+    def _invalidate_verification_scope(self, target: str) -> None:
+        stale = {
+            verified
+            for verified in self._verified_targets
+            if _verification_targets_overlap(target, verified)
+        }
+        self._verified_targets.difference_update(stale)
+
     async def execute_with_runtime(
         self,
         params: dict[str, Any],
         runtime: ToolRuntime,
     ) -> str:
         target = params.get("target", "")
+        self._invalidate_verification_scope(target)
         pinned_runner = params.get("runner")
         extra_args = params.get("extra_args", "")
         timeout = params.get("timeout", DEFAULT_TIMEOUT)
@@ -464,7 +508,12 @@ async def _native_fallback_candidate(
 
 def _pytest_missing(returncode: int, output: str) -> bool:
     """Whether the run failed because pytest itself is absent."""
-    return returncode == 127 or "No module named pytest" in output
+    if returncode == 0:
+        return False
+    if returncode == 127:
+        return True
+    lines = [line.strip() for line in output.splitlines() if line.strip()]
+    return len(lines) == 1 and _PYTEST_MISSING_RE.fullmatch(lines[0]) is not None
 
 
 def _pytest_no_tests(returncode: int, output: str) -> bool:

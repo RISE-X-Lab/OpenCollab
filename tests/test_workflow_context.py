@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from workflow_context_test_support import (
@@ -25,6 +26,20 @@ from opencollab.application.workflow import (
 def test_workflow_context_rejects_invalid_concurrency(max_concurrency):
     with pytest.raises(ValueError, match="max_concurrency must be a positive integer"):
         WorkflowContext(FakeFactory([]), max_concurrency=max_concurrency)
+
+
+@pytest.mark.parametrize("task_concurrency", [0, -1, 1.5, True, "2", float("nan")])
+def test_workflow_context_rejects_invalid_task_concurrency(task_concurrency):
+    with pytest.raises(ValueError, match="task_concurrency must be a positive integer"):
+        WorkflowContext(FakeFactory([]), task_concurrency=task_concurrency)
+
+
+def test_workflow_context_task_concurrency_defaults_to_agent_concurrency():
+    ctx = WorkflowContext(FakeFactory([]), max_concurrency=3)
+
+    assert ctx._max_concurrency == 3
+    assert ctx._task_concurrency == 3
+
 
 @pytest.mark.asyncio
 async def test_agent_returns_final_text_and_seeds_prompt():
@@ -216,6 +231,72 @@ async def test_structured_retry_build_error_records_safe_provider_fields():
         schema={"type": "object", "properties": {}},
     ) is None
     assert ctx.agent_failures[0]["provider_error_type"] == "access_terminated_error"
+
+class _AuxiliaryProviderFailure(RuntimeError):
+    status_code = 503
+    body = {"error": {"type": "provider_unavailable"}}
+
+
+class _AuxiliaryFailureSession:
+    used_tokens = 0
+
+    async def add_user_message(self, _content):
+        return None
+
+    async def run_loop(self, cancel_event=None):
+        raise _AuxiliaryProviderFailure("private provider detail")
+
+
+class _AuxiliaryFailureFactory:
+    def __init__(self, fail_at):
+        self.fail_at = fail_at
+
+    def build_workflow_session(self, **_kwargs):
+        if self.fail_at == "build":
+            raise _AuxiliaryProviderFailure("private provider detail")
+        return _AuxiliaryFailureSession()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_at", ["build", "run"])
+async def test_draft_failures_are_recorded_with_stage_label(fail_at):
+    ctx = WorkflowContext(_AuxiliaryFailureFactory(fail_at))
+
+    assert await ctx.draft_findings("draft", label="scout:0") is None
+    assert ctx.agent_failures == (
+        {
+            "label": "scout:0:draft",
+            "exception_type": "_AuxiliaryProviderFailure",
+            "status_code": 503,
+            "provider_error_type": "provider_unavailable",
+        },
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_at", ["build", "run"])
+async def test_dead_scout_synth_failures_are_recorded_with_stage_label(fail_at):
+    ctx = WorkflowContext(_AuxiliaryFailureFactory(fail_at))
+    dead = SimpleNamespace(
+        state=SimpleNamespace(
+            messages=[],
+            turn=SimpleNamespace(
+                scout_ledger=[
+                    {"tool": "grep", "target": "x", "outcome": "hit", "snippet": "x.py:1"}
+                ]
+            ),
+        )
+    )
+
+    assert await ctx._synthesize_dead_scout(
+        dead,
+        "scout:0",
+        commit_reserve=1_000,
+        caller_deadline=None,
+    ) is None
+    assert ctx.agent_failures[0]["label"] == "scout:0:synth"
+    assert ctx.agent_failures[0]["provider_error_type"] == "provider_unavailable"
+
 
 @pytest.mark.asyncio
 async def test_agent_rejects_unsupported_isolation_before_building_session():

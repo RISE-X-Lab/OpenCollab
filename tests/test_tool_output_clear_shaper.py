@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from opencollab.application.shaping import (
     DEFAULT_CLEARED_TOOL_CONTENT,
     DEFAULT_HISTORY_TARGET_TOKENS,
@@ -138,19 +140,46 @@ def test_history_trigger_target_defaults_when_window_unknown():
 
 def test_history_trigger_target_never_negative_for_tiny_window():
     trigger, target = history_trigger_target(1_000)
-    assert trigger >= 1 and target >= 1
+    assert 1 <= target < trigger
 
 
-def test_model_context_window_lookup_matches_by_substring():
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"output_reserve": -1},
+        {"output_reserve": True},
+        {"buffer": -1},
+        {"buffer": 1.5},
+        {"target_ratio": 0},
+        {"target_ratio": 1},
+        {"target_ratio": float("nan")},
+        {"target_ratio": float("inf")},
+    ],
+)
+def test_history_trigger_target_rejects_invalid_configuration(kwargs):
+    with pytest.raises(ValueError):
+        history_trigger_target(200_000, **kwargs)
+
+
+def test_model_context_window_lookup_matches_bounded_families():
     from opencollab.adapters.llm import model_context_window
 
     assert model_context_window("claude-opus-4-8-2026") == 200_000
     assert model_context_window("gpt-4o-mini") == 128_000
     assert model_context_window("deepseek-chat") == 64_000
     assert model_context_window("glm-5.2") == 400_000
+    assert model_context_window("vendor/gpt-4o-mini") == 128_000
     assert model_context_window("k3") == 1_048_576
     assert model_context_window("kimi-for-coding") == 262_144
-    for near_miss in ("k3-256k", "kimi-k3", "kimi-k2.6", "kimi-k2.70", "kimi-for-coding-preview"):
+    for near_miss in (
+        "k3-256k",
+        "kimi-k3",
+        "kimi-k2.6",
+        "kimi-k2.70",
+        "kimi-for-coding-preview",
+        "gpt-4.1",
+        "vendor/gpt-4.1-mini",
+    ):
         assert model_context_window(near_miss) is None
     assert model_context_window("some-unknown-model") is None
     assert model_context_window(None) is None

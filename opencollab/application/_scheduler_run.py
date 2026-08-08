@@ -6,17 +6,28 @@ import asyncio
 import logging
 
 from opencollab.application.scheduler_types import SchedulerStalledError, SchedulerTurnError
+from opencollab.domain.pending import RowStatus
 from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
 
 
 class SchedulerRunMixin:
-    async def run(self, user_message: str) -> str:
+    async def run(
+        self,
+        user_message: str,
+        cancel_event: asyncio.Event | None = None,
+    ) -> str:
         """Compatibility entry point for an external turn addressed to Lead."""
-        return await self.run_turn(0, user_message)
+        return await self.run_turn(0, user_message, cancel_event=cancel_event)
 
-    async def run_turn(self, aid: int, user_message: str) -> str:
+    async def run_turn(
+        self,
+        aid: int,
+        user_message: str,
+        *,
+        cancel_event: asyncio.Event | None = None,
+    ) -> str:
         """Send an external user turn to ``aid`` and wait for team quiescence.
 
         A session that suspends on deferred work (``AWAITING_EVENTS``) returns
@@ -25,12 +36,23 @@ class SchedulerRunMixin:
         is finished only when no task is running, no pending table is
         outstanding, and every session is terminal or idle (``_quiescent``).
         """
+        if isinstance(aid, bool) or not isinstance(aid, int) or aid < 0:
+            raise ValueError("Agent aid must be a non-negative integer.")
+        if cancel_event is not None and not isinstance(cancel_event, asyncio.Event):
+            raise TypeError("cancel_event must be an asyncio.Event or None.")
         current_task = asyncio.current_task()
         if current_task is not None:
             self._active_run_tasks[current_task] = aid
         try:
-            async with self._run_lock:
-                return await self._run_turn_exclusive(aid, user_message)
+            lock = self._run_locks.setdefault(aid, asyncio.Lock())
+            async with lock:
+                if cancel_event is not None:
+                    self._turn_cancel_events[aid] = cancel_event
+                try:
+                    return await self._run_turn_exclusive(aid, user_message)
+                finally:
+                    if self._turn_cancel_events.get(aid) is cancel_event:
+                        self._turn_cancel_events.pop(aid, None)
         except asyncio.CancelledError:
             # The public caller owns the whole team turn. Do not leave its target
             # driver and descendants running after that owner is cancelled.
@@ -46,9 +68,7 @@ class SchedulerRunMixin:
                     self._active_run_tasks.pop(current_task, None)
 
     async def _run_turn_exclusive(self, aid: int, user_message: str) -> str:
-        """Drive one externally visible agent turn under ``_run_lock``."""
-        if isinstance(aid, bool) or not isinstance(aid, int) or aid < 0:
-            raise ValueError("Agent aid must be a non-negative integer.")
+        """Drive one externally visible agent turn under its per-aid lock."""
         session = self._sessions.get(aid)
         scb = self.table.get(aid)
         if session is None or scb is None:
@@ -71,7 +91,7 @@ class SchedulerRunMixin:
             task = self._tasks.get(aid)
             if task is None or task.done():
                 self._reserve_turn_lease(aid)
-                self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
+                self._start_agent_task(aid, session)
             await self.wait_until_terminal(aid)
 
         # A snapshot can capture the durable gap after an external user message
@@ -80,7 +100,7 @@ class SchedulerRunMixin:
         # unrelated user requests into one provider prompt.
         if getattr(session.state, "pending_external_user_turn", None) is not None:
             self._reserve_turn_lease(aid)
-            self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
+            self._start_agent_task(aid, session)
             await self.wait_until_terminal(aid)
 
         # Restored teammate messages are scheduler-owned turns. Deliver and
@@ -103,24 +123,54 @@ class SchedulerRunMixin:
         if self._shutting_down:
             self._release_turn_lease(aid)
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
-        self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
+        self._start_agent_task(aid, session)
 
-        while True:
-            for done_aid in [a for a, t in self._tasks.items() if t.done()]:
-                task = self._tasks.pop(done_aid)
-                try:
-                    task.result()
-                except asyncio.CancelledError:
-                    logger.debug("background task for aid %s was cancelled", done_aid)
-                except Exception as exc:
-                    logger.error("background task for aid %s failed: %s", done_aid, exc)
-            pending = self._active_scheduler_tasks()
-            if not pending:
-                if self._quiescent():
-                    break
-                await self._wait_for_scheduler_progress(aid)
-                continue
-            await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        cancel_event = self._turn_cancel_events.get(aid)
+        cancel_waiter = (
+            asyncio.create_task(cancel_event.wait())
+            if cancel_event is not None
+            else None
+        )
+        cancellation_requested = bool(
+            cancel_event is not None and cancel_event.is_set()
+        )
+        try:
+            while True:
+                for done_aid in [a for a, t in self._tasks.items() if t.done()]:
+                    task = self._tasks.pop(done_aid, None)
+                    if task is None:
+                        continue
+                    try:
+                        task.result()
+                    except asyncio.CancelledError:
+                        logger.debug(
+                            "background task for aid %s was cancelled",
+                            done_aid,
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "background task for aid %s failed: %s",
+                            done_aid,
+                            exc,
+                        )
+                if cancel_waiter is not None and cancel_waiter.done():
+                    cancellation_requested = True
+                    cancel_waiter = None
+                if cancellation_requested:
+                    await self._settle_cancelled_suspended_turn(aid)
+                pending = self._active_scheduler_tasks()
+                if cancel_waiter is not None:
+                    pending.add(cancel_waiter)
+                if not pending:
+                    if self._quiescent():
+                        break
+                    await self._wait_for_scheduler_progress(aid)
+                    continue
+                await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            if cancel_waiter is not None:
+                cancel_waiter.cancel()
+                await asyncio.gather(cancel_waiter, return_exceptions=True)
 
         self._write_manifest()
 
@@ -141,6 +191,115 @@ class SchedulerRunMixin:
                 partial_answer or None,
             )
         return partial_answer
+
+    def _turn_descendant_aids(self, aid: int) -> set[int]:
+        """Return descendants referenced by this turn's live pending graph."""
+        descendants: set[int] = set()
+        changed = True
+        while changed:
+            changed = False
+            parents = {aid, *descendants}
+            for parent_aid in parents:
+                parent = self.table.get(parent_aid)
+                if parent is None:
+                    continue
+                for row in parent.state.pending_events.rows.values():
+                    child_aid = row.ref
+                    if (
+                        row.status is RowStatus.PENDING
+                        and isinstance(child_aid, int)
+                        and not isinstance(child_aid, bool)
+                        and child_aid != aid
+                        and child_aid not in descendants
+                    ):
+                        descendants.add(child_aid)
+                        changed = True
+            for child_aid, origin in self._spawn_origin.items():
+                if child_aid not in descendants and origin[0] in parents:
+                    descendants.add(child_aid)
+                    changed = True
+            for child_aid, origin in self._startup_origin.items():
+                if child_aid not in descendants and origin[0] in parents:
+                    descendants.add(child_aid)
+                    changed = True
+        return descendants
+
+    async def _settle_cancelled_suspended_turn(self, aid: int) -> None:
+        """Cancel one suspended turn subtree without shutting down the team."""
+        target = self.table.get(aid)
+        if target is None or target.state.phase is not SessionPhase.AWAITING_EVENTS:
+            return
+
+        reason = "interrupted by user"
+        failure = f"Error: {reason}"
+        descendants = self._turn_descendant_aids(aid)
+        # Close every wake gate in the subtree before cancelling any producer.
+        # A leaf cancellation is delivered to its immediate parent first; if
+        # only the public target were terminal, that delivery could resume an
+        # intermediate suspended parent and create an untracked replacement
+        # task while this finalizer awaited the original owners.
+        for child_aid in descendants:
+            child = self.table.get(child_aid)
+            if child is not None and not child.state.phase.is_terminal():
+                child.state.cancel("parent turn interrupted by user")
+                if not child.result:
+                    child.result = failure
+        target.state.cancel(reason)
+        target.result = failure
+
+        owned_tasks = {
+            task
+            for child_aid in descendants
+            for task in (
+                self._tasks.get(child_aid),
+                self._startup_tasks.get(child_aid),
+            )
+            if task is not None and not task.done()
+        }
+        for task in owned_tasks:
+            task.cancel()
+        if owned_tasks:
+            await asyncio.gather(*owned_tasks, return_exceptions=True)
+
+        for child_aid in (*descendants, aid):
+            scb = self.table.get(child_aid)
+            if scb is None:
+                continue
+            table = scb.state.pending_events
+            for tool_call_id, row in tuple(table.rows.items()):
+                if row.status is RowStatus.PENDING:
+                    table.fill(
+                        tool_call_id,
+                        result=failure,
+                        status=RowStatus.FAILED,
+                        error=failure,
+                    )
+            for message in table.ordered_results():
+                scb.state.append_message(message)
+            table.clear()
+            scb.state.clear_active_turn()
+            if not scb.state.phase.is_terminal():
+                scb.state.cancel(
+                    reason
+                    if child_aid == aid
+                    else "parent turn interrupted by user"
+                )
+            if child_aid == aid:
+                scb.state.terminal_reason = reason
+                scb.result = failure
+            elif not scb.result:
+                scb.result = failure
+            self._spawn_origin.pop(child_aid, None)
+            self._startup_origin.pop(child_aid, None)
+            self._delivery_committed.discard(child_aid)
+            self._release_leases(child_aid)
+            self._turn_started_at.pop(child_aid, None)
+            self._autosave_session(child_aid)
+
+        await self._safe_emit_scheduler_event(
+            self._events.agent_cancelled(aid, target.agent.name)
+        )
+        self._write_manifest()
 
     def _active_scheduler_tasks(self) -> set[asyncio.Task]:
         """Return live scheduler-owned producers, excluding the current waiter."""

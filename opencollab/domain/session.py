@@ -89,7 +89,7 @@ PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
     SessionPhase.EXECUTING_TOOLS: frozenset(
         {SessionPhase.AUTOSAVING, SessionPhase.AWAITING_EVENTS}
     ),
-    SessionPhase.AWAITING_EVENTS: frozenset({SessionPhase.PRECHECK}),
+    SessionPhase.AWAITING_EVENTS: frozenset({SessionPhase.AUTOSAVING}),
     SessionPhase.AUTOSAVING: frozenset({SessionPhase.PRECHECK}),
     # Terminal phases resume back to IDLE for a fresh user turn or a re-run.
     SessionPhase.DONE: frozenset({SessionPhase.IDLE}),
@@ -111,7 +111,7 @@ class InvalidPhaseTransition(Exception):
 class TurnEnforcementState:
     """The per-turn enforcement window — the brake panel's per-turn half.
 
-    These eight fields are the unit that ``checkpoint_user_turn`` /
+    These nine fields are the unit that ``checkpoint_user_turn`` /
     ``restore_user_turn`` snapshot and roll back as a whole, and that
     ``reset_for_user_turn`` clears on a fresh user turn. They live in their own
     record — rather than smeared flat on ``SessionState`` — precisely because
@@ -133,6 +133,11 @@ class TurnEnforcementState:
     # the last successful edit. Drives the reads-without-write nudge/escalation;
     # reset to 0 on a successful write.
     reads_since_last_edit: int = 0
+    # Obligation state for agents that can both edit files and submit structured
+    # output. Once an edit lands, the hard steering gate switches from requiring
+    # another write to requiring the structured submission. Reset with the rest
+    # of the per-turn window.
+    has_landed_write: bool = False
     # Information-gain sensor (STEP 1): consecutive low-yield results since the
     # last informative one (reset to 0 on any informative result). A result is
     # "informative" when NOVEL (unseen content OR unseen path-normalized call
@@ -162,8 +167,12 @@ class _UserTurnCheckpoint:
     phase: SessionPhase
     terminal_reason: str | None
     pending_external_user_turn: dict[str, Any] | None
+    pending_step_latency: float | None
     # The per-turn enforcement window, snapshotted and rolled back as one unit.
     turn: TurnEnforcementState
+    wind_down_done: bool
+    wind_down_attempts: int
+    wind_down_token_mark: int
 
 
 @dataclass
@@ -188,14 +197,14 @@ class SessionState:
     # ``reset_for_user_turn`` as one unit, which is why it lives in its own record
     # rather than smeared flat here.
     turn: TurnEnforcementState = field(default_factory=TurnEnforcementState)
-    # === enforcement: session-lifetime latches (NOT reset per user turn) ===
+    # === enforcement: durable current-turn latches ===
     # ``wind_down_done`` flips True the first time the enforcement precheck forces
     # a scout into its single protected submit turn — the latch that grants
     # EXACTLY ONE more CALLING_LLM and then routes to a terminal.
     # ``wind_down_token_mark`` records ``used_tokens`` at the trip so the
     # commitment-terminus metric can report ``submit_turn_cost``. Both are inert
     # unless ``enforcement_strength`` is on, so a self-regulating run never touches
-    # them. Unlike the per-turn window they survive a user-turn boundary.
+    # them. They survive persistence within a turn but reset for a new user turn.
     wind_down_done: bool = False
     # Counts protected provider calls allocated by the wind-down gate. It is
     # durable so a restore cannot re-grant the one compatibility retry.
@@ -225,6 +234,9 @@ class SessionState:
     # began. It is retained only while a deferred turn is suspended so a
     # restored runner can keep answer lookup within that turn.
     active_turn_start_message_index: int | None = None
+    # Elapsed provider/tool time for a deferred step whose process-local
+    # PendingStep response was released while waiting for child results.
+    pending_step_latency: float | None = None
 
     def __post_init__(self) -> None:
         self._align_timestamps()
@@ -236,16 +248,21 @@ class SessionState:
                 len(self.messages) - len(self.message_timestamps)
             )
 
-    def enriched_messages(self) -> list[dict[str, Any]]:
+    def enriched_messages(self, start: int = 0) -> list[dict[str, Any]]:
         """Messages with their creation ``timestamp`` merged in, for persistence.
 
         Re-aligns first so messages appended by bypassing ``append_message``
         (e.g. direct list mutation) still get a timestamp.
         """
+        if isinstance(start, bool) or not isinstance(start, int) or start < 0:
+            raise ValueError("message start must be a non-negative integer")
         self._align_timestamps()
         return [
             {**msg, "timestamp": ts}
-            for msg, ts in zip(self.messages, self.message_timestamps)
+            for msg, ts in zip(
+                self.messages[start:],
+                self.message_timestamps[start:],
+            )
         ]
 
     def queue_pending_user_message(self, message: dict[str, Any]) -> None:
@@ -289,6 +306,7 @@ class SessionState:
     def clear_active_turn(self) -> None:
         """Discard a turn boundary once that turn reaches a terminal phase."""
         self.active_turn_start_message_index = None
+        self.pending_step_latency = None
 
     @property
     def is_done(self) -> bool:
@@ -318,6 +336,8 @@ class SessionState:
         self.message_timestamps = [ts for _, ts in rebuilt]
 
     def add_used_tokens(self, tokens: int) -> None:
+        if isinstance(tokens, bool) or not isinstance(tokens, int) or tokens < 0:
+            raise ValueError("used token increment must be a non-negative integer")
         self.used_tokens += tokens
 
     def add_markup_recovered(self, count: int) -> None:
@@ -396,8 +416,12 @@ class SessionState:
             phase=self.phase,
             terminal_reason=self.terminal_reason,
             pending_external_user_turn=copy.deepcopy(self.pending_external_user_turn),
+            pending_step_latency=self.pending_step_latency,
             # Deep-copy the whole per-turn window as one pristine, reusable unit.
             turn=copy.deepcopy(self.turn),
+            wind_down_done=self.wind_down_done,
+            wind_down_attempts=self.wind_down_attempts,
+            wind_down_token_mark=self.wind_down_token_mark,
         )
 
     def restore_user_turn(self, checkpoint: _UserTurnCheckpoint) -> None:
@@ -409,8 +433,12 @@ class SessionState:
         self.pending_external_user_turn = copy.deepcopy(
             checkpoint.pending_external_user_turn
         )
+        self.pending_step_latency = checkpoint.pending_step_latency
         # A fresh copy each restore, so the checkpoint stays reusable.
         self.turn = copy.deepcopy(checkpoint.turn)
+        self.wind_down_done = checkpoint.wind_down_done
+        self.wind_down_attempts = checkpoint.wind_down_attempts
+        self.wind_down_token_mark = checkpoint.wind_down_token_mark
 
     def reset_for_user_turn(self) -> None:
         """Prepare an existing session to accept a new user turn.
@@ -420,11 +448,14 @@ class SessionState:
         intentionally preserved — both ``max_steps`` and ``max_budget_tokens``
         are session-lifetime caps, so a long-lived interactive/messaged session
         keeps accumulating across turns rather than getting a fresh allowance.
-        The session-lifetime latches (``wind_down_done`` / ``wind_down_token_mark``)
-        are likewise preserved.
+        Durable wind-down latches are current-turn state and reset here.
         """
         self.resume_to_idle()
         self.turn = TurnEnforcementState()
+        self.wind_down_done = False
+        self.wind_down_attempts = 0
+        self.wind_down_token_mark = 0
+        self.pending_step_latency = None
 
     def record_evidence_signal(
         self,

@@ -339,15 +339,42 @@ def convert_to_anthropic_messages(messages: list[dict]) -> tuple[list[str], list
     system_parts: list[str] = []
     anthropic_messages: list[dict] = []
 
-    for message in messages:
+    for message_index, message in enumerate(messages):
         role = message.get("role", "")
 
         if role == "system":
-            system_parts.append(message.get("content", ""))
+            content = message.get("content", "")
+            blocks = _normalize_openai_content(
+                content,
+                message_index=message_index,
+                role=role,
+            )
+            if message.get("compacted"):
+                # A compaction record is chronological conversation context, not a
+                # global instruction. Keep it at its original position instead of
+                # hoisting it into Anthropic's top-level system field.
+                anthropic_messages.append(
+                    {
+                        "role": "user",
+                        "content": content if isinstance(content, str) else blocks,
+                    }
+                )
+            else:
+                system_parts.append("".join(block["text"] for block in blocks))
         elif role == "user":
-            anthropic_messages.append({"role": "user", "content": message.get("content", "")})
+            content = message.get("content", "")
+            normalized = (
+                content
+                if isinstance(content, str)
+                else _normalize_openai_content(
+                    content,
+                    message_index=message_index,
+                    role=role,
+                )
+            )
+            anthropic_messages.append({"role": "user", "content": normalized})
         elif role == "assistant":
-            content_blocks = _convert_assistant_content(message)
+            content_blocks = _convert_assistant_content(message, message_index=message_index)
             if content_blocks:
                 anthropic_messages.append({"role": "assistant", "content": content_blocks})
         elif role == "tool":
@@ -356,33 +383,78 @@ def convert_to_anthropic_messages(messages: list[dict]) -> tuple[list[str], list
     return system_parts, anthropic_messages
 
 
-def _convert_assistant_content(message: dict) -> list[dict]:
+def _normalize_openai_content(
+    content: Any,
+    *,
+    message_index: int,
+    role: str,
+) -> list[dict[str, str]]:
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if not isinstance(content, list):
+        raise ValueError(
+            f"message {message_index} ({role}) content must be text or a content block list"
+        )
+
+    normalized: list[dict[str, str]] = []
+    for block_index, block in enumerate(content):
+        if not isinstance(block, dict):
+            raise ValueError(
+                f"message {message_index} ({role}) content block {block_index} must be an object"
+            )
+        block_type = block.get("type")
+        if block_type not in {"text", "input_text"}:
+            raise ValueError(
+                f"message {message_index} ({role}) unsupported content block type: {block_type}"
+            )
+        text = block.get("text")
+        if not isinstance(text, str):
+            raise ValueError(
+                f"message {message_index} ({role}) content block {block_index} requires text"
+            )
+        normalized.append({"type": "text", "text": text})
+    return normalized
+
+
+def _convert_assistant_content(message: dict, *, message_index: int) -> list[dict]:
     """Build Anthropic content blocks (text + tool_use) from an assistant message."""
     provider_state = message.get("provider_state")
     if isinstance(provider_state, dict):
         provider_content = provider_state.get("anthropic_content")
         if isinstance(provider_content, list):
             return copy.deepcopy(provider_content)
-    content_blocks: list[dict] = []
-    if message.get("content"):
-        content_blocks.append({"type": "text", "text": message["content"]})
+    content_blocks: list[dict] = _normalize_openai_content(
+        message.get("content", ""),
+        message_index=message_index,
+        role="assistant",
+    )
     for tool_call in message.get("tool_calls") or []:
-        content_blocks.append(_convert_tool_call(tool_call))
+        content_blocks.append(_convert_tool_call(tool_call, message_index=message_index))
     return content_blocks
 
 
-def _convert_tool_call(tool_call: dict) -> dict:
+def _convert_tool_call(tool_call: dict, *, message_index: int) -> dict:
     """Convert one OpenAI tool call to an Anthropic tool_use block."""
     func = tool_call["function"]
-    try:
-        arguments = func["arguments"]
-        tool_input = json.loads(arguments) if isinstance(arguments, str) else arguments
-    except (json.JSONDecodeError, TypeError):
-        tool_input = {}
+    name = func["name"]
+    call_id = tool_call["id"]
+    arguments = func.get("arguments")
+    location = f"message {message_index} (assistant) tool {name} ({call_id})"
+    if isinstance(arguments, str):
+        try:
+            tool_input = json.loads(arguments)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"{location} has invalid JSON arguments: {exc.msg}") from exc
+    elif isinstance(arguments, dict):
+        tool_input = copy.deepcopy(arguments)
+    else:
+        raise ValueError(f"{location} arguments must be JSON text or an object")
+    if not isinstance(tool_input, dict):
+        raise ValueError(f"{location} arguments must decode to a JSON object")
     return {
         "type": "tool_use",
-        "id": tool_call["id"],
-        "name": func["name"],
+        "id": call_id,
+        "name": name,
         "input": tool_input,
     }
 

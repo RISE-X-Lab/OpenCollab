@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from collections.abc import Callable
 
 import pytest
 
 from opencollab.adapters import _env_docker as docker_module
+from opencollab.adapters._env_local import LOCAL_FILE_WRITE_LIMIT_BYTES
 from opencollab.adapters._env_process import ProcessCleanupError, ProcessResult
 from opencollab.adapters.env import DockerEnvironment, LocalEnvironment
 
@@ -52,6 +54,36 @@ def _patch(monkeypatch, fake: FakeDocker) -> None:
     monkeypatch.setattr(docker_module, "run_process", fake)
 
 
+@pytest.mark.parametrize(
+    ("probe_result", "expected_returncode", "pidfile_retained"),
+    [(0, 125, True), (1, 0, False)],
+    ids=("group-survives", "group-quiesces"),
+)
+def test_exec_cancel_only_succeeds_after_process_group_quiesces(
+    tmp_path,
+    probe_result,
+    expected_returncode,
+    pidfile_retained,
+) -> None:
+    pidfile = tmp_path / "exec.pid"
+    pidfile.write_text("123\n", encoding="utf-8")
+    command = (
+        f'kill() {{ [ "$1" = "-0" ] && return {probe_result}; return 0; }}; '
+        "sleep() { :; }; "
+        f"{docker_module._EXEC_CANCEL}"
+    )
+
+    result = subprocess.run(
+        ["bash", "-c", command, "opencollab-cancel", str(pidfile)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == expected_returncode
+    assert pidfile.exists() is pidfile_retained
+
+
 async def test_owned_setup_is_network_isolated_and_cleanup_uses_full_id(monkeypatch) -> None:
     def respond(command, _kwargs):
         if command[1] == "run":
@@ -70,6 +102,38 @@ async def test_owned_setup_is_network_isolated_and_cleanup_uses_full_id(monkeypa
     assert "opencollab.owner=" in " ".join(run_command)
     await env.cleanup()
     assert fake.calls[-1][0] == ("docker", "rm", "-f", "--", CONTAINER_ID)
+
+
+async def test_concurrent_setup_reuses_one_owned_container(monkeypatch) -> None:
+    env = DockerEnvironment()
+    started = asyncio.Event()
+    release = asyncio.Event()
+    run_count = 0
+
+    async def fake_docker(*args, **_kwargs):
+        nonlocal run_count
+        if args[0] == "run":
+            run_count += 1
+            started.set()
+            await release.wait()
+            return _result(stdout=f"{CONTAINER_ID}\n".encode())
+        if args[:3] == ("rm", "-f", "--"):
+            return _result()
+        raise AssertionError(args)
+
+    monkeypatch.setattr(env, "_docker", fake_docker)
+    first = asyncio.create_task(env.setup())
+    await started.wait()
+    second = asyncio.create_task(env.setup())
+    try:
+        await asyncio.sleep(0.01)
+        assert run_count == 1
+    finally:
+        release.set()
+        outcomes = await asyncio.gather(first, second, return_exceptions=True)
+
+    assert outcomes == [CONTAINER_ID, CONTAINER_ID]
+    await env.cleanup()
 
 
 async def test_start_failure_never_removes_foreign_name_collision(monkeypatch) -> None:
@@ -100,6 +164,42 @@ async def test_start_failure_reports_unproven_inspect_cleanup(monkeypatch) -> No
     with pytest.raises(ProcessCleanupError, match="removal was not proven"):
         await DockerEnvironment().setup()
     assert all(call[0][1] != "rm" for call in fake.calls)
+
+
+@pytest.mark.parametrize("kind", ["missing", "file"])
+async def test_setup_rejects_invalid_mount_before_docker(
+    monkeypatch,
+    tmp_path,
+    kind,
+) -> None:
+    mount = tmp_path / kind
+    if kind == "file":
+        mount.write_text("not a directory", encoding="utf-8")
+    fake = FakeDocker(lambda command, _kwargs: AssertionError(command))
+    _patch(monkeypatch, fake)
+
+    with pytest.raises(NotADirectoryError):
+        await DockerEnvironment().setup(str(mount))
+
+    assert fake.calls == []
+
+
+async def test_setup_mounts_canonical_host_directory(monkeypatch, tmp_path) -> None:
+    target = tmp_path / "target"
+    target.mkdir()
+    alias = tmp_path / "alias"
+    alias.symlink_to(target, target_is_directory=True)
+    fake = FakeDocker(
+        lambda command, _kwargs: _result(stdout=f"{CONTAINER_ID}\n".encode())
+    )
+    _patch(monkeypatch, fake)
+    env = DockerEnvironment(workspace="/repo")
+
+    await env.setup(str(alias))
+
+    run_argv = fake.calls[0][0]
+    assert run_argv[run_argv.index("-v") + 1] == f"{target.resolve()}:/repo"
+    assert env.host_workspace == str(target.resolve())
 
 
 async def test_attached_name_binds_once_and_executes_by_full_id(monkeypatch) -> None:
@@ -172,6 +272,32 @@ async def test_exec_preserves_bounded_output_metadata(monkeypatch) -> None:
     assert result.stderr_dropped_bytes == 3
 
 
+async def test_docker_text_range_requests_only_window_plus_probe(monkeypatch) -> None:
+    env = DockerEnvironment(container_id=CONTAINER_ID)
+    commands: list[str] = []
+
+    async def fake_exec(command, timeout=120.0):
+        commands.append(command)
+        return docker_module.ExecResult(0, "first\nsecond\nthird\n", "")
+
+    monkeypatch.setattr(env, "exec_cmd", fake_exec)
+
+    window = await env.read_text_range(
+        "/repo/large.txt",
+        offset=10,
+        limit=2,
+        max_chars=100,
+    )
+
+    assert window.lines == ["first", "second"]
+    assert window.start_line == 10
+    assert window.total_lines is None
+    assert window.has_more
+    assert not window.chars_truncated
+    assert "10,12p;12q" in commands[0]
+    assert "head -c" in commands[0]
+
+
 async def test_user_exit_125_does_not_destroy_owned_container(monkeypatch) -> None:
     exec_attempts = 0
 
@@ -217,6 +343,12 @@ async def test_timeout_runs_container_inner_cancel_before_return(monkeypatch) ->
     assert "timed out" in result.stderr
     assert exec_attempts == 2
     assert docker_module._EXEC_CANCEL in fake.calls[-1][0]
+
+
+@pytest.mark.parametrize("value", [0, False, "0"])
+def test_timeout_returncode_rejects_success_and_non_integer_values(value) -> None:
+    with pytest.raises(ValueError, match="non-zero integer"):
+        DockerEnvironment(timeout_returncode=value)
 
 
 async def test_attached_timeout_revokes_when_inner_cancel_fails(monkeypatch) -> None:
@@ -279,6 +411,36 @@ async def test_attached_abort_cancels_and_waits_for_all_active_execs(monkeypatch
     await asyncio.gather(first, second)
     with pytest.raises(RuntimeError, match="aborted"):
         await env.exec_cmd("echo after-abort")
+
+
+async def test_attached_cleanup_revokes_and_removes_owned_temporary_files(
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_docker(*args, **_kwargs):
+        calls.append(args)
+        return _result()
+
+    env = DockerEnvironment(container_id=CONTAINER_ID)
+    env._attached_bound = True
+    env._temporary_files = {"/tmp/opencollab-a", "/tmp/opencollab-b"}
+    monkeypatch.setattr(env, "_docker", fake_docker)
+
+    await env.cleanup()
+
+    assert env.revoked
+    assert env._temporary_files == set()
+    assert {call[-1] for call in calls} == {
+        "/tmp/opencollab-a",
+        "/tmp/opencollab-b",
+    }
+    assert all(call[:2] == ("exec", "--") for call in calls)
+    with pytest.raises(RuntimeError, match="aborted"):
+        await env.exec_cmd("echo stale")
+
+    await env.cleanup()
+    assert len(calls) == 2
 
 
 async def test_double_cancellation_cannot_interrupt_container_recovery(monkeypatch) -> None:
@@ -355,6 +517,32 @@ async def test_double_cancellation_finishes_container_and_backing_cleanup(monkey
         await owner
     assert removal_done.is_set()
     assert backing_cleaned.is_set()
+
+
+async def test_cleanup_preserves_backing_when_container_removal_fails(
+    monkeypatch,
+) -> None:
+    backing_cleanup_calls = 0
+
+    class BackingEnvironment:
+        source_workspace = "/source"
+
+        async def cleanup(self):
+            nonlocal backing_cleanup_calls
+            backing_cleanup_calls += 1
+
+    async def fail_remove():
+        return False
+
+    backing = BackingEnvironment()
+    env = DockerEnvironment(backing_environment=backing)
+    monkeypatch.setattr(env, "_remove_container_if_owned", fail_remove)
+
+    with pytest.raises(RuntimeError, match="container could not be removed"):
+        await env.cleanup()
+
+    assert backing_cleanup_calls == 0
+    assert env._backing_environment is backing
 
 
 async def test_verified_write_threads_stdin_and_digest(monkeypatch) -> None:
@@ -513,6 +701,32 @@ async def test_concurrent_same_container_path_writes_are_serialized(monkeypatch)
 
     assert max_active == 1
     assert target in {b"A" * 2000, b"B" * 2000}
+
+
+@pytest.mark.parametrize("temporary", [False, True])
+async def test_docker_writes_reject_oversize_utf8_before_transport(
+    monkeypatch,
+    temporary,
+) -> None:
+    calls = 0
+
+    async def fake_docker(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        return _result()
+
+    env = DockerEnvironment(container_id=CONTAINER_ID)
+    env._attached_bound = True
+    monkeypatch.setattr(env, "_docker", fake_docker)
+    content = "é" * (LOCAL_FILE_WRITE_LIMIT_BYTES // 2 + 1)
+
+    with pytest.raises(OSError, match="write limit"):
+        if temporary:
+            await env.write_temp_file(content, prefix="probe-")
+        else:
+            await env.write_file("/repo/result.txt", content)
+
+    assert calls == 0
 
 
 async def test_only_docker_declares_os_process_isolation(tmp_path) -> None:

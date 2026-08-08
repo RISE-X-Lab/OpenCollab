@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import subprocess
@@ -55,6 +56,63 @@ def _materialize_tree(repository: Path, commit: str, destination: Path) -> list[
     return paths
 
 
+def _baseline_fingerprint(raw: bytes) -> str | None:
+    """Return a stable fingerprint that ignores scanner-maintained line metadata.
+
+    ``detect-secrets-hook`` refreshes ``line_number`` and ``generated_at`` when
+    code is inserted before an already-audited finding.  Those coordinates are
+    useful for a human baseline file, but they do not change the finding's
+    identity or trust decision.  Every other baseline field remains part of the
+    fingerprint so new findings, changed hashes, or changed classifications
+    still fail closed.
+    """
+    try:
+        document = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(document, dict):
+        return None
+
+    normalized = dict(document)
+    normalized.pop("generated_at", None)
+    results = normalized.get("results")
+    if isinstance(results, dict):
+        normalized_results: dict[str, list[dict[str, object]]] = {}
+        for path, findings in results.items():
+            if not isinstance(path, str) or not isinstance(findings, list):
+                return None
+            cleaned: list[dict[str, object]] = []
+            for finding in findings:
+                if not isinstance(finding, dict):
+                    return None
+                cleaned.append(
+                    {
+                        key: value
+                        for key, value in finding.items()
+                        if key != "line_number"
+                    }
+                )
+            normalized_results[path] = sorted(
+                cleaned,
+                key=lambda finding: json.dumps(
+                    finding,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                ),
+            )
+        normalized["results"] = {
+            path: normalized_results[path] for path in sorted(normalized_results)
+        }
+
+    return json.dumps(
+        normalized,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+
+
 def _scan_materialized_tree(
     repository: Path,
     commit: str,
@@ -76,6 +134,7 @@ def _scan_materialized_tree(
     _git(tree, "init", "--quiet")
     baseline = tree / BASELINE_PATH
     baseline.write_bytes(trusted_baseline)
+    baseline_before_scan = baseline.read_bytes()
     completed = subprocess.run(
         [
             *scanner,
@@ -88,6 +147,18 @@ def _scan_materialized_tree(
         cwd=tree,
         check=False,
     )
+    if completed.returncode == 3:
+        baseline_after_scan = baseline.read_bytes()
+        if (
+            baseline_before_scan != baseline_after_scan
+            and (before := _baseline_fingerprint(baseline_before_scan)) is not None
+            and before == _baseline_fingerprint(baseline_after_scan)
+        ):
+            print(
+                "::notice::Secret baseline metadata refreshed for proposed "
+                f"commit {commit}; finding identities and trust decisions are unchanged."
+            )
+            return 0
     if completed.returncode:
         print(f"::error::Secret scan failed for proposed commit {commit}.")
     return completed.returncode

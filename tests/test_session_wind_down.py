@@ -371,6 +371,17 @@ def test_harvest_chop_before_submit_yields_partial_not_scout_died():
     assert "scout died" not in report
 
 
+def test_harvest_bounds_large_raw_transcript_and_reports_omissions():
+    messages = [
+        {"role": "tool", "tool_call_id": f"call-{index}", "content": f"{index}:" + "x" * 500}
+        for index in range(10_000)
+    ]
+    report = harvest_findings(None, fallback_text="", messages=messages)
+    assert len(report) <= 16_000
+    assert "omitted" in report
+    assert "9999:" in report
+
+
 def test_harvest_falls_back_to_text_when_no_capture():
     report = harvest_findings(None, fallback_text="here is my prose report", messages=[])
     assert report == "here is my prose report"
@@ -419,6 +430,29 @@ def test_submit_findings_accepts_insufficient_evidence_abstention():
     out = _exec(tool, _captured(insufficient=True, findings=[]))
     assert tool.captured is not None  # abstaining is a valid, non-penalized outcome
     assert "accepted" in out.lower()
+
+
+def test_submit_findings_rejects_empty_non_abstaining_report():
+    captured_flag = {"hit": False}
+    tool = SubmitFindingsTool(on_capture=lambda: captured_flag.__setitem__("hit", True))
+    out = _exec(
+        tool,
+        {"findings": [], "summary": "", "insufficient_evidence": False},
+    )
+    assert tool.captured is None
+    assert tool.terminal_capture_accepted is False
+    assert captured_flag["hit"] is False
+    assert "at least one finding" in out.lower()
+
+
+def test_submit_findings_requires_explanation_when_abstaining():
+    tool = SubmitFindingsTool()
+    out = _exec(
+        tool,
+        {"findings": [], "summary": "   ", "insufficient_evidence": True},
+    )
+    assert tool.captured is None
+    assert "explain" in out.lower()
 
 
 def test_submit_findings_abstention_cannot_bypass_verified_anchor():
@@ -550,6 +584,29 @@ def test_enforced_agent_injects_submit_configures_runner_harvests_and_emits_metr
     assert payload["role"] == "scout:0:bug-origin"
     assert payload["evidence_anchor_count"] == 1
     assert payload["artifact_nonempty"] is True
+
+
+def test_commitment_trace_failure_does_not_overturn_harvested_result():
+    class ThrowingTracer:
+        def log_step(self, **_kwargs):
+            raise OSError("trace sink unavailable")
+
+    session = _EnforcedFakeSession(capture=_captured(), reply="")
+    ctx = _ctx_with(_EnforcedFakeFactory(session), ThrowingTracer())
+
+    result = run(
+        ctx.agent(
+            "scout the bug",
+            tools=[_ReadStub()],
+            label="scout:0",
+            enforcement_strength=ENFORCEMENT_ON,
+        )
+    )
+
+    assert "root cause located" in result
+    assert ctx.trace_failures == (
+        {"step_type": "commitment_terminus", "exception_type": "OSError"},
+    )
 
 
 def test_off_default_does_not_inject_submit_or_emit_metric():

@@ -52,6 +52,16 @@ def test_git_diff_stat_only_summarizes_without_raw_patch(repo):
     assert "-    return 1" not in result
 
 
+def test_git_diff_stat_only_uses_same_head_baseline_for_staged_changes(repo):
+    _git(repo, "add", "app.py")
+
+    result = run(GitDiffTool().execute_with_runtime({"stat_only": True}, _runtime(repo)))
+
+    assert "diff --stat:" in result
+    assert "app.py" in result
+    assert "1 file changed" in result
+
+
 def test_git_diff_path_filter_can_skip_status(repo):
     (repo / "other.py").write_text("x = 1\n", encoding="utf-8")
 
@@ -65,6 +75,48 @@ def test_git_diff_path_filter_can_skip_status(repo):
     assert "Status" not in result
     assert "app.py" in result
     assert "other.py" not in result.split("diff vs HEAD:")[1]
+
+
+@pytest.mark.parametrize("stat_only", [False, True])
+def test_git_diff_includes_untracked_files_in_default_change_set(repo, stat_only):
+    target = repo / "new file.py"
+    target.write_text("new_value = 3\n", encoding="utf-8")
+
+    result = run(
+        GitDiffTool().execute_with_runtime(
+            {"stat_only": stat_only, "include_status": False},
+            _runtime(repo),
+        )
+    )
+
+    assert "new file.py" in result
+    if stat_only:
+        assert "1 insertion" in result
+    else:
+        assert "+new_value = 3" in result
+
+
+@pytest.mark.parametrize("stat_only", [False, True])
+def test_git_diff_supports_unborn_repository_with_staged_file(tmp_path, stat_only):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "first.py").write_text("value = 1\n", encoding="utf-8")
+    _git(repo, "add", "first.py")
+
+    result = run(
+        GitDiffTool().execute_with_runtime(
+            {"stat_only": stat_only},
+            _runtime(repo),
+        )
+    )
+
+    assert "diff vs empty tree" in result
+    assert "first.py" in result
+    if stat_only:
+        assert "1 file changed" in result
+    else:
+        assert "+value = 1" in result
 
 
 def test_git_diff_reports_environment_errors(tmp_path):

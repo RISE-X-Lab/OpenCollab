@@ -17,6 +17,7 @@ Tool *names* are resolved to concrete Tool instances by ``ContextBuilder`` in
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from dataclasses import dataclass, field
@@ -32,7 +33,12 @@ from opencollab.bootstrap.tool_registry import (
     KNOWN_TOOL_NAMES,
     validate_tool_limits,
 )
-from opencollab.domain.hooks import HOOK_ACTION_TYPES, HOOK_EVENT_NAMES, HookSpec
+from opencollab.domain.hooks import (
+    EXECUTABLE_HOOK_ACTION_TYPES,
+    HOOK_ACTION_TYPES,
+    HOOK_EVENT_NAMES,
+    HookSpec,
+)
 from opencollab.domain.identity import role_collision_key, validate_role_identity
 from opencollab.domain.team import Topology
 
@@ -57,6 +63,18 @@ MAX_TEAM_CONFIG_BYTES = 4 * 1024 * 1024
 MAX_ROLE_PROMPT_BYTES = 4 * 1024 * 1024
 
 
+def _validate_thinking_params(
+    value: dict[Any, Any] | None,
+) -> dict[Any, Any] | None:
+    if value is None:
+        return None
+    try:
+        json.dumps(value, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("thinking_params must be JSON-serializable") from exc
+    return value
+
+
 def _load_default_prompt(filename: str) -> str:
     return (_PROMPT_DIR / filename).read_text(encoding="utf-8")
 
@@ -68,13 +86,18 @@ DEFAULT_ROLE_PROMPT = _load_default_prompt("role.md")
 class RoleConfig(BaseModel):
     """A single role definition: prompt + optional model override + tool names."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     prompt: str = Field(min_length=1)
     model: str | None = None
     # Optional per-role sampling-temperature override. ``None`` falls back to the
     # global ``OpenCollabConfig.temperature`` (resolved in ``ContextBuilder``).
-    temperature: float | None = None
+    temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        allow_inf_nan=False,
+    )
     # Optional per-role thinking overrides. ``None`` falls back to the global
     # ``OpenCollabConfig`` values (resolved in ``ContextBuilder``), mirroring how
     # ``temperature`` is resolved.
@@ -82,36 +105,110 @@ class RoleConfig(BaseModel):
     thinking_params: dict | None = None
     tools: list[str] = Field(default_factory=list)
 
+    @field_validator("prompt")
+    @classmethod
+    def _reject_blank_prompt(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("role prompt must not be blank")
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def _normalize_optional_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("role model must not be blank")
+        return normalized
+
+    @field_validator("thinking_params")
+    @classmethod
+    def _validate_provider_parameters(
+        cls,
+        value: dict[Any, Any] | None,
+    ) -> dict[Any, Any] | None:
+        return _validate_thinking_params(value)
+
+    @field_validator("temperature", mode="before")
+    @classmethod
+    def _reject_boolean_temperature(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("role temperature must not be a boolean")
+        return value
 
 class _RoleFileModel(BaseModel):
     """On-disk role entry; ``prompt`` or ``prompt_file`` (resolved at load)."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     prompt: str | None = None
     prompt_file: str | None = None
     model: str | None = None
-    temperature: float | None = None
+    temperature: float | None = Field(
+        default=None,
+        ge=0.0,
+        le=2.0,
+        allow_inf_nan=False,
+    )
     thinking: bool | None = None
     thinking_params: dict | None = None
     tools: list[str] = Field(default_factory=list)
 
+    @field_validator("prompt")
+    @classmethod
+    def _reject_blank_prompt(cls, value: str | None) -> str | None:
+        if value is not None and not value.strip():
+            raise ValueError("role prompt must not be blank")
+        return value
+
+    @field_validator("model")
+    @classmethod
+    def _normalize_optional_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("role model must not be blank")
+        return normalized
+
+    @field_validator("thinking_params")
+    @classmethod
+    def _validate_provider_parameters(
+        cls,
+        value: dict[Any, Any] | None,
+    ) -> dict[Any, Any] | None:
+        return _validate_thinking_params(value)
+
+    @field_validator("temperature", mode="before")
+    @classmethod
+    def _reject_boolean_temperature(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("role temperature must not be a boolean")
+        return value
 
 class _HookActionFileModel(BaseModel):
     """On-disk hook entry: one action bound to a lifecycle event."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     command: str = Field(min_length=1)
     matcher: str | None = None
     type: str = "command"
     timeout: float = Field(default=30.0, gt=0, allow_inf_nan=False)
 
+    @field_validator("timeout", mode="before")
+    @classmethod
+    def _reject_boolean_timeout(cls, value: Any) -> Any:
+        if isinstance(value, bool):
+            raise ValueError("hook timeout must not be a boolean")
+        return value
+
 
 class _TeamFileModel(BaseModel):
     """Top-level team file schema."""
 
-    model_config = ConfigDict(extra="ignore")
+    model_config = ConfigDict(extra="forbid")
 
     roles: dict[str, _RoleFileModel] = Field(default_factory=dict)
     topology: dict[str, list[str]] = Field(default_factory=dict)
@@ -250,8 +347,13 @@ def _resolve_entry_role(explicit: str | None, roles: dict[str, RoleConfig]) -> s
                 f"({sorted(roles)})."
             )
         return canonical
-    if "lead" in roles:
-        return "lead"
+    canonical_roles = {
+        role_collision_key(role): role
+        for role in roles
+    }
+    lead = canonical_roles.get(role_collision_key("lead"))
+    if lead is not None:
+        return lead
     if roles:
         return next(iter(roles))
     return "lead"
@@ -311,6 +413,11 @@ def _build_hook_specs(hooks: dict[str, list[_HookActionFileModel]]) -> tuple[Hoo
                 raise ValueError(
                     f"Unknown hook action type '{action.type}' for event "
                     f"'{event_name}'. Known types: {sorted(HOOK_ACTION_TYPES)}"
+                )
+            if action.type not in EXECUTABLE_HOOK_ACTION_TYPES:
+                raise ValueError(
+                    f"Hook action type '{action.type}' for event '{event_name}' "
+                    "is recognized but not implemented"
                 )
             specs.append(
                 HookSpec(

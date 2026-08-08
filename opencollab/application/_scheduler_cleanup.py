@@ -14,6 +14,7 @@ from opencollab.application.async_timeout import (
     cancel_tasks_and_wait,
     consume_task_result,
 )
+from opencollab.application.session_lifecycle import close_session_resources
 from opencollab.domain.pending import PendingRowError, RowStatus
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,7 @@ class SchedulerCleanupMixin:
             self.table.entries.pop(aid, None)
             self._sessions.pop(aid, None)
             self._locks.pop(aid, None)
+            self._run_locks.pop(aid, None)
             self._message_inbox.pop(aid, None)
 
         self._startup_tasks.clear()
@@ -132,7 +134,10 @@ class SchedulerCleanupMixin:
         self._lease_baseline.clear()
         self._inflight.clear()
         self._inflight_key_of.clear()
+        self._delivery_committed.clear()
         self._tasks.clear()
+        self._turn_started_at.clear()
+        self._turn_cancel_events.clear()
 
         persistence_quiesced = await self._wait_for_session_persistence(
             persistence_sessions,
@@ -151,7 +156,31 @@ class SchedulerCleanupMixin:
         if persistence_errors:
             failures.append("session persistence failed")
 
-        release_safe = not pending and environments_aborted and persistence_quiesced
+        session_resources_closed = await close_session_resources(
+            self._persistence_sessions(persistence_sessions),
+            timeout=timeout,
+        )
+        if not session_resources_closed:
+            failures.append("session resource close failed or timed out")
+
+        lifecycle_errors: list[BaseException] = []
+        lifecycle_quiesced = True
+        for description, resource in self._lifecycle_resources:
+            if getattr(resource, "cleanup_quiesced", False) is True:
+                continue
+            lifecycle_quiesced = False
+            failures.append(f"{description} did not quiesce")
+            error = getattr(resource, "cleanup_error", None)
+            if isinstance(error, BaseException):
+                lifecycle_errors.append(error)
+
+        release_safe = (
+            not pending
+            and environments_aborted
+            and persistence_quiesced
+            and session_resources_closed
+            and lifecycle_quiesced
+        )
         worktrees_released = release_safe and await self._release_worktree_pool_bounded(timeout=timeout)
         if not worktrees_released:
             failures.append(
@@ -163,6 +192,8 @@ class SchedulerCleanupMixin:
             failure = RuntimeError("technical scheduler cleanup failed: " + "; ".join(failures))
             if persistence_errors:
                 raise failure from persistence_errors[0]
+            if lifecycle_errors:
+                raise failure from lifecycle_errors[0]
             raise failure
 
     def _persistence_sessions(self, initial: tuple[Any, ...]) -> tuple[Any, ...]:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -77,7 +78,10 @@ def rescue_empty_turn(
     this is the single source both ``openai_provider`` and ``anthropic_provider``
     delegate to instead of hand-mirroring the guard.
     """
-    if not content and not tool_calls:
+    if (
+        (content is None or not content.strip())
+        and not tool_calls
+    ):
         return reasoning
     return content
 
@@ -96,11 +100,11 @@ class ModelCapabilities:
     honors_workflow_thinking_override: bool = True
 
 
-# Best-effort context-window sizes (tokens), keyed by a substring of the model
-# id. Used to derive history-compaction triggers (see
-# ``shaping.history_trigger_target``); an unrecognised model returns ``None`` and
-# the caller falls back to fixed defaults. Substring match keeps this resilient
-# to version/date suffixes (e.g. ``claude-opus-4-8-2026...`` matches ``claude``).
+# Best-effort context-window sizes (tokens), keyed by a model family. Used to
+# derive history-compaction triggers (see ``shaping.history_trigger_target``);
+# an unrecognised model returns ``None`` and the caller falls back to fixed
+# defaults. Family matching accepts provider prefixes and hyphenated
+# version/date suffixes without treating unrelated substrings as a known model.
 MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "claude": 200_000,
     "gpt-4o": 128_000,
@@ -131,15 +135,36 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
 DEFAULT_MAX_OUTPUT_TOKENS = DEFAULT_MAX_TOKENS_PER_STEP
 
 
+def model_matches_family(model: str | None, family: str) -> bool:
+    """Whether ``model`` is an exact or hyphen-suffixed family identifier."""
+    if not model:
+        return False
+    normalized = model.strip().lower().rsplit("/", 1)[-1]
+    normalized_family = family.strip().lower()
+    return normalized == normalized_family or normalized.startswith(
+        f"{normalized_family}-"
+    )
+
+
+def _canonical_model_id(model: str) -> str:
+    leaf = model.strip().lower().rsplit("/", 1)[-1]
+    if leaf in _EXACT_MODEL_CAPABILITIES:
+        return leaf
+    for known in _EXACT_MODEL_CAPABILITIES:
+        if re.fullmatch(rf"{re.escape(known)}-\d{{4}}(?:-\d{{2}}){{0,2}}", leaf):
+            return known
+    return leaf
+
+
 def model_capabilities(model: str | None) -> ModelCapabilities:
     """Return exact capability metadata plus a best-effort context window."""
     if not model:
         return ModelCapabilities()
-    lowered = model.lower()
-    if lowered in _EXACT_MODEL_CAPABILITIES:
-        return _EXACT_MODEL_CAPABILITIES[lowered]
+    canonical = _canonical_model_id(model)
+    if canonical in _EXACT_MODEL_CAPABILITIES:
+        return _EXACT_MODEL_CAPABILITIES[canonical]
     for key, window in MODEL_CONTEXT_WINDOWS.items():
-        if key in lowered:
+        if model_matches_family(model, key):
             return ModelCapabilities(context_window=window)
     return ModelCapabilities()
 

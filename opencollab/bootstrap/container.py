@@ -21,6 +21,7 @@ order acyclic regardless of which module is imported first.
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -36,6 +37,7 @@ from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.compaction_summary import ReadTimeSummarizer
 from opencollab.application.event_bus import EventBus
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import (
     AskUserPort,
     EventPublisherPort,
@@ -94,11 +96,15 @@ if TYPE_CHECKING:
 
 
 def _build_initial_state(
-    agent: Agent, seed_user_messages: list[dict[str, Any]] | None = None
+    agent: Agent,
+    seed_user_messages: list[dict[str, Any]] | None = None,
+    seed_system_messages: list[dict[str, Any]] | None = None,
 ) -> SessionState:
-    messages: list[dict[str, Any]] = [
-        {"role": "system", "content": agent.system_prompt}
-    ]
+    messages: list[dict[str, Any]] = (
+        list(seed_system_messages)
+        if seed_system_messages
+        else [{"role": "system", "content": agent.system_prompt}]
+    )
     if seed_user_messages:
         messages.extend(seed_user_messages)
     return SessionState(messages=messages)
@@ -133,9 +139,11 @@ def _build_summarizer(
     reused as-is.
     """
     if llm is not None:
+
         async def _summary_complete(request: list[dict[str, Any]]) -> Any:
             return await resolved_llm.complete(request, temperature=0.0)
     else:
+
         async def _summary_complete(request: list[dict[str, Any]]) -> Any:
             client = LLMClient(
                 model=agent.model,
@@ -144,7 +152,26 @@ def _build_summarizer(
                 provider=agent.provider,
                 request_timeout=llm_timeout,
             )
-            return await client.complete(request, temperature=0.0)
+            primary_failure: BaseException | None = None
+            try:
+                return await client.complete(request, temperature=0.0)
+            except BaseException as exc:
+                primary_failure = exc
+                raise
+            finally:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    try:
+                        outcome = close()
+                        if inspect.isawaitable(outcome):
+                            await outcome
+                    except BaseException as close_failure:
+                        if primary_failure is None:
+                            raise
+                        add_exception_note(
+                            primary_failure,
+                            f"summary client close also failed: {type(close_failure).__name__}: {close_failure}",
+                        )
 
     return ReadTimeSummarizer(_summary_complete, transcript_path=auto_save_path)
 
@@ -219,6 +246,7 @@ def build_session_runtime(
     ] | None = None,
     aid: int = -1,
     seed_user_messages: list[dict[str, Any]] | None = None,
+    seed_system_messages: list[dict[str, Any]] | None = None,
     shaper: ShaperPort | None = None,
     team_budget_exhausted: Callable[[], bool] | None = None,
 ) -> SessionRuntime:
@@ -228,8 +256,9 @@ def build_session_runtime(
     ``auto_save_callback`` is the bound method the facade exposes for direct
     autosave. ``auto_save_prepare_callback`` freezes a payload on the event
     loop and returns the file-I/O operation run by the subscriber worker.
-    ``seed_user_messages`` are startup user-context
-    messages appended after the system prompt (e.g. a spawned agent's task);
+    ``seed_system_messages`` retain source-level provenance for layered system
+    context; ``seed_user_messages`` are startup user-context messages appended
+    after them (e.g. a spawned agent's task);
     ``shaper`` reshapes the message list before each model call.
     """
     resolved_env = env if env is not None else LocalEnvironment()
@@ -244,7 +273,11 @@ def build_session_runtime(
         )
         event_bus.subscribe(auto_save_subscriber)
 
-    state = _build_initial_state(agent, seed_user_messages)
+    state = _build_initial_state(
+        agent,
+        seed_user_messages,
+        seed_system_messages,
+    )
     state.aid = aid
 
     resolved_llm = _resolve_llm(agent, llm, llm_timeout)
@@ -294,6 +327,7 @@ def build_session_runtime(
         runner=runner,
         auto_save_path=auto_save_path,
         auto_save_subscriber=auto_save_subscriber,
+        owns_llm=llm is None,
     )
 
 

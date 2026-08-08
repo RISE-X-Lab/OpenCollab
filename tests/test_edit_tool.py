@@ -1,4 +1,5 @@
 import asyncio
+import tracemalloc
 from hashlib import sha256
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
 from opencollab.adapters.tools.apply_patch import ApplyPatchTool
+from opencollab.adapters.tools.apply_patch_engine import _find_block
 from opencollab.adapters.tools.fs import FileWriteTool
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -105,6 +107,33 @@ def test_unified_diff_matches_by_content_despite_line_drift(tmp_path):
     assert target.read_text(encoding="utf-8") == "extra0\nextra1\nlineA\nlineB_fixed\nlineC\n"
 
 
+def test_fuzzy_block_search_uses_constant_auxiliary_memory():
+    # Roughly 4 MiB of repeated source text. Every position matches, so the old
+    # collect-and-sort implementation allocated hundreds of thousands of ints.
+    source = ["repeated-line"] * 350_000
+    tracemalloc.start()
+    try:
+        position = _find_block(
+            source,
+            ["repeated-line"],
+            expected_idx=175_000,
+            min_idx=0,
+        )
+        _, peak_bytes = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert position == 175_000
+    assert peak_bytes < 1_000_000
+
+
+def test_fuzzy_block_search_preserves_nearest_then_earliest_tie_break():
+    source = ["x", "target", "x", "target", "x"]
+
+    assert _find_block(source, ["target"], expected_idx=2, min_idx=0) == 1
+    assert _find_block(source, ["target"], expected_idx=3, min_idx=0) == 3
+
+
 def test_unified_diff_failed_hunk_writes_nothing(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -131,6 +160,36 @@ def test_unified_diff_failed_hunk_writes_nothing(tmp_path):
 
     assert "hunk #2" in result
     assert target.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {
+            "path": "f.py",
+            "mode": "line_replace",
+            "start_line": 1,
+            "end_line": 1,
+            "new_str": "a",
+        },
+        {
+            "path": "f.py",
+            "mode": "unified_diff",
+            "patch": "@@ -1,2 +1,2 @@\n a\n b\n",
+        },
+    ],
+)
+def test_apply_patch_rejects_successful_noop_without_writing(tmp_path, params):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text("a\nb\n", encoding="utf-8")
+
+    result = run(ApplyPatchTool().execute_with_runtime(params, _runtime(ws)))
+
+    assert result.startswith("Error applying patch")
+    assert "no changes" in result
+    assert target.read_text(encoding="utf-8") == "a\nb\n"
 
 
 def test_unified_diff_treats_header_like_hunk_content_as_content(tmp_path):
@@ -203,6 +262,108 @@ def test_unified_diff_pure_insertions_use_header_position(tmp_path, header, expe
 
     assert "Applied unified_diff" in result
     assert target.read_text(encoding="utf-8") == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "patch", "expected"),
+    [
+        (
+            "old\n",
+            "@@ -1 +1 @@\n-old\n+new\n\\ No newline at end of file\n",
+            "new",
+        ),
+        (
+            "old",
+            "@@ -1 +1 @@\n-old\n\\ No newline at end of file\n+new\n",
+            "new\n",
+        ),
+    ],
+)
+def test_unified_diff_applies_eof_newline_metadata(tmp_path, source, patch, expected):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text(source, encoding="utf-8")
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {"path": "f.py", "mode": "unified_diff", "patch": patch},
+            _runtime(ws),
+        )
+    )
+
+    assert "Applied unified_diff" in result
+    assert target.read_text(encoding="utf-8") == expected
+
+
+@pytest.mark.parametrize(
+    ("tool", "params"),
+    [
+        (
+            FileWriteTool(),
+            {
+                "path": "f.py",
+                "mode": "str_replace",
+                "old_str": "alpha\ntarget",
+                "new_str": "alpha\nchanged",
+            },
+        ),
+        (
+            ApplyPatchTool(),
+            {
+                "path": "f.py",
+                "mode": "line_replace",
+                "start_line": 2,
+                "end_line": 2,
+                "expected_str": "target",
+                "new_str": "changed",
+            },
+        ),
+        (
+            ApplyPatchTool(),
+            {
+                "path": "f.py",
+                "mode": "unified_diff",
+                "patch": "@@ -1,3 +1,3 @@\n alpha\n-target\n+changed\n omega\n",
+            },
+        ),
+    ],
+    ids=("str-replace", "line-replace", "unified-diff"),
+)
+def test_edit_modes_match_logical_lines_and_preserve_crlf(tmp_path, tool, params):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_bytes(b"alpha\r\ntarget\r\nomega\r\n")
+
+    result = run(tool.execute_with_runtime(params, _runtime(ws)))
+
+    assert not result.startswith("Error:")
+    assert target.read_bytes() == b"alpha\r\nchanged\r\nomega\r\n"
+
+
+def test_line_edit_rejects_mixed_newlines_without_rewriting_file(tmp_path):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    original = b"alpha\r\ntarget\nomega\r\n"
+    target.write_bytes(original)
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "line_replace",
+                "start_line": 2,
+                "end_line": 2,
+                "new_str": "changed",
+            },
+            _runtime(ws),
+        )
+    )
+
+    assert "mixed newline styles" in result
+    assert target.read_bytes() == original
 
 
 def test_apply_patch_reports_file_and_workspace_errors(tmp_path):

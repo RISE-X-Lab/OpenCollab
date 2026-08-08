@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from typing import Any
 
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.key_binding import KeyBindings
+
+HISTORY_CACHE_MAX_ENTRIES = 16
 
 
 def build_agent_prompt(tui: Any, base_prompt: Any) -> Any:
@@ -15,7 +18,7 @@ def build_agent_prompt(tui: Any, base_prompt: Any) -> Any:
     switching focus replaces the prior agent instead of adding terminal scrollback.
     The revision-aware cache avoids re-rendering Rich history on every keystroke.
     """
-    history_cache: dict[tuple[int, int, int], str] = {}
+    history_cache: OrderedDict[tuple[int, int, int], str] = OrderedDict()
 
     def prompt() -> list[tuple[str, str]]:
         key = tui.selected_history_cache_key
@@ -24,6 +27,10 @@ def build_agent_prompt(tui: Any, base_prompt: Any) -> Any:
                 history_cache[key] = tui.render_selected_history()
             except Exception:
                 history_cache[key] = ""
+            while len(history_cache) > HISTORY_CACHE_MAX_ENTRIES:
+                history_cache.popitem(last=False)
+        else:
+            history_cache.move_to_end(key)
         history = history_cache[key]
 
         fragments = []

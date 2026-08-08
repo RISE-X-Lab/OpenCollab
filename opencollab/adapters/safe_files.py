@@ -6,21 +6,43 @@ import errno
 import fcntl
 import os
 import stat
+import sys
 import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO, TextIO
 
+from opencollab.adapters._env_base import TextFileRange
+
 _LOCK_TIMEOUT_SECONDS = 10.0
 _READ_CHUNK_BYTES = 1024 * 1024
+_RANGE_READ_CHUNK_CHARS = 64 * 1024
+_RANGE_TOTAL_COUNT_LIMIT_BYTES = 256 * 1024
+_MACOS_SYSTEM_ALIASES = (
+    (Path("/tmp"), Path("/private/tmp")),
+    (Path("/var"), Path("/private/var")),
+)
+
+
+def _canonicalize_system_alias(path: Path) -> Path:
+    if sys.platform != "darwin":
+        return path
+    for alias, canonical in _MACOS_SYSTEM_ALIASES:
+        try:
+            relative = path.relative_to(alias)
+        except ValueError:
+            continue
+        if Path(os.path.realpath(alias)) == canonical and canonical.is_dir():
+            return canonical / relative
+    return path
 
 
 def _absolute(path: str | os.PathLike[str]) -> Path:
     value = os.fspath(path)
     if not value or "\0" in value:
         raise ValueError("path must be non-empty text without NUL bytes")
-    return Path(os.path.abspath(value))
+    return _canonicalize_system_alias(Path(os.path.abspath(value)))
 
 
 def _require_limit(max_bytes: int) -> int:
@@ -101,13 +123,170 @@ def read_regular_text(
     return read_regular_bytes(path, max_bytes=max_bytes).decode(encoding)
 
 
-def open_regular_text_append(path: str | os.PathLike[str]) -> TextIO:
+def _read_text_line(
+    handle: TextIO,
+    *,
+    collect_limit: int | None,
+) -> tuple[str | None, bool, bool]:
+    parts: list[str] = []
+    seen_content = False
+    remaining = collect_limit
+    while True:
+        chunk = handle.readline(_RANGE_READ_CHUNK_CHARS)
+        if chunk == "":
+            if not seen_content:
+                return None, True, False
+            return "".join(parts), True, False
+        seen_content = True
+        ended = chunk.endswith("\n")
+        content = chunk[:-1] if ended else chunk
+        if remaining is not None:
+            if len(content) > remaining:
+                parts.append(content[:remaining])
+                return "".join(parts), False, True
+            parts.append(content)
+            remaining -= len(content)
+        if ended:
+            return "".join(parts), False, False
+
+
+def read_regular_text_range(
+    path: str | os.PathLike[str],
+    *,
+    offset: int,
+    limit: int,
+    max_chars: int,
+    encoding: str = "utf-8",
+) -> TextFileRange:
+    """Read a bounded logical-line window without loading the full file."""
+    if (
+        isinstance(offset, bool)
+        or not isinstance(offset, int)
+        or offset < 1
+        or isinstance(limit, bool)
+        or not isinstance(limit, int)
+        or limit < 1
+        or isinstance(max_chars, bool)
+        or not isinstance(max_chars, int)
+        or max_chars < 1
+    ):
+        raise ValueError("offset, limit, and max_chars must be positive integers")
+    target = _absolute(path)
+    _check_directory_components(target.parent, create=False)
+    fd = os.open(
+        target,
+        os.O_RDONLY
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise OSError(f"read target is not a regular file: {target}")
+        count_to_eof = opened.st_size <= _RANGE_TOTAL_COUNT_LIMIT_BYTES
+        with os.fdopen(fd, "r", encoding=encoding, errors="strict", newline=None) as handle:
+            fd = -1
+            line_number = 0
+            while line_number < offset - 1:
+                line, at_eof, _truncated = _read_text_line(
+                    handle,
+                    collect_limit=None,
+                )
+                if line is None:
+                    return TextFileRange([], offset, line_number, False)
+                line_number += 1
+                if at_eof:
+                    return TextFileRange([], offset, line_number, False)
+
+            selected: list[str] = []
+            chars_used = 0
+            while len(selected) < limit:
+                separator_chars = 1 if selected else 0
+                remaining = max_chars - chars_used - separator_chars
+                if remaining < 1:
+                    return TextFileRange(
+                        selected,
+                        offset,
+                        None,
+                        True,
+                        chars_truncated=True,
+                    )
+                line, at_eof, truncated = _read_text_line(
+                    handle,
+                    collect_limit=remaining,
+                )
+                if line is None:
+                    return TextFileRange(
+                        selected,
+                        offset,
+                        line_number,
+                        False,
+                    )
+                selected.append(line)
+                line_number += 1
+                chars_used += separator_chars + len(line)
+                if truncated:
+                    return TextFileRange(
+                        selected,
+                        offset,
+                        None,
+                        True,
+                        chars_truncated=True,
+                    )
+                if at_eof:
+                    return TextFileRange(
+                        selected,
+                        offset,
+                        line_number,
+                        False,
+                    )
+
+            if count_to_eof:
+                shown_end = offset - 1 + len(selected)
+                while True:
+                    line, at_eof, _truncated = _read_text_line(
+                        handle,
+                        collect_limit=None,
+                    )
+                    if line is None:
+                        return TextFileRange(
+                            selected,
+                            offset,
+                            line_number,
+                            line_number > shown_end,
+                        )
+                    line_number += 1
+                    if at_eof:
+                        return TextFileRange(
+                            selected,
+                            offset,
+                            line_number,
+                            line_number > shown_end,
+                        )
+            has_more = handle.read(1) != ""
+            return TextFileRange(
+                selected,
+                offset,
+                None if has_more else line_number,
+                has_more,
+            )
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+def open_regular_text_append(
+    path: str | os.PathLike[str],
+    *,
+    readable: bool = False,
+) -> TextIO:
     target = _absolute(path)
     ensure_directory_no_symlinks(target.parent)
     _current_regular(target, context="append")
     fd = os.open(
         target,
-        os.O_WRONLY
+        (os.O_RDWR if readable else os.O_WRONLY)
         | os.O_APPEND
         | os.O_CREAT
         | getattr(os, "O_NONBLOCK", 0)
@@ -164,6 +343,22 @@ def _current_regular(path: Path, *, context: str) -> os.stat_result | None:
     return info
 
 
+def _fsync_directory(path: Path) -> None:
+    fd = os.open(
+        path,
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        if not stat.S_ISDIR(os.fstat(fd).st_mode):
+            raise OSError(f"fsync target is not a directory: {path}")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def write_regular_file_atomic(
     path: str | os.PathLike[str],
     writer: Callable[[BinaryIO], None],
@@ -206,6 +401,7 @@ def write_regular_file_atomic(
             os.unlink(temporary)
         else:
             os.replace(temporary, target)
+        _fsync_directory(target.parent)
     finally:
         if fd >= 0:
             os.close(fd)
@@ -262,6 +458,7 @@ def unlink_regular_file_durable(path: str | os.PathLike[str]) -> bool:
     if current is None:
         return False
     os.unlink(target)
+    _fsync_directory(target.parent)
     return True
 
 
@@ -272,6 +469,7 @@ __all__ = [
     "open_regular_text_append",
     "read_regular_bytes",
     "read_regular_text",
+    "read_regular_text_range",
     "unlink_regular_file_durable",
     "write_locked_text",
     "write_regular_bytes_atomic",

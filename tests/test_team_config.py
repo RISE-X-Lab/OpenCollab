@@ -176,6 +176,53 @@ topology:
     assert cfg.roles["coder"].temperature == 0.9
 
 
+@pytest.mark.parametrize("temperature", ["-0.1", "2.1", ".nan", ".inf", "-.inf"])
+def test_role_temperature_rejects_invalid_values(tmp_path, temperature):
+    config = tmp_path / "team.yaml"
+    config.write_text(
+        "roles:\n"
+        "  lead:\n"
+        "    prompt: Lead prompt.\n"
+        f"    temperature: {temperature}\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(Exception, match="temperature"):
+        load_team_config(str(tmp_path), path=config)
+
+
+def test_role_thinking_params_reject_yaml_native_dates(tmp_path):
+    config = tmp_path / "team.yaml"
+    config.write_text(
+        "roles:\n"
+        "  lead:\n"
+        "    prompt: Lead prompt.\n"
+        "    thinking_params:\n"
+        "      cutoff: 2026-08-07\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="JSON-serializable"):
+        load_team_config(str(tmp_path), path=config)
+
+@pytest.mark.parametrize("yaml_boolean", ["true", "false", "yes", "no"])
+def test_role_temperature_rejects_yaml_booleans(
+    tmp_path, monkeypatch, yaml_boolean
+):
+    _write_team(
+        tmp_path,
+        monkeypatch,
+        yaml_text=(
+            "roles:\n"
+            "  lead:\n"
+            "    prompt: Lead prompt.\n"
+            f"    temperature: {yaml_boolean}\n"
+        ),
+    )
+    with pytest.raises(Exception, match="must not be a boolean"):
+        load_team_config(str(tmp_path))
+
+
 def test_prompt_file_is_resolved_relative_to_team_file(tmp_path, monkeypatch):
     _write_team(tmp_path, monkeypatch, coder_prompt="Resolved coder body.")
     cfg = load_team_config(str(tmp_path))
@@ -203,6 +250,20 @@ def test_entry_prefers_lead_role_when_unset(tmp_path, monkeypatch):
     # TEAM_YAML declares lead + coder with no explicit entry → lead wins.
     _write_team(tmp_path, monkeypatch)
     assert load_team_config(str(tmp_path)).entry == "lead"
+
+
+def test_entry_prefers_case_normalized_lead_role_when_unset(tmp_path):
+    config = tmp_path / "team.yaml"
+    config.write_text(
+        "roles:\n"
+        "  analyst:\n"
+        "    prompt: Analyst prompt.\n"
+        "  Lead:\n"
+        "    prompt: Lead prompt.\n",
+        encoding="utf-8",
+    )
+
+    assert load_team_config(str(tmp_path), path=config).entry == "Lead"
 
 
 def test_entry_falls_back_to_first_role_without_lead(tmp_path, monkeypatch):
@@ -268,6 +329,36 @@ roles:
     monkeypatch.setenv("OPENCOLLAB_TEAM_FILE", str(configs / "team.yaml"))
     with pytest.raises(ValueError, match="prompt"):
         load_team_config(str(tmp_path))
+
+
+@pytest.mark.parametrize(
+    "yaml_text",
+    [
+        "roles:\n  lead:\n    prompt: '   '\n",
+        "roles:\n  lead:\n    prompt: valid\n    model: '   '\n",
+    ],
+)
+def test_team_config_rejects_blank_prompt_or_model(tmp_path, yaml_text):
+    config = tmp_path / "team.yaml"
+    config.write_text(yaml_text, encoding="utf-8")
+
+    with pytest.raises(Exception, match="role (prompt|model) must not be blank"):
+        load_team_config(str(tmp_path), path=config)
+
+
+@pytest.mark.parametrize(
+    "yaml_text",
+    [
+        "rolse:\n  lead:\n    prompt: typo\n",
+        "roles:\n  lead:\n    prompt: ok\n    modle: typo\n",
+    ],
+)
+def test_team_config_rejects_unknown_keys(tmp_path, monkeypatch, yaml_text):
+    config = tmp_path / "team.yaml"
+    config.write_text(yaml_text, encoding="utf-8")
+
+    with pytest.raises(Exception, match="rolse|modle"):
+        load_team_config(str(tmp_path), path=config)
 
 
 @pytest.mark.parametrize("kind", ["fifo", "symlink", "oversized"])

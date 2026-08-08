@@ -6,6 +6,7 @@ from typing import Any
 
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.ports import SchedulerPort
+from opencollab.application.scheduler_types import DuplicateSpawnError
 from opencollab.application.self_collaboration import validate_review_iterations
 from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 from opencollab.domain.identity import validate_role_identity
@@ -62,27 +63,22 @@ class SpawnAgentTool(Tool):
         task = params["task"]
         context = params.get("context", "")
         parent_aid = runtime.aid
-        # Single-flight guard: only this parent's exact (role, task, context)
-        # delegation is deduped. The string return resolves this tool call
-        # synchronously (no pending row).
-        existing = self._scheduler.inflight_spawn(
-            role,
-            task,
-            parent_aid=parent_aid,
-            context=context,
-        )
-        if existing is not None:
+        # Scheduler.spawn is the authoritative single-flight boundary. Convert
+        # its domain-specific conflict into a synchronous tool result so no
+        # pending row is registered for the rejected duplicate.
+        try:
+            aid = await self._scheduler.spawn(
+                parent_aid, role, task, context, tool_call_id=runtime.tool_call_id
+            )
+        except DuplicateSpawnError as exc:
             return (
                 f"Not spawned: this task is already being handled by agent "
-                f"aid={existing}. Do not spawn another agent for the same task — "
+                f"aid={exc.existing_aid}. Do not spawn another agent for the same task — "
                 f"its result will be delivered to you as a tool result, and you "
                 f"can act on it then."
             )
         # Defer with the child aid so the deferral path can register a pending
         # row keyed by this tool call; the child's result fills it on completion.
-        aid = await self._scheduler.spawn(
-            parent_aid, role, task, context, tool_call_id=runtime.tool_call_id
-        )
         return DeferredCall(ref=aid)
 
 

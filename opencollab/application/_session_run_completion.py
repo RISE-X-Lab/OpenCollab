@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -26,6 +27,66 @@ from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, Ro
 from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
+
+
+def _selector_names_tool_choice(selector: Any) -> bool:
+    """Return whether a structured error selector targets ``tool_choice``."""
+    values = selector if isinstance(selector, (list, tuple)) else [selector]
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        normalized = re.sub(r"[\s-]+", "_", value.strip().lower())
+        segments = re.split(r"[.\[\]/]+", normalized)
+        if "tool_choice" in segments:
+            return True
+    return False
+
+
+def _selector_has_named_segment(selector: Any) -> bool:
+    """Return whether a structured selector contains an authoritative name."""
+    values = selector if isinstance(selector, (list, tuple)) else [selector]
+    return any(isinstance(value, str) and bool(value.strip()) for value in values)
+
+
+def _is_tool_choice_rejection(exc: Exception) -> bool:
+    """Return whether a provider validation error specifically rejects choice."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status is not None and status not in {400, 422}:
+        return False
+
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        detail = body.get("error", body)
+        if isinstance(detail, dict):
+            selector_keys = ("param", "field", "path")
+            selectors = [
+                detail[key]
+                for key in selector_keys
+                if key in detail and _selector_has_named_segment(detail[key])
+            ]
+            if selectors:
+                return any(_selector_names_tool_choice(value) for value in selectors)
+            code = detail.get("code")
+            if code in {"invalid_tool_choice", "unsupported_tool_choice"}:
+                return True
+
+    message = str(exc).lower()
+    choice = r"tool(?:_| )choice"
+    rejection = (
+        r"invalid|unsupported|not\s+supported|not\s+allowed|unknown|"
+        r"unrecognized|unexpected|rejected"
+    )
+    return any(
+        re.search(pattern, message)
+        for pattern in (
+            rf"\b(?:{rejection})\s+(?:(?:value\s+for|parameter|field)\s*:?\s+)?"
+            rf"{choice}\b",
+            rf"\b{choice}\b(?:\s+(?:parameter|field|value))?"
+            rf"\s+(?:(?:is|was)\s+)?(?:{rejection})\b",
+            rf"\b(?:does\s+not\s+support|doesn't\s+support|rejects?|rejected)"
+            rf"\s+(?:the\s+)?{choice}\b",
+        )
+    )
 
 
 class _SessionRunCompletionMixin:
@@ -75,13 +136,18 @@ class _SessionRunCompletionMixin:
     async def autosave_pending_step(self) -> None:
         """Emit step_end (the autosave trigger) and loop back to PRECHECK."""
         pending = self._pending
-        latency = pending.latency if pending is not None else 0.0
+        latency = (
+            pending.latency
+            if pending is not None
+            else (self.state.pending_step_latency or 0.0)
+        )
         await self.finish_step(latency)
         self.clear_pending_step()
         self.state.transition_to(SessionPhase.PRECHECK)
 
     def clear_pending_step(self) -> None:
         self._pending = None
+        self.state.pending_step_latency = None
 
     def build_tool_schemas(self) -> list[dict] | None:
         return self.agent.tool_schemas() or None
@@ -95,8 +161,12 @@ class _SessionRunCompletionMixin:
         filtered = [spec for spec in tools if spec.get("function", {}).get("name") in names]
         return filtered or tools
 
-    def _hard_steering_tools(self) -> tuple[frozenset[str], str]:
+    def _hard_steering_tools(
+        self, tool_choice_override: Any | None
+    ) -> tuple[frozenset[str], str]:
         tool_names = {getattr(t, "name", None) for t in getattr(self.agent, "tools", []) or []}
+        if tool_choice_override == _submit_tool_choice(_STRUCTURED_OUTPUT_TOOL):
+            return frozenset({_STRUCTURED_OUTPUT_TOOL}), "hard structured-output gate"
         if tool_names & _WRITE_TOOLS:
             return _WRITE_TOOLS, "hard write gate"
         if _STRUCTURED_OUTPUT_TOOL in tool_names:
@@ -181,6 +251,7 @@ class _SessionRunCompletionMixin:
             has_write=bool(tool_names & _WRITE_TOOLS),
             has_structured_output=_STRUCTURED_OUTPUT_TOOL in tool_names,
             structured_override=_submit_tool_choice(_STRUCTURED_OUTPUT_TOOL),
+            write_landed=self.state.turn.has_landed_write,
         )
         self._maybe_trace_steering(steering_level)
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
@@ -190,7 +261,7 @@ class _SessionRunCompletionMixin:
         if steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
-            hard_tools, gate_label = self._hard_steering_tools()
+            hard_tools, gate_label = self._hard_steering_tools(tool_choice_override)
             self._pending_tool_allowlist = hard_tools
             self._pending_tool_gate_label = gate_label
             tools = self._tool_schemas_with_names(tools, hard_tools)
@@ -217,7 +288,11 @@ class _SessionRunCompletionMixin:
         )
         await self.event_publisher.emit(self.event_factory.error("context_overflow_recompacted"))
         try:
-            return await self._complete(forced, tools)
+            return await self._complete(
+                forced,
+                tools,
+                tool_choice_override,
+            )
         except Exception as exc:
             if self._is_context_overflow(exc):
                 raise _ContextOverflowStop() from exc
@@ -250,9 +325,7 @@ class _SessionRunCompletionMixin:
             # identically, so re-raise it instead of masking a real fault behind
             # a second call. Duck-typed so the application layer needs no
             # provider-specific exception imports.
-            status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
-            msg = str(exc).lower()
-            if status != 400 and "tool_choice" not in msg and "tool choice" not in msg:
+            if not _is_tool_choice_rejection(exc):
                 raise
             logger.warning(
                 "tool_choice=%r rejected on aid=%s (%s); retrying once with 'auto'",
@@ -260,7 +333,15 @@ class _SessionRunCompletionMixin:
                 self.state.aid,
                 type(exc).__name__,
             )
-            return await self._complete_with_choice(messages, tools, "auto")
+            try:
+                return await self._complete_with_choice(messages, tools, "auto")
+            except Exception as fallback_exc:
+                if hasattr(exc, "add_note"):
+                    exc.add_note(
+                        "Retrying with tool_choice='auto' also failed: "
+                        f"{type(fallback_exc).__name__}: {fallback_exc}"
+                    )
+                raise exc from fallback_exc
 
     async def _complete_with_choice(
         self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None
@@ -450,19 +531,23 @@ class _SessionRunCompletionMixin:
             )
 
     def append_assistant_message(self, response: CompletionResponse) -> None:
+        has_content = (
+            isinstance(response.content, str)
+            and bool(response.content.strip())
+        )
         # A provider-limit response may contain an incomplete tool call. Never
         # persist that structure: a later turn would send an orphaned call back
         # to the provider, and the run loop must not execute partial arguments.
         # Preserve only user-visible partial text; the full raw response remains
         # available in the trace for diagnosis.
         if response.finish_reason in {"length", "max_tokens"}:
-            if response.content:
+            if has_content:
                 self.state.append_message({"role": "assistant", "content": response.content})
             return
         # An empty-stop turn (no content, no tool calls) would append a bare
         # ``{"role": "assistant"}`` message that some providers reject on the
         # next request. Skip it — handle_pending_response decides retry-vs-DONE.
-        if not response.content and not response.tool_calls:
+        if not has_content and not response.tool_calls:
             return
         assistant_msg: dict[str, Any] = {"role": "assistant"}
         reasoning = getattr(response, "reasoning", None)
@@ -471,7 +556,7 @@ class _SessionRunCompletionMixin:
         provider_state = getattr(response, "provider_state", None)
         if provider_state:
             assistant_msg["provider_state"] = provider_state
-        if response.content:
+        if has_content:
             assistant_msg["content"] = response.content
         if response.tool_calls:
             assistant_msg["tool_calls"] = response.tool_calls
