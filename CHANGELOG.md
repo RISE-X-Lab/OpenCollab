@@ -7,14 +7,20 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-08
+
 ### Added
 - Added Mini Edict, a bilingual, tested Three Departments and Six Ministries
   example with both a team configuration and a hard-gated workflow.
 - Added a public maintainer release procedure covering exact-SHA validation,
   artifact construction, signed tagging, publication, and failure handling.
 - Added explicit lifecycle exceptions for rejected concurrent turns,
-  scheduler turn failures/stalls, and unavailable isolated snapshots. See the
-  0.5.0 migration guide for import paths and recovery actions.
+  duplicate live spawns, scheduler turn failures/stalls, and unavailable
+  isolated snapshots. See the 0.5.0 migration guide for import paths and
+  recovery actions.
+- Added `task_concurrency` to workflow runs and `cleanup_timeout` to team runs
+  so callers can bound non-agent workflow units and scheduler shutdown
+  independently.
 
 ### Changed
 - Replaced changelog links that depended on the absent remote `v0.1.0` tag with
@@ -22,6 +28,9 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 - Scheduler and session boundaries now preserve terminal failures, ownership,
   budgets, deadlines, and snapshot isolation instead of silently treating
   partial work as success.
+- Configuration and team schemas reject unknown keys, API-key fallback is
+  provider/endpoint specific, wind-down latches reset per user turn while hard
+  budgets remain session-lifetime, and useful partial compaction is retained.
 
 ### Fixed
 - Capped structured-output corrective retries at 60 seconds while preserving
@@ -105,6 +114,7 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/563027175e2cc2540d19324def73010a7e436dcc...v0.4.1
 [0.1.0]: https://github.com/RISE-X-Lab/OpenCollab/tree/563027175e2cc2540d19324def73010a7e436dcc
