@@ -322,19 +322,12 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
                 return val
         return default
 
-    def resolve_ordered(
-        *keys: str, default: str | None = None, file_first: bool = False
-    ) -> str | None:
+    def resolve_ordered(*keys: str, default: str | None = None) -> str | None:
         # For provider-specific secrets, key specificity matters more than
         # source. This prevents a generic exported OPENAI_API_KEY from being sent
         # to a provider-specific compatible endpoint such as DashScope.
-        #
-        # With file_first, the env FILE value of each key beats a shell export of
-        # the same key. A stale shell ANTHROPIC_API_KEY/OPENAI_API_KEY then cannot
-        # shadow the real provider key written to configs/.env.
         for key in keys:
-            sources = (dotenv, os.environ) if file_first else (os.environ, dotenv)
-            for source in sources:
+            for source in (os.environ, dotenv):
                 val = source.get(key)
                 if val:
                     return val
@@ -355,7 +348,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         else resolve("OPENCOLLAB_BASE_URL", provider_base_url_key)
     )
     api_key_value = selected_overrides.get("api_key") or resolve_ordered(
-        *api_key_env_precedence(provider_value, base_url_value), file_first=True
+        *api_key_env_precedence(provider_value, base_url_value)
     )
 
     values: dict[str, Any] = {
