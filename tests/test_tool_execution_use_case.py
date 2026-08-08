@@ -14,6 +14,7 @@ from tool_execution_test_support import (
     RecordingEventPublisher as FakeEventPublisher,
 )
 
+import opencollab.application.tool_execution_runtime as tool_execution_runtime
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.structured_output import StructuredOutputTool
 from opencollab.application.submit_findings import SubmitFindingsTool
@@ -709,4 +710,3 @@ def test_loop_block_short_circuit_counts_toward_hard_brake():
 
     assert state.turn.loop_blocked_since_progress == 1
     assert result.loop_detections == [LoopDetection(tool="fake_tool", count=3)]
-
