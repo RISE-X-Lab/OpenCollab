@@ -119,6 +119,32 @@ def test_tool_runtime_confirm_fn_returns_none_without_permission_policy():
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("value", [0, -1, False, 1.5])
+def test_bash_rejects_invalid_output_limits_at_construction(value):
+    with pytest.raises(ValueError, match="positive integer"):
+        BashTool(max_output_chars=value)
+
+
+@pytest.mark.parametrize(
+    ("tool_type", "parameter"),
+    [
+        (FileReadTool, "max_read_chars"),
+        (GrepTool, "max_grep_chars"),
+        (GitDiffTool, "max_diff_chars"),
+        (GitDiffTool, "max_status_chars"),
+        (RunTestsTool, "max_traceback_chars"),
+    ],
+)
+@pytest.mark.parametrize("value", [0, -1, False, 1.5])
+def test_public_tools_reject_invalid_output_limits_at_construction(
+    tool_type,
+    parameter,
+    value,
+):
+    with pytest.raises(ValueError, match="positive integer"):
+        tool_type(**{parameter: value})
+
+
 def test_bash_tool_without_env_returns_existing_error():
     runtime = ToolRuntime(environment=None, safety_policy=None, permission_policy=None)
 
@@ -187,6 +213,27 @@ def test_file_read_reads_through_runtime(tmp_path):
     assert "1\talpha" not in result
 
 
+def test_file_read_small_range_bypasses_full_file_limit(tmp_path):
+    target = tmp_path / "large.txt"
+    target.write_bytes(b"first\nsecond\n" + b"x" * (5 * 1024 * 1024))
+    runtime = ToolRuntime(
+        environment=LocalEnvironment(str(tmp_path)),
+        safety_policy=None,
+        permission_policy=None,
+    )
+
+    result = run(
+        FileReadTool().execute_with_runtime(
+            {"path": "large.txt", "offset": 1, "limit": 2},
+            runtime,
+        )
+    )
+
+    assert "1\tfirst" in result
+    assert "2\tsecond" in result
+    assert "more lines below" in result
+
+
 def test_file_read_preserves_workspace_path_jail(tmp_path):
     workspace = tmp_path / "ws"
     workspace.mkdir()
@@ -219,7 +266,7 @@ def test_file_read_preserves_permission_error_string(monkeypatch, tmp_path):
     async def raise_permission_error(*args, **kwargs):
         raise PermissionError("denied")
 
-    monkeypatch.setattr(LocalEnvironment, "read_file", raise_permission_error)
+    monkeypatch.setattr(LocalEnvironment, "read_text_range", raise_permission_error)
     env = LocalEnvironment(str(tmp_path))
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
@@ -256,6 +303,42 @@ def test_file_write_create_and_str_replace(tmp_path):
     assert "Created/wrote" in create_result
     assert "Replaced in" in replace_result
     assert (workspace / "note.txt").read_text(encoding="utf-8") == "beta\n"
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_file_write_create_requires_explicit_content(tmp_path, existing):
+    target = tmp_path / "note.txt"
+    if existing:
+        target.write_text("KEEP", encoding="utf-8")
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {"path": "note.txt", "mode": "create"},
+            runtime,
+        )
+    )
+
+    assert result == "Error: content is required for create mode."
+    assert target.exists() is existing
+    if existing:
+        assert target.read_text(encoding="utf-8") == "KEEP"
+
+
+def test_file_write_create_allows_explicit_empty_content(tmp_path):
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {"path": "empty.txt", "mode": "create", "content": ""},
+            runtime,
+        )
+    )
+
+    assert "Created/wrote" in result
+    assert (tmp_path / "empty.txt").read_text(encoding="utf-8") == ""
 
 
 def test_file_write_preserves_workspace_path_jail(tmp_path):
@@ -320,6 +403,26 @@ def test_file_write_preserves_duplicate_old_str_error(tmp_path):
         result
         == "Error: old_str found 2 times in note.txt. Provide more context to make it unique."
     )
+
+
+def test_file_write_rejects_overlapping_old_str_matches(tmp_path):
+    target = tmp_path / "note.txt"
+    target.write_text("aaa", encoding="utf-8")
+    env = LocalEnvironment(str(tmp_path))
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        FileWriteTool().execute_with_runtime(
+            {"path": "note.txt", "mode": "str_replace", "old_str": "aa", "new_str": "b"},
+            runtime,
+        )
+    )
+
+    assert (
+        result
+        == "Error: old_str found 2 times in note.txt. Provide more context to make it unique."
+    )
+    assert target.read_text(encoding="utf-8") == "aaa"
 
 
 # ---------------------------------------------------------------------------
@@ -507,6 +610,86 @@ def test_grep_tool_rejects_non_integer_max_results_before_exec():
     assert env.exec_calls == []
 
 
+def test_grep_tool_applies_max_results_globally():
+    env = FakeEnv(
+        stdout="\n".join(f"src/file_{index}.py:1:needle" for index in range(6))
+    )
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        GrepTool().execute_with_runtime(
+            {"pattern": "needle", "max_results": 2},
+            runtime,
+        )
+    )
+
+    assert result.splitlines() == [
+        "src/file_0.py:1:needle",
+        "src/file_1.py:1:needle",
+    ]
+
+
+def test_grep_tool_does_not_fallback_after_normal_rg_no_match():
+    class NoMatchEnv(FakeEnv):
+        async def exec_cmd(self, cmd: str, timeout: float = 120.0):
+            self.exec_calls.append((cmd, timeout))
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    env = NoMatchEnv()
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(GrepTool().execute_with_runtime({"pattern": "absent"}, runtime))
+
+    assert result == "No matches found for pattern: absent"
+    assert len(env.exec_calls) == 1
+    assert "grep -r" not in env.exec_calls[0][0]
+
+
+@pytest.mark.parametrize(
+    ("returncode", "stderr", "expected"),
+    [
+        (2, "regex parse error", "regex parse error"),
+        (2, "path does not exist", "path does not exist"),
+        (-1, "Command timed out after 30s", "timed out"),
+    ],
+)
+def test_grep_tool_reports_backend_failures(returncode, stderr, expected):
+    class FailedSearchEnv(FakeEnv):
+        async def exec_cmd(self, cmd: str, timeout: float = 120.0):
+            self.exec_calls.append((cmd, timeout))
+            return SimpleNamespace(
+                returncode=returncode,
+                stdout="",
+                stderr=stderr,
+                stdout_truncated=False,
+                stderr_truncated=False,
+            )
+
+    env = FailedSearchEnv()
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(GrepTool().execute_with_runtime({"pattern": "["}, runtime))
+
+    assert result.startswith("Error: rg search failed")
+    assert expected in result
+    assert "No matches" not in result
+    assert "2>/dev/null" not in env.exec_calls[0][0]
+
+
+def test_grep_tool_includes_hidden_project_paths_with_noise_exclusions():
+    env = FakeEnv(stdout=".github/workflows/ci.yml:1:needle\n")
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(GrepTool().execute_with_runtime({"pattern": "needle"}, runtime))
+
+    assert result == ".github/workflows/ci.yml:1:needle"
+    command = env.exec_calls[0][0]
+    assert "rg -n --hidden " in command
+    assert "-g '!.git/**'" in command
+    assert "-g '!.venv/**'" in command
+    assert "-g '!.opencollab/**'" in command
+
+
 def test_grep_tool_terminates_options_before_pattern_and_path():
     env = FakeEnv(stdout="")
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
@@ -519,11 +702,8 @@ def test_grep_tool_terminates_options_before_pattern_and_path():
     )
 
     cmd, _ = env.exec_calls[0]
-    assert "rg -n --max-count 50 -- '--pre=touch pwned' --debug" in cmd
-    assert (
-        "grep -rEn --exclude-dir=.git --exclude-dir=.venv --exclude-dir=.opencollab "
-        "-- '--pre=touch pwned' --debug"
-    ) in cmd
+    assert "rg -n --hidden" in cmd
+    assert "-- '--pre=touch pwned' --debug" in cmd
 
 
 def test_file_read_description_teaches_distill_and_forbids_reread():
@@ -544,7 +724,14 @@ def test_grep_tool_fallback_uses_ere_and_skips_session_dir():
     # nothing. It must also skip .opencollab so it can't "match" its own logged
     # pattern strings instead of real source. (Regression: a 100-step run stalled
     # because every alternation grep returned "No matches found".)
-    env = FakeEnv(stdout="")
+    class MissingRgEnv(FakeEnv):
+        async def exec_cmd(self, cmd: str, timeout: float = 120.0):
+            self.exec_calls.append((cmd, timeout))
+            if len(self.exec_calls) == 1:
+                return SimpleNamespace(returncode=127, stdout="", stderr="")
+            return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    env = MissingRgEnv(stdout="")
     runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
 
     run(
@@ -553,8 +740,9 @@ def test_grep_tool_fallback_uses_ere_and_skips_session_dir():
         )
     )
 
-    cmd, _ = env.exec_calls[0]
-    assert "|| grep -rEn" in cmd
+    assert len(env.exec_calls) == 2
+    cmd, _ = env.exec_calls[1]
+    assert cmd.startswith("grep -rEn")
     assert " grep -rn " not in cmd  # the buggy BRE fallback must be gone
     assert "--exclude-dir=.opencollab" in cmd
 

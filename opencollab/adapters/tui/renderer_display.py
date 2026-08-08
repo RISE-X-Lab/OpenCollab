@@ -318,6 +318,15 @@ class _RendererDisplayMixin:
     def _build_history_display(self, state: Any, *, start: int = 0) -> Any | None:
         """Build the requested slice of one agent's history without live chrome."""
         blocks = list(state.history_blocks[start:])
+        if start == 0 and state.history_omitted_blocks:
+            blocks.insert(
+                0,
+                Text(
+                    f"... {state.history_omitted_blocks} older history blocks "
+                    "omitted; full history remains in the run trace.",
+                    style=self._STYLE_MUTED,
+                ),
+            )
         if state.current_text:
             blocks.append(self._assistant_block(Markdown(state.current_text)))
         if not blocks:

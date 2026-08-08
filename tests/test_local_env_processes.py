@@ -6,6 +6,7 @@ import asyncio
 import os
 import shlex
 import sys
+import threading
 
 import pytest
 
@@ -64,7 +65,7 @@ async def test_local_exec_bounds_output(tmp_path, monkeypatch) -> None:
     [
         (b"ok", 4, b"ok", 0),
         (b"four", 4, b"four", 0),
-        (b"abcdef", 4, b"abcd", 2),
+        (b"abcdef", 4, b"abef", 2),
     ],
     ids=("below-limit", "exact-limit", "over-limit"),
 )
@@ -84,6 +85,22 @@ async def test_process_output_limit_counts_only_unretained_bytes(
     assert result.stdout == expected_stdout
     assert result.stdout_dropped_bytes == expected_dropped
     assert result.to_exec_result().stdout_truncated is (expected_dropped > 0)
+
+
+async def test_process_output_limit_preserves_real_head_and_tail() -> None:
+    payload = b"HEAD" + b"x" * 100 + b"TAIL"
+
+    result = await run_process(
+        (sys.executable, "-c", f"import os; os.write(1, {payload!r})"),
+        shell=False,
+        timeout=5,
+        output_limit=16,
+    )
+
+    assert result.stdout.startswith(b"HEAD")
+    assert result.stdout.endswith(b"TAIL")
+    assert len(result.stdout) == 16
+    assert result.stdout_dropped_bytes == len(payload) - 16
 
 
 async def test_local_timeout_kills_descendant_before_it_mutates_workspace(tmp_path) -> None:
@@ -181,6 +198,133 @@ async def test_process_timeout_covers_blocked_stdin_writer(tmp_path) -> None:
             ),
             timeout=2,
         )
+
+
+async def test_process_timeout_covers_subprocess_spawn(monkeypatch, tmp_path) -> None:
+    gate = asyncio.Event()
+    terminated = asyncio.Event()
+    original_spawn = process_module.asyncio.create_subprocess_exec
+    original_terminate = process_module.terminate_process
+
+    async def delayed_spawn(*args, **kwargs):
+        await gate.wait()
+        return await original_spawn(*args, **kwargs)
+
+    async def tracked_terminate(process, **kwargs):
+        result = await original_terminate(process, **kwargs)
+        terminated.set()
+        return result
+
+    monkeypatch.setattr(
+        process_module.asyncio,
+        "create_subprocess_exec",
+        delayed_spawn,
+    )
+    monkeypatch.setattr(process_module, "terminate_process", tracked_terminate)
+    task = asyncio.create_task(
+        run_process(
+            (sys.executable, "-c", "import time; time.sleep(5)"),
+            shell=False,
+            cwd=str(tmp_path),
+            timeout=0.01,
+        )
+    )
+
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=0.1)
+        assert task in done
+        with pytest.raises(asyncio.TimeoutError):
+            task.result()
+    finally:
+        gate.set()
+        if not task.done():
+            with pytest.raises(asyncio.TimeoutError):
+                await task
+        await asyncio.wait_for(terminated.wait(), timeout=1)
+
+
+async def test_process_cancellation_during_spawn_is_bounded(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    gate = asyncio.Event()
+    terminated = asyncio.Event()
+    original_spawn = process_module.asyncio.create_subprocess_exec
+    original_terminate = process_module.terminate_process
+
+    async def delayed_spawn(*args, **kwargs):
+        await gate.wait()
+        return await original_spawn(*args, **kwargs)
+
+    async def tracked_terminate(process, **kwargs):
+        result = await original_terminate(process, **kwargs)
+        terminated.set()
+        return result
+
+    monkeypatch.setattr(
+        process_module.asyncio,
+        "create_subprocess_exec",
+        delayed_spawn,
+    )
+    monkeypatch.setattr(process_module, "terminate_process", tracked_terminate)
+    task = asyncio.create_task(
+        run_process(
+            (sys.executable, "-c", "import time; time.sleep(5)"),
+            shell=False,
+            cwd=str(tmp_path),
+            timeout=5,
+        )
+    )
+    await asyncio.sleep(0)
+    task.cancel()
+
+    try:
+        done, _pending = await asyncio.wait({task}, timeout=0.1)
+        assert task in done
+        with pytest.raises(asyncio.CancelledError):
+            task.result()
+    finally:
+        gate.set()
+        if not task.done():
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        await asyncio.wait_for(terminated.wait(), timeout=1)
+
+
+async def test_registry_abort_bounds_unfinished_spawn_handoff(monkeypatch) -> None:
+    registry = process_module.ProcessRegistry()
+    spawn_started = asyncio.Event()
+    spawn_release = asyncio.Event()
+    process = object()
+
+    async def factory():
+        spawn_started.set()
+        await spawn_release.wait()
+        return process
+
+    async def cleanup(candidate):
+        assert candidate is process
+        return True
+
+    monkeypatch.setattr(process_module, "PROCESS_KILL_GRACE_SECONDS", 0.01)
+    monkeypatch.setattr(process_module, "terminate_process", cleanup)
+    spawn_owner = asyncio.create_task(registry.spawn(factory))
+    await spawn_started.wait()
+    abort_owner = asyncio.create_task(registry.abort())
+
+    try:
+        done, _pending = await asyncio.wait({abort_owner}, timeout=0.1)
+        assert abort_owner in done
+        with pytest.raises(ProcessCleanupError, match="spawn handoff"):
+            abort_owner.result()
+    finally:
+        spawn_release.set()
+        with pytest.raises(RuntimeError, match="revoked"):
+            await spawn_owner
+        if not abort_owner.done():
+            await abort_owner
+
+    await registry.abort()
 
 
 async def test_cancellation_during_timeout_cleanup_is_preserved(monkeypatch) -> None:
@@ -364,6 +508,62 @@ async def test_local_file_operations_reject_symlink_and_escape(tmp_path) -> None
     with pytest.raises(PermissionError):
         await env.write_file("../escape", "changed")
     assert outside.read_text(encoding="utf-8") == "outside"
+
+
+@pytest.mark.parametrize("operation", ["read", "write"])
+async def test_local_file_io_does_not_block_event_loop(
+    tmp_path,
+    monkeypatch,
+    operation,
+) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_file_io(*_args, **_kwargs):
+        started.set()
+        assert release.wait(1.0)
+        return b"payload"
+
+    env = LocalEnvironment(str(tmp_path))
+    if operation == "read":
+        monkeypatch.setattr(local_module, "read_regular_bytes", slow_file_io)
+        owner = asyncio.create_task(env.read_file("value"))
+    else:
+        monkeypatch.setattr(local_module, "write_regular_bytes_atomic", slow_file_io)
+        owner = asyncio.create_task(env.write_file("value", "payload"))
+    timer = threading.Timer(0.15, release.set)
+    timer.start()
+    try:
+        await asyncio.sleep(0.02)
+        assert started.is_set()
+        assert not owner.done()
+    finally:
+        release.set()
+        timer.cancel()
+        await owner
+
+
+async def test_local_cleanup_waits_for_cancelled_file_io(tmp_path, monkeypatch) -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_write(*_args, **_kwargs) -> None:
+        started.set()
+        assert release.wait(1.0)
+
+    monkeypatch.setattr(local_module, "write_regular_bytes_atomic", slow_write)
+    env = LocalEnvironment(str(tmp_path))
+    writer = asyncio.create_task(env.write_file("value", "payload"))
+    assert await asyncio.to_thread(started.wait, 1.0)
+    writer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await writer
+
+    cleanup = asyncio.create_task(env.cleanup())
+    await asyncio.sleep(0.02)
+    assert not cleanup.done()
+    release.set()
+    await cleanup
 
 
 async def test_local_temp_files_have_owned_cleanup(tmp_path) -> None:

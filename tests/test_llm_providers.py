@@ -201,6 +201,34 @@ def test_openai_thinking_on_adds_extra_body():
     assert kwargs["extra_body"] == {"enable_thinking": True}
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "model",
+        "messages",
+        "tools",
+        "tool_choice",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "max_completion_tokens",
+        "stream",
+        "stream_options",
+    ],
+)
+def test_openai_thinking_rejects_framework_controlled_request_fields(field):
+    with pytest.raises(ValueError, match=field):
+        build_openai_kwargs(
+            "safe-model",
+            [{"role": "user", "content": "keep this message"}],
+            None,
+            0.2,
+            thinking=True,
+            thinking_params={field: "override"},
+            max_output_tokens=10,
+        )
+
+
 def test_openai_preserves_reasoning_content_for_tool_follow_up():
     kwargs = build_openai_kwargs(
         "kimi-for-coding",
@@ -330,6 +358,35 @@ def test_exact_model_capabilities_centralize_provider_compatibility(model, conte
     assert capabilities.honors_workflow_thinking_override is False
 
 
+@pytest.mark.parametrize(
+    "model",
+    [
+        "vendor/kimi-for-coding",
+        "gateway/kimi-for-coding-2026-08-07",
+    ],
+)
+def test_known_model_capabilities_accept_bounded_provider_aliases(model):
+    capabilities = model_capabilities(model)
+
+    assert capabilities.context_window == 262_144
+    assert capabilities.supports_forced_tool_choice is False
+    assert capabilities.honors_workflow_thinking_override is False
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "vendor/kimi-for-coding-preview",
+        "vendor/not-kimi-for-coding",
+    ],
+)
+def test_known_model_capabilities_reject_prefixed_near_misses(model):
+    capabilities = model_capabilities(model)
+
+    assert capabilities.context_window is None
+    assert capabilities.supports_forced_tool_choice is True
+
+
 def test_unknown_model_capabilities_use_neutral_defaults():
     capabilities = model_capabilities("unknown-model")
 
@@ -367,6 +424,41 @@ def test_openai_top_p_omitted_when_none():
     assert "top_p" not in kwargs
 
 
+@pytest.mark.parametrize(
+    "model",
+    ["o1-preview", "o3-mini", "gateway/o1-2026-08-07"],
+)
+def test_openai_reasoning_models_use_compatible_request_fields(model):
+    kwargs = build_openai_kwargs(
+        model,
+        [{"role": "user", "content": "hi"}],
+        None,
+        0.2,
+        top_p=0.9,
+        max_output_tokens=123,
+    )
+
+    assert kwargs["max_completion_tokens"] == 123
+    assert "max_tokens" not in kwargs
+    assert "temperature" not in kwargs
+    assert "top_p" not in kwargs
+
+
+def test_openai_reasoning_model_near_miss_keeps_classic_fields():
+    kwargs = build_openai_kwargs(
+        "vendor/not-o1-preview",
+        [{"role": "user", "content": "hi"}],
+        None,
+        0.2,
+        top_p=0.9,
+        max_output_tokens=123,
+    )
+
+    assert kwargs["max_tokens"] == 123
+    assert kwargs["temperature"] == 0.2
+    assert kwargs["top_p"] == 0.9
+
+
 def test_anthropic_top_p_included_when_set():
     """Anthropic parity: top_p set -> the payload carries it."""
     kwargs = build_anthropic_kwargs(
@@ -388,6 +480,28 @@ def test_anthropic_top_p_omitted_when_none():
         0.2,
     )
     assert "top_p" not in kwargs
+
+
+def test_anthropic_keeps_compaction_record_in_conversation_order():
+    identity = "global identity"
+    compacted = "[Context auto-compacted]: earlier work"
+    system_parts, messages = convert_to_anthropic_messages(
+        [
+            {"role": "system", "content": identity},
+            {"role": "user", "content": "old request"},
+            {"role": "assistant", "content": "old answer"},
+            {"role": "system", "content": compacted, "compacted": True},
+            {"role": "user", "content": "new request"},
+        ]
+    )
+
+    assert system_parts == [identity]
+    assert [message["content"] for message in messages] == [
+        "old request",
+        [{"type": "text", "text": "old answer"}],
+        compacted,
+        "new request",
+    ]
 
 
 def test_max_output_tokens_reaches_both_provider_payloads():
@@ -465,6 +579,29 @@ def test_llm_client_forwards_anthropic_base_url(monkeypatch):
     assert captured["base_url"] == "http://proxy.local"
     assert captured["api_key"] == "k"
     assert captured["timeout"] == 12.0
+    assert captured["max_retries"] == 0
+
+
+def test_llm_client_disables_openai_sdk_retries(monkeypatch):
+    captured = {}
+
+    class FakeAsyncOpenAI:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    from opencollab.adapters.llm import client as client_module
+
+    monkeypatch.setattr(client_module.openai, "AsyncOpenAI", FakeAsyncOpenAI)
+
+    client = client_module.LLMClient(
+        provider="openai",
+        model="gpt-4o",
+        api_key="k",
+        max_retries=3,
+    )
+
+    assert client.max_retries == 3
+    assert captured["max_retries"] == 0
 
 
 def test_openai_estimates_output_from_tool_calls_when_no_content():
@@ -588,6 +725,108 @@ def test_anthropic_preserves_signed_thinking_for_tool_follow_up():
     assert converted[0]["content"][1]["type"] == "tool_use"
 
 
+def test_anthropic_conversion_normalizes_openai_text_blocks_without_mutation():
+    messages = [
+        {
+            "role": "system",
+            "content": [
+                {"type": "text", "text": "system "},
+                {"type": "text", "text": "policy"},
+            ],
+        },
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "first"},
+                {"type": "text", "text": "second"},
+            ],
+        },
+    ]
+    original = json.loads(json.dumps(messages))
+
+    system, converted = convert_to_anthropic_messages(messages)
+
+    assert system == ["system policy"]
+    assert converted == [{
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ],
+    }]
+    assert messages == original
+
+
+def test_anthropic_conversion_rejects_unsupported_content_block_with_location():
+    messages = [
+        {"role": "user", "content": "before"},
+        {
+            "role": "assistant",
+            "content": [{"type": "image_url", "image_url": {"url": "https://example.test/a.png"}}],
+        },
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match=r"message 1 .*assistant.* unsupported content block type: image_url",
+    ):
+        convert_to_anthropic_messages(messages)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "reason"),
+    [
+        ('{"path":', "invalid JSON"),
+        ('"path"', "JSON object"),
+        ("[]", "JSON object"),
+        (b"{}", "text or an object"),
+        (None, "text or an object"),
+    ],
+)
+def test_anthropic_conversion_rejects_invalid_restored_tool_arguments(
+    arguments,
+    reason,
+):
+    messages = [
+        {"role": "user", "content": "before"},
+        {
+            "role": "assistant",
+            "tool_calls": [{
+                "id": "call-bad",
+                "type": "function",
+                "function": {"name": "file_read", "arguments": arguments},
+            }],
+        },
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match=rf"message 1 .*file_read.*call-bad.*{reason}",
+    ):
+        convert_to_anthropic_messages(messages)
+
+
+def test_anthropic_conversion_preserves_object_tool_arguments():
+    messages = [{
+        "role": "assistant",
+        "tool_calls": [{
+            "id": "call-ok",
+            "type": "function",
+            "function": {
+                "name": "file_read",
+                "arguments": '{"path": "src/a.py", "options": {"line": 2}}',
+            },
+        }],
+    }]
+
+    _, converted = convert_to_anthropic_messages(messages)
+
+    assert converted[0]["content"][0]["input"] == {
+        "path": "src/a.py",
+        "options": {"line": 2},
+    }
+
+
 def test_anthropic_redacted_thinking_is_not_harvested():
     """redacted_thinking holds encrypted data, not text — must not become content."""
     redacted = SimpleNamespace(type="redacted_thinking", data="encrypted-bytes")
@@ -653,6 +892,24 @@ def test_openai_markup_two_tool_calls_are_synthesized():
     assert [tc["function"]["name"] for tc in result.tool_calls] == ["grep", "read_file"]
     assert [tc["id"] for tc in result.tool_calls] == ["c1", "c2"]
     assert result.content is None
+
+
+def test_openai_markup_malformed_group_is_not_partially_executed():
+    content = (
+        "<|tool_calls_section_begin|>"
+        "<|tool_call_begin|>functions.file_read:c1"
+        '<|tool_call_argument_begin|>{"path": "safe.txt"}<|tool_call_end|>'
+        "<|tool_call_begin|>functions.file_write:c2"
+        '<|tool_call_argument_begin|>{"path": "target.txt"<|tool_call_end|>'
+        "<|tool_calls_section_end|>"
+    )
+    resp = _openai_resp(usage=None, content=content)
+
+    result = parse_openai_response(resp, [{"role": "user", "content": "q"}])
+
+    assert result.tool_calls == []
+    assert result.content == content
+    assert result.usage.markup_recovered == 0
 
 
 def test_openai_markup_preserves_surrounding_prose():
