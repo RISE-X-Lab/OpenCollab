@@ -49,8 +49,9 @@ New behavior needs tests, and the suite must stay green.
   repository-root `ruff.toml`.
 - **PR title** must follow Conventional Commits. Squash-merge uses it as the
   commit subject on `main`.
-- **File hygiene** rejects a newly added file over 500 KB or a new `.py` module over
-  800 lines. Commit `.tex`/`.md` sources, not compiled PDFs.
+- **File hygiene** rejects any file your change pushes over 500 KB, and any `.py`
+  module it pushes over 800 lines — appending to an existing module counts.
+  Commit `.tex`/`.md` sources, not compiled PDFs.
 
 To run the same hooks locally, use
 `pip install pre-commit && pre-commit install`.
