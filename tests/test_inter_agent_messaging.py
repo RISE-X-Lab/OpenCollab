@@ -790,4 +790,3 @@ def test_send_message_from_unknown_aid_is_rejected_before_mutation():
 
     assert "no sending agent with aid 99" in result
     assert scheduler._message_inbox.get(0) in (None, [])
-

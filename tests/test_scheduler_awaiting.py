@@ -737,4 +737,3 @@ def test_external_turns_for_different_agents_start_concurrently():
         assert results == ["lead answer", "child answer"]
 
     run(scenario())
-

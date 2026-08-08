@@ -215,4 +215,3 @@ class WorkflowCollectionsMixin:
             len(items),
             lambda index: flow(items[index], index),
         )
-

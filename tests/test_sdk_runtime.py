@@ -635,5 +635,3 @@ async def test_artifact_directory_must_be_new_or_empty(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="new or empty"):
         await OpenCollab(tmp_path).workflow(plain, artifacts=artifacts, trace=False)
     assert (artifacts / "keep.txt").read_text() == "user data"
-
-
