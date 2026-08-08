@@ -167,6 +167,36 @@ def test_hard_budget_preempts_new_turn_wind_down(
     assert state.wind_down_done is False
 
 
+def test_budget_wind_down_is_not_regranted_on_a_new_user_turn():
+    state = SessionState(
+        messages=[{"role": "user", "content": "first"}],
+        used_tokens=80,
+    )
+    llm = FakeLLM([llm_response(content="first protected answer", total_tokens=5)])
+    runner = build_runner(
+        state=state,
+        agent=_agent_with_submit(),
+        llm=llm,
+        max_budget_tokens=100,
+        enforcement_strength=ENFORCEMENT_ON,
+        commit_reserve=20,
+    )
+
+    run(runner.run_loop())
+    assert len(llm.calls) == 1
+    assert state.used_tokens == 85
+
+    state.reset_for_user_turn()
+    runner.reset_runtime_for_user_turn()
+    state.append_message({"role": "user", "content": "again"})
+
+    run(runner.run_loop())
+
+    assert len(llm.calls) == 1
+    assert state.phase is SessionPhase.STOPPED
+    assert state.terminal_reason == "budget reserve exhausted: protected commit turn already used"
+
+
 # --------------------------------------------------------------------------- #
 # T2 — WIND-DOWN BEHAVIOR.
 # --------------------------------------------------------------------------- #
@@ -327,6 +357,7 @@ def test_legacy_wind_down_snapshot_without_attempts_stops_conservatively(tmp_pat
     session.save(str(path))
     snapshot = json.loads(path.read_text())
     del snapshot["session_state"]["wind_down_attempts"]
+    del snapshot["session_state"]["budget_reserve_consumed"]
     path.write_text(json.dumps(snapshot))
 
     restored_llm = FakeLLM()
@@ -339,6 +370,7 @@ def test_legacy_wind_down_snapshot_without_attempts_stops_conservatively(tmp_pat
     run(restored.run_loop())
 
     assert restored.state.wind_down_attempts == 2
+    assert restored.state.budget_reserve_consumed is True
     assert restored_llm.calls == []
 
 
@@ -349,6 +381,7 @@ def test_t2_winddown_not_entered_while_a_tool_result_is_pending():
     from opencollab.domain.pending import PendingRow, RowKind, RowStatus
 
     state = SessionState(messages=[{"role": "user", "content": "x"}], used_tokens=80_000)
+    state.budget_reserve_consumed = True
     state.pending_events.add(
         PendingRow(tool_call_id="t1", kind=RowKind.CHILD_AGENT, order=0, status=RowStatus.PENDING)
     )

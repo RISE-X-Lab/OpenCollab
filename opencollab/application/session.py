@@ -485,6 +485,9 @@ class Session:
         restored.wind_down_token_mark = _snapshot_nonnegative_int(
             raw_state.get("wind_down_token_mark")
         )
+        restored.budget_reserve_consumed = bool(
+            raw_state.get("budget_reserve_consumed", restored.wind_down_done)
+        )
         restored.turn.loop_blocked_since_progress = _snapshot_nonnegative_int(
             raw_state.get("loop_blocked_since_progress")
         )
@@ -671,6 +674,7 @@ class Session:
                 "wind_down_done": self.state.wind_down_done,
                 "wind_down_attempts": self.state.wind_down_attempts,
                 "wind_down_token_mark": self.state.wind_down_token_mark,
+                "budget_reserve_consumed": self.state.budget_reserve_consumed,
                 "loop_blocked_since_progress": self.state.turn.loop_blocked_since_progress,
                 "phase": self.state.phase.value,
                 "terminal_reason": self.state.terminal_reason,

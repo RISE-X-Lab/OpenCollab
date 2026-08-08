@@ -499,8 +499,15 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         brake = budget_spent or watchdog_tripped or low_yield_tripped
         if not brake or not self.state.pending_events.is_empty():
             return False
+        if budget_spent and self.state.budget_reserve_consumed:
+            await self._stop_precheck(
+                "budget reserve exhausted: protected commit turn already used"
+            )
+            return True
 
         self._trace_brake_trip(budget_spent, watchdog_tripped, low_yield_tripped)
+        if budget_spent:
+            self.state.budget_reserve_consumed = True
         self._enter_wind_down()
         self.state.transition_to(SessionPhase.CALLING_LLM)
         return True
@@ -571,6 +578,11 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         latency = time.monotonic() - start
         input_tokens, total_tokens = _normalize_completion_usage(response.usage)
         self.state.add_used_tokens(total_tokens)
+        if (
+            self.state.wind_down_done
+            and self.state.used_tokens >= self.max_budget_tokens - self._commit_reserve
+        ):
+            self.state.budget_reserve_consumed = True
         self.state.add_markup_recovered(getattr(response.usage, "markup_recovered", 0))
         self.state.set_context_tokens(input_tokens)
 

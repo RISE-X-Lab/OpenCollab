@@ -173,8 +173,9 @@ def test_save_and_load_round_trip_restores_control_flow_latches(tmp_path):
     state.turn.seen_result_hashes = {"content-hash", "call-hash"}
     state.turn.scout_ledger = [{"tool": "grep", "outcome": "hit"}]
     state.turn.steps_since_progress = 2
-    state.wind_down_done = True
+    state.wind_down_done = False
     state.wind_down_token_mark = 123
+    state.budget_reserve_consumed = True
     state.turn.loop_blocked_since_progress = 2
     path = tmp_path / "control-state.json"
 
@@ -189,8 +190,9 @@ def test_save_and_load_round_trip_restores_control_flow_latches(tmp_path):
     assert restored.turn.seen_result_hashes == {"content-hash", "call-hash"}
     assert restored.turn.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
     assert restored.turn.steps_since_progress == 2
-    assert restored.wind_down_done is True
+    assert restored.wind_down_done is False
     assert restored.wind_down_token_mark == 123
+    assert restored.budget_reserve_consumed is True
     assert restored.turn.loop_blocked_since_progress == 2
 
 def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
@@ -215,8 +217,10 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
         "content": "retry after restore",
         "message_index": 1,
     }
-    # The durable current-turn latch is part of the user-turn transaction.
+    # The wind-down latch is part of the current-turn transaction; the budget
+    # reserve is session-lifetime state and must survive a rollback.
     state.wind_down_done = True
+    state.budget_reserve_consumed = False
 
     checkpoint = state.checkpoint_user_turn()
 
@@ -230,6 +234,7 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
     state.turn.loop_blocked_since_progress = 99
     state.pending_external_user_turn = None
     state.wind_down_done = False
+    state.budget_reserve_consumed = True
 
     state.restore_user_turn(checkpoint)
 
@@ -247,8 +252,10 @@ def test_checkpoint_and_restore_user_turn_roll_back_per_turn_enforcement():
         "content": "retry after restore",
         "message_index": 1,
     }
-    # Rollback restores the prior turn's latch along with its counters.
+    # Rollback restores the prior turn's latch while retaining the lifetime
+    # budget reserve consumption.
     assert state.wind_down_done is True
+    assert state.budget_reserve_consumed is True
 
     # The checkpoint is an independent snapshot: mutating restored state and
     # restoring a second time still yields the checkpoint values.
