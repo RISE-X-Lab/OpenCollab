@@ -45,7 +45,11 @@ def test_autosave_subscriber_records_save_errors(caplog):
 
     sub = AutoSaveSubscriber(boom)
     with caplog.at_level(logging.WARNING):
-        asyncio.run(sub.emit(SessionEvent(type="step_end")))
+        async def scenario():
+            await sub.emit(SessionEvent(type="step_end"))
+            await asyncio.gather(*sub.pending_tasks, return_exceptions=True)
+
+        asyncio.run(scenario())
 
     assert sub.last_error is error
     assert sub.failure_count == 1
@@ -59,7 +63,11 @@ def test_autosave_wraps_worker_base_exceptions_without_escaping(fatal):
 
     sub = AutoSaveSubscriber(boom)
 
-    asyncio.run(sub.emit(SessionEvent(type="step_end")))
+    async def scenario():
+        await sub.emit(SessionEvent(type="step_end"))
+        await asyncio.gather(*sub.pending_tasks, return_exceptions=True)
+
+    asyncio.run(scenario())
 
     assert isinstance(sub.last_error, RuntimeError)
     assert type(fatal).__name__ in str(sub.last_error)
