@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from llm_provider_test_support import _openai_resp
 
+from opencollab.adapters.llm.anthropic_provider import _parse_response as parse_anthropic_response
 from opencollab.adapters.llm.anthropic_provider import _parse_usage as parse_anthropic_usage
 from opencollab.adapters.llm.openai_provider import _parse_response as parse_openai_response
 from opencollab.adapters.llm.providers import (
@@ -169,3 +170,30 @@ def test_openai_normal_usage_unchanged_and_no_double_count():
     assert result.usage.raw_usage["prompt_tokens_details"]["cached_tokens"] == 800
     assert result.usage.total_tokens == 1050
     assert result.usage.estimated is False
+
+
+def test_anthropic_tolerates_null_text_and_thinking_blocks():
+    """Compatible Anthropic gateways may emit nullable content fields."""
+    response = SimpleNamespace(
+        content=[
+            SimpleNamespace(
+                type="thinking",
+                thinking=None,
+                signature="signed-thinking",
+            ),
+            SimpleNamespace(type="text", text=None),
+        ],
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+        stop_reason="end_turn",
+    )
+
+    result = parse_anthropic_response(response)
+
+    assert result.content is None
+    assert result.reasoning is None
+    assert result.provider_state == {
+        "anthropic_content": [
+            {"type": "thinking", "thinking": "", "signature": "signed-thinking"},
+            {"type": "text", "text": ""},
+        ]
+    }
