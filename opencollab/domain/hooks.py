@@ -32,12 +32,11 @@ HOOK_EVENT_NAMES: frozenset[str] = frozenset(
 # Events whose payload carries a tool name and therefore support a ``matcher``.
 TOOL_SCOPED_EVENTS: frozenset[str] = frozenset({"PreToolUse", "PostToolUse"})
 
-# Action types a hook may declare. ``command`` is the only one a runner executes
-# in phase 1; ``prompt`` and ``agent`` are reserved (a config may declare them,
-# but firing one raises until its executor lands). Anything outside this set is a
-# typo and is rejected at config load so it fails fast rather than silently never
-# firing.
+# Recognized action vocabulary and the subset that the installed runner can
+# execute. Keeping both here gives configuration and runtime one source of truth
+# while reserving future names without accepting inert configurations.
 HOOK_ACTION_TYPES: frozenset[str] = frozenset({"command", "prompt", "agent"})
+EXECUTABLE_HOOK_ACTION_TYPES: frozenset[str] = frozenset({"command"})
 
 
 @dataclass(frozen=True)
@@ -103,6 +102,7 @@ def match_hooks(
 __all__ = [
     "HOOK_EVENT_NAMES",
     "HOOK_ACTION_TYPES",
+    "EXECUTABLE_HOOK_ACTION_TYPES",
     "TOOL_SCOPED_EVENTS",
     "HookSpec",
     "HookOutcome",

@@ -180,6 +180,9 @@ class Scheduler(
         self._cleanup_task: asyncio.Task[None] | None = None
         self._fallback_autosavers: dict[int, AutoSaveSubscriber] = {}
         self._scheduler_persistence_errors: list[Exception] = []
+        # Bootstrap-owned resources whose process/persistence state must be
+        # proven quiescent before scheduler cleanup may release worktrees.
+        self._lifecycle_resources: list[tuple[str, Any]] = []
         # A synchronous review loop temporarily yields its caller's turn lease
         # through ordinary ``spawn`` calls. Context-local accounting records only
         # leases actually released by this review invocation, so an external API
@@ -188,6 +191,16 @@ class Scheduler(
         self._review_parent_lease_tracker: contextvars.ContextVar[
             tuple[int, dict[str, int]] | None
         ] = contextvars.ContextVar("review_parent_lease_tracker", default=None)
+
+    def register_lifecycle_resource(
+        self,
+        resource: Any,
+        *,
+        description: str,
+    ) -> None:
+        """Make an externally owned resource part of final cleanup evidence."""
+        self._lifecycle_resources.append((description, resource))
+
 
 __all__ = [
     "LaunchSpec",

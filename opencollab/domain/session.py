@@ -236,16 +236,21 @@ class SessionState:
                 len(self.messages) - len(self.message_timestamps)
             )
 
-    def enriched_messages(self) -> list[dict[str, Any]]:
+    def enriched_messages(self, start: int = 0) -> list[dict[str, Any]]:
         """Messages with their creation ``timestamp`` merged in, for persistence.
 
         Re-aligns first so messages appended by bypassing ``append_message``
         (e.g. direct list mutation) still get a timestamp.
         """
+        if isinstance(start, bool) or not isinstance(start, int) or start < 0:
+            raise ValueError("message start must be a non-negative integer")
         self._align_timestamps()
         return [
             {**msg, "timestamp": ts}
-            for msg, ts in zip(self.messages, self.message_timestamps)
+            for msg, ts in zip(
+                self.messages[start:],
+                self.message_timestamps[start:],
+            )
         ]
 
     def queue_pending_user_message(self, message: dict[str, Any]) -> None:
