@@ -121,6 +121,7 @@ class SchedulerCleanupMixin:
             self.table.entries.pop(aid, None)
             self._sessions.pop(aid, None)
             self._locks.pop(aid, None)
+            self._run_locks.pop(aid, None)
             self._message_inbox.pop(aid, None)
 
         self._startup_tasks.clear()
@@ -133,7 +134,10 @@ class SchedulerCleanupMixin:
         self._lease_baseline.clear()
         self._inflight.clear()
         self._inflight_key_of.clear()
+        self._delivery_committed.clear()
         self._tasks.clear()
+        self._turn_started_at.clear()
+        self._turn_cancel_events.clear()
 
         persistence_quiesced = await self._wait_for_session_persistence(
             persistence_sessions,

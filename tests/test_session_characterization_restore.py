@@ -20,7 +20,8 @@ from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler_types import LaunchSpec
 from opencollab.bootstrap import build_session as Session
 from opencollab.bootstrap import load_session
-from opencollab.domain.pending import PendingRow, RowKind, RowStatus
+from opencollab.domain.pending import PendingRow, PendingRowError, RowKind, RowStatus
+from opencollab.domain.scheduler import SessionControlBlock
 from opencollab.domain.session import SessionPhase
 
 
@@ -166,6 +167,76 @@ def test_apply_launch_rejects_conflicting_spec_after_success(tmp_path, monkeypat
         )
 
 
+def test_restore_duplicate_pending_row_is_fully_transactional_and_retryable(
+    tmp_path,
+):
+    path = tmp_path / "duplicate-pending-row.json"
+    source = Session(agent=FakeAgent(), llm=FakeLLMClient(), aid=9)
+    source.state.append_message(
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "duplicate-row",
+                    "type": "function",
+                    "function": {"name": "spawn_agent", "arguments": "{}"},
+                }
+            ],
+        }
+    )
+    source.state.set_used_tokens(77)
+    source.state.set_context_tokens(33)
+    source.state.set_step_count(4)
+    source.state.set_phase(SessionPhase.AWAITING_EVENTS)
+    source.state.pending_events.add(
+        PendingRow(
+            tool_call_id="duplicate-row",
+            kind=RowKind.CHILD_AGENT,
+            order=0,
+            ref=12,
+        )
+    )
+    source.save(str(path))
+    document = json.loads(path.read_text(encoding="utf-8"))
+    rows = document["session_state"]["pending_events"]
+    rows.append(copy.deepcopy(rows[0]))
+    path.write_text(json.dumps(document), encoding="utf-8")
+
+    target = Session(agent=FakeAgent(), llm=FakeLLMClient(), aid=3)
+    target.state.append_message({"role": "user", "content": "pristine"})
+    target.state.set_used_tokens(5)
+    target.state.set_context_tokens(2)
+    target.state.set_step_count(1)
+    target.state.mark_done()
+    target.state.pending_events.add(
+        PendingRow(
+            tool_call_id="original-row",
+            kind=RowKind.IMMEDIATE,
+            order=0,
+            status=RowStatus.DONE,
+            result="original",
+        )
+    )
+    before = target._snapshot_for_save()
+    launch = LaunchSpec(session_file=str(path))
+
+    with pytest.raises(PendingRowError, match="duplicate pending row"):
+        target.apply_launch(launch)
+
+    assert target._snapshot_for_save() == before
+
+    rows.pop()
+    path.write_text(json.dumps(document), encoding="utf-8")
+    target.apply_launch(launch)
+
+    assert target.state.aid == 9
+    assert target.state.used_tokens == 77
+    assert target.state.context_tokens == 33
+    assert target.state.step_count == 4
+    assert set(target.state.pending_events.rows) == {"duplicate-row"}
+
+
 def test_restore_pairs_reused_tool_call_ids_in_transcript_order(tmp_path):
     agent = FakeAgent()
     session = Session(agent=agent, llm=FakeLLMClient())
@@ -207,6 +278,7 @@ def test_restore_converts_orphaned_deferred_child_to_failed_tool_result(tmp_path
     agent = FakeAgent()
     session = Session(agent=agent, llm=FakeLLMClient())
     session.phase = SessionPhase.AWAITING_EVENTS
+    session.state.pending_step_latency = 0.125
     session.state.pending_events.add(
         PendingRow(
             tool_call_id="child-1",
@@ -223,6 +295,7 @@ def test_restore_converts_orphaned_deferred_child_to_failed_tool_result(tmp_path
 
     row = loaded.state.pending_events.rows["child-1"]
     assert loaded.phase is SessionPhase.AWAITING_EVENTS
+    assert loaded.state.pending_step_latency == 0.125
     assert row.status is RowStatus.FAILED
     assert "interrupted by session restore" in (row.result or "")
     assert loaded.state.pending_events.is_complete()
@@ -337,6 +410,18 @@ def test_scheduler_init_preserves_and_drains_restored_awaiting_phase(tmp_path):
         event_sink=EventBus(),
     )
     scheduler.create_init_process(LaunchSpec(session_file=str(path)))
+    sender = Session(agent=FakeAgent(), llm=FakeLLMClient())
+    sender.state.aid = 1
+    sender.state.mark_done()
+    scheduler.table.add(
+        SessionControlBlock(
+            aid=1,
+            parent_aid=0,
+            agent=sender.agent,
+            state=sender.state,
+        )
+    )
+    scheduler._sessions[1] = sender
 
     assert resumed.phase is SessionPhase.AWAITING_EVENTS
     assert resumed.state.pending_events.is_complete()

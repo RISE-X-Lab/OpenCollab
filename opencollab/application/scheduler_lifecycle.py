@@ -118,6 +118,10 @@ class LifecycleMixin:
         # re-spawn of this (role, task)). Release both and re-raise so the caller
         # (execute_deferred) still surfaces the failure into the parent's row.
         try:
+            # ``spawn`` is the authoritative single-flight boundary. This
+            # compare-and-set runs before the first await, so concurrent
+            # coroutines cannot both reserve the same delegated-work identity.
+            self._reserve_inflight(aid, parent_aid, role, task, context)
             # ``spawn`` runs after the parent's current model generation has
             # completed. Return the parent's unused turn lease before granting
             # children; the parent will acquire a fresh lease when the complete
@@ -136,7 +140,6 @@ class LifecycleMixin:
                 parent_lease = self._release_turn_lease(parent_aid)
                 if parent_lease is not None:
                     self._track_review_parent_lease_release(parent_aid, 1)
-            self._reserve_inflight(aid, parent_aid, role, task, context)
             budget = self._reserve_child_budget(aid)
             if budget <= 0:
                 raise RuntimeError(
@@ -186,7 +189,7 @@ class LifecycleMixin:
             # Start async task. Once this succeeds, _drive_agent owns the
             # reservation release — must be the last statement that can hand off
             # ownership, so the except below never double-releases on success.
-            self._tasks[aid] = asyncio.create_task(self._drive_agent(aid, session))
+            self._start_agent_task(aid, session)
             self._startup_tasks.pop(aid, None)
             self._startup_envs.pop(aid, None)
             self._startup_origin.pop(aid, None)
@@ -227,6 +230,7 @@ class LifecycleMixin:
         self._startup_origin.pop(aid, None)
         self._tasks.pop(aid, None)
         self._locks.pop(aid, None)
+        self._run_locks.pop(aid, None)
         self._message_inbox.pop(aid, None)
 
         if env is None:
@@ -267,6 +271,39 @@ class LifecycleMixin:
         self._clear_inflight(aid)
         self._release_turn_lease(aid)
 
+    def _start_agent_task(self, aid: int, session: Any) -> asyncio.Task[None]:
+        """Start and track one driver, reaping its references when it settles."""
+        task = asyncio.create_task(self._drive_agent(aid, session))
+        self._tasks[aid] = task
+        task.add_done_callback(
+            lambda finished, owned_aid=aid: self._agent_task_done(
+                owned_aid,
+                finished,
+            )
+        )
+        return task
+
+    def _agent_task_done(self, aid: int, task: asyncio.Task[None]) -> None:
+        """Consume a finished driver and release only its own registry entry."""
+        if self._tasks.get(aid) is task:
+            self._tasks.pop(aid, None)
+        # During cleanup the committed-delivery marker must survive until
+        # _finalize_cleanup_failure has observed it. Normal completion has no
+        # later writer that can overwrite the already-filled parent row.
+        if not self._shutting_down:
+            self._delivery_committed.discard(aid)
+        scb = self.table.get(aid)
+        if scb is not None and scb.state.phase.is_terminal():
+            self._turn_started_at.pop(aid, None)
+            if not self._shutting_down:
+                self._write_manifest()
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            logger.debug("background task for aid %s was cancelled", aid)
+        except Exception as exc:
+            logger.error("background task for aid %s failed: %s", aid, exc)
+
     async def _drive_agent(self, aid: int, session: Any) -> None:
         """Run a session's loop once and finalize.
 
@@ -282,10 +319,15 @@ class LifecycleMixin:
         if scb is None:
             return
 
-        start = time.monotonic()
+        start = self._turn_started_at.setdefault(aid, time.monotonic())
 
         try:
-            result = await session.run_loop()
+            cancel_event = self._turn_cancel_events.get(aid)
+            result = (
+                await session.run_loop(cancel_event)
+                if cancel_event is not None
+                else await session.run_loop()
+            )
         except asyncio.CancelledError:
             self._release_leases(aid)
             scb.state.cancel()
@@ -535,9 +577,7 @@ class LifecycleMixin:
             )
             if should_resume:
                 self._reserve_turn_lease(parent_aid)
-                self._tasks[parent_aid] = asyncio.create_task(
-                    self._drive_agent(parent_aid, parent_session)
-                )
+                self._start_agent_task(parent_aid, parent_session)
             elif (
                 not self._shutting_down
                 and parent_scb.state.phase is SessionPhase.AWAITING_EVENTS
@@ -619,9 +659,7 @@ class LifecycleMixin:
             )
             if should_resume:
                 self._reserve_turn_lease(parent_aid)
-                self._tasks[parent_aid] = asyncio.create_task(
-                    self._drive_agent(parent_aid, parent_session)
-                )
+                self._start_agent_task(parent_aid, parent_session)
             elif (
                 not self._shutting_down
                 and
@@ -670,9 +708,7 @@ class LifecycleMixin:
                 and parent_scb.state.pending_events.is_complete()
             ):
                 self._reserve_turn_lease(parent_aid)
-                self._tasks[parent_aid] = asyncio.create_task(
-                    self._drive_agent(parent_aid, parent_session)
-                )
+                self._start_agent_task(parent_aid, parent_session)
                 should_resume = True
         if should_resume:
             try:

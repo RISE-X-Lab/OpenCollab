@@ -14,6 +14,16 @@ from typing import TypedDict
 from opencollab.domain.session import SessionPhase
 
 
+class DuplicateSpawnError(RuntimeError):
+    """An identical delegated task already has a live single-flight owner."""
+
+    def __init__(self, existing_aid: int) -> None:
+        self.existing_aid = existing_aid
+        super().__init__(
+            f"Duplicate delegated task is already handled by agent aid={existing_aid}"
+        )
+
+
 class SchedulerTurnError(RuntimeError):
     """A targeted public turn reached a non-success terminal session phase."""
 
@@ -95,9 +105,13 @@ class QueuedTeammateMessage:
     xml: str
     sent_at: str = ""
     message_id: str = ""
+    from_role: str = ""
+    to_role: str = ""
+    restored: bool = False
 
 
 __all__ = [
+    "DuplicateSpawnError",
     "LaunchSpec",
     "QueuedTeammateMessage",
     "RosterEntry",

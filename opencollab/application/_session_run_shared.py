@@ -33,6 +33,7 @@ class PendingStep:
 
     response: CompletionResponse
     latency: float
+    started_at: float | None = None
 
 
 # Re-prompt used when a turn returns neither text nor a tool call (an

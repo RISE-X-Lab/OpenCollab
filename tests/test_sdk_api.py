@@ -82,6 +82,7 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "inputs",
             "budget",
             "concurrency",
+            "task_concurrency",
             "timeout",
             "max_steps",
             "system_prompt",

@@ -192,6 +192,8 @@ class SessionStore:
                         "Invalid assistant message at position "
                         f"{lineno}: 'tool_calls' must be a list"
                     )
+                if isinstance(tool_calls, list):
+                    self._validate_tool_calls(tool_calls, lineno)
                 if "content" not in msg and not tool_calls:
                     raise ValueError(
                         "Invalid assistant message at position "
@@ -227,6 +229,84 @@ class SessionStore:
                 "Invalid message at position "
                 f"{position}: 'content' must be text or a content-part list"
             )
+        if isinstance(content, list):
+            SessionStore._validate_content_parts(content, position)
+
+    @staticmethod
+    def _validate_content_parts(
+        parts: list[Any],
+        position: int,
+    ) -> None:
+        if not parts:
+            raise ValueError(
+                "Invalid message at position "
+                f"{position}: 'content' part list must not be empty"
+            )
+        for part_index, part in enumerate(parts, 1):
+            prefix = (
+                f"Invalid message at position {position}, "
+                f"content part {part_index}"
+            )
+            if not isinstance(part, dict):
+                raise ValueError(f"{prefix}: expected object")
+            part_type = part.get("type")
+            if not isinstance(part_type, str) or not part_type.strip():
+                raise ValueError(f"{prefix}: expected non-empty 'type'")
+            if part_type in {"text", "input_text", "output_text"}:
+                if not isinstance(part.get("text"), str):
+                    raise ValueError(
+                        f"{prefix}: {part_type!r} requires text"
+                    )
+                continue
+            if part_type == "image_url":
+                image_url = part.get("image_url")
+                if isinstance(image_url, str) and image_url:
+                    continue
+                if (
+                    isinstance(image_url, dict)
+                    and isinstance(image_url.get("url"), str)
+                    and image_url["url"]
+                ):
+                    continue
+                raise ValueError(
+                    f"{prefix}: 'image_url' requires a URL string or object"
+                )
+            # Preserve provider-specific blocks while rejecting a type-only
+            # placeholder that no provider can consume.
+            if len(part) == 1:
+                raise ValueError(
+                    f"{prefix}: {part_type!r} requires provider payload fields"
+                )
+
+    @staticmethod
+    def _validate_tool_calls(
+        tool_calls: list[Any],
+        position: int,
+    ) -> None:
+        for call_index, tool_call in enumerate(tool_calls, 1):
+            prefix = (
+                f"Invalid assistant message at position {position}, "
+                f"tool call {call_index}"
+            )
+            if not isinstance(tool_call, dict):
+                raise ValueError(f"{prefix}: expected object")
+            call_id = tool_call.get("id")
+            if not isinstance(call_id, str) or not call_id:
+                raise ValueError(f"{prefix}: expected non-empty 'id'")
+            if tool_call.get("type") != "function":
+                raise ValueError(f"{prefix}: 'type' must be 'function'")
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                raise ValueError(f"{prefix}: 'function' must be an object")
+            name = function.get("name")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(
+                    f"{prefix}: function requires non-empty 'name'"
+                )
+            if not isinstance(function.get("arguments"), str):
+                raise ValueError(
+                    f"{prefix}: function 'arguments' must be a string"
+                )
 
     def _parse_document(self, text: str) -> dict[str, Any] | list[dict[str, Any]]:
         if not text.strip():

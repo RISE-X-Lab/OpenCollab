@@ -261,6 +261,7 @@ class OpenCollab:
         *,
         budget: int | None = None,
         concurrency: int = 4,
+        task_concurrency: int | None = None,
         timeout: float | None = None,
         max_steps: int = 100,
         system_prompt: str | None = None,
@@ -268,7 +269,13 @@ class OpenCollab:
         artifacts: str | os.PathLike[str] | None = None,
         trace: bool = True,
     ) -> RunResult[Any]:
-        """Run a decorated or plain async workflow function."""
+        """Run a decorated or plain async workflow function.
+
+        ``concurrency`` limits agent sessions. ``task_concurrency`` separately
+        limits active parallel/pipeline units across the workflow and defaults
+        to ``concurrency``. Mixed agent and task work may therefore peak at the
+        sum of both limits.
+        """
         if not callable(flow) and not callable(getattr(flow, "fn", None)):
             raise TypeError("flow must be a workflow function or spec")
         if inputs is not None and not isinstance(inputs, Mapping):
@@ -292,6 +299,11 @@ class OpenCollab:
                     else _positive_int(budget, "budget")
                 ),
                 max_concurrency=_positive_int(concurrency, "concurrency"),
+                task_concurrency=(
+                    None
+                    if task_concurrency is None
+                    else _positive_int(task_concurrency, "task_concurrency")
+                ),
                 timeout=_positive_timeout(timeout, "timeout"),
                 max_steps=_positive_int(max_steps, "max_steps"),
                 system_prompt=system_prompt,
