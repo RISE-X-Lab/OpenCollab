@@ -50,8 +50,9 @@ concrete type in `bootstrap/`. When splitting a module, keep its public names re
 1. **Lint** — `ruff check .` over the **whole** repository. Config is the
    repo-root `ruff.toml` (line-length 120, py310).
 2. **PR title** — Conventional Commits (see above).
-3. **File hygiene** — a newly added file over **500 KB**, or a new `.py` module over
-   **800 lines**, fails the build.
+3. **File hygiene** — a file your change pushes over **500 KB**, or a `.py` module it
+   pushes over **800 lines**, fails the build. Growing an existing module past the
+   limit counts; split it instead of appending.
 
 ## Conventions that keep the repo clean
 
