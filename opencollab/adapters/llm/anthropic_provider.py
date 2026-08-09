@@ -234,9 +234,9 @@ def _parse_response(resp: Any) -> LLMResponse:
     for block in resp.content:
         provider_content.append(_serialize_content_block(block))
         if block.type == "text":
-            content += block.text
+            content += _text_or_empty(getattr(block, "text", None))
         elif block.type == "thinking":
-            thinking_text += getattr(block, "thinking", "")
+            thinking_text += _text_or_empty(getattr(block, "thinking", None))
             has_thinking = True
         elif block.type == "redacted_thinking":
             has_thinking = True
@@ -266,18 +266,30 @@ def _parse_response(resp: Any) -> LLMResponse:
     )
 
 
+def _text_or_empty(value: Any) -> str:
+    """Normalize nullable text fields emitted by compatible gateways."""
+    return value if isinstance(value, str) else ""
+
+
 def _serialize_content_block(block: Any) -> dict[str, Any]:
     """Return a JSON-safe Anthropic block for an unchanged later request."""
     if hasattr(block, "model_dump"):
         payload = block.model_dump(mode="json", exclude_none=True)
         if isinstance(payload, dict):
+            if payload.get("type") == "text":
+                payload["text"] = _text_or_empty(payload.get("text"))
+            elif payload.get("type") == "thinking":
+                payload["thinking"] = _text_or_empty(payload.get("thinking"))
             return payload
     if isinstance(block, dict):
         return copy.deepcopy(block)
     if block.type == "text":
-        return {"type": "text", "text": getattr(block, "text", "")}
+        return {"type": "text", "text": _text_or_empty(getattr(block, "text", None))}
     if block.type == "thinking":
-        payload = {"type": "thinking", "thinking": getattr(block, "thinking", "")}
+        payload = {
+            "type": "thinking",
+            "thinking": _text_or_empty(getattr(block, "thinking", None)),
+        }
         signature = getattr(block, "signature", None)
         if signature is not None:
             payload["signature"] = signature
