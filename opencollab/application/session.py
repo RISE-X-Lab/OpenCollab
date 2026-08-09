@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Callable
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.event_bus import EventBus
+from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import (
     EnvironmentPort,
     JournalSnapshotStorePort,
@@ -112,6 +113,7 @@ class Session:
         self._owns_llm = runtime.owns_llm
         self._llm_closed = False
         self._llm_close_error: BaseException | None = None
+        self._terminal_checkpoint_error: Exception | None = None
         self._auto_save_sequence = 0
         self._auto_save_message_count = 0
         self._auto_save_rewrite_from: int | None = 0
@@ -193,10 +195,15 @@ class Session:
     def persistence_errors(self) -> tuple[Exception, ...]:
         """Sticky subscriber persistence failures visible to run boundaries."""
         errors: list[Exception] = []
+        seen: set[int] = set()
         for subscriber in self.event_bus.subscribers:
             error = getattr(subscriber, "last_error", None)
-            if isinstance(error, Exception):
+            if isinstance(error, Exception) and id(error) not in seen:
                 errors.append(error)
+                seen.add(id(error))
+        error = self._terminal_checkpoint_error
+        if isinstance(error, Exception) and id(error) not in seen:
+            errors.append(error)
         return tuple(errors)
 
     async def aclose(self) -> None:
@@ -279,25 +286,54 @@ class Session:
         if self._turn_lock.locked() or self.runner.pending_cleanup_tasks:
             raise SessionBusyError("session already has an active turn")
         async with self._turn_lock:
+            primary_error: BaseException | None = None
             try:
                 return await self.runner.run_loop(cancel_event)
+            except BaseException as exc:
+                primary_error = exc
+                raise
             finally:
-                if self.state.phase.is_terminal():
-                    owner = self.enqueue_auto_save()
-                    if owner is not None:
-                        await await_owned_operation(
-                            owner,
-                            propagate_cancellation=True,
-                        )
-                    # Journal-backed autosave normally appends a delta. A
-                    # terminal turn must also publish a self-contained base
-                    # snapshot: callers and crash recovery may read the base
-                    # file directly, without replaying its sidecar journal.
-                    if (
-                        self._auto_save_path
-                        and isinstance(self.store, JournalSnapshotStorePort)
-                    ):
-                        await asyncio.to_thread(self.save, self._auto_save_path)
+                try:
+                    await self._checkpoint_terminal_snapshot()
+                except Exception as checkpoint_error:
+                    if primary_error is None:
+                        raise
+                    add_exception_note(
+                        primary_error,
+                        "terminal checkpoint also failed: "
+                        f"{type(checkpoint_error).__name__}: {checkpoint_error}",
+                    )
+
+    async def _checkpoint_terminal_snapshot(self) -> None:
+        if not self.state.phase.is_terminal():
+            return
+        owner = self.enqueue_auto_save()
+        if owner is not None:
+            await await_owned_operation(
+                owner,
+                propagate_cancellation=True,
+            )
+        # Journal-backed autosave normally appends a delta. A terminal turn
+        # must also publish a self-contained base snapshot: callers and crash
+        # recovery may read the base file directly, without replaying its
+        # sidecar journal.
+        if (
+            not self._auto_save_path
+            or not isinstance(self.store, JournalSnapshotStorePort)
+        ):
+            return
+
+        async def checkpoint() -> None:
+            try:
+                await asyncio.to_thread(self.save, self._auto_save_path)
+            except Exception as exc:
+                self._terminal_checkpoint_error = exc
+                raise
+
+        await await_owned_operation(
+            checkpoint(),
+            propagate_cancellation=True,
+        )
 
     async def add_user_message(self, content: str) -> None:
         if (
