@@ -15,7 +15,50 @@ from opencollab.adapters.llm.errors import is_context_overflow_error
 RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
 
 # Error-message fragments that signal a transient failure when no status is set.
-RETRYABLE_MESSAGE_FRAGMENTS = ("rate limit", "429", "timeout", "temporarily unavailable", "overloaded")
+RETRYABLE_MESSAGE_FRAGMENTS = (
+    "rate limit",
+    "429",
+    "timeout",
+    "temporarily unavailable",
+    "overloaded",
+)
+
+# The Anthropic/OpenAI SDKs wrap transport failures in provider-specific
+# exception classes (for example ``APIConnectionError``) without attaching an
+# HTTP status.  Compatible gateways commonly stringify those exceptions as
+# simply ``Connection error``.  Keep the classification narrow: retry known
+# transport exception class names and transport-layer message fragments, but
+# do not retry an arbitrary application ``ValueError`` that happens to mention
+# a connection.
+_TRANSIENT_TRANSPORT_CLASS_NAMES = frozenset(
+    {
+        "apiconnectionerror",
+        "apitimeouterror",
+        "connecterror",
+        "connecttimeout",
+        "connectionabortederror",
+        "connectionrefusederror",
+        "connectionreseterror",
+        "brokenpipeerror",
+        "pooltimeout",
+        "readerror",
+        "readtimeout",
+        "remoteprotocolerror",
+        "sockettimeout",
+        "timeouterror",
+        "writeerror",
+        "writetimeout",
+    }
+)
+_TRANSIENT_TRANSPORT_MESSAGE_FRAGMENTS = (
+    "connection error",
+    "connection reset",
+    "connection refused",
+    "connection aborted",
+    "broken pipe",
+    "server disconnected",
+    "remote protocol error",
+)
 
 # Small random jitter (seconds) added to each backoff to reduce thundering herd.
 RETRY_JITTER_MAX_SECONDS = 0.25
@@ -63,7 +106,34 @@ def is_retryable_error(error: Exception) -> bool:
             return True
 
     msg = str(error).lower()
-    return any(k in msg for k in RETRYABLE_MESSAGE_FRAGMENTS)
+    if any(k in msg for k in RETRYABLE_MESSAGE_FRAGMENTS):
+        return True
+
+    # Follow the exception cause/context chain because SDK wrappers often
+    # preserve the useful transport error only as ``__cause__``.
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        class_name = type(current).__name__.lower()
+        if class_name in _TRANSIENT_TRANSPORT_CLASS_NAMES:
+            return True
+        message = str(current).lower()
+        if any(
+            fragment in message
+            for fragment in _TRANSIENT_TRANSPORT_MESSAGE_FRAGMENTS
+        ) and class_name in {
+            "apiconnectionerror",
+            "apitimeouterror",
+            "connecterror",
+            "connectionerror",
+            "connectionreseterror",
+            "remoteprotocolerror",
+            "timeouterror",
+        }:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def extract_retry_after_seconds(
