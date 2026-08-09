@@ -337,6 +337,7 @@ class Session:
             self.state.__dict__.clear()
             self.state.__dict__.update(restored.__dict__)
             self._restore_auto_save_tracking(snapshot)
+            self._checkpoint_restored_auto_save_target(path)
             return
 
         self.messages = messages
@@ -438,6 +439,7 @@ class Session:
             self.state.set_phase(SessionPhase.IDLE)
             self._append_restore_results_for_open_tool_calls()
         self._restore_auto_save_tracking(snapshot)
+        self._checkpoint_restored_auto_save_target(path)
 
     def _restore_auto_save_tracking(self, snapshot: dict[str, Any]) -> None:
         sequence = _snapshot_nonnegative_int(snapshot.get("_autosave_sequence"))
@@ -454,6 +456,11 @@ class Session:
         self._next_auto_save_checkpoint = (
             1 if sequence == 0 else 1 << sequence.bit_length()
         )
+
+    def _checkpoint_restored_auto_save_target(self, source_path: str) -> None:
+        target_path = self._auto_save_path
+        if target_path and not _same_snapshot_path(source_path, target_path):
+            self.save(target_path)
 
     def _open_tool_call_ids(self) -> list[str]:
         # Pair calls and results in transcript order. Tool-call ids are expected
@@ -513,7 +520,7 @@ class Session:
     def save(self, path: str) -> None:
         messages, meta = self._snapshot_for_save()
         if (
-            path == self._auto_save_path
+            _same_snapshot_path(path, self._auto_save_path)
             and isinstance(self.store, JournalSnapshotStorePort)
         ):
             self.store.checkpoint_snapshot(
@@ -650,6 +657,14 @@ class Session:
 _LEGACY_TERMINAL_PHASES = frozenset(
     {"cancelled", "budget_exceeded", "step_limit_exceeded", "context_overflow"}
 )
+
+
+def _same_snapshot_path(left: str | None, right: str | None) -> bool:
+    if left is None or right is None:
+        return False
+    return os.path.normcase(os.path.abspath(os.fspath(left))) == os.path.normcase(
+        os.path.abspath(os.fspath(right))
+    )
 
 
 def _restore_phase(raw: object) -> SessionPhase:

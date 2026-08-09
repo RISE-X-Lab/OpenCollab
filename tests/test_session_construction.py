@@ -186,6 +186,69 @@ def test_apply_launch_recovers_journal_when_atomic_base_is_absent(tmp_path):
     assert session.messages[-1]["content"] == "durable step"
 
 
+def test_apply_launch_checkpoints_restore_into_distinct_autosave_target(tmp_path):
+    source = tmp_path / "source.json"
+    target = tmp_path / "target.json"
+    store = SessionStore()
+    store.checkpoint_snapshot(
+        str(source),
+        [
+            {"role": "system", "content": "You are a fake agent."},
+            {"role": "user", "content": "resume me"},
+        ],
+        meta={
+            "snapshot_version": 1,
+            "session_state": {
+                "step_count": 2,
+                "phase": "idle",
+            },
+        },
+        sequence=2,
+    )
+
+    session = _new_session(auto_save_path=str(target), store=store)
+    session.apply_launch(
+        LaunchSpec(
+            session_file=str(source),
+            auto_save_path=str(target),
+        )
+    )
+
+    checkpoint = store.load_snapshot(str(target), session.agent.system_prompt)
+    assert checkpoint["_autosave_sequence"] == 2
+    assert checkpoint["messages"][-1]["content"] == "resume me"
+
+    async def append_and_flush():
+        await session.add_user_message("continue here")
+        pending = session.pending_cleanup_tasks
+        if pending:
+            await asyncio.gather(*pending)
+
+    run(append_and_flush())
+    restored = load_session(
+        str(target),
+        agent=_FakeAgent(),
+        llm=_FakeLLM(),
+        store=store,
+    )
+    assert restored._auto_save_sequence == 3
+    assert restored.messages[-1]["content"] == "continue here"
+
+
+def test_relative_save_alias_uses_autosave_checkpoint(tmp_path, monkeypatch):
+    target = tmp_path / "alias.json"
+    session = _new_session(auto_save_path=str(target))
+    session._auto_save_sequence = 4
+    session.messages.append({"role": "user", "content": "durable"})
+    monkeypatch.chdir(tmp_path)
+
+    session.save("alias.json")
+
+    saved = json.loads(target.read_text())
+    assert saved["_autosave_sequence"] == 4
+    assert (tmp_path / "alias.json.journal").read_bytes() == b""
+
+
 def test_session_snapshot_returns_independent_session_without_autosave(tmp_path):
     path = tmp_path / "auto.jsonl"
     session = _new_session(auto_save_path=str(path), env=_ForkableEnvironment())
