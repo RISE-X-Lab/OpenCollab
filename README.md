@@ -17,6 +17,10 @@
   OpenCollab is inspired by <a href="https://arxiv.org/abs/2304.07590" title="Self-collaboration Code Generation via ChatGPT — Dong, Jiang, Jin, Li (2023)"><b>Self-Collaboration</b></a>.
 </p>
 
+## News
+
+- 🎉 **Congratulations!** OpenCollab has been selected for support by the **Seed Program of the Youth Open Source Special Fund**.
+
 ## What you can run
 
 <p align="center">
