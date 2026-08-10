@@ -35,6 +35,20 @@ def _repository(tmp_path: Path, subject: str) -> Path:
     return repository
 
 
+def _merge_repository(tmp_path: Path) -> Path:
+    repository = _repository(tmp_path, _CLEAN_SNAPSHOT)
+    _git(repository, "checkout", "-b", "feature")
+    (repository / "feature.txt").write_text("feature\n", encoding="utf-8")
+    _git(repository, "add", "feature.txt")
+    _git(repository, "commit", "-m", "fix: add feature change")
+    _git(repository, "checkout", "-b", "target", "HEAD~1")
+    (repository / "target.txt").write_text("target\n", encoding="utf-8")
+    _git(repository, "add", "target.txt")
+    _git(repository, "commit", "-m", "fix: add target change")
+    _git(repository, "merge", "--no-ff", "feature", "-m", "Merge pull request #1")
+    return repository
+
+
 def _run(repository: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(_SCRIPT), *args],
@@ -74,3 +88,12 @@ def test_commit_mode_fails_when_the_commit_is_missing(tmp_path):
 
     assert result.returncode == 2
     assert "Unable to read commit title" in result.stdout
+
+
+def test_commit_mode_accepts_github_merge_commit_subject(tmp_path):
+    repository = _merge_repository(tmp_path)
+
+    result = _run(repository, "--commit", "HEAD")
+
+    assert result.returncode == 0
+    assert "merge commit" in result.stdout

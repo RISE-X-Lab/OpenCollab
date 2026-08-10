@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the Conventional Commit title used by a PR or direct main push."""
+"""Validate a PR or direct-push title, allowing already-reviewed merge commits."""
 
 from __future__ import annotations
 
@@ -27,6 +27,18 @@ def validate_title(title: str) -> str | None:
     return None
 
 
+def is_merge_commit(repository: Path, commit: str) -> bool:
+    """Return whether *commit* has more than one parent."""
+    completed = subprocess.run(
+        ["git", "show", "-s", "--format=%P", commit],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return len(completed.stdout.split()) > 1
+
+
 def commit_subject(repository: Path, commit: str) -> str:
     """Read the canonical subject from the commit object named by *commit*."""
     completed = subprocess.run(
@@ -50,6 +62,12 @@ def _arguments(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _arguments(argv)
     try:
+        if args.commit is not None and is_merge_commit(Path.cwd(), args.commit):
+            print(
+                "Conventional title check skipped for merge commit; "
+                "the pull request title was checked before merge."
+            )
+            return 0
         title = args.title if args.title is not None else commit_subject(Path.cwd(), args.commit)
     except (OSError, subprocess.CalledProcessError) as exc:
         print(f"::error::Unable to read commit title: {exc}")
