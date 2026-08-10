@@ -36,6 +36,7 @@ from opencollab.application.compaction_prompt import (
 ACompletePort = Callable[[list[dict[str, Any]]], Awaitable[Any]]
 
 DEFAULT_FALLBACK_CHARS = 4_000
+SUMMARY_CACHE_VERSION = "read-time-summary-v1"
 
 
 def run_coro_blocking(make_coro: Callable[[], Awaitable[Any]]) -> Any:
@@ -71,8 +72,26 @@ class ReadTimeSummarizer:
         self._transcript_path = transcript_path
         self._custom_instructions = custom_instructions
         self._fallback_chars = max(0, fallback_chars)
+        self._last_call_cacheable = False
+
+    @property
+    def cache_key(self) -> tuple[Any, ...]:
+        """Namespace successful summaries by model closure and prompt settings."""
+        return (
+            SUMMARY_CACHE_VERSION,
+            id(self._acomplete),
+            self._transcript_path,
+            self._custom_instructions,
+            self._fallback_chars,
+        )
+
+    @property
+    def last_call_cacheable(self) -> bool:
+        """Whether the most recent result was a real summary, not a fallback."""
+        return self._last_call_cacheable
 
     def __call__(self, segment: list[dict[str, Any]]) -> str:
+        self._last_call_cacheable = False
         request = build_summary_request(segment, custom_instructions=self._custom_instructions)
         try:
             response = run_coro_blocking(lambda: self._acomplete(request))
@@ -85,6 +104,7 @@ class ReadTimeSummarizer:
             return self._fallback(segment)
         if self._transcript_path:
             summary += "\n\n" + transcript_recovery_note(self._transcript_path)
+        self._last_call_cacheable = True
         return summary
 
     def _fallback(self, segment: list[dict[str, Any]]) -> str:
