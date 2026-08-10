@@ -247,6 +247,140 @@ def test_autocompact_does_not_mutate_input():
     assert messages == snapshot
 
 
+def test_autocompact_reuses_summary_for_unchanged_segment():
+    class CountingSummarizer:
+        cache_key = "model-a:prompt-v1"
+        last_call_cacheable = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, segment):
+            self.calls += 1
+            return f"SUMMARY-{self.calls}"
+
+    summarizer = CountingSummarizer()
+    shaper = _autocompact(summarizer=summarizer)
+    messages = [_sys(), _user(), _text("x" * 1000), _text("y" * 1000), _text("recent")]
+
+    first = shaper.shape(messages)
+    second = shaper.shape(copy.deepcopy(messages))
+
+    assert first == second
+    assert summarizer.calls == 1
+
+
+def test_autocompact_cache_invalidates_on_segment_or_summarizer_key_change():
+    class CountingSummarizer:
+        cache_key = "model-a:prompt-v1"
+        last_call_cacheable = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, segment):
+            self.calls += 1
+            return f"SUMMARY-{self.calls}"
+
+    summarizer = CountingSummarizer()
+    shaper = _autocompact(summarizer=summarizer)
+    messages = [_sys(), _user(), _text("x" * 1000), _text("y" * 1000), _text("recent")]
+
+    shaper.shape(messages)
+    changed = copy.deepcopy(messages)
+    changed[2]["content"] += "changed"
+    shaper.shape(changed)
+    summarizer.cache_key = "model-b:prompt-v1"
+    shaper.shape(changed)
+
+    assert summarizer.calls == 3
+
+
+def test_autocompact_reuses_summary_when_only_kept_tool_group_grows():
+    class CountingSummarizer:
+        cache_key = "model-a:prompt-v1"
+        last_call_cacheable = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, segment):
+            self.calls += 1
+            return "SUMMARY"
+
+    summarizer = CountingSummarizer()
+    shaper = _autocompact(summarizer=summarizer)
+    recent_call = {
+        "role": "assistant",
+        "tool_calls": [
+            {"id": "r1", "function": {"name": "bash", "arguments": "{}"}},
+            {"id": "r2", "function": {"name": "bash", "arguments": "{}"}},
+        ],
+    }
+    messages = [
+        _sys(),
+        _user(),
+        _text("x" * 1000),
+        _text("y" * 1000),
+        recent_call,
+        _tool("r1", "first"),
+    ]
+
+    shaper.shape(messages)
+    shaper.shape([*messages, _tool("r2", "second")])
+
+    assert summarizer.calls == 1
+
+
+def test_autocompact_summary_cache_is_bounded_lru():
+    class CountingSummarizer:
+        cache_key = "model-a:prompt-v1"
+        last_call_cacheable = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, segment):
+            self.calls += 1
+            return f"SUMMARY-{self.calls}"
+
+    summarizer = CountingSummarizer()
+    shaper = _autocompact(summarizer=summarizer, summary_cache_size=1)
+    first = [_sys(), _user(), _text("x" * 1000), _text("y" * 1000), _text("recent")]
+    second = copy.deepcopy(first)
+    second[2]["content"] += "changed"
+
+    shaper.shape(first)
+    shaper.shape(second)
+    shaper.shape(first)
+
+    assert summarizer.calls == 3
+
+
+def test_autocompact_does_not_cache_fallback_or_failed_summary():
+    class FlakySummarizer:
+        cache_key = "model-a:prompt-v1"
+
+        def __init__(self):
+            self.calls = 0
+            self.last_call_cacheable = False
+
+        def __call__(self, segment):
+            self.calls += 1
+            self.last_call_cacheable = self.calls > 1
+            return "fallback" if self.calls == 1 else "real summary"
+
+    summarizer = FlakySummarizer()
+    shaper = _autocompact(summarizer=summarizer)
+    messages = [_sys(), _user(), _text("x" * 1000), _text("y" * 1000), _text("recent")]
+
+    assert "fallback" in shaper.shape(messages)[1]["content"]
+    assert "real summary" in shaper.shape(messages)[1]["content"]
+    shaper.shape(messages)
+
+    assert summarizer.calls == 2
+
+
 def test_lazy_degradation_snip_sufficient_skips_autocompact():
     # Old tool turns are snippable, so snip alone gets under the trigger and the
     # downstream auto-compact sees no pressure → no summary marker appears.
