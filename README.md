@@ -124,3 +124,17 @@ links design records and research notes. Benchmark users should begin with the
 
 OpenCollab is licensed under the [Mulan Permissive Software License v2](https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE)
 (`MulanPSL-2.0`).
+
+## Citation
+If you find this project useful, please consider giving it a ⭐ and citing our paper. Our technical paper is also coming soon.
+```bibtex
+@article{dong2023self,
+  author={Dong, Yihong and Jiang, Xue and Jin, Zhi and Li, Ge},
+  title        = {Self-Collaboration Code Generation via ChatGPT},
+  journal      = {ACM Transactions on Software Engineering and Methodology},
+  volume       = {33},
+  number       = {7},
+  pages        = {189:1--189:38},
+  year         = {2024}
+}
+```
