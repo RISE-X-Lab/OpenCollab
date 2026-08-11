@@ -1,4 +1,3 @@
-/opt/homebrew/Library/Homebrew/cmd/shellenv.sh: line 18: /bin/ps: Operation not permitted
 """Tests for workflow structured output (phase 2).
 
 Covers the stdlib JSON-schema validator, the pure ``StructuredOutputTool``
