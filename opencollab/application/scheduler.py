@@ -43,6 +43,8 @@ from opencollab.application.scheduler_lifecycle import LifecycleMixin
 from opencollab.application.scheduler_messaging import MessagingMixin
 from opencollab.application.scheduler_types import LaunchSpec as LaunchSpec
 from opencollab.application.scheduler_types import QueuedTeammateMessage as QueuedTeammateMessage
+from opencollab.application.scheduler_types import SchedulerStalledError as SchedulerStalledError
+from opencollab.application.scheduler_types import SchedulerTurnError as SchedulerTurnError
 from opencollab.domain.identity import role_collision_key, validate_role_identity
 from opencollab.domain.scheduler import SessionTable
 from opencollab.domain.team import Topology
@@ -136,7 +138,9 @@ class Scheduler(
         self._sessions: dict[int, Any] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._run_lock = asyncio.Lock()
-        self._active_run_tasks: set[asyncio.Task[Any]] = set()
+        # A public run_turn owner must retain its addressed aid through cleanup:
+        # cancelling a child turn must never terminalize the Lead by default.
+        self._active_run_tasks: dict[asyncio.Task[Any], int] = {}
         self._lead_session: Any | None = None
         # child aid -> (parent aid, tool_call_id) for deferred spawns: lets a
         # child's completion fill the exact pending row that suspended its
@@ -147,12 +151,9 @@ class Scheduler(
         # post-delivery event; this marker preserves the already-committed child /
         # parent terminal pair instead of rewriting only the child to CANCELLED.
         self._delivery_committed: set[int] = set()
-        # Single-flight spawn dedup: task key -> the aid currently handling it,
-        # plus the reverse map for release. A (role, task) is reserved at spawn
-        # and freed when the child reaches a terminal phase, so a model that
-        # re-issues an identical spawn is refused (see ``inflight_spawn``) rather
-        # than spinning up a duplicate — tool-level enforcement of "don't spawn
-        # the same task twice", which prompt guidance alone cannot guarantee.
+        # Single-flight spawn dedup: delegated-work identity -> the handling aid,
+        # plus the reverse map for release. A (parent, role, task, context) is
+        # reserved at spawn and freed when the child reaches a terminal phase.
         self._inflight: dict[str, int] = {}
         self._inflight_key_of: dict[int, str] = {}
         # Per-active-turn token leases. A lease records the session's token count
@@ -188,4 +189,10 @@ class Scheduler(
             tuple[int, dict[str, int]] | None
         ] = contextvars.ContextVar("review_parent_lease_tracker", default=None)
 
-__all__ = ["LaunchSpec", "QueuedTeammateMessage", "Scheduler"]
+__all__ = [
+    "LaunchSpec",
+    "QueuedTeammateMessage",
+    "Scheduler",
+    "SchedulerStalledError",
+    "SchedulerTurnError",
+]

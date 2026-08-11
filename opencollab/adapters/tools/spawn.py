@@ -62,10 +62,15 @@ class SpawnAgentTool(Tool):
         task = params["task"]
         context = params.get("context", "")
         parent_aid = runtime.aid
-        # Single-flight guard: if this exact (role, task) is already running,
-        # refuse and tell the model to wait rather than spawn a duplicate. The
-        # string return resolves this tool call synchronously (no pending row).
-        existing = self._scheduler.inflight_spawn(role, task)
+        # Single-flight guard: only this parent's exact (role, task, context)
+        # delegation is deduped. The string return resolves this tool call
+        # synchronously (no pending row).
+        existing = self._scheduler.inflight_spawn(
+            role,
+            task,
+            parent_aid=parent_aid,
+            context=context,
+        )
         if existing is not None:
             return (
                 f"Not spawned: this task is already being handled by agent "

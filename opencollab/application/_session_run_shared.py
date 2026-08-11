@@ -24,6 +24,18 @@ class _ContextOverflowStop(Exception):
     """
 
 
+class _TokenBudgetStop(Exception):
+    """Internal signal that a request has no reserved output headroom."""
+
+    def __init__(self, *, reserved_input_tokens: int, remaining_budget: int) -> None:
+        self.reserved_input_tokens = reserved_input_tokens
+        self.remaining_budget = remaining_budget
+        super().__init__(
+            "conservative input reservation requires "
+            f"{reserved_input_tokens} of {remaining_budget} remaining tokens"
+        )
+
+
 @dataclass
 class PendingStep:
     """The LLM response carried across HANDLING_RESPONSE → EXECUTING_TOOLS →

@@ -40,7 +40,20 @@ class SchedulerCleanupMixin:
         timeout = self._validate_cleanup_timeout(cleanup_timeout)
         if self._cleanup_task is None:
             self._cleanup_task = asyncio.create_task(self._cleanup_impl(timeout=timeout))
-        await await_owned_operation(self._cleanup_task, propagate_cancellation=True)
+        task = self._cleanup_task
+        try:
+            await await_owned_operation(task, propagate_cancellation=True)
+        except BaseException:
+            # Share one in-flight teardown across concurrent callers, but do not
+            # permanently memoize a transient failure. Caller cancellation alone
+            # is not a retry signal: await_owned_operation keeps the owner alive
+            # and may re-raise cancellation after that owner succeeded.
+            failed = task.done() and (
+                task.cancelled() or task.exception() is not None
+            )
+            if failed and self._cleanup_task is task:
+                self._cleanup_task = None
+            raise
 
     @staticmethod
     def _validate_cleanup_timeout(value: object) -> float:
@@ -59,20 +72,23 @@ class SchedulerCleanupMixin:
         startup_aids = set(self._startup_tasks)
         origins = {**self._startup_origin, **self._spawn_origin}
         interrupted_deliveries = set(self._message_delivery_tasks)
+        public_run_tasks = _unique_task_owners(
+            ((aid, task) for task, aid in self._active_run_tasks.items()),
+        )
         execution_tasks = _unique_task_owners(
             self._tasks.items(),
             self._startup_tasks.items(),
         )
         delivery_tasks = _unique_task_owners(
             self._message_delivery_tasks.items(),
-            ((0, task) for task in self._active_run_tasks),
+            public_run_tasks,
         )
         tracked_tasks = _unique_task_owners(execution_tasks, delivery_tasks)
         running_execution = {
             (aid, task) for aid, task in execution_tasks if not task.done()
         }
-        running_delivery = {
-            (aid, task) for aid, task in delivery_tasks if not task.done()
+        running_public_turns = {
+            (aid, task) for aid, task in public_run_tasks if not task.done()
         }
         all_tasks = {task for _aid, task in tracked_tasks}
         pending = await cancel_tasks_and_wait(all_tasks, timeout=timeout)
@@ -97,8 +113,8 @@ class SchedulerCleanupMixin:
         for aid, task in running_execution:
             if task.cancelled() or task in pending or (task.done() and task.exception() is not None):
                 self._finalize_cleanup_failure(aid, origin_override=origins.get(aid))
-        if any(aid == 0 for aid, _task in running_delivery):
-            self._finalize_cleanup_failure(0)
+        for aid, _task in running_public_turns:
+            self._finalize_cleanup_failure(aid)
         for aid in startup_aids:
             self._finalize_cleanup_failure(aid, origin_override=origins.get(aid))
             self.table.entries.pop(aid, None)
@@ -135,13 +151,13 @@ class SchedulerCleanupMixin:
         if persistence_errors:
             failures.append("session persistence failed")
 
-        release_safe = not pending and environments_aborted
+        release_safe = not pending and environments_aborted and persistence_quiesced
         worktrees_released = release_safe and await self._release_worktree_pool_bounded(timeout=timeout)
         if not worktrees_released:
             failures.append(
                 "worktree pool release failed or timed out"
                 if release_safe
-                else "worktree pool release skipped because scheduler work did not quiesce"
+                else "worktree pool release skipped because owned work did not quiesce"
             )
         if failures:
             failure = RuntimeError("technical scheduler cleanup failed: " + "; ".join(failures))

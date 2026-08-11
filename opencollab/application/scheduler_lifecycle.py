@@ -136,7 +136,7 @@ class LifecycleMixin:
                 parent_lease = self._release_turn_lease(parent_aid)
                 if parent_lease is not None:
                     self._track_review_parent_lease_release(parent_aid, 1)
-            self._reserve_inflight(aid, role, task)
+            self._reserve_inflight(aid, parent_aid, role, task, context)
             budget = self._reserve_child_budget(aid)
             if budget <= 0:
                 raise RuntimeError(
@@ -272,10 +272,11 @@ class LifecycleMixin:
 
         The loop returns either suspended on ``AWAITING_EVENTS`` (the session
         spawned its own children — leave it; a child wake re-enters here later)
-        or terminal. On terminal completion it emits ``agent_completed`` and, if
-        the session was itself a deferred child, fills its parent's pending row
-        and re-activates the parent. Used for both the initial run and every
-        event-driven resume, at any depth of the delegation tree.
+        or terminal. A DONE terminal emits ``agent_completed``; STOPPED/ERROR
+        terminals emit ``agent_failed``. If the session was itself a deferred
+        child, its outcome fills the parent's pending row and re-activates the
+        parent. Used for both the initial run and every event-driven resume, at
+        any depth of the delegation tree.
         """
         scb = self.table.get(aid)
         if scb is None:
@@ -298,24 +299,26 @@ class LifecycleMixin:
                 logger.error(
                     "agent_cancelled event failed for aid %s: %s", aid, event_exc
                 )
-            await self._deliver_to_parent(aid, reason, RowStatus.FAILED)
+            await self._deliver_to_parent(aid, reason, RowStatus.FAILED, error=reason)
             if not self._shutting_down:
                 await self._drain_message_inbox(aid, allow_current_task=True)
                 await self._drain_ready_message_inboxes()
             raise
         except Exception as exc:
             self._release_leases(aid)
-            scb.state.fail()
-            scb.result = f"Error: {exc}"
+            terminal_reason = scb.state.terminal_reason or f"{type(exc).__name__}: {exc}"
+            scb.state.fail(terminal_reason)
+            reason = f"Error: {terminal_reason}"
+            scb.result = reason
             try:
                 await self.emit_scheduler_event(
-                    self._events.agent_failed(aid, scb.agent.name, str(exc))
+                    self._events.agent_failed(aid, scb.agent.name, terminal_reason)
                 )
             except Exception as event_exc:
                 logger.error(
                     "agent_failed event failed for aid %s: %s", aid, event_exc
                 )
-            await self._deliver_to_parent(aid, f"Error: {exc}", RowStatus.FAILED)
+            await self._deliver_to_parent(aid, reason, RowStatus.FAILED, error=reason)
             await self._drain_message_inbox(aid, allow_current_task=True)
             await self._drain_ready_message_inboxes()
             return
@@ -340,6 +343,23 @@ class LifecycleMixin:
         # delivering, so a later spawn can reuse this child's unspent headroom.
         self._release_leases(aid)
 
+        terminal_failure = self._terminal_failure_result(scb, result)
+        if terminal_failure is not None:
+            scb.result = terminal_failure
+            await self._safe_emit_scheduler_event(
+                self._events.agent_failed(aid, scb.agent.name, terminal_failure)
+            )
+            await self._deliver_to_parent(
+                aid,
+                terminal_failure,
+                RowStatus.FAILED,
+                error=terminal_failure,
+            )
+            await self._drain_message_inbox(aid, allow_current_task=True)
+            if not self._shutting_down:
+                await self._drain_ready_message_inboxes()
+            return
+
         # A completed coding task still needs its patch evidence. Tracing and
         # event delivery are observational, but a missing diff is a technical
         # failure because the parent cannot verify what changed.
@@ -355,7 +375,7 @@ class LifecycleMixin:
                 await self._safe_emit_scheduler_event(
                     self._events.agent_failed(aid, scb.agent.name, str(exc))
                 )
-                await self._deliver_to_parent(aid, result, RowStatus.FAILED)
+                await self._deliver_to_parent(aid, result, RowStatus.FAILED, error=result)
                 await self._drain_message_inbox(aid, allow_current_task=True)
                 if not self._shutting_down:
                     await self._drain_ready_message_inboxes()
@@ -395,13 +415,28 @@ class LifecycleMixin:
             self._finalize_cleanup_failure(aid)
             return
 
-        status = RowStatus.FAILED if scb.state.phase is SessionPhase.ERROR else RowStatus.DONE
-        await self._deliver_to_parent(aid, result, status)
+        await self._deliver_to_parent(aid, result, RowStatus.DONE)
         await self._drain_message_inbox(aid, allow_current_task=True)
         if not self._shutting_down:
             await self._drain_ready_message_inboxes()
 
-    async def _deliver_to_parent(self, child_aid: int, result: str, status: RowStatus) -> None:
+    @staticmethod
+    def _terminal_failure_result(scb: Any, result: str) -> str | None:
+        phase = scb.state.phase
+        if phase not in {SessionPhase.ERROR, SessionPhase.STOPPED}:
+            return None
+        disposition = "failed" if phase is SessionPhase.ERROR else "stopped"
+        reason = scb.state.terminal_reason or result.strip() or phase.value
+        return f"Error: agent {disposition}: {reason}"
+
+    async def _deliver_to_parent(
+        self,
+        child_aid: int,
+        result: str,
+        status: RowStatus,
+        *,
+        error: str | None = None,
+    ) -> None:
         """Route a finished child's result to the pending row that suspended its
         parent, then re-activate the parent. No-op for fire-and-forget spawns.
         """
@@ -416,14 +451,115 @@ class LifecycleMixin:
                 result,
                 status,
                 child_aid=child_aid,
+                error=error,
             )
         except PendingRowError as exc:
-            self._spawn_origin.pop(child_aid, None)
+            retry_tool_call_id = await self._recover_delivery_route(
+                child_aid,
+                parent_aid,
+                exc,
+            )
+            if retry_tool_call_id is not None:
+                try:
+                    await self._wake(
+                        parent_aid,
+                        retry_tool_call_id,
+                        result,
+                        status,
+                        child_aid=child_aid,
+                        error=error,
+                    )
+                    return
+                except PendingRowError as retry_exc:
+                    # The unique row disappeared or changed between discovery
+                    # and fill. Count that as the bounded final route failure.
+                    exc = retry_exc
+                    await self._recover_delivery_route(child_aid, parent_aid, retry_exc)
             # A misrouted completion must surface loudly, never silently succeed.
             logger.error("misrouted completion from child %s: %s", child_aid, exc)
             await self._safe_emit_scheduler_event(
                 self._events.agent_failed(parent_aid, self._role_of(parent_aid), str(exc))
             )
+
+    async def _recover_delivery_route(
+        self,
+        child_aid: int,
+        parent_aid: int,
+        cause: PendingRowError,
+    ) -> str | None:
+        """Route a unique child row or close the parent batch explicitly.
+
+        A pending row is identified only by its ``ref`` pointing to the child;
+        this never writes the child's result into an unrelated tool row.  The
+        only safe recovery is a single such row.  Any other shape is terminal:
+        atomically fail the parent's open batch so it cannot remain suspended
+        waiting for a child whose completion no longer has a valid route.
+        """
+        parent_scb = self.table.get(parent_aid)
+        parent_session = self._sessions.get(parent_aid)
+        if parent_scb is None or parent_session is None:
+            self._spawn_origin.pop(child_aid, None)
+            return None
+
+        lock = self._locks.setdefault(parent_aid, asyncio.Lock())
+        should_resume = False
+        async with lock:
+            table = parent_scb.state.pending_events
+            child_rows = [
+                tool_call_id
+                for tool_call_id, row in table.rows.items()
+                if row.status is RowStatus.PENDING and row.ref == child_aid
+            ]
+            if len(child_rows) == 1:
+                return child_rows[0]
+
+            reason = f"Error: child completion routing failed: {cause}"
+            # No unique target exists. This is a terminal parent-side routing
+            # failure, not a child result for a different row: fail every open
+            # row atomically so no producer-less PENDING row survives.
+            for tool_call_id, row in tuple(table.rows.items()):
+                if row.status is RowStatus.PENDING:
+                    table.fill(
+                        tool_call_id,
+                        result=reason,
+                        status=RowStatus.FAILED,
+                        error=reason,
+                    )
+            self._spawn_origin.pop(child_aid, None)
+            in_flight = self._tasks.get(parent_aid)
+            should_resume = (
+                not self._shutting_down
+                and parent_scb.state.phase is SessionPhase.AWAITING_EVENTS
+                and table.is_complete()
+                and (in_flight is None or in_flight.done())
+            )
+            if should_resume:
+                self._reserve_turn_lease(parent_aid)
+                self._tasks[parent_aid] = asyncio.create_task(
+                    self._drive_agent(parent_aid, parent_session)
+                )
+            elif (
+                not self._shutting_down
+                and parent_scb.state.phase is SessionPhase.AWAITING_EVENTS
+                and table.is_complete()
+                and in_flight is not None
+                and not in_flight.done()
+            ):
+                in_flight.add_done_callback(
+                    lambda finished: asyncio.create_task(
+                        self._resume_after_parent_task(
+                            parent_aid,
+                            parent_session,
+                            finished,
+                        )
+                    )
+                )
+
+        if should_resume:
+            await self._safe_emit_scheduler_event(
+                self._events.agent_resumed(parent_aid, self._role_of(parent_aid))
+            )
+        return None
 
     async def _wake(
         self,
@@ -433,6 +569,7 @@ class LifecycleMixin:
         status: RowStatus,
         *,
         child_aid: int | None = None,
+        error: str | None = None,
     ) -> None:
         """Fill the parent's pending row and, if that completes the batch while
         the parent is suspended, create a resume task. Fill + completeness check
@@ -451,7 +588,7 @@ class LifecycleMixin:
         async with lock:
             table = parent_scb.state.pending_events
             cleanup_forced = False
-            fill_error: str | None = None
+            fill_error = error
             if child_aid is not None:
                 child_scb = self.table.get(child_aid)
                 cleanup_forced = self._shutting_down

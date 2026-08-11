@@ -11,6 +11,34 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TypedDict
 
+from opencollab.domain.session import SessionPhase
+
+
+class SchedulerTurnError(RuntimeError):
+    """A targeted public turn reached a non-success terminal session phase."""
+
+    def __init__(
+        self,
+        aid: int,
+        phase: SessionPhase,
+        terminal_reason: str | None,
+        partial_answer: str | None,
+    ) -> None:
+        self.aid = aid
+        self.phase = phase
+        self.terminal_reason = terminal_reason
+        self.partial_answer = partial_answer
+        reason = terminal_reason or phase.value
+        super().__init__(f"Agent aid {aid} {phase.value}: {reason}")
+
+
+class SchedulerStalledError(RuntimeError):
+    """No scheduler-owned task can advance a non-terminal session."""
+
+    def __init__(self, aid: int) -> None:
+        self.aid = aid
+        super().__init__(f"Scheduler stalled for aid {aid}: no active producer can advance it")
+
 
 class RosterEntry(TypedDict):
     """One row of a team roster (``Scheduler.team_snapshot``/``team_roster``).
@@ -66,11 +94,14 @@ class QueuedTeammateMessage:
     content: str
     xml: str
     sent_at: str = ""
+    message_id: str = ""
 
 
 __all__ = [
     "LaunchSpec",
     "QueuedTeammateMessage",
     "RosterEntry",
+    "SchedulerStalledError",
+    "SchedulerTurnError",
     "roster_display_state",
 ]

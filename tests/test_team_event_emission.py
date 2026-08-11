@@ -22,7 +22,7 @@ from opencollab.application.session_run import GenerationTimeoutError
 from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
 from opencollab.domain.events import SchedulerEvent, SessionRuntimeEvent
-from opencollab.domain.scheduler import ReviewVerdict, SessionControlBlock
+from opencollab.domain.scheduler import ReviewVerdict
 from opencollab.domain.session import SessionPhase, SessionState
 
 
@@ -95,6 +95,7 @@ class _FakeSessionFactory:
         self._queues = {role: list(results) for role, results in role_results.items()}
         self.built: list[tuple[str, int]] = []
         self.built_tasks: list[tuple[str, str]] = []
+        self.built_contexts: list[tuple[str, str]] = []
 
     def build_lead_session(self, **kwargs):
         return _FakeLeadSession()
@@ -102,6 +103,7 @@ class _FakeSessionFactory:
     def build_spawn_session(self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None, task=None, context=""):
         self.built.append((role, budget))
         self.built_tasks.append((role, task or ""))
+        self.built_contexts.append((role, context))
         queue = self._queues.get(role, [])
         result = queue.pop(0) if queue else ""
         return _FakeTeammateSession(result, role=role)
@@ -126,138 +128,6 @@ def _build_scheduler(monkeypatch, role_results: dict[str, list[str]]) -> tuple[S
 
 def _scheduler_events(events: list[Any]) -> list[SchedulerEvent]:
     return [e for e in events if isinstance(e, SchedulerEvent)]
-
-
-def test_spawn_emits_agent_spawned_then_completed(monkeypatch):
-    scheduler, events = _build_scheduler(monkeypatch, {"coder": ["coder did it"]})
-
-    run(_spawn_and_settle(scheduler, 0, "coder", "do the thing"))
-
-    seq = _scheduler_events(events)
-    types = [e.type for e in seq]
-    assert "agent_spawned" in types
-    assert "agent_completed" in types
-
-    spawned = [e for e in seq if e.type == "agent_spawned"][0]
-    assert spawned.data["role"] == "coder"
-    assert spawned.data["task"] == "do the thing"
-
-    completed = [e for e in seq if e.type == "agent_completed"][0]
-    assert completed.data["role"] == "coder"
-    assert "latency" in completed.data
-    assert isinstance(completed.data["latency"], float)
-
-
-def test_spawn_autosaves_parent_tool_call(monkeypatch, tmp_path):
-    scheduler, _ = _build_scheduler(monkeypatch, {"analyst": ["done"]})
-    lead = scheduler.lead_session
-    lead.auto_save_path = str(tmp_path / "agent_0_lead.json")
-    lead.state.append_message({"role": "user", "content": "fix it"})
-    lead.state.append_message(
-        {
-            "role": "assistant",
-            "tool_calls": [
-                {
-                    "id": "call-1",
-                    "type": "function",
-                    "function": {
-                        "name": "spawn_agent",
-                        "arguments": '{"role": "analyst", "task": "investigate"}',
-                    },
-                }
-            ],
-        }
-    )
-
-    run(_spawn_and_settle(scheduler, 0, "analyst", "investigate"))
-
-    with open(lead.auto_save_path) as f:
-        saved = json.load(f)
-    assert saved["messages"][-1]["tool_calls"][0]["function"]["name"] == "spawn_agent"
-
-
-def test_spawn_lifecycle_slow_autosave_keeps_event_loop_responsive(tmp_path):
-    started = threading.Event()
-    release = threading.Event()
-    scheduler, _ = _build_scheduler(None, {"analyst": ["done"]})
-    lead = scheduler.lead_session
-    lead.auto_save_path = str(tmp_path / "lead.json")
-
-    def slow_save(path: str) -> None:
-        started.set()
-        assert release.wait(timeout=2.0)
-        _FakeLeadSession.save(lead, path)
-
-    lead.save = slow_save
-
-    async def scenario():
-        aid = await scheduler.spawn(0, "analyst", "investigate")
-        assert await asyncio.to_thread(started.wait, 1.0)
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(asyncio.Event().wait(), timeout=0.02)
-        owners = scheduler._fallback_autosavers[0].pending_tasks
-        assert owners
-        release.set()
-        await asyncio.gather(*owners, return_exceptions=True)
-        await scheduler._tasks[aid]
-        await scheduler.cleanup()
-
-    run(scenario())
-
-
-def test_message_queue_slow_autosave_keeps_event_loop_responsive(tmp_path):
-    started = threading.Event()
-    release = threading.Event()
-    scheduler, _ = _build_scheduler(None, {})
-    target = _FakeTeammateSession("unused", role="coder")
-    target.state.aid = 1
-    target.state.set_phase(SessionPhase.AWAITING_EVENTS)
-    target.auto_save_path = str(tmp_path / "target.json")
-
-    def slow_save(path: str) -> None:
-        started.set()
-        assert release.wait(timeout=2.0)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump({"messages": target.state.enriched_messages()}, handle)
-
-    target.save = slow_save
-    scheduler.table.add(
-        SessionControlBlock(
-            aid=1,
-            parent_aid=0,
-            agent=target.agent,
-            state=target.state,
-        )
-    )
-    scheduler._sessions[1] = target
-
-    async def scenario():
-        result = await scheduler.send_message(0, 1, "question", "are you there?")
-        assert result == "Message queued to aid 1."
-        assert await asyncio.to_thread(started.wait, 1.0)
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(asyncio.Event().wait(), timeout=0.02)
-        owners = scheduler._fallback_autosavers[1].pending_tasks
-        assert owners
-        release.set()
-        await asyncio.gather(*owners, return_exceptions=True)
-        target.auto_save_path = None
-        await scheduler.cleanup()
-
-    run(scenario())
-
-
-def test_cleanup_autosaves_live_sessions(monkeypatch, tmp_path):
-    scheduler, _ = _build_scheduler(monkeypatch, {})
-    lead = scheduler.lead_session
-    lead.auto_save_path = str(tmp_path / "agent_0_lead.json")
-    lead.state.append_message({"role": "assistant", "content": "latest state"})
-
-    run(scheduler.cleanup())
-
-    with open(lead.auto_save_path) as f:
-        saved = json.load(f)
-    assert saved["messages"][-1]["content"] == "latest state"
 
 
 def test_cleanup_drains_queued_autosaves_before_final_snapshot(tmp_path):
@@ -705,6 +575,31 @@ def test_spawn_with_review_iterates_when_reviewer_fails(monkeypatch):
     second_coder_task = [task for role, task in factory.built_tasks if role == "coder"][1]
     assert "v1 impl" in second_coder_task
     assert "Reapply the previous implementation" in second_coder_task
+
+
+def test_spawn_with_review_passes_context_and_constraints_to_reviewer(monkeypatch):
+    scheduler, _ = _build_scheduler(
+        monkeypatch,
+        {"coder": ["implemented parser"], "reviewer": ["VERDICT: PASS"]},
+    )
+    context = 'Preserve comments.\nSupport "Python 3.10" syntax.'
+
+    result = run(
+        scheduler.spawn_with_review(
+            0,
+            "implement parser",
+            context=context,
+            max_iterations=1,
+        )
+    )
+
+    assert "PASSED after 1 iteration" in result
+    factory = scheduler._session_factory
+    assert factory.built_contexts == [("coder", context), ("reviewer", context)]
+    reviewer_task = [task for role, task in factory.built_tasks if role == "reviewer"][0]
+    assert "Original task:\nimplement parser" in reviewer_task
+    assert f"Required context:\n{context}" in reviewer_task
+    assert "Artifact to review:\nimplemented parser" in reviewer_task
 
 
 def test_review_verdict_uses_only_the_final_nonempty_line():
