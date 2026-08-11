@@ -31,6 +31,14 @@ class FakeEnv:
         raise AssertionError("write_file was not expected")
 
 
+class FalseyFakeEnv(FakeEnv):
+    def __bool__(self) -> bool:
+        return False
+
+    async def read_file(self, path: str) -> str:
+        return "contents\n"
+
+
 class SpySafetyPolicy:
     def __init__(self):
         self.cmd_calls = []

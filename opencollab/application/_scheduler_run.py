@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from opencollab.application.scheduler_types import SchedulerStalledError, SchedulerTurnError
 from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ class SchedulerRunMixin:
         """
         current_task = asyncio.current_task()
         if current_task is not None:
-            self._active_run_tasks.add(current_task)
+            self._active_run_tasks[current_task] = aid
         try:
             async with self._run_lock:
                 return await self._run_turn_exclusive(aid, user_message)
@@ -35,12 +36,14 @@ class SchedulerRunMixin:
             # driver and descendants running after that owner is cancelled.
             if not self._shutting_down:
                 if current_task is not None:
-                    self._active_run_tasks.discard(current_task)
+                    if self._active_run_tasks.get(current_task) == aid:
+                        self._active_run_tasks.pop(current_task, None)
                 await self.cleanup()
             raise
         finally:
             if current_task is not None:
-                self._active_run_tasks.discard(current_task)
+                if self._active_run_tasks.get(current_task) == aid:
+                    self._active_run_tasks.pop(current_task, None)
 
     async def _run_turn_exclusive(self, aid: int, user_message: str) -> str:
         """Drive one externally visible agent turn under ``_run_lock``."""
@@ -102,15 +105,11 @@ class SchedulerRunMixin:
                     logger.debug("background task for aid %s was cancelled", done_aid)
                 except Exception as exc:
                     logger.error("background task for aid %s failed: %s", done_aid, exc)
-            pending = list(self._tasks.values())
+            pending = self._active_scheduler_tasks()
             if not pending:
                 if self._quiescent():
                     break
-                # All tasks drained but a wake's resume task may be mid-creation
-                # (or a pending table is still open) — yield and re-check rather
-                # than exit early. Non-empty pending tables keep us looping
-                # without busy-spinning.
-                await asyncio.sleep(0)
+                await self._wait_for_scheduler_progress(aid)
                 continue
             await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
 
@@ -119,15 +118,54 @@ class SchedulerRunMixin:
         # Limit the answer lookup to messages appended during this invocation.
         # This keeps the public return value free of the worktree diff stored on
         # the SCB and prevents a precheck-only turn from leaking an old answer.
+        partial_answer = ""
         for message in reversed(session.state.messages[turn_start:]):
             if message.get("role") == "assistant" and message.get("content"):
-                return message["content"]
-        return ""
+                partial_answer = message["content"]
+                break
+        phase = scb.state.phase
+        if phase in {SessionPhase.ERROR, SessionPhase.STOPPED}:
+            raise SchedulerTurnError(
+                aid,
+                phase,
+                scb.state.terminal_reason,
+                partial_answer or None,
+            )
+        return partial_answer
+
+    def _active_scheduler_tasks(self) -> set[asyncio.Task]:
+        """Return live scheduler-owned producers, excluding the current waiter."""
+        current = asyncio.current_task()
+        return {
+            task
+            for task in (
+                *self._tasks.values(),
+                *self._startup_tasks.values(),
+                *self._message_delivery_tasks.values(),
+            )
+            if not task.done() and task is not current
+        }
+
+    async def _wait_for_scheduler_progress(self, aid: int) -> None:
+        """Block for a producer completion or report a state with no producer."""
+        producers = self._active_scheduler_tasks()
+        if not producers:
+            raise SchedulerStalledError(aid)
+        await asyncio.wait(producers, return_when=asyncio.FIRST_COMPLETED)
 
     def _quiescent(self) -> bool:
         """True when no session is mid-flight: none is awaiting events, none has
         an outstanding pending table, and every phase is terminal or idle.
         """
+        if any(
+            not task.done()
+            for task in (
+                *self._tasks.values(),
+                *self._startup_tasks.values(),
+                *self._message_delivery_tasks.values(),
+            )
+        ):
+            return False
         for scb in self.table.entries.values():
             if self._message_inbox.get(scb.aid):
                 return False

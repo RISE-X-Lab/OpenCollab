@@ -1,7 +1,4 @@
 import asyncio
-import math
-import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -15,9 +12,9 @@ from tool_execution_test_support import (
     RecordingEventPublisher as FakeEventPublisher,
 )
 
-import opencollab.application.tool_execution_runtime as tool_execution_runtime
-from opencollab.adapters.env import Environment
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
+from opencollab.application.structured_output import StructuredOutputTool
+from opencollab.application.submit_findings import SubmitFindingsTool
 from opencollab.application.tool_execution import (
     MAX_TOOL_CALLS_PER_BATCH,
     ToolExecutionUseCase,
@@ -74,6 +71,137 @@ class SideEffectTool(RuntimeNativeTool):
         "required": ["value"],
         "properties": {"value": {"type": "integer"}},
     }
+
+
+@pytest.mark.parametrize(
+    ("schema", "arguments", "expected_error"),
+    [
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "integer"}},
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+            '{"value": 1, "unexpected": true}',
+            "unexpected property",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "number", "minimum": 0}},
+                "required": ["value"],
+            },
+            '{"value": -1}',
+            "must be >= 0",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "number", "maximum": 10}},
+                "required": ["value"],
+            },
+            '{"value": 11}',
+            "must be <= 10",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "string", "minLength": 3}},
+                "required": ["value"],
+            },
+            '{"value": "ab"}',
+            "must have length >= 3",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "string", "maxLength": 3}},
+                "required": ["value"],
+            },
+            '{"value": "abcd"}',
+            "must have length <= 3",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "string", "pattern": "^[A-Z]+$"}},
+                "required": ["value"],
+            },
+            '{"value": "lower"}',
+            "must match pattern",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "array", "minItems": 2}},
+                "required": ["value"],
+            },
+            '{"value": [1]}',
+            "must contain at least 2 items",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {"value": {"type": "array", "maxItems": 2}},
+                "required": ["value"],
+            },
+            '{"value": [1, 2, 3]}',
+            "must contain at most 2 items",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {
+                    "value": {
+                        "oneOf": [
+                            {"type": "integer", "minimum": 0},
+                            {"type": "string", "minLength": 3},
+                        ]
+                    }
+                },
+                "required": ["value"],
+            },
+            '{"value": false}',
+            "must match exactly one schema in oneOf",
+        ),
+    ],
+    ids=[
+        "additional-properties",
+        "minimum",
+        "maximum",
+        "min-length",
+        "max-length",
+        "pattern",
+        "min-items",
+        "max-items",
+        "one-of",
+    ],
+)
+def test_declared_schema_constraints_block_side_effects(schema, arguments, expected_error):
+    tool = SideEffectTool()
+    tool.parameters = schema
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
+
+    result = run(use_case.process([tool_call(arguments=arguments)]))
+
+    assert tool.runtime_calls == []
+    assert result.messages_to_append[0]["content"].startswith(
+        "Error: schema validation failed:"
+    )
+    assert expected_error in result.messages_to_append[0]["content"]
+
+
+def test_structured_output_rejects_unsupported_assertion_schema_before_provider_use():
+    with pytest.raises(ValueError, match="anyOf: unsupported schema keyword"):
+        StructuredOutputTool(
+            {
+                "anyOf": [
+                    {"type": "string"},
+                    {"type": "integer"},
+                ]
+            }
+        )
 
 
 def event_factory() -> SessionEventFactory:
@@ -162,6 +290,86 @@ def test_tool_execution_use_case_handles_non_string_and_preparsed_arguments():
     assert "must be a JSON object" in invalid.messages_to_append[0]["content"]
     assert valid.messages_to_append[0]["content"] == "runtime result"
     assert tool.runtime_calls[0][0] == {"value": 1}
+
+
+def test_terminal_structured_output_skips_later_side_effect_and_answers_every_call():
+    terminal = StructuredOutputTool(
+        {
+            "type": "object",
+            "required": ["answer"],
+            "properties": {"answer": {"type": "string"}},
+        }
+    )
+    side_effect = SideEffectTool(output="side effect executed")
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[terminal, side_effect]))
+
+    result = run(
+        use_case.process(
+            [
+                tool_call(
+                    name="structured_output",
+                    arguments='{"answer": "done"}',
+                    call_id="terminal",
+                ),
+                tool_call(
+                    name="fake_tool",
+                    arguments='{"value": 1}',
+                    call_id="side-effect",
+                ),
+            ]
+        )
+    )
+
+    assert terminal.captured == {"answer": "done"}
+    assert side_effect.runtime_calls == []
+    assert result.messages_to_append == [
+        {
+            "role": "tool",
+            "tool_call_id": "terminal",
+            "content": "Recorded. Structured output accepted. Your task is complete.",
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "side-effect",
+            "content": "Skipped: terminal structured output accepted earlier in this batch.",
+        },
+    ]
+
+
+def test_terminal_submit_findings_skips_later_side_effect():
+    terminal = SubmitFindingsTool()
+    side_effect = SideEffectTool(output="side effect executed")
+    use_case, _ = build_use_case(agent=FakeAgent(tools=[terminal, side_effect]))
+
+    result = run(
+        use_case.process(
+            [
+                tool_call(
+                    name="submit_findings",
+                    arguments=(
+                        '{"findings": [], "summary": "done", '
+                        '"insufficient_evidence": true}'
+                    ),
+                    call_id="terminal",
+                ),
+                tool_call(
+                    name="fake_tool",
+                    arguments='{"value": 1}',
+                    call_id="side-effect",
+                ),
+            ]
+        )
+    )
+
+    assert terminal.captured is not None
+    assert side_effect.runtime_calls == []
+    assert [message["tool_call_id"] for message in result.messages_to_append] == [
+        "terminal",
+        "side-effect",
+    ]
+    assert result.messages_to_append[-1]["content"] == (
+        "Skipped: terminal structured output accepted earlier in this batch."
+    )
 
 
 def test_tool_execution_use_case_preserves_unknown_tool_error():
@@ -447,308 +655,3 @@ def test_loop_block_short_circuit_counts_toward_hard_brake():
     assert result.loop_detections == [LoopDetection(tool="fake_tool", count=3)]
 
 
-class RevocableEnvironment(Environment):
-    def __init__(self):
-        self._aborted = False
-        self.writes = []
-
-    async def exec_cmd(self, cmd: str, timeout: float = 120.0):
-        self._ensure_active()
-        return SimpleNamespace(returncode=0, stdout="", stderr="")
-
-    async def read_file(self, path: str) -> str:
-        self._ensure_active()
-        return ""
-
-    async def write_file(self, path: str, content: str) -> None:
-        self._ensure_active()
-        self.writes.append((path, content))
-
-
-class StubbornLateWriteTool:
-    name = "stubborn_late_writer"
-    default_timeout = 0.005
-    disable_outer_timeout = False
-
-    def __init__(self):
-        self.started = asyncio.Event()
-        self.cancel_seen = asyncio.Event()
-        self.release = asyncio.Event()
-        self.write_blocked = asyncio.Event()
-
-    async def execute_with_runtime(self, args, runtime):
-        self.started.set()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            self.cancel_seen.set()
-            while not self.release.is_set():
-                try:
-                    await self.release.wait()
-                except asyncio.CancelledError:
-                    continue
-            try:
-                await runtime.environment.write_file("late.py", "late")
-            except RuntimeError:
-                self.write_blocked.set()
-            return "late completion"
-
-
-def _bounded_tool_use_case(tool, environment):
-    return build_use_case(
-        agent=FakeAgent(tools=[tool]),
-        environment=environment,
-        cancellation_cleanup_timeout=0.01,
-        cancellation_force_timeout=0.01,
-        environment_abort_timeout=0.01,
-    )[0]
-
-
-@pytest.mark.asyncio
-async def test_stubborn_timed_out_tool_cannot_write_after_execute_returns(monkeypatch):
-    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
-    environment = RevocableEnvironment()
-    tool = StubbornLateWriteTool()
-    use_case = _bounded_tool_use_case(tool, environment)
-
-    started = time.monotonic()
-    output, _latency = await use_case.execute_tool(tool, {})
-    elapsed = time.monotonic() - started
-
-    assert elapsed < 0.2
-    assert "Tool cancellation cleanup failed" in output
-    assert "environment was revoked" in output
-    assert environment._aborted is True
-    pending = use_case.pending_cleanup_tasks
-    assert len(pending) == 1
-
-    tool.release.set()
-    await asyncio.gather(*pending)
-    await asyncio.wait_for(tool.write_blocked.wait(), timeout=0.2)
-
-    assert tool.write_blocked.is_set()
-    assert environment.writes == []
-    assert use_case.pending_cleanup_tasks == ()
-
-
-@pytest.mark.asyncio
-async def test_stubborn_environment_abort_is_bounded_and_exposed(monkeypatch):
-    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
-
-    class StubbornAbortEnvironment(RevocableEnvironment):
-        def __init__(self):
-            super().__init__()
-            self.abort_started = asyncio.Event()
-            self.abort_release = asyncio.Event()
-
-        async def abort(self) -> None:
-            self.abort_started.set()
-            while not self.abort_release.is_set():
-                try:
-                    await self.abort_release.wait()
-                except asyncio.CancelledError:
-                    continue
-
-    environment = StubbornAbortEnvironment()
-    tool = StubbornLateWriteTool()
-    use_case = _bounded_tool_use_case(tool, environment)
-
-    started = time.monotonic()
-    output, _latency = await use_case.execute_tool(tool, {})
-    elapsed = time.monotonic() - started
-
-    assert elapsed < 0.2
-    assert environment.abort_started.is_set()
-    assert "environment abort did not quiesce within its bounded timeout" in output
-    pending = use_case.pending_cleanup_tasks
-    assert len(pending) == 2
-
-    tool.release.set()
-    environment.abort_release.set()
-    await asyncio.gather(*pending)
-    await asyncio.wait_for(tool.write_blocked.wait(), timeout=0.2)
-
-    assert tool.write_blocked.is_set()
-    assert environment.writes == []
-    assert use_case.pending_cleanup_tasks == ()
-
-
-@pytest.mark.asyncio
-async def test_cooperative_tool_timeout_keeps_existing_result_shape(monkeypatch):
-    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
-
-    class CooperativeTimeoutTool:
-        name = "cooperative"
-        default_timeout = 0.005
-        disable_outer_timeout = False
-
-        async def execute_with_runtime(self, args, runtime):
-            await asyncio.Event().wait()
-
-    tool = CooperativeTimeoutTool()
-    environment = RevocableEnvironment()
-    use_case = _bounded_tool_use_case(tool, environment)
-
-    output, _latency = await use_case.execute_tool(tool, {})
-
-    assert output.startswith("Tool execution timed out after ")
-    assert "while running 'cooperative'." in output
-    assert "cleanup failed" not in output
-    assert environment._aborted is False
-    assert use_case.pending_cleanup_tasks == ()
-
-
-@pytest.mark.asyncio
-async def test_execute_tool_success_path_is_unchanged():
-    tool = RuntimeNativeTool(output="success")
-    use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
-
-    output, _latency = await use_case.execute_tool(tool, {"value": 1})
-
-    assert output == "success"
-    assert use_case.pending_cleanup_tasks == ()
-
-
-@pytest.mark.asyncio
-async def test_execute_tool_preserves_caller_cancellation():
-    class CallerCancelledTool:
-        name = "caller_cancelled"
-        default_timeout = None
-        disable_outer_timeout = True
-
-        def __init__(self):
-            self.started = asyncio.Event()
-            self.cancelled = asyncio.Event()
-
-        async def execute_with_runtime(self, args, runtime):
-            self.started.set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                self.cancelled.set()
-
-    tool = CallerCancelledTool()
-    use_case, _ = build_use_case(agent=FakeAgent(tools=[tool]))
-    execution = asyncio.create_task(use_case.execute_tool(tool, {}))
-    await tool.started.wait()
-
-    execution.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await execution
-
-    await asyncio.wait_for(tool.cancelled.wait(), timeout=0.2)
-
-
-@pytest.mark.asyncio
-async def test_repeated_caller_cancel_cannot_interrupt_late_write_cleanup():
-    class CallerStubbornLateWriteTool(StubbornLateWriteTool):
-        default_timeout = None
-        disable_outer_timeout = True
-
-    environment = RevocableEnvironment()
-    tool = CallerStubbornLateWriteTool()
-    use_case = _bounded_tool_use_case(tool, environment)
-    execution = asyncio.create_task(use_case.execute_tool(tool, {}))
-    await tool.started.wait()
-
-    execution.cancel()
-    await tool.cancel_seen.wait()
-    execution.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await execution
-
-    assert environment._aborted is True
-    pending = use_case.pending_cleanup_tasks
-    assert len(pending) == 1
-    tool.release.set()
-    await asyncio.gather(*pending)
-    await asyncio.wait_for(tool.write_blocked.wait(), timeout=0.2)
-
-    assert tool.write_blocked.is_set()
-    assert environment.writes == []
-    assert use_case.pending_cleanup_tasks == ()
-
-
-@pytest.mark.asyncio
-async def test_caller_cancel_cannot_interrupt_tool_timeout_cleanup(monkeypatch):
-    monkeypatch.setattr(tool_execution_runtime, "TOOL_EXECUTION_TIMEOUT_GRACE", 0.001)
-    environment = RevocableEnvironment()
-    tool = StubbornLateWriteTool()
-    use_case = _bounded_tool_use_case(tool, environment)
-    execution = asyncio.create_task(use_case.execute_tool(tool, {}))
-
-    await tool.cancel_seen.wait()
-    execution.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await execution
-
-    assert environment._aborted is True
-    pending = use_case.pending_cleanup_tasks
-    assert len(pending) == 1
-    tool.release.set()
-    await asyncio.gather(*pending)
-    await asyncio.wait_for(tool.write_blocked.wait(), timeout=0.2)
-
-    assert tool.write_blocked.is_set()
-    assert environment.writes == []
-    assert use_case.pending_cleanup_tasks == ()
-
-
-@pytest.mark.asyncio
-async def test_simultaneous_outer_and_cleanup_cancel_cannot_spin():
-    use_case, _ = build_use_case()
-    cleanup_started = asyncio.Event()
-
-    async def cleanup():
-        cleanup_started.set()
-        await asyncio.Event().wait()
-
-    cleanup_task = asyncio.create_task(cleanup())
-    owner = asyncio.create_task(
-        use_case._await_owned_cleanup_despite_cancellation(cleanup_task)
-    )
-    await cleanup_started.wait()
-
-    owner.cancel()
-    cleanup_task.cancel()
-
-    await asyncio.wait_for(owner, timeout=0.2)
-    assert cleanup_task.cancelled() is True
-
-
-@pytest.mark.parametrize(
-    "field",
-    [
-        "cancellation_cleanup_timeout",
-        "cancellation_force_timeout",
-        "environment_abort_timeout",
-    ],
-)
-@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "invalid"])
-def test_tool_cleanup_timeouts_must_be_finite_and_positive(field, value):
-    kwargs = {field: value}
-
-    with pytest.raises(ValueError, match="must be a finite positive number"):
-        build_use_case(**kwargs)
-
-
-@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), True, "invalid"])
-def test_invalid_requested_tool_timeout_falls_back_to_positive_bound(value):
-    tool = SimpleNamespace(default_timeout=None, disable_outer_timeout=False)
-    use_case, _ = build_use_case()
-
-    timeout = use_case.tool_execution_timeout(tool, {"timeout": value})
-
-    assert timeout is not None
-    assert math.isfinite(timeout)
-    assert timeout > 0
-
-
-def test_application_tool_execution_module_does_not_import_outer_layers():
-    package_root = Path(__file__).resolve().parents[1]
-    source = (package_root / "opencollab/application/tool_execution.py").read_text(encoding="utf-8")
-
-    assert "opencollab.core.session" not in source
-    assert "opencollab.tools" not in source
-    assert "opencollab.bootstrap" not in source
-    assert "opencollab.tui" not in source

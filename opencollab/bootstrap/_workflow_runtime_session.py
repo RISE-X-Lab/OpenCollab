@@ -36,9 +36,8 @@ class WorkflowSessionFactory:
 
     Each ``build_workflow_session`` call assembles a fresh one-shot ``Agent``
     (carrying the resolved LLM config) and a self-wiring ``Session``. ``tools``
-    from the caller become the agent's toolset; ``isolation`` is accepted for
-    forward-compatibility (a future worktree-backed environment) but currently
-    runs in a local environment.
+    from the caller become the agent's toolset. ``isolation=True`` is rejected
+    until this factory can provide a distinct worktree-backed environment.
     """
 
     def __init__(
@@ -114,6 +113,8 @@ class WorkflowSessionFactory:
         tool_choice: str | None = None,
         thinking: bool | None = None,
     ) -> Any:
+        if isolation:
+            raise ValueError("workflow agent isolation is not available")
         use_thinking = self._thinking if thinking is None else thinking
         capabilities = model_capabilities(self._model)
         if self._thinking and not capabilities.honors_workflow_thinking_override:
@@ -133,7 +134,13 @@ class WorkflowSessionFactory:
             thinking_params=self._thinking_params,
             tool_choice=tool_choice,
         )
-        env = self._env or (LocalEnvironment(self._workspace) if self._workspace else LocalEnvironment())
+        env = self._env
+        if env is None:
+            env = (
+                LocalEnvironment(self._workspace)
+                if self._workspace
+                else LocalEnvironment()
+            )
         return build_session(
             agent=agent,
             env=env,
@@ -196,7 +203,9 @@ def build_workflow_context(
     budget_total = budget if budget is not None else cfg.get("budget")
     # Working-tree probe over the same workspace the sessions edit, so the
     # workflow can verify a real edit landed before declaring success.
-    probe_env = environment or (LocalEnvironment(workspace) if workspace else LocalEnvironment())
+    probe_env = environment
+    if probe_env is None:
+        probe_env = LocalEnvironment(workspace) if workspace else LocalEnvironment()
     return WorkflowContext(
         factory,
         event_sink=event_sink,

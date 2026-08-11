@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from opencollab.application.ports import ShaperPort
+from opencollab.domain.token_estimation import estimate_messages_tokens
 
 # History-compaction thresholds (token estimates over the whole view). The
 # trigger/target gap is deliberate: a layer compacts down to ``TARGET`` (well
@@ -53,21 +54,14 @@ def history_trigger_target(
 
 
 def approx_messages_tokens(messages: list[dict[str, Any]]) -> int:
-    """Cheap, additive context-size estimate (~chars/4) over a message list.
+    """Cheap, additive context-size estimate over a message list.
 
     Additive per message so subtracting a group's estimate equals the estimate
     of the remainder — lets the history layers re-estimate incrementally. A
-    real tokenizer-backed estimator is injected at wiring time; this is the
-    dependency-free fallback (the spec only needs an approximation).
+    real tokenizer-backed estimator is injected at wiring time; this fallback
+    uses the same serialized request fields as budget accounting.
     """
-    total = 0
-    for message in messages:
-        content = message.get("content")
-        if isinstance(content, str):
-            total += len(content)
-        for call in message.get("tool_calls") or ():
-            total += len(str(call.get("function", {}).get("arguments", "")))
-    return total // 4
+    return estimate_messages_tokens(messages)
 
 
 @contextmanager

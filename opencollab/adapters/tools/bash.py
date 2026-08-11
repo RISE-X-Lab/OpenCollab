@@ -101,7 +101,7 @@ class BashTool(Tool):
         env = runtime.environment
         safety_policy = runtime.safety_policy
 
-        if not env:
+        if env is None:
             return "Error: no execution environment available."
         if self.require_process_isolation and not getattr(
             env, "process_isolated", False

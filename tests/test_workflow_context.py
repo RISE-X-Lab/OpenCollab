@@ -218,15 +218,15 @@ async def test_structured_retry_build_error_records_safe_provider_fields():
     assert ctx.agent_failures[0]["provider_error_type"] == "access_terminated_error"
 
 @pytest.mark.asyncio
-async def test_agent_forwards_tools_and_isolation():
+async def test_agent_rejects_unsupported_isolation_before_building_session():
     session = FakeSession()
     factory = FakeFactory([session])
     ctx = WorkflowContext(factory)
 
-    await ctx.agent("p", tools=["t1"], isolation=True)
+    with pytest.raises(ValueError, match="isolation is not available"):
+        await ctx.agent("p", tools=["t1"], isolation=True)
 
-    assert factory.builds[0]["tools"] == ["t1"]
-    assert factory.builds[0]["isolation"] is True
+    assert factory.builds == []
 
 @pytest.mark.asyncio
 async def test_agent_threads_tool_choice_to_factory():
