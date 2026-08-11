@@ -12,6 +12,7 @@ from opencollab.application._session_run_shared import (
     GenerationTimeoutError,
     _ContextOverflowStop,
     _submit_tool_choice,
+    _TokenBudgetStop,
 )
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import CompletionResponse
@@ -24,6 +25,7 @@ from opencollab.application.steering import (
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase
+from opencollab.domain.token_estimation import request_tokens_upper_bound
 
 logger = logging.getLogger(__name__)
 
@@ -175,7 +177,7 @@ class _SessionRunCompletionMixin:
         steering, tool_choice_override, steering_level = build_steering_block(
             used_tokens=self.state.used_tokens,
             max_budget_tokens=self.max_budget_tokens or 0,
-            step_count=self.state.step_count,
+            step_count=self.state.step_count + 1,
             max_steps=self.max_steps,
             reads=self.state.turn.reads_since_last_edit,
             has_write=bool(tool_names & _WRITE_TOOLS),
@@ -284,7 +286,26 @@ class _SessionRunCompletionMixin:
         top_p = getattr(self.agent, "top_p", None)
         if top_p is not None:
             extra["top_p"] = top_p
-        max_output_tokens = getattr(self.agent, "max_tokens_per_step", DEFAULT_MAX_TOKENS_PER_STEP)
+        configured_output_tokens = getattr(
+            self.agent,
+            "max_tokens_per_step",
+            DEFAULT_MAX_TOKENS_PER_STEP,
+        )
+        remaining_budget = int(self.max_budget_tokens) - int(self.state.used_tokens)
+        reserved_input_tokens = request_tokens_upper_bound(messages, tools)
+        output_budget = remaining_budget - reserved_input_tokens
+        if output_budget < 1:
+            raise _TokenBudgetStop(
+                reserved_input_tokens=reserved_input_tokens,
+                remaining_budget=remaining_budget,
+            )
+        # Precheck guarantees positive headroom before entering this call. Clamp
+        # the provider's output ceiling to the live remainder after reserving an
+        # upper bound for request messages and registered tool schemas.
+        max_output_tokens = min(
+            max(1, int(configured_output_tokens)),
+            output_budget,
+        )
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
             extra["max_output_tokens"] = max_output_tokens
         if not getattr(self.agent, "thinking", False):
@@ -314,6 +335,7 @@ class _SessionRunCompletionMixin:
         workflow/agent wrapper as a dead step (the run continues with whatever is
         already in the working tree). ``None`` disables the ceiling.
         """
+        await self._start_llm_step()
         if self._per_call_timeout is None:
             return await self.llm.complete(**kwargs)
         try:
@@ -326,6 +348,16 @@ class _SessionRunCompletionMixin:
             raise GenerationTimeoutError(
                 f"LLM generation exceeded the {self._per_call_timeout}s per-call timeout"
             ) from exc
+
+    async def _start_llm_step(self) -> None:
+        """Record one step immediately before the first provider attempt."""
+        if self._llm_step_started:
+            return
+        self.state.advance_step()
+        await self.event_publisher.emit(
+            self.event_factory.step_start(self.state.step_count)
+        )
+        self._llm_step_started = True
 
     async def _stop_on_context_overflow(self) -> None:
         """Graceful terminal stop when a prompt overflows the model window even

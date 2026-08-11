@@ -59,9 +59,8 @@ TERMINAL_PHASES = frozenset(
 # cancel gates) and from CALLING_LLM (context overflow: the provider rejected the
 # prompt as too large even after a forced maximal compaction pass + one retry —
 # e.g. the pinned identity/team/task seed alone exceeds the window). Every STOPPED
-# is a *controlled* stop that delivers a clean result to the parent, never an
-# unhandled ERROR, so a child that overflows or exhausts its budget does not crash
-# the parent's turn.
+# is a controlled stop that delivers an explicit failed result to the parent,
+# allowing it to recover without treating unfinished work as successful.
 #
 # AWAITING_EVENTS is a non-terminal *suspend* state: the loop stops there (the
 # task returns) when a step deferred work (e.g. a spawned child) and the
@@ -242,6 +241,12 @@ class SessionState:
     def discard_pending_user_message(self, content: str) -> None:
         for index, message in enumerate(self.pending_user_messages):
             if message.get("content") == content:
+                del self.pending_user_messages[index]
+                return
+
+    def discard_pending_user_message_id(self, message_id: str) -> None:
+        for index, message in enumerate(self.pending_user_messages):
+            if message.get("message_id") == message_id:
                 del self.pending_user_messages[index]
                 return
 

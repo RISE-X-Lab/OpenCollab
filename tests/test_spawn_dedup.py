@@ -1,11 +1,12 @@
 """Single-flight spawn dedup — the reliable, tool-level guard against the
-"won't stop" loop where a model re-spawns an identical task.
+"won't stop" loop where a model re-spawns an identical delegated task.
 
 Prompt-level "don't duplicate" is unreliable; the scheduler enforces it. While
-a (role, task) spawn is in flight, ``inflight_spawn`` reports the handling aid
-and ``SpawnAgentTool`` refuses to spawn again, returning a self-describing
-message instead of a second child. The reservation clears once the child
-reaches a terminal phase, so a legitimate later re-run is never blocked.
+a (parent, role, task, context) spawn is in flight, ``inflight_spawn`` reports
+the handling aid and ``SpawnAgentTool`` refuses to spawn again, returning a
+self-describing message instead of a second child. The reservation clears once
+the child reaches a terminal phase, so a legitimate later re-run is never
+blocked.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
 from opencollab.application.tool_execution import DeferredCall, ToolRuntime
+from opencollab.domain.scheduler import SessionControlBlock
 from opencollab.domain.session import SessionPhase, SessionState
 
 
@@ -47,17 +49,18 @@ class BlockingChild:
 
 
 class ChildFactory:
-    def __init__(self, child: BlockingChild):
-        self._child = child
+    def __init__(self, children: BlockingChild | list[BlockingChild]):
+        self._children = list(children) if isinstance(children, list) else [children]
 
     def build_spawn_session(
         self, *, role, env, budget, max_steps=50, aid=-1, scheduler=None, task=None, context=""
     ):
-        self._child.state.aid = aid
-        return self._child
+        child = self._children.pop(0)
+        child.state.aid = aid
+        return child
 
 
-def _scheduler(child: BlockingChild) -> Scheduler:
+def _scheduler(child: BlockingChild | list[BlockingChild]) -> Scheduler:
     scheduler = Scheduler(
         session_factory=ChildFactory(child),
         worktree_pool=WorktreePool(".", use_worktrees=False),
@@ -69,27 +72,28 @@ def _scheduler(child: BlockingChild) -> Scheduler:
     return scheduler
 
 
-def test_inflight_spawn_tracks_then_clears():
+def test_inflight_spawn_keeps_parent_context_and_task_whitespace_distinct():
     async def scenario():
         gate = asyncio.Event()
         child = BlockingChild("coder", "RESULT", gate)
         scheduler = _scheduler(child)
+        task = "fix:\n  return 1"
+        context = "module=a"
 
-        aid = await scheduler.spawn(0, "coder", "build it", tool_call_id="call-1")
+        aid = await scheduler.spawn(0, "coder", task, context, tool_call_id="call-1")
 
-        # In flight: the same (role, task) is reported as already handled.
-        assert scheduler.inflight_spawn("coder", "build it") == aid
-        # Whitespace-insensitive — re-prompting with reflowed text still collides.
-        assert scheduler.inflight_spawn("coder", "build   it") == aid
-        # A different task (or role) is not deduped.
-        assert scheduler.inflight_spawn("coder", "build something else") is None
-        assert scheduler.inflight_spawn("reviewer", "build it") is None
+        # Only the same parent's exact delegated input is single-flight.
+        assert scheduler.inflight_spawn("coder", task, parent_aid=0, context=context) == aid
+        assert scheduler.inflight_spawn("coder", task, parent_aid=1, context=context) is None
+        assert scheduler.inflight_spawn("coder", task, parent_aid=0, context="module=b") is None
+        assert scheduler.inflight_spawn("coder", "fix: return 1", parent_aid=0, context=context) is None
+        assert scheduler.inflight_spawn("reviewer", task, parent_aid=0, context=context) is None
 
         gate.set()
         await scheduler._tasks[aid]
 
         # Terminal completion releases the reservation.
-        assert scheduler.inflight_spawn("coder", "build it") is None
+        assert scheduler.inflight_spawn("coder", task, parent_aid=0, context=context) is None
 
     run(scenario())
 
@@ -106,7 +110,7 @@ def test_duplicate_spawn_tool_call_is_refused_while_in_flight():
             aid=0, tool_call_id="call-1",
         )
         deferred = await tool.execute_with_runtime(
-            {"role": "coder", "task": "build it"}, first_rt
+            {"role": "coder", "task": "build it", "context": "module=a"}, first_rt
         )
         assert isinstance(deferred, DeferredCall)
         aid = deferred.ref
@@ -117,7 +121,7 @@ def test_duplicate_spawn_tool_call_is_refused_while_in_flight():
             aid=0, tool_call_id="call-2",
         )
         msg = await tool.execute_with_runtime(
-            {"role": "coder", "task": "build it"}, dup_rt
+            {"role": "coder", "task": "build it", "context": "module=a"}, dup_rt
         )
         assert isinstance(msg, str)
         assert f"aid={aid}" in msg
@@ -127,6 +131,48 @@ def test_duplicate_spawn_tool_call_is_refused_while_in_flight():
 
         gate.set()
         await scheduler._tasks[aid]
+
+    run(scenario())
+
+
+def test_same_role_task_from_different_parent_is_not_deduped():
+    async def scenario():
+        gate = asyncio.Event()
+        scheduler = _scheduler(
+            [
+                BlockingChild("coder", "first", gate),
+                BlockingChild("coder", "second", gate),
+            ]
+        )
+        second_parent = BlockingChild("reviewer", "", asyncio.Event())
+        second_parent.state.aid = 2
+        second_parent.state.set_phase(SessionPhase.DONE)
+        scheduler.table.add(
+            SessionControlBlock(
+                aid=2,
+                parent_aid=0,
+                agent=second_parent.agent,
+                state=second_parent.state,
+            )
+        )
+        scheduler._sessions[2] = second_parent
+        tool = SpawnAgentTool(scheduler)
+
+        first = await tool.execute_with_runtime(
+            {"role": "coder", "task": "inspect repository", "context": "module=a"},
+            ToolRuntime(None, None, None, aid=0, tool_call_id="call-1"),
+        )
+        second = await tool.execute_with_runtime(
+            {"role": "coder", "task": "inspect repository", "context": "module=a"},
+            ToolRuntime(None, None, None, aid=2, tool_call_id="call-2"),
+        )
+
+        assert isinstance(first, DeferredCall)
+        assert isinstance(second, DeferredCall)
+        assert first.ref != second.ref
+
+        gate.set()
+        await asyncio.gather(*scheduler._tasks.values())
 
     run(scenario())
 

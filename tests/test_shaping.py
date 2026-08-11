@@ -12,6 +12,7 @@ from opencollab.application.shaping import (
     PerToolResultBudgetShaper,
     ShaperPipeline,
 )
+from opencollab.application.shaping.pipeline import approx_messages_tokens
 
 
 def _tool_msg(content, tool_call_id="t1"):
@@ -146,6 +147,25 @@ def test_snip_noop_below_trigger_returns_input_identity():
     messages = [_sys(), _user(), _text("small"), _text("recent")]
     out = _snip().shape(messages)
     assert out is messages
+
+
+def test_fallback_estimator_compacts_large_tool_call_reasoning():
+    """The dependency-free estimator must trigger on request-side tool payloads."""
+    old_call = _call("large")
+    old_call["reasoning_content"] = "r" * 6_000
+    messages = [_sys(), _user(), old_call, _tool("large", "small result"), _text("recent")]
+    shaper = OldHistorySnipShaper(
+        estimate_tokens=approx_messages_tokens,
+        trigger_tokens=1_000,
+        target_tokens=500,
+        keep_recent_groups=1,
+    )
+
+    out = shaper.shape(messages)
+
+    assert approx_messages_tokens(messages) > shaper.trigger_tokens
+    assert not any(m.get("tool_calls") for m in out)
+    assert out[-1] == _text("recent")
 
 
 def test_snip_drops_old_tool_turns_when_over_trigger():

@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 import pytest
-from tool_runtime_test_support import FakeRemoteEnv, SpyLock, run
+from tool_runtime_test_support import FakeRemoteEnv, FalseyFakeEnv, SpyLock, run
 
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.safety import SandboxInterceptor
@@ -86,6 +86,15 @@ def test_file_read_requires_environment():
     result = run(FileReadTool().execute_with_runtime({"path": "missing.txt"}, runtime))
 
     assert result == "Error: no execution environment available."
+
+
+def test_file_read_accepts_falsey_environment():
+    env = FalseyFakeEnv()
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(FileReadTool().execute_with_runtime({"path": "note.txt"}, runtime))
+
+    assert "contents" in result
 
 
 def test_file_read_preserves_file_not_found(tmp_path):
