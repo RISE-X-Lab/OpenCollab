@@ -23,6 +23,7 @@ from opencollab.application._session_run_shared import (
     PendingStep,
     _ContextOverflowStop,
     _submit_tool_choice,
+    _TokenBudgetStop,
 )
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
@@ -164,6 +165,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # deferred suspend/resume so the returned answer is scoped to this turn.
         self._turn_start_message_index: int | None = None
         self._provider_tasks: set[asyncio.Task[Any]] = set()
+        self._llm_step_started = False
 
     @property
     def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
@@ -481,13 +483,20 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         gracefully (CONTEXT_OVERFLOW) instead of letting it crash as an
         unhandled ERROR — mirroring the BUDGET_EXCEEDED degradation.
         """
-        self.state.advance_step()
-        await self.event_publisher.emit(self.event_factory.step_start(self.state.step_count))
+        self._llm_step_started = False
         start = time.monotonic()
 
         tools = self.build_tool_schemas()
         try:
             response = await self.call_llm(tools)
+        except _TokenBudgetStop as exc:
+            reason = (
+                "budget exhausted before model call: conservative input reservation "
+                f"requires {exc.reserved_input_tokens} of {exc.remaining_budget} "
+                "remaining tokens, leaving no output headroom"
+            )
+            await self._stop_precheck(reason)
+            return
         except _ContextOverflowStop:
             await self._stop_on_context_overflow()
             return
@@ -497,6 +506,21 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.state.set_context_tokens(response.usage.input_tokens)
 
         self.record_llm_trace(response, latency)
+        if self.state.used_tokens > self.max_budget_tokens:
+            reason = (
+                "budget exceeded after model call: "
+                f"{self.state.used_tokens} tokens used"
+            )
+            self.state.append_message(
+                {
+                    "role": "system",
+                    "content": f"[{reason.capitalize()}. Session stopped.]",
+                }
+            )
+            await self.event_publisher.emit(self.event_factory.error(reason))
+            await self.finish_step(latency)
+            self.state.transition_to(SessionPhase.STOPPED, reason=reason)
+            return
         self.append_assistant_message(response)
         self._pending = PendingStep(response=response, latency=latency)
         self.state.transition_to(SessionPhase.HANDLING_RESPONSE)

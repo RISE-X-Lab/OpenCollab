@@ -8,9 +8,11 @@ import arbitrary files), so it is exercised here against a tmp_path directory.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 import textwrap
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -275,6 +277,211 @@ def test_load_workflow_specs_supports_dataclasses_and_relative_imports(tmp_path)
 
     assert [spec.name for spec in specs] == ["with_context"]
     assert specs[0].description == "loaded through a relative import"
+
+
+@pytest.mark.asyncio
+async def test_loaded_workflow_keeps_runtime_relative_imports_available(tmp_path):
+    wf_dir = tmp_path / "workflows"
+    wf_dir.mkdir()
+    _write_workflow_module(wf_dir, "_runtime_helper.py", 'VALUE = "runtime helper"')
+    _write_workflow_module(
+        wf_dir,
+        "runtime_import.py",
+        '''
+        from opencollab.application.workflow_registry import workflow
+
+        @workflow(name="runtime-import", description="d")
+        async def run(ctx, args):
+            from ._runtime_helper import VALUE
+
+            return VALUE
+        ''',
+    )
+
+    specs = workflow_discovery.load_workflow_specs(str(wf_dir / "runtime_import.py"))
+    module_name = specs[0].fn.__module__
+    package_name = module_name.partition(".")[0]
+
+    assert module_name not in sys.modules
+    assert package_name not in sys.modules
+    assert package_name not in workflow_discovery._WORKFLOW_IMPORT_FINDER._package_roots
+
+    assert await specs[0].fn(None, {}) == "runtime helper"
+    assert module_name not in sys.modules
+    assert package_name not in sys.modules
+    assert package_name not in workflow_discovery._WORKFLOW_IMPORT_FINDER._package_roots
+
+
+@pytest.mark.asyncio
+async def test_overlapping_workflow_calls_share_runtime_package_until_last_release(tmp_path):
+    wf_dir = tmp_path / "workflows"
+    wf_dir.mkdir()
+    _write_workflow_module(wf_dir, "_runtime_helper.py", 'VALUE = "runtime helper"')
+    _write_workflow_module(
+        wf_dir,
+        "overlap.py",
+        '''
+        from opencollab.application.workflow_registry import workflow
+
+        @workflow(name="overlap", description="d")
+        async def run(ctx, args):
+            await args["started"].put(args["name"])
+            await args["release"].wait()
+            from ._runtime_helper import VALUE
+
+            return f"{args['name']} {VALUE}"
+        ''',
+    )
+    spec = workflow_discovery.load_workflow_specs(str(wf_dir / "overlap.py"))[0]
+    package_name = spec.fn.__module__.partition(".")[0]
+    started = asyncio.Queue()
+    first_release = asyncio.Event()
+    second_release = asyncio.Event()
+    first = asyncio.create_task(
+        spec.fn(None, {"name": "first", "started": started, "release": first_release})
+    )
+    second = asyncio.create_task(
+        spec.fn(None, {"name": "second", "started": started, "release": second_release})
+    )
+    assert {await started.get(), await started.get()} == {"first", "second"}
+
+    first_release.set()
+    assert await first == "first runtime helper"
+    assert package_name in sys.modules
+    assert package_name in workflow_discovery._WORKFLOW_IMPORT_FINDER._package_roots
+
+    second_release.set()
+    assert await second == "second runtime helper"
+    assert package_name not in sys.modules
+    assert package_name not in workflow_discovery._WORKFLOW_IMPORT_FINDER._package_roots
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("namespace_package", [False, True])
+async def test_loaded_workflow_supports_nested_local_packages(tmp_path, namespace_package):
+    wf_dir = tmp_path / "workflows"
+    helpers = wf_dir / "_helpers"
+    helpers.mkdir(parents=True)
+    if not namespace_package:
+        _write_workflow_module(helpers, "__init__.py", "")
+    _write_workflow_module(helpers, "value.py", 'VALUE = "nested helper"')
+    _write_workflow_module(
+        wf_dir,
+        "nested_import.py",
+        '''
+        from opencollab.application.workflow_registry import workflow
+
+        @workflow(name="nested-import", description="d")
+        async def run(ctx, args):
+            from ._helpers.value import VALUE
+
+            return VALUE
+        ''',
+    )
+
+    specs = workflow_discovery.load_workflow_specs(str(wf_dir / "nested_import.py"))
+
+    assert await specs[0].fn(None, {}) == "nested helper"
+
+
+def test_repeated_loads_leave_no_global_workflow_modules_or_finder_roots(tmp_path):
+    wf_dir = tmp_path / "workflows"
+    wf_dir.mkdir()
+    _write_workflow_module(
+        wf_dir,
+        "repeat.py",
+        '''
+        from opencollab.application.workflow_registry import workflow
+
+        @workflow(name="repeat", description="d")
+        async def run(ctx, args):
+            return "ok"
+        ''',
+    )
+    before = {name for name in sys.modules if name.startswith("_opencollab_workflow_")}
+
+    loaded = [
+        workflow_discovery.load_workflow_specs(str(wf_dir / "repeat.py"))
+        for _ in range(20)
+    ]
+
+    assert all(specs[0].name == "repeat" for specs in loaded)
+    assert {name for name in sys.modules if name.startswith("_opencollab_workflow_")} == before
+    assert workflow_discovery._WORKFLOW_IMPORT_FINDER._package_roots == {}
+
+
+@pytest.mark.asyncio
+async def test_loaded_workflow_supports_function_local_dataclass(tmp_path):
+    wf_dir = tmp_path / "workflows"
+    wf_dir.mkdir()
+    _write_workflow_module(
+        wf_dir,
+        "local_dataclass.py",
+        '''
+        from opencollab.application.workflow_registry import workflow
+
+        @workflow(name="local-dataclass", description="d")
+        async def run(ctx, args):
+            from dataclasses import dataclass
+
+            @dataclass
+            class Result:
+                value: str
+
+            return Result(value="created after discovery")
+        ''',
+    )
+
+    specs = workflow_discovery.load_workflow_specs(str(wf_dir / "local_dataclass.py"))
+
+    result = await specs[0].fn(None, {})
+    assert result.value == "created after discovery"
+
+
+@pytest.mark.parametrize("kind", ["symlink", "fifo", "oversized"])
+def test_relative_import_helpers_use_bounded_regular_loader(tmp_path, monkeypatch, kind):
+    wf_dir = tmp_path / "workflows"
+    wf_dir.mkdir()
+    helper = wf_dir / "_helper.py"
+    if kind == "symlink":
+        outside = tmp_path / "outside.py"
+        outside.write_text("VALUE = 1\n", encoding="utf-8")
+        helper.symlink_to(outside)
+    elif kind == "fifo":
+        os.mkfifo(helper)
+
+        def feed_fifo() -> None:
+            try:
+                helper.write_text("VALUE = 1\n", encoding="utf-8")
+            except BrokenPipeError:
+                pass
+
+        writer = threading.Thread(target=feed_fifo, daemon=True)
+        writer.start()
+    else:
+        helper.write_text("VALUE = 1\n" + "x" * 512, encoding="utf-8")
+        monkeypatch.setattr(workflow_discovery, "MAX_WORKFLOW_SOURCE_BYTES", 256)
+    _write_workflow_module(
+        wf_dir,
+        "imports_helper.py",
+        '''
+        from ._helper import VALUE
+        from opencollab.application.workflow_registry import workflow
+
+        @workflow(name="imports-helper", description=str(VALUE))
+        async def run(ctx, args):
+            return VALUE
+        ''',
+    )
+
+    try:
+        with pytest.raises((OSError, ValueError), match="_helper.py"):
+            workflow_discovery.load_workflow_specs(str(wf_dir / "imports_helper.py"))
+    finally:
+        if kind == "fifo":
+            fd = os.open(helper, os.O_RDONLY | os.O_NONBLOCK)
+            os.close(fd)
+            writer.join(timeout=1)
 
 
 def test_load_workflow_specs_rolls_back_registered_modules_after_failure(tmp_path, monkeypatch):

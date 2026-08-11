@@ -132,6 +132,36 @@ def test_validate_union_type_list():
     assert validate({"x": 7}, schema)
 
 
+def test_validate_nullable_object_enforces_object_constraints():
+    schema = {
+        "type": ["object", "null"],
+        "required": ["x"],
+        "properties": {"x": {"type": "integer"}},
+        "additionalProperties": False,
+    }
+
+    assert validate(None, schema) == []
+    assert validate({"x": 1}, schema) == []
+    assert validate({}, schema)
+    assert validate({"x": "wrong"}, schema)
+    assert validate({"x": 1, "extra": True}, schema)
+
+
+def test_validate_nullable_array_enforces_array_constraints():
+    schema = {
+        "type": ["array", "null"],
+        "items": {"type": "integer"},
+        "minItems": 2,
+        "maxItems": 2,
+    }
+
+    assert validate(None, schema) == []
+    assert validate([1, 2], schema) == []
+    assert validate([1, "wrong"], schema)
+    assert validate([1], schema)
+    assert validate([1, 2, 3], schema)
+
+
 # --------------------------------------------------------------------------- #
 # StructuredOutputTool
 # --------------------------------------------------------------------------- #

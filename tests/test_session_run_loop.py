@@ -19,12 +19,35 @@ from session_run_loop_test_support import (
     tool_call,
 )
 
+from opencollab.application.steering import build_steering_block
 from opencollab.domain.session import (
     SessionPhase,
     SessionState,
     TurnEnforcementState,
 )
+from opencollab.domain.token_estimation import (
+    estimate_messages_tokens,
+    request_tokens_upper_bound,
+)
 from opencollab.domain.tools import ToolProcessingResult
+
+
+def _first_call_messages(messages):
+    steering, _override, _level = build_steering_block(
+        used_tokens=0,
+        max_budget_tokens=500,
+        step_count=1,
+        max_steps=100,
+        reads=0,
+        has_write=False,
+        has_structured_output=False,
+        structured_override=None,
+    )
+    return [*messages, steering]
+
+
+def _reserved_first_call_input(messages):
+    return request_tokens_upper_bound(_first_call_messages(messages))
 
 
 @pytest.mark.parametrize(
@@ -55,35 +78,206 @@ def test_run_loop_budget_exceeded_emits_error_and_sets_phase():
 
 
 def test_remaining_budget_caps_next_model_output_request():
+    messages = [{"role": "system", "content": "sys"}]
+    input_tokens = _reserved_first_call_input(messages)
     state = SessionState(
-        messages=[{"role": "system", "content": "sys"}],
-        used_tokens=9,
+        messages=messages,
+        used_tokens=500 - input_tokens - 1,
     )
-    llm = FakeLLM([llm_response(content="done", total_tokens=1)])
+    llm = FakeLLM([
+        llm_response(
+            content="done",
+            input_tokens=input_tokens,
+            output_tokens=1,
+            total_tokens=input_tokens + 1,
+        )
+    ])
     runner = build_runner(
         state=state,
         llm=llm,
-        max_budget_tokens=10,
+        max_budget_tokens=500,
     )
 
     assert run(runner.run_loop()) == "done"
     assert llm.calls[0]["max_output_tokens"] == 1
-    assert state.used_tokens == 10
+    assert state.used_tokens == 500
+
+
+def test_input_reservation_exhausting_budget_stops_before_model_call():
+    events, bus = collect_events()
+    state = SessionState(
+        messages=[{"role": "system", "content": "sys"}],
+        used_tokens=9,
+    )
+    llm = FakeLLM([
+        llm_response(
+            content="should not run",
+            input_tokens=100,
+            output_tokens=1,
+            total_tokens=101,
+        )
+    ])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        event_bus=bus,
+        max_budget_tokens=10,
+    )
+
+    assert run(runner.run_loop()) == ""
+    assert llm.calls == []
+    assert state.used_tokens == 9
+    assert state.step_count == 0
+    assert state.phase is SessionPhase.STOPPED
+    assert state.terminal_reason.startswith("budget exhausted before model call")
+    assert [event_type for event_type, _data in events] == ["error"]
+
+
+def test_conservative_input_reservation_blocks_estimator_overshoot():
+    messages = [{"role": "system", "content": "\u754c" * 3}]
+    provider_messages = _first_call_messages(messages)
+    ordinary_estimate = estimate_messages_tokens(provider_messages)
+    upper_bound = request_tokens_upper_bound(provider_messages)
+    reported_input_tokens = 143
+    assert ordinary_estimate == 43
+    assert ordinary_estimate + 1 < reported_input_tokens <= upper_bound
+
+    state = SessionState(
+        messages=messages,
+        used_tokens=456,
+    )
+    llm = FakeLLM([
+        llm_response(
+            content="should not run",
+            input_tokens=reported_input_tokens,
+            output_tokens=1,
+            total_tokens=reported_input_tokens + 1,
+        )
+    ])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        max_budget_tokens=500,
+    )
+
+    assert run(runner.run_loop()) == ""
+    assert llm.calls == []
+    assert state.used_tokens == 456
+    assert state.step_count == 0
+    assert state.phase is SessionPhase.STOPPED
+    assert state.terminal_reason.startswith("budget exhausted before model call")
+
+
+def test_anthropic_provider_state_is_reserved_before_model_call():
+    base_messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "assistant", "content": ""},
+    ]
+    messages = [
+        base_messages[0],
+        {
+            **base_messages[1],
+            "provider_state": {
+                "anthropic_content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "\u754c" * 256,
+                        "signature": "signed-state",
+                    }
+                ]
+            },
+        },
+    ]
+    baseline_bound = request_tokens_upper_bound(_first_call_messages(base_messages))
+    provider_state_bound = request_tokens_upper_bound(_first_call_messages(messages))
+    assert provider_state_bound > baseline_bound + 700
+
+    llm = FakeLLM([llm_response(content="should not run")])
+    state = SessionState(messages=messages)
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        max_budget_tokens=baseline_bound + 1,
+    )
+
+    assert run(runner.run_loop()) == ""
+    assert llm.calls == []
+    assert state.step_count == 0
+    assert state.phase is SessionPhase.STOPPED
+
+
+def test_actual_usage_overrun_is_traced_and_response_is_discarded():
+    events, bus = collect_events()
+    tracer = FakeTracer()
+    messages = [{"role": "system", "content": "sys"}]
+    reserved_input_tokens = _reserved_first_call_input(messages)
+    state = SessionState(
+        messages=messages,
+        used_tokens=500 - reserved_input_tokens - 1,
+    )
+    calls = [tool_call()]
+    llm = FakeLLM([
+        llm_response(
+            content="discard me",
+            tool_calls=calls,
+            input_tokens=reserved_input_tokens + 100,
+            output_tokens=1,
+            total_tokens=reserved_input_tokens + 101,
+            finish_reason="tool_calls",
+        )
+    ])
+    tool_execution = FakeToolExecution()
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        event_bus=bus,
+        tool_execution=tool_execution,
+        tracer=tracer,
+        max_budget_tokens=500,
+    )
+
+    assert run(runner.run_loop()) == ""
+    assert state.used_tokens == 600
+    assert state.phase is SessionPhase.STOPPED
+    assert state.terminal_reason == "budget exceeded after model call: 600 tokens used"
+    assert [message["role"] for message in state.messages] == ["system", "system"]
+    assert tool_execution.calls == []
+    assert [event_type for event_type, _data in events] == [
+        "step_start",
+        "error",
+        "step_end",
+    ]
+    assert len(tracer.steps) == 1
+    assert tracer.steps[0]["step_type"] == "llm_call"
+    assert tracer.steps[0]["tokens"] == reserved_input_tokens + 101
+    assert tracer.steps[0]["payload"]["usage"]["input_tokens"] == (
+        reserved_input_tokens + 100
+    )
+    assert tracer.steps[0]["latency"] >= 0
 
 
 def test_remaining_budget_caps_configured_per_step_output_limit():
     agent = FakeAgent()
     agent.max_tokens_per_step = 100
+    messages = [{"role": "system", "content": "sys"}]
+    input_tokens = _reserved_first_call_input(messages)
     state = SessionState(
-        messages=[{"role": "system", "content": "sys"}],
-        used_tokens=13,
+        messages=messages,
+        used_tokens=500 - input_tokens - 7,
     )
-    llm = FakeLLM([llm_response(content="done", total_tokens=7)])
+    llm = FakeLLM([
+        llm_response(
+            content="done",
+            input_tokens=input_tokens,
+            output_tokens=7,
+            total_tokens=input_tokens + 7,
+        )
+    ])
     runner = build_runner(
         state=state,
         agent=agent,
         llm=llm,
-        max_budget_tokens=20,
+        max_budget_tokens=500,
     )
 
     run(runner.run_loop())

@@ -177,9 +177,9 @@ def _validate(value: Any, schema: dict[str, Any], path: str, errors: list[str]) 
     if _is_number(value):
         _validate_number(value, schema, path, errors)
 
-    if expected_type == "object" or (expected_type is None and isinstance(value, dict)):
+    if isinstance(value, dict):
         _validate_object(value, schema, path, errors)
-    elif expected_type == "array" or (expected_type is None and isinstance(value, list)):
+    elif isinstance(value, list):
         _validate_array(value, schema, path, errors)
 
 
