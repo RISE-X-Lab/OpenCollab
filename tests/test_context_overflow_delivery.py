@@ -1,10 +1,10 @@
-"""A context-overflowed CHILD delivers a controlled result to its parent.
+"""A context-overflowed CHILD delivers an explicit failure to its parent.
 
 The third leg of the safety net: when a spawned child's prompt overflows the
 model window even after forced compaction, the child must reach the graceful
-CONTEXT_OVERFLOW terminal and deliver a clean (DONE) result to its parent's
-pending row — re-activating the parent — rather than crashing the parent's turn
-with an unhandled exception. This exercises the real Scheduler lifecycle
+CONTEXT_OVERFLOW terminal and deliver a failed result to its parent's pending
+row — re-activating the parent — rather than crashing the parent's turn with an
+unhandled exception. This exercises the real Scheduler lifecycle
 (_drive_agent / _deliver_to_parent / _wake) with a real child SessionRunUseCase.
 """
 
@@ -206,8 +206,8 @@ def test_overflowed_child_delivers_controlled_result_not_crash():
     # The child tried the provider exactly twice (initial + one forced retry).
     assert len(child.llm.calls) == 2
 
-    # The child's completion was delivered to the parent's row as a controlled
-    # DONE result (ERROR would have made it a FAILED row).
+    # The child's controlled STOPPED outcome is an explicit failed tool result,
+    # while the parent can still recover and complete its own turn.
     child_scb = scheduler.table.get(child.state.aid)
     assert child_scb.state.phase is SessionPhase.STOPPED
 
@@ -218,10 +218,8 @@ def test_overflowed_child_delivers_controlled_result_not_crash():
     assert len(tool_results) == 1
 
 
-def test_delivery_status_of_overflowed_child_is_done_not_failed():
-    # Directly assert the lifecycle's status mapping: a CONTEXT_OVERFLOW child is
-    # delivered DONE (only an ERROR phase maps to FAILED). Verifies the row the
-    # parent ends up with carries a non-failure status.
+def test_delivery_status_of_overflowed_child_is_failed_with_terminal_reason():
+    # A STOPPED child must never be presented as a successful tool result.
     factory = OverflowChildFactory()
     scheduler = Scheduler(
         session_factory=factory,
@@ -255,15 +253,10 @@ def test_delivery_status_of_overflowed_child_is_done_not_failed():
 
     run(scheduler.run("delegate"))
 
-    # The spawn tool's result delivered to the lead carries the child's run-loop
-    # output (empty/controlled), and the lead's turn completed cleanly. The row
-    # status surfaced as DONE — verified via the filled tool message actually
-    # flowing into the lead's history rather than an error string.
+    # The spawn tool's failed result lets the lead continue, but preserves the
+    # terminal reason instead of masquerading as a successful child output.
     assert factory.child.state.phase is SessionPhase.STOPPED
     assert lead_state.phase is SessionPhase.DONE
-    # The delivered tool message exists and is not an "Error:" string (which is
-    # how a FAILED/ERROR child would have been surfaced).
     tool_msg = next(m for m in lead_state.messages if m.get("role") == "tool" and m.get("tool_call_id") == "c1")
-    assert not str(tool_msg.get("content", "")).startswith("Error:")
-    # Sanity: RowStatus exists and DONE is the success status used in delivery.
-    assert RowStatus.DONE is not RowStatus.FAILED
+    assert tool_msg["content"].startswith("Error: agent stopped: context overflow:")
+    assert RowStatus.FAILED is not RowStatus.DONE

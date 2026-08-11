@@ -46,9 +46,7 @@ class SchedulerReviewMixin:
             if task is not None and not task.done():
                 await asyncio.shield(task)
             else:
-                # A child completion may be between filling the pending table
-                # and publishing the replacement driving task.
-                await asyncio.sleep(0)
+                await self._wait_for_scheduler_progress(aid)
 
     async def spawn_with_review(
         self,

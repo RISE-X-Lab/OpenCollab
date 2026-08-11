@@ -126,6 +126,93 @@ def test_mixed_batch_buffers_immediate_and_resumes_in_order():
         {"role": "tool", "tool_call_id": "s1", "content": "child done"},
     ]
 
+
+def test_terminal_capture_before_deferred_spawn_rejects_spawn_and_keeps_history_complete():
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    batch = [
+        tool_call(call_id="terminal", name="structured_output", arguments='{"answer": "done"}'),
+        tool_call(call_id="spawn", name="spawn_agent", arguments="{}"),
+    ]
+    process_result = ToolProcessingResult(
+        messages_to_append=[
+            {
+                "role": "tool",
+                "tool_call_id": "terminal",
+                "content": "Recorded. Structured output accepted. Your task is complete.",
+            }
+        ]
+    )
+    process_result.terminal_capture_accepted = True
+    te = FakeToolExecutionDeferred(
+        process_result=process_result,
+        deferred_outcomes={"spawn": (9, None)},
+    )
+    runner = build_runner(state=state, tool_execution=te)
+    state.phase = SessionPhase.EXECUTING_TOOLS
+    runner._pending = PendingStep(
+        response=llm_response(content="mixed", tool_calls=batch, finish_reason="tool_calls"),
+        latency=0.0,
+    )
+
+    run(runner.execute_pending_tools())
+
+    assert te.process_calls == [[batch[0]]]
+    assert te.deferred_calls == []
+    assert state.phase is SessionPhase.AUTOSAVING
+    assert state.pending_events.is_empty()
+    assert state.messages[-2:] == [
+        {
+            "role": "tool",
+            "tool_call_id": "terminal",
+            "content": "Recorded. Structured output accepted. Your task is complete.",
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "spawn",
+            "content": "Skipped: terminal structured output accepted earlier in this batch.",
+        },
+    ]
+
+
+def test_terminal_aware_mixed_batch_executes_preceding_spawn_before_capture():
+    state = SessionState(messages=[{"role": "system", "content": "sys"}])
+    batch = [
+        tool_call(call_id="spawn", name="spawn_agent", arguments="{}"),
+        tool_call(call_id="terminal", name="structured_output", arguments='{"answer": "done"}'),
+    ]
+    process_result = ToolProcessingResult(
+        messages_to_append=[
+            {
+                "role": "tool",
+                "tool_call_id": "terminal",
+                "content": "Recorded. Structured output accepted. Your task is complete.",
+            }
+        ]
+    )
+    process_result.terminal_capture_accepted = True
+
+    class OrderedTerminalCaptureToolExecution(FakeToolExecutionDeferred):
+        async def process(self, tool_calls):
+            assert self.deferred_calls == [batch[0]]
+            return await super().process(tool_calls)
+
+    te = OrderedTerminalCaptureToolExecution(
+        process_result=process_result,
+        deferred_outcomes={"spawn": (9, None)},
+    )
+    runner = build_runner(state=state, tool_execution=te)
+    state.phase = SessionPhase.EXECUTING_TOOLS
+    runner._pending = PendingStep(
+        response=llm_response(content="mixed", tool_calls=batch, finish_reason="tool_calls"),
+        latency=0.0,
+    )
+
+    run(runner.execute_pending_tools())
+
+    assert te.deferred_calls == [batch[0]]
+    assert te.process_calls == [[batch[1]]]
+    assert state.phase is SessionPhase.AWAITING_EVENTS
+
 def test_deferred_batch_with_blocked_tool_uses_original_order():
     state = SessionState(messages=[{"role": "system", "content": "sys"}])
     state.phase = SessionPhase.EXECUTING_TOOLS
