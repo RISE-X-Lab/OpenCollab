@@ -13,6 +13,7 @@ Pure application layer: stdlib only.
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from collections.abc import Sequence
@@ -118,6 +119,15 @@ def _validate_schema(schema: Any, path: str, errors: list[str]) -> None:
             )
         elif not isinstance(additional_properties, bool):
             errors.append(f"{path}.additionalProperties: must be a boolean or schema object")
+    if "enum" in schema:
+        enum = schema["enum"]
+        if not isinstance(enum, list) or not enum:
+            errors.append(f"{path}.enum: must be a non-empty array of JSON values")
+        else:
+            try:
+                json.dumps(enum, allow_nan=False)
+            except (TypeError, ValueError):
+                errors.append(f"{path}.enum: entries must be valid JSON values")
     for keyword in ("minLength", "maxLength", "minItems", "maxItems"):
         if keyword in schema:
             _validate_nonnegative_integer(schema[keyword], f"{path}.{keyword}", errors)

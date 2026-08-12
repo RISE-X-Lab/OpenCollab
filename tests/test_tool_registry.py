@@ -49,6 +49,19 @@ def test_unknown_tool_error_lists_known_tools_including_skill():
     assert "use_skill" in msg
 
 
+@pytest.mark.parametrize(
+    "tool_names",
+    [
+        ["bash", "bash"],
+        ["bash", "BASH"],
+        ["bash", "ｂａｓｈ"],
+    ],
+)
+def test_build_rejects_duplicate_tool_names_before_resolution(tool_names):
+    with pytest.raises(ValueError, match="duplicate tool names"):
+        build_tools_for_role(tool_names)
+
+
 def test_stateless_tools_resolve_without_any_dependency():
     tools = build_tools_for_role(["bash", "file_read"])
     assert {t.name for t in tools} == {"bash", "file_read"}

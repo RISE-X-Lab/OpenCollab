@@ -75,7 +75,7 @@ class WorkflowAgentsMixin:
         except Exception as exc:  # noqa: BLE001 — factory failure must not abort the fleet
             self._record_agent_failure(label, exc)
             await self.log(f"agent build failed ({label or 'agent'}): {exc}")
-            return None
+            return harvest_fallback or None
 
         self._track_session(session)
         self._configure_session_enforcement(
@@ -149,7 +149,12 @@ class WorkflowAgentsMixin:
         """
         ledger = self._scout_ledger(dead_session)
         messages = self._session_messages(dead_session)
-        prompt = build_dead_scout_synthesis_prompt(ledger, messages)
+        prompt_chars = max(2_000, min(16_000, commit_reserve * 4))
+        prompt = build_dead_scout_synthesis_prompt(
+            ledger,
+            messages,
+            max_chars=prompt_chars,
+        )
         capture_done = asyncio.Event()
         submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
         synth_label = f"{label}:synth" if label else "synth"
@@ -165,6 +170,7 @@ class WorkflowAgentsMixin:
                 thinking=False,
             )
         except Exception as exc:  # noqa: BLE001 — a failed salvage must not abort the fleet
+            self._record_agent_failure(synth_label, exc)
             await self.log(f"dead-scout synth build failed ({synth_label}): {exc}")
             return None
 
@@ -180,6 +186,7 @@ class WorkflowAgentsMixin:
                 cancel_event=capture_done,
             )
         except Exception as exc:  # noqa: BLE001 — one dead salvage never kills the fleet
+            self._record_agent_failure(synth_label, exc)
             await self.log(f"dead-scout synth failed ({synth_label}): {exc}")
             return None
 
@@ -244,6 +251,7 @@ class WorkflowAgentsMixin:
         session_budget = self._capped_session_budget(budget)
         capture_done = asyncio.Event()
         submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
+        draft_label = f"{label}:draft" if label else "draft"
         try:
             session = self._factory.build_workflow_session(
                 prompt=prompt,
@@ -255,6 +263,7 @@ class WorkflowAgentsMixin:
                 thinking=False,
             )
         except Exception as exc:  # noqa: BLE001 — a failed draft must not abort the fleet
+            self._record_agent_failure(draft_label, exc)
             await self.log(f"draft build failed ({label or 'draft'}): {exc}")
             return None
         self._track_session(session)
@@ -267,6 +276,7 @@ class WorkflowAgentsMixin:
                 cancel_event=capture_done,
             )
         except Exception as exc:  # noqa: BLE001 — one dead draft never kills the fleet
+            self._record_agent_failure(draft_label, exc)
             await self.log(f"draft failed ({label or 'draft'}): {exc}")
             return None
         return submit_tool.captured
@@ -286,12 +296,10 @@ class WorkflowAgentsMixin:
         """Trace one ``dead_scout_synthesis`` event (no-op without a tracer) so the
         rare salvage is auditable: how big the ledger was, whether a payload was
         captured, and the anchor count of the salvaged findings."""
-        if self._tracer is None:
-            return
         findings = (captured or {}).get("findings") or []
-        self._tracer.log_step(
-            step_type="dead_scout_synthesis",
-            payload={
+        self._trace_step(
+            "dead_scout_synthesis",
+            {
                 "role": label,
                 "ledger_size": len(ledger),
                 "salvaged": salvaged,
@@ -332,8 +340,6 @@ class WorkflowAgentsMixin:
     ) -> None:
         """Emit one ``commitment_terminus`` event per scout to orchestration.jsonl
         (no-op when no tracer is wired)."""
-        if self._tracer is None:
-            return
         state = getattr(session, "state", None)
         payload = commitment_terminus_payload(
             role=label,
@@ -344,4 +350,4 @@ class WorkflowAgentsMixin:
             wind_down_token_mark=int(getattr(state, "wind_down_token_mark", 0) or 0),
             artifact=report or "",
         )
-        self._tracer.log_step(step_type="commitment_terminus", payload=payload)
+        self._trace_step("commitment_terminus", payload)

@@ -39,6 +39,36 @@ DEFAULT_FALLBACK_CHARS = 4_000
 SUMMARY_CACHE_VERSION = "read-time-summary-v1"
 
 
+def _fallback_content_text(content: Any) -> str:
+    """Render common message content shapes without exposing binary payloads."""
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ""
+
+    parts: list[str] = []
+    for block in content:
+        if isinstance(block, str):
+            if block:
+                parts.append(block)
+            continue
+        if not isinstance(block, dict):
+            parts.append("[unknown block]")
+            continue
+
+        block_type = block.get("type")
+        text = block.get("text")
+        if not isinstance(text, str):
+            text = block.get("input_text")
+        if isinstance(text, str) and text:
+            parts.append(text)
+            continue
+
+        label = block_type if isinstance(block_type, str) and block_type else "unknown"
+        parts.append(f"[{label} block]")
+    return "\n".join(parts)
+
+
 def run_coro_blocking(make_coro: Callable[[], Awaitable[Any]]) -> Any:
     """Run an awaitable to completion from a sync caller, loop-safe.
 
@@ -95,11 +125,11 @@ class ReadTimeSummarizer:
         request = build_summary_request(segment, custom_instructions=self._custom_instructions)
         try:
             response = run_coro_blocking(lambda: self._acomplete(request))
+            raw = getattr(response, "content", None) or ""
+            summary = format_compact_summary(raw)
         except Exception:
             return self._fallback(segment)
 
-        raw = getattr(response, "content", None) or ""
-        summary = format_compact_summary(raw)
         if not summary:
             return self._fallback(segment)
         if self._transcript_path:
@@ -111,8 +141,8 @@ class ReadTimeSummarizer:
         """Bounded raw excerpt when no model summary is available."""
         parts: list[str] = []
         for message in segment:
-            content = message.get("content")
-            if isinstance(content, str) and content:
+            content = _fallback_content_text(message.get("content"))
+            if content:
                 parts.append(f"[{message.get('role', '?')}]: {content}")
         text = "\n".join(parts)[: self._fallback_chars]
         return text or "[summary unavailable]"

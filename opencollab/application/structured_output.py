@@ -50,6 +50,10 @@ class StructuredOutputTool:
         on_capture: Callable[[], None] | None = None,
     ) -> None:
         schema_errors = validate_schema(schema)
+        if not isinstance(schema, dict) or schema.get("type") != "object":
+            schema_errors.append(
+                "$schema.type: structured-output tool top-level type must be 'object'"
+            )
         if schema_errors:
             raise ValueError(
                 "structured output schema is unsupported: " + "; ".join(schema_errors)

@@ -31,7 +31,6 @@ import math
 import operator
 import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from opencollab.application.async_timeout import (
@@ -48,14 +47,18 @@ from opencollab.application.ports import (
     WorkingTreeProbe,
 )
 from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE, ENFORCEMENT_OFF
+from opencollab.application.structured_output import TOOL_NAME as STRUCTURED_OUTPUT_TOOL_NAME
+from opencollab.application.submit_findings import SUBMIT_TOOL_NAME
 from opencollab.application.workflow_agents import WorkflowAgentsMixin
 from opencollab.application.workflow_budget import WorkflowBudget, _BudgetLease
+from opencollab.application.workflow_events import WorkflowEvent
 from opencollab.application.workflow_structured import (
     WorkflowStructuredMixin,
 )
 from opencollab.application.workflow_structured import (
     _schema_satisfied as _schema_satisfied,
 )
+from opencollab.domain.tools import validate_unique_tool_names
 
 logger = logging.getLogger(__name__)
 
@@ -84,17 +87,6 @@ class WorkflowBudgetExceeded(Exception):
     """Raised by ``WorkflowContext.agent`` when the shared budget is exhausted
     before a session is started. The only exception a primitive lets escape.
     """
-
-
-@dataclass(frozen=True)
-class WorkflowEvent:
-    """Lightweight observability event emitted by ``phase`` / ``log``.
-
-    ``kind`` is ``"phase"`` or ``"log"``; ``message`` is the title/text.
-    """
-
-    kind: str
-    message: str
 
 
 class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
@@ -141,6 +133,7 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         self._active_call_tasks: set[asyncio.Task[Any]] = set()
         self._active_session_tasks: set[asyncio.Task[Any]] = set()
         self._agent_failures: list[dict[str, Any]] = []
+        self._trace_failures: list[dict[str, str]] = []
         self._tree_probe = tree_probe
         # Absolute path of the repo the sessions edit/read (the workspace passed to
         # ``run_workflow``). Read-only metadata for workflows that need to run a
@@ -218,6 +211,26 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
     def agent_failures(self) -> tuple[dict[str, Any], ...]:
         """Safe structured summaries for child-agent exceptions."""
         return tuple(dict(failure) for failure in self._agent_failures)
+
+    @property
+    def trace_failures(self) -> tuple[dict[str, str], ...]:
+        """Sticky, payload-free diagnostics for failed trace writes."""
+        return tuple(dict(failure) for failure in self._trace_failures)
+
+    def _trace_step(self, step_type: str, payload: dict[str, Any]) -> None:
+        """Best-effort trace emission that never overturns workflow results."""
+        if self._tracer is None:
+            return
+        try:
+            self._tracer.log_step(step_type=step_type, payload=payload)
+        except Exception as exc:  # noqa: BLE001 — observability is non-authoritative
+            self._trace_failures.append(
+                {
+                    "step_type": str(step_type)[:240],
+                    "exception_type": type(exc).__name__[:128],
+                }
+            )
+            logger.error("workflow %s trace failed: %s", step_type, exc)
 
     def _record_agent_failure(self, label: str | None, exc: Exception) -> None:
         status_code = getattr(exc, "status_code", None)
@@ -371,6 +384,15 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         """
         if isolation:
             raise ValueError("workflow agent isolation is not available")
+        supplied_tool_names = [
+            name
+            for tool in tools or ()
+            if isinstance((name := getattr(tool, "name", None)), str)
+        ]
+        validate_unique_tool_names(
+            supplied_tool_names,
+            reserved={STRUCTURED_OUTPUT_TOOL_NAME, SUBMIT_TOOL_NAME},
+        )
         timeout = self._normalize_timeout(timeout)
         call_task = asyncio.current_task()
         if call_task is not None:
@@ -756,13 +778,7 @@ class WorkflowContext(WorkflowAgentsMixin, WorkflowStructuredMixin):
         await self._emit("log", message)
 
     async def _emit(self, kind: str, message: str) -> None:
-        if self._tracer is not None:
-            try:
-                self._tracer.log_step(
-                    step_type=f"workflow_{kind}", payload={"message": message}
-                )
-            except Exception as exc:
-                logger.error("workflow %s trace failed: %s", kind, exc)
+        self._trace_step(f"workflow_{kind}", {"message": message})
         if self._event_sink is not None:
             try:
                 await self._event_sink.emit(WorkflowEvent(kind=kind, message=message))

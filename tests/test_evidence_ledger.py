@@ -25,6 +25,7 @@ from tool_execution_test_support import build_sensor_use_case as _use_case
 
 from opencollab.application.submit_findings import (
     SUBMIT_TOOL_NAME,
+    build_dead_scout_synthesis_prompt,
     harvest_findings,
 )
 from opencollab.domain.session import SessionState, TurnEnforcementState
@@ -118,6 +119,31 @@ def test_t1_harvest_backstop_reads_the_ledger_for_a_partial_salvage():
     assert "scout died" not in report
 
 
+def test_dead_scout_prompt_has_total_bound_and_omission_counts():
+    ledger = [
+        {
+            "tool": "grep",
+            "target": f"target-{index}-" + "t" * 500,
+            "outcome": "hit",
+            "snippet": f"file.py:{index} " + "s" * 500,
+        }
+        for index in range(256)
+    ]
+    messages = [
+        {"role": "tool", "tool_call_id": f"call-{index}", "content": "r" * 2_000}
+        for index in range(100)
+    ]
+
+    prompt = build_dead_scout_synthesis_prompt(
+        ledger,
+        messages,
+        max_chars=4_000,
+    )
+
+    assert len(prompt) <= 4_000
+    assert "omitted" in prompt
+
+
 # --------------------------------------------------------------------------- #
 # T2 helpers — workflow-level dead-scout synthesizer.
 # --------------------------------------------------------------------------- #
@@ -142,7 +168,11 @@ def _cited_payload():
 
 
 def _insufficient_payload():
-    return {"findings": [], "summary": "", "insufficient_evidence": True}
+    return {
+        "findings": [],
+        "summary": "The available tool evidence did not establish this dimension.",
+        "insufficient_evidence": True,
+    }
 
 
 class _ReadStub:

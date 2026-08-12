@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from opencollab.application.shaping import (
     COMPACTED_MARKER_PREFIX,
+    DEFAULT_CLEARED_TOOL_CONTENT,
     PIN_FLOOR,
     AutoCompactShaper,
     OldHistorySnipShaper,
     PerToolResultBudgetShaper,
     ShaperPipeline,
+    ToolOutputClearShaper,
 )
 from opencollab.application.shaping.pipeline import approx_messages_tokens
 
@@ -58,6 +62,64 @@ def test_any_size_result_fits_budget():
     for n in (1999, 2000, 2001, 100_000):
         out = shaper.shape([_tool_msg("z" * n)])
         assert len(out[0]["content"]) <= 2000
+
+
+def test_reactive_clear_keeps_new_result_when_provider_reuses_call_id():
+    messages = [
+        _sys(),
+        _call("call_1"),
+        _tool("call_1", "old" * 300),
+        _call("call_1"),
+        _tool("call_1", "new result"),
+        _text("recent"),
+    ]
+    shaper = ToolOutputClearShaper(
+        estimate_tokens=_chars,
+        trigger_tokens=2,
+        target_tokens=1,
+        keep_recent=1,
+        keep_recent_groups=0,
+    )
+    out = shaper.shape(messages)
+    results = [message["content"] for message in out if message.get("role") == "tool"]
+    assert results == [DEFAULT_CLEARED_TOOL_CONTENT, "new result"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"trigger_tokens": 0},
+        {"trigger_tokens": True},
+        {"target_tokens": 0},
+        {"target_tokens": 1_500},
+        {"keep_recent_groups": -1},
+        {"keep_recent_groups": 1.5},
+    ],
+)
+def test_reactive_shapers_reject_inconsistent_thresholds(kwargs):
+    defaults = {
+        "estimate_tokens": _chars,
+        "trigger_tokens": 1_500,
+        "target_tokens": 800,
+        "keep_recent_groups": 1,
+    }
+    with pytest.raises(ValueError):
+        OldHistorySnipShaper(**{**defaults, **kwargs})
+
+
+@pytest.mark.parametrize("max_chars", [True, 0, -1, 1.5, float("nan")])
+def test_tool_result_budget_rejects_invalid_limits(max_chars):
+    with pytest.raises(ValueError, match="positive integer"):
+        PerToolResultBudgetShaper(max_chars=max_chars)
+
+
+@pytest.mark.parametrize("max_chars", [1, 5, 20, 100])
+def test_tiny_tool_result_budgets_remain_hard_caps(max_chars):
+    message = _tool_msg("z" * 1_000)
+    snapshot = copy.deepcopy(message)
+    content = PerToolResultBudgetShaper(max_chars=max_chars).shape([message])[0]["content"]
+    assert 0 < len(content) <= max_chars
+    assert message == snapshot
 
 
 def test_empty_pipeline_is_identity():
@@ -149,8 +211,8 @@ def test_snip_noop_below_trigger_returns_input_identity():
     assert out is messages
 
 
-def test_fallback_estimator_compacts_large_tool_call_reasoning():
-    """The dependency-free estimator must trigger on request-side tool payloads."""
+def test_snip_preserves_reasoning_only_tool_group_when_it_cannot_split_safely():
+    """Provider-signed reasoning must not be detached from its tool call."""
     old_call = _call("large")
     old_call["reasoning_content"] = "r" * 6_000
     messages = [_sys(), _user(), old_call, _tool("large", "small result"), _text("recent")]
@@ -164,7 +226,8 @@ def test_fallback_estimator_compacts_large_tool_call_reasoning():
     out = shaper.shape(messages)
 
     assert approx_messages_tokens(messages) > shaper.trigger_tokens
-    assert not any(m.get("tool_calls") for m in out)
+    assert old_call in out
+    assert _tool("large", "small result") in out
     assert out[-1] == _text("recent")
 
 
@@ -207,6 +270,39 @@ def test_snip_preserves_tool_pairing():
     ]
     out = _snip().shape(messages)
     assert _orphaned_tool_ids(out) == set()
+
+
+def test_snip_preserves_hybrid_assistant_text_when_dropping_tool_payload():
+    hybrid = _call("t1", text="decision: keep the verified constraint")
+    messages = [
+        _sys(),
+        _user(),
+        hybrid,
+        _tool("t1", "x" * 2_000),
+        _text("recent"),
+    ]
+    out = _snip().shape(messages)
+    preserved = next(
+        message for message in out
+        if message.get("content") == "decision: keep the verified constraint"
+    )
+    assert "tool_calls" not in preserved
+    assert not any(message.get("role") == "tool" for message in out)
+
+
+@pytest.mark.parametrize(
+    "malformed_results",
+    [
+        [_tool("unknown", "x" * 2_000)],
+        [_tool("t1", "x" * 1_000), _tool("t1", "duplicate")],
+        [],
+    ],
+)
+def test_snip_leaves_malformed_tool_exchanges_untouched(malformed_results):
+    exchange = [_call("t1"), *malformed_results]
+    messages = [_sys(), _user(), *exchange, _text("p" * 2_000), _text("recent")]
+    out = _snip().shape(messages)
+    assert all(message in out for message in exchange)
 
 
 def test_snip_does_not_mutate_input():
@@ -265,6 +361,50 @@ def test_autocompact_does_not_mutate_input():
     snapshot = copy.deepcopy(messages)
     _autocompact(summarizer=lambda seg: "SUMMARY").shape(messages)
     assert messages == snapshot
+
+
+def test_autocompact_rejects_summary_that_grows_view():
+    class CountingSummarizer:
+        cache_key = "oversized"
+        last_call_cacheable = True
+
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, _segment):
+            self.calls += 1
+            return "s" * 3_000
+
+    summarizer = CountingSummarizer()
+    messages = [
+        _sys(),
+        _user(),
+        _text("x" * 1_000),
+        _text("y" * 1_000),
+        _text("recent"),
+    ]
+    shaper = _autocompact(summarizer=summarizer)
+
+    assert shaper.shape(messages) is messages
+    assert shaper.shape(messages) is messages
+    assert summarizer.calls == 1
+
+
+def test_autocompact_accepts_strict_reduction_that_misses_target():
+    messages = [
+        _sys(),
+        _user(),
+        _text("x" * 1_000),
+        _text("y" * 1_000),
+        _text("recent"),
+    ]
+    shaper = _autocompact(summarizer=lambda _segment: "s" * 1_000)
+
+    out = shaper.shape(messages)
+
+    assert out is not messages
+    assert _chars(out) < _chars(messages)
+    assert _chars(out) > shaper.target_tokens
 
 
 def test_autocompact_reuses_summary_for_unchanged_segment():
@@ -457,6 +597,34 @@ def test_autocompact_never_folds_a_pinned_source_into_the_summary():
     assert any(str(m.get("content", "")).startswith(COMPACTED_MARKER_PREFIX) for m in out)
     # the task was never handed to the summarizer
     assert all(task not in segment for segment in seen_segments)
+
+
+def test_autocompact_can_shed_low_priority_system_source_by_provenance():
+    identity = {
+        "role": "system",
+        "content": "identity",
+        "_ctx": {"name": "identity", "layer": "identity", "priority": 100},
+    }
+    team = {
+        "role": "system",
+        "content": "team",
+        "_ctx": {"name": "team", "layer": "team", "priority": 90},
+    }
+    project = {
+        "role": "system",
+        "content": "project-map-" + "x" * 2_000,
+        "_ctx": {"name": "project", "layer": "project", "priority": 30},
+    }
+    task = _ctx_user("task", priority=80)
+    messages = [identity, team, project, task, _text("recent")]
+    snapshot = copy.deepcopy(messages)
+
+    out = _autocompact(summarizer=lambda _segment: "project context omitted").shape(messages)
+
+    assert identity in out and team in out and task in out
+    assert project not in out
+    assert any(message.get("compacted") for message in out)
+    assert messages == snapshot
 
 
 # ---------------------------------------------------------------------------

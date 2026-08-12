@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from structured_output_test_support import NamedTool as _NamedTool
+from structured_output_test_support import runtime as _runtime
 
-from opencollab.application.schema_validate import validate
 from opencollab.application.structured_output import StructuredOutputTool
-from opencollab.application.tool_execution import ToolRuntime
 from opencollab.application.workflow import (
     DEFAULT_DEADLINE_MARGIN_SECONDS,
     WorkflowContext,
@@ -26,192 +27,6 @@ from opencollab.application.workflow import (
 
 # --------------------------------------------------------------------------- #
 # validator
-# --------------------------------------------------------------------------- #
-
-
-def test_validate_valid_object():
-    schema = {
-        "type": "object",
-        "required": ["name", "age"],
-        "properties": {"name": {"type": "string"}, "age": {"type": "integer"}},
-    }
-    assert validate({"name": "ada", "age": 36}, schema) == []
-
-
-def test_validate_missing_required():
-    schema = {"type": "object", "required": ["name"], "properties": {}}
-    errors = validate({}, schema)
-    assert errors
-    assert any("name" in e for e in errors)
-
-
-def test_validate_wrong_type():
-    schema = {"type": "object", "properties": {"age": {"type": "integer"}}}
-    errors = validate({"age": "old"}, schema)
-    assert errors
-    assert any("age" in e for e in errors)
-
-
-def test_validate_enum_violation():
-    schema = {
-        "type": "object",
-        "properties": {"color": {"type": "string", "enum": ["red", "green"]}},
-    }
-    assert validate({"color": "red"}, schema) == []
-    errors = validate({"color": "blue"}, schema)
-    assert errors
-    assert any("color" in e for e in errors)
-
-
-def test_validate_nested_object_and_array():
-    schema = {
-        "type": "object",
-        "required": ["items"],
-        "properties": {
-            "items": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "required": ["id"],
-                    "properties": {"id": {"type": "integer"}},
-                },
-            },
-        },
-    }
-    assert validate({"items": [{"id": 1}, {"id": 2}]}, schema) == []
-    errors = validate({"items": [{"id": 1}, {"id": "two"}]}, schema)
-    assert errors
-    # missing required inside a nested array item
-    errors2 = validate({"items": [{}]}, schema)
-    assert errors2
-
-
-def test_validate_boolean_and_number():
-    schema = {
-        "type": "object",
-        "properties": {"ok": {"type": "boolean"}, "ratio": {"type": "number"}},
-    }
-    assert validate({"ok": True, "ratio": 0.5}, schema) == []
-    assert validate({"ok": True, "ratio": 3}, schema) == []  # int is a number
-    assert validate({"ok": 1, "ratio": 0.5}, schema)  # bool!=int slot here
-
-
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
-def test_validate_rejects_non_finite_json_numbers(value):
-    assert validate(value, {"type": "number"})
-
-
-def test_validate_rejects_unknown_schema_types_even_when_value_matches():
-    errors = validate("anything", {"type": "mystery"})
-    assert errors
-    assert "unsupported schema type" in errors[0]
-
-
-def test_validate_integer_rejects_bool():
-    schema = {"type": "object", "properties": {"n": {"type": "integer"}}}
-    assert validate({"n": 5}, schema) == []
-    assert validate({"n": True}, schema)
-
-
-def test_validate_top_level_array():
-    schema = {"type": "array", "items": {"type": "string"}}
-    assert validate(["a", "b"], schema) == []
-    assert validate(["a", 2], schema)
-
-
-def test_validate_union_type_list():
-    # JSON Schema permits ``type`` to be a list ("any of these"). A union type
-    # must not raise (unhashable list) and must accept any listed member.
-    schema = {
-        "type": "object",
-        "properties": {"x": {"type": ["string", "null"]}},
-    }
-    assert validate({"x": "hi"}, schema) == []
-    assert validate({"x": None}, schema) == []
-    # a value matching none of the union members is rejected, not crashed
-    assert validate({"x": 7}, schema)
-
-
-def test_validate_nullable_object_enforces_object_constraints():
-    schema = {
-        "type": ["object", "null"],
-        "required": ["x"],
-        "properties": {"x": {"type": "integer"}},
-        "additionalProperties": False,
-    }
-
-    assert validate(None, schema) == []
-    assert validate({"x": 1}, schema) == []
-    assert validate({}, schema)
-    assert validate({"x": "wrong"}, schema)
-    assert validate({"x": 1, "extra": True}, schema)
-
-
-def test_validate_nullable_array_enforces_array_constraints():
-    schema = {
-        "type": ["array", "null"],
-        "items": {"type": "integer"},
-        "minItems": 2,
-        "maxItems": 2,
-    }
-
-    assert validate(None, schema) == []
-    assert validate([1, 2], schema) == []
-    assert validate([1, "wrong"], schema)
-    assert validate([1], schema)
-    assert validate([1, 2, 3], schema)
-
-
-# --------------------------------------------------------------------------- #
-# StructuredOutputTool
-# --------------------------------------------------------------------------- #
-
-
-def _runtime() -> ToolRuntime:
-    return ToolRuntime(
-        environment=None,
-        safety_policy=None,
-        permission_policy=None,
-    )
-
-
-@pytest.mark.asyncio
-async def test_tool_captures_valid_payload():
-    schema = {"type": "object", "required": ["x"], "properties": {"x": {"type": "integer"}}}
-    tool = StructuredOutputTool(schema)
-    assert tool.captured is None
-
-    result = await tool.execute_with_runtime({"x": 7}, _runtime())
-
-    assert tool.captured == {"x": 7}
-    assert "x" in result.lower() or "record" in result.lower() or result
-
-
-@pytest.mark.asyncio
-async def test_tool_returns_errors_on_invalid_payload():
-    schema = {"type": "object", "required": ["x"], "properties": {"x": {"type": "integer"}}}
-    tool = StructuredOutputTool(schema)
-
-    result = await tool.execute_with_runtime({"x": "nope"}, _runtime())
-
-    assert tool.captured is None
-    assert "x" in result  # error string mentions the offending field
-
-
-@pytest.mark.asyncio
-async def test_tool_schema_surface():
-    schema = {"type": "object", "properties": {}}
-    tool = StructuredOutputTool(schema)
-    assert tool.name == "structured_output"
-    assert isinstance(tool.description, str) and tool.description
-    openai = tool.to_openai_schema()
-    assert openai["function"]["name"] == "structured_output"
-    # the tool's parameters expose the caller's schema as the input shape
-    assert openai["function"]["parameters"] == schema
-
-
-# --------------------------------------------------------------------------- #
-# agent(schema=...)
 # --------------------------------------------------------------------------- #
 
 
@@ -369,6 +184,19 @@ class ScriptedFactory:
         return session
 
 
+class TransientFailureFactory(ScriptedFactory):
+    """First structured session raises; the single corrective session captures."""
+
+    def build_workflow_session(self, **kwargs):
+        session = super().build_workflow_session(**kwargs)
+        if len(self.sessions) == 1:
+            async def fail_once(cancel_event=None):
+                raise OSError("temporary provider failure")
+
+            session.run_loop = fail_once
+        return session
+
+
 SCHEMA = {"type": "object", "required": ["x"], "properties": {"x": {"type": "integer"}}}
 
 
@@ -401,6 +229,18 @@ async def test_agent_schema_retries_once_then_succeeds():
     assert len(factory.sessions) == 2
     assert factory.sessions[0].run_count == 1
     assert factory.sessions[1].run_count == 1
+
+
+@pytest.mark.asyncio
+async def test_agent_schema_retries_once_after_transient_first_pass_error():
+    factory = TransientFailureFactory(payloads=[{"x": 17}])
+    ctx = WorkflowContext(factory)
+
+    result = await ctx.agent("give me x", schema=SCHEMA, label="solver")
+
+    assert result == {"x": 17}
+    assert len(factory.sessions) == 2
+    assert ctx.agent_failures[0]["exception_type"] == "OSError"
 
 
 @pytest.mark.asyncio
@@ -646,6 +486,40 @@ async def test_non_structured_agent_leaves_thinking_default():
     assert factory.builds[0]["thinking"] is None
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reserved_name",
+    [
+        "structured_output",
+        "STRUCTURED_OUTPUT",
+        "submit_findings",
+        "ｓｕｂｍｉｔ＿ｆｉｎｄｉｎｇｓ",
+    ],
+)
+async def test_agent_rejects_reserved_external_tool_before_build(reserved_name):
+    factory = ScriptedFactory(payloads=[])
+    ctx = WorkflowContext(factory)
+
+    with pytest.raises(ValueError, match="reserved tool name"):
+        await ctx.agent("go", tools=[_NamedTool(reserved_name)])
+
+    assert factory.builds == []
+
+
+@pytest.mark.asyncio
+async def test_agent_rejects_normalized_duplicate_tools_before_build():
+    factory = ScriptedFactory(payloads=[])
+    ctx = WorkflowContext(factory)
+
+    with pytest.raises(ValueError, match="duplicate tool names"):
+        await ctx.agent(
+            "go",
+            tools=[_NamedTool("custom_tool"), _NamedTool("ＣＵＳＴＯＭ＿ＴＯＯＬ")],
+        )
+
+    assert factory.builds == []
+
+
 # --------------------------------------------------------------------------- #
 # wall-clock deadline (time_low / seconds_left)
 # --------------------------------------------------------------------------- #
@@ -714,3 +588,16 @@ def test_schema_satisfied_predicate():
     assert _schema_satisfied("not a dict", schema) is False
     # no required keys: any captured dict (even {}) is an accepted commit
     assert _schema_satisfied({}, {"type": "object"}) is True
+
+
+def test_structured_retry_carries_history_through_declared_state_port():
+    prior_messages = [
+        {"role": "assistant", "tool_calls": [{"id": "read-1"}]},
+        {"role": "tool", "tool_call_id": "read-1", "content": "evidence"},
+    ]
+    prior = SimpleNamespace(state=SimpleNamespace(messages=prior_messages))
+    retry = SimpleNamespace(state=SimpleNamespace(messages=[]))
+
+    assert WorkflowContext._carry_exploration(prior, retry) is True
+    assert retry.state.messages == prior_messages
+    assert retry.state.messages is not prior_messages
