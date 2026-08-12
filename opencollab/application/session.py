@@ -28,6 +28,10 @@ if TYPE_CHECKING:
     from opencollab.application.scheduler import LaunchSpec
 
 
+class SessionBusyError(RuntimeError):
+    """Raised when a public operation would interleave an active session turn."""
+
+
 @dataclass
 class SessionRuntime:
     """Pre-built collaborators a ``Session`` facade keeps as attributes.
@@ -77,6 +81,10 @@ class Session:
         self._safety_policy = safety_policy
         self._auto_save_path = auto_save_path
         self._launch_applied = False
+        # The public facade owns turn admission. The runner protects its own
+        # cleanup, but callers can otherwise interleave a new message or a
+        # second run with the same mutable FSM.
+        self._turn_lock = asyncio.Lock()
 
         # Adopt the runtime's collaborators as Session attributes so the
         # public surface stays exactly what it used to be.
@@ -92,6 +100,48 @@ class Session:
         # the same Environment instance.
         if env is None:
             self.env = self.tool_execution.environment
+
+    @property
+    def env(self) -> EnvironmentPort | None:
+        return self._env
+
+    @env.setter
+    def env(self, value: EnvironmentPort | None) -> None:
+        self._env = value
+        if hasattr(self, "tool_execution"):
+            self.tool_execution.environment = value
+
+    @property
+    def tracer(self) -> TracePort | None:
+        return self._tracer
+
+    @tracer.setter
+    def tracer(self, value: TracePort | None) -> None:
+        self._tracer = value
+        if hasattr(self, "tool_execution"):
+            self.tool_execution.tracer = value
+        if hasattr(self, "runner"):
+            self.runner.tracer = value
+
+    @property
+    def max_budget_tokens(self) -> int:
+        return self._max_budget_tokens
+
+    @max_budget_tokens.setter
+    def max_budget_tokens(self, value: int) -> None:
+        self._max_budget_tokens = value
+        if hasattr(self, "runner"):
+            self.runner.max_budget_tokens = value
+
+    @property
+    def max_steps(self) -> int:
+        return self._max_steps
+
+    @max_steps.setter
+    def max_steps(self, value: int) -> None:
+        self._max_steps = value
+        if hasattr(self, "runner"):
+            self.runner.max_steps = value
 
     @property
     def permission_policy(self) -> PermissionPort | None:
@@ -183,12 +233,23 @@ class Session:
         self.state.set_phase(value)
 
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
-        return await self.runner.run_loop(cancel_event)
+        if self._turn_lock.locked() or self.runner.pending_cleanup_tasks:
+            raise SessionBusyError("session already has an active turn")
+        async with self._turn_lock:
+            return await self.runner.run_loop(cancel_event)
 
     async def add_user_message(self, content: str) -> None:
-        self.state.append_message({"role": "user", "content": content})
-        self.state.reset_for_user_turn()
-        await self.event_bus.emit(SessionEvent(type="user_message_appended"))
+        if (
+            self._turn_lock.locked()
+            or self.runner.pending_cleanup_tasks
+            or self.state.pending_external_user_turn is not None
+            or (self.state.phase is not SessionPhase.IDLE and not self.state.phase.is_terminal())
+        ):
+            raise SessionBusyError("session already has an active turn")
+        async with self._turn_lock:
+            self.state.append_queued_external_user_turn(content)
+            self.state.reset_for_user_turn()
+            await self.event_bus.emit(SessionEvent(type="user_message_appended"))
 
     def apply_launch(self, launch: "LaunchSpec") -> None:
         """Apply launch-time persistence as a one-shot lifecycle step.
@@ -216,15 +277,40 @@ class Session:
                 "messages": self.store.load_messages(path, self.agent.system_prompt)
             }
 
-        self.messages = list(snapshot.get("messages", []))
+        messages = list(snapshot.get("messages", []))
+        raw_state = snapshot.get("session_state")
+        if not isinstance(raw_state, dict):
+            # A message-only (or pre-runtime-state) snapshot has no authority
+            # over the current session's counters, phase, or pending work. Build
+            # a complete clean state first, then update the existing object so
+            # the runner and tool executor retain their shared state reference.
+            restored = SessionState(
+                messages=messages,
+                aid=_snapshot_int(snapshot.get("aid"), default=self.state.aid),
+            )
+            pending_messages = snapshot.get("pending_messages", [])
+            restored.pending_user_messages = [
+                dict(message) for message in pending_messages if isinstance(message, dict)
+            ] if isinstance(pending_messages, list) else []
+            self.state.__dict__.clear()
+            self.state.__dict__.update(restored.__dict__)
+            return
+
+        self.messages = messages
+        self.state.pending_external_user_turn = None
+        self.state.clear_active_turn()
         pending_messages = snapshot.get("pending_messages", [])
         self.state.pending_user_messages = [
             dict(message) for message in pending_messages if isinstance(message, dict)
         ] if isinstance(pending_messages, list) else []
         self.state.aid = _snapshot_int(snapshot.get("aid"), default=self.state.aid)
-        raw_state = snapshot.get("session_state")
-        if not isinstance(raw_state, dict):
-            return
+
+        self.state.pending_external_user_turn = _restore_queued_external_user_turn(
+            raw_state.get("pending_external_user_turn"), self.state.messages
+        )
+        restored_turn_start = _restore_active_turn_start(
+            raw_state.get("active_turn_start_message_index"), self.state.messages
+        )
 
         self.state.set_used_tokens(_snapshot_nonnegative_int(raw_state.get("used_tokens")))
         self.state.set_context_tokens(_snapshot_nonnegative_int(raw_state.get("context_tokens")))
@@ -261,6 +347,14 @@ class Session:
             raw_state.get("steps_since_progress")
         )
         self.state.wind_down_done = bool(raw_state.get("wind_down_done", False))
+        if "wind_down_attempts" in raw_state:
+            self.state.wind_down_attempts = _snapshot_nonnegative_int(
+                raw_state.get("wind_down_attempts")
+            )
+        else:
+            # A legacy snapshot cannot prove whether its one retry was already
+            # allocated. Preserve the budget contract by not granting another.
+            self.state.wind_down_attempts = 2 if self.state.wind_down_done else 0
         self.state.wind_down_token_mark = _snapshot_nonnegative_int(
             raw_state.get("wind_down_token_mark")
         )
@@ -283,6 +377,8 @@ class Session:
         # child rows above are converted to explicit FAILED tool results.
         recoverable = {SessionPhase.AWAITING_EVENTS, *[p for p in SessionPhase if p.is_terminal()]}
         self.state.set_phase(phase if phase in recoverable else SessionPhase.IDLE)
+        if self.state.phase is SessionPhase.AWAITING_EVENTS:
+            self.state.active_turn_start_message_index = restored_turn_start
         if phase is not SessionPhase.AWAITING_EVENTS:
             self._append_restore_results_for_open_tool_calls()
             # Rows from an interrupted non-awaiting phase have no live producer
@@ -378,11 +474,16 @@ class Session:
                 "scout_ledger": [dict(card) for card in self.state.turn.scout_ledger],
                 "steps_since_progress": self.state.turn.steps_since_progress,
                 "wind_down_done": self.state.wind_down_done,
+                "wind_down_attempts": self.state.wind_down_attempts,
                 "wind_down_token_mark": self.state.wind_down_token_mark,
                 "loop_blocked_since_progress": self.state.turn.loop_blocked_since_progress,
                 "phase": self.state.phase.value,
                 "terminal_reason": self.state.terminal_reason,
                 "pending_events": [_serialize_pending_row(row) for row in self.state.pending_events.rows.values()],
+                "pending_external_user_turn": copy.deepcopy(
+                    self.state.pending_external_user_turn
+                ),
+                "active_turn_start_message_index": self.state.active_turn_start_message_index,
             },
         }
         if self.state.pending_user_messages:
@@ -429,6 +530,44 @@ def _restore_phase(raw: object) -> SessionPhase:
         return SessionPhase(value)
     except ValueError:
         return SessionPhase.IDLE
+
+
+def _restore_queued_external_user_turn(
+    value: object, messages: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """Validate a queued external turn against the restored transcript."""
+    if not isinstance(value, dict) or value.get("status") != "queued":
+        return None
+    content = value.get("content")
+    turn_id = value.get("turn_id")
+    index = value.get("message_index")
+    if (
+        not isinstance(content, str)
+        or not isinstance(turn_id, str)
+        or not turn_id
+        or isinstance(index, bool)
+        or not isinstance(index, int)
+        or not 0 <= index < len(messages)
+    ):
+        return None
+    message = messages[index]
+    if message.get("role") != "user" or message.get("content") != content:
+        return None
+    return {
+        "turn_id": turn_id,
+        "status": "queued",
+        "content": content,
+        "message_index": index,
+    }
+
+
+def _restore_active_turn_start(
+    value: object, messages: list[dict[str, Any]]
+) -> int | None:
+    """Return a valid suspended-turn answer boundary, else leave it unknown."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value if 0 <= value <= len(messages) else None
 
 
 def _snapshot_nonnegative_int(value: object) -> int:

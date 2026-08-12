@@ -32,6 +32,44 @@ from opencollab.domain.events import SessionRuntimeEvent
 
 
 @pytest.mark.asyncio
+async def test_cleanup_cancels_tasks_without_aborting_caller_environment():
+    class CallerEnvironment:
+        def __init__(self) -> None:
+            self.revoked = False
+            self.abort_calls = 0
+
+        def revoke(self) -> None:
+            self.revoked = True
+
+        async def abort(self) -> None:
+            self.abort_calls += 1
+            self.revoked = True
+
+    class Session:
+        def __init__(self, environment, cleanup_task) -> None:
+            self.env = environment
+            self.pending_cleanup_tasks = (cleanup_task,)
+            self.persistence_errors: tuple[str, ...] = ()
+
+    environment = CallerEnvironment()
+    cleanup_task = asyncio.create_task(asyncio.Event().wait())
+    ctx = WorkflowContext(factory=object())
+    ctx._cleanup_environment = False
+    ctx._track_session(Session(environment, cleanup_task))
+
+    quiesced, succeeded, lingering = await workflow_cleanup._quiesce_workflow_context(
+        ctx,
+        timeout=0.01,
+    )
+
+    assert quiesced
+    assert succeeded
+    assert not lingering
+    assert not environment.revoked
+    assert environment.abort_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_run_workflow_quiesces_late_session_before_manifest_and_tracer_close(
     monkeypatch,
     tmp_path,

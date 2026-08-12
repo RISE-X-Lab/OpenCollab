@@ -20,7 +20,7 @@ from opencollab.bootstrap import (
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_deadline_cancels_owner_and_aborts_injected_environment(monkeypatch):
+async def test_bootstrap_deadline_cancels_owner_without_aborting_injected_environment(monkeypatch):
     cancelled = asyncio.Event()
     environment = _InjectedEnvironment()
 
@@ -39,20 +39,55 @@ async def test_bootstrap_deadline_cancels_owner_and_aborts_injected_environment(
             env=environment,
             deadline_monotonic=asyncio.get_running_loop().time() + 0.01,
             cleanup_timeout=0.1,
-        )
+    )
     assert cancelled.is_set()
-    assert environment.revoked
-    assert environment.abort_calls == 1
+    assert not environment.revoked
+    assert environment.abort_calls == 0
+
 
 @pytest.mark.asyncio
-async def test_bootstrap_deadline_reports_lifecycle_failure_when_abort_fails(monkeypatch):
+async def test_caller_cancellation_rejects_lingering_workflow_owner(monkeypatch):
+    started = asyncio.Event()
+    cancel_seen = asyncio.Event()
+    release = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def stubborn(*_args, **_kwargs):
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancel_seen.set()
+        finished.set()
+        return "late"
+
+    monkeypatch.setattr(workflow_runtime, "_run_workflow_with_integrity", stubborn)
+    task = asyncio.create_task(
+        workflow_runtime.run_workflow(
+            object(), {}, cfg=_cfg(), cleanup_timeout=0.01,
+        )
+    )
+    await started.wait()
+    task.cancel()
+    try:
+        with pytest.raises(workflow_runtime.WorkflowLifecycleError, match="cancelled workflow"):
+            await task
+        assert cancel_seen.is_set()
+        assert not finished.is_set()
+    finally:
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=0.2)
+
+@pytest.mark.asyncio
+async def test_bootstrap_deadline_does_not_require_caller_environment_abort(monkeypatch):
     environment = _InjectedEnvironment(abort_fails=True)
 
     async def blocked(*_args, **_kwargs):
         await asyncio.Event().wait()
 
     monkeypatch.setattr(workflow_runtime, "_run_workflow_with_integrity", blocked)
-    with pytest.raises(workflow_runtime.WorkflowLifecycleError, match="quiescent"):
+    with pytest.raises(workflow_runtime.WorkflowDeadlineExceeded):
         await workflow_runtime.run_workflow(
             object(),
             {},
@@ -61,8 +96,31 @@ async def test_bootstrap_deadline_reports_lifecycle_failure_when_abort_fails(mon
             deadline_monotonic=asyncio.get_running_loop().time() + 0.01,
             cleanup_timeout=0.1,
         )
+    assert not environment.revoked
+    assert environment.abort_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_deadline_aborts_explicitly_owned_environment(monkeypatch):
+    environment = _InjectedEnvironment()
+
+    async def blocked(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(workflow_runtime, "_run_workflow_with_integrity", blocked)
+    with pytest.raises(workflow_runtime.WorkflowDeadlineExceeded):
+        await workflow_runtime.run_workflow(
+            object(),
+            {},
+            cfg=_cfg(),
+            env=environment,
+            deadline_monotonic=asyncio.get_running_loop().time() + 0.01,
+            cleanup_timeout=0.1,
+            cleanup_environment=True,
+        )
     assert environment.revoked
     assert environment.abort_calls == 1
+
 
 @pytest.mark.asyncio
 async def test_bootstrap_deadline_preserves_inner_cleanup_failure(monkeypatch):

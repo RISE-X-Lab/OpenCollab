@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -160,6 +161,7 @@ class _UserTurnCheckpoint:
     timestamp_count: int
     phase: SessionPhase
     terminal_reason: str | None
+    pending_external_user_turn: dict[str, Any] | None
     # The per-turn enforcement window, snapshotted and rolled back as one unit.
     turn: TurnEnforcementState
 
@@ -195,6 +197,9 @@ class SessionState:
     # unless ``enforcement_strength`` is on, so a self-regulating run never touches
     # them. Unlike the per-turn window they survive a user-turn boundary.
     wind_down_done: bool = False
+    # Counts protected provider calls allocated by the wind-down gate. It is
+    # durable so a restore cannot re-grant the one compatibility retry.
+    wind_down_attempts: int = 0
     wind_down_token_mark: int = 0
     phase: SessionPhase = SessionPhase.IDLE
     # Human-readable detail for the current terminal phase (e.g. the exception
@@ -212,6 +217,14 @@ class SessionState:
     # These are persisted for observability/recovery without changing the
     # provider-facing history until delivery is safe.
     pending_user_messages: list[dict[str, Any]] = field(default_factory=list)
+    # An external user turn has already been appended but no runner has begun
+    # it yet. Unlike scheduler-owned ``pending_user_messages``, this records
+    # the crash window between accepting a public turn and starting its driver.
+    pending_external_user_turn: dict[str, Any] | None = None
+    # First message position *after* the history visible when the active turn
+    # began. It is retained only while a deferred turn is suspended so a
+    # restored runner can keep answer lookup within that turn.
+    active_turn_start_message_index: int | None = None
 
     def __post_init__(self) -> None:
         self._align_timestamps()
@@ -252,6 +265,30 @@ class SessionState:
 
     def enriched_pending_user_messages(self) -> list[dict[str, Any]]:
         return [dict(message) for message in self.pending_user_messages]
+
+    def append_queued_external_user_turn(self, content: str) -> None:
+        """Atomically mark and append a public user turn awaiting its driver."""
+        pending = {
+            "turn_id": uuid.uuid4().hex,
+            "status": "queued",
+            "content": content,
+        }
+        self.pending_external_user_turn = pending
+        self.append_message({"role": "user", "content": content})
+        pending["message_index"] = len(self.messages) - 1
+
+    def consume_queued_external_user_turn(self) -> None:
+        """Mark a queued external turn as claimed by the current runner."""
+        if self.pending_external_user_turn is not None:
+            self.pending_external_user_turn = None
+
+    def start_active_turn(self, message_index: int) -> None:
+        """Persist the answer-lookup boundary for an active user turn."""
+        self.active_turn_start_message_index = message_index
+
+    def clear_active_turn(self) -> None:
+        """Discard a turn boundary once that turn reaches a terminal phase."""
+        self.active_turn_start_message_index = None
 
     @property
     def is_done(self) -> bool:
@@ -358,6 +395,7 @@ class SessionState:
             timestamp_count=len(self.message_timestamps),
             phase=self.phase,
             terminal_reason=self.terminal_reason,
+            pending_external_user_turn=copy.deepcopy(self.pending_external_user_turn),
             # Deep-copy the whole per-turn window as one pristine, reusable unit.
             turn=copy.deepcopy(self.turn),
         )
@@ -368,6 +406,9 @@ class SessionState:
         del self.message_timestamps[checkpoint.timestamp_count :]
         self.phase = checkpoint.phase
         self.terminal_reason = checkpoint.terminal_reason
+        self.pending_external_user_turn = copy.deepcopy(
+            checkpoint.pending_external_user_turn
+        )
         # A fresh copy each restore, so the checkpoint stays reusable.
         self.turn = copy.deepcopy(checkpoint.turn)
 

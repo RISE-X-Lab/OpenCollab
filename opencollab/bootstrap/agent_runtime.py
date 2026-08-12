@@ -240,6 +240,8 @@ async def run_agent(
         return record_finalization_result(task)
 
     async def finalize_with_retry() -> bool:
+        if finalization_succeeded:
+            return True
         while not finalization_succeeded:
             if (
                 finalization_task is None
@@ -253,7 +255,12 @@ async def run_agent(
         return False
 
     async def stop_owned() -> tuple[bool, bool, bool]:
-        aborted = await revoke_and_abort_environment(environment, cleanup_timeout_seconds)
+        aborted = True
+        if cleanup_environment:
+            aborted = await revoke_and_abort_environment(
+                environment,
+                cleanup_timeout_seconds,
+            )
         terminal = await force_task_terminal(owner, timeout=cleanup_timeout_seconds)
         finalized = await finalize_with_retry()
         return aborted, terminal, finalized
@@ -312,8 +319,14 @@ async def run_agent(
             cleanup_quiesced=True,
             cleanup_environment=cleanup_environment,
         )
-    except asyncio.CancelledError:
-        await stop_once(propagate_cancellation=False)
+    except asyncio.CancelledError as cancellation:
+        aborted, terminated, finalized = await stop_once(
+            propagate_cancellation=False
+        )
+        if not aborted or not terminated or not finalized:
+            raise AgentRuntimeLifecycleError(
+                "cancelled agent did not reach a quiescent terminal state"
+            ) from cancellation
         raise
     except Exception:
         if not owner.done():

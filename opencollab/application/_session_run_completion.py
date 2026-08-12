@@ -343,6 +343,8 @@ class _SessionRunCompletionMixin:
                 self.llm.complete(**kwargs),
                 self._per_call_timeout,
                 task_tracker=self._track_provider_task,
+                late_task_tracker=self._mark_provider_task_draining,
+                late_result_handler=self._record_late_provider_result,
             )
         except CallerTimeoutError as exc:
             raise GenerationTimeoutError(

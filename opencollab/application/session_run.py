@@ -155,10 +155,6 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         # threshold uses.
         self._watchdog_k = watchdog_k
         self._low_yield_m = low_yield_m
-        # Guards the once-per-session provider-compat retry on the wind-down turn
-        # (a model that ignored the forced tool_choice and called another/unknown
-        # tool gets exactly ONE more turn before going terminal).
-        self._wind_down_retried = False
         self._pending_tool_allowlist: frozenset[str] | None = None
         self._pending_tool_gate_label: str | None = None
         # Message index where the current user turn began. It survives a
@@ -166,14 +162,29 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._turn_start_message_index: int | None = None
         self._provider_tasks: set[asyncio.Task[Any]] = set()
         self._llm_step_started = False
+        self._draining_provider_tasks: set[asyncio.Task[Any]] = set()
+        # Successful responses that arrived only after their caller timeout.
+        # They count against the budget but never enter a later turn's history.
+        self._late_provider_usage: tuple[int, ...] = ()
 
     @property
     def pending_cleanup_tasks(self) -> tuple[asyncio.Task[Any], ...]:
-        return tuple(task for task in self._provider_tasks if not task.done())
+        return tuple(
+            set(task for task in self._provider_tasks if not task.done())
+            | self._draining_provider_tasks
+        )
+
+    @property
+    def late_provider_usage(self) -> tuple[int, ...]:
+        """Immutable token ledger for successful, timed-out provider calls."""
+        return self._late_provider_usage
 
     def _track_provider_task(self, task: asyncio.Task[Any]) -> None:
         self._provider_tasks.add(task)
         task.add_done_callback(self._provider_task_done)
+
+    def _mark_provider_task_draining(self, task: asyncio.Task[Any]) -> None:
+        self._draining_provider_tasks.add(task)
 
     def _provider_task_done(self, task: asyncio.Task[Any]) -> None:
         self._provider_tasks.discard(task)
@@ -182,6 +193,20 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         except BaseException:
             pass
 
+    def _record_late_provider_result(self, task: asyncio.Future[Any]) -> None:
+        """Charge a provider response that survived cancellation after timeout."""
+        try:
+            response = task.result()
+            total_tokens = response.usage.total_tokens
+            if isinstance(total_tokens, bool) or not isinstance(total_tokens, int) or total_tokens < 0:
+                return
+            self._late_provider_usage += (total_tokens,)
+            self.state.add_used_tokens(total_tokens)
+        except BaseException:
+            pass
+        finally:
+            self._draining_provider_tasks.discard(task)
+
     async def run_loop(self, cancel_event: asyncio.Event | None = None) -> str:
         """Drive the phase FSM until the turn finishes or suspends.
 
@@ -189,6 +214,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         unexpected exception the session is marked failed and the exception
         re-raised; cancellation flushes the tracer before propagating.
         """
+        if self.pending_cleanup_tasks:
+            raise RuntimeError("prior provider generation is still draining")
         try:
             self._prepare_turn()
             while not self._should_suspend():
@@ -202,17 +229,26 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             self.state.fail(reason=f"{type(exc).__name__}: {exc}")
             raise
 
-        return self._last_turn_answer()
+        answer = self._last_turn_answer()
+        if self.is_terminal_phase():
+            self.state.clear_active_turn()
+        return answer
 
     def _prepare_turn(self) -> None:
         """Set the answer cursor and resume the phase appropriate to this call."""
         entry_phase = self.state.phase
-        if entry_phase in {SessionPhase.AWAITING_EVENTS, SessionPhase.DONE}:
+        if entry_phase is SessionPhase.IDLE:
+            self.state.consume_queued_external_user_turn()
+        if entry_phase is SessionPhase.AWAITING_EVENTS:
             if self._turn_start_message_index is None:
-                # Restored sessions do not yet persist this runtime-only cursor.
-                self._turn_start_message_index = 0
+                self._turn_start_message_index = self.state.active_turn_start_message_index
+        elif entry_phase is SessionPhase.DONE:
+            # Re-entering an already-completed session is a compatibility
+            # read-only query for its final answer, not a restored active turn.
+            self._turn_start_message_index = 0
         else:
             self._turn_start_message_index = len(self.state.messages)
+            self.state.start_active_turn(self._turn_start_message_index)
 
         if entry_phase is SessionPhase.AWAITING_EVENTS:
             self._resume_from_awaiting()
@@ -224,7 +260,9 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
 
     def _last_turn_answer(self) -> str:
         """Return the last real assistant text produced by the current turn."""
-        turn_start = self._turn_start_message_index or 0
+        turn_start = self._turn_start_message_index
+        if turn_start is None:
+            return ""
         for message in reversed(self.state.messages[turn_start:]):
             content = message.get("content")
             if message["role"] == "assistant" and content and content != _EMPTY_STOP_PLACEHOLDER:
@@ -327,6 +365,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         tool is somehow absent the toolset is left as-is (the injected message + the
         one allowed turn still apply)."""
         self.state.wind_down_done = True
+        self.state.wind_down_attempts += 1
         self.state.wind_down_token_mark = self.state.used_tokens
         finder = getattr(self.agent, "find_tool", None)
         submit = finder(self._submit_tool_name) if callable(finder) else None
@@ -402,15 +441,15 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         (``low_yield_since_progress`` >= M). Any one trips it; none fires while a
         tool result is still un-ingested (``pending_events`` non-empty).
 
-        Once wound down, the latch grants EXACTLY ONE protected commit turn, then a
-        single retry (``_wind_down_retried``) if that turn strays, then a terminal
-        STOPPED — never an unbounded forced loop.
+        Once wound down, the durable attempt count grants EXACTLY ONE protected
+        commit turn and a single retry if that turn strays, then a terminal
+        STOPPED — never an unbounded forced loop, including after restore.
         """
         if not self._enforcement_on():
             return False
         if self.state.wind_down_done:
-            if not self._wind_down_retried:
-                self._wind_down_retried = True
+            if self.state.wind_down_attempts < 2:
+                self.state.wind_down_attempts += 1
                 self.state.append_message({"role": "system", "content": _WIND_DOWN_RETRY})
                 self.state.transition_to(SessionPhase.CALLING_LLM)
                 return True
@@ -605,6 +644,23 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             raise RuntimeError("Cannot execute tools before calling LLM")
 
         original_tool_calls = list(pending.response.tool_calls)
+        preflight = getattr(self.tool_execution, "preflight_tool_batch", None)
+        rejected_batch = getattr(
+            self.tool_execution,
+            "preflight_rejection_result",
+            None,
+        )
+        if callable(preflight) and callable(rejected_batch):
+            preflight_errors = preflight(original_tool_calls)
+            if any(preflight_errors):
+                rejected_batch(
+                    original_tool_calls,
+                    preflight_errors,
+                ).apply_to(self.state)
+                self._pending_tool_allowlist = None
+                self._pending_tool_gate_label = None
+                self.state.transition_to(SessionPhase.AUTOSAVING)
+                return
         tool_calls, blocked_messages = self._apply_pending_tool_allowlist(original_tool_calls)
         immediate, deferred = self._split_tool_calls(tool_calls)
 
