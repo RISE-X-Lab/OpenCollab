@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any, BinaryIO
 
 from opencollab.adapters.safe_files import (
@@ -19,6 +22,7 @@ _JSON_WRITE_CHUNK_CHARS = 64 * 1024
 _AUTOSAVE_SEQUENCE_KEY = "_autosave_sequence"
 _AUTOSAVE_JOURNAL_VERSION = 1
 _AUTOSAVE_JOURNAL_SUFFIX = ".journal"
+_AUTOSAVE_JOURNAL_LOCK_SUFFIX = ".lock"
 _JOURNAL_LOCKS: dict[str, threading.RLock] = {}
 _JOURNAL_LOCKS_GUARD = threading.Lock()
 
@@ -27,6 +31,19 @@ def _journal_lock(path: str) -> threading.RLock:
     key = os.path.abspath(path)
     with _JOURNAL_LOCKS_GUARD:
         return _JOURNAL_LOCKS.setdefault(key, threading.RLock())
+
+
+@contextmanager
+def _journal_operation_lock(path: str) -> Iterator[None]:
+    """Serialize compaction and append on a stable cross-process lockfile."""
+    with _journal_lock(path):
+        lock_path = f"{path}{_AUTOSAVE_JOURNAL_SUFFIX}{_AUTOSAVE_JOURNAL_LOCK_SUFFIX}"
+        with open_regular_text_append(lock_path) as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class _BoundedUTF8Writer:
@@ -403,7 +420,7 @@ class SessionStore:
             _AUTOSAVE_SEQUENCE_KEY: sequence,
             "messages": messages,
         }
-        with _journal_lock(path):
+        with _journal_operation_lock(path):
             self._atomic_json_write(path, obj)
             write_regular_bytes_atomic(
                 self._journal_path(path),
@@ -427,7 +444,7 @@ class SessionStore:
         )
 
     def _append_journal_record(self, path: str, record: dict[str, Any]) -> None:
-        with _journal_lock(path):
+        with _journal_operation_lock(path):
             journal_path = self._journal_path(path)
             payload = self._encode_journal_record(record)
             payload_size = len(payload.encode("utf-8"))
