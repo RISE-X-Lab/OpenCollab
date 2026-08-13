@@ -58,12 +58,21 @@ class LocalEnvironment(Environment):
     def _full_path(self, path: str) -> str:
         if not isinstance(path, str) or not path or "\0" in path:
             raise ValueError("local file path must be non-empty text without NUL bytes")
-        if os.path.isabs(path):
-            return os.path.normpath(path)
+        if not os.path.isdir(self.workspace) or os.path.islink(self.workspace):
+            raise OSError(f"local workspace is not a real directory: {self.workspace}")
         normalized = os.path.normpath(path)
         if normalized == ".." or normalized.startswith(f"..{os.sep}"):
             raise PermissionError(f"relative path escapes local workspace: {path}")
-        return os.path.join(self.workspace, normalized)
+        candidate = os.path.realpath(
+            normalized if os.path.isabs(path) else os.path.join(self.workspace, normalized)
+        )
+        try:
+            inside = os.path.commonpath((self.workspace, candidate)) == self.workspace
+        except ValueError:
+            inside = False
+        if not inside:
+            raise PermissionError(f"path escapes local workspace: {path}")
+        return candidate
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         self._ensure_active()
@@ -186,6 +195,8 @@ class LocalEnvironment(Environment):
         while self._file_operations:
             pending = tuple(self._file_operations)
             await asyncio.gather(*pending, return_exceptions=True)
+        if not os.path.isdir(self.workspace) or os.path.islink(self.workspace):
+            raise OSError(f"local workspace is not a real directory: {self.workspace}")
         failures: list[OSError] = []
         for path in tuple(self._temporary_files):
             try:

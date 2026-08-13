@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
@@ -184,6 +185,69 @@ def test_apply_launch_recovers_journal_when_atomic_base_is_absent(tmp_path):
 
     assert session.step_count == 7
     assert session.messages[-1]["content"] == "durable step"
+
+
+def test_checkpoint_compaction_does_not_erase_concurrent_journal_delta(tmp_path):
+    path = tmp_path / "race.json"
+    store = SessionStore()
+    store.append_snapshot_delta(
+        str(path),
+        sequence=2,
+        replace_from=0,
+        messages=[
+            {"role": "system", "content": "system"},
+            {"role": "assistant", "content": "old"},
+        ],
+        meta={"snapshot_version": 1, "session_state": {}},
+    )
+    base_written = threading.Event()
+    release_compaction = threading.Event()
+    original_write = store._atomic_json_write
+
+    def paused_write(target, value):
+        original_write(target, value)
+        base_written.set()
+        assert release_compaction.wait(timeout=2)
+
+    store._atomic_json_write = paused_write
+    checkpoint = threading.Thread(
+        target=store.checkpoint_snapshot,
+        args=(
+            str(path),
+            [{"role": "system", "content": "system"},
+             {"role": "assistant", "content": "base"}],
+        ),
+        kwargs={"meta": {"snapshot_version": 1, "session_state": {}}, "sequence": 2},
+    )
+    checkpoint.start()
+    assert base_written.wait(timeout=2)
+    append_errors = []
+
+    def append_new_delta():
+        try:
+            store.append_snapshot_delta(
+                str(path),
+                sequence=3,
+                replace_from=2,
+                messages=[{"role": "assistant", "content": "new"}],
+                meta={"snapshot_version": 1, "session_state": {}},
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostic assertion below
+            append_errors.append(exc)
+
+    append = threading.Thread(target=append_new_delta)
+    append.start()
+    # The append must wait for compaction's lock rather than racing its clear.
+    release_compaction.set()
+    append.join(timeout=2)
+    release_compaction.set()
+    checkpoint.join(timeout=2)
+    assert not append.is_alive()
+    assert not checkpoint.is_alive()
+    assert append_errors == []
+    restored = store.load_snapshot(str(path), "system")
+    assert restored["_autosave_sequence"] == 3
+    assert restored["messages"][-1]["content"] == "new"
 
 
 def test_apply_launch_checkpoints_restore_into_distinct_autosave_target(tmp_path):

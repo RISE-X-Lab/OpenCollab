@@ -51,6 +51,20 @@ async def test_local_exec_returns_command_output(tmp_path) -> None:
     assert result.stderr_dropped_bytes == 0
 
 
+async def test_local_file_operations_reject_absolute_paths_outside_workspace(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside.txt"
+    workspace.mkdir()
+    outside.write_text("secret", encoding="utf-8")
+    env = LocalEnvironment(str(workspace))
+
+    with pytest.raises(PermissionError, match="workspace"):
+        await env.read_file(str(outside))
+    with pytest.raises(PermissionError, match="workspace"):
+        await env.write_file(str(outside), "overwritten")
+    assert outside.read_text(encoding="utf-8") == "secret"
+
+
 async def test_local_exec_bounds_output(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(local_module, "PROCESS_OUTPUT_CAPTURE_BYTES", 32)
     env = LocalEnvironment(str(tmp_path))

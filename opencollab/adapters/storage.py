@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from typing import Any, BinaryIO
 
 from opencollab.adapters.safe_files import (
@@ -18,6 +19,14 @@ _JSON_WRITE_CHUNK_CHARS = 64 * 1024
 _AUTOSAVE_SEQUENCE_KEY = "_autosave_sequence"
 _AUTOSAVE_JOURNAL_VERSION = 1
 _AUTOSAVE_JOURNAL_SUFFIX = ".journal"
+_JOURNAL_LOCKS: dict[str, threading.RLock] = {}
+_JOURNAL_LOCKS_GUARD = threading.Lock()
+
+
+def _journal_lock(path: str) -> threading.RLock:
+    key = os.path.abspath(path)
+    with _JOURNAL_LOCKS_GUARD:
+        return _JOURNAL_LOCKS.setdefault(key, threading.RLock())
 
 
 class _BoundedUTF8Writer:
@@ -394,12 +403,13 @@ class SessionStore:
             _AUTOSAVE_SEQUENCE_KEY: sequence,
             "messages": messages,
         }
-        self._atomic_json_write(path, obj)
-        write_regular_bytes_atomic(
-            self._journal_path(path),
-            b"",
-            max_bytes=0,
-        )
+        with _journal_lock(path):
+            self._atomic_json_write(path, obj)
+            write_regular_bytes_atomic(
+                self._journal_path(path),
+                b"",
+                max_bytes=0,
+            )
 
     @staticmethod
     def _journal_path(path: str) -> str:
@@ -417,33 +427,34 @@ class SessionStore:
         )
 
     def _append_journal_record(self, path: str, record: dict[str, Any]) -> None:
-        journal_path = self._journal_path(path)
-        payload = self._encode_journal_record(record)
-        payload_size = len(payload.encode("utf-8"))
-        if payload_size > MAX_SESSION_SNAPSHOT_BYTES:
-            raise ValueError(
-                "autosave journal record exceeds "
-                f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
-                f"{journal_path}"
-            )
-        with open_regular_text_append(journal_path, readable=True) as handle:
-            current_size = os.fstat(handle.fileno()).st_size
-            complete_size = self._complete_journal_size(
-                handle.fileno(),
-                current_size,
-            )
-            if complete_size < current_size:
-                os.ftruncate(handle.fileno(), complete_size)
-                current_size = complete_size
-            if current_size + payload_size > MAX_SESSION_SNAPSHOT_BYTES:
+        with _journal_lock(path):
+            journal_path = self._journal_path(path)
+            payload = self._encode_journal_record(record)
+            payload_size = len(payload.encode("utf-8"))
+            if payload_size > MAX_SESSION_SNAPSHOT_BYTES:
                 raise ValueError(
-                    "autosave journal exceeds "
+                    "autosave journal record exceeds "
                     f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
                     f"{journal_path}"
                 )
-            write_locked_text(handle, payload)
-            handle.flush()
-            os.fsync(handle.fileno())
+            with open_regular_text_append(journal_path, readable=True) as handle:
+                current_size = os.fstat(handle.fileno()).st_size
+                complete_size = self._complete_journal_size(
+                    handle.fileno(),
+                    current_size,
+                )
+                if complete_size < current_size:
+                    os.ftruncate(handle.fileno(), complete_size)
+                    current_size = complete_size
+                if current_size + payload_size > MAX_SESSION_SNAPSHOT_BYTES:
+                    raise ValueError(
+                        "autosave journal exceeds "
+                        f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
+                        f"{journal_path}"
+                    )
+                write_locked_text(handle, payload)
+                handle.flush()
+                os.fsync(handle.fileno())
 
     @staticmethod
     def _complete_journal_size(fd: int, size: int) -> int:
