@@ -135,6 +135,10 @@ class ModelCapabilities:
     supports_forced_tool_choice: bool = True
     supports_responses_json_schema: bool = False
     honors_workflow_thinking_override: bool = True
+    supports_responses_streaming: bool = True
+    supports_responses_sampling: bool = True
+    supports_responses_reasoning: bool = True
+    supports_responses_tools: bool = True
 
 
 # Best-effort context-window sizes (tokens), keyed by a model family. Used to
@@ -156,6 +160,20 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "o1-pro": ModelCapabilities(
+        context_window=200_000,
+        supports_responses_streaming=False,
+        supports_responses_sampling=False,
+    ),
+    "o1-mini": ModelCapabilities(
+        context_window=200_000,
+        supports_responses_sampling=False,
+        supports_responses_tools=False,
+    ),
+    "o3": ModelCapabilities(context_window=200_000, supports_responses_sampling=False),
+    "o3-mini": ModelCapabilities(context_window=200_000, supports_responses_sampling=False),
+    "gpt-4o": ModelCapabilities(context_window=128_000, supports_responses_reasoning=False),
+    "gpt-4o-mini": ModelCapabilities(context_window=128_000, supports_responses_reasoning=False),
     "deepseek-v4-flash": ModelCapabilities(
         context_window=1_048_576,
         supports_forced_tool_choice=False,
@@ -195,6 +213,8 @@ def _canonical_model_id(model: str) -> str:
         return leaf
     for known in _EXACT_MODEL_CAPABILITIES:
         if re.fullmatch(rf"{re.escape(known)}-\d{{4}}(?:-\d{{2}}){{0,2}}", leaf):
+            return known
+        if leaf.startswith(f"{known}-") and leaf[len(known) + 1 :].split("-", 1)[0].isdigit():
             return known
     return leaf
 

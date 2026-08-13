@@ -75,6 +75,35 @@ def _message_text(content: Any) -> str:
         raise ResponsesProtocolError(str(exc)) from exc
 
 
+def _message_content_parts(content: Any) -> str | list[dict[str, Any]]:
+    """Project legacy text/image blocks into Responses input content."""
+    if not isinstance(content, list):
+        return _message_text(content)
+    parts: list[dict[str, Any]] = []
+    for part in content:
+        if isinstance(part, str):
+            parts.append({"type": "input_text", "text": part})
+            continue
+        if not isinstance(part, dict):
+            raise ResponsesProtocolError("message content contains an unsupported block")
+        kind = part.get("type")
+        if kind == "text" and isinstance(part.get("text"), str):
+            parts.append({"type": "input_text", "text": part["text"]})
+            continue
+        if kind == "image_url" and isinstance(part.get("image_url"), dict):
+            image = part["image_url"]
+            url = image.get("url")
+            if not isinstance(url, str) or not url:
+                raise ResponsesProtocolError("image_url block is missing url")
+            item = {"type": "input_image", "image_url": url}
+            if image.get("detail") is not None:
+                item["detail"] = image["detail"]
+            parts.append(item)
+            continue
+        raise ResponsesProtocolError(f"unsupported message content block {kind!r}")
+    return parts
+
+
 def _validated_response_items(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         raise ResponsesProtocolError("response_items must be a list")
@@ -176,9 +205,9 @@ def _messages_to_input(messages: list[dict[str, Any]]) -> tuple[str | None, list
             continue
         if role not in {"user", "assistant"}:
             raise ResponsesProtocolError(f"unsupported message role {role!r}")
-        text = _message_text(message.get("content"))
-        if text:
-            items.append({"role": role, "content": text})
+        content = _message_content_parts(message.get("content"))
+        if content:
+            items.append({"role": role, "content": content})
         for call in message.get("tool_calls") or ():
             function = call.get("function") if isinstance(call, dict) else None
             call_id = call.get("id") if isinstance(call, dict) else None
@@ -282,14 +311,19 @@ def _build_request_kwargs(
     kwargs: dict[str, Any] = {
         "model": model,
         "input": input_items,
-        "include": ["reasoning.encrypted_content"],
         "store": False,
-        "stream": True,
-        "temperature": temperature,
+        "stream": model_capabilities(model).supports_responses_streaming,
     }
+    capabilities = model_capabilities(model)
+    if capabilities.supports_responses_reasoning:
+        kwargs["include"] = ["reasoning.encrypted_content"]
+    if capabilities.supports_responses_sampling:
+        kwargs["temperature"] = temperature
     if instructions:
         kwargs["instructions"] = instructions
     converted_tools = _responses_tools(tools)
+    if converted_tools and not capabilities.supports_responses_tools:
+        raise ResponsesProtocolError(f"model {model!r} does not support function tools")
     choice = _responses_tool_choice(tool_choice, converted_tools)
     if converted_tools:
         text_tool = _forced_text_tool(model, converted_tools, tool_choice)
@@ -300,11 +334,11 @@ def _build_request_kwargs(
             if not model_capabilities(model).supports_forced_tool_choice and choice is not None and choice != "auto":
                 choice = "auto"
             kwargs["tool_choice"] = choice
-    if top_p is not None:
+    if top_p is not None and capabilities.supports_responses_sampling:
         kwargs["top_p"] = top_p
     if max_output_tokens is not None:
         kwargs["max_output_tokens"] = int(max_output_tokens)
-    if reasoning_effort is not None:
+    if reasoning_effort is not None and capabilities.supports_responses_reasoning:
         kwargs["reasoning"] = {"effort": reasoning_effort}
     if prompt_cache_namespace and response_session_id:
         kwargs["prompt_cache_key"] = hashlib.sha256(
@@ -750,6 +784,8 @@ async def complete_responses(
         prompt_cache_namespace=prompt_cache_namespace,
         response_session_id=response_session_id,
     )
+    capabilities = model_capabilities(model)
+    stream = stream and capabilities.supports_responses_streaming
 
     async def request_once() -> LLMResponse:
         if not stream:
