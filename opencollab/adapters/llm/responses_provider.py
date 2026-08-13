@@ -378,12 +378,17 @@ def _accept_output_item(event: Any, state: _StreamState) -> None:
 
 def _validate_completed_response(response: Any, expected_model: str | None) -> str:
     status = getattr(response, "status", None)
-    if status != "completed":
-        raise ResponsesProtocolError(f"Responses request ended with status {status!r}")
     error = to_plain_data(getattr(response, "error", None))
+    incomplete = to_plain_data(getattr(response, "incomplete_details", None))
+    if status != "completed":
+        terminal_detail = error if error is not None else incomplete
+        if terminal_detail is not None:
+            raise ResponsesProtocolError(
+                f"Responses request ended with status {status!r}: {terminal_detail!r}"
+            )
+        raise ResponsesProtocolError(f"Responses request ended with status {status!r}")
     if error is not None:
         raise ResponsesProtocolError(f"completed Responses object contains error {error!r}")
-    incomplete = to_plain_data(getattr(response, "incomplete_details", None))
     if incomplete is not None:
         raise ResponsesProtocolError(f"completed Responses object contains incomplete details {incomplete!r}")
     actual_model = getattr(response, "model", None)

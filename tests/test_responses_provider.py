@@ -307,6 +307,13 @@ async def test_completed_empty_output_exhausts_retry_budget(monkeypatch):
     "response,match",
     [
         (completed_response(status="failed"), "status 'failed'"),
+        (
+            completed_response(
+                status="incomplete",
+                incomplete_details={"reason": "max_output_tokens"},
+            ),
+            "max_output_tokens",
+        ),
         (completed_response(error={"message": "late failure"}), "contains error"),
         (
             completed_response(incomplete_details={"reason": "max_output_tokens"}),
