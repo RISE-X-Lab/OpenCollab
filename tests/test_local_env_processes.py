@@ -33,9 +33,7 @@ def _descendant_command(ready, sentinel, *, delay: float = 0.35) -> str:
         f"pathlib.Path({str(sentinel)!r}).write_text('leaked')"
     )
     parent = (
-        "import subprocess,sys;"
-        f"child=subprocess.Popen([sys.executable,'-c',{child!r}]);"
-        "raise SystemExit(child.wait())"
+        f"import subprocess,sys;child=subprocess.Popen([sys.executable,'-c',{child!r}]);raise SystemExit(child.wait())"
     )
     return f"exec {shlex.quote(sys.executable)} -c {shlex.quote(parent)}"
 
@@ -63,6 +61,113 @@ async def test_local_file_operations_reject_absolute_paths_outside_workspace(tmp
     with pytest.raises(PermissionError, match="workspace"):
         await env.write_file(str(outside), "overwritten")
     assert outside.read_text(encoding="utf-8") == "secret"
+
+
+async def test_local_read_is_anchored_when_parent_is_replaced_by_symlink(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    parent = workspace / "parent"
+    moved_parent = workspace / "moved-parent"
+    outside = tmp_path / "outside"
+    parent.mkdir(parents=True)
+    outside.mkdir()
+    (parent / "value.txt").write_text("inside", encoding="utf-8")
+    (outside / "value.txt").write_text("outside-secret", encoding="utf-8")
+    env = LocalEnvironment(str(workspace))
+
+    final_open_started = threading.Event()
+    resume_final_open = threading.Event()
+    real_open = local_module.read_regular_bytes_at.__globals__["os"].open
+
+    def barrier_open(path, flags, mode=0o777, *, dir_fd=None):
+        if not final_open_started.is_set() and os.path.basename(os.fspath(path)) == "value.txt":
+            final_open_started.set()
+            if not resume_final_open.wait(timeout=2):
+                raise AssertionError("timed out waiting to resume final file open")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr("opencollab.adapters.safe_files.os.open", barrier_open)
+    read = asyncio.create_task(env.read_file("parent/value.txt"))
+    assert await asyncio.to_thread(final_open_started.wait, 2)
+    parent.rename(moved_parent)
+    parent.symlink_to(outside, target_is_directory=True)
+    resume_final_open.set()
+
+    assert await read == "inside"
+    assert (outside / "value.txt").read_text(encoding="utf-8") == "outside-secret"
+
+
+@pytest.mark.parametrize("operation", ["range", "write"])
+async def test_local_file_operations_stay_anchored_during_parent_replacement(
+    tmp_path,
+    monkeypatch,
+    operation,
+) -> None:
+    workspace = tmp_path / "workspace"
+    parent = workspace / "parent"
+    moved_parent = workspace / "moved-parent"
+    outside = tmp_path / "outside"
+    parent.mkdir(parents=True)
+    outside.mkdir()
+    (parent / "value.txt").write_text("inside\nsecond", encoding="utf-8")
+    outside_value = outside / "value.txt"
+    outside_value.write_text("outside-secret", encoding="utf-8")
+    env = LocalEnvironment(str(workspace))
+
+    final_operation_started = threading.Event()
+    resume_final_operation = threading.Event()
+    if operation == "range":
+        real_call = local_module.read_regular_text_range_at.__globals__["os"].open
+
+        def barrier(path, flags, mode=0o777, *, dir_fd=None):
+            if not final_operation_started.is_set() and os.path.basename(os.fspath(path)) == "value.txt":
+                final_operation_started.set()
+                assert resume_final_operation.wait(timeout=2)
+            return real_call(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr("opencollab.adapters.safe_files.os.open", barrier)
+        task = asyncio.create_task(env.read_text_range("parent/value.txt", offset=1, limit=1, max_chars=20))
+    else:
+        real_call = local_module.write_regular_bytes_atomic_at.__globals__["os"].rename
+
+        def barrier(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+            if not final_operation_started.is_set() and dst == "value.txt":
+                final_operation_started.set()
+                assert resume_final_operation.wait(timeout=2)
+            return real_call(
+                src,
+                dst,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+            )
+
+        monkeypatch.setattr("opencollab.adapters.safe_files.os.rename", barrier)
+        task = asyncio.create_task(env.write_file("parent/value.txt", "updated"))
+
+    assert await asyncio.to_thread(final_operation_started.wait, 2)
+    parent.rename(moved_parent)
+    parent.symlink_to(outside, target_is_directory=True)
+    resume_final_operation.set()
+    result = await task
+
+    if operation == "range":
+        assert result.lines == ["inside"]
+    else:
+        assert (moved_parent / "value.txt").read_text(encoding="utf-8") == "updated"
+    assert outside_value.read_text(encoding="utf-8") == "outside-secret"
+
+
+async def test_local_range_rejects_absolute_path_outside_workspace(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside.txt"
+    workspace.mkdir()
+    outside.write_text("secret", encoding="utf-8")
+    env = LocalEnvironment(str(workspace))
+
+    with pytest.raises(PermissionError, match="workspace"):
+        await env.read_text_range(str(outside), offset=1, limit=1, max_chars=10)
 
 
 async def test_local_exec_bounds_output(tmp_path, monkeypatch) -> None:
@@ -128,9 +233,7 @@ async def test_local_timeout_kills_descendant_before_it_mutates_workspace(tmp_pa
     # guarantee does not need a tight window.
     late_write_delay = 1.0
     env = LocalEnvironment(str(tmp_path))
-    owner = asyncio.create_task(
-        env.exec_cmd(_descendant_command(ready, sentinel, delay=late_write_delay), timeout=0.5)
-    )
+    owner = asyncio.create_task(env.exec_cmd(_descendant_command(ready, sentinel, delay=late_write_delay), timeout=0.5))
     await _wait_for(ready)
     result = await owner
     assert result.returncode == -1

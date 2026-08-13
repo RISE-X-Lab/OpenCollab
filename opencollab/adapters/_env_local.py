@@ -22,11 +22,13 @@ from opencollab.adapters._env_process import (
     run_process,
 )
 from opencollab.adapters.safe_files import (
-    create_regular_bytes_atomic,
-    read_regular_bytes,
-    read_regular_text_range,
-    unlink_regular_file_durable,
-    write_regular_bytes_atomic,
+    canonicalize_system_path,
+    create_regular_bytes_atomic_at,
+    open_directory_anchor,
+    read_regular_bytes_at,
+    read_regular_text_range_at,
+    unlink_regular_file_durable_at,
+    write_regular_bytes_atomic_at,
 )
 from opencollab.application.async_timeout import await_owned_operation, consume_task_result
 
@@ -35,6 +37,11 @@ LOCAL_FILE_WRITE_LIMIT_BYTES = ENV_FILE_WRITE_LIMIT_BYTES
 _TEMP_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _FILE_IO_CONCURRENCY = 4
 T = TypeVar("T")
+
+# Preserve the module-level fault-injection seam used by existing integrations
+# and tests while routing the implementation through descriptor-relative I/O.
+read_regular_bytes = read_regular_bytes_at
+write_regular_bytes_atomic = write_regular_bytes_atomic_at
 
 
 class LocalEnvironment(Environment):
@@ -48,6 +55,7 @@ class LocalEnvironment(Environment):
         self.workspace = os.path.realpath(os.path.abspath(workspace))
         if not os.path.isdir(self.workspace):
             raise NotADirectoryError(self.workspace)
+        self._workspace_fd: int | None = open_directory_anchor(self.workspace)
         self.host_workspace = self.workspace
         self.source_workspace = self.workspace
         self._processes = ProcessRegistry()
@@ -55,24 +63,29 @@ class LocalEnvironment(Environment):
         self._file_io_semaphore = asyncio.Semaphore(_FILE_IO_CONCURRENCY)
         self._file_operations: set[asyncio.Task] = set()
 
-    def _full_path(self, path: str) -> str:
+    def _relative_path(self, path: str) -> str:
         if not isinstance(path, str) or not path or "\0" in path:
             raise ValueError("local file path must be non-empty text without NUL bytes")
-        if not os.path.isdir(self.workspace) or os.path.islink(self.workspace):
-            raise OSError(f"local workspace is not a real directory: {self.workspace}")
-        normalized = os.path.normpath(path)
+        if os.path.isabs(path):
+            candidate = canonicalize_system_path(path)
+            workspace = canonicalize_system_path(self.workspace)
+            try:
+                inside = os.path.commonpath((workspace, candidate)) == os.fspath(workspace)
+            except ValueError:
+                inside = False
+            if not inside:
+                raise PermissionError(f"path escapes local workspace: {path}")
+            normalized = os.path.relpath(candidate, workspace)
+        else:
+            normalized = os.path.normpath(path)
         if normalized == ".." or normalized.startswith(f"..{os.sep}"):
             raise PermissionError(f"relative path escapes local workspace: {path}")
-        candidate = os.path.realpath(
-            normalized if os.path.isabs(path) else os.path.join(self.workspace, normalized)
-        )
-        try:
-            inside = os.path.commonpath((self.workspace, candidate)) == self.workspace
-        except ValueError:
-            inside = False
-        if not inside:
-            raise PermissionError(f"path escapes local workspace: {path}")
-        return candidate
+        return normalized
+
+    def _root_fd(self) -> int:
+        if self._workspace_fd is None:
+            raise RuntimeError("Local environment workspace is closed.")
+        return self._workspace_fd
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         self._ensure_active()
@@ -114,9 +127,7 @@ class LocalEnvironment(Environment):
     ) -> T:
         if require_active:
             self._ensure_active()
-        owner = asyncio.create_task(
-            self._execute_file_operation(operation, *args, **kwargs)
-        )
+        owner = asyncio.create_task(self._execute_file_operation(operation, *args, **kwargs))
         self._file_operations.add(owner)
         owner.add_done_callback(self._file_operations.discard)
         owner.add_done_callback(consume_task_result)
@@ -125,7 +136,9 @@ class LocalEnvironment(Environment):
     async def read_file(self, path: str) -> str:
         payload = await self._run_file_operation(
             read_regular_bytes,
-            self._full_path(path),
+            self._root_fd(),
+            self.workspace,
+            self._relative_path(path),
             max_bytes=LOCAL_FILE_READ_LIMIT_BYTES,
         )
         return payload.decode("utf-8")
@@ -139,8 +152,10 @@ class LocalEnvironment(Environment):
         max_chars: int,
     ) -> TextFileRange:
         return await self._run_file_operation(
-            read_regular_text_range,
-            self._full_path(path),
+            read_regular_text_range_at,
+            self._root_fd(),
+            self.workspace,
+            self._relative_path(path),
             offset=offset,
             limit=limit,
             max_chars=max_chars,
@@ -150,12 +165,12 @@ class LocalEnvironment(Environment):
         self._ensure_active()
         payload = content.encode("utf-8")
         if len(payload) > LOCAL_FILE_WRITE_LIMIT_BYTES:
-            raise OSError(
-                f"local file exceeds write limit of {LOCAL_FILE_WRITE_LIMIT_BYTES} bytes: {path}"
-            )
+            raise OSError(f"local file exceeds write limit of {LOCAL_FILE_WRITE_LIMIT_BYTES} bytes: {path}")
         await self._run_file_operation(
             write_regular_bytes_atomic,
-            self._full_path(path),
+            self._root_fd(),
+            self.workspace,
+            self._relative_path(path),
             payload,
             max_bytes=LOCAL_FILE_WRITE_LIMIT_BYTES,
         )
@@ -173,35 +188,42 @@ class LocalEnvironment(Environment):
         payload = content.encode("utf-8")
         if len(payload) > LOCAL_FILE_WRITE_LIMIT_BYTES:
             raise OSError("temporary file exceeds local write limit")
-        path = os.path.join(self.workspace, f"{prefix}{uuid.uuid4().hex}{suffix}")
-        self._temporary_files.add(path)
+        relative_path = f"{prefix}{uuid.uuid4().hex}{suffix}"
+        self._temporary_files.add(relative_path)
         await self._run_file_operation(
-            create_regular_bytes_atomic,
-            path,
+            create_regular_bytes_atomic_at,
+            self._root_fd(),
+            self.workspace,
+            relative_path,
             payload,
             max_bytes=LOCAL_FILE_WRITE_LIMIT_BYTES,
         )
-        return path
+        return os.path.join(self.workspace, relative_path)
 
     async def remove_file(self, path: str) -> None:
         self._ensure_active()
-        target = self._full_path(path)
+        target = self._relative_path(path)
         if target not in self._temporary_files:
             raise OSError(f"refusing to remove unowned local temporary file: {path}")
-        await self._run_file_operation(unlink_regular_file_durable, target)
+        await self._run_file_operation(
+            unlink_regular_file_durable_at,
+            self._root_fd(),
+            self.workspace,
+            target,
+        )
         self._temporary_files.discard(target)
 
     async def _cleanup_files(self) -> None:
         while self._file_operations:
             pending = tuple(self._file_operations)
             await asyncio.gather(*pending, return_exceptions=True)
-        if not os.path.isdir(self.workspace) or os.path.islink(self.workspace):
-            raise OSError(f"local workspace is not a real directory: {self.workspace}")
         failures: list[OSError] = []
         for path in tuple(self._temporary_files):
             try:
                 await self._run_file_operation(
-                    unlink_regular_file_durable,
+                    unlink_regular_file_durable_at,
+                    self._root_fd(),
+                    self.workspace,
                     path,
                     require_active=False,
                 )
@@ -211,6 +233,9 @@ class LocalEnvironment(Environment):
                 self._temporary_files.discard(path)
         if failures:
             raise OSError("failed to remove one or more environment temporary files") from failures[0]
+        if self._workspace_fd is not None:
+            os.close(self._workspace_fd)
+            self._workspace_fd = None
 
     async def cleanup(self) -> None:
         self.revoke()
@@ -219,5 +244,6 @@ class LocalEnvironment(Environment):
             self._cleanup_files(),
             propagate_cancellation=True,
         )
+
 
 __all__ = ["LocalEnvironment"]
