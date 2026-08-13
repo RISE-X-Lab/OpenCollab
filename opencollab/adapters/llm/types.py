@@ -214,8 +214,6 @@ def _canonical_model_id(model: str) -> str:
     for known in _EXACT_MODEL_CAPABILITIES:
         if re.fullmatch(rf"{re.escape(known)}-\d{{4}}(?:-\d{{2}}){{0,2}}", leaf):
             return known
-        if leaf.startswith(f"{known}-") and leaf[len(known) + 1 :].split("-", 1)[0].isdigit():
-            return known
     return leaf
 
 

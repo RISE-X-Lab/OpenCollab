@@ -219,6 +219,9 @@ def test_known_model_capabilities_accept_bounded_provider_aliases(model):
     [
         "vendor/kimi-for-coding-preview",
         "vendor/not-kimi-for-coding",
+        "gateway/kimi-for-coding-20260807",
+        "gateway/kimi-for-coding-2026-8-07",
+        "gateway/kimi-for-coding-2026-08-07-preview",
     ],
 )
 def test_known_model_capabilities_reject_prefixed_near_misses(model):

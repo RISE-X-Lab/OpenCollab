@@ -644,18 +644,29 @@ def test_responses_rejects_tools_for_models_without_function_calling():
 
 
 @pytest.mark.parametrize("model", ["o1-pro", "vendor/o1-pro-2025-04-01", "o3-mini", "gateway/o3-mini-2026-01-01"])
-def test_responses_omits_unsupported_sampling(model):
-    kwargs = _build_request_kwargs(model, [{"role": "user", "content": "work"}], None, 0.2, top_p=0.9)
+def test_responses_omits_default_sampling_for_models_without_sampling(model):
+    kwargs = _build_request_kwargs(model, [{"role": "user", "content": "work"}], None, 0.2)
     assert "temperature" not in kwargs
     assert "top_p" not in kwargs
     assert kwargs["stream"] is ("o1-pro" not in model)
 
 
-def test_responses_omits_reasoning_for_non_reasoning_models():
-    kwargs = _build_request_kwargs(
-        "gpt-4o", [{"role": "user", "content": "work"}], None, 0.2, reasoning_effort="low"
-    )
-    assert "reasoning" not in kwargs
+@pytest.mark.parametrize("model", ["o1-pro", "vendor/o1-pro-2025-04-01", "o3-mini"])
+def test_responses_rejects_explicit_top_p_for_models_without_sampling(model):
+    with pytest.raises(ResponsesProtocolError, match="does not support explicit top_p"):
+        _build_request_kwargs(model, [{"role": "user", "content": "work"}], None, 0.2, top_p=0.9)
+
+
+@pytest.mark.parametrize("model", ["gpt-4o", "vendor/gpt-4o-mini-2026-01-01"])
+def test_responses_rejects_explicit_reasoning_for_non_reasoning_models(model):
+    with pytest.raises(ResponsesProtocolError, match="does not support explicit reasoning_effort"):
+        _build_request_kwargs(
+            model,
+            [{"role": "user", "content": "work"}],
+            None,
+            0.2,
+            reasoning_effort="low",
+        )
 
 
 @pytest.mark.parametrize(

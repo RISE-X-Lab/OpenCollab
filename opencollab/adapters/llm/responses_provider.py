@@ -319,6 +319,10 @@ def _build_request_kwargs(
         kwargs["include"] = ["reasoning.encrypted_content"]
     if capabilities.supports_responses_sampling:
         kwargs["temperature"] = temperature
+    elif top_p is not None:
+        raise ResponsesProtocolError(f"model {model!r} does not support explicit top_p")
+    if reasoning_effort is not None and not capabilities.supports_responses_reasoning:
+        raise ResponsesProtocolError(f"model {model!r} does not support explicit reasoning_effort")
     if instructions:
         kwargs["instructions"] = instructions
     converted_tools = _responses_tools(tools)
@@ -334,11 +338,11 @@ def _build_request_kwargs(
             if not model_capabilities(model).supports_forced_tool_choice and choice is not None and choice != "auto":
                 choice = "auto"
             kwargs["tool_choice"] = choice
-    if top_p is not None and capabilities.supports_responses_sampling:
+    if top_p is not None:
         kwargs["top_p"] = top_p
     if max_output_tokens is not None:
         kwargs["max_output_tokens"] = int(max_output_tokens)
-    if reasoning_effort is not None and capabilities.supports_responses_reasoning:
+    if reasoning_effort is not None:
         kwargs["reasoning"] = {"effort": reasoning_effort}
     if prompt_cache_namespace and response_session_id:
         kwargs["prompt_cache_key"] = hashlib.sha256(
