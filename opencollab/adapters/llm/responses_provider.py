@@ -16,6 +16,15 @@ from opencollab.adapters.llm.responses_errors import (
     ResponsesTerminalEventError,
     ResponsesTransientEventError,
 )
+from opencollab.adapters.llm.responses_messages import (
+    function_call_identity as _function_call_identity,
+)
+from opencollab.adapters.llm.responses_messages import (
+    message_content_parts as _message_content_parts,
+)
+from opencollab.adapters.llm.responses_messages import (
+    message_text as _message_text,
+)
 from opencollab.adapters.llm.responses_structured import (
     ForcedTextTool,
     forced_text_format,
@@ -26,7 +35,6 @@ from opencollab.adapters.llm.responses_usage import parse_responses_usage
 from opencollab.adapters.llm.retry import RetryTimeBudget, with_retry
 from opencollab.adapters.llm.tool_contracts import (
     normalize_function_tools,
-    normalize_text_content,
     normalize_tool_choice,
     validate_tool_choice_target,
 )
@@ -68,42 +76,6 @@ class _StreamState:
     completed_response: Any = None
 
 
-def _message_text(content: Any) -> str:
-    try:
-        return normalize_text_content(content)
-    except ValueError as exc:
-        raise ResponsesProtocolError(str(exc)) from exc
-
-
-def _message_content_parts(content: Any) -> str | list[dict[str, Any]]:
-    """Project legacy text/image blocks into Responses input content."""
-    if not isinstance(content, list):
-        return _message_text(content)
-    parts: list[dict[str, Any]] = []
-    for part in content:
-        if isinstance(part, str):
-            parts.append({"type": "input_text", "text": part})
-            continue
-        if not isinstance(part, dict):
-            raise ResponsesProtocolError("message content contains an unsupported block")
-        kind = part.get("type")
-        if kind == "text" and isinstance(part.get("text"), str):
-            parts.append({"type": "input_text", "text": part["text"]})
-            continue
-        if kind == "image_url" and isinstance(part.get("image_url"), dict):
-            image = part["image_url"]
-            url = image.get("url")
-            if not isinstance(url, str) or not url:
-                raise ResponsesProtocolError("image_url block is missing url")
-            item = {"type": "input_image", "image_url": url}
-            if image.get("detail") is not None:
-                item["detail"] = image["detail"]
-            parts.append(item)
-            continue
-        raise ResponsesProtocolError(f"unsupported message content block {kind!r}")
-    return parts
-
-
 def _validated_response_items(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
         raise ResponsesProtocolError("response_items must be a list")
@@ -114,22 +86,6 @@ def _validated_response_items(value: Any) -> list[dict[str, Any]]:
             raise ResponsesProtocolError("response_items contain an unsupported item")
         items.append(item)
     return items
-
-
-def _normalized_arguments(value: Any) -> str:
-    if not isinstance(value, str):
-        raise ResponsesProtocolError("function call arguments must be JSON text")
-    try:
-        parsed = json.loads(value)
-    except (TypeError, ValueError) as exc:
-        raise ResponsesProtocolError("function call arguments contain invalid JSON") from exc
-    return json.dumps(parsed, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def _function_call_identity(call_id: Any, name: Any, arguments: Any) -> tuple[str, str, str]:
-    if not isinstance(call_id, str) or not call_id or not isinstance(name, str) or not name:
-        raise ResponsesProtocolError("function call is missing call_id or name")
-    return call_id, name, _normalized_arguments(arguments)
 
 
 def _verify_replay_tool_calls(message: dict[str, Any], items: list[dict[str, Any]]) -> None:
@@ -434,9 +390,7 @@ def _validate_terminal_response(
     if status == "incomplete":
         reason = incomplete.get("reason") if isinstance(incomplete, dict) else None
         if reason not in {"max_tokens", "max_output_tokens"}:
-            raise ResponsesProtocolError(
-                f"incomplete Responses object has unsupported reason {reason!r}"
-            )
+            raise ResponsesProtocolError(f"incomplete Responses object has unsupported reason {reason!r}")
         finish_reason = "max_tokens"
     actual_model = getattr(response, "model", None)
     if not isinstance(actual_model, str) or not actual_model:
@@ -662,21 +616,15 @@ def _parse_stream(
         expected_model,
     )
     if forced_text_tool is not None and finish_reason != "stop":
-        incomplete = to_plain_data(
-            getattr(state.completed_response, "incomplete_details", None)
-        )
-        raise ResponsesProtocolError(
-            f"JSON Schema tool response incomplete: {incomplete!r}"
-        )
+        incomplete = to_plain_data(getattr(state.completed_response, "incomplete_details", None))
+        raise ResponsesProtocolError(f"JSON Schema tool response incomplete: {incomplete!r}")
     final_output = to_plain_data(getattr(state.completed_response, "output", None))
     final_items = _validated_response_items(final_output)
     if len(final_items) != len(state.output_items) or not all(
         _output_items_agree(streamed, terminal)
         for streamed, terminal in zip(state.output_items, final_items, strict=True)
     ):
-        raise ResponsesProtocolError(
-            "terminal Responses output disagrees with streamed output items"
-        )
+        raise ResponsesProtocolError("terminal Responses output disagrees with streamed output items")
     state.output_items = [
         _merge_terminal_projection(streamed, terminal)
         for streamed, terminal in zip(state.output_items, final_items, strict=True)
@@ -725,9 +673,7 @@ def _parse_stream(
             content,
             tool_calls,
         ),
-        finish_reason=(
-            "tool_calls" if tool_calls and finish_reason == "stop" else finish_reason
-        ),
+        finish_reason=("tool_calls" if tool_calls and finish_reason == "stop" else finish_reason),
         reasoning=reasoning,
         provider_items=state.output_items,
         provider_model=actual_model,

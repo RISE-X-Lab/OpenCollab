@@ -132,9 +132,7 @@ def test_anthropic_mythos_preview_still_accepts_manual_thinking():
         None,
         0.2,
         thinking=True,
-        thinking_params={
-            "thinking": {"type": "enabled", "budget_tokens": 4096}
-        },
+        thinking_params={"thinking": {"type": "enabled", "budget_tokens": 4096}},
         max_output_tokens=8192,
     )
 
@@ -177,9 +175,7 @@ def test_anthropic_adaptive_only_models_reject_manual_thinking(model):
             None,
             0.2,
             thinking=True,
-            thinking_params={
-                "thinking": {"type": "enabled", "budget_tokens": 4096}
-            },
+            thinking_params={"thinking": {"type": "enabled", "budget_tokens": 4096}},
             max_output_tokens=8192,
         )
 
@@ -339,15 +335,9 @@ def test_named_tool_choice_has_one_cross_provider_meaning():
     messages = [{"role": "user", "content": "submit"}]
     choice = {"type": "function", "name": "submit"}
 
-    chat = build_openai_kwargs(
-        "gpt-4o", messages, [tool], 0.2, tool_choice=choice
-    )
-    anthropic = build_anthropic_kwargs(
-        "claude-sonnet-5", messages, [tool], 0.2, tool_choice=choice
-    )
-    responses = build_responses_kwargs(
-        "gpt-5", messages, [tool], 0.2, tool_choice=choice
-    )
+    chat = build_openai_kwargs("gpt-4o", messages, [tool], 0.2, tool_choice=choice)
+    anthropic = build_anthropic_kwargs("claude-sonnet-5", messages, [tool], 0.2, tool_choice=choice)
+    responses = build_responses_kwargs("gpt-5", messages, [tool], 0.2, tool_choice=choice)
 
     assert chat["tool_choice"] == {
         "type": "function",
@@ -373,9 +363,7 @@ def test_all_provider_paths_reject_malformed_tool_choice(choice):
     with pytest.raises(ValueError, match="tool_choice"):
         build_openai_kwargs("gpt-4o", messages, [tool], 0.2, tool_choice=choice)
     with pytest.raises(ValueError, match="tool_choice"):
-        build_anthropic_kwargs(
-            "claude-sonnet-5", messages, [tool], 0.2, tool_choice=choice
-        )
+        build_anthropic_kwargs("claude-sonnet-5", messages, [tool], 0.2, tool_choice=choice)
     with pytest.raises(ResponsesProtocolError, match="tool_choice"):
         build_responses_kwargs("gpt-5", messages, [tool], 0.2, tool_choice=choice)
 
@@ -388,9 +376,7 @@ def test_all_provider_paths_reject_unavailable_named_tool():
     with pytest.raises(ValueError, match="unavailable tool"):
         build_openai_kwargs("gpt-4o", messages, [tool], 0.2, tool_choice=choice)
     with pytest.raises(ValueError, match="unavailable tool"):
-        build_anthropic_kwargs(
-            "claude-sonnet-5", messages, [tool], 0.2, tool_choice=choice
-        )
+        build_anthropic_kwargs("claude-sonnet-5", messages, [tool], 0.2, tool_choice=choice)
     with pytest.raises(ResponsesProtocolError, match="unavailable tool"):
         build_responses_kwargs("gpt-5", messages, [tool], 0.2, tool_choice=choice)
 

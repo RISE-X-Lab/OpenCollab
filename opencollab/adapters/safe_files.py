@@ -6,7 +6,6 @@ import errno
 import fcntl
 import os
 import stat
-import sys
 import time
 import uuid
 from collections.abc import Callable
@@ -14,37 +13,13 @@ from pathlib import Path
 from typing import BinaryIO, TextIO
 
 from opencollab.adapters._env_base import TextFileRange
+from opencollab.adapters.safe_paths import canonicalize_system_path
 
 _LOCK_TIMEOUT_SECONDS = 10.0
 _READ_CHUNK_BYTES = 1024 * 1024
 _RANGE_READ_CHUNK_CHARS = 64 * 1024
 _RANGE_TOTAL_COUNT_LIMIT_BYTES = 256 * 1024
-_MACOS_SYSTEM_ALIASES = (
-    (Path("/tmp"), Path("/private/tmp")),
-    (Path("/var"), Path("/private/var")),
-)
 _HAS_DIRFD_OPEN = os.open in os.supports_dir_fd
-
-
-def _canonicalize_system_alias(path: Path) -> Path:
-    if sys.platform != "darwin":
-        return path
-    for alias, canonical in _MACOS_SYSTEM_ALIASES:
-        try:
-            relative = path.relative_to(alias)
-        except ValueError:
-            continue
-        if Path(os.path.realpath(alias)) == canonical and canonical.is_dir():
-            return canonical / relative
-    return path
-
-
-def canonicalize_system_path(path: str | os.PathLike[str]) -> Path:
-    """Return one absolute path with stable macOS system-directory aliases."""
-    value = os.fspath(path)
-    if not value or "\0" in value:
-        raise ValueError("path must be non-empty text without NUL bytes")
-    return _canonicalize_system_alias(Path(os.path.abspath(value)))
 
 
 def _absolute(path: str | os.PathLike[str]) -> Path:
