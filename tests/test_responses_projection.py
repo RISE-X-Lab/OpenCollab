@@ -52,6 +52,52 @@ async def test_stream_accepts_terminal_projection_without_transport_metadata():
 
 
 @pytest.mark.asyncio
+async def test_stream_preserves_terminal_assistant_phase_when_stream_omits_it():
+    streamed_message = message_item("OK")
+    final_message = {
+        **message_item("OK"),
+        "phase": "final_answer",
+    }
+    state = await _consume_stream(
+        FakeStream([
+            ns(type="response.output_item.done", output_index=0, item=streamed_message),
+            ns(
+                type="response.completed",
+                response=completed_response(output=[final_message]),
+            ),
+        ]),
+        1,
+        1,
+        "gpt-fake",
+    )
+
+    parsed = _parse_stream(state, [{"role": "user", "content": "work"}], "gpt-fake")
+
+    assert parsed.provider_items[0]["phase"] == "final_answer"
+
+
+@pytest.mark.asyncio
+async def test_stream_rejects_conflicting_assistant_phases():
+    streamed_message = {**message_item("OK"), "phase": "commentary"}
+    final_message = {**message_item("OK"), "phase": "final_answer"}
+    state = await _consume_stream(
+        FakeStream([
+            ns(type="response.output_item.done", output_index=0, item=streamed_message),
+            ns(
+                type="response.completed",
+                response=completed_response(output=[final_message]),
+            ),
+        ]),
+        1,
+        1,
+        "gpt-fake",
+    )
+
+    with pytest.raises(ResponsesProtocolError, match="disagrees with streamed"):
+        _parse_stream(state, [{"role": "user", "content": "work"}], "gpt-fake")
+
+
+@pytest.mark.asyncio
 async def test_stream_accepts_terminal_function_call_projection():
     streamed_call = {
         **function_item("call_1", "read_file", '{"path":"a.py"}'),

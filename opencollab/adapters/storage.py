@@ -135,6 +135,15 @@ class SessionStore:
 
     def load_snapshot(self, path: str, system_prompt: str) -> dict[str, Any]:
         """Load the versioned snapshot, accepting legacy list/JSONL files."""
+        # A checkpoint replaces the base file and then truncates the journal.
+        # Keep both reads in the same critical section so a reader cannot
+        # observe the old base together with the already-compacted journal (or
+        # vice versa).
+        with _journal_operation_lock(path):
+            return self._load_snapshot_unlocked(path, system_prompt)
+
+    def _load_snapshot_unlocked(self, path: str, system_prompt: str) -> dict[str, Any]:
+        """Load a snapshot while the journal operation lock is held."""
         try:
             text = self._read_snapshot_text(path)
         except FileNotFoundError:
@@ -463,6 +472,32 @@ class SessionStore:
                     "refusing stale checkpoint sequence "
                     f"{sequence}; persisted sequence {persisted_sequence} is newer"
                 )
+            journal_records = self._read_journal_records(path)
+            same_sequence_records = [
+                record
+                for record in journal_records
+                if self._record_integer(record, "sequence", minimum=1) == sequence
+            ]
+            if len(same_sequence_records) > 1:
+                # Multiple records at one cursor are ambiguous: replay skips
+                # the second and later records, so accepting this checkpoint
+                # would clear data that cannot be proven equivalent.
+                raise ValueError(
+                    "refusing checkpoint sequence "
+                    f"{sequence}; persisted journal contains duplicate sequence records"
+                )
+            if same_sequence_records:
+                # A same-sequence journal record may belong to another writer.
+                # Only compact it when the proposed checkpoint is exactly the
+                # state obtained by replaying the durable base and journal;
+                # otherwise retaining the journal is safer than silently
+                # discarding a peer's update.
+                persisted = self._load_snapshot_unlocked(path, "")
+                if not self._checkpoint_states_equal(persisted, obj):
+                    raise ValueError(
+                        "refusing checkpoint sequence "
+                        f"{sequence}; it conflicts with persisted journal state"
+                    )
             self._atomic_json_write(path, obj)
             write_regular_bytes_atomic(
                 self._journal_path(path),
@@ -583,6 +618,31 @@ class SessionStore:
                 self._record_integer(record, "sequence", minimum=1),
             )
         return newest
+
+    @staticmethod
+    def _checkpoint_states_equal(
+        persisted: dict[str, Any], candidate: dict[str, Any]
+    ) -> bool:
+        """Compare a replayed state with a checkpoint after replay normalization.
+
+        Journal replay materializes ``session_state.seen_result_hashes`` and
+        sorts it, while a caller's full checkpoint payload may omit that empty
+        field or retain insertion order.  Those representations are
+        semantically identical; comparing the raw dictionaries would reject a
+        legitimate idempotent compaction and leave the journal unbounded.
+        """
+
+        def normalize(value: dict[str, Any]) -> dict[str, Any]:
+            normalized = dict(value)
+            raw_state = normalized.get("session_state")
+            state = dict(raw_state) if isinstance(raw_state, dict) else {}
+            seen = state.get("seen_result_hashes", [])
+            if isinstance(seen, list) and all(isinstance(item, str) for item in seen):
+                state["seen_result_hashes"] = sorted(set(seen))
+            normalized["session_state"] = state
+            return normalized
+
+        return normalize(persisted) == normalize(candidate)
 
     @staticmethod
     def _snapshot_sequence(snapshot: dict[str, Any]) -> int:

@@ -31,17 +31,32 @@ def message_content_parts(content: Any) -> str | list[dict[str, Any]]:
         if not isinstance(part, dict):
             raise ResponsesProtocolError("message content contains an unsupported block")
         kind = part.get("type")
-        if kind == "text" and isinstance(part.get("text"), str):
+        # Snapshots can contain either the legacy ``text`` discriminator or
+        # native Responses input/output text blocks.  EasyInputMessageParam
+        # uses ``input_text`` for both user and assistant history; normalize
+        # all three accepted spellings instead of replaying an unsupported
+        # ``output_text`` item into a new request.
+        if kind in {"text", "input_text", "output_text"} and isinstance(
+            part.get("text"), str
+        ):
             parts.append({"type": "input_text", "text": part["text"]})
             continue
-        if kind == "image_url" and isinstance(part.get("image_url"), dict):
-            image = part["image_url"]
-            url = image.get("url")
+        if kind == "image_url":
+            image = part.get("image_url")
+            if isinstance(image, str):
+                url = image
+                detail = None
+            elif isinstance(image, dict):
+                url = image.get("url")
+                detail = image.get("detail")
+            else:
+                url = None
+                detail = None
             if not isinstance(url, str) or not url:
                 raise ResponsesProtocolError("image_url block is missing url")
             item = {"type": "input_image", "image_url": url}
-            if image.get("detail") is not None:
-                item["detail"] = image["detail"]
+            if detail is not None:
+                item["detail"] = detail
             parts.append(item)
             continue
         raise ResponsesProtocolError(f"unsupported message content block {kind!r}")
@@ -159,7 +174,15 @@ def messages_to_input(
             raise ResponsesProtocolError(f"unsupported message role {role!r}")
         content = message_content_parts(message.get("content"))
         if content:
-            items.append({"role": role, "content": content})
+            item = {"role": role, "content": content}
+            if role == "assistant" and message.get("phase") is not None:
+                phase = message["phase"]
+                if phase not in {"commentary", "final_answer"}:
+                    raise ResponsesProtocolError(
+                        f"unsupported assistant phase {phase!r}"
+                    )
+                item["phase"] = phase
+            items.append(item)
         for call in message.get("tool_calls") or ():
             function = call.get("function") if isinstance(call, dict) else None
             call_id = call.get("id") if isinstance(call, dict) else None

@@ -452,6 +452,11 @@ def _semantic_output_item(item: dict[str, Any]) -> tuple[Any, ...]:
         role = item.get("role")
         if not isinstance(role, str) or not role:
             raise ResponsesProtocolError("message output item is missing its role")
+        phase = item.get("phase")
+        if phase is not None and phase not in {"commentary", "final_answer"}:
+            raise ResponsesProtocolError(
+                f"message output contains unsupported phase {phase!r}"
+            )
         parts: list[tuple[str, str]] = []
         for raw_part in item.get("content") or ():
             if not isinstance(raw_part, dict):
@@ -477,6 +482,16 @@ def _semantic_output_item(item: dict[str, Any]) -> tuple[Any, ...]:
 def _output_items_agree(streamed: dict[str, Any], terminal: dict[str, Any]) -> bool:
     if _semantic_output_item(streamed) != _semantic_output_item(terminal):
         return False
+    if streamed.get("type") == "message":
+        streamed_phase = streamed.get("phase")
+        terminal_phase = terminal.get("phase")
+        if (
+            streamed_phase is not None
+            and terminal_phase is not None
+            and streamed_phase != terminal_phase
+        ):
+            return False
+        return True
     if streamed.get("type") != "reasoning":
         return True
     streamed_encrypted = streamed.get("encrypted_content")
@@ -496,7 +511,13 @@ def _merge_terminal_projection(
         and streamed.get("encrypted_content") is None
         and terminal.get("encrypted_content") is not None
     ):
-        return {**streamed, "encrypted_content": terminal["encrypted_content"]}
+        streamed = {**streamed, "encrypted_content": terminal["encrypted_content"]}
+    if (
+        streamed.get("type") == "message"
+        and streamed.get("phase") is None
+        and terminal.get("phase") is not None
+    ):
+        streamed = {**streamed, "phase": terminal["phase"]}
     return streamed
 
 

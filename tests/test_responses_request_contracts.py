@@ -68,6 +68,25 @@ def test_responses_restored_assistant_parts_remain_easy_input_content():
     ]
 
 
+@pytest.mark.parametrize("part_type", ["text", "input_text", "output_text"])
+def test_responses_normalizes_restored_text_block_variants(part_type):
+    _, items = _messages_to_input(
+        [
+            {
+                "role": "assistant",
+                "content": [{"type": part_type, "text": "Recovered answer."}],
+            }
+        ]
+    )
+
+    assert items == [
+        {
+            "role": "assistant",
+            "content": [{"type": "input_text", "text": "Recovered answer."}],
+        }
+    ]
+
+
 def test_responses_restored_assistant_image_remains_easy_input_content():
     _, items = _messages_to_input(
         [
@@ -92,6 +111,26 @@ def test_responses_restored_assistant_image_remains_easy_input_content():
                     "image_url": "https://example.test/a.png",
                 }
             ],
+        }
+    ]
+
+
+def test_responses_preserves_assistant_phase_in_legacy_history():
+    _, items = _messages_to_input(
+        [
+            {
+                "role": "assistant",
+                "phase": "commentary",
+                "content": "Inspecting the workspace.",
+            }
+        ]
+    )
+
+    assert items == [
+        {
+            "role": "assistant",
+            "phase": "commentary",
+            "content": "Inspecting the workspace.",
         }
     ]
 
@@ -177,7 +216,6 @@ def test_responses_rejects_explicit_reasoning_for_non_reasoning_models(model):
         "gpt-4.1",
         "gpt-4-turbo",
         "gpt-3.5-turbo",
-        "deepseek-v4-flash",
         "k3",
         "kimi-for-coding",
         "unknown-gateway-model",
@@ -200,6 +238,19 @@ def test_responses_reasoning_metadata_is_fail_closed(model):
             0.2,
             reasoning_effort="low",
         )
+
+
+def test_responses_known_deepseek_reasoning_is_explicitly_opted_in():
+    kwargs = _build_request_kwargs(
+        "deepseek-v4-flash-0731",
+        [{"role": "user", "content": "work"}],
+        None,
+        0.2,
+        reasoning_effort="max",
+    )
+
+    assert kwargs["include"] == ["reasoning.encrypted_content"]
+    assert kwargs["reasoning"] == {"effort": "max"}
 
 
 @pytest.mark.parametrize("model", ["o1-preview", "gateway/o3-pro"])

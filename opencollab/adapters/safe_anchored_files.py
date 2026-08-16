@@ -380,13 +380,17 @@ def write_regular_file_atomic_at(
             )
         os.fsync(parent_fd)
     finally:
-        if fd >= 0:
-            os.close(fd)
         try:
-            os.unlink(temporary, dir_fd=parent_fd)
-        except FileNotFoundError:
-            pass
-        os.close(parent_fd)
+            if fd >= 0:
+                os.close(fd)
+        finally:
+            try:
+                try:
+                    os.unlink(temporary, dir_fd=parent_fd)
+                except FileNotFoundError:
+                    pass
+            finally:
+                os.close(parent_fd)
 
 
 def write_regular_bytes_atomic_at(

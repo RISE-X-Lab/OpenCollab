@@ -31,6 +31,7 @@ from opencollab.adapters.safe_anchored_files import (
 )
 from opencollab.adapters.safe_paths import canonicalize_system_path
 from opencollab.application.async_timeout import await_owned_operation, consume_task_result
+from opencollab.application.exception_notes import add_exception_note
 
 LOCAL_FILE_READ_LIMIT_BYTES = 4 * 1024 * 1024
 LOCAL_FILE_WRITE_LIMIT_BYTES = ENV_FILE_WRITE_LIMIT_BYTES
@@ -214,38 +215,96 @@ class LocalEnvironment(Environment):
         self._temporary_files.discard(target)
 
     async def _cleanup_files(self) -> None:
-        try:
-            while self._file_operations:
-                pending = tuple(self._file_operations)
-                await asyncio.gather(*pending, return_exceptions=True)
-            failures: list[OSError] = []
-            for path in tuple(self._temporary_files):
-                try:
-                    await self._run_file_operation(
-                        unlink_regular_file_durable_at,
-                        self._root_fd(),
-                        self.workspace,
-                        path,
-                        require_active=False,
-                    )
-                except OSError as exc:
-                    failures.append(exc)
-                else:
-                    self._temporary_files.discard(path)
-            if failures:
-                raise OSError("failed to remove one or more environment temporary files") from failures[0]
-        finally:
-            if self._workspace_fd is not None:
-                os.close(self._workspace_fd)
-                self._workspace_fd = None
+        while self._file_operations:
+            pending = tuple(self._file_operations)
+            await asyncio.gather(*pending, return_exceptions=True)
+        failures: list[OSError] = []
+        for path in tuple(self._temporary_files):
+            try:
+                await self._run_file_operation(
+                    unlink_regular_file_durable_at,
+                    self._root_fd(),
+                    self.workspace,
+                    path,
+                    require_active=False,
+                )
+            except OSError as exc:
+                failures.append(exc)
+            else:
+                self._temporary_files.discard(path)
+
+        # A failed temporary-file unlink must remain retryable.  WorktreePool
+        # retains environments whose cleanup failed and calls cleanup() again;
+        # closing this descriptor while an owned path remains would make that
+        # retry permanently incapable of reaching the anchored workspace.
+        if not self._temporary_files and self._workspace_fd is not None:
+            os.close(self._workspace_fd)
+            self._workspace_fd = None
+
+        if failures:
+            failure = OSError("failed to remove one or more environment temporary files")
+            for secondary in failures[1:]:
+                add_exception_note(
+                    failure,
+                    "additional file cleanup failure: "
+                    f"{type(secondary).__name__}: {secondary}",
+                )
+            raise failure from failures[0]
 
     async def cleanup(self) -> None:
         self.revoke()
-        await self._processes.abort()
-        await await_owned_operation(
-            self._cleanup_files(),
-            propagate_cancellation=True,
+        process_failure: BaseException | None = None
+        try:
+            await self._processes.abort()
+        except BaseException as exc:
+            process_failure = exc
+
+        file_failure: BaseException | None = None
+        try:
+            await await_owned_operation(
+                self._cleanup_files(),
+                # Once cancellation has already been captured from process
+                # cleanup, keep the file owner alive through repeat cancels and
+                # re-raise the original cancellation after resources quiesce.
+                propagate_cancellation=not isinstance(
+                    process_failure,
+                    asyncio.CancelledError,
+                ),
+            )
+        except BaseException as exc:
+            file_failure = exc
+
+        cancellation = next(
+            (
+                failure
+                for failure in (process_failure, file_failure)
+                if isinstance(failure, asyncio.CancelledError)
+            ),
+            None,
         )
+        if cancellation is not None:
+            for label, failure in (
+                ("process cleanup", process_failure),
+                ("file cleanup", file_failure),
+            ):
+                if failure is not None and failure is not cancellation:
+                    add_exception_note(
+                        cancellation,
+                        f"{label} also failed: {type(failure).__name__}: {failure}",
+                    )
+            raise cancellation
+
+        if process_failure is not None:
+            if file_failure is not None:
+                add_exception_note(
+                    process_failure,
+                    "file cleanup also failed: "
+                    f"{type(file_failure).__name__}: {file_failure}",
+                )
+                raise process_failure from file_failure
+            raise process_failure
+        if file_failure is not None:
+            raise file_failure
 
 
 __all__ = ["LocalEnvironment"]

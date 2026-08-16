@@ -11,6 +11,7 @@ from typing import Any
 
 from opencollab.adapters._env_base import ExecResult
 from opencollab.application.async_timeout import await_owned_operation
+from opencollab.application.exception_notes import add_exception_note
 
 PROCESS_OUTPUT_CAPTURE_BYTES = 1024 * 1024
 PROCESS_TERM_GRACE_SECONDS = 0.05
@@ -200,8 +201,25 @@ class ProcessRegistry:
         for process, result in zip(processes, results, strict=True):
             if result is True:
                 self._processes.discard(process)
-        if any(result is not True for result in results):
-            raise ProcessCleanupError("one or more subprocess groups did not quiesce")
+        failures = [result for result in results if result is not True]
+        if failures:
+            failure = ProcessCleanupError(
+                "one or more subprocess groups did not quiesce"
+            )
+            for result in failures:
+                detail = (
+                    f"{type(result).__name__}: {result}"
+                    if isinstance(result, BaseException)
+                    else "termination returned an unproven result"
+                )
+                add_exception_note(failure, f"subprocess cleanup failure: {detail}")
+            cause = next(
+                (result for result in failures if isinstance(result, BaseException)),
+                None,
+            )
+            if cause is not None:
+                raise failure from cause
+            raise failure
 
     async def abort(self) -> None:
         await await_owned_operation(self._abort_owned(), propagate_cancellation=True)

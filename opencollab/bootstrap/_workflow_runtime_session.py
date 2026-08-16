@@ -7,6 +7,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.llm.providers import RESPONSES
 from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.llm.types import (
     DEFAULT_MAX_OUTPUT_TOKENS,
@@ -23,7 +24,11 @@ from opencollab.bootstrap.config import (
     DEFAULT_TOP_P,
     resolve_thinking_params,
 )
-from opencollab.bootstrap.session_factory import build_session, workflow_transcript_path
+from opencollab.bootstrap.session_factory import (
+    build_session,
+    validate_responses_model_controls,
+    workflow_transcript_path,
+)
 from opencollab.domain.agent import Agent
 
 _WORKFLOW_ENV_OVERRIDE: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
@@ -145,10 +150,19 @@ class WorkflowSessionFactory:
             use_thinking = True
             use_reasoning_effort = self._reasoning_effort
             reasoning_effort_policy = "configured"
+        resolved_tools = list(tools or [])
+        if self._wire_protocol == RESPONSES:
+            validate_responses_model_controls(
+                self._model,
+                role_name="workflow_agent",
+                tools_present=bool(resolved_tools),
+                top_p=self._top_p,
+                reasoning_effort=use_reasoning_effort,
+            )
         agent = Agent(
             name="workflow_agent",
             system_prompt=self._system_prompt,
-            tools=list(tools or []),
+            tools=resolved_tools,
             model=self._model,
             provider=self._provider,
             wire_protocol=self._wire_protocol,
