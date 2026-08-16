@@ -88,7 +88,10 @@ async def test_local_read_is_anchored_when_parent_is_replaced_by_symlink(
                 raise AssertionError("timed out waiting to resume final file open")
         return real_open(path, flags, mode, dir_fd=dir_fd)
 
-    monkeypatch.setattr("opencollab.adapters.safe_files.os.open", barrier_open)
+    monkeypatch.setattr(
+        "opencollab.adapters.safe_anchored_files.os.open",
+        barrier_open,
+    )
     read = asyncio.create_task(env.read_file("parent/value.txt"))
     assert await asyncio.to_thread(final_open_started.wait, 2)
     parent.rename(moved_parent)
@@ -127,7 +130,10 @@ async def test_local_file_operations_stay_anchored_during_parent_replacement(
                 assert resume_final_operation.wait(timeout=2)
             return real_call(path, flags, mode, dir_fd=dir_fd)
 
-        monkeypatch.setattr("opencollab.adapters.safe_files.os.open", barrier)
+        monkeypatch.setattr(
+            "opencollab.adapters.safe_anchored_files.os.open",
+            barrier,
+        )
         task = asyncio.create_task(env.read_text_range("parent/value.txt", offset=1, limit=1, max_chars=20))
     else:
         real_call = local_module.write_regular_bytes_atomic_at.__globals__["os"].rename
@@ -143,7 +149,10 @@ async def test_local_file_operations_stay_anchored_during_parent_replacement(
                 dst_dir_fd=dst_dir_fd,
             )
 
-        monkeypatch.setattr("opencollab.adapters.safe_files.os.rename", barrier)
+        monkeypatch.setattr(
+            "opencollab.adapters.safe_anchored_files.os.rename",
+            barrier,
+        )
         task = asyncio.create_task(env.write_file("parent/value.txt", "updated"))
 
     assert await asyncio.to_thread(final_operation_started.wait, 2)

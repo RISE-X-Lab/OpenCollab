@@ -137,7 +137,7 @@ class ModelCapabilities:
     honors_workflow_thinking_override: bool = True
     supports_responses_streaming: bool = True
     supports_responses_sampling: bool = True
-    supports_responses_reasoning: bool = True
+    supports_responses_reasoning: bool = False
     supports_responses_tools: bool = True
 
 
@@ -164,14 +164,24 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         context_window=200_000,
         supports_responses_streaming=False,
         supports_responses_sampling=False,
+        supports_responses_reasoning=True,
     ),
     "o1-mini": ModelCapabilities(
         context_window=200_000,
         supports_responses_sampling=False,
+        supports_responses_reasoning=True,
         supports_responses_tools=False,
     ),
-    "o3": ModelCapabilities(context_window=200_000, supports_responses_sampling=False),
-    "o3-mini": ModelCapabilities(context_window=200_000, supports_responses_sampling=False),
+    "o3": ModelCapabilities(
+        context_window=200_000,
+        supports_responses_sampling=False,
+        supports_responses_reasoning=True,
+    ),
+    "o3-mini": ModelCapabilities(
+        context_window=200_000,
+        supports_responses_sampling=False,
+        supports_responses_reasoning=True,
+    ),
     "gpt-4o": ModelCapabilities(context_window=128_000, supports_responses_reasoning=False),
     "gpt-4o-mini": ModelCapabilities(context_window=128_000, supports_responses_reasoning=False),
     "deepseek-v4-flash": ModelCapabilities(
@@ -217,6 +227,11 @@ def _canonical_model_id(model: str) -> str:
     return leaf
 
 
+def _is_responses_reasoning_family(model: str) -> bool:
+    leaf = model.strip().lower().rsplit("/", 1)[-1]
+    return re.match(r"^(?:gpt-5|o[134])(?:$|[-.])", leaf) is not None
+
+
 def model_capabilities(model: str | None) -> ModelCapabilities:
     """Return exact capability metadata plus a best-effort context window."""
     if not model:
@@ -224,10 +239,15 @@ def model_capabilities(model: str | None) -> ModelCapabilities:
     canonical = _canonical_model_id(model)
     if canonical in _EXACT_MODEL_CAPABILITIES:
         return _EXACT_MODEL_CAPABILITIES[canonical]
+    context_window = None
     for key, window in MODEL_CONTEXT_WINDOWS.items():
         if model_matches_family(model, key):
-            return ModelCapabilities(context_window=window)
-    return ModelCapabilities()
+            context_window = window
+            break
+    return ModelCapabilities(
+        context_window=context_window,
+        supports_responses_reasoning=_is_responses_reasoning_family(model),
+    )
 
 
 def model_context_window(model: str | None) -> int | None:

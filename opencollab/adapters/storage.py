@@ -6,9 +6,11 @@ import os
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import Any, BinaryIO
 
 from opencollab.adapters.safe_files import (
+    acquire_exclusive_lock,
     ensure_directory_no_symlinks,
     open_regular_text_append,
     read_regular_bytes,
@@ -23,23 +25,57 @@ _AUTOSAVE_SEQUENCE_KEY = "_autosave_sequence"
 _AUTOSAVE_JOURNAL_VERSION = 1
 _AUTOSAVE_JOURNAL_SUFFIX = ".journal"
 _AUTOSAVE_JOURNAL_LOCK_SUFFIX = ".lock"
-_JOURNAL_LOCKS: dict[str, threading.RLock] = {}
+_JOURNAL_LOCK_TIMEOUT_SECONDS = 10.0
+
+
+@dataclass
+class _JournalLockEntry:
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    users: int = 0
+
+
+_JOURNAL_LOCKS: dict[str, _JournalLockEntry] = {}
 _JOURNAL_LOCKS_GUARD = threading.Lock()
 
 
-def _journal_lock(path: str) -> threading.RLock:
+@contextmanager
+def _journal_thread_lock(path: str) -> Iterator[None]:
     key = os.path.abspath(path)
     with _JOURNAL_LOCKS_GUARD:
-        return _JOURNAL_LOCKS.setdefault(key, threading.RLock())
+        entry = _JOURNAL_LOCKS.setdefault(key, _JournalLockEntry())
+        entry.users += 1
+    acquired = False
+    try:
+        acquired = entry.lock.acquire(timeout=_JOURNAL_LOCK_TIMEOUT_SECONDS)
+        if not acquired:
+            raise TimeoutError("timed out acquiring journal thread lock")
+        yield
+    finally:
+        if acquired:
+            entry.lock.release()
+        with _JOURNAL_LOCKS_GUARD:
+            entry.users -= 1
+            if entry.users == 0 and _JOURNAL_LOCKS.get(key) is entry:
+                del _JOURNAL_LOCKS[key]
 
 
 @contextmanager
 def _journal_operation_lock(path: str) -> Iterator[None]:
-    """Serialize compaction and append on a stable cross-process lockfile."""
-    with _journal_lock(path):
+    """Serialize compaction and append on a stable cross-process lockfile.
+
+    The lockfile is deliberately persistent. Removing it after unlock can split
+    waiters across old and newly-created inodes, allowing two critical sections
+    to overlap. The snapshot and journal themselves are replaced by rename, so
+    neither data inode can safely serve as this coordination point.
+    """
+    with _journal_thread_lock(path):
         lock_path = f"{path}{_AUTOSAVE_JOURNAL_SUFFIX}{_AUTOSAVE_JOURNAL_LOCK_SUFFIX}"
         with open_regular_text_append(lock_path) as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            acquire_exclusive_lock(
+                handle.fileno(),
+                timeout_seconds=_JOURNAL_LOCK_TIMEOUT_SECONDS,
+                context="journal operation lock",
+            )
             try:
                 yield
             finally:
@@ -421,6 +457,12 @@ class SessionStore:
             "messages": messages,
         }
         with _journal_operation_lock(path):
+            persisted_sequence = self._newest_persisted_sequence(path)
+            if persisted_sequence > sequence:
+                raise ValueError(
+                    "refusing stale checkpoint sequence "
+                    f"{sequence}; persisted sequence {persisted_sequence} is newer"
+                )
             self._atomic_json_write(path, obj)
             write_regular_bytes_atomic(
                 self._journal_path(path),
@@ -524,6 +566,23 @@ class SessionStore:
                 )
             records.append(record)
         return records
+
+    def _newest_persisted_sequence(self, path: str) -> int:
+        newest = 0
+        try:
+            text = self._read_snapshot_text(path)
+        except FileNotFoundError:
+            pass
+        else:
+            parsed = self._parse_document(text)
+            if isinstance(parsed, dict):
+                newest = self._snapshot_sequence(parsed)
+        for record in self._read_journal_records(path):
+            newest = max(
+                newest,
+                self._record_integer(record, "sequence", minimum=1),
+            )
+        return newest
 
     @staticmethod
     def _snapshot_sequence(snapshot: dict[str, Any]) -> int:

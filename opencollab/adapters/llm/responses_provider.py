@@ -17,13 +17,16 @@ from opencollab.adapters.llm.responses_errors import (
     ResponsesTransientEventError,
 )
 from opencollab.adapters.llm.responses_messages import (
+    OUTPUT_ITEM_TYPES as _OUTPUT_ITEM_TYPES,
+)
+from opencollab.adapters.llm.responses_messages import (
     function_call_identity as _function_call_identity,
 )
 from opencollab.adapters.llm.responses_messages import (
-    message_content_parts as _message_content_parts,
+    messages_to_input as _messages_to_input,
 )
 from opencollab.adapters.llm.responses_messages import (
-    message_text as _message_text,
+    validated_response_items as _validated_response_items,
 )
 from opencollab.adapters.llm.responses_structured import (
     ForcedTextTool,
@@ -45,7 +48,6 @@ from opencollab.adapters.llm.types import (
     to_plain_data,
 )
 
-_OUTPUT_ITEM_TYPES = frozenset({"message", "reasoning", "function_call"})
 _PASSIVE_EVENT_TYPES = frozenset(
     {
         "response.created",
@@ -74,113 +76,6 @@ class _StreamState:
     output_items: list[dict[str, Any]] = field(default_factory=list)
     argument_fragments: dict[int, list[str]] = field(default_factory=dict)
     completed_response: Any = None
-
-
-def _validated_response_items(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        raise ResponsesProtocolError("response_items must be a list")
-    items: list[dict[str, Any]] = []
-    for raw in value:
-        item = to_plain_data(raw)
-        if not isinstance(item, dict) or item.get("type") not in _OUTPUT_ITEM_TYPES:
-            raise ResponsesProtocolError("response_items contain an unsupported item")
-        items.append(item)
-    return items
-
-
-def _verify_replay_tool_calls(message: dict[str, Any], items: list[dict[str, Any]]) -> None:
-    if "tool_calls" not in message:
-        return
-    legacy = []
-    for call in message.get("tool_calls") or ():
-        function = call.get("function") if isinstance(call, dict) else None
-        if not isinstance(function, dict):
-            raise ResponsesProtocolError("legacy tool call is missing function data")
-        legacy.append(
-            _function_call_identity(
-                call.get("id"),
-                function.get("name"),
-                function.get("arguments") or "{}",
-            )
-        )
-    replayed = [
-        _function_call_identity(item.get("call_id"), item.get("name"), item.get("arguments"))
-        for item in items
-        if item["type"] == "function_call"
-    ]
-    if legacy != replayed:
-        raise ResponsesProtocolError("tool_calls and response_items disagree")
-
-
-def _messages_to_input(messages: list[dict[str, Any]]) -> tuple[str | None, list[dict[str, Any]]]:
-    instructions: list[str] = []
-    items: list[dict[str, Any]] = []
-    call_ids: set[str] = set()
-    answered_ids: set[str] = set()
-    for message in messages:
-        role = message.get("role")
-        if role == "system":
-            text = _message_text(message.get("content"))
-            if text:
-                if message.get("compacted"):
-                    items.append({"role": "user", "content": text})
-                else:
-                    instructions.append(text)
-            continue
-        if role == "tool":
-            call_id = message.get("tool_call_id")
-            if not isinstance(call_id, str) or not call_id:
-                raise ResponsesProtocolError("function_call_output is missing call_id")
-            if call_id not in call_ids:
-                raise ResponsesProtocolError(f"function_call_output has no matching call_id {call_id!r}")
-            if call_id in answered_ids:
-                raise ResponsesProtocolError(f"duplicate function_call_output for {call_id!r}")
-            answered_ids.add(call_id)
-            items.append(
-                {
-                    "type": "function_call_output",
-                    "call_id": call_id,
-                    "output": _message_text(message.get("content")),
-                }
-            )
-            continue
-        replay = message.get("response_items")
-        if replay is not None:
-            replay_items = _validated_response_items(replay)
-            _verify_replay_tool_calls(message, replay_items)
-            for item in replay_items:
-                if item["type"] != "function_call":
-                    continue
-                call_id = item.get("call_id")
-                if not isinstance(call_id, str) or not call_id:
-                    raise ResponsesProtocolError("replayed function_call is missing call_id")
-                if call_id in call_ids:
-                    raise ResponsesProtocolError(f"duplicate replayed call_id {call_id!r}")
-                call_ids.add(call_id)
-            items.extend(replay_items)
-            continue
-        if role not in {"user", "assistant"}:
-            raise ResponsesProtocolError(f"unsupported message role {role!r}")
-        content = _message_content_parts(message.get("content"))
-        if content:
-            items.append({"role": role, "content": content})
-        for call in message.get("tool_calls") or ():
-            function = call.get("function") if isinstance(call, dict) else None
-            call_id = call.get("id") if isinstance(call, dict) else None
-            if not isinstance(function, dict) or not isinstance(call_id, str) or not call_id:
-                raise ResponsesProtocolError("legacy tool call is missing function data or call_id")
-            if call_id in call_ids:
-                raise ResponsesProtocolError(f"duplicate legacy call_id {call_id!r}")
-            call_ids.add(call_id)
-            items.append(
-                {
-                    "type": "function_call",
-                    "call_id": call_id,
-                    "name": function.get("name"),
-                    "arguments": function.get("arguments") or "{}",
-                }
-            )
-    return ("\n\n".join(instructions) or None), items
 
 
 def _responses_tools(tools: list[dict[str, Any]] | None) -> list[dict[str, Any]]:

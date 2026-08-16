@@ -614,64 +614,6 @@ def test_item_replay_binds_function_call_output_to_original_call_id():
     assert function in items
 
 
-def test_responses_preserves_image_url_content_blocks():
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": "What is shown?"},
-                {"type": "image_url", "image_url": {"url": "https://example.test/a.png", "detail": "high"}},
-            ],
-        }
-    ]
-    _, items = _messages_to_input(messages)
-    assert items == [
-        {
-            "role": "user",
-            "content": [
-                {"type": "input_text", "text": "What is shown?"},
-                {"type": "input_image", "image_url": "https://example.test/a.png", "detail": "high"},
-            ],
-        }
-    ]
-
-
-def test_responses_rejects_tools_for_models_without_function_calling():
-    with pytest.raises(ResponsesProtocolError, match="does not support function tools"):
-        _build_request_kwargs(
-            "o1-mini",
-            [{"role": "user", "content": "work"}],
-            [{"type": "function", "function": {"name": "f", "parameters": {}}}],
-            0.2,
-        )
-
-
-@pytest.mark.parametrize("model", ["o1-pro", "vendor/o1-pro-2025-04-01", "o3-mini", "gateway/o3-mini-2026-01-01"])
-def test_responses_omits_default_sampling_for_models_without_sampling(model):
-    kwargs = _build_request_kwargs(model, [{"role": "user", "content": "work"}], None, 0.2)
-    assert "temperature" not in kwargs
-    assert "top_p" not in kwargs
-    assert kwargs["stream"] is ("o1-pro" not in model)
-
-
-@pytest.mark.parametrize("model", ["o1-pro", "vendor/o1-pro-2025-04-01", "o3-mini"])
-def test_responses_rejects_explicit_top_p_for_models_without_sampling(model):
-    with pytest.raises(ResponsesProtocolError, match="does not support explicit top_p"):
-        _build_request_kwargs(model, [{"role": "user", "content": "work"}], None, 0.2, top_p=0.9)
-
-
-@pytest.mark.parametrize("model", ["gpt-4o", "vendor/gpt-4o-mini-2026-01-01"])
-def test_responses_rejects_explicit_reasoning_for_non_reasoning_models(model):
-    with pytest.raises(ResponsesProtocolError, match="does not support explicit reasoning_effort"):
-        _build_request_kwargs(
-            model,
-            [{"role": "user", "content": "work"}],
-            None,
-            0.2,
-            reasoning_effort="low",
-        )
-
-
 @pytest.mark.parametrize(
     "messages,match",
     [

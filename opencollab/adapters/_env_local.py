@@ -21,8 +21,7 @@ from opencollab.adapters._env_process import (
     ProcessRegistry,
     run_process,
 )
-from opencollab.adapters.safe_files import (
-    canonicalize_system_path,
+from opencollab.adapters.safe_anchored_files import (
     create_regular_bytes_atomic_at,
     open_directory_anchor,
     read_regular_bytes_at,
@@ -30,6 +29,7 @@ from opencollab.adapters.safe_files import (
     unlink_regular_file_durable_at,
     write_regular_bytes_atomic_at,
 )
+from opencollab.adapters.safe_paths import canonicalize_system_path
 from opencollab.application.async_timeout import await_owned_operation, consume_task_result
 
 LOCAL_FILE_READ_LIMIT_BYTES = 4 * 1024 * 1024
@@ -214,28 +214,30 @@ class LocalEnvironment(Environment):
         self._temporary_files.discard(target)
 
     async def _cleanup_files(self) -> None:
-        while self._file_operations:
-            pending = tuple(self._file_operations)
-            await asyncio.gather(*pending, return_exceptions=True)
-        failures: list[OSError] = []
-        for path in tuple(self._temporary_files):
-            try:
-                await self._run_file_operation(
-                    unlink_regular_file_durable_at,
-                    self._root_fd(),
-                    self.workspace,
-                    path,
-                    require_active=False,
-                )
-            except OSError as exc:
-                failures.append(exc)
-            else:
-                self._temporary_files.discard(path)
-        if failures:
-            raise OSError("failed to remove one or more environment temporary files") from failures[0]
-        if self._workspace_fd is not None:
-            os.close(self._workspace_fd)
-            self._workspace_fd = None
+        try:
+            while self._file_operations:
+                pending = tuple(self._file_operations)
+                await asyncio.gather(*pending, return_exceptions=True)
+            failures: list[OSError] = []
+            for path in tuple(self._temporary_files):
+                try:
+                    await self._run_file_operation(
+                        unlink_regular_file_durable_at,
+                        self._root_fd(),
+                        self.workspace,
+                        path,
+                        require_active=False,
+                    )
+                except OSError as exc:
+                    failures.append(exc)
+                else:
+                    self._temporary_files.discard(path)
+            if failures:
+                raise OSError("failed to remove one or more environment temporary files") from failures[0]
+        finally:
+            if self._workspace_fd is not None:
+                os.close(self._workspace_fd)
+                self._workspace_fd = None
 
     async def cleanup(self) -> None:
         self.revoke()

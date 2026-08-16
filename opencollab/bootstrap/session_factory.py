@@ -20,7 +20,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
+from opencollab.adapters.llm.providers import RESPONSES
 from opencollab.adapters.llm.retry import RetryTimeBudget
+from opencollab.adapters.llm.types import model_capabilities
 from opencollab.adapters.repo_map import build_repo_map
 from opencollab.adapters.safe_files import ensure_directory_no_symlinks
 from opencollab.adapters.trace import Tracer
@@ -39,7 +41,11 @@ from opencollab.application.session import Session
 from opencollab.bootstrap.container import build_session_runtime, build_skill_store
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
-from opencollab.bootstrap.team_config import TeamConfig, default_team_config
+from opencollab.bootstrap.team_config import (
+    BASE_TOOL_NAMES,
+    TeamConfig,
+    default_team_config,
+)
 from opencollab.domain.agent import Agent
 from opencollab.domain.identity import role_storage_slug, validate_role_identity
 
@@ -368,12 +374,38 @@ class DefaultSessionFactory:
             else None
         )
         self._team = team_cfg or default_team_config()
-        self._lead_workspace = lead_workspace
         self._interactive = interactive
+        self._validate_responses_tool_support()
+        self._lead_workspace = lead_workspace
         self._allow_unisolated_child_tests = allow_unisolated_child_tests
         # Run folder where every agent's transcript is persisted. When set,
         # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
         self._save_dir = save_dir
+
+    def _validate_responses_tool_support(self) -> None:
+        """Reject statically incompatible team roles before opening a workspace."""
+        if self._cfg.wire_protocol != RESPONSES:
+            return
+        for role_name, role in self._team.roles.items():
+            model = role.model or self._cfg.model
+            tool_names = set(role.tools)
+            if role_name != self._team.entry or not self._interactive:
+                tool_names.discard("ask_user")
+            if tool_names and not model_capabilities(model).supports_responses_tools:
+                raise ValueError(
+                    f"role {role_name!r} model {model!r} does not support "
+                    "Responses tools"
+                )
+        fallback_tool_names = set(BASE_TOOL_NAMES) - {"ask_user"}
+        if (
+            self._team.topology.allow_all
+            and fallback_tool_names
+            and not model_capabilities(self._cfg.model).supports_responses_tools
+        ):
+            raise ValueError(
+                f"default model {self._cfg.model!r} does not support Responses "
+                "tools required by ad-hoc roles"
+            )
 
     def _fresh_context_builder(self) -> ContextBuilder:
         """Snapshot bounded workspace context at the new session's start."""

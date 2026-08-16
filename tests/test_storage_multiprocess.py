@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import errno
 import multiprocessing
+import threading
 from pathlib import Path
 
+import pytest
+
+from opencollab.adapters import storage as storage_module
 from opencollab.adapters.storage import SessionStore
 
 _META = {"snapshot_version": 1, "session_state": {}}
@@ -98,3 +103,71 @@ def test_checkpoint_and_append_are_serialized_across_processes(tmp_path: Path) -
     restored = store.load_snapshot(str(path), "system")
     assert restored["_autosave_sequence"] == 3
     assert restored["messages"][-1]["content"] == "new"
+
+
+def test_journal_operation_lock_times_out_instead_of_blocking_forever(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "blocked.json"
+
+    def always_busy(_fd: int, operation: int) -> None:
+        if operation & storage_module.fcntl.LOCK_UN:
+            return
+        if not operation & storage_module.fcntl.LOCK_NB:
+            raise AssertionError("journal lock acquisition must be non-blocking")
+        raise BlockingIOError(errno.EWOULDBLOCK, "busy")
+
+    monkeypatch.setattr(storage_module.fcntl, "flock", always_busy)
+    monkeypatch.setattr(storage_module, "_JOURNAL_LOCK_TIMEOUT_SECONDS", 0.0)
+
+    with pytest.raises(TimeoutError, match="journal operation lock"):
+        SessionStore().checkpoint_snapshot(
+            str(path),
+            _BASE_MESSAGES,
+            meta=_META,
+            sequence=1,
+        )
+
+
+def test_journal_thread_lock_registry_releases_idle_paths(tmp_path: Path) -> None:
+    path = tmp_path / "one-shot.json"
+
+    SessionStore().checkpoint_snapshot(
+        str(path),
+        _BASE_MESSAGES,
+        meta=_META,
+        sequence=1,
+    )
+
+    assert storage_module._JOURNAL_LOCKS == {}
+
+
+def test_journal_thread_lock_times_out_and_releases_waiter_entry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = str(tmp_path / "blocked-thread.json")
+    holder_started = threading.Event()
+    release_holder = threading.Event()
+
+    def hold_lock() -> None:
+        with storage_module._journal_thread_lock(path):
+            holder_started.set()
+            assert release_holder.wait(timeout=2)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert holder_started.wait(timeout=2)
+    monkeypatch.setattr(storage_module, "_JOURNAL_LOCK_TIMEOUT_SECONDS", 0.0)
+
+    try:
+        with pytest.raises(TimeoutError, match="journal thread lock"):
+            with storage_module._journal_thread_lock(path):
+                raise AssertionError("unreachable")
+    finally:
+        release_holder.set()
+        holder.join(timeout=2)
+
+    assert not holder.is_alive()
+    assert storage_module._JOURNAL_LOCKS == {}

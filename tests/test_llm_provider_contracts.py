@@ -423,6 +423,40 @@ def test_responses_rejects_unsupported_content_instead_of_dropping_it():
         )
 
 
+def test_responses_converts_image_url_instead_of_dropping_it():
+    _, items = _messages_to_input(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "inspect"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": "https://example.test/image.png",
+                            "detail": "high",
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert items == [
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "inspect"},
+                {
+                    "type": "input_image",
+                    "image_url": "https://example.test/image.png",
+                    "detail": "high",
+                },
+            ],
+        }
+    ]
+
+
 def test_anthropic_rejects_unknown_message_role_instead_of_dropping_it():
     with pytest.raises(ValueError, match="unsupported role 'developer'"):
         build_anthropic_kwargs(

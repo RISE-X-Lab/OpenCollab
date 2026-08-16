@@ -12,6 +12,8 @@ import json
 import os
 import threading
 
+import pytest
+
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.scheduler_types import LaunchSpec
@@ -248,6 +250,31 @@ def test_checkpoint_compaction_does_not_erase_concurrent_journal_delta(tmp_path)
     restored = store.load_snapshot(str(path), "system")
     assert restored["_autosave_sequence"] == 3
     assert restored["messages"][-1]["content"] == "new"
+
+
+def test_checkpoint_rejects_sequence_older_than_persisted_journal(tmp_path):
+    path = tmp_path / "stale-checkpoint.json"
+    store = SessionStore()
+    base = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "base"},
+    ]
+    meta = {"snapshot_version": 1, "session_state": {}}
+    store.checkpoint_snapshot(str(path), base, meta=meta, sequence=1)
+    store.append_snapshot_delta(
+        str(path),
+        sequence=2,
+        replace_from=2,
+        messages=[{"role": "assistant", "content": "newer-delta"}],
+        meta=meta,
+    )
+
+    with pytest.raises(ValueError, match="persisted sequence 2"):
+        store.checkpoint_snapshot(str(path), base, meta=meta, sequence=1)
+
+    restored = store.load_snapshot(str(path), "system")
+    assert restored["_autosave_sequence"] == 2
+    assert restored["messages"][-1]["content"] == "newer-delta"
 
 
 def test_apply_launch_checkpoints_restore_into_distinct_autosave_target(tmp_path):
