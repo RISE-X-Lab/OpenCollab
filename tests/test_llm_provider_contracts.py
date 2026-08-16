@@ -405,8 +405,8 @@ def test_responses_keeps_compaction_record_in_conversation_order():
     ]
 
 
-def test_responses_rejects_unsupported_content_instead_of_dropping_it():
-    with pytest.raises(ResponsesProtocolError, match="unsupported type 'image_url'"):
+def test_responses_rejects_unknown_content_instead_of_dropping_it():
+    with pytest.raises(ResponsesProtocolError, match="unsupported message content block 'video_url'"):
         _messages_to_input(
             [
                 {
@@ -414,8 +414,8 @@ def test_responses_rejects_unsupported_content_instead_of_dropping_it():
                     "content": [
                         {"type": "text", "text": "inspect"},
                         {
-                            "type": "image_url",
-                            "image_url": {"url": "https://example.test/image.png"},
+                            "type": "video_url",
+                            "video_url": {"url": "https://example.test/video.mp4"},
                         },
                     ],
                 }
