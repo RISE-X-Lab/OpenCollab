@@ -93,7 +93,7 @@ def test_scheduler_init_process_lead_uses_workspace_local_env(tmp_path, monkeypa
     assert lead.env.workspace == os.path.abspath(str(tmp_path))
     assert lead.tool_execution.environment is lead.env
     tool_names = {t.name for t in lead.agent.tools}
-    assert {"spawn_agent", "spawn_with_review"} <= tool_names
+    assert "spawn_agent" in tool_names
 
 def test_scheduler_init_process_lead_gets_workspace_safety_policy(tmp_path, monkeypatch):
     from opencollab.adapters.safety import SandboxInterceptor

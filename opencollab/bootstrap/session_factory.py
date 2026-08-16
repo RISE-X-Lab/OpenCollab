@@ -320,7 +320,7 @@ def build_spawn_session(
 ) -> Session:
     """Build the Agent + Session bundle for a spawned child agent.
 
-    ``team_cfg`` defaults to the lead-only default team, so roles resolve to the
+    ``team_cfg`` defaults to the Self-Collaboration team, so roles resolve to the
     generic spec (base tools). The safety policy is derived from the child's
     environment. When ``task`` is given it is seeded as the agent's first
     user-context message (the TASK-layer source), so no separate
@@ -346,7 +346,7 @@ class DefaultSessionFactory:
 
     Holds the shared ``SpawnConfig`` (LLM config inherited by every session),
     the resolved ``TeamConfig`` (role prompts/tools + topology), and the
-    lead-only composition bits (``lead_workspace`` for the local environment and
+    agent-0 composition bits (``lead_workspace`` for the local environment and
     ``interactive`` for the ask-user tool). All role -> Agent assembly is
     delegated to a single ``ContextBuilder``.
     """
