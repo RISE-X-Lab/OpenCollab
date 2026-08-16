@@ -8,7 +8,7 @@ from opencollab.bootstrap import (
     build_runtime_context,
     build_scheduler,
 )
-from opencollab.bootstrap.team_config import DEFAULT_LEAD_PROMPT, LEAD_TOOL_NAMES
+from opencollab.bootstrap.team_config import ANALYST_TOOL_NAMES, DEFAULT_ANALYST_PROMPT
 from opencollab.domain.identity import role_storage_slug
 
 
@@ -24,14 +24,15 @@ def _cfg(**overrides):
     return base
 
 
-def test_lead_prompt_references_spawn_tools_not_delegate():
-    # Guard against the prompt/tool mismatch: agent 0 is given spawn_agent /
-    # spawn_with_review, so its prompt must name those, not the removed
-    # delegate_task / delegate_with_review.
-    assert "spawn_agent" in DEFAULT_LEAD_PROMPT
-    assert "spawn_with_review" in DEFAULT_LEAD_PROMPT
-    assert "delegate_task" not in DEFAULT_LEAD_PROMPT
-    assert "delegate_with_review" not in DEFAULT_LEAD_PROMPT
+def test_analyst_prompt_references_only_the_tools_it_has():
+    # Guard against the prompt/tool mismatch: agent 0 is given spawn_agent and
+    # nothing else that delegates, so its prompt must name that and must not
+    # advertise the removed delegate_* tools or spawn_with_review, which the
+    # closed default topology would refuse anyway.
+    assert "spawn_agent" in DEFAULT_ANALYST_PROMPT
+    assert "spawn_with_review" not in DEFAULT_ANALYST_PROMPT
+    assert "delegate_task" not in DEFAULT_ANALYST_PROMPT
+    assert "delegate_with_review" not in DEFAULT_ANALYST_PROMPT
 
 
 def test_build_scheduler_lead_has_spawn_tools(tmp_path, monkeypatch):
@@ -48,12 +49,12 @@ def test_build_scheduler_lead_has_spawn_tools(tmp_path, monkeypatch):
     system_message = lead.messages[0]
     assert system_message["role"] == "system"
 
-    # The no-team default lead gets every registered tool (interactive ⇒
-    # ask_user kept); the set is derived from the registry, so assert against
-    # the source constant rather than a frozen literal that would drift.
+    # Agent 0 is the Self-Collaboration Analyst (interactive ⇒ ask_user kept).
+    # It plans and delegates, so it carries spawn_agent but nothing that writes.
     tool_names = {t.name for t in lead.agent.tools}
-    assert tool_names == set(LEAD_TOOL_NAMES)
-    assert {"spawn_agent", "spawn_with_review"} <= tool_names
+    assert tool_names == set(ANALYST_TOOL_NAMES)
+    assert "spawn_agent" in tool_names
+    assert not {"apply_patch", "file_write"} & tool_names
 
 
 def test_build_scheduler_lead_omits_ask_user_when_headless(tmp_path, monkeypatch):
@@ -66,7 +67,7 @@ def test_build_scheduler_lead_omits_ask_user_when_headless(tmp_path, monkeypatch
 
     tool_names = {t.name for t in scheduler.lead_session.agent.tools}
     assert "ask_user" not in tool_names
-    assert {"spawn_agent", "spawn_with_review"} <= tool_names
+    assert "spawn_agent" in tool_names
 
 
 def test_build_scheduler_rejects_missing_explicit_session(tmp_path):
@@ -142,14 +143,14 @@ def test_build_scheduler_writes_structured_lead_file_and_manifest(tmp_path):
     scheduler = build_scheduler(ctx, use_worktrees=False, interactive=False)
     lead_path = scheduler.lead_session.auto_save_path
 
-    # Lead transcript: structured JSON with metadata + per-message timestamps.
+    # Agent 0 transcript: structured JSON with metadata + per-message timestamps.
     assert os.path.basename(lead_path) == (
-        f"agent_0_{role_storage_slug('lead')}.json"
+        f"agent_0_{role_storage_slug('analyst')}.json"
     )
     with open(lead_path) as f:
         saved = json.load(f)
     assert saved["aid"] == 0
-    assert saved["role"] == "lead"
+    assert saved["role"] == "analyst"
     assert saved["messages"] and all("timestamp" in m for m in saved["messages"])
 
     # team.json manifest sits in the same run folder and lists agent 0.
@@ -159,7 +160,7 @@ def test_build_scheduler_writes_structured_lead_file_and_manifest(tmp_path):
     with open(manifest_path) as f:
         manifest = json.load(f)
     agents = {a["aid"]: a for a in manifest["agents"]}
-    assert agents[0]["role"] == "lead"
+    assert agents[0]["role"] == "analyst"
     assert agents[0]["parent_aid"] is None
     assert "started_at" in manifest and "run_id" in manifest
 

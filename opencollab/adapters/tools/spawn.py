@@ -26,7 +26,8 @@ class SpawnAgentTool(Tool):
         "agent finishes, then its result is delivered straight back to you as "
         "this tool call's result — so you can act on it in the same turn. Spawn "
         "several at once to run them in parallel; you resume when all are done. "
-        "Available roles: analyst, coder, reviewer, or any custom name."
+        "The roles you may spawn are listed in your team context; a team with an "
+        "open topology also accepts a custom role name."
     )
     parameters = {
         "type": "object",

@@ -55,7 +55,7 @@ def build_scheduler(
 ) -> Scheduler:
     """Build the Scheduler and let it create agent 0 (the init process).
 
-    Loads an explicitly selected team config (or the built-in lead-only team),
+    Loads an explicitly selected team config (or the built-in Self-Collaboration team),
     wires dependencies, and hands the scheduler a ``LaunchSpec``;
     ``scheduler.create_init_process`` builds agent 0 (aid=0) through the factory
     and applies the launch spec. ``session_file`` resumes agent 0's history;

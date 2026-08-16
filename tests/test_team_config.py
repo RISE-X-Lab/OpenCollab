@@ -8,16 +8,21 @@ import pytest
 
 from opencollab.bootstrap import team_config as team_config_mod
 from opencollab.bootstrap.team_config import (
+    ANALYST_TOOL_NAMES,
     BASE_TOOL_NAMES,
-    DEFAULT_LEAD_PROMPT,
+    CODER_TOOL_NAMES,
+    DEFAULT_ANALYST_PROMPT,
+    DEFAULT_CODER_PROMPT,
     DEFAULT_ROLE_PROMPT,
-    LEAD_TOOL_NAMES,
+    DEFAULT_TESTER_PROMPT,
+    TESTER_TOOL_NAMES,
     RoleConfig,
     TeamConfig,
     default_team_config,
     load_team_config,
     resolve_team_file,
 )
+from opencollab.bootstrap.tool_registry import COORDINATION_TOOL_NAMES
 from opencollab.domain.team import Topology
 
 TEAM_YAML = """\
@@ -50,28 +55,51 @@ def test_default_prompts_load_from_packaged_files():
     # The built-in defaults are data files under bootstrap/prompts/; guard that
     # they load (non-empty, correct identity) so a packaging regression fails here
     # rather than silently shipping an empty system prompt.
-    assert DEFAULT_LEAD_PROMPT.startswith("You are OpenCollab, agent 0")
-    assert "spawn_with_review" in DEFAULT_LEAD_PROMPT
+    assert DEFAULT_ANALYST_PROMPT.startswith("You are OpenCollab's Analyst, agent 0")
+    assert DEFAULT_CODER_PROMPT.startswith("You are OpenCollab's Coder.")
+    assert DEFAULT_TESTER_PROMPT.startswith("You are OpenCollab's Tester.")
     assert DEFAULT_ROLE_PROMPT.startswith("You are an OpenCollab specialist agent.")
 
 
-def test_lead_prompt_has_anti_thrash_recon_strategy():
+def test_analyst_prompt_has_anti_thrash_recon_strategy():
     # The per-read distill rule lives in the file_read tool description (universal
-    # across all workflows/teams). The lead prompt keeps only the lead-specific
-    # strategy: stop reading once notes cover the task, and delegate sprawling
-    # recon. Regression for the 90-read/0-write stall (session 2026-06-21T20-28-41).
-    assert "thrash" in DEFAULT_LEAD_PROMPT
-    assert "STOP reading" in DEFAULT_LEAD_PROMPT
-    assert "spawn_agent" in DEFAULT_LEAD_PROMPT  # delegate when recon sprawls
+    # across all workflows/teams). The entry role's prompt keeps only the
+    # entry-specific strategy: stop reading once notes cover the task, and leave
+    # the rest to the Coder. Regression for the 90-read/0-write stall
+    # (session 2026-06-21T20-28-41), carried over from the retired lead prompt.
+    assert "thrash" in DEFAULT_ANALYST_PROMPT
+    assert "STOP reading" in DEFAULT_ANALYST_PROMPT
+    assert "spawn_agent" in DEFAULT_ANALYST_PROMPT  # delegate rather than read on
 
 
-def test_default_team_is_lead_only_with_allow_all(monkeypatch):
+def test_default_team_is_self_collaboration_over_a_closed_topology(monkeypatch):
     monkeypatch.delenv("OPENCOLLAB_TEAM_FILE", raising=False)
     cfg = default_team_config()
-    assert set(cfg.roles) == {"lead"}
-    assert cfg.roles["lead"].tools == list(LEAD_TOOL_NAMES)
-    assert cfg.topology.allow_all is True
-    assert cfg.topology.allows("lead", "any-custom-role")
+    assert set(cfg.roles) == {"analyst", "coder", "tester"}
+    assert cfg.roles["analyst"].tools == list(ANALYST_TOOL_NAMES)
+    assert cfg.roles["coder"].tools == list(CODER_TOOL_NAMES)
+    assert cfg.roles["tester"].tools == list(TESTER_TOOL_NAMES)
+    assert cfg.topology.allow_all is False
+    assert cfg.topology.allows("analyst", "coder")
+    assert cfg.topology.allows("analyst", "tester")
+    # Closed: no ad-hoc role, and neither specialist may delegate onward.
+    assert not cfg.topology.allows("analyst", "any-custom-role")
+    assert not cfg.topology.allows("coder", "tester")
+    assert not cfg.topology.allows("tester", "coder")
+
+
+def test_default_team_divides_labour_by_capability(monkeypatch):
+    # The role split is enforced by the toolset, not by prompt wording: neither
+    # the Analyst nor the Tester can write, and only the Analyst can delegate.
+    monkeypatch.delenv("OPENCOLLAB_TEAM_FILE", raising=False)
+    cfg = default_team_config()
+    writing = {"apply_patch", "file_write"}
+    assert not writing & set(cfg.roles["analyst"].tools)
+    assert not writing & set(cfg.roles["tester"].tools)
+    assert writing & set(cfg.roles["coder"].tools)
+    for specialist in ("coder", "tester"):
+        assert not COORDINATION_TOOL_NAMES & set(cfg.roles[specialist].tools)
+    assert "spawn_agent" in cfg.roles["analyst"].tools
 
 
 def test_load_team_ignores_conventional_workspace_file(tmp_path, monkeypatch):
@@ -86,8 +114,9 @@ def test_load_team_ignores_conventional_workspace_file(tmp_path, monkeypatch):
 
     cfg = load_team_config(str(tmp_path))
 
-    assert set(cfg.roles) == {"lead"}
-    assert cfg.entry == "lead"
+    # The conventional filename is ignored, so the built-in default stands.
+    assert set(cfg.roles) == {"analyst", "coder", "tester"}
+    assert cfg.entry == "analyst"
     assert resolve_team_file(str(tmp_path)) is None
 
 
@@ -241,9 +270,9 @@ def test_unknown_role_falls_back_to_generic_spec(tmp_path, monkeypatch):
     assert "use_skill" not in fallback.tools
 
 
-def test_default_team_entry_is_lead(monkeypatch):
+def test_default_team_entry_is_analyst(monkeypatch):
     monkeypatch.delenv("OPENCOLLAB_TEAM_FILE", raising=False)
-    assert default_team_config().entry == "lead"
+    assert default_team_config().entry == "analyst"
 
 
 def test_entry_prefers_lead_role_when_unset(tmp_path, monkeypatch):

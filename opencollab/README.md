@@ -36,7 +36,7 @@ uv run opencollab --workspace .
 ```
 
 It runs the current checkout in the project environment, resolves
-`configs/.env`, and starts agent 0 with the built-in lead-only configuration.
+`configs/.env`, and starts agent 0 with the built-in Self-Collaboration team.
 Team mode uses the root command with `--team-config PATH`; there is no separate
 `team` subcommand. `scripts/start_opencollab.sh` remains available for
 environments that need its physical-path handling.
@@ -90,7 +90,7 @@ three return `RunResult`. Import optional authoring contracts from
 `opencollab.tools`, `opencollab.environments`, and `opencollab.workflows`.
 Treat other package paths as internal. An `artifacts` directory, when supplied,
 must be new or empty because each run claims it for executable evidence.
-`team(...)` uses the built-in lead-only configuration unless its `config=`
+`team(...)` uses the built-in Self-Collaboration team unless its `config=`
 argument names a team YAML file. Its `cleanup_timeout` bounds scheduler
 shutdown and must be a finite positive number.
 

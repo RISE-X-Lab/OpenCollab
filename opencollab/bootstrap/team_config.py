@@ -6,10 +6,12 @@ plus a directed ``topology`` of which role may spawn/message which other role.
 
 A team file is loaded only when the caller passes ``path=`` or sets the explicit
 ``OPENCOLLAB_TEAM_FILE`` environment variable. Otherwise,
-``default_team_config`` returns a lead-only team with a permissive
-(``allow_all``) topology — the lead can still spawn ad-hoc roles that fall back
-to ``default_role``. Conventional filenames such as ``configs/team.yaml`` are
-never discovered implicitly.
+``default_team_config`` returns the built-in Self-Collaboration team: an
+``analyst`` entry that plans and delegates, a ``coder`` that implements, and a
+``tester`` that verifies, over a *closed* topology. A declared team file may
+still open its topology with ``allow_all``, in which case undeclared roles fall
+back to ``default_role``. Conventional filenames such as ``configs/team.yaml``
+are never discovered implicitly.
 
 Tool *names* are resolved to concrete Tool instances by ``ContextBuilder`` in
 ``bootstrap.container``; this module only carries the names.
@@ -42,17 +44,34 @@ from opencollab.domain.hooks import (
 from opencollab.domain.identity import role_collision_key, validate_role_identity
 from opencollab.domain.team import Topology
 
-# Default tool bundles, derived from the registry so it stays the single source
-# of truth — add a tool there and the lead picks it up, no hand-maintained list
-# to drift. The lead (agent 0) gets every registered tool; an ad-hoc specialist
-# gets work tools only: no coordination (it must not fan out further) and no
-# skill dispatch. ``ask_user`` stays in the base set but is moot for spawned
-# specialists — they are built non-interactive, so the registry resolver drops it
-# for them regardless. Sorted for a deterministic, reproducible tool order.
-LEAD_TOOL_NAMES: tuple[str, ...] = tuple(sorted(KNOWN_TOOL_NAMES))
+# Built-in Self-Collaboration tool bundles. The division of labour is enforced
+# by capability, not by asking a role nicely in its prompt: the Analyst has no
+# tool that writes, the Tester has no tool that writes, and neither the Coder
+# nor the Tester carries a coordination tool, so they cannot fan the work out
+# further. ``ask_user`` is the Analyst's alone and is moot for the other two —
+# they are built non-interactive, so the registry resolver drops it regardless.
+# Sorted for a deterministic, reproducible tool order.
+ANALYST_TOOL_NAMES: tuple[str, ...] = ("ask_user", "file_read", "grep", "spawn_agent", "use_skill")
+CODER_TOOL_NAMES: tuple[str, ...] = ("apply_patch", "bash", "file_read", "grep", "run_tests")
+TESTER_TOOL_NAMES: tuple[str, ...] = ("file_read", "git_diff", "grep", "run_tests")
+
+# Fallback bundle for a role an ``allow_all`` team file spawns without declaring
+# it. Derived from the registry so it stays the single source of truth — add a
+# tool there and the fallback picks it up, no hand-maintained list to drift. It
+# is work tools only: no coordination (it must not fan out further) and no skill
+# dispatch.
 BASE_TOOL_NAMES: tuple[str, ...] = tuple(
     sorted(KNOWN_TOOL_NAMES - COORDINATION_TOOL_NAMES - {"use_skill"})
 )
+
+# The three bundles above are hand-written subsets, so a rename in the registry
+# would silently leave a role short a tool. Fail at import instead.
+for _role_bundle in (ANALYST_TOOL_NAMES, CODER_TOOL_NAMES, TESTER_TOOL_NAMES):
+    _unknown = sorted(set(_role_bundle) - KNOWN_TOOL_NAMES)
+    if _unknown:
+        raise RuntimeError(
+            f"built-in team declares tools missing from the registry: {_unknown}"
+        )
 
 # Built-in default prompts live as data files next to this module (``prompts/``)
 # so they read as prose, not Python string literals, and ship with the package —
@@ -79,7 +98,9 @@ def _load_default_prompt(filename: str) -> str:
     return (_PROMPT_DIR / filename).read_text(encoding="utf-8")
 
 
-DEFAULT_LEAD_PROMPT = _load_default_prompt("lead.md")
+DEFAULT_ANALYST_PROMPT = _load_default_prompt("analyst.md")
+DEFAULT_CODER_PROMPT = _load_default_prompt("coder.md")
+DEFAULT_TESTER_PROMPT = _load_default_prompt("tester.md")
 DEFAULT_ROLE_PROMPT = _load_default_prompt("role.md")
 
 
@@ -323,9 +344,41 @@ def default_role(name: str) -> RoleConfig:
 
 
 def default_team_config() -> TeamConfig:
-    """Lead-only team with a permissive topology (the no-file default)."""
-    lead = RoleConfig(prompt=DEFAULT_LEAD_PROMPT, model=None, tools=list(LEAD_TOOL_NAMES))
-    return TeamConfig(roles={"lead": lead}, topology=Topology(allow_all=True), entry="lead")
+    """The built-in Self-Collaboration team (the no-file default).
+
+    Analyst plans and delegates, Coder implements, Tester verifies — the role
+    split of Dong et al., *Self-Collaboration Code Generation via ChatGPT*. The
+    topology is closed on purpose: only the Analyst may delegate, only to these
+    two roles, and neither of them may delegate onward.
+    """
+    return TeamConfig(
+        roles={
+            "analyst": RoleConfig(
+                prompt=DEFAULT_ANALYST_PROMPT,
+                model=None,
+                tools=list(ANALYST_TOOL_NAMES),
+            ),
+            "coder": RoleConfig(
+                prompt=DEFAULT_CODER_PROMPT,
+                model=None,
+                tools=list(CODER_TOOL_NAMES),
+            ),
+            "tester": RoleConfig(
+                prompt=DEFAULT_TESTER_PROMPT,
+                model=None,
+                tools=list(TESTER_TOOL_NAMES),
+            ),
+        },
+        topology=Topology(
+            edges={
+                "analyst": frozenset({"coder", "tester"}),
+                "coder": frozenset(),
+                "tester": frozenset(),
+            },
+            allow_all=False,
+        ),
+        entry="analyst",
+    )
 
 
 def _resolve_entry_role(explicit: str | None, roles: dict[str, RoleConfig]) -> str:
@@ -513,7 +566,7 @@ def load_team_config(
     *,
     path: str | os.PathLike[str] | None = None,
 ) -> TeamConfig:
-    """Load an explicitly selected team file or the built-in lead-only team.
+    """Load an explicitly selected team file or the built-in Self-Collaboration team.
 
     ``workspace`` remains accepted for compatibility but is intentionally not
     searched for conventional filenames. An explicit ``path`` takes precedence
@@ -538,10 +591,14 @@ def load_team_config(
 
 
 __all__ = [
+    "ANALYST_TOOL_NAMES",
     "BASE_TOOL_NAMES",
-    "LEAD_TOOL_NAMES",
-    "DEFAULT_LEAD_PROMPT",
+    "CODER_TOOL_NAMES",
+    "TESTER_TOOL_NAMES",
+    "DEFAULT_ANALYST_PROMPT",
+    "DEFAULT_CODER_PROMPT",
     "DEFAULT_ROLE_PROMPT",
+    "DEFAULT_TESTER_PROMPT",
     "RoleConfig",
     "TeamConfig",
     "default_role",

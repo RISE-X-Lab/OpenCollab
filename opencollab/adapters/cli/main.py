@@ -160,7 +160,7 @@ def main_callback(
     team_config: Optional[str] = typer.Option(
         None,
         "--team-config",
-        help="Explicit team YAML file (default: OPENCOLLAB_TEAM_FILE or built-in lead-only)",
+        help="Explicit team YAML file (default: OPENCOLLAB_TEAM_FILE or the built-in Self-Collaboration team)",
     ),
     prompt: Optional[str] = typer.Option(None, "--prompt", help="Run a single prompt and exit (no REPL)"),
     prompt_file: Optional[str] = typer.Option(None, "--prompt-file", help="Read the one-shot prompt from a file"),

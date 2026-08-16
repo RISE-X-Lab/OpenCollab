@@ -91,7 +91,9 @@ jobs:
           test "${#wheels[@]}" -eq 1
           uv run --isolated --no-project --python 3.12 python - \
             "${sdists[0]}" "${wheels[0]}" pyproject.toml \
-            opencollab/bootstrap/prompts/lead.md \
+            opencollab/bootstrap/prompts/analyst.md \
+            opencollab/bootstrap/prompts/coder.md \
+            opencollab/bootstrap/prompts/tester.md \
             opencollab/bootstrap/prompts/role.md <<'PY'
           from __future__ import annotations
 
@@ -208,7 +210,7 @@ jobs:
           assert sdk.__all__ == opencollab.__all__
           assert sdk.OpenCollab is opencollab.OpenCollab
           package_root = resources.files("opencollab.bootstrap")
-          for prompt_name in ("lead.md", "role.md"):
+          for prompt_name in ("analyst.md", "coder.md", "tester.md", "role.md"):
               prompt = package_root.joinpath("prompts", prompt_name)
               assert prompt.is_file(), prompt
               assert prompt.read_text(encoding="utf-8").strip(), prompt
