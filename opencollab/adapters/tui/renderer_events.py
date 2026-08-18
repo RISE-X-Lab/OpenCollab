@@ -296,7 +296,7 @@ class _RendererEventsMixin:
         state: Any | None = None,
         preserve: bool = False,
     ) -> None:
-        """Route status lines to Live when active; print directly otherwise."""
+        """Route status lines to the HUD when one is painted; print otherwise."""
         status = message if isinstance(message, Text) else Text.from_markup(message)
         target = state or self._selected_state
         target_aid = self._aid_of(target)
@@ -304,7 +304,7 @@ class _RendererEventsMixin:
             self._flush_current_text_to_timeline(target)
             self._append_history_block(target, status)
             self._drain_pending(target_aid)
-        if self._live or self._live_paused:
+        if self._redraw is not None:
             # The status row is one row. The preserved copy above keeps the
             # message whole in scrollback, so nothing is lost by folding it.
             target.status_lines.append(collapse_text_rows(status))
@@ -313,7 +313,7 @@ class _RendererEventsMixin:
                 del target.status_lines[:overflow]
             self._refresh()
             return
-        # No live frame to hold a transient line. Printing it is the only way to
+        # No HUD to hold a transient line. Printing it is the only way to
         # show it at all — but it still obeys focus, and a preserved line has
         # already been printed as part of the transcript.
         if not preserve and target_aid == self._selected_aid:

@@ -7,35 +7,41 @@ Ref:
 
 Settled output goes to ordinary terminal scrollback the moment it settles, so
 the terminal's own scrollback is the transcript and nothing is ever erased. The
-Live region holds only in-flight chrome — streaming text, tool spinners, the
-wait indicator, and the roster footer — so it stays a few lines tall.
+in-flight remainder — streaming text, tool spinners, the wait indicator, the
+roster — is not printed at all: it is rendered to ANSI rows and handed to the
+prompt that owns the bottom of the screen (see ``adapters.cli.live_prompt``).
+
+One renderer per region is the whole point. Two in-place redrawers cannot share
+rows, so the HUD stopped being a Rich ``Live`` the moment the prompt became
+permanent.
 
 Split by concern (``self`` is unchanged — mixins run on the one TUI instance):
 
 - ``renderer_events``  — event dispatch + history/status/roster updates
 - ``renderer_display`` — Rich renderable building + style palette
-- this module          — ``TUI`` state, Live lifecycle, and turn-level API
+- this module          — ``TUI`` state, scrollback writes, and turn-level API
 """
 
 from __future__ import annotations
 
-import asyncio
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from rich.console import Console, Group
 from rich.control import Control
-from rich.live import Live
 from rich.panel import Panel
 from rich.text import Text
 
 from opencollab.adapters.tui.brand_motion import MARK_HEX, PulseDot
-from opencollab.adapters.tui.keyboard import TabKeyNavigator
 from opencollab.adapters.tui.renderer_display import _RendererDisplayMixin
 from opencollab.adapters.tui.renderer_events import _RendererEventsMixin
 from opencollab.domain.session import TERMINAL_PHASES
 
+# The HUD is re-rendered at most once per tick; the prompt asks far more often
+# than that. 20 ticks a second is finer than the eye reads a breathing dot.
+HUD_FRAME_INTERVAL = 0.05
 MAX_HISTORY_BLOCKS_PER_AGENT = 400
 MAX_TERMINAL_AGENT_STATES = 128
 MAX_TERMINAL_AGENT_SUMMARIES = 256
@@ -100,8 +106,11 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         # seconds-less tool-execution spinner. Each agent owns its own LLM-wait
         # indicator so hidden streams remain intact while another agent is selected.
         self._motion = PulseDot(muted_style=self._STYLE_MUTED, show_seconds=False)
-        self._live: Live | None = None
-        self._live_paused = False
+        # The prompt that owns the bottom region asks for a redraw through this
+        # callback; ``None`` means nothing is painting a HUD (a non-TTY run).
+        self._redraw: Callable[[], None] | None = None
+        self._queued_turns = 0
+        self._hud_cache: tuple[Any, str] | None = None
         # Retained as a compatibility input while the renderer moves to one
         # lossless per-agent view. It must never control event collection.
         self._filter_messages = filter_messages
@@ -111,19 +120,8 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         # configured "available" roles). When set, the team panel renders from
         # it so the roster stays visible during a turn, not only after a spawn.
         self._team_provider: Any | None = None
-        self._keyboard_controller: Any | None = TabKeyNavigator(
-            self.select_previous_agent,
-            self.select_next_agent,
-        )
-        self._keyboard_resume_pending = False
-        self._holding_for_exit = False
-        # Settled blocks are written straight to the terminal. While a prompt is
-        # on screen that write has to be handed to prompt_toolkit instead, or it
-        # corrupts the prompt's redraw — the CLI swaps in ``run_in_terminal``.
-        # A stack, not a slot: prompts overlap (see ``set_scrollback_gate``).
-        self._scrollback_gates: list[Callable[[Callable[[], None]], Any]] = []
-        # Agents whose trailing streamed text the last ``stop_live()`` committed
-        # to scrollback, so a failed turn is not reported twice.
+        # Agents whose trailing streamed text the last ``settle_turn()``
+        # committed to scrollback, so a failed turn is not reported twice.
         self._drained_partial_aids: frozenset[int] = frozenset()
 
     def _state_for(self, aid: int) -> _AgentRenderState:
@@ -138,41 +136,17 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
             state.history_omitted_blocks += overflow
             state.printed_blocks = max(0, state.printed_blocks - overflow)
 
-    @property
-    def _scrollback_gate(self) -> Callable[[Callable[[], None]], Any] | None:
-        """The gate currently owning the screen, if any."""
-        return self._scrollback_gates[-1] if self._scrollback_gates else None
+    def set_redraw(self, redraw: Callable[[], None] | None) -> None:
+        """Register the owner of the bottom region, or ``None`` to detach.
 
-    def set_scrollback_gate(self, gate: Callable[[Callable[[], None]], Any] | None) -> None:
-        """Claim the scrollback gate with ``gate``, or release one with ``None``.
-
-        Rich's Live renders ordinary prints above its own region, so a running
-        turn needs no gate. A prompt_toolkit prompt owns the screen instead, so
-        the CLI installs ``run_in_terminal`` for the duration of the prompt.
-
-        Ownership is a stack rather than a slot because prompts overlap: an
-        ``ask_user`` question and a permission y/N come from two agents running
-        concurrently, and the first to be answered must not uninstall the gate
-        the other one is still relying on. Claims and releases pair up; a
-        release with nothing claimed is a no-op.
+        Scrollback writes need no cooperation from it: the CLI stands a
+        ``patch_stdout`` up for the whole session, so every print — this
+        renderer's and anyone else's — is routed above the prompt already. What
+        the callback buys is the other direction: an event that changes the HUD
+        has to ask the prompt to repaint, because nothing else will.
         """
-        if gate is None:
-            if self._scrollback_gates:
-                self._scrollback_gates.pop()
-            return
-        self._scrollback_gates.append(gate)
-
-    def _write_scrollback(self, emit: Callable[[], None]) -> None:
-        gate = self._scrollback_gate
-        if gate is None:
-            emit()
-            return
-        try:
-            gate(emit)
-        except Exception:
-            # A gate can only fail when its owning prompt is already gone; the
-            # transcript is worth more than the redraw it was protecting.
-            emit()
+        self._redraw = redraw
+        self._hud_cache = None
 
     def _drain_pending(self, aid: int | None = None) -> None:
         """Print the focused agent's not-yet-printed settled blocks."""
@@ -196,7 +170,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
             return
         state.printed_blocks = len(state.history_blocks)
         blocks = pending if aid == self._selected_aid else [self._focus_band(aid), *pending]
-        self._write_scrollback(lambda: self._print_blocks(blocks))
+        self._print_blocks(blocks)
 
     def _fully_printed(self, aid: int) -> bool:
         """Has everything this agent has settled reached scrollback?"""
@@ -207,8 +181,9 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         for block in blocks:
             self.console.print(block)
 
-    def _scroll_to_screen_top(self) -> None:
-        """Push the visible screen into scrollback, then home the cursor.
+    def _screen_top_prelude(self) -> list[Any]:
+        """Renderables that push the visible screen into scrollback and home the
+        cursor, or nothing when there is no screen to scroll.
 
         A focus switch reads as a change of view, so the newly focused agent has
         to open on the terminal's first row. Erasing (``ESC[2J``) would clear the
@@ -217,14 +192,15 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         in the very transcript this renderer exists to keep. Scrolling loses
         nothing — the screen of blank rows is the separator between two agents.
 
-        One print, not two: Live wraps every print with a redraw of its own
-        region, so a redraw landing between the newlines and the home would
-        scroll a live region's worth of blank rows into scrollback.
+        Returned rather than printed because the scroll, the home, and the
+        redraw have to leave as *one* write: the prompt repaints itself after
+        every write it sees, and a repaint landing between the newlines and the
+        home would scroll a prompt's worth of rows into scrollback.
         """
         height = self.console.height
         if not self.console.is_terminal or height < 1:
-            return
-        self.console.print(Group(Text("\n" * (height - 1)), Control.home()), end="")
+            return []
+        return [Text("\n" * (height - 1)), Control.home()]
 
     def _track_agent_render_lifecycle(self, aid: int, state: str) -> None:
         if aid in self._terminal_summary_order:
@@ -338,10 +314,6 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         shows the team continuously (matching the prompt's bottom toolbar)."""
         self._team_provider = provider
 
-    def set_keyboard_controller(self, controller: Any) -> None:
-        """Attach the turn-scoped Tab-key controller used by the CLI."""
-        self._keyboard_controller = controller
-
     @property
     def selected_aid(self) -> int:
         return self._selected_aid
@@ -413,7 +385,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         retained trajectory, not whatever happened to accumulate since they last
         looked. Blocks evicted by the per-agent bound are named, not silently dropped.
 
-        The redraw opens at the first row (see ``_scroll_to_screen_top``) so the
+        The redraw opens at the first row (see ``_screen_top_prelude``) so the
         agent the user asked for is the only one on screen. A trajectory taller
         than the terminal still scrolls off the top — the guarantee is where the
         redraw starts, not that all of it fits.
@@ -432,11 +404,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
                     style=self._STYLE_MUTED,
                 ),
             )
-        def emit() -> None:
-            self._scroll_to_screen_top()
-            self._print_blocks([band, *blocks])
-
-        self._write_scrollback(emit)
+        self.console.print(Group(*self._screen_top_prelude(), band, *blocks))
 
     def select_agent(self, aid: int) -> int:
         """Select an existing agent and return the resulting aid."""
@@ -475,86 +443,61 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         self._drain_pending(aid)
 
     def _refresh(self) -> None:
-        """Re-render the current state."""
-        if self._live and not self._live_paused:
-            self._live.update(self._build_live_display())
+        """Ask the bottom region's owner to repaint the HUD."""
+        self._hud_cache = None
+        if self._redraw is not None:
+            self._redraw()
 
-    def start_live(self) -> None:
-        """Start the Live display context."""
-        self._live_paused = False
+    def hud_ansi(self, width: int | None = None) -> str | None:
+        """The in-flight frame as ANSI rows, or ``None`` when nothing is live.
+
+        Rich builds it, prompt_toolkit paints it. Handing over rows instead of
+        printing them is what keeps the region single-owned: the prompt already
+        redraws these rows on every keystroke, and a second renderer writing to
+        them would be drawing over a surface it does not control.
+
+        Cached between repaints because the prompt asks far more often than the
+        state changes — several times per keystroke, plus its own refresh tick —
+        while the frame it renders only moves when an event or the pulse does.
+        """
+        width = self.console.width if width is None else width
+        key = (width, int(time.monotonic() / HUD_FRAME_INTERVAL))
+        cached = self._hud_cache
+        if cached is not None and cached[0] == key:
+            return cached[1] or None
+        frame = self._build_hud()
+        rendered = "" if frame is None else self._render_ansi(frame, width)
+        self._hud_cache = (key, rendered)
+        return rendered or None
+
+    def _render_ansi(self, renderable: Any, width: int) -> str:
+        """Render one renderable to the ANSI rows the prompt will paint."""
+        with self.console.capture() as capture:
+            self.console.print(renderable, width=width, end="", crop=True)
+        return capture.get().rstrip("\n")
+
+    def set_queued_turns(self, count: int) -> None:
+        """Report how many typed messages are waiting for the running turn.
+
+        Typing during a turn queues rather than interrupts, so the count is the
+        only evidence the user has that their line landed at all.
+        """
+        if count == self._queued_turns:
+            return
+        self._queued_turns = count
+        self._refresh()
+
+    def start_turn(self, aid: int) -> None:
+        """Open a turn on ``aid``: show its wait indicator and repaint."""
         # The turn begins by waiting on the model — show the animated wait bar so
         # first-token latency doesn't read as frozen. step_start refines it with
         # the step counter; text/tool progress clears it.
-        label = self._agent_label(self._selected_aid)
-        self._selected_state.thinking = self._new_thinking_bar(f"{label} thinking…")
-        self._live = Live(
-            self._build_live_display(),
-            console=self.console,
-            refresh_per_second=10,
-            transient=True,
-            vertical_overflow="crop",
-        )
-        self._live.start()
-        if self._keyboard_controller is not None:
-            self._keyboard_controller.start()
+        label = self._agent_label(aid)
+        self._state_for(aid).thinking = self._new_thinking_bar(f"{label} thinking…")
+        self._refresh()
 
-    async def hold_live(self) -> bool:
-        """Keep a completed TTY Live view open until the user presses ``q``.
-
-        Returns ``False`` when no interactive keyboard controller is active, so
-        redirected and other non-TTY one-shot runs never wait for input.
-        """
-        controller = self._keyboard_controller
-        set_quit_callback = getattr(controller, "set_quit_callback", None)
-        if (
-            self._live is None
-            or controller is None
-            or not getattr(controller, "active", False)
-            or not callable(set_quit_callback)
-        ):
-            return False
-
-        released = asyncio.Event()
-        set_quit_callback(released.set)
-        self._holding_for_exit = True
-        try:
-            self._refresh()
-            await released.wait()
-            return True
-        finally:
-            set_quit_callback(None)
-            self._holding_for_exit = False
-
-    def suspend_live(self) -> bool:
-        """Temporarily stop Live updates while preserving render state."""
-        if not self._live or self._live_paused:
-            return False
-        if self._keyboard_controller is not None:
-            self._keyboard_resume_pending = self._keyboard_controller.stop()
-        self._live.stop()
-        self._live = None
-        self._live_paused = True
-        return True
-
-    def resume_live(self, was_suspended: bool) -> None:
-        """Resume Live after suspend_live was used."""
-        if not was_suspended or not self._live_paused:
-            return
-        self._live = Live(
-            self._build_live_display(),
-            console=self.console,
-            refresh_per_second=10,
-            transient=True,
-            vertical_overflow="crop",
-        )
-        self._live_paused = False
-        self._live.start()
-        if self._keyboard_resume_pending and self._keyboard_controller is not None:
-            self._keyboard_controller.start()
-        self._keyboard_resume_pending = False
-
-    def stop_live(self, final_aid: int | None = None) -> None:
-        """Stop the live HUD, settling whatever it still held.
+    def settle_turn(self, final_aid: int | None = None) -> None:
+        """Close a turn, settling whatever the HUD still held.
 
         Everything settled during the turn already reached scrollback, so this
         only has to commit the trailing streamed text and drop live-only chrome.
@@ -564,30 +507,21 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         could Tab back to it. Its tail is flushed even if focus wandered off to
         a teammate.
         """
-        set_quit_callback = getattr(self._keyboard_controller, "set_quit_callback", None)
-        if callable(set_quit_callback):
-            set_quit_callback(None)
-        self._holding_for_exit = False
-        if self._keyboard_controller is not None:
-            self._keyboard_controller.stop()
-        self._keyboard_resume_pending = False
         streaming = {aid for aid, state in self._agent_states.items() if state.current_text}
         for state in self._agent_states.values():
             self._flush_current_text_to_timeline(state)
             state.status_lines.clear()
-        if self._live:
-            self._live.stop()
-            self._live = None
-        self._live_paused = False
+            state.thinking = None
         self._drain_pending()
         if final_aid is not None:
             self._drain_agent_tail(final_aid)
         self._drained_partial_aids = frozenset(
             aid for aid in streaming if self._fully_printed(aid)
         )
+        self._refresh()
 
     def drained_partial_answer(self, aid: int) -> bool:
-        """Did the last ``stop_live()`` commit this agent's trailing text?
+        """Did the last ``settle_turn()`` commit this agent's trailing text?
 
         A turn that ends in ``SchedulerTurnError`` carries the half-finished
         answer as ``partial_answer``, and the CLI used to print it because the

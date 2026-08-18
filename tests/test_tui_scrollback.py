@@ -35,19 +35,26 @@ def _history_plains(tui: TUI, aid: int) -> list[str]:
     ]
 
 
-def test_live_frame_stays_bounded_while_full_history_reaches_scrollback():
+def test_the_hud_stays_bounded_while_full_history_reaches_scrollback():
     console = Console(file=StringIO(), width=100, height=24, color_system=None)
     tui = TUI(console)
-    tui.select_agent(1)
 
     for index in range(100):
         tui._append_activity((f"activity {index}", tui._STYLE_MUTED))
+    tui.start_turn(0)
+    for index in range(40):
+        tui.event_handler(
+            SessionRuntimeEvent("text_delta", {"content": f"streamed {index}\n\n", "aid": 0})
+        )
 
-    frame = console.render_lines(tui._build_live_display(), console.options, pad=False)
+    frame = console.render_lines(tui._build_hud(), console.options, pad=False)
     assert len(frame) <= renderer_display_mod.MAX_LIVE_BODY_LINES
     scrollback = _scrollback(tui)
     assert "activity 0" in scrollback
     assert "activity 99" in scrollback
+    # The tail is what the HUD shows; the rest is not lost, it just has not
+    # settled yet.
+    assert "streamed 39" in "".join("".join(seg.text for seg in line) for line in frame)
 
 
 def test_every_settled_block_path_reaches_scrollback_for_the_focused_agent():
@@ -99,14 +106,14 @@ def test_user_message_is_recorded_only_in_target_and_printed_only_when_focused()
     assert "please inspect the renderer" in _scrollback(tui)
 
 
-def test_stop_live_settles_child_final_text_and_error_into_its_history():
+def test_settle_turn_settles_child_final_text_and_error_into_its_history():
     console = Console(file=StringIO(), width=100, color_system=None)
     tui = TUI(console)
     tui._live_paused = True
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "final child text", "aid": 1}))
     tui.event_handler(SessionRuntimeEvent("error", {"reason": "child error", "aid": 1}))
 
-    tui.stop_live()
+    tui.settle_turn()
     tui.select_agent(1)
 
     assert tui._state_for(1).current_text == ""
@@ -119,11 +126,11 @@ def test_agent_history_accumulates_across_turn_resets():
     console = Console(file=StringIO(), width=100, color_system=None)
     tui = TUI(console)
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "turn one", "aid": 1}))
-    tui.stop_live()
+    tui.settle_turn()
 
     tui.reset()
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "turn two", "aid": 1}))
-    tui.stop_live()
+    tui.settle_turn()
     tui.select_agent(1)
 
     scrollback = _scrollback(tui)
@@ -136,11 +143,11 @@ def test_scrollback_is_append_only_across_turns_for_the_focused_agent():
     console = Console(file=StringIO(), width=100, color_system=None)
     tui = TUI(console)
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "old answer", "aid": 0}))
-    tui.stop_live()
+    tui.settle_turn()
 
     tui.reset()
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "new answer", "aid": 0}))
-    tui.stop_live()
+    tui.settle_turn()
 
     scrollback = _scrollback(tui)
     assert scrollback.count("old answer") == 1
@@ -179,12 +186,12 @@ def test_legacy_event_without_aid_routes_to_lead_not_current_focus():
     assert tui._state_for(1).current_text == "child"
 
 
-def test_stop_live_settles_every_agent_but_prints_only_the_focused_one():
+def test_settle_turn_settles_every_agent_but_prints_only_the_focused_one():
     tui = _make_tui()
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "lead answer", "aid": 0}))
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "child notes", "aid": 1}))
 
-    tui.stop_live()
+    tui.settle_turn()
 
     # Both agents' streamed text is committed, so neither is lost on a later switch.
     assert tui._state_for(0).current_text == ""
@@ -213,7 +220,7 @@ def test_finishing_on_an_unfocused_agent_prints_its_tail_exactly_once():
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "the final answer", "aid": 0}))
 
     tui.select_agent(1)  # the user wanders off to watch a teammate
-    tui.stop_live(final_aid=0)
+    tui.settle_turn(final_aid=0)
 
     scrollback = _scrollback(tui)
     assert scrollback.count("early lead line") == 1
@@ -223,47 +230,19 @@ def test_finishing_on_an_unfocused_agent_prints_its_tail_exactly_once():
     assert scrollback.rindex(band) < scrollback.index("the final answer")
 
 
-def test_stop_live_reports_whose_trailing_text_it_committed():
+def test_settle_turn_reports_whose_trailing_text_it_committed():
     """The CLI salvages a failed turn's partial answer only if this says no."""
     tui = _make_tui()
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "lead partial", "aid": 0}))
     tui.event_handler(SessionRuntimeEvent("text_delta", {"content": "child partial", "aid": 1}))
 
-    tui.stop_live()
+    tui.settle_turn()
 
     # The lead held focus, so its partial reached scrollback; the child's did not.
     assert tui.drained_partial_answer(0) is True
     assert tui.drained_partial_answer(1) is False
     # An agent that streamed nothing has no partial to have been committed.
     assert tui.drained_partial_answer(2) is False
-
-
-def test_overlapping_prompts_keep_the_gate_until_the_last_one_releases():
-    """Two agents can hold a prompt at once; the first to finish must not
-    uninstall the gate the other is still relying on."""
-    tui = _make_tui()
-    withheld: list[object] = []
-
-    def outer_gate(emit) -> None:
-        withheld.append(emit)
-
-    def inner_gate(emit) -> None:
-        withheld.append(emit)
-
-    tui.set_scrollback_gate(outer_gate)   # agent 1's permission y/N
-    tui.set_scrollback_gate(inner_gate)   # agent 2's ask_user question
-    tui.set_scrollback_gate(None)         # agent 2 answers first
-
-    assert tui._scrollback_gate is outer_gate
-
-    tui.record_user_message(0, "settled while the first prompt is still up")
-
-    # Withheld, not printed behind the surviving prompt's back.
-    assert len(withheld) == 1
-    assert _scrollback(tui) == ""
-
-    tui.set_scrollback_gate(None)
-    assert tui._scrollback_gate is None
 
 
 def test_focus_switch_scrolls_the_screen_away_instead_of_erasing_it():
@@ -303,21 +282,34 @@ def test_focus_switch_leaves_a_redirected_terminal_alone():
     assert "\x1b[" not in scrollback
 
 
-def test_focus_switch_scroll_is_gated_with_the_redraw_it_belongs_to():
-    """The scroll must reach the terminal through the same gate as the blocks.
+def test_focus_switch_scroll_and_redraw_leave_as_one_write():
+    """The scroll, the home, and the redraw are one write to the terminal.
 
-    Splitting them would let a prompt_toolkit redraw land between the scroll and
-    the agent it was making room for.
+    The prompt repaints itself after every write it sees, so a repaint landing
+    between the newlines and the home would scroll a prompt's worth of rows
+    into scrollback — and the redraw would then open below them, not on row 1.
     """
+    class RecordingFile(StringIO):
+        def __init__(self) -> None:
+            super().__init__()
+            self.writes: list[str] = []
+
+        def write(self, value: str) -> int:
+            self.writes.append(value)
+            return super().write(value)
+
     console = Console(
-        file=StringIO(), width=100, height=24, force_terminal=True, color_system=None
+        file=RecordingFile(), width=100, height=24, force_terminal=True, color_system=None
     )
     tui = TUI(console)
     tui.record_user_message(1, "child line")
-    withheld: list[object] = []
-    tui.set_scrollback_gate(withheld.append)
+    console.file.writes.clear()
 
     tui.select_agent(1)
 
-    assert len(withheld) == 1
-    assert _scrollback(tui) == ""
+    scroll_to_top = "\n" * console.height + "\x1b[H"
+    carrying_the_switch = [
+        write for write in console.file.writes if scroll_to_top in write
+    ]
+    assert len(carrying_the_switch) == 1
+    assert "child line" in carrying_the_switch[0]

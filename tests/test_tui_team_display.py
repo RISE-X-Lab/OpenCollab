@@ -32,7 +32,7 @@ def _assert_visible_text_has_non_white_style(text: Text) -> None:
 
 def test_roster_tracks_spawn_and_completion_state():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(SchedulerEvent("agent_spawned", {"aid": 1, "parent_aid": 0, "role": "coder"}))
     assert tui._roster[1] == {"role": "coder", "state": "running"}
@@ -43,7 +43,7 @@ def test_roster_tracks_spawn_and_completion_state():
 
 def test_agent_resumed_marks_roster_running_again():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(SchedulerEvent("agent_spawned", {"aid": 1, "parent_aid": 0, "role": "manager"}))
     tui.event_handler(SchedulerEvent("agent_completed", {"aid": 1, "role": "manager", "latency": 1.0}))
@@ -56,7 +56,7 @@ def test_agent_resumed_marks_roster_running_again():
 
 def test_team_panel_renders_when_roster_present():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
     assert tui._build_team_panel() is None
 
     tui.event_handler(SchedulerEvent("agent_spawned", {"aid": 2, "parent_aid": 0, "role": "reviewer"}))
@@ -135,7 +135,7 @@ def test_team_provider_failure_falls_back_to_event_roster():
 
 def test_message_events_append_activity_lines():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(SchedulerEvent("agent_message_sent", {"from_aid": 0, "to_aid": 2}))
     tui.event_handler(SchedulerEvent("agent_message_delivered", {"to_aid": 2, "result_len": 10}))
@@ -156,7 +156,7 @@ def test_message_events_append_activity_lines():
 
 def test_status_lines_use_explicit_non_white_styles():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(SessionRuntimeEvent("step_start", {"step": 4, "aid": 0}))
     tui.event_handler(SessionRuntimeEvent("budget_warning", {}))
@@ -168,7 +168,7 @@ def test_status_lines_use_explicit_non_white_styles():
 
 def test_status_chrome_renderables_avoid_default_text_color():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(
         SessionRuntimeEvent(
@@ -206,7 +206,7 @@ def test_status_row_stays_one_row_when_the_text_it_quotes_has_newlines():
     assert len(console.render_lines(row, console.options.update(width=100))) == 1
 
     # Same for the error path, whose reason comes straight from the runtime.
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
     tui.event_handler(
         SessionRuntimeEvent("error", {"reason": "boom\n  File x.py, line 1\n  KeyError", "aid": 0})
     )
@@ -218,14 +218,14 @@ def test_status_row_stays_one_row_when_the_text_it_quotes_has_newlines():
     assert "File x.py" in console.file.getvalue()
 
 
-def test_live_display_tails_when_content_exceeds_terminal_height():
+def test_the_hud_tails_when_content_exceeds_terminal_height():
     console = Console(file=StringIO(), width=40, height=4)
     tui = TUI(console)
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
     for index in range(8):
         tui._status_lines.append(Text(f"status {index}", style="#6B7280"))
 
-    display = tui._build_live_display()
+    display = tui._build_hud()
     lines = console.render_lines(display, console.options, pad=False)
     plain = "\n".join("".join(segment.text for segment in line) for line in lines)
 
@@ -253,9 +253,9 @@ def test_narrow_agent_status_keeps_selected_agent_visible():
     assert plain.index("Lead") < plain.index("A1") < plain.index("◆ A5")
 
 
-def _live_rows(tui: TUI) -> list[str]:
+def _hud_rows(tui: TUI) -> list[str]:
     console = tui.console
-    rendered = console.render_lines(tui._build_live_display(), console.options, pad=False)
+    rendered = console.render_lines(tui._build_hud(), console.options, pad=False)
     return ["".join(segment.text for segment in line) for line in rendered]
 
 
@@ -266,7 +266,7 @@ def _stream(tui: TUI, paragraphs: int) -> None:
     )
 
 
-def test_agent_status_remains_last_row_when_live_view_is_cropped():
+def test_agent_status_remains_last_row_when_the_hud_is_cropped():
     console = Console(file=StringIO(), width=50, height=3, color_system=None)
     tui = TUI(console)
     tui.set_team_provider(lambda: [
@@ -275,7 +275,7 @@ def test_agent_status_remains_last_row_when_live_view_is_cropped():
     ])
     _stream(tui, 8)
 
-    rows = _live_rows(tui)
+    rows = _hud_rows(tui)
 
     assert len(rows) == console.height
     # The body is cropped to its tail; the status row is not part of that budget.
@@ -293,7 +293,7 @@ def test_agent_status_is_pinned_to_terminal_bottom_when_content_is_short():
     ])
     tui._state_for(0).current_text = "short body"
 
-    rows = _live_rows(tui)
+    rows = _hud_rows(tui)
 
     # A short frame must claim only the rows it needs. Padding it out to the
     # terminal height is what buried the settled transcript printed above it.
@@ -311,7 +311,7 @@ def test_agent_status_owns_only_row_in_one_line_terminal():
     ])
     tui._state_for(0).current_text = "body is hidden"
 
-    rows = _live_rows(tui)
+    rows = _hud_rows(tui)
 
     assert len(rows) == 1
     assert "AGENTS" in rows[0]
@@ -325,11 +325,11 @@ def test_pinned_agent_status_reflows_to_resized_terminal_height():
         {"aid": 0, "role": "lead", "phase": "done", "busy": False},
     ])
     _stream(tui, 8)
-    assert len(_live_rows(tui)) == 6
+    assert len(_hud_rows(tui)) == 6
 
     console.height = 3
 
-    rows = _live_rows(tui)
+    rows = _hud_rows(tui)
     assert len(rows) == 3
     assert "AGENTS" in rows[-1]
 
