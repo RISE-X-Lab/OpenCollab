@@ -21,6 +21,7 @@ import asyncio
 import os
 import sys
 import uuid
+from functools import partial
 from typing import Any, Optional
 
 import typer
@@ -34,10 +35,7 @@ from opencollab.adapters.cli.config_resolve import (
     print_missing_key_hint,
     resolve_config,
 )
-from opencollab.adapters.cli.prompt_view import (
-    build_agent_navigation_bindings,
-    build_agent_prompt,
-)
+from opencollab.adapters.cli.prompt_view import build_agent_navigation_bindings
 from opencollab.adapters.cli.toolbar import format_team_toolbar
 from opencollab.adapters.cli.workflow import app as workflow_app
 from opencollab.adapters.safe_files import read_regular_text
@@ -230,12 +228,59 @@ def _resolve_one_shot_prompt(prompt: str | None, prompt_file: str | None) -> str
 # ---------------------------------------------------------------------------
 
 
+def _prompt_scrollback_gate(emit: Any) -> None:
+    """Print above a live prompt via prompt_toolkit, which owns the screen."""
+    from prompt_toolkit.application import run_in_terminal
+
+    run_in_terminal(emit)
+
+
+def _print_hint(label: str, value: str) -> None:
+    """One hairline-led chrome line, home-shortened and kept to a single row.
+
+    Session and trajectory paths are long enough to wrap into three or four rows
+    and push real output off the top. The head is elided rather than the tail:
+    the run id and filename at the end are what identify the file.
+    """
+    home = os.path.expanduser("~")
+    if home != "~" and value.startswith(home):
+        value = "~" + value[len(home):]
+    prefix = f"─ {label} → "
+    budget = max(8, console.width - len(prefix))
+    if len(value) > budget:
+        value = "…" + value[-(budget - 1):]
+    line = Text()
+    line.append("─ ", style="grey46")
+    line.append(f"{label} → {value}", style="grey58")
+    console.print(line)
+
+
+async def _read_line_at_prompt(tui, prompt_text: Any, **kwargs: Any) -> str:
+    """Read one line with the TUI's scrollback routed through prompt_toolkit.
+
+    Every prompt owns the screen, not just the REPL's: an ``ask_user`` question
+    and a permission y/N are up while other agents keep running, and a settled
+    block printed straight to the console corrupts the prompt's redraw. So the
+    gate belongs to *reading a line*, not to one call site.
+    """
+    tui.set_scrollback_gate(_prompt_scrollback_gate)
+    try:
+        return await _read_line(prompt_text, **kwargs)
+    finally:
+        tui.set_scrollback_gate(None)
+
+
 async def _read_command(tui, bottom_toolbar: Any = None) -> str | None:
-    """Prompt for a user line, returning None on EOF/interrupt."""
+    """Prompt for a user line, returning None on EOF/interrupt.
+
+    Tab reprints the newly selected agent while this prompt is on screen, which
+    is one of the writes ``_read_line_at_prompt`` gates.
+    """
     was_suspended = tui.suspend_live()
     try:
-        return await _read_line(
-            build_agent_prompt(tui, _PROMPT),
+        return await _read_line_at_prompt(
+            tui,
+            _PROMPT,
             bottom_toolbar=bottom_toolbar,
             key_bindings=build_agent_navigation_bindings(tui),
         )
@@ -296,7 +341,10 @@ async def _repl_loop(tui: Any, handle_turn, lead: Any, bottom_toolbar: Any = Non
         try:
             result = await handle_turn(line, target_aid)
         except SchedulerTurnError as exc:
-            if exc.partial_answer:
+            # The half-finished answer is salvage: print it only if the turn's
+            # cleanup did not already settle the streamed text into scrollback,
+            # or the user reads the same partial answer twice.
+            if exc.partial_answer and not tui.drained_partial_answer(exc.aid):
                 console.print(Text(exc.partial_answer))
             reason = exc.terminal_reason or exc.phase.value
             style = "yellow" if exc.phase.value == "stopped" else "red"
@@ -363,10 +411,11 @@ async def _run(
 
     # ``--yolo`` only auto-approves risky commands; a human is still present, so
     # the ask-user tool stays interactive (routed through the TUI's suspend/resume).
+    gated_read_line = partial(_read_line_at_prompt, tui)
     permission_policy = None
     if not yolo:
-        permission_policy = TuiPermissionPolicy(render=tui, read_line=_read_line)
-    ask_policy = TuiAskUserPolicy(render=tui, read_line=_read_line)
+        permission_policy = TuiPermissionPolicy(render=tui, read_line=gated_read_line)
+    ask_policy = TuiAskUserPolicy(render=tui, read_line=gated_read_line)
 
     event_sink = TuiEventSink(tui)
     events_file = os.environ.get("OPENCOLLAB_EVENTS_FILE")
@@ -399,13 +448,9 @@ async def _run(
         tui.set_team_provider(scheduler.team_roster)
         lead = scheduler.lead_session
         if session_file and os.path.exists(session_file):
-            console.print(
-                f"[grey46]─[/grey46] [grey58]restored from {session_file}[/grey58]"
-            )
+            _print_hint("restored from", str(session_file))
         elif lead.auto_save_path:
-            console.print(
-                f"[grey46]─[/grey46] [grey58]session → {lead.auto_save_path}[/grey58]"
-            )
+            _print_hint("session", str(lead.auto_save_path))
 
         async def turn(line: str, target_aid: int) -> None:
             tui.select_agent(target_aid)
@@ -423,9 +468,14 @@ async def _run(
                     if completed and one_shot_prompt is not None and hold_after_run:
                         await tui.hold_live()
                 finally:
+                    # Only the focused agent's blocks reach scrollback, and a
+                    # one-shot run has no "later" in which to Tab back. If the
+                    # user wandered off to watch a teammate, flush the tail of
+                    # the agent that owes them an answer. The tail, not a focus
+                    # switch: a switch reprints in full and would repeat every
+                    # row this agent already put on screen.
                     tui.stop_live(
-                        persist=one_shot_prompt is not None,
-                        aid=target_aid,
+                        final_aid=target_aid if one_shot_prompt is not None else None
                     )
                     tui.print_stats(
                         scheduler.used_tokens,
@@ -461,10 +511,7 @@ async def _run(
                 )
             else:
                 try:
-                    console.print(
-                        f"[grey46]─[/grey46] "
-                        f"[grey58]trajectory → {ctx.tracer.path}[/grey58]"
-                    )
+                    _print_hint("trajectory", str(ctx.tracer.path))
                 except BaseException as exc:
                     tracer_failure = exc
     if file_event_sink is not None:

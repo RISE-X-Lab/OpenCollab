@@ -6,12 +6,12 @@ import io
 import os
 import struct
 import termios
+from functools import partial
 from types import SimpleNamespace
 
 import prompt_toolkit
 import pytest
 from prompt_toolkit import PromptSession
-from prompt_toolkit.formatted_text import HTML, fragment_list_to_text, to_formatted_text
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.keys import Keys
 from prompt_toolkit.output import DummyOutput
@@ -19,10 +19,8 @@ from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.console import Console
 
 from opencollab.adapters.cli import main as cli_main
-from opencollab.adapters.cli.prompt_view import (
-    build_agent_navigation_bindings,
-    build_agent_prompt,
-)
+from opencollab.adapters.cli.prompt_view import build_agent_navigation_bindings
+from opencollab.adapters.tui import TUI
 from opencollab.application.scheduler_types import SchedulerTurnError
 from opencollab.domain.session import SessionPhase
 
@@ -30,13 +28,14 @@ from opencollab.domain.session import SessionPhase
 class _FakeTUI:
     def __init__(self) -> None:
         self.selected_aid = 0
-        self.history = {1: "agent one full history", 2: "agent two full history"}
-        self.revisions = {0: 0, 1: 0, 2: 0}
-        self.render_calls = 0
+        self.gates: list = []
+        self.drained_partials: set[int] = set()
 
-    @property
-    def selected_history_cache_key(self) -> tuple[int, int, int]:
-        return self.selected_aid, self.revisions[self.selected_aid], 80
+    def set_scrollback_gate(self, gate) -> None:
+        self.gates.append(gate)
+
+    def drained_partial_answer(self, aid: int) -> bool:
+        return aid in self.drained_partials
 
     def select_next_agent(self) -> int | None:
         self.selected_aid = 1 if self.selected_aid == 0 else 2
@@ -46,67 +45,19 @@ class _FakeTUI:
         self.selected_aid = 1
         return self.selected_aid
 
-    def render_selected_history(self) -> str:
-        self.render_calls += 1
-        return self.history.get(self.selected_aid, "")
 
+def test_prompt_scrollback_gate_hands_printing_to_prompt_toolkit(monkeypatch):
+    import prompt_toolkit.application as pt_application
 
-def _plain_prompt(prompt) -> str:
-    return fragment_list_to_text(to_formatted_text(prompt))
+    handed: list = []
+    monkeypatch.setattr(pt_application, "run_in_terminal", handed.append)
 
+    def emit() -> None:
+        raise AssertionError("the gate must not print behind prompt_toolkit's back")
 
-def test_agent_prompt_replaces_history_and_refreshes_on_revision():
-    tui = _FakeTUI()
-    prompt = build_agent_prompt(tui, HTML("<b>&gt;</b> "))
+    cli_main._prompt_scrollback_gate(emit)
 
-    assert _plain_prompt(prompt) == "> "
-    tui.selected_aid = 1
-    assert _plain_prompt(prompt) == "agent one full history\n> "
-    assert _plain_prompt(prompt) == "agent one full history\n> "
-    assert tui.render_calls == 2
-
-    tui.history[1] = "agent one latest history"
-    tui.revisions[1] += 1
-    assert _plain_prompt(prompt) == "agent one latest history\n> "
-    assert tui.render_calls == 3
-
-    tui.selected_aid = 2
-    assert _plain_prompt(prompt) == "agent two full history\n> "
-    assert tui.render_calls == 4
-
-
-def test_agent_prompt_render_failure_falls_back_to_plain_input():
-    tui = _FakeTUI()
-    tui.selected_aid = 1
-
-    def fail_render() -> str:
-        raise RuntimeError("render failed")
-
-    tui.render_selected_history = fail_render
-    prompt = build_agent_prompt(tui, "> ")
-
-    assert _plain_prompt(prompt) == "> "
-
-
-def test_agent_prompt_history_cache_evicts_old_revisions():
-    tui = _FakeTUI()
-    tui.selected_aid = 1
-    prompt = build_agent_prompt(tui, "> ")
-
-    for revision in range(17):
-        tui.revisions[1] = revision
-        tui.history[1] = f"revision {revision}"
-        assert f"revision {revision}" in _plain_prompt(prompt)
-
-    assert tui.render_calls == 17
-    tui.revisions[1] = 0
-    tui.history[1] = "revision zero rerendered"
-    assert "revision zero rerendered" in _plain_prompt(prompt)
-    assert tui.render_calls == 18
-
-    tui.revisions[1] = 16
-    assert "revision 16" in _plain_prompt(prompt)
-    assert tui.render_calls == 18
+    assert handed == [emit]
 
 
 @pytest.mark.asyncio
@@ -210,24 +161,34 @@ async def test_prompt_session_processes_tab_navigation_without_editing_text():
 
 
 @pytest.mark.asyncio
-async def test_prompt_pty_redraw_clears_rows_from_longer_agent_history(monkeypatch):
+async def test_prompt_tab_reprints_agent_into_scrollback_without_erasing_it(monkeypatch):
+    """Tab appends the newly focused agent to scrollback; it never rewrites it.
+
+    The old renderer carried each agent's history *inside* the prompt, so a
+    switch had to erase the previous agent's rows — and once that history grew
+    past the terminal height the erase could no longer reach them. Here the
+    reprint is ordinary terminal output that prompt_toolkit scrolls away from.
+    """
     monkeypatch.setenv("PROMPT_TOOLKIT_NO_CPR", "1")
-    tui = _FakeTUI()
-    tui.selected_aid = 1
-    tui.history[1] = "OLD-ONE\nOLD-TWO\nOLD-THREE"
-    tui.history[2] = "NEW-TWO"
     master_fd, slave_fd = os.openpty()
     os.set_blocking(master_fd, False)
-    fcntl.ioctl(
-        slave_fd,
-        termios.TIOCSWINSZ,
-        struct.pack("HHHH", 12, 80, 0, 0),
-    )
+    fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 12, 80, 0, 0))
     output_stream = os.fdopen(os.dup(slave_fd), "w", encoding="utf-8", buffering=1)
     output = Vt100_Output.from_pty(output_stream, term="xterm")
+
+    console = Console(file=output_stream, force_terminal=True, width=80, height=12)
+    tui = TUI(console)
+    tui.set_team_provider(lambda: [
+        {"aid": 0, "role": "analyst", "phase": "idle", "busy": False},
+        {"aid": 1, "role": "coder", "phase": "idle", "busy": False},
+    ])
+    # Focus is on agent 0, so agent 1's transcript stays unprinted until Tab.
+    tui.record_user_message(0, "SETTLED-ON-ANALYST")
+    tui.record_user_message(1, "PENDING-ON-CODER")
+
     raw = bytearray()
-    old_rendered = asyncio.Event()
-    new_rendered = asyncio.Event()
+    settled_seen = asyncio.Event()
+    reprint_seen = asyncio.Event()
     loop = asyncio.get_running_loop()
 
     def drain_output() -> None:
@@ -239,30 +200,24 @@ async def test_prompt_pty_redraw_clears_rows_from_longer_agent_history(monkeypat
             if not data:
                 break
             raw.extend(data)
-        if b"OLD-THREE" in raw:
-            old_rendered.set()
-        if b"NEW-TWO" in raw:
-            new_rendered.set()
+        if b"SETTLED-ON-ANALYST" in raw:
+            settled_seen.set()
+        if b"PENDING-ON-CODER" in raw:
+            reprint_seen.set()
 
     loop.add_reader(master_fd, drain_output)
     try:
         with create_pipe_input() as pipe_input:
             session = PromptSession(
-                input=pipe_input,
-                output=output,
-                erase_when_done=True,
+                input=pipe_input, output=output, erase_when_done=True
             )
-            prompt = asyncio.create_task(
-                session.prompt_async(
-                    build_agent_prompt(tui, "> "),
-                    key_bindings=build_agent_navigation_bindings(tui),
-                )
-            )
-            await asyncio.wait_for(old_rendered.wait(), timeout=2)
+            monkeypatch.setattr(cli_main, "_get_prompt_session", lambda: session)
+            command = asyncio.create_task(cli_main._read_command(tui))
+            await asyncio.wait_for(settled_seen.wait(), timeout=2)
             pipe_input.send_bytes(b"\t")
-            await asyncio.wait_for(new_rendered.wait(), timeout=2)
-            pipe_input.send_bytes(b"\r")
-            assert await asyncio.wait_for(prompt, timeout=2) == ""
+            await asyncio.wait_for(reprint_seen.wait(), timeout=2)
+            pipe_input.send_text("hello\r")
+            assert await asyncio.wait_for(command, timeout=2) == "hello"
             await asyncio.sleep(0)
     finally:
         loop.remove_reader(master_fd)
@@ -271,15 +226,19 @@ async def test_prompt_pty_redraw_clears_rows_from_longer_agent_history(monkeypat
         os.close(master_fd)
         os.close(slave_fd)
 
-    redraw = bytes(raw).split(b"OLD-THREE", 1)[1]
-    before_new, after_new = redraw.split(b"NEW-TWO", 1)
-    assert b"\x1b[3A" in before_new
-    assert after_new.count(b"\x1b[K") >= 2
-    assert b"\x1b[J" in after_new
+    stream = bytes(raw)
+    assert tui.selected_aid == 1
+    # The band names the agent being redrawn, and the redraw is appended after
+    # the analyst's settled line rather than replacing it.
+    assert b"A1" in stream
+    assert stream.index(b"SETTLED-ON-ANALYST") < stream.index(b"PENDING-ON-CODER")
+    assert b"\x1b[2J" not in stream  # never a full-screen wipe
+    # The gate is prompt-scoped: it is removed once the line is read.
+    assert tui._scrollback_gate is None
 
 
 @pytest.mark.asyncio
-async def test_read_command_wires_dynamic_prompt_and_navigation(monkeypatch):
+async def test_read_command_uses_a_static_prompt_and_a_prompt_scoped_gate(monkeypatch):
     tui = _FakeTUI()
     tui.suspend_live = lambda: False
     resumed: list[bool] = []
@@ -290,6 +249,7 @@ async def test_read_command_wires_dynamic_prompt_and_navigation(monkeypatch):
         captured["prompt"] = prompt_text
         captured["toolbar"] = bottom_toolbar
         captured["bindings"] = key_bindings
+        captured["gate_during_prompt"] = tui.gates[-1]
         return "do work"
 
     monkeypatch.setattr(cli_main, "_read_line", fake_read_line)
@@ -299,9 +259,40 @@ async def test_read_command_wires_dynamic_prompt_and_navigation(monkeypatch):
 
     assert await cli_main._read_command(tui, bottom_toolbar=toolbar) == "do work"
     assert captured["toolbar"] is toolbar
-    assert callable(captured["prompt"])
+    # No history is smuggled into the prompt any more — it is the bare chevron.
+    assert captured["prompt"] is cli_main._PROMPT
     assert captured["bindings"].get_bindings_for_keys((Keys.ControlI,))
+    assert captured["gate_during_prompt"] is cli_main._prompt_scrollback_gate
+    assert tui.gates == [cli_main._prompt_scrollback_gate, None]
     assert resumed == [False]
+
+
+@pytest.mark.asyncio
+async def test_agent_asked_prompts_are_gated_like_the_repl_prompt(monkeypatch):
+    """A permission y/N and an ask_user question own the screen too.
+
+    Both are read while other agents keep running, so an ungated settled block
+    from a concurrent agent would print into prompt_toolkit's redraw.
+    """
+    from opencollab.adapters.tui import TuiAskUserPolicy, TuiPermissionPolicy
+
+    tui = _FakeTUI()
+    tui.suspend_live = lambda: True
+    tui.resume_live = lambda was_suspended: None
+    seen: list = []
+
+    async def fake_read_line(prompt_text, **kwargs):
+        seen.append((prompt_text, tui.gates[-1]))
+        return "y"
+
+    monkeypatch.setattr(cli_main, "_read_line", fake_read_line)
+    read_line = partial(cli_main._read_line_at_prompt, tui)
+
+    assert await TuiPermissionPolicy(render=tui, read_line=read_line).confirm("Allow?") is True
+    assert await TuiAskUserPolicy(render=tui, read_line=read_line).ask("Which one?") == "y"
+
+    assert [gate for _prompt, gate in seen] == [cli_main._prompt_scrollback_gate] * 2
+    assert tui.gates[-1] is None
 
 
 @pytest.mark.asyncio
@@ -364,6 +355,39 @@ async def test_repl_reports_stopped_turn_and_accepts_next_input(monkeypatch):
         "Agent 2 stopped: token budget exhausted",
     ]
     assert len(dividers) == 2
+
+
+@pytest.mark.asyncio
+async def test_stopped_turn_does_not_print_a_partial_answer_already_in_scrollback(monkeypatch):
+    """The partial answer is salvage, and the turn's cleanup may have got there first.
+
+    ``stop_live`` settles the trailing streamed text into scrollback, so printing
+    ``partial_answer`` unconditionally shows the user the same text twice.
+    """
+    tui = _FakeTUI()
+    tui.selected_aid = 2
+    tui.drained_partials = {2}
+    lines = iter(["first", None])
+    monkeypatch.setattr(
+        cli_main,
+        "_read_command",
+        lambda *_args, **_kwargs: asyncio.sleep(0, result=next(lines)),
+    )
+    printed: list[str] = []
+    monkeypatch.setattr(
+        cli_main,
+        "console",
+        SimpleNamespace(print=lambda value: printed.append(str(value))),
+    )
+
+    async def handle_turn(line: str, aid: int) -> None:
+        raise SchedulerTurnError(aid, SessionPhase.STOPPED, "token budget exhausted", "partial answer")
+
+    tui.print_turn_divider = lambda: None
+
+    await cli_main._repl_loop(tui, handle_turn, object())
+
+    assert printed == ["Agent 2 stopped: token budget exhausted"]
 
 
 @pytest.mark.asyncio

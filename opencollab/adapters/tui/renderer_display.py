@@ -1,14 +1,19 @@
-"""Display building for the TUI: team panel, timeline, and live viewport.
+"""Display building for the TUI: team panel, live viewport, and block chrome.
 
 Mixed into ``renderer.TUI`` — methods render the state that
 ``renderer_events`` maintains. Also owns the shared style palette.
+
+Settled blocks are printed to scrollback by ``renderer``; what is built here for
+the Live region is only the in-flight remainder, so the frame stays proportional
+to its content instead of claiming the whole terminal.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.markdown import Markdown
 from rich.segment import Segment
 from rich.text import Text
@@ -25,39 +30,71 @@ from opencollab.adapters.tui.theme import (
 )
 from opencollab.application.scheduler_types import roster_display_state
 
+# Ceiling on the Live region, in terminal rows. The live frame carries only
+# in-flight chrome, so it is normally far shorter; this bounds the pathological
+# case (a long streamed answer) so the region can never take over the terminal
+# the way a full-height frame did.
+MAX_LIVE_BODY_LINES = 12
+
+
+def collapse_rows(value: str) -> str:
+    """Fold CR/LF into spaces so one line of chrome stays one terminal row.
+
+    Chrome quotes text the renderer does not control — a shell command, a tool
+    argument, an error reason. A newline in any of them turns the single shared
+    status row into three, which is the regression the one-row chrome exists to
+    prevent. Width is already handled downstream by truncation.
+    """
+    if "\n" not in value and "\r" not in value:
+        return value
+    return " ".join(value.replace("\r\n", "\n").replace("\r", "\n").split("\n"))
+
+
+def collapse_text_rows(text: Text) -> Text:
+    """``collapse_rows`` for a styled ``Text``.
+
+    Status lines carry a single base style rather than per-word spans, so
+    rebuilding the string keeps the line looking the same.
+    """
+    plain = text.plain
+    if "\n" not in plain and "\r" not in plain:
+        return text
+    return Text(collapse_rows(plain), style=text.style)
+
 
 class _LineViewport:
-    """A pre-rendered, bottom-aligned live viewport."""
+    """A pre-rendered, bottom-aligned live viewport.
 
-    def __init__(self, lines: list[list[Segment]]) -> None:
+    ``close`` terminates the final line. Every ordinary Rich renderable does,
+    and a group relies on it: left open, the renderable that follows is
+    appended to a row that is already the full terminal width, and the crop
+    to that width silently swallows it.
+    """
+
+    def __init__(self, lines: list[list[Segment]], *, close: bool = False) -> None:
         self.lines = lines
+        self.close = close
 
     def __rich_console__(self, console: Console, options: Any) -> Any:
         for index, line in enumerate(self.lines):
             yield from line
-            if index < len(self.lines) - 1:
+            if self.close or index < len(self.lines) - 1:
                 yield Segment.line()
 
 
-class _PinnedFooterViewport:
-    """A live body that reserves the terminal's physical bottom row for status."""
+class _LiveLine:
+    """One row, rebuilt on every Live frame.
 
-    def __init__(self, body: Any, footer: Any) -> None:
-        self.body = body
-        self.footer = footer
+    The pulsing dot and its seconds counter are functions of wall time, so the
+    status row has to be recomputed per frame — Live re-renders the object it
+    was handed, and a ``Text`` built once would sit frozen between events.
+    """
 
-    def __rich_console__(self, console: Console, options: Any) -> Any:
-        max_height = max(1, console.height)
-        body_lines = console.render_lines(self.body, options, pad=False)
-        footer_lines = console.render_lines(self.footer, options, pad=False)
-        if len(footer_lines) >= max_height:
-            lines = footer_lines[-max_height:]
-        else:
-            body_height = max_height - len(footer_lines)
-            visible_body = body_lines[-body_height:] if body_height else []
-            spacer = [[] for _ in range(body_height - len(visible_body))]
-            lines = [*visible_body, *spacer, *footer_lines]
-        yield from _LineViewport(lines).__rich_console__(console, options)
+    def __init__(self, build: Callable[[], Text | None]) -> None:
+        self._build = build
+
+    def __rich__(self) -> Text:
+        return self._build() or Text("")
 
 
 class _RendererDisplayMixin:
@@ -114,7 +151,7 @@ class _RendererDisplayMixin:
             for key in self._PREVIEW_KEYS:
                 value = source.get(key)
                 if isinstance(value, str):
-                    text = value[:limit]
+                    text = collapse_rows(value)[:limit]
                     return f" `{text}`" if code and key == "command" else f" {text}"
         return ""
 
@@ -136,8 +173,13 @@ class _RendererDisplayMixin:
             for aid in sorted(self._roster)
         ]
 
-    def _build_team_panel(self) -> Any | None:
-        """One-line bottom status roster, or None when no team exists."""
+    def _build_team_panel(self, *, width: int | None = None) -> Any | None:
+        """The roster half of the status row, or None when no team exists.
+
+        ``width`` is the space left after the activity half; it defaults to the
+        whole terminal for callers that render the roster on its own.
+        """
+        available = max(1, self.console.width if width is None else width)
         entries = self._team_entries()
         if not entries:
             return None
@@ -191,9 +233,61 @@ class _RendererDisplayMixin:
             return line
 
         line = build_line(compact=False)
-        if line.cell_len > self.console.width:
+        if line.cell_len > available:
             line = build_line(compact=True)
-        line.truncate(max(1, self.console.width), overflow="ellipsis")
+        line.truncate(available, overflow="ellipsis")
+        return line
+
+    def _activity_text(self) -> Text | None:
+        """The activity half of the status row: what this agent is doing now.
+
+        One line, so the three in-flight signals are ranked rather than stacked:
+        a running tool is the most concrete, the model wait is next, and a
+        transient status note only shows when nothing else is happening.
+        """
+        if self._active_tools:
+            label, data = next(iter(self._active_tools.items()))
+            text = self._motion.render()
+            text.append("  ", style=self._STYLE_MUTED)
+            text.append(str(data.get("_display_label", label)), style=self._STYLE_ACCENT)
+            text.append(self._args_preview(data, limit=40, code=True), style=self._STYLE_MUTED)
+            if len(self._active_tools) > 1:
+                text.append(f"  +{len(self._active_tools) - 1}", style=self._STYLE_MUTED)
+            return text
+        if self._thinking is not None:
+            return self._thinking.render()
+        if self._status_lines:
+            text = self._motion.render()
+            text.append("  ", style=self._STYLE_MUTED)
+            text.append_text(self._status_lines[-1])
+            return text
+        return None
+
+    def _build_status_row(self) -> Text | None:
+        """The whole live frame's chrome on one row: activity, then roster.
+
+        Everything the frame says about *state* shares this single row — it is
+        the terminal's bottom status bar. Stacking it (a heading per tool, a row
+        per status note, a roster line) cost up to a dozen rows and pushed the
+        settled transcript off the screen it belongs on.
+
+        Activity goes left because it is the volatile half and the half that
+        must never be the one truncated; the roster already knows how to shrink
+        into whatever width is left.
+        """
+        width = max(1, self.console.width)
+        line = Text(no_wrap=True, overflow="ellipsis")
+        activity = self._activity_text()
+        if activity is not None:
+            line.append_text(activity)
+        roster = self._build_team_panel(width=width - line.cell_len - 2)
+        if roster is not None:
+            if line.cell_len:
+                line.append("  ", style=self._STYLE_MUTED)
+            line.append_text(roster)
+        if not line.cell_len:
+            return None
+        line.truncate(width, overflow="ellipsis")
         return line
 
     def _new_thinking_bar(self, label: str) -> PulseDot:
@@ -228,119 +322,70 @@ class _RendererDisplayMixin:
         )
         return grid
 
-    def _build_display(self, *, include_team_panel: bool = True) -> Any:
-        """Build the Rich renderable for current state."""
-        parts = []
+    def _focus_band(self, aid: int) -> Any:
+        """The labelled rule that opens a newly focused agent's redraw."""
+        from rich.rule import Rule
 
-        # Chronological blocks (assistant text snapshots + activity lines).
-        if self._timeline_blocks:
-            parts.extend(self._timeline_blocks)
-            parts.append(Text("", style=""))
+        role = next(
+            (
+                str(entry_role)
+                for entry_aid, entry_role, _state in self._team_entries()
+                if entry_aid == aid
+            ),
+            "",
+        )
+        label = self._agent_label(aid)
+        title = f"{label} {role}" if role and aid != 0 else label
+        return Rule(Text(title, style=self._STYLE_HEADING), style=self._STYLE_MUTED)
 
+    def _build_body(self) -> Any | None:
+        """The in-flight content above the status row: the streaming answer.
+
+        Settled blocks are not included: they already went to scrollback. Tool
+        progress, status notes and the roster are not here either — they are
+        chrome, and chrome lives on the one status row.
+        """
+        if not self._current_text:
+            return None
         # Current streaming chunk — fronted by the brand ◆ gutter marker.
-        if self._current_text:
-            parts.append(self._assistant_block(Markdown(self._current_text)))
-            parts.append(Text("", style=""))
+        return self._assistant_block(Markdown(self._current_text))
 
-        # Active tool spinners — the shared pulsing brand dot, one calm
-        # motion for every tool. Each tool is a one-row Table.grid so the spinner
-        # cell and label cell stay on a single render line (the block is captured
-        # by render_lines in _build_live_display).
-        if self._active_tools:
-            from rich.table import Table
-
-            parts.append(Text("Running", style=self._STYLE_HEADING))
-            for label, data in self._active_tools.items():
-                args_preview = self._args_preview(data, limit=60, code=True)
-                display_label = data.get("_display_label", label)
-
-                label_text = Text.assemble(
-                    (display_label, self._STYLE_ACCENT),  # tool name carries the accent
-                    (args_preview, self._STYLE_MUTED),  # preview stays dim (" `ls -la`")
-                )
-                row = Table.grid(padding=(0, 1))
-                row.add_column(no_wrap=True)            # spinner cell
-                row.add_column(ratio=1)                 # label + args cell
-                row.add_row(self._motion, label_text)
-                parts.append(row)
-            parts.append(Text("", style=""))
-
-        if self._status_lines:
-            parts.extend(self._status_lines)
-            parts.append(Text("", style=""))
-
-        # LLM-wait indicator: the animated pulsing dot (replaces the old static
-        # "thinking" line). Shown while waiting on the model; cleared as soon as
-        # text or tool progress arrives. Being time-driven, it keeps pulsing on
-        # Live's refresh even when no new events land — so it never looks frozen.
-        if self._thinking is not None:
-            parts.append(self._thinking)
-            parts.append(Text("", style=""))
-
-        if include_team_panel:
-            team_panel = self._build_team_panel()
-            if team_panel is not None:
-                parts.append(team_panel)
-
-        if not parts:
+    def _build_display(self) -> Any:
+        """The whole in-flight frame, uncropped: body then status row."""
+        body = self._build_body()
+        status = self._status_renderable()
+        if body is None:
             # Nothing yet — still animate the wait so first-token latency doesn't
             # look frozen. Route the placeholder through the same pulsing dot.
-            return self._thinking or self._new_thinking_bar("Thinking…")
+            return status or self._thinking or self._new_thinking_bar("Thinking…")
+        return Group(body, status) if status is not None else body
 
-        from rich.console import Group
-        return Group(*parts)
+    def _status_renderable(self) -> Any | None:
+        """The status row as a per-frame renderable, or None when it is empty."""
+        if self._build_status_row() is None:
+            return None
+        return _LiveLine(self._build_status_row)
 
     def _build_live_display(self) -> Any:
-        """Build a live frame with the team status on the terminal's bottom row."""
-        max_height = max(1, self.console.height)
-        team_panel = self._build_team_panel()
-        if team_panel is None:
-            display = self._build_display()
-            lines = self.console.render_lines(display, self.console.options, pad=False)
-            if len(lines) <= max_height:
-                return display
-            return _LineViewport(lines[-max_height:])
+        """Build a live frame sized to its content, the status row last.
 
-        body = self._build_display(include_team_panel=False)
-        return _PinnedFooterViewport(body, team_panel)
+        The body is capped at ``MAX_LIVE_BODY_LINES`` (and at the terminal
+        height) and shows its tail when it overflows. It is never padded out to
+        the terminal height: a short frame must occupy few rows so the settled
+        transcript printed above it stays on screen.
 
-    def _build_settled_display(self, *, aid: int = 0) -> Any | None:
-        """Build one settled turn for an explicit scrollback handoff.
-
-        Interactive mode keeps this material in the redrawable history viewport;
-        one-shot mode uses this slice so it still leaves a normal terminal result.
-        Live-only chrome (spinner, transient status, roster) is excluded.
+        The status row is cropped out of the body budget rather than out of the
+        frame, and stays a live renderable instead of pre-rendered lines — it is
+        the row that has to keep animating between events.
         """
-        state = self._state_for(aid)
-        if state.current_text:
-            self._flush_current_text_to_timeline(state)
-        return self._build_history_display(state, start=state.turn_history_start)
-
-    def _build_history_display(self, state: Any, *, start: int = 0) -> Any | None:
-        """Build the requested slice of one agent's history without live chrome."""
-        blocks = list(state.history_blocks[start:])
-        if start == 0 and state.history_omitted_blocks:
-            blocks.insert(
-                0,
-                Text(
-                    f"... {state.history_omitted_blocks} older history blocks "
-                    "omitted; full history remains in the run trace.",
-                    style=self._STYLE_MUTED,
-                ),
-            )
-        if state.current_text:
-            blocks.append(self._assistant_block(Markdown(state.current_text)))
-        if not blocks:
-            return None
-        from rich.console import Group
-
-        return Group(*blocks)
-
-    def render_selected_history(self) -> str:
-        """Render the selected agent's complete history for Prompt Toolkit."""
-        display = self._build_history_display(self._selected_state)
-        if display is None:
-            return ""
-        with self.console.capture() as capture:
-            self.console.print(display, end="")
-        return capture.get().rstrip("\n")
+        status = self._status_renderable()
+        max_height = max(1, min(MAX_LIVE_BODY_LINES, self.console.height))
+        if status is not None:
+            max_height -= 1
+        body = self._build_body()
+        if body is None or max_height < 1:
+            return status or self._thinking or self._new_thinking_bar("Thinking…")
+        lines = self.console.render_lines(body, self.console.options, pad=False)
+        if len(lines) > max_height:
+            body = _LineViewport(lines[-max_height:], close=status is not None)
+        return Group(body, status) if status is not None else body

@@ -1,7 +1,8 @@
 """Event handling for the TUI: session-runtime + scheduler event dispatch.
 
 Mixed into ``renderer.TUI`` — methods run on the TUI instance and feed the
-timeline/status/roster state that ``renderer_display`` renders.
+history/status/roster state that ``renderer_display`` renders. A block that
+settles here is handed straight to scrollback for the focused agent.
 """
 
 from __future__ import annotations
@@ -11,10 +12,9 @@ from typing import Any
 from rich.markdown import Markdown
 from rich.text import Text
 
+from opencollab.adapters.tui.renderer_display import collapse_text_rows
 from opencollab.domain.events import SchedulerEvent
 
-# Cap on retained timeline blocks so long sessions don't grow render cost.
-MAX_TIMELINE_BLOCKS = 80
 MAX_STATUS_LINES = 40
 
 
@@ -72,9 +72,7 @@ class _RendererEventsMixin:
 
         if etype == "text_delta":
             self._clear_thinking_status(state)
-            content = event.data.get("content", "")
-            state.current_text += content
-            state.history_revision += 1
+            state.current_text += event.data.get("content", "")
             self._refresh()
 
         elif etype == "tool_start":
@@ -130,15 +128,19 @@ class _RendererEventsMixin:
         elif etype == "loop_detected":
             tool = event.data.get("tool", "?")
             count = event.data.get("count", 0)
+            # Preserved: with the live chrome down to one shared row, a warning
+            # that only lived there would be overwritten by the next tool.
             self._emit_status(
                 Text(f"Loop detected: {tool} called {count}x with same args", style=self._STYLE_WARNING),
                 state=state,
+                preserve=True,
             )
 
         elif etype == "budget_warning":
             self._emit_status(
                 Text("Token budget running low", style=self._STYLE_WARNING),
                 state=state,
+                preserve=True,
             )
 
         elif etype == "error":
@@ -297,18 +299,25 @@ class _RendererEventsMixin:
         """Route status lines to Live when active; print directly otherwise."""
         status = message if isinstance(message, Text) else Text.from_markup(message)
         target = state or self._selected_state
+        target_aid = self._aid_of(target)
         if preserve:
             self._flush_current_text_to_timeline(target)
             self._append_history_block(target, status)
-            target.history_revision += 1
+            self._drain_pending(target_aid)
         if self._live or self._live_paused:
-            target.status_lines.append(status)
+            # The status row is one row. The preserved copy above keeps the
+            # message whole in scrollback, so nothing is lost by folding it.
+            target.status_lines.append(collapse_text_rows(status))
             overflow = len(target.status_lines) - MAX_STATUS_LINES
             if overflow > 0:
                 del target.status_lines[:overflow]
             self._refresh()
             return
-        self.console.print(status)
+        # No live frame to hold a transient line. Printing it is the only way to
+        # show it at all — but it still obeys focus, and a preserved line has
+        # already been printed as part of the transcript.
+        if not preserve and target_aid == self._selected_aid:
+            self.console.print(status)
 
     def _append_activity(
         self,
@@ -322,10 +331,8 @@ class _RendererEventsMixin:
         self._flush_current_text_to_timeline(target)
         styled_segments: list[tuple[str, str]] = [marker or self._MARK_DOT]
         styled_segments.extend((text, style) for text, style in segments if text)
-        line = Text.assemble(*styled_segments)
-        self._append_history_block(target, line)
-        self._append_timeline_block(target, line)
-        target.history_revision += 1
+        self._append_history_block(target, Text.assemble(*styled_segments))
+        self._drain_pending(self._aid_of(target))
 
     def _flush_current_text_to_timeline(self, state: Any | None = None) -> None:
         """Commit accumulated assistant text so later events appear in-order."""
@@ -333,10 +340,21 @@ class _RendererEventsMixin:
         if not target.current_text:
             return
         block = self._assistant_block(Markdown(target.current_text))
-        self._append_history_block(target, block)
-        self._append_timeline_block(target, block)
         target.current_text = ""
-        target.history_revision += 1
+        self._append_history_block(target, block)
+        self._drain_pending(self._aid_of(target))
+
+    def _aid_of(self, state: Any) -> int:
+        """Reverse-lookup an agent id from its render state.
+
+        Event handlers thread the state object, not the aid, and only the
+        focused agent's blocks may be printed — so the printer needs the aid
+        back. An unregistered state yields ``-1``, which can never be focused.
+        """
+        return next(
+            (aid for aid, candidate in self._agent_states.items() if candidate is state),
+            -1,
+        )
 
     def _clear_thinking_status(self, state: Any | None = None) -> None:
         """Drop the transient LLM-wait indicator before fresher progress shows."""
