@@ -1,9 +1,8 @@
 # AGENTS.md
 
-Guidance for coding agents (OpenAI Codex, Claude Code, and others) contributing to
-**OpenCollab**. Follow it exactly — CI enforces most of it, and a PR that ignores it
-will be blocked. Human contributors: see [CONTRIBUTING.md](CONTRIBUTING.md) for the
-long form.
+Guidance for coding agents contributing to **OpenCollab**. Follow it exactly — CI
+enforces most of it, and a PR that ignores it will be blocked. Human contributors:
+see [CONTRIBUTING.md](CONTRIBUTING.md) for the long form.
 
 ## Setup & the checks your change must pass
 
@@ -80,5 +79,4 @@ ran.
 ## See also
 
 - [CONTRIBUTING.md](CONTRIBUTING.md) — full contributor guide and dev setup.
-- [CLAUDE.md](CLAUDE.md) — repo notes for Claude Code.
 - [SECURITY.md](SECURITY.md) — report vulnerabilities privately; never in a public issue.

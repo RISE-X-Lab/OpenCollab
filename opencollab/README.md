@@ -280,7 +280,7 @@ uv run pytest -q
 ```
 
 See [`../CONTRIBUTING.md`](../CONTRIBUTING.md) for contributor guidance and
-[`../CLAUDE.md`](../CLAUDE.md) for repository-specific architecture notes. The
+[`../AGENTS.md`](../AGENTS.md) for repository-specific architecture notes. The
 archived module map under [`../docs/archive/repomap/`](../docs/archive/repomap/)
 records an earlier revision. Use the current source and tests for the current
 module layout.
