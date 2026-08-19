@@ -4,9 +4,15 @@ Two surfaces:
 - the default (no subcommand): one interactive team. Agent 0 is the first
   session and can spawn children; Tab selects any live session for follow-up.
 
-Split by concern: ``toolbar`` (prompt bottom-toolbar), ``config_resolve``
-(CLI args + .env merge and API-key checks).
-This module keeps the Typer app, the chat REPL, and ``main()``.
+The input line is permanent: ``live_prompt`` owns the bottom of the terminal
+for the whole session and ``turn_queue`` runs turns behind it, so typing during
+a turn queues instead of waiting, and Ctrl+C interrupts the turn instead of
+ending the session.
+
+Split by concern: ``live_prompt`` (the prompt and the HUD above it),
+``turn_queue`` (background turn execution), ``config_resolve`` (CLI args + .env
+merge and API-key checks). This module keeps the Typer app, the read loop, and
+``main()``.
 
 Ref:
 - kimi-cli: Typer app with callback, async main, session management
@@ -21,12 +27,10 @@ import asyncio
 import os
 import sys
 import uuid
-from functools import partial
+from collections.abc import Awaitable
 from typing import Any, Optional
 
 import typer
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit.styles import Style
 from rich.console import Console
 from rich.text import Text
 
@@ -35,11 +39,10 @@ from opencollab.adapters.cli.config_resolve import (
     print_missing_key_hint,
     resolve_config,
 )
-from opencollab.adapters.cli.prompt_view import build_agent_navigation_bindings
-from opencollab.adapters.cli.toolbar import format_team_toolbar
+from opencollab.adapters.cli.live_prompt import LivePrompt
+from opencollab.adapters.cli.turn_queue import TurnQueue
 from opencollab.adapters.cli.workflow import app as workflow_app
 from opencollab.adapters.safe_files import read_regular_text
-from opencollab.adapters.tui.theme import BRAND_VIOLET
 from opencollab.application.async_timeout import run_with_bounded_shutdown
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.scheduler_types import SchedulerTurnError
@@ -50,87 +53,9 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
-_prompt_session: Any | None = None
-_PROMPT_STYLE = Style.from_dict({
-    "bottom-toolbar": "noreverse bg:default fg:ansibrightblack",
-    "bottom-toolbar.text": "noreverse bg:default fg:ansibrightblack",
-})
-# One OC-violet chevron; the rest of the prompt chrome stays neutral.
-_PROMPT = HTML(
-    f'<style fg="{BRAND_VIOLET}"><b>❯</b></style>'
-    '<style fg="ansibrightblack"> </style>'
-)
 MAX_CLI_PROMPT_FILE_BYTES = 4 * 1024 * 1024
 
 app.add_typer(workflow_app, name="workflow")
-
-
-def _get_prompt_session() -> Any:
-    """Lazy-init prompt_toolkit session for robust terminal line editing (IME-safe)."""
-    global _prompt_session
-    if _prompt_session is None:
-        from prompt_toolkit import PromptSession
-
-        _prompt_session = PromptSession(style=_PROMPT_STYLE, erase_when_done=True)
-    return _prompt_session
-
-
-async def _read_console_line(prompt_text: str) -> str:
-    """Read a terminal line without leaving an executor thread on cancellation."""
-    loop = asyncio.get_running_loop()
-    try:
-        stdin_fd = sys.stdin.fileno()
-    except (AttributeError, OSError) as exc:
-        raise RuntimeError("console input fallback requires a selectable stdin") from exc
-
-    console.print(prompt_text, end="")
-    result: asyncio.Future[str] = loop.create_future()
-
-    def on_readable() -> None:
-        if result.done():
-            return
-        try:
-            line = sys.stdin.readline()
-        except BaseException as exc:
-            result.set_exception(exc)
-            return
-        if line == "":
-            result.set_exception(EOFError())
-            return
-        result.set_result(line.rstrip("\r\n"))
-
-    try:
-        loop.add_reader(stdin_fd, on_readable)
-    except (AttributeError, NotImplementedError) as exc:
-        raise RuntimeError("console input fallback is unavailable on this event loop") from exc
-    try:
-        return await result
-    finally:
-        loop.remove_reader(stdin_fd)
-
-
-async def _read_line(
-    prompt_text: Any,
-    bottom_toolbar: Any = None,
-    key_bindings: Any = None,
-) -> str:
-    """Read one input line; fall back to rich console input if needed.
-
-    ``prompt_text`` may be a plain ``str`` or a prompt_toolkit ``HTML`` object
-    (the styled chevron). ``bottom_toolbar`` (a callable returning text) renders
-    a status line under the input, à la a HUD — used to show the live team
-    roster at the prompt.
-    """
-    try:
-        session = _get_prompt_session()
-        return await session.prompt_async(
-            prompt_text,
-            bottom_toolbar=bottom_toolbar,
-            key_bindings=key_bindings,
-        )
-    except Exception:
-        fallback = prompt_text if isinstance(prompt_text, str) else "> "
-        return await _read_console_line(fallback)
 
 
 @app.callback(invoke_without_command=True)
@@ -165,7 +90,7 @@ def main_callback(
     hold: bool = typer.Option(
         False,
         "--hold",
-        help="Keep a completed one-shot TUI open for Tab inspection; press q to exit",
+        help="Stay at the prompt after a one-shot run: Tab inspects an agent, q or exit quits",
     ),
 ):
     """Interactive team. Agent 0 starts the session and can spawn child agents."""
@@ -228,13 +153,6 @@ def _resolve_one_shot_prompt(prompt: str | None, prompt_file: str | None) -> str
 # ---------------------------------------------------------------------------
 
 
-def _prompt_scrollback_gate(emit: Any) -> None:
-    """Print above a live prompt via prompt_toolkit, which owns the screen."""
-    from prompt_toolkit.application import run_in_terminal
-
-    run_in_terminal(emit)
-
-
 def _print_hint(label: str, value: str) -> None:
     """One hairline-led chrome line, home-shortened and kept to a single row.
 
@@ -255,42 +173,10 @@ def _print_hint(label: str, value: str) -> None:
     console.print(line)
 
 
-async def _read_line_at_prompt(tui, prompt_text: Any, **kwargs: Any) -> str:
-    """Read one line with the TUI's scrollback routed through prompt_toolkit.
-
-    Every prompt owns the screen, not just the REPL's: an ``ask_user`` question
-    and a permission y/N are up while other agents keep running, and a settled
-    block printed straight to the console corrupts the prompt's redraw. So the
-    gate belongs to *reading a line*, not to one call site.
-    """
-    tui.set_scrollback_gate(_prompt_scrollback_gate)
-    try:
-        return await _read_line(prompt_text, **kwargs)
-    finally:
-        tui.set_scrollback_gate(None)
-
-
-async def _read_command(tui, bottom_toolbar: Any = None) -> str | None:
-    """Prompt for a user line, returning None on EOF/interrupt.
-
-    Tab reprints the newly selected agent while this prompt is on screen, which
-    is one of the writes ``_read_line_at_prompt`` gates.
-    """
-    was_suspended = tui.suspend_live()
-    try:
-        return await _read_line_at_prompt(
-            tui,
-            _PROMPT,
-            bottom_toolbar=bottom_toolbar,
-            key_bindings=build_agent_navigation_bindings(tui),
-        )
-    except (EOFError, KeyboardInterrupt):
-        return None
-    finally:
-        tui.resume_live(was_suspended)
-
-
 _EXIT_COMMANDS = frozenset({"exit", "quit", "/exit", "/quit"})
+# ``--hold`` inherits the word the old post-run inspection view used for the
+# same intent, now that there is no raw key listener to press it against.
+_HOLD_EXIT_COMMANDS = _EXIT_COMMANDS | {"q"}
 
 
 def _save_session(lead: Any) -> None:
@@ -300,13 +186,17 @@ def _save_session(lead: Any) -> None:
     console.print(f"[dim]Session saved to {path}[/dim]")
 
 
-def _dispatch_repl_command(line: str, lead: Any) -> bool:
+def _dispatch_repl_command(
+    line: str,
+    lead: Any,
+    exit_words: frozenset[str] | set[str] = _EXIT_COMMANDS,
+) -> bool:
     """Handle a built-in REPL command. Returns True to keep looping, False to exit.
 
     ``None`` (not a command) is signalled by raising ``KeyError`` to the caller.
     """
     command = line.lower()
-    if command in _EXIT_COMMANDS:
+    if command in exit_words:
         return False
     if command == "/save":
         try:
@@ -322,43 +212,91 @@ def _dispatch_repl_command(line: str, lead: Any) -> bool:
     raise KeyError(line)
 
 
-async def _repl_loop(tui: Any, handle_turn, lead: Any, bottom_toolbar: Any = None) -> None:
-    """Shared REPL: read line, dispatch built-in slash commands, run a turn."""
+async def _read_loop(
+    prompt: LivePrompt,
+    queue: TurnQueue,
+    tui: Any,
+    lead: Any,
+    *,
+    exit_words: frozenset[str] | set[str] = _EXIT_COMMANDS,
+) -> None:
+    """Read the one input line until the user leaves it.
+
+    Every line has three possible owners, in this order: an agent waiting on an
+    answer, a built-in command, and finally the queue of turns. The agent wins
+    because it asked first and the user can see whose question is on screen.
+    """
     while True:
-        line = await _read_command(tui, bottom_toolbar=bottom_toolbar)
-        if line is None:
-            break
+        try:
+            line = await prompt.read()
+        except EOFError:
+            return
+        except KeyboardInterrupt:
+            # Ctrl+C is an interrupt while there is something to interrupt, and
+            # the way out otherwise. Both halves run: a question left standing
+            # would keep the tool that asked it parked on an answer that is
+            # never coming.
+            declined = prompt.decline_pending()
+            interrupted = queue.interrupt()
+            if declined or interrupted:
+                continue
+            return
+        if prompt.deliver(line):
+            continue
         line = line.strip()
         if not line:
             continue
         try:
-            if not _dispatch_repl_command(line, lead):
-                break
+            if not _dispatch_repl_command(line, lead, exit_words):
+                return
             continue
         except KeyError:
             pass
-        target_aid = tui.selected_aid
-        try:
-            result = await handle_turn(line, target_aid)
-        except SchedulerTurnError as exc:
-            # The half-finished answer is salvage: print it only if the turn's
-            # cleanup did not already settle the streamed text into scrollback,
-            # or the user reads the same partial answer twice.
-            if exc.partial_answer and not tui.drained_partial_answer(exc.aid):
-                console.print(Text(exc.partial_answer))
-            reason = exc.terminal_reason or exc.phase.value
-            style = "yellow" if exc.phase.value == "stopped" else "red"
-            console.print(
-                Text(
-                    f"Agent {exc.aid} {exc.phase.value}: {reason}",
-                    style=style,
-                )
-            )
-            tui.print_turn_divider()
-            continue
-        if result is False:
-            break
-        tui.print_turn_divider()
+        queue.submit(line, tui.selected_aid)
+
+
+def _report_turn_failure(tui: Any, exc: SchedulerTurnError) -> None:
+    """Print what a failed turn left behind, without repeating what it printed."""
+    # The half-finished answer is salvage: print it only if the turn's cleanup
+    # did not already settle the streamed text into scrollback, or the user
+    # reads the same partial answer twice.
+    if exc.partial_answer and not tui.drained_partial_answer(exc.aid):
+        console.print(Text(exc.partial_answer))
+    reason = exc.terminal_reason or exc.phase.value
+    style = "yellow" if exc.phase.value == "stopped" else "red"
+    console.print(Text(f"Agent {exc.aid} {exc.phase.value}: {reason}", style=style))
+
+
+async def _drive(
+    queue: TurnQueue,
+    *,
+    reader: Awaitable[None] | None,
+    until_drained: bool,
+) -> None:
+    """Run queued turns while the input line stays live, until one side ends.
+
+    Three ways out: the user leaves the prompt, a one-shot run drains its
+    queue, or a turn fails outright — and that failure is re-raised here
+    because it is the same failure the REPL used to take inline.
+    """
+    if reader is None and not until_drained:
+        raise ValueError("a run with nothing reading must end when its queue drains")
+    watchers = [asyncio.create_task(queue.run(), name="turn-worker")]
+    if reader is not None:
+        watchers.append(asyncio.create_task(reader, name="prompt-reader"))
+    if until_drained:
+        watchers.append(asyncio.create_task(queue.drain(), name="turn-drain"))
+    try:
+        done, _pending = await asyncio.wait(
+            watchers, return_when=asyncio.FIRST_COMPLETED
+        )
+    finally:
+        for task in watchers:
+            task.cancel()
+        await asyncio.gather(*watchers, return_exceptions=True)
+    for task in done:
+        if not task.cancelled() and task.exception() is not None:
+            raise task.exception()
 
 
 async def _await_scheduler_cleanup(scheduler: Any) -> asyncio.CancelledError | None:
@@ -401,21 +339,25 @@ async def _run(
     from opencollab.bootstrap import build_runtime_context, build_scheduler
 
     tui = TUI(console, filter_messages=cfg["filter_messages"])
+    # A redirected or piped run has no bottom region to own: nothing is painted
+    # and lines are read straight from stdin.
+    has_screen = sys.stdin.isatty() and sys.stdout.isatty()
+    prompt = LivePrompt(tui, console=console, interactive=has_screen)
     tui.print_welcome(
         model=cfg["model"],
         provider=cfg["provider"],
         workspace=workspace,
         budget=cfg.get("budget"),
-        interactive=one_shot_prompt is None,
+        interactive=one_shot_prompt is None or (hold_after_run and has_screen),
     )
 
     # ``--yolo`` only auto-approves risky commands; a human is still present, so
-    # the ask-user tool stays interactive (routed through the TUI's suspend/resume).
-    gated_read_line = partial(_read_line_at_prompt, tui)
+    # the ask-user tool stays interactive — its question takes the shared input
+    # line ahead of whatever the user was typing.
     permission_policy = None
     if not yolo:
-        permission_policy = TuiPermissionPolicy(render=tui, read_line=gated_read_line)
-    ask_policy = TuiAskUserPolicy(render=tui, read_line=gated_read_line)
+        permission_policy = TuiPermissionPolicy(read_line=prompt.ask)
+    ask_policy = TuiAskUserPolicy(read_line=prompt.ask)
 
     event_sink = TuiEventSink(tui)
     events_file = os.environ.get("OPENCOLLAB_EVENTS_FILE")
@@ -452,46 +394,65 @@ async def _run(
         elif lead.auto_save_path:
             _print_hint("session", str(lead.auto_save_path))
 
-        async def turn(line: str, target_aid: int) -> None:
+        one_shot = one_shot_prompt is not None
+        # Holding means staying at the prompt, so a run with no screen to hold
+        # it on has nothing to stay for.
+        holding = hold_after_run and has_screen
+
+        async def turn(line: str, target_aid: int, cancel: asyncio.Event) -> None:
             tui.select_agent(target_aid)
             tui.reset()
             tui.record_user_message(target_aid, line)
-            tui.start_live()
-            completed = False
+            tui.start_turn(target_aid)
+            failure: SchedulerTurnError | None = None
             try:
-                await scheduler.run_turn(target_aid, line)
-                completed = True
+                await scheduler.run_turn(target_aid, line, cancel_event=cancel)
+            except SchedulerTurnError as exc:
+                failure = exc
             except KeyboardInterrupt:
-                pass  # abandon the turn, return to the REPL
+                pass  # abandon the turn, return to the prompt
             finally:
-                try:
-                    if completed and one_shot_prompt is not None and hold_after_run:
-                        await tui.hold_live()
-                finally:
-                    # Only the focused agent's blocks reach scrollback, and a
-                    # one-shot run has no "later" in which to Tab back. If the
-                    # user wandered off to watch a teammate, flush the tail of
-                    # the agent that owes them an answer. The tail, not a focus
-                    # switch: a switch reprints in full and would repeat every
-                    # row this agent already put on screen.
-                    tui.stop_live(
-                        final_aid=target_aid if one_shot_prompt is not None else None
-                    )
-                    tui.print_stats(
-                        scheduler.used_tokens,
-                        scheduler.agent_step_count(target_aid),
-                    )
+                # Only the focused agent's blocks reach scrollback, and a
+                # one-shot run has no "later" in which to Tab back. If the
+                # user wandered off to watch a teammate, flush the tail of
+                # the agent that owes them an answer. The tail, not a focus
+                # switch: a switch reprints in full and would repeat every
+                # row this agent already put on screen.
+                tui.settle_turn(
+                    final_aid=target_aid if one_shot else None
+                )
+                tui.print_stats(
+                    scheduler.used_tokens,
+                    scheduler.agent_step_count(target_aid),
+                )
+            if failure is not None:
+                _report_turn_failure(tui, failure)
+            if not one_shot or holding:
+                # The rule separates turns. A run that ends with this one has
+                # nothing to separate it from.
+                tui.print_turn_divider()
 
-        def team_toolbar() -> str:
-            return format_team_toolbar(
-                scheduler.team_roster(),
-                selected_aid=tui.selected_aid,
+        queue = TurnQueue(turn, on_depth=tui.set_queued_turns)
+        exit_words = _EXIT_COMMANDS
+        with prompt.attached():
+            if one_shot:
+                queue.submit(one_shot_prompt, 0)
+                if holding:
+                    exit_words = _HOLD_EXIT_COMMANDS
+                    _print_hint("hold", "Tab inspects an agent · q quits")
+            # A one-shot run still reads: its agents can ask for permission,
+            # and Ctrl+C has to reach the turn. Only a run with no screen at
+            # all skips the loop and lets the policies read stdin directly.
+            reader = (
+                _read_loop(prompt, queue, tui, lead, exit_words=exit_words)
+                if not one_shot or has_screen
+                else None
             )
-
-        if one_shot_prompt is not None:
-            await turn(one_shot_prompt, 0)
-        else:
-            await _repl_loop(tui, turn, lead, bottom_toolbar=team_toolbar)
+            await _drive(
+                queue,
+                reader=reader,
+                until_drained=one_shot and not holding,
+            )
     except BaseException as exc:
         primary_failure = exc
     if scheduler is not None:

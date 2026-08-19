@@ -3,14 +3,14 @@
 Mixed into ``renderer.TUI`` — methods render the state that
 ``renderer_events`` maintains. Also owns the shared style palette.
 
-Settled blocks are printed to scrollback by ``renderer``; what is built here for
-the Live region is only the in-flight remainder, so the frame stays proportional
-to its content instead of claiming the whole terminal.
+Settled blocks are printed to scrollback by ``renderer``; what is built here is
+only the in-flight remainder — the HUD the prompt paints above its input line —
+so the frame stays proportional to its content instead of claiming rows it has
+nothing to say in.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import Any
 
 from rich.console import Console, Group
@@ -30,10 +30,10 @@ from opencollab.adapters.tui.theme import (
 )
 from opencollab.application.scheduler_types import roster_display_state
 
-# Ceiling on the Live region, in terminal rows. The live frame carries only
-# in-flight chrome, so it is normally far shorter; this bounds the pathological
-# case (a long streamed answer) so the region can never take over the terminal
-# the way a full-height frame did.
+# Ceiling on the HUD body, in terminal rows. The frame carries only in-flight
+# chrome, so it is normally far shorter; this bounds the pathological case (a
+# long streamed answer) so the HUD can never push the input line off the screen
+# it shares with the transcript.
 MAX_LIVE_BODY_LINES = 12
 
 
@@ -63,7 +63,7 @@ def collapse_text_rows(text: Text) -> Text:
 
 
 class _LineViewport:
-    """A pre-rendered, bottom-aligned live viewport.
+    """A pre-rendered, bottom-aligned view of a taller body.
 
     ``close`` terminates the final line. Every ordinary Rich renderable does,
     and a group relies on it: left open, the renderable that follows is
@@ -80,21 +80,6 @@ class _LineViewport:
             yield from line
             if self.close or index < len(self.lines) - 1:
                 yield Segment.line()
-
-
-class _LiveLine:
-    """One row, rebuilt on every Live frame.
-
-    The pulsing dot and its seconds counter are functions of wall time, so the
-    status row has to be recomputed per frame — Live re-renders the object it
-    was handed, and a ``Text`` built once would sit frozen between events.
-    """
-
-    def __init__(self, build: Callable[[], Text | None]) -> None:
-        self._build = build
-
-    def __rich__(self) -> Text:
-        return self._build() or Text("")
 
 
 class _RendererDisplayMixin:
@@ -228,8 +213,6 @@ class _RendererDisplayMixin:
                         line.append(f" {state}", style=style)
             if len(entries) > 1 and not compact:
                 line.append("  ⇧Tab/Tab", style=self._STYLE_MUTED)
-            if self._holding_for_exit and not compact:
-                line.append("  q close", style=self._STYLE_MUTED)
             return line
 
         line = build_line(compact=False)
@@ -280,6 +263,10 @@ class _RendererDisplayMixin:
         activity = self._activity_text()
         if activity is not None:
             line.append_text(activity)
+        if self._queued_turns:
+            if line.cell_len:
+                line.append("  ", style=self._STYLE_MUTED)
+            line.append(f"+{self._queued_turns} queued", style=self._STYLE_MUTED)
         roster = self._build_team_panel(width=width - line.cell_len - 2)
         if roster is not None:
             if line.cell_len:
@@ -353,39 +340,34 @@ class _RendererDisplayMixin:
     def _build_display(self) -> Any:
         """The whole in-flight frame, uncropped: body then status row."""
         body = self._build_body()
-        status = self._status_renderable()
+        status = self._build_status_row()
         if body is None:
             # Nothing yet — still animate the wait so first-token latency doesn't
             # look frozen. Route the placeholder through the same pulsing dot.
             return status or self._thinking or self._new_thinking_bar("Thinking…")
         return Group(body, status) if status is not None else body
 
-    def _status_renderable(self) -> Any | None:
-        """The status row as a per-frame renderable, or None when it is empty."""
-        if self._build_status_row() is None:
-            return None
-        return _LiveLine(self._build_status_row)
+    def _build_hud(self) -> Any | None:
+        """Build the rows painted ABOVE the input line, sized to their content.
 
-    def _build_live_display(self) -> Any:
-        """Build a live frame sized to its content, the status row last.
+        The in-flight body only. The status row sits under the input line now,
+        so it is no longer part of this frame and no longer costs it a row.
 
         The body is capped at ``MAX_LIVE_BODY_LINES`` (and at the terminal
         height) and shows its tail when it overflows. It is never padded out to
-        the terminal height: a short frame must occupy few rows so the settled
-        transcript printed above it stays on screen.
+        the terminal height: every row the HUD claims is a row the transcript
+        above it loses, and the input line has to stay visible under it.
 
-        The status row is cropped out of the body budget rather than out of the
-        frame, and stays a live renderable instead of pre-rendered lines — it is
-        the row that has to keep animating between events.
+        ``None`` means nothing is streaming — between turns there is no reason
+        to hold a row above the input at all.
         """
-        status = self._status_renderable()
-        max_height = max(1, min(MAX_LIVE_BODY_LINES, self.console.height))
-        if status is not None:
-            max_height -= 1
         body = self._build_body()
-        if body is None or max_height < 1:
-            return status or self._thinking or self._new_thinking_bar("Thinking…")
+        if body is None:
+            return None
+        max_height = max(1, min(MAX_LIVE_BODY_LINES, self.console.height))
         lines = self.console.render_lines(body, self.console.options, pad=False)
         if len(lines) > max_height:
-            body = _LineViewport(lines[-max_height:], close=status is not None)
-        return Group(body, status) if status is not None else body
+            # Nothing follows in this frame, so the last line stays open — the
+            # prompt puts the input line under it.
+            body = _LineViewport(lines[-max_height:])
+        return body

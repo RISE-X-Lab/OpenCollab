@@ -276,7 +276,7 @@ jobs:
             tests/test_safe_files.py::test_write_rejects_nested_ancestor_symlink \
             tests/test_safe_files.py::test_read_rejects_fifo_without_blocking \
             tests/test_local_env_processes.py::test_local_file_operations_reject_symlink_and_escape \
-            tests/test_tui_keyboard.py::test_tab_navigation_reads_tab_and_backtab_and_restores_tty
+            tests/test_cli_live_prompt.py::test_prompt_tab_reprints_agent_into_scrollback_without_erasing_it
           uv run python - "$RUNNER_TEMP/h68.xml" <<'PY'
           import sys
           import xml.etree.ElementTree as ET

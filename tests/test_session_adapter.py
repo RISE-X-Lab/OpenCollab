@@ -9,74 +9,45 @@ def run(coro):
     return asyncio.run(coro)
 
 
-class FakeRender:
-    def __init__(self):
-        self.events = []
-
-    def suspend_live(self) -> bool:
-        self.events.append("suspend")
-        return True
-
-    def resume_live(self, was_suspended: bool) -> None:
-        self.events.append(("resume", was_suspended))
-
-
-def test_tui_permission_policy_suspends_resumes_and_parses_yes():
-    render = FakeRender()
-    answers = iter(["yes\n"])
-
+def test_tui_permission_policy_parses_yes():
     async def fake_read(prompt: str) -> str:
         assert prompt.endswith("[y/N] ")
-        return next(answers)
+        return "yes\n"
 
-    policy = TuiPermissionPolicy(render=render, read_line=fake_read)
-    assert run(policy.confirm("Allow?")) is True
-    assert render.events == ["suspend", ("resume", True)]
+    assert run(TuiPermissionPolicy(read_line=fake_read).confirm("Allow?")) is True
 
 
 def test_tui_permission_policy_parses_no():
-    render = FakeRender()
-
     async def fake_read(prompt: str) -> str:
         return "n"
 
-    policy = TuiPermissionPolicy(render=render, read_line=fake_read)
-    assert run(policy.confirm("Allow?")) is False
-    assert render.events == ["suspend", ("resume", True)]
+    assert run(TuiPermissionPolicy(read_line=fake_read).confirm("Allow?")) is False
 
 
-def test_tui_permission_policy_resumes_on_eof():
-    render = FakeRender()
+def test_tui_permission_policy_denies_on_eof():
+    """A closed input is not consent."""
 
     async def fake_read(prompt: str) -> str:
         raise EOFError
 
-    policy = TuiPermissionPolicy(render=render, read_line=fake_read)
-    assert run(policy.confirm("Allow?")) is False
-    assert ("resume", True) in render.events
+    assert run(TuiPermissionPolicy(read_line=fake_read).confirm("Allow?")) is False
 
 
-def test_tui_ask_user_policy_suspends_resumes_and_returns_answer():
-    render = FakeRender()
+def test_tui_ask_user_policy_returns_the_answer_to_its_question():
     prompts = []
 
     async def fake_read(prompt: str) -> str:
         prompts.append(prompt)
         return "use the smaller patch\n"
 
-    policy = TuiAskUserPolicy(render=render, read_line=fake_read)
+    policy = TuiAskUserPolicy(read_line=fake_read)
     assert run(policy.ask("Which patch?")) == "use the smaller patch\n"
     assert "Which patch?" in prompts[0]
-    assert render.events == ["suspend", ("resume", True)]
 
 
-def test_tui_ask_user_policy_resumes_then_propagates_eof():
-    render = FakeRender()
-
+def test_tui_ask_user_policy_propagates_eof_so_the_tool_reports_a_decline():
     async def fake_read(prompt: str) -> str:
         raise EOFError
 
-    policy = TuiAskUserPolicy(render=render, read_line=fake_read)
     with pytest.raises(EOFError):
-        run(policy.ask("Which patch?"))
-    assert ("resume", True) in render.events
+        run(TuiAskUserPolicy(read_line=fake_read).ask("Which patch?"))

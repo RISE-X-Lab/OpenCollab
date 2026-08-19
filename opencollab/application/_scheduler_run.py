@@ -159,13 +159,17 @@ class SchedulerRunMixin:
                 if cancellation_requested:
                     await self._settle_cancelled_suspended_turn(aid)
                 pending = self._active_scheduler_tasks()
-                if cancel_waiter is not None:
-                    pending.add(cancel_waiter)
                 if not pending:
                     if self._quiescent():
                         break
                     await self._wait_for_scheduler_progress(aid)
                     continue
+                # The waiter joins the wait, never the liveness question: it
+                # never completes on its own, so counting it as pending work
+                # would keep a quiescent team's turn running until someone
+                # cancelled it.
+                if cancel_waiter is not None:
+                    pending.add(cancel_waiter)
                 await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
         finally:
             if cancel_waiter is not None:

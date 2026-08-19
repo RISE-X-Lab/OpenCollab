@@ -7,7 +7,6 @@ per-agent routing without golden-mastering a whole terminal frame.
 
 from __future__ import annotations
 
-import asyncio
 from io import StringIO
 
 import pytest
@@ -133,7 +132,7 @@ def test_tool_start_for_spawn_agent_promotes_role_from_args():
     """The session emits tool_start when the LLM calls SpawnAgentTool;
     role gets lifted from the tool args even though it's not at top level."""
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(
         SessionRuntimeEvent(
@@ -164,7 +163,7 @@ def test_spawn_spinner_preview_uses_scheduler_task_payload():
     # Render the display to text and assert the preview is visible to the user.
     console = Console(file=StringIO(), width=80, color_system="truecolor")
     tui = TUI(console)
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
     tui.event_handler(
         SchedulerEvent(
             "agent_spawned",
@@ -179,7 +178,7 @@ def test_spawn_spinner_preview_uses_scheduler_task_payload():
 
 def test_step_start_updates_step_counter_and_status():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(SessionRuntimeEvent("step_start", {"step": 4, "aid": -1}))
     assert tui._step == 4
@@ -192,7 +191,7 @@ def test_step_start_updates_step_counter_and_status():
 
 def test_loop_detected_event_emits_warning_status():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(
         SessionRuntimeEvent("loop_detected", {"tool": "bash", "count": 5, "aid": -1}),
@@ -203,7 +202,7 @@ def test_loop_detected_event_emits_warning_status():
 
 def test_budget_warning_emits_status():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(SessionRuntimeEvent("budget_warning", {}))
     statuses = _status_plains(tui)
@@ -212,7 +211,7 @@ def test_budget_warning_emits_status():
 
 def test_error_event_emits_status_with_reason():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(SessionRuntimeEvent("error", {"reason": "boom", "aid": -1}))
     statuses = _status_plains(tui)
@@ -226,7 +225,7 @@ def test_error_event_emits_status_with_reason():
 
 def test_agent_spawned_emits_status_with_role():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(
         SchedulerEvent(
@@ -245,7 +244,7 @@ def test_agent_spawned_emits_status_with_role():
 
 def test_agent_completed_clears_active_tool_and_emits_finished_status():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(
         SchedulerEvent(
@@ -268,7 +267,7 @@ def test_agent_completed_clears_active_tool_and_emits_finished_status():
 
 def test_follow_up_completion_is_not_labeled_as_another_spawn():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
     tui.event_handler(
         SchedulerEvent(
             "agent_completed",
@@ -285,7 +284,7 @@ def test_review_started_tracks_review_loop_without_teammate_status():
     """Review loop is a scheduler-orchestration boundary; it should not produce
     a 'Teammate started' line — that fires only on the inner spawns."""
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(
         SchedulerEvent(
@@ -302,7 +301,7 @@ def test_review_started_tracks_review_loop_without_teammate_status():
 
 def test_review_completed_clears_review_loop_from_active_tools():
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     tui.event_handler(
         SchedulerEvent("review_started", {"iteration": 1, "max": 3}),
@@ -324,7 +323,7 @@ def test_scheduler_events_do_not_use_legacy_tool_start_dispatch():
     via the scheduler-event handler — only via the session handler (which has had
     that branch removed)."""
     tui = _make_tui()
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
 
     # Legacy shape, kept here intentionally to assert that the team-shaped
     # branches were removed from the session-runtime handler.
@@ -430,7 +429,7 @@ def test_available_role_is_visible_but_joins_focus_only_after_spawn():
 def test_failed_agent_remains_selectable_with_retained_output_and_error():
     console = Console(file=StringIO(), width=100, color_system=None)
     tui = TUI(console)
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
     tui.set_team_provider(lambda: [
         {"aid": 0, "role": "lead", "phase": "idle", "busy": False},
         {"aid": 2, "role": "reviewer", "phase": "failed", "busy": False},
@@ -478,7 +477,7 @@ def test_completed_agent_render_states_have_a_global_bound():
 
 def test_terminal_agent_summaries_have_a_global_bound():
     tui = TUI(Console(file=StringIO(), width=100, color_system=None))
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
     total = (
         renderer_mod.MAX_TERMINAL_AGENT_STATES
         + renderer_mod.MAX_TERMINAL_AGENT_SUMMARIES
@@ -513,7 +512,7 @@ def test_terminal_provider_entries_cannot_recreate_evicted_render_states(
     provider_phase,
 ):
     tui = TUI(Console(file=StringIO(), width=100, color_system=None))
-    tui._live_paused = True
+    tui.set_redraw(lambda: None)
     total = renderer_mod.MAX_TERMINAL_AGENT_STATES + 300
     roster = [
         {"aid": 0, "role": "lead", "phase": "idle", "busy": False},
@@ -547,95 +546,3 @@ def test_terminal_provider_entries_cannot_recreate_evicted_render_states(
 
     assert retained <= renderer_mod.MAX_TERMINAL_AGENT_STATES + 1
     assert len(tui._agent_states) == retained
-
-
-def test_live_suspend_and_resume_transfer_keyboard_ownership():
-    class FakeKeyboard:
-        def __init__(self) -> None:
-            self.active = False
-            self.starts = 0
-            self.stops = 0
-
-        def start(self) -> bool:
-            self.starts += 1
-            self.active = True
-            return True
-
-        def stop(self) -> bool:
-            self.stops += 1
-            was_active = self.active
-            self.active = False
-            return was_active
-
-    keyboard = FakeKeyboard()
-    tui = TUI(Console(file=StringIO(), width=80))
-    tui.set_keyboard_controller(keyboard)
-
-    tui.start_live()
-    assert keyboard.active is True
-    assert tui.suspend_live() is True
-    assert keyboard.active is False
-    tui.resume_live(True)
-    assert keyboard.active is True
-    tui.stop_live()
-
-    assert keyboard.starts == 2
-    assert keyboard.stops == 2
-
-
-@pytest.mark.asyncio
-async def test_hold_live_keeps_the_display_until_quit_and_marks_the_footer():
-    class FakeKeyboard:
-        active = True
-
-        def __init__(self) -> None:
-            self.quit_callback = None
-
-        def set_quit_callback(self, callback) -> None:
-            self.quit_callback = callback
-
-    class FakeLive:
-        def __init__(self) -> None:
-            self.updates = 0
-
-        def update(self, display) -> None:
-            self.updates += 1
-
-    keyboard = FakeKeyboard()
-    live = FakeLive()
-    tui = TUI(Console(file=StringIO(), width=120))
-    tui.set_team_provider(lambda: [
-        {"aid": 0, "role": "analyst", "phase": "done", "busy": False},
-        {"aid": 1, "role": "coder", "phase": "done", "busy": False},
-        {"aid": 2, "role": "tester", "phase": "done", "busy": False},
-    ])
-    tui.set_keyboard_controller(keyboard)
-    tui._live = live
-
-    holding = asyncio.create_task(tui.hold_live())
-    await asyncio.sleep(0)
-
-    assert holding.done() is False
-    assert callable(keyboard.quit_callback)
-    assert "q close" in tui._build_team_panel().plain
-    assert live.updates == 1
-
-    keyboard.quit_callback()
-    assert await holding is True
-    assert keyboard.quit_callback is None
-    assert tui._holding_for_exit is False
-
-
-@pytest.mark.asyncio
-async def test_hold_live_declines_without_an_active_tty_controller():
-    class InactiveKeyboard:
-        active = False
-
-        def set_quit_callback(self, callback) -> None:
-            raise AssertionError("inactive keyboard must not receive a quit callback")
-
-    tui = TUI(Console(file=StringIO(), width=80))
-    tui.set_keyboard_controller(InactiveKeyboard())
-    tui._live = object()
-
-    assert await tui.hold_live() is False
