@@ -135,6 +135,9 @@ class FakeTUI:
     def set_queued_turns(self, count):
         return None
 
+    def status_ansi(self, width=None):
+        return None
+
     def hud_ansi(self, width=None):
         return None
 

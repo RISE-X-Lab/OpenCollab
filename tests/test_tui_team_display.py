@@ -222,16 +222,15 @@ def test_the_hud_tails_when_content_exceeds_terminal_height():
     console = Console(file=StringIO(), width=40, height=4)
     tui = TUI(console)
     tui.set_redraw(lambda: None)
-    for index in range(8):
-        tui._status_lines.append(Text(f"status {index}", style="#6B7280"))
+    _stream(tui, 8)
 
     display = tui._build_hud()
     lines = console.render_lines(display, console.options, pad=False)
     plain = "\n".join("".join(segment.text for segment in line) for line in lines)
 
     assert len(lines) <= console.height
-    assert "status 7" in plain
-    assert "status 0" not in plain
+    assert "streamed paragraph 7" in plain
+    assert "streamed paragraph 0" not in plain
 
 
 def test_narrow_agent_status_keeps_selected_agent_visible():
@@ -266,7 +265,32 @@ def _stream(tui: TUI, paragraphs: int) -> None:
     )
 
 
-def test_agent_status_remains_last_row_when_the_hud_is_cropped():
+def test_the_status_row_is_rendered_apart_from_the_hud():
+    """The two frames are painted on opposite sides of the input line.
+
+    The HUD is the in-flight answer and goes above it; the status row goes
+    below it, as a ``bottom_toolbar``. Nothing about the team may reach the
+    rows above the input — that is the transcript's side.
+    """
+    console = Console(file=StringIO(), width=50, height=8, color_system=None)
+    tui = TUI(console)
+    tui.set_team_provider(lambda: [
+        {"aid": 0, "role": "analyst", "phase": "done", "busy": False},
+        {"aid": 1, "role": "coder", "phase": "executing_tools", "busy": True},
+    ])
+    tui._state_for(0).current_text = "short body"
+
+    rows = _hud_rows(tui)
+    status = tui.status_ansi()
+
+    assert len(rows) == 1
+    assert "short body" in rows[0]
+    assert "AGENTS" not in rows[0]
+    assert status is not None and "AGENTS" in status
+
+
+def test_the_hud_spends_its_whole_budget_on_the_body_when_cropped():
+    """Cropping used to give a row back to the status line; it no longer has to."""
     console = Console(file=StringIO(), width=50, height=3, color_system=None)
     tui = TUI(console)
     tui.set_team_provider(lambda: [
@@ -278,47 +302,28 @@ def test_agent_status_remains_last_row_when_the_hud_is_cropped():
     rows = _hud_rows(tui)
 
     assert len(rows) == console.height
-    # The body is cropped to its tail; the status row is not part of that budget.
-    assert "AGENTS" in rows[-1]
-    assert "streamed paragraph 7" in "\n".join(rows[:-1])
+    assert all("AGENTS" not in row for row in rows)
+    assert "streamed paragraph 7" in "\n".join(rows)
     assert "streamed paragraph 0" not in "\n".join(rows)
 
 
-def test_agent_status_is_pinned_to_terminal_bottom_when_content_is_short():
+def test_a_hud_with_nothing_in_flight_claims_no_rows_at_all():
+    """Between turns the input line is free to sit against the transcript.
+
+    The roster alone is no longer a reason to hold a row above the input: it
+    has a row of its own under it.
+    """
     console = Console(file=StringIO(), width=50, height=6, color_system=None)
     tui = TUI(console)
     tui.set_team_provider(lambda: [
         {"aid": 0, "role": "analyst", "phase": "done", "busy": False},
-        {"aid": 1, "role": "coder", "phase": "done", "busy": False},
     ])
-    tui._state_for(0).current_text = "short body"
 
-    rows = _hud_rows(tui)
-
-    # A short frame must claim only the rows it needs. Padding it out to the
-    # terminal height is what buried the settled transcript printed above it.
-    assert len(rows) < console.height
-    assert "short body" in rows[0]
-    assert "AGENTS" in rows[-1]
-    assert all("AGENTS" not in row for row in rows[:-1])
+    assert tui._build_hud() is None
+    assert "AGENTS" in (tui.status_ansi() or "")
 
 
-def test_agent_status_owns_only_row_in_one_line_terminal():
-    console = Console(file=StringIO(), width=50, height=1, color_system=None)
-    tui = TUI(console)
-    tui.set_team_provider(lambda: [
-        {"aid": 0, "role": "lead", "phase": "done", "busy": False},
-    ])
-    tui._state_for(0).current_text = "body is hidden"
-
-    rows = _hud_rows(tui)
-
-    assert len(rows) == 1
-    assert "AGENTS" in rows[0]
-    assert "body is hidden" not in rows[0]
-
-
-def test_pinned_agent_status_reflows_to_resized_terminal_height():
+def test_the_hud_body_reflows_to_a_resized_terminal_height():
     console = Console(file=StringIO(), width=50, height=6, color_system=None)
     tui = TUI(console)
     tui.set_team_provider(lambda: [
@@ -331,7 +336,7 @@ def test_pinned_agent_status_reflows_to_resized_terminal_height():
 
     rows = _hud_rows(tui)
     assert len(rows) == 3
-    assert "AGENTS" in rows[-1]
+    assert "streamed paragraph 7" in "\n".join(rows)
 
 
 def test_reset_clears_live_state_but_preserves_agent_history_and_roster():

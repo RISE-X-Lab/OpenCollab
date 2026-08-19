@@ -111,6 +111,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         self._redraw: Callable[[], None] | None = None
         self._queued_turns = 0
         self._hud_cache: tuple[Any, str] | None = None
+        self._status_cache: tuple[Any, str] | None = None
         # Retained as a compatibility input while the renderer moves to one
         # lossless per-agent view. It must never control event collection.
         self._filter_messages = filter_messages
@@ -147,6 +148,7 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
         """
         self._redraw = redraw
         self._hud_cache = None
+        self._status_cache = None
 
     def _drain_pending(self, aid: int | None = None) -> None:
         """Print the focused agent's not-yet-printed settled blocks."""
@@ -445,8 +447,27 @@ class TUI(_RendererEventsMixin, _RendererDisplayMixin):
     def _refresh(self) -> None:
         """Ask the bottom region's owner to repaint the HUD."""
         self._hud_cache = None
+        self._status_cache = None
         if self._redraw is not None:
             self._redraw()
+
+    def status_ansi(self, width: int | None = None) -> str | None:
+        """The one status row as ANSI, or ``None`` when it has nothing to say.
+
+        Rendered apart from ``hud_ansi`` because the two are painted on
+        opposite sides of the input line: the in-flight frame above it, this
+        row below it. Same cache discipline as the frame — the prompt asks on
+        every keystroke, the row moves only when the state or the pulse does.
+        """
+        width = self.console.width if width is None else width
+        key = (width, int(time.monotonic() / HUD_FRAME_INTERVAL))
+        cached = self._status_cache
+        if cached is not None and cached[0] == key:
+            return cached[1] or None
+        row = self._build_status_row()
+        rendered = "" if row is None else self._render_ansi(row, width)
+        self._status_cache = (key, rendered)
+        return rendered or None
 
     def hud_ansi(self, width: int | None = None) -> str | None:
         """The in-flight frame as ANSI rows, or ``None`` when nothing is live.

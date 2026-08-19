@@ -348,25 +348,26 @@ class _RendererDisplayMixin:
         return Group(body, status) if status is not None else body
 
     def _build_hud(self) -> Any | None:
-        """Build the frame the prompt paints, sized to its content.
+        """Build the rows painted ABOVE the input line, sized to their content.
+
+        The in-flight body only. The status row sits under the input line now,
+        so it is no longer part of this frame and no longer costs it a row.
 
         The body is capped at ``MAX_LIVE_BODY_LINES`` (and at the terminal
         height) and shows its tail when it overflows. It is never padded out to
         the terminal height: every row the HUD claims is a row the transcript
         above it loses, and the input line has to stay visible under it.
 
-        The status row is cropped out of the body budget rather than out of the
-        frame. ``None`` means the frame has nothing to say — between turns with
-        no team, there is no reason to hold a row at all.
+        ``None`` means nothing is streaming — between turns there is no reason
+        to hold a row above the input at all.
         """
-        status = self._build_status_row()
-        max_height = max(1, min(MAX_LIVE_BODY_LINES, self.console.height))
-        if status is not None:
-            max_height -= 1
         body = self._build_body()
-        if body is None or max_height < 1:
-            return status or self._thinking
+        if body is None:
+            return None
+        max_height = max(1, min(MAX_LIVE_BODY_LINES, self.console.height))
         lines = self.console.render_lines(body, self.console.options, pad=False)
         if len(lines) > max_height:
-            body = _LineViewport(lines[-max_height:], close=status is not None)
-        return Group(body, status) if status is not None else body
+            # Nothing follows in this frame, so the last line stays open — the
+            # prompt puts the input line under it.
+            body = _LineViewport(lines[-max_height:])
+        return body

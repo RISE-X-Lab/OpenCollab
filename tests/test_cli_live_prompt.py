@@ -12,28 +12,40 @@ from types import SimpleNamespace
 
 import pytest
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application.current import set_app
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.keys import Keys
+from prompt_toolkit.layout.mouse_handlers import MouseHandlers
+from prompt_toolkit.layout.screen import Screen, WritePosition
 from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.output.vt100 import Vt100_Output
 from rich.console import Console
 
-from opencollab.adapters.cli.live_prompt import LivePrompt, read_console_line
+from opencollab.adapters.cli.live_prompt import (
+    LivePrompt,
+    _pin_status_row_under_input,
+    _Question,
+    read_console_line,
+)
 from opencollab.adapters.cli.prompt_view import build_agent_navigation_bindings
 from opencollab.adapters.tui import TUI, TuiAskUserPolicy, TuiPermissionPolicy
 
 
 class _FakeTUI:
-    def __init__(self, hud: str | None = None) -> None:
+    def __init__(self, hud: str | None = None, status: str | None = None) -> None:
         self.selected_aid = 0
         self.redraws: list = []
         self._hud = hud
+        self._status = status
 
     def set_redraw(self, redraw) -> None:
         self.redraws.append(redraw)
 
     def hud_ansi(self, width=None) -> str | None:
         return self._hud
+
+    def status_ansi(self, width=None) -> str | None:
+        return self._status
 
     def select_next_agent(self) -> int | None:
         self.selected_aid = 1 if self.selected_aid == 0 else 2
@@ -48,6 +60,27 @@ def _text(fragments) -> str:
     return "".join(text for _style, text in fragments)
 
 
+SCREEN_WIDTH, SCREEN_HEIGHT = 80, 12
+
+
+def _render_layout_rows(app) -> list[str]:
+    """Render a prompt's layout into a screen and read its rows back."""
+    with set_app(app):
+        screen = Screen()
+        app.layout.container.write_to_screen(
+            screen,
+            MouseHandlers(),
+            WritePosition(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT),
+            "",
+            False,
+            None,
+        )
+    return [
+        "".join(screen.data_buffer[y][x].char for x in range(SCREEN_WIDTH)).rstrip()
+        for y in range(SCREEN_HEIGHT)
+    ]
+
+
 def test_the_prompt_paints_the_hud_above_its_own_input_line():
     """The HUD is rows the prompt owns, not output printed near it.
 
@@ -59,6 +92,82 @@ def test_the_prompt_paints_the_hud_above_its_own_input_line():
     rendered = _text(prompt._message())
 
     assert rendered == "▸ bash · 2s   AGENTS 1/2\n❯ "
+
+
+def test_the_status_row_is_handed_to_the_toolbar_below_the_input_line():
+    """The answer above the input line, the status row below it.
+
+    The row is a ``bottom_toolbar``, so it must not also be in the message —
+    the message is painted above the cursor, and a row in both frames is a row
+    printed twice.
+    """
+    prompt = LivePrompt(_FakeTUI("◆ streaming", "● thinking  AGENTS 1/3"), console=Console())
+    prompt._session = SimpleNamespace(
+        app=SimpleNamespace(renderer=SimpleNamespace(height_is_known=True))
+    )
+
+    assert _text(prompt._message()) == "◆ streaming\n❯ "
+    assert _text(prompt._status()) == "● thinking  AGENTS 1/3"
+
+
+def test_the_status_row_moves_back_above_the_input_when_the_toolbar_cannot_paint():
+    """A terminal that answers no cursor-position request gets no toolbar.
+
+    prompt_toolkit holds a ``bottom_toolbar`` back until the renderer knows the
+    room below the cursor. The status row is the run's only evidence of what
+    the team is doing, so it goes back above the input rather than disappearing.
+    """
+    prompt = LivePrompt(_FakeTUI("◆ streaming", "● thinking  AGENTS 1/3"), console=Console())
+    prompt._session = SimpleNamespace(
+        app=SimpleNamespace(renderer=SimpleNamespace(height_is_known=False))
+    )
+
+    assert _text(prompt._message()) == "◆ streaming\n● thinking  AGENTS 1/3\n❯ "
+
+
+@pytest.mark.asyncio
+async def test_a_question_holding_the_input_line_keeps_the_status_row_under_it():
+    prompt = LivePrompt(_FakeTUI(None, "● thinking  AGENTS 1/3"), console=Console())
+    prompt._session = SimpleNamespace(
+        app=SimpleNamespace(renderer=SimpleNamespace(height_is_known=True))
+    )
+    loop = asyncio.get_running_loop()
+    prompt._questions.append(_Question("[Agent asks] Which one?\n> ", loop.create_future()))
+
+    assert _text(prompt._message()) == "[Agent asks] Which one?\n> "
+    assert _text(prompt._status()) == "● thinking  AGENTS 1/3"
+
+
+@pytest.mark.asyncio
+async def test_the_status_row_lands_on_the_row_under_the_input_line():
+    """Where the two frames end up on screen, row by row.
+
+    A prompt claims every row between the cursor and the bottom of the screen,
+    which is slack whenever it is not already at the bottom. Left to spread,
+    that slack lands *between* the input line and the toolbar, and the status
+    row drifts down the screen. ``_pin_status_row_under_input`` is what keeps
+    the two adjacent, so this renders the real layout into a screen far taller
+    than its content and reads the rows back.
+    """
+    with create_pipe_input() as pipe_input:
+        session = PromptSession(input=pipe_input, output=DummyOutput())
+        _pin_status_row_under_input(session)
+        prompt = LivePrompt(_FakeTUI("HUD-BODY-ROW", "STATUS-ROW"), console=Console())
+        prompt._session = session
+        session.message = prompt._message
+        session.bottom_toolbar = prompt._status
+
+        app = session.app
+        # A toolbar is held back until the renderer knows the room below the
+        # cursor; a DummyOutput never reports it, so state the room outright.
+        app.renderer._min_available_height = SCREEN_HEIGHT
+        rows = _render_layout_rows(app)
+
+    assert rows[0] == "HUD-BODY-ROW"
+    assert rows[1].startswith("❯")
+    assert rows[2] == "STATUS-ROW"
+    # ...and every row the prompt claimed but does not need is below them.
+    assert all(row == "" for row in rows[3:])
 
 
 def test_a_prompt_with_nothing_in_flight_is_just_the_chevron():

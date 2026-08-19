@@ -1,10 +1,16 @@
 """The always-on input line, and the bottom region of the terminal it owns.
 
-prompt_toolkit paints two things, in this order: the HUD the TUI renders to
-ANSI rows (streaming text, then the one status row), and the input line under
-it. It stays up for the whole session — while a turn runs, between turns, and
-while an agent is waiting on an answer — because two in-place redrawers cannot
-share rows, which is what a Rich ``Live`` and a prompt used to try to do.
+prompt_toolkit paints three things, top to bottom: the HUD the TUI renders to
+ANSI rows (the in-flight answer), the input line, and the status row under it.
+It stays up for the whole session — while a turn runs, between turns, and while
+an agent is waiting on an answer — because two in-place redrawers cannot share
+rows, which is what a Rich ``Live`` and a prompt used to try to do.
+
+The status row is a ``bottom_toolbar``, which prompt_toolkit places last in the
+prompt's layout. Two adjustments keep it *against* the input line rather than
+at the bottom of the claimed region: the layout stacks to the top, and the
+input window is stopped from growing into the slack. Without them the slack
+lands between the two and the row drifts down the screen.
 
 Everything printed while it is up goes above it: a standing ``patch_stdout``
 routes every write — this package's and anyone else's — through
@@ -25,7 +31,10 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any
 
+from prompt_toolkit.filters import to_filter
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
+from prompt_toolkit.layout.containers import VerticalAlign, Window
+from prompt_toolkit.layout.controls import BufferControl
 from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.styles import Style
 
@@ -38,6 +47,11 @@ REFRESH_INTERVAL = 0.1
 
 _PROMPT_STYLE = Style.from_dict({
     "prompt.chevron": f"{BRAND_VIOLET} bold",
+    # The default toolbar style is a reverse-video bar across the width. The
+    # row carries its own Rich colors, so all this has to do is stay out of
+    # their way.
+    "bottom-toolbar": "noreverse bg:default",
+    "bottom-toolbar.text": "noreverse bg:default",
 })
 _CHEVRON = [("class:prompt.chevron", "❯"), ("", " ")]
 _FALLBACK_PROMPT = "> "
@@ -83,6 +97,38 @@ async def read_console_line(console: Any, prompt_text: str) -> str:
         return await result
     finally:
         loop.remove_reader(stdin_fd)
+
+
+def _pin_status_row_under_input(session: Any) -> None:
+    """Keep the toolbar row against the input line instead of the screen bottom.
+
+    A prompt claims every row between the cursor and the bottom of the screen
+    (``Renderer.render`` floors its height at the room it measured there), which
+    is slack whenever the prompt is not already at the bottom. By default that
+    slack is shared out among the layout's children, and both of them hand it
+    downward: the input window grows into it, and the toolbar — last in the
+    layout — is pushed to the far end of the claimed region, rows away from the
+    line it describes.
+
+    So: stack the layout to the top, where the leftover collects in a filler
+    below everything, and stop the input window from extending. The visible
+    rows then sit flush — HUD, input, status — and the slack falls under them.
+
+    Best-effort by design: this reaches into how a ``PromptSession`` assembles
+    its layout, so a prompt_toolkit that no longer looks like this leaves the
+    row at the bottom of the region rather than failing the run.
+    """
+    try:
+        session.layout.container.align = VerticalAlign.TOP
+        for container in session.layout.walk():
+            if (
+                isinstance(container, Window)
+                and isinstance(container.content, BufferControl)
+                and container.content.buffer is session.default_buffer
+            ):
+                container.dont_extend_height = to_filter(True)
+    except Exception:
+        pass
 
 
 class LivePrompt:
@@ -141,6 +187,7 @@ class LivePrompt:
         try:
             return await session.prompt_async(
                 self._message,
+                bottom_toolbar=self._status,
                 refresh_interval=REFRESH_INTERVAL,
                 key_bindings=build_agent_navigation_bindings(self._tui),
                 style=_PROMPT_STYLE,
@@ -209,22 +256,56 @@ class LivePrompt:
         if self._session is None:
             from prompt_toolkit import PromptSession
 
-            self._session = PromptSession(erase_when_done=True)
+            session = PromptSession(erase_when_done=True)
+            _pin_status_row_under_input(session)
+            self._session = session
         return self._session
 
     def _message(self) -> Any:
-        """The rows above the cursor: the HUD, then a question or the chevron."""
+        """The rows above the cursor: the HUD, then a question or the chevron.
+
+        The status row joins them only when the toolbar below cannot be drawn
+        (see ``_toolbar_renders``) — the row is the run's only evidence of what
+        the team is doing, so it moves back above the input rather than
+        vanishing on a terminal that answers no cursor-position request.
+        """
         rows: list[Any] = []
         hud = self._tui.hud_ansi()
         if hud:
             rows.extend(to_formatted_text(ANSI(hud)))
             rows.append(("", "\n"))
+        if not self._toolbar_renders():
+            status = self._tui.status_ansi()
+            if status:
+                rows.extend(to_formatted_text(ANSI(status)))
+                rows.append(("", "\n"))
         question = self.pending_question
         if question is not None:
             rows.extend(to_formatted_text(question))
             return rows
         rows.extend(_CHEVRON)
         return rows
+
+    def _status(self) -> Any:
+        """The row under the input line."""
+        status = self._tui.status_ansi()
+        return to_formatted_text(ANSI(status)) if status else ""
+
+    def _toolbar_renders(self) -> bool:
+        """Whether prompt_toolkit will actually paint the toolbar right now.
+
+        It holds a ``bottom_toolbar`` back until the renderer knows how much
+        room is left below the cursor, which on a vt100 terminal means a
+        cursor-position report. One that never answers gets no toolbar, ever.
+        """
+        app = getattr(self._session, "app", None)
+        renderer = getattr(app, "renderer", None)
+        if renderer is None:
+            return False
+        try:
+            return bool(renderer.height_is_known)
+        except Exception:
+            return False
 
     def _buffer(self) -> Any | None:
         return getattr(self._session, "default_buffer", None)
