@@ -7,6 +7,7 @@
   <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/LICENSE"><img src="https://img.shields.io/badge/License-MulanPSL--2.0-blue.svg" alt="License: MulanPSL-2.0"></a>
   <img src="https://img.shields.io/badge/python-3.10--3.14-blue.svg" alt="Python 3.10 through 3.14">
   <a href="https://github.com/RISE-X-Lab/OpenCollab/blob/main/assets/README.md"><img src="https://img.shields.io/badge/brand-assets-7C3AED.svg" alt="Brand assets"></a>
+  <a href="https://github.com/RISE-X-Lab/OpenCollab"><img src="https://img.shields.io/badge/GitHub-View%20on%20GitHub-181717.svg?logo=github&logoColor=white" alt="View on GitHub"></a>
 </p>
 
 <p align="center">
