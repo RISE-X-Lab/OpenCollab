@@ -150,7 +150,7 @@ async def test_real_http_stream_replays_reasoning_function_call_and_output(monke
     ]
     with fake_responses_server(scripts) as (base_url, requests):
         client = LLMClient(
-            model="gpt-fake",
+            model="gpt-5-fake",
             api_key="fake-key",  # pragma: allowlist secret
             base_url=base_url,
             wire_protocol="responses",

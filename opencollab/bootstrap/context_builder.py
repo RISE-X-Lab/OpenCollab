@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from opencollab.adapters.llm.providers import RESPONSES
+from opencollab.adapters.llm.types import model_capabilities
 from opencollab.adapters.skills.null_skill_store import NullSkillStore
 from opencollab.adapters.trace import Tracer
 from opencollab.application.event_bus import EventBus
@@ -201,6 +203,16 @@ class ContextBuilder:
             tool_limits=self._team.tool_limits,
         )
         cfg = self._cfg
+        model = role.model or cfg.model
+        if (
+            cfg.wire_protocol == RESPONSES
+            and tools
+            and not model_capabilities(model).supports_responses_tools
+        ):
+            raise ValueError(
+                f"role {role_name!r} model {model!r} does not support "
+                "Responses tools"
+            )
         # A role override of 0.0 is meaningful (fully deterministic), so fall
         # back to the global default only when the role left it unset (None).
         temperature = (
@@ -218,7 +230,7 @@ class ContextBuilder:
             name=role_name,
             system_prompt=plan.system_prompt(),
             tools=tools,
-            model=role.model or cfg.model,
+            model=model,
             provider=cfg.provider,
             wire_protocol=cfg.wire_protocol,
             api_key=cfg.api_key,

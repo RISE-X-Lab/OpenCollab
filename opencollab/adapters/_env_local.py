@@ -21,20 +21,28 @@ from opencollab.adapters._env_process import (
     ProcessRegistry,
     run_process,
 )
-from opencollab.adapters.safe_files import (
-    create_regular_bytes_atomic,
-    read_regular_bytes,
-    read_regular_text_range,
-    unlink_regular_file_durable,
-    write_regular_bytes_atomic,
+from opencollab.adapters.safe_anchored_files import (
+    create_regular_bytes_atomic_at,
+    open_directory_anchor,
+    read_regular_bytes_at,
+    read_regular_text_range_at,
+    unlink_regular_file_durable_at,
+    write_regular_bytes_atomic_at,
 )
+from opencollab.adapters.safe_paths import canonicalize_system_path
 from opencollab.application.async_timeout import await_owned_operation, consume_task_result
+from opencollab.application.exception_notes import add_exception_note
 
 LOCAL_FILE_READ_LIMIT_BYTES = 4 * 1024 * 1024
 LOCAL_FILE_WRITE_LIMIT_BYTES = ENV_FILE_WRITE_LIMIT_BYTES
 _TEMP_COMPONENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _FILE_IO_CONCURRENCY = 4
 T = TypeVar("T")
+
+# Preserve the module-level fault-injection seam used by existing integrations
+# and tests while routing the implementation through descriptor-relative I/O.
+read_regular_bytes = read_regular_bytes_at
+write_regular_bytes_atomic = write_regular_bytes_atomic_at
 
 
 class LocalEnvironment(Environment):
@@ -48,6 +56,7 @@ class LocalEnvironment(Environment):
         self.workspace = os.path.realpath(os.path.abspath(workspace))
         if not os.path.isdir(self.workspace):
             raise NotADirectoryError(self.workspace)
+        self._workspace_fd: int | None = open_directory_anchor(self.workspace)
         self.host_workspace = self.workspace
         self.source_workspace = self.workspace
         self._processes = ProcessRegistry()
@@ -55,15 +64,29 @@ class LocalEnvironment(Environment):
         self._file_io_semaphore = asyncio.Semaphore(_FILE_IO_CONCURRENCY)
         self._file_operations: set[asyncio.Task] = set()
 
-    def _full_path(self, path: str) -> str:
+    def _relative_path(self, path: str) -> str:
         if not isinstance(path, str) or not path or "\0" in path:
             raise ValueError("local file path must be non-empty text without NUL bytes")
         if os.path.isabs(path):
-            return os.path.normpath(path)
-        normalized = os.path.normpath(path)
+            candidate = canonicalize_system_path(path)
+            workspace = canonicalize_system_path(self.workspace)
+            try:
+                inside = os.path.commonpath((workspace, candidate)) == os.fspath(workspace)
+            except ValueError:
+                inside = False
+            if not inside:
+                raise PermissionError(f"path escapes local workspace: {path}")
+            normalized = os.path.relpath(candidate, workspace)
+        else:
+            normalized = os.path.normpath(path)
         if normalized == ".." or normalized.startswith(f"..{os.sep}"):
             raise PermissionError(f"relative path escapes local workspace: {path}")
-        return os.path.join(self.workspace, normalized)
+        return normalized
+
+    def _root_fd(self) -> int:
+        if self._workspace_fd is None:
+            raise RuntimeError("Local environment workspace is closed.")
+        return self._workspace_fd
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0) -> ExecResult:
         self._ensure_active()
@@ -105,9 +128,7 @@ class LocalEnvironment(Environment):
     ) -> T:
         if require_active:
             self._ensure_active()
-        owner = asyncio.create_task(
-            self._execute_file_operation(operation, *args, **kwargs)
-        )
+        owner = asyncio.create_task(self._execute_file_operation(operation, *args, **kwargs))
         self._file_operations.add(owner)
         owner.add_done_callback(self._file_operations.discard)
         owner.add_done_callback(consume_task_result)
@@ -116,7 +137,9 @@ class LocalEnvironment(Environment):
     async def read_file(self, path: str) -> str:
         payload = await self._run_file_operation(
             read_regular_bytes,
-            self._full_path(path),
+            self._root_fd(),
+            self.workspace,
+            self._relative_path(path),
             max_bytes=LOCAL_FILE_READ_LIMIT_BYTES,
         )
         return payload.decode("utf-8")
@@ -130,8 +153,10 @@ class LocalEnvironment(Environment):
         max_chars: int,
     ) -> TextFileRange:
         return await self._run_file_operation(
-            read_regular_text_range,
-            self._full_path(path),
+            read_regular_text_range_at,
+            self._root_fd(),
+            self.workspace,
+            self._relative_path(path),
             offset=offset,
             limit=limit,
             max_chars=max_chars,
@@ -141,12 +166,12 @@ class LocalEnvironment(Environment):
         self._ensure_active()
         payload = content.encode("utf-8")
         if len(payload) > LOCAL_FILE_WRITE_LIMIT_BYTES:
-            raise OSError(
-                f"local file exceeds write limit of {LOCAL_FILE_WRITE_LIMIT_BYTES} bytes: {path}"
-            )
+            raise OSError(f"local file exceeds write limit of {LOCAL_FILE_WRITE_LIMIT_BYTES} bytes: {path}")
         await self._run_file_operation(
             write_regular_bytes_atomic,
-            self._full_path(path),
+            self._root_fd(),
+            self.workspace,
+            self._relative_path(path),
             payload,
             max_bytes=LOCAL_FILE_WRITE_LIMIT_BYTES,
         )
@@ -164,22 +189,29 @@ class LocalEnvironment(Environment):
         payload = content.encode("utf-8")
         if len(payload) > LOCAL_FILE_WRITE_LIMIT_BYTES:
             raise OSError("temporary file exceeds local write limit")
-        path = os.path.join(self.workspace, f"{prefix}{uuid.uuid4().hex}{suffix}")
-        self._temporary_files.add(path)
+        relative_path = f"{prefix}{uuid.uuid4().hex}{suffix}"
+        self._temporary_files.add(relative_path)
         await self._run_file_operation(
-            create_regular_bytes_atomic,
-            path,
+            create_regular_bytes_atomic_at,
+            self._root_fd(),
+            self.workspace,
+            relative_path,
             payload,
             max_bytes=LOCAL_FILE_WRITE_LIMIT_BYTES,
         )
-        return path
+        return os.path.join(self.workspace, relative_path)
 
     async def remove_file(self, path: str) -> None:
         self._ensure_active()
-        target = self._full_path(path)
+        target = self._relative_path(path)
         if target not in self._temporary_files:
             raise OSError(f"refusing to remove unowned local temporary file: {path}")
-        await self._run_file_operation(unlink_regular_file_durable, target)
+        await self._run_file_operation(
+            unlink_regular_file_durable_at,
+            self._root_fd(),
+            self.workspace,
+            target,
+        )
         self._temporary_files.discard(target)
 
     async def _cleanup_files(self) -> None:
@@ -190,7 +222,9 @@ class LocalEnvironment(Environment):
         for path in tuple(self._temporary_files):
             try:
                 await self._run_file_operation(
-                    unlink_regular_file_durable,
+                    unlink_regular_file_durable_at,
+                    self._root_fd(),
+                    self.workspace,
                     path,
                     require_active=False,
                 )
@@ -198,15 +232,79 @@ class LocalEnvironment(Environment):
                 failures.append(exc)
             else:
                 self._temporary_files.discard(path)
+
+        # A failed temporary-file unlink must remain retryable.  WorktreePool
+        # retains environments whose cleanup failed and calls cleanup() again;
+        # closing this descriptor while an owned path remains would make that
+        # retry permanently incapable of reaching the anchored workspace.
+        if not self._temporary_files and self._workspace_fd is not None:
+            os.close(self._workspace_fd)
+            self._workspace_fd = None
+
         if failures:
-            raise OSError("failed to remove one or more environment temporary files") from failures[0]
+            failure = OSError("failed to remove one or more environment temporary files")
+            for secondary in failures[1:]:
+                add_exception_note(
+                    failure,
+                    "additional file cleanup failure: "
+                    f"{type(secondary).__name__}: {secondary}",
+                )
+            raise failure from failures[0]
 
     async def cleanup(self) -> None:
         self.revoke()
-        await self._processes.abort()
-        await await_owned_operation(
-            self._cleanup_files(),
-            propagate_cancellation=True,
+        process_failure: BaseException | None = None
+        try:
+            await self._processes.abort()
+        except BaseException as exc:
+            process_failure = exc
+
+        file_failure: BaseException | None = None
+        try:
+            await await_owned_operation(
+                self._cleanup_files(),
+                # Once cancellation has already been captured from process
+                # cleanup, keep the file owner alive through repeat cancels and
+                # re-raise the original cancellation after resources quiesce.
+                propagate_cancellation=not isinstance(
+                    process_failure,
+                    asyncio.CancelledError,
+                ),
+            )
+        except BaseException as exc:
+            file_failure = exc
+
+        cancellation = next(
+            (
+                failure
+                for failure in (process_failure, file_failure)
+                if isinstance(failure, asyncio.CancelledError)
+            ),
+            None,
         )
+        if cancellation is not None:
+            for label, failure in (
+                ("process cleanup", process_failure),
+                ("file cleanup", file_failure),
+            ):
+                if failure is not None and failure is not cancellation:
+                    add_exception_note(
+                        cancellation,
+                        f"{label} also failed: {type(failure).__name__}: {failure}",
+                    )
+            raise cancellation
+
+        if process_failure is not None:
+            if file_failure is not None:
+                add_exception_note(
+                    process_failure,
+                    "file cleanup also failed: "
+                    f"{type(file_failure).__name__}: {file_failure}",
+                )
+                raise process_failure from file_failure
+            raise process_failure
+        if file_failure is not None:
+            raise file_failure
+
 
 __all__ = ["LocalEnvironment"]

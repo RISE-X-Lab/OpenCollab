@@ -20,7 +20,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
+from opencollab.adapters.llm.providers import RESPONSES
 from opencollab.adapters.llm.retry import RetryTimeBudget
+from opencollab.adapters.llm.types import model_capabilities
 from opencollab.adapters.repo_map import build_repo_map
 from opencollab.adapters.safe_files import ensure_directory_no_symlinks
 from opencollab.adapters.trace import Tracer
@@ -39,13 +41,48 @@ from opencollab.application.session import Session
 from opencollab.bootstrap.container import build_session_runtime, build_skill_store
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
-from opencollab.bootstrap.team_config import TeamConfig, default_team_config
+from opencollab.bootstrap.team_config import (
+    BASE_TOOL_NAMES,
+    TeamConfig,
+    default_team_config,
+)
 from opencollab.domain.agent import Agent
 from opencollab.domain.identity import role_storage_slug, validate_role_identity
 
 
 class SnapshotSessionError(RuntimeError):
     """An independent session snapshot could not be created safely."""
+
+
+def validate_responses_model_controls(
+    model: str | None,
+    *,
+    role_name: str,
+    tools_present: bool = False,
+    top_p: float | None = None,
+    reasoning_effort: str | None = None,
+) -> None:
+    """Reject known-incompatible Responses controls before side effects.
+
+    Capability metadata is deliberately dimension-specific: unknown models keep
+    neutral tool/streaming defaults, while known reasoning families fail closed
+    for sampling and reasoning controls.  This helper is shared by team and
+    workflow bootstrap paths; the provider adapter remains the final runtime
+    guard for dynamically assembled requests.
+    """
+    capabilities = model_capabilities(model)
+    if tools_present and not capabilities.supports_responses_tools:
+        raise ValueError(
+            f"role {role_name!r} model {model!r} does not support Responses tools"
+        )
+    if top_p is not None and not capabilities.supports_responses_sampling:
+        raise ValueError(
+            f"role {role_name!r} model {model!r} does not support Responses sampling"
+        )
+    if reasoning_effort is not None and not capabilities.supports_responses_reasoning:
+        raise ValueError(
+            f"role {role_name!r} model {model!r} does not support Responses reasoning_effort"
+        )
 
 
 def _team_budget_guard(scheduler: SchedulerPort | None) -> Callable[[], bool] | None:
@@ -368,12 +405,65 @@ class DefaultSessionFactory:
             else None
         )
         self._team = team_cfg or default_team_config()
-        self._lead_workspace = lead_workspace
         self._interactive = interactive
+        self._validate_responses_tool_support()
+        self._lead_workspace = lead_workspace
         self._allow_unisolated_child_tests = allow_unisolated_child_tests
         # Run folder where every agent's transcript is persisted. When set,
         # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
         self._save_dir = save_dir
+
+    def _validate_responses_tool_support(self) -> None:
+        """Reject statically incompatible team roles before opening a workspace."""
+        if self._cfg.wire_protocol != RESPONSES:
+            return
+
+        # A restricted topology may name an undeclared destination.  Such a
+        # destination is still spawnable and ``TeamConfig.role_for`` resolves it
+        # to the generic BASE_TOOL_NAMES role, so it must participate in the
+        # same startup preflight as explicitly declared roles.
+        reachable_roles = dict(self._team.roles)
+        for source, destinations in self._team.topology.edges.items():
+            reachable_roles.setdefault(source, self._team.role_for(source))
+            for destination in destinations:
+                reachable_roles.setdefault(
+                    destination,
+                    self._team.role_for(destination),
+                )
+
+        for role_name, role in reachable_roles.items():
+            model = role.model or self._cfg.model
+            tool_names = set(role.tools)
+            if role_name != self._team.entry or not self._interactive:
+                tool_names.discard("ask_user")
+            validate_responses_model_controls(
+                model,
+                role_name=role_name,
+                tools_present=bool(tool_names),
+                top_p=self._cfg.top_p,
+                reasoning_effort=self._cfg.reasoning_effort,
+            )
+        fallback_tool_names = set(BASE_TOOL_NAMES) - {"ask_user"}
+        if self._team.topology.allow_all:
+            capabilities = model_capabilities(self._cfg.model)
+            if fallback_tool_names and not capabilities.supports_responses_tools:
+                raise ValueError(
+                    f"default model {self._cfg.model!r} does not support Responses "
+                    "tools required by ad-hoc roles"
+                )
+            if self._cfg.top_p is not None and not capabilities.supports_responses_sampling:
+                raise ValueError(
+                    f"default model {self._cfg.model!r} does not support Responses "
+                    "sampling required by ad-hoc roles"
+                )
+            if (
+                self._cfg.reasoning_effort is not None
+                and not capabilities.supports_responses_reasoning
+            ):
+                raise ValueError(
+                    f"default model {self._cfg.model!r} does not support Responses "
+                    "reasoning_effort required by ad-hoc roles"
+                )
 
     def _fresh_context_builder(self) -> ContextBuilder:
         """Snapshot bounded workspace context at the new session's start."""
@@ -500,5 +590,6 @@ __all__ = [
     "make_run_dir",
     "slug_label",
     "snapshot_session",
+    "validate_responses_model_controls",
     "workflow_transcript_path",
 ]

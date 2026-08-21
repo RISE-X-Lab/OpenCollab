@@ -135,6 +135,10 @@ class ModelCapabilities:
     supports_forced_tool_choice: bool = True
     supports_responses_json_schema: bool = False
     honors_workflow_thinking_override: bool = True
+    supports_responses_streaming: bool = True
+    supports_responses_sampling: bool = True
+    supports_responses_reasoning: bool = False
+    supports_responses_tools: bool = True
 
 
 # Best-effort context-window sizes (tokens), keyed by a model family. Used to
@@ -156,10 +160,35 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+    "o1-pro": ModelCapabilities(
+        context_window=200_000,
+        supports_responses_streaming=False,
+        supports_responses_sampling=False,
+        supports_responses_reasoning=True,
+    ),
+    "o1-mini": ModelCapabilities(
+        context_window=200_000,
+        supports_responses_sampling=False,
+        supports_responses_reasoning=True,
+        supports_responses_tools=False,
+    ),
+    "o3": ModelCapabilities(
+        context_window=200_000,
+        supports_responses_sampling=False,
+        supports_responses_reasoning=True,
+    ),
+    "o3-mini": ModelCapabilities(
+        context_window=200_000,
+        supports_responses_sampling=False,
+        supports_responses_reasoning=True,
+    ),
+    "gpt-4o": ModelCapabilities(context_window=128_000, supports_responses_reasoning=False),
+    "gpt-4o-mini": ModelCapabilities(context_window=128_000, supports_responses_reasoning=False),
     "deepseek-v4-flash": ModelCapabilities(
         context_window=1_048_576,
         supports_forced_tool_choice=False,
         supports_responses_json_schema=True,
+        supports_responses_reasoning=True,
         honors_workflow_thinking_override=False,
     ),
     "k3": ModelCapabilities(
@@ -199,17 +228,51 @@ def _canonical_model_id(model: str) -> str:
     return leaf
 
 
+def _is_responses_reasoning_family(model: str) -> bool:
+    leaf = model.strip().lower().rsplit("/", 1)[-1]
+    return re.match(r"^(?:gpt-5|o[134])(?:$|[-.])", leaf) is not None
+
+
+def _is_responses_sampling_restricted_family(model: str) -> bool:
+    """Return families known to reject Responses sampling controls.
+
+    GPT-5 variants support the Responses reasoning fields while retaining the
+    sampling controls used by the existing adapter contract.  The older o1/o3
+    reasoning families are the ones for which sampling is known to be
+    unsupported; keep that dimension independent from reasoning detection.
+    """
+
+    leaf = model.strip().lower().rsplit("/", 1)[-1]
+    return re.match(r"^o[134](?:$|[-.])", leaf) is not None
+
+
 def model_capabilities(model: str | None) -> ModelCapabilities:
-    """Return exact capability metadata plus a best-effort context window."""
+    """Return exact capability metadata plus a best-effort context window.
+
+    Capability dimensions are intentionally independent.  Known ``o1``/``o3``
+    /``o4`` families fail closed for sampling while GPT-5 variants retain the
+    existing sampling contract even though they opt in to Responses reasoning.
+    Streaming and function-tool support stay at their neutral defaults until a
+    provider contract explicitly confirms them; an unknown dimension must not
+    be inferred from reasoning support.
+    """
     if not model:
         return ModelCapabilities()
     canonical = _canonical_model_id(model)
     if canonical in _EXACT_MODEL_CAPABILITIES:
         return _EXACT_MODEL_CAPABILITIES[canonical]
+    context_window = None
     for key, window in MODEL_CONTEXT_WINDOWS.items():
         if model_matches_family(model, key):
-            return ModelCapabilities(context_window=window)
-    return ModelCapabilities()
+            context_window = window
+            break
+    reasoning_family = _is_responses_reasoning_family(model)
+    sampling_restricted_family = _is_responses_sampling_restricted_family(model)
+    return ModelCapabilities(
+        context_window=context_window,
+        supports_responses_sampling=not sampling_restricted_family,
+        supports_responses_reasoning=reasoning_family,
+    )
 
 
 def model_context_window(model: str | None) -> int | None:

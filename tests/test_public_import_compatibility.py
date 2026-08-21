@@ -25,14 +25,21 @@ def test_safe_file_facade_retains_public_operations() -> None:
     operations = {
         "append_regular_text",
         "create_regular_bytes_atomic",
+        "create_regular_bytes_atomic_at",
         "ensure_directory_no_symlinks",
+        "open_directory_anchor",
         "open_regular_text_append",
         "read_regular_bytes",
+        "read_regular_bytes_at",
         "read_regular_text",
+        "read_regular_text_range_at",
         "unlink_regular_file_durable",
+        "unlink_regular_file_durable_at",
         "write_locked_text",
         "write_regular_bytes_atomic",
+        "write_regular_bytes_atomic_at",
         "write_regular_file_atomic",
+        "write_regular_file_atomic_at",
     }
 
     assert operations <= set(facade.__all__)
