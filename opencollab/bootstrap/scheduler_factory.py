@@ -190,6 +190,10 @@ def build_scheduler(
         interactive=interactive,
         save_dir=run_dir,
         allow_unisolated_child_tests=allow_unisolated_child_tests,
+        # A prebuilt roster's teammates are declared nodes seated before the
+        # first model call, so the factory gives them agent 0's shell instead of
+        # the hardened default it gives a child a model spawned mid-run.
+        prebuilt_roster=prebuild_team,
     )
     worktree_pool = WorktreePool(ctx.workspace, use_worktrees=use_worktrees)
 

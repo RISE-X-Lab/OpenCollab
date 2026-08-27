@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 from scheduler_awaiting_test_support import ScriptedFactory, ScriptedSession, terminal
 
+from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.trace import Tracer
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.event_bus import EventBus
@@ -36,12 +37,15 @@ from opencollab.application.scheduler import Scheduler
 from opencollab.application.scheduler_types import TeamPrebuiltError
 from opencollab.application.tool_execution import ToolRuntime
 from opencollab.bootstrap import build_runtime_context, build_scheduler
+from opencollab.bootstrap.context_builder import SpawnConfig
+from opencollab.bootstrap.session_factory import DefaultSessionFactory
 from opencollab.bootstrap.team_config import (
     ANALYST_TOOL_NAMES,
     CODER_TOOL_NAMES,
     TESTER_TOOL_NAMES,
     TeamConfig,
     default_team_config,
+    load_team_config,
 )
 from opencollab.domain.scheduler import PER_AGENT_BUDGET_SHARE, per_agent_cap
 
@@ -52,6 +56,27 @@ CONFIG = {
     "base_url": None,
     "budget": 1_000_000,
 }
+# The team the handoff experiment runs: three peers, two of them carrying bash
+# so they can hand a commit to each other over git.
+HANDOFF_TEAM_FILE = (
+    Path(__file__).resolve().parents[1] / "configs" / "team.handoff.experiment.yaml"
+)
+
+
+SCHEDULER_STANDIN = object()
+
+
+def _spawn_config(ctx) -> SpawnConfig:
+    return SpawnConfig(
+        model=CONFIG["model"],
+        provider=CONFIG["provider"],
+        api_key=CONFIG["api_key"],
+        base_url=CONFIG["base_url"],
+        llm_timeout=600.0,
+        tracer=None,
+        event_bus=EventBus(ctx.event_sink),
+        permission_policy=None,
+    )
 
 
 def _payloads(path: str, step_type: str) -> list[dict]:
@@ -98,7 +123,15 @@ def _prebuildable_default() -> TeamConfig:
     return TeamConfig(roles=roles, topology=team.topology, entry=team.entry)
 
 
-def _scheduler(tmp_path, *, prebuild_team, use_worktrees=False, workspace=None, **kwargs):
+def _scheduler(
+    tmp_path,
+    *,
+    prebuild_team,
+    use_worktrees=False,
+    workspace=None,
+    interactive=False,
+    **kwargs,
+):
     """A fully wired scheduler over a throwaway workspace, plus its tracer."""
     if prebuild_team and not {"team_config_path", "resolved_team_config"} & set(kwargs):
         kwargs["resolved_team_config"] = _prebuildable_default()
@@ -114,7 +147,7 @@ def _scheduler(tmp_path, *, prebuild_team, use_worktrees=False, workspace=None, 
     scheduler = build_scheduler(
         ctx,
         use_worktrees=use_worktrees,
-        interactive=False,
+        interactive=interactive,
         auto_save=False,
         prebuild_team=prebuild_team,
         **kwargs,
@@ -485,8 +518,8 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             # says so rather than implying an isolation that is not there.
             "workspace_isolated": False,
             # The Analyst was never given ``bash`` — a different fact from
-            # "carries bash and would be refused", which is what the Coder
-            # records here.
+            # "carries bash and would be refused", which is what the Coder and
+            # Tester record here.
             "shell": "absent",
         },
         {
@@ -499,7 +532,8 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             "workspace_isolated": False,
             # ``interactive=False`` above, so nobody in this run may open a
             # shell the OS does not sandbox — and a shared local directory is
-            # not one. Every command the Coder sends to bash is refused.
+            # not one. The peers record the same answer agent 0 would: the
+            # switch is run-wide, not per-agent.
             "shell": "sandbox_required",
         },
         {
@@ -514,6 +548,119 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             "shell": "absent",
         },
     ]
+
+
+# --- the capabilities a seat comes with --------------------------------------
+
+
+def _bash(session):
+    for tool in session.agent.tools:
+        if tool.name == "bash":
+            return tool
+    raise AssertionError(f"{session.agent.name} was built without bash")
+
+
+async def test_a_seated_peer_gets_the_entry_agent_s_shell(tmp_path):
+    """The whole point of the split: one run, one answer about the shell.
+
+    A peer is a non-entry role, so it is built with no ``ask_user``. While that
+    one fact also decided the shell, every peer was seated with a ``bash`` that
+    refused to run in the worktree it was given, while agent 0 — same run, same
+    machine, same repository — had a working one. A team measured against a lone
+    agent under that arrangement is not measuring the team.
+    """
+    team = load_team_config(path=str(HANDOFF_TEAM_FILE))
+    scheduler, tracer = _scheduler(
+        tmp_path,
+        prebuild_team=True,
+        use_worktrees=True,
+        workspace=_repo(tmp_path / "repo"),
+        interactive=True,
+        resolved_team_config=team,
+    )
+    try:
+        await scheduler.ensure_team_prebuilt()
+        seats = {
+            session.agent.name: _bash(session).require_process_isolation
+            for aid, session in sorted(scheduler._sessions.items())
+            if any(tool.name == "bash" for tool in session.agent.tools)
+        }
+        entry = scheduler._sessions[0]
+    finally:
+        tracer.close()
+        await scheduler.cleanup()
+
+    # The Analyst carries no bash, so agent 0's shell answer is read off the
+    # switch itself rather than off a tool it does not have.
+    assert "ask_user" in {tool.name for tool in entry.agent.tools}
+    assert seats == {"coder": False, "tester": False}
+
+
+async def test_a_child_the_model_spawns_is_not_a_seat_and_keeps_the_hard_default(
+    tmp_path,
+):
+    """The product default, unchanged: a mid-run child still needs a sandbox.
+
+    A prebuilt roster is declared in a file by a human before the run starts. A
+    ``spawn_agent`` child is not declared anywhere — a running model asked for
+    it — so it does not inherit agent 0's shell, whatever agent 0 has.
+    """
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    ctx = build_runtime_context(str(workspace), dict(CONFIG), trace=False)
+    factory = DefaultSessionFactory(
+        _spawn_config(ctx),
+        team_cfg=load_team_config(path=str(HANDOFF_TEAM_FILE)),
+        lead_workspace=str(workspace),
+        interactive=True,
+    )
+    env = LocalEnvironment(str(workspace))
+    # A stand-in scheduler: the coordination tools only store the reference.
+    ad_hoc = factory.build_spawn_session(
+        role="coder", env=env, budget=10_000, aid=1, scheduler=SCHEDULER_STANDIN
+    )
+    assert _bash(ad_hoc).require_process_isolation is True
+
+    seated = DefaultSessionFactory(
+        _spawn_config(ctx),
+        team_cfg=load_team_config(path=str(HANDOFF_TEAM_FILE)),
+        lead_workspace=str(workspace),
+        interactive=True,
+        prebuilt_roster=True,
+    ).build_spawn_session(
+        role="coder", env=env, budget=10_000, aid=1, scheduler=SCHEDULER_STANDIN
+    )
+    assert _bash(seated).require_process_isolation is False
+
+
+async def test_no_seat_gets_a_shell_the_entry_agent_would_not_have(tmp_path):
+    """The other direction of the same rule, and the one that keeps it honest.
+
+    ``interactive=False`` is a run with nobody to show a risky command to, so
+    agent 0 may not open an unsandboxed shell — and neither may its peers. A
+    fix that only ever *adds* capability would pass the test above and still
+    leave the two sides on different answers.
+    """
+    scheduler, tracer = _scheduler(
+        tmp_path,
+        prebuild_team=True,
+        use_worktrees=True,
+        workspace=_repo(tmp_path / "repo"),
+        interactive=False,
+        resolved_team_config=load_team_config(path=str(HANDOFF_TEAM_FILE)),
+    )
+    try:
+        await scheduler.ensure_team_prebuilt()
+        seats = {
+            session.agent.name: _bash(session).require_process_isolation
+            for session in scheduler._sessions.values()
+            if any(tool.name == "bash" for tool in session.agent.tools)
+        }
+    finally:
+        tracer.close()
+        await scheduler.cleanup()
+
+    assert seats == {"coder": True, "tester": True}
 
 
 # --- a declared edge nobody can walk -----------------------------------------

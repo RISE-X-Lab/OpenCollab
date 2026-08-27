@@ -386,6 +386,12 @@ class DefaultSessionFactory:
     agent-0 composition bits (``lead_workspace`` for the local environment and
     ``interactive`` for the ask-user tool). All role -> Agent assembly is
     delegated to a single ``ContextBuilder``.
+
+    ``prebuilt_roster`` says whether this run's roster is an input to the run
+    (every agent declared in the team file and seated before the first model
+    call) or an outcome of it (children the model spawns mid-run). It is the
+    only thing that separates a teammate from an ad-hoc child here, and it is
+    read exclusively by ``_unisolated_shell_allowed``.
     """
 
     def __init__(
@@ -397,6 +403,7 @@ class DefaultSessionFactory:
         interactive: bool = False,
         save_dir: str | None = None,
         allow_unisolated_child_tests: bool = False,
+        prebuilt_roster: bool = False,
     ):
         self._cfg = cfg
         self._provider_retry_budget = (
@@ -409,6 +416,7 @@ class DefaultSessionFactory:
         self._validate_responses_tool_support()
         self._lead_workspace = lead_workspace
         self._allow_unisolated_child_tests = allow_unisolated_child_tests
+        self._prebuilt_roster = bool(prebuilt_roster)
         # Run folder where every agent's transcript is persisted. When set,
         # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
         self._save_dir = save_dir
@@ -465,6 +473,25 @@ class DefaultSessionFactory:
                     "reasoning_effort required by ad-hoc roles"
                 )
 
+    def _unisolated_shell_allowed(self, *, seated_at_start: bool) -> bool:
+        """May this agent run commands the OS does not sandbox?
+
+        The one source every session in this run reads, so agent 0 and its
+        teammates cannot end up on different answers. ``ask_user`` is decided
+        separately (``interactive`` plus the entry-role rule) — the two used to
+        be the same boolean, which is how teammates came to be seated without a
+        working shell while agent 0 had one.
+
+        ``seated_at_start`` is what distinguishes an agent the run was given
+        from one the run invented. Agent 0 is seated at the start by
+        definition, and so is every teammate of a prebuilt roster: both are
+        nodes a human declared in the team file, running where agent 0 runs, so
+        both get agent 0's answer. A child a model spawned mid-run is not
+        declared anywhere, and keeps the hardened default — it must be handed an
+        OS-sandboxed environment before it can run a command.
+        """
+        return self._interactive and seated_at_start
+
     def _fresh_context_builder(self) -> ContextBuilder:
         """Snapshot bounded workspace context at the new session's start."""
         skill_store = build_skill_store(self._lead_workspace)
@@ -504,7 +531,12 @@ class DefaultSessionFactory:
         agent = context_builder.build_agent(
             role,
             scheduler=scheduler,
-            interactive=False,
+            # Never: a spawned agent is not the entry role, and a peer has no
+            # human of its own to ask.
+            ask_user_available=False,
+            allow_unisolated_shell=self._unisolated_shell_allowed(
+                seated_at_start=self._prebuilt_roster
+            ),
             allow_unisolated_tests=self._allow_unisolated_child_tests,
             plan=plan,
         )
@@ -556,7 +588,10 @@ class DefaultSessionFactory:
         agent = context_builder.build_agent(
             self._team.entry,
             scheduler=scheduler,
-            interactive=self._interactive,
+            ask_user_available=self._interactive,
+            allow_unisolated_shell=self._unisolated_shell_allowed(
+                seated_at_start=True
+            ),
             plan=plan,
         )
         return build_session(

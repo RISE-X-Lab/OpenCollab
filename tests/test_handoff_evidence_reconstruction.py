@@ -21,15 +21,15 @@ removed. If the same reconstruction accepts both, the records cannot tell a
 handoff from two agents working past each other, and the positive result means
 nothing.
 
-Two things this test has to arrange that a real run would not:
+Nothing here reaches into the seated agents to give them their shell. A
+prebuilt roster's peers are declared nodes, and the session factory hands them
+the same shell answer it hands agent 0 — if that ever stops being true this
+test stops passing, which is the point of running the real ``BashTool`` against
+a real worktree instead of a stub.
 
-* ``build_spawn_session`` builds every teammate headless, and ``bash`` refuses to
-  run headless unless the environment is an OS process sandbox — which a
-  worktree is not. Seated peers therefore cannot run ``git`` at all on this
-  path, so the seated agents' ``BashTool`` instances are put back into the mode
-  the interactive entry agent already gets.
-* ``PYTHONDONTWRITEBYTECODE`` keeps the Tester's own probe from writing a
-  ``__pycache__`` file into the worktree it is measuring.
+One thing this test does arrange that a real run would not:
+``PYTHONDONTWRITEBYTECODE`` keeps the Tester's own probe from writing a
+``__pycache__`` file into the worktree it is measuring.
 """
 
 from __future__ import annotations
@@ -213,23 +213,6 @@ def _scripted_llm(*, tester_checks_out: bool):
     return ScriptedLLM
 
 
-def _unblock_bash(scheduler) -> None:
-    """Let seated teammates run ``git``.
-
-    ``build_spawn_session`` builds every teammate with ``interactive=False``, and
-    the registry then gives a headless ``bash`` ``require_process_isolation``.
-    A ``WorktreeEnvironment`` is not process-isolated, so a seated Coder or
-    Tester cannot run a command at all — the tool answers every call with a
-    refusal. This puts those instances into the mode the interactive entry agent
-    is already given, which is the only thing standing between this team and the
-    protocol its own prompts describe.
-    """
-    for session in scheduler._sessions.values():
-        for tool in getattr(session.agent, "tools", ()):
-            if getattr(tool, "name", None) == "bash":
-                tool.require_process_isolation = False
-
-
 async def _run_handoff(tmp_path, monkeypatch, *, tester_checks_out: bool) -> list[dict]:
     """Run the whole team once; return every trace record, in order."""
     workspace = _repo(tmp_path / "repo")
@@ -252,7 +235,6 @@ async def _run_handoff(tmp_path, monkeypatch, *, tester_checks_out: bool) -> lis
     )
     try:
         await scheduler.ensure_team_prebuilt()
-        _unblock_bash(scheduler)
         await scheduler.run_turn(
             ANALYST_AID, "app.py's add() is wrong. Get it fixed and verified."
         )
