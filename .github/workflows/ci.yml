@@ -33,6 +33,10 @@ jobs:
         run: uv sync --locked --extra dev
       - name: Lint (whole repo)
         run: uv run ruff check .
+      - name: Architecture contracts
+        run: uv run lint-imports
+      - name: Dependency hygiene
+        run: uv run deptry .
       - name: Test
         run: uv run pytest -q
 
