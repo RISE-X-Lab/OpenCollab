@@ -37,8 +37,10 @@ from opencollab.application.scheduler_types import TeamPrebuiltError
 from opencollab.application.tool_execution import ToolRuntime
 from opencollab.bootstrap import build_runtime_context, build_scheduler
 from opencollab.bootstrap.team_config import (
+    ANALYST_TOOL_NAMES,
     CODER_TOOL_NAMES,
     TESTER_TOOL_NAMES,
+    TeamConfig,
     default_team_config,
 )
 from opencollab.domain.scheduler import PER_AGENT_BUDGET_SHARE, per_agent_cap
@@ -74,8 +76,32 @@ def _repo(path):
     return path
 
 
+def _prebuildable_default() -> TeamConfig:
+    """The built-in team with the one change prebuild mode forces on it.
+
+    A prebuilt team refuses ``spawn_agent``, so ``message_agent`` is the only
+    tool left that can walk a topology edge — and ``build_scheduler`` refuses a
+    prebuilt team whose Analyst is given two outgoing edges and nothing to walk
+    them with. The built-in team is exactly that team: it delegates by spawning
+    and collects results on the join path, which is legitimate everywhere except
+    here.
+
+    Everything else is the shipped configuration verbatim — the same three
+    roles, the same edges, the Coder's and Tester's tool bundles untouched — so
+    the assertions below still pin what OpenCollab ships.
+    """
+    team = default_team_config()
+    roles = dict(team.roles)
+    roles["analyst"] = roles["analyst"].model_copy(
+        update={"tools": sorted({*ANALYST_TOOL_NAMES, "message_agent"})}
+    )
+    return TeamConfig(roles=roles, topology=team.topology, entry=team.entry)
+
+
 def _scheduler(tmp_path, *, prebuild_team, use_worktrees=False, workspace=None, **kwargs):
     """A fully wired scheduler over a throwaway workspace, plus its tracer."""
+    if prebuild_team and not {"team_config_path", "resolved_team_config"} & set(kwargs):
+        kwargs["resolved_team_config"] = _prebuildable_default()
     if workspace is None:
         workspace = tmp_path / "ws"
         workspace.mkdir()
@@ -443,7 +469,16 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             "role": "analyst",
             "entry": True,
             # Headless, so the analyst's ask_user is dropped by the registry.
-            "tools": ["file_read", "grep", "spawn_agent", "use_skill"],
+            # ``message_agent`` is the one addition ``_prebuildable_default``
+            # makes: without it the Analyst's two edges are unwalkable and the
+            # team is refused before it is seated.
+            "tools": [
+                "file_read",
+                "grep",
+                "message_agent",
+                "spawn_agent",
+                "use_skill",
+            ],
             "permission_mode": "auto",
             "workspace": workspaces[0],
             # use_worktrees=False: everyone shares one directory, and the record
@@ -469,3 +504,111 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             "workspace_isolated": False,
         },
     ]
+
+
+# --- a declared edge nobody can walk -----------------------------------------
+
+
+def _mute_team(tmp_path, *, messaging: bool) -> Path:
+    """A two-role team whose Coder is told to answer the Analyst.
+
+    With ``messaging`` off, the Coder holds the edge ``coder -> analyst`` and no
+    tool that can carry anything along it. That is the defect this section is
+    about: the topology promises a return channel the agent cannot use.
+    """
+    coder_tools = "[file_read, message_agent]" if messaging else "[file_read]"
+    team = tmp_path / f"team-{'talking' if messaging else 'mute'}.yaml"
+    team.write_text(
+        "entry: analyst\n"
+        "roles:\n"
+        "  analyst:\n"
+        "    prompt: plan the work\n"
+        "    tools: [file_read, message_agent]\n"
+        "  coder:\n"
+        "    prompt: do the work\n"
+        f"    tools: {coder_tools}\n"
+        "topology:\n"
+        "  analyst: [coder]\n"
+        "  coder: [analyst]\n",
+        encoding="utf-8",
+    )
+    return team
+
+
+async def test_a_prebuilt_role_with_an_edge_and_no_way_to_walk_it_is_refused(tmp_path):
+    """Naming the role and the edge, because "invalid config" is not actionable.
+
+    A prebuilt team refuses ``spawn_agent``, so ``message_agent`` is the only
+    channel between two seated agents. A role given an outgoing edge without it
+    is seated mute: the run would start, record the edge as assigned, and end
+    with a transcript in which that edge was never used — which reads as a
+    finding about the model rather than about the config.
+    """
+    with pytest.raises(ValueError) as raised:
+        _scheduler(
+            tmp_path,
+            prebuild_team=True,
+            team_config_path=str(_mute_team(tmp_path, messaging=False)),
+        )
+    message = str(raised.value)
+    assert "prebuild_team: this team declares edges that no agent can walk." in message
+    assert "role 'coder' may address analyst" in message
+    assert "unwalkable edges: coder -> analyst" in message
+    assert "Add 'message_agent' to the `tools:` list of 'coder'" in message
+    # The Analyst holds the same kind of edge and the tool to walk it, so it is
+    # not named: the report is the roles that need changing, not every role.
+    assert "role 'analyst'" not in message
+
+
+async def test_the_same_team_starts_once_the_missing_tool_is_given_back(tmp_path):
+    scheduler, tracer = _scheduler(
+        tmp_path,
+        prebuild_team=True,
+        team_config_path=str(_mute_team(tmp_path, messaging=True)),
+    )
+    try:
+        assert await scheduler.ensure_team_prebuilt() == (1,)
+        assert _roles(scheduler) == {0: "analyst", 1: "coder"}
+    finally:
+        tracer.close()
+        await scheduler.cleanup()
+
+
+async def test_the_refusal_lands_before_agent_0_exists(tmp_path):
+    """Same bargain the unfillable-seat failure already makes: fail before a
+    token is spent, not after a run has produced an assigned topology it could
+    never have honoured. Nothing is built here — not even the run folder that
+    every transcript is written into."""
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    ctx = build_runtime_context(str(workspace), dict(CONFIG), trace=False)
+    with pytest.raises(ValueError):
+        build_scheduler(
+            ctx,
+            use_worktrees=False,
+            interactive=False,
+            auto_save=True,
+            prebuild_team=True,
+            team_config_path=str(_mute_team(tmp_path, messaging=False)),
+        )
+    assert not (workspace / ".opencollab").exists()
+
+
+async def test_the_shipped_team_still_starts_with_the_switch_off(tmp_path):
+    """The product default must not be caught by this.
+
+    The built-in Analyst has two outgoing edges and no ``message_agent`` — the
+    exact shape refused above. With ``prebuild_team`` off it is not a defect:
+    ``spawn_agent`` walks those edges and the join path carries the results
+    back. The guard is behind the switch precisely so this keeps working.
+    """
+    scheduler, tracer = _scheduler(tmp_path, prebuild_team=False)
+    try:
+        shipped = default_team_config()
+        assert "message_agent" not in shipped.roles["analyst"].tools
+        assert sorted(shipped.topology.edges["analyst"]) == ["coder", "tester"]
+        assert _roles(scheduler) == {0: "analyst"}
+        assert await scheduler.spawn(0, "coder", "implement it") == 1
+    finally:
+        tracer.close()
+        await scheduler.cleanup()

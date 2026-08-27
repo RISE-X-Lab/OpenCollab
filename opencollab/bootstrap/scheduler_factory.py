@@ -39,6 +39,64 @@ from opencollab.bootstrap.team_config import (
 )
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 
+# The one tool that carries a message from one live agent to another
+# (``adapters.tools.message.MessageAgentTool``). Named here rather than
+# imported from the registry so the composition root states the dependency it
+# actually has: a topology edge is walkable only if the source role holds this.
+_MESSAGING_TOOL_NAME = "message_agent"
+
+
+def _reject_unwalkable_edges(team: TeamConfig) -> None:
+    """Refuse a prebuilt team whose declared edges no agent can walk.
+
+    Only under ``prebuild_team``. There, ``spawn_agent`` is refused for the
+    whole run (``SchedulerTeamMixin._refuse_spawn_when_prebuilt``), so
+    ``message_agent`` is the only channel left between two seated agents. A role
+    that is given an outgoing edge but not that tool is seated mute: the
+    topology says it may address a teammate and nothing it can call will do so.
+    The run still starts, still records that edge as ``assigned.topology_edges``,
+    and produces a transcript in which the edge was simply never used — which
+    reads as a finding about the model rather than about the config.
+
+    Under the product default (``prebuild_team=False``) the same shape is
+    legitimate and must not be touched: the built-in Analyst has two outgoing
+    edges and no ``message_agent``, because it walks them with ``spawn_agent``
+    and receives results back through the join path. That is why this is called
+    from behind the switch and nowhere else.
+
+    Raised before anything is wired, so the failure lands before agent 0 exists
+    and before a single token is spent — the same bargain
+    ``ensure_team_prebuilt`` already makes for a seat it cannot fill.
+    """
+    offenders: list[tuple[str, list[str], list[str]]] = []
+    for source in sorted(team.topology.edges):
+        destinations = sorted(team.topology.edges[source])
+        role = team.roles.get(source)
+        if not destinations or role is None:
+            continue
+        if _MESSAGING_TOOL_NAME in role.tools:
+            continue
+        offenders.append((source, destinations, sorted(role.tools)))
+    if not offenders:
+        return
+    detail = "\n".join(
+        f"  - role '{source}' may address {', '.join(destinations)} "
+        f"but its tools are [{', '.join(tools)}]\n"
+        f"    unwalkable edges: "
+        + ", ".join(f"{source} -> {destination}" for destination in destinations)
+        for source, destinations, tools in offenders
+    )
+    named = ", ".join(f"'{source}'" for source, _, _ in offenders)
+    raise ValueError(
+        "prebuild_team: this team declares edges that no agent can walk.\n"
+        f"{detail}\n"
+        f"A prebuilt team refuses spawn_agent, so '{_MESSAGING_TOOL_NAME}' is "
+        "the only channel between seated agents. Add "
+        f"'{_MESSAGING_TOOL_NAME}' to the `tools:` list of {named}, or remove "
+        "those roles' entries from `topology:`."
+    )
+
+
 
 def build_scheduler(
     ctx: RuntimeContext,
@@ -84,6 +142,8 @@ def build_scheduler(
         if resolved_team_config is not None
         else load_team_config(ctx.workspace, path=team_config_path)
     )
+    if prebuild_team:
+        _reject_unwalkable_edges(team_cfg)
     event_bus = EventBus(ctx.event_sink)
 
     # Per-run folder: every agent's transcript plus a team.json manifest land
