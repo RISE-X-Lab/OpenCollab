@@ -26,11 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
-from opencollab.adapters.llm import (
-    LLMClient,
-    estimate_messages_tokens,
-    is_context_overflow_error,
-)
+from opencollab.adapters.llm import LLMClient, is_context_overflow_error
 from opencollab.adapters.skills.file_skill_store import FileSkillStore
 from opencollab.adapters.skills.null_skill_store import NullSkillStore
 from opencollab.adapters.storage import SessionStore
@@ -59,6 +55,7 @@ from opencollab.application.shaping import (
     PerToolResultBudgetShaper,
     ShaperPipeline,
     ToolOutputClearShaper,
+    approx_messages_tokens,
     history_trigger_target,
 )
 from opencollab.application.tool_execution import ToolExecutionUseCase
@@ -229,8 +226,12 @@ def _build_default_shaper(
     context_window = getattr(resolved_llm, "context_window", lambda: None)()
     history_trigger, history_target = history_trigger_target(context_window)
 
+    # Inject the shaping module's own estimator rather than reaching past it:
+    # the layers must size history the way the *request* is sized, provider
+    # state included, or compaction fires late by exactly the thinking traces
+    # it cannot see. Passing a different callable here silently overrode that.
     history_kwargs = {
-        "estimate_tokens": estimate_messages_tokens,
+        "estimate_tokens": approx_messages_tokens,
         "trigger_tokens": history_trigger,
         "target_tokens": history_target,
     }
