@@ -158,6 +158,9 @@ def test_a_message_the_topology_forbids_is_recorded_in_full(tracer):
             "max_message_bytes": MAX_TEAMMATE_MESSAGE_BYTES,
             "max_inbox_messages": MAX_TEAMMATE_INBOX_MESSAGES,
             "max_inbox_bytes": MAX_TEAMMATE_INBOX_BYTES,
+            # A model reaching for a forbidden edge, not a message the reload
+            # could no longer route. Same row shape, opposite finding.
+            "restored": False,
         }
     ]
     assert _payloads(tracer.path, "message_sent") == []
@@ -422,3 +425,84 @@ def test_more_object_ids_than_are_listed_still_measure_as_more(tracer):
     payload = _payloads(tracer.path, "message_refused")[0]
     assert payload["commit_refs"] == refs[:MESSAGE_TRACE_COMMIT_REFS]
     assert payload["commit_refs_found"] == len(refs)
+
+
+def test_a_restored_route_the_topology_now_forbids_is_recorded_too(tracer):
+    """The same observation, at the other moment it can happen.
+
+    A message can be legal when it is queued and forbidden when it is finally
+    delivered: the roster comes back from a reload, the topology is rebuilt, and
+    the route no longer exists. That rejection used to reach only
+    ``events.jsonl``, which a run writes only when ``OPENCOLLAB_EVENTS_FILE`` is
+    set — so in a default run the message was dropped and the trajectory said
+    nothing at all. It is the same ``role_boundary`` axis as a send-time refusal
+    and has to be countable in the same units.
+    """
+    scheduler, child = _scheduler(tracer)
+
+    async def scenario():
+        _hold_target_busy(scheduler, 1)
+        queued = await scheduler.send_message(0, 1, "handoff", "take it from here")
+        # Between queueing and delivery the team is no longer wired that way.
+        scheduler._topology = Topology(
+            edges={"lead": frozenset(), "coder": frozenset()}
+        )
+        del scheduler._tasks[1]
+        return queued, await scheduler._drain_message_inbox_locked(1)
+
+    queued, _events = run(scenario())
+    tracer.flush()
+
+    assert queued == "Message queued to aid 1."
+    # The message really was dropped, not merely reported.
+    assert scheduler._message_inbox.get(1) == []
+    assert child.added == []
+
+    refused = _payloads(tracer.path, "message_refused")
+    assert len(refused) == 1
+    assert refused[0]["reason"] == "restored_topology_forbidden"
+    assert refused[0]["restored"] is True
+    assert (refused[0]["from_role"], refused[0]["to_role"]) == ("lead", "coder")
+
+
+def test_the_two_moments_a_message_can_be_refused_are_counted_the_same_way(tracer):
+    """One edge, two refusals, one row shape — and still distinguishable.
+
+    Counting "how many messages the declared edge lead->coder lost" must not
+    require knowing which of the two gates stopped each one, so the rows carry
+    the same fields. Deciding whether a model reached for a forbidden edge is
+    the opposite question, and must not be answerable only by guessing from the
+    reason string, so ``restored`` carries that on its own.
+    """
+    scheduler, _child = _scheduler(tracer)
+
+    async def scenario():
+        _hold_target_busy(scheduler, 1)
+        await scheduler.send_message(0, 1, "handoff", "take it from here")
+        scheduler._topology = Topology(
+            edges={"lead": frozenset(), "coder": frozenset()}
+        )
+        del scheduler._tasks[1]
+        await scheduler._drain_message_inbox_locked(1)
+        # Now the model itself tries the edge the topology closed.
+        return await scheduler.send_message(0, 1, "again", "please look")
+
+    error = run(scenario())
+    tracer.flush()
+
+    assert error.startswith("Error: role 'lead' is not permitted")
+
+    refused = _payloads(tracer.path, "message_refused")
+    assert len(refused) == 2
+    on_restore, at_send = refused
+    # Same shape: every field one row has, the other has.
+    assert set(on_restore) == set(at_send)
+    # Same edge, so both count toward the same denominator.
+    assert (on_restore["from_role"], on_restore["to_role"]) == ("lead", "coder")
+    assert (at_send["from_role"], at_send["to_role"]) == ("lead", "coder")
+    # And still separable without parsing prose.
+    assert [row["restored"] for row in refused] == [True, False]
+    assert [row["reason"] for row in refused] == [
+        "restored_topology_forbidden",
+        "topology_forbidden",
+    ]

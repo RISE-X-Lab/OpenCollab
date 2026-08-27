@@ -11,6 +11,16 @@ rule that stops a message, ``message_sent`` for one that is queued. Together
 they are the only place a run says how much traffic each declared topology edge
 actually carried, and how much was attempted and stopped.
 
+A message is checked twice, and both gates write the same row. The rules run
+once at send time against the roster the sender sees, and again when the inbox
+drains against whatever roster is live then — a route legal when it was queued
+can be forbidden by the topology a reload rebuilt. The second gate wrote only a
+scheduler event, which lands in ``events.jsonl`` and therefore only in a run
+that opted into one, so by default the message was dropped and the trajectory
+recorded nothing. Both now write ``message_refused``; ``restored`` says which
+gate, so the rows add up on the edge while still separating "the model reached
+for an edge it does not have" from "the reload could no longer route this".
+
 ``MessagingMixin`` is composed into ``Scheduler`` and relies on the
 ``_sessions`` / ``_tasks`` / ``_locks`` / ``_message_inbox`` maps and the
 ``_role_of`` / ``_autosave_session`` / ``emit_scheduler_event`` / ``_drive_agent``
@@ -251,6 +261,7 @@ class MessagingMixin:
         message_id: str | None = None,
         inbox_messages: int | None = None,
         inbox_bytes: int | None = None,
+        restored: bool = False,
     ) -> None:
         """Record one ``send_message`` outcome. Observation only.
 
@@ -288,6 +299,15 @@ class MessagingMixin:
         is recorded beside the reading it bounds, so a row is readable without
         the constants file that produced it.
 
+        ``restored`` separates the two moments a message can be refused. At send
+        time the rules run against the roster the sender is looking at; on the
+        restore path they run again, against whatever roster came back, and a
+        route that was legal when it was queued can be forbidden by the topology
+        now. Both are the same observation on the same axis and are counted in
+        the same units, so they share a row shape — but a run that lost a
+        message to a reload is not a run whose model reached for a forbidden
+        edge, and one boolean is what keeps the two apart.
+
         Guarded end to end: a record that cannot be built must never overturn
         the decision it describes.
         """
@@ -321,6 +341,7 @@ class MessagingMixin:
                     "max_message_bytes": MAX_TEAMMATE_MESSAGE_BYTES,
                     "max_inbox_messages": MAX_TEAMMATE_INBOX_MESSAGES,
                     "max_inbox_bytes": MAX_TEAMMATE_INBOX_BYTES,
+                    "restored": restored,
                 }
             )
             tracer.log_step(step_type=step_type, payload=payload)
@@ -545,17 +566,33 @@ class MessagingMixin:
         retained = []
         rejected = False
         for message in inbox:
-            reason = self._message_route_error(aid, message)
-            if reason is None:
+            route_error = self._message_route_error(aid, message)
+            if route_error is None:
                 retained.append(message)
                 continue
+            reason, detail = route_error
             rejected = True
-            self._mark_message_rejected(session.state, message, reason)
+            self._mark_message_rejected(session.state, message, detail)
+            # The scheduler event alone was invisible: it goes to events.jsonl,
+            # which a run writes only when OPENCOLLAB_EVENTS_FILE is set, so a
+            # default run dropped the message and recorded nothing a reader
+            # would ever see. This row lands in the trajectory every run, in the
+            # same shape as a send-time refusal, so the two can be added up.
+            self._trace_message_decision(
+                "message_refused",
+                reason=reason,
+                from_aid=message.from_aid,
+                to_aid=aid,
+                summary=message.summary,
+                content=message.content,
+                message_id=message.message_id or None,
+                restored=True,
+            )
             events.append(
                 self._events.agent_message_rejected_on_restore(
                     message.from_aid,
                     aid,
-                    reason,
+                    detail,
                 )
             )
         if rejected:
@@ -619,20 +656,38 @@ class MessagingMixin:
         self,
         aid: int,
         message: QueuedTeammateMessage,
-    ) -> str | None:
-        """Validate a durable message against the current roster and topology."""
+    ) -> tuple[str, str] | None:
+        """Validate a durable message against the current roster and topology.
+
+        Returns ``(reason, detail)`` or ``None``. ``reason`` is a short
+        enumerated token in the same vocabulary ``send_message`` refuses in, so
+        a refusal on this path can be counted rather than parsed out of prose;
+        ``detail`` is the sentence a person reads, and names the two values that
+        stopped being equal. The pair exists because the two audiences differ:
+        the count needs a closed set, and the operator needs the specifics.
+        """
         if message.to_aid != aid:
             return (
-                f"restored target aid changed from {message.to_aid} to {aid}"
+                "restored_target_changed",
+                f"restored target aid changed from {message.to_aid} to {aid}",
             )
         if message.from_aid == aid:
-            return "restored route would deliver a message to its sender"
+            return (
+                "restored_self_message",
+                "restored route would deliver a message to its sender",
+            )
         sender = self.table.get(message.from_aid)
         target = self.table.get(aid)
         if sender is None or self._sessions.get(message.from_aid) is None:
-            return f"restored sender aid {message.from_aid} no longer exists"
+            return (
+                "restored_sender_gone",
+                f"restored sender aid {message.from_aid} no longer exists",
+            )
         if target is None or self._sessions.get(aid) is None:
-            return f"restored target aid {aid} no longer exists"
+            return (
+                "restored_target_gone",
+                f"restored target aid {aid} no longer exists",
+            )
 
         current_from_role = sender.agent.name
         current_to_role = target.agent.name
@@ -641,25 +696,34 @@ class MessagingMixin:
                 current_from_role
             ):
                 return (
+                    "restored_sender_role_changed",
                     f"restored sender role changed from {message.from_role!r} "
-                    f"to {current_from_role!r}"
+                    f"to {current_from_role!r}",
                 )
         elif message.restored and self._topology is not None:
-            return "restored message has no durable sender role identity"
+            return (
+                "restored_sender_role_missing",
+                "restored message has no durable sender role identity",
+            )
         if message.to_role:
             if role_collision_key(message.to_role) != role_collision_key(
                 current_to_role
             ):
                 return (
+                    "restored_target_role_changed",
                     f"restored target role changed from {message.to_role!r} "
-                    f"to {current_to_role!r}"
+                    f"to {current_to_role!r}",
                 )
         elif message.restored and self._topology is not None:
-            return "restored message has no durable target role identity"
+            return (
+                "restored_target_role_missing",
+                "restored message has no durable target role identity",
+            )
         if self._topology_forbids(current_from_role, current_to_role):
             return (
+                "restored_topology_forbidden",
                 f"restored route {current_from_role!r} to {current_to_role!r} "
-                "is forbidden by the current team topology"
+                "is forbidden by the current team topology",
             )
         return None
 
