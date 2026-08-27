@@ -25,6 +25,15 @@ DEFAULT_HISTORY_KEEP_RECENT_GROUPS = 4
 # turns) have no ``_ctx`` and are governed by the recency-based layers instead.
 PIN_FLOOR = 70
 
+# Reported by ``ShaperPipeline.shape_with_report`` when a whole pass left the
+# view untouched. Emitting it (rather than nothing) is what lets a reader tell
+# "no rung fired this turn" apart from "this turn was never recorded".
+_NO_RUNG_FIRED = "none"
+# A shaper wired into the chain without a ``rung`` label. Unreachable with the
+# five real rungs (each declares its own); kept so an unlabeled shaper is
+# reported as an obvious wiring bug instead of silently masquerading as "none".
+_UNLABELED_RUNG = "unknown"
+
 # Window-derived trigger math. The effective input budget reserves room for the
 # next output; the trigger also keeps a safety buffer. Compaction targets a
 # lower ratio so the next turn does not immediately compact again.
@@ -134,6 +143,12 @@ def forced_shape(
         return shaper.shape(messages)
 
 
+def _rung_label(shaper: ShaperPort) -> str:
+    """The frozen trajectory label a shaper declares for itself."""
+    label = getattr(shaper, "rung", None)
+    return label if isinstance(label, str) and label else _UNLABELED_RUNG
+
+
 class ShaperPipeline:
     """An ordered chain of shapers applied left-to-right.
 
@@ -149,6 +164,69 @@ class ShaperPipeline:
         for shaper in self._shapers:
             result = shaper.shape(result)
         return result
+
+    def shape_with_report(
+        self, messages: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """``shape``, plus a per-rung account of what actually fired.
+
+        Returns ``(shaped, reports)``; each report is ``{"rung",
+        "tokens_before", "tokens_after"}`` with ``rung`` the label the shaper
+        declares for itself (never its class name). A rung counts as fired when
+        its output differs in CONTENT from its input — deliberately not "the
+        token estimate moved", since two different message lists can estimate
+        to the same number. When nothing fires the result is a single
+        ``none`` report, so a caller persisting these can tell an untouched
+        turn from an unrecorded one.
+
+        Reporting only: this writes nowhere. The caller owns the sink, which
+        keeps this package a pure transform with no I/O of its own.
+        """
+        result = messages
+        reports: list[dict[str, Any]] = []
+        tokens = approx_messages_tokens(result)
+        for shaper in self._shapers:
+            result, entries = self._run_rung(shaper, result, tokens)
+            if entries:
+                reports.extend(entries)
+                tokens = entries[-1]["tokens_after"]
+        if not reports:
+            reports.append(
+                {
+                    "rung": _NO_RUNG_FIRED,
+                    "tokens_before": tokens,
+                    "tokens_after": tokens,
+                }
+            )
+        return result, reports
+
+    def _run_rung(
+        self,
+        shaper: ShaperPort,
+        messages: list[dict[str, Any]],
+        tokens_before: int,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Apply one chain entry; return its output and the reports it earned.
+
+        A nested pipeline reports its own inner rungs (its ``none`` filler is
+        dropped — the outer pass decides whether the whole turn was untouched).
+        An entry that changed nothing earns no report.
+        """
+        if isinstance(shaper, ShaperPipeline):
+            result, nested = shaper.shape_with_report(messages)
+            if result == messages:
+                return result, []
+            return result, [e for e in nested if e["rung"] != _NO_RUNG_FIRED]
+        result = shaper.shape(messages)
+        if result == messages:
+            return result, []
+        return result, [
+            {
+                "rung": _rung_label(shaper),
+                "tokens_before": tokens_before,
+                "tokens_after": approx_messages_tokens(result),
+            }
+        ]
 
 
 def _group_spans(messages: list[dict[str, Any]]) -> list[tuple[int, int]]:

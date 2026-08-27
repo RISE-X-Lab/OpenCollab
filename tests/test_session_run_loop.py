@@ -247,13 +247,12 @@ def test_actual_usage_overrun_is_traced_and_response_is_discarded():
         "error",
         "step_end",
     ]
-    assert len(tracer.steps) == 1
-    assert tracer.steps[0]["step_type"] == "llm_call"
-    assert tracer.steps[0]["tokens"] == reserved_input_tokens + 101
-    assert tracer.steps[0]["payload"]["usage"]["input_tokens"] == (
+    assert [step["step_type"] for step in tracer.steps] == ["context_shaping", "llm_call"]
+    assert tracer.steps[1]["tokens"] == reserved_input_tokens + 101
+    assert tracer.steps[1]["payload"]["usage"]["input_tokens"] == (
         reserved_input_tokens + 100
     )
-    assert tracer.steps[0]["latency"] >= 0
+    assert tracer.steps[1]["latency"] >= 0
 
 
 def test_remaining_budget_caps_configured_per_step_output_limit():
@@ -496,8 +495,14 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
     ]
     assert events[0] == ("step_start", {"step": 1, "aid": -1})
     assert events[2][1]["step"] == 1
-    assert events[2][1]["latency"] == tracer.steps[0]["latency"]
-    assert tracer.steps[0] == {
+    assert [step["step_type"] for step in tracer.steps] == [
+        "context_shaping",
+        "llm_call",
+        "context_shaping",
+        "llm_call",
+    ]
+    assert events[2][1]["latency"] == tracer.steps[1]["latency"]
+    assert tracer.steps[1] == {
         "step_type": "llm_call",
         "payload": {
                 "aid": -1,
@@ -518,7 +523,7 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
             },
         },
         "tokens": 9,
-        "latency": tracer.steps[0]["latency"],
+        "latency": tracer.steps[1]["latency"],
     }
 
 def test_run_loop_without_tool_calls_marks_done():

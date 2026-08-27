@@ -18,7 +18,7 @@ from opencollab.application._session_run_shared import (
 )
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import CompletionResponse
-from opencollab.application.shaping import forced_shape
+from opencollab.application.shaping import ShaperPipeline, forced_shape
 from opencollab.application.steering import (
     READS_NUDGE_SOFT,
     build_steering_block,
@@ -383,7 +383,7 @@ class _SessionRunCompletionMixin:
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
             self.state.messages[-1] = fold_steering(self.state.messages[-1], steering["content"])
-        messages = self.shaper.shape(self.state.messages) if self.shaper is not None else self.state.messages
+        messages = self._shape_and_trace(self.state.messages)
         if steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
@@ -588,6 +588,41 @@ class _SessionRunCompletionMixin:
         await self.event_publisher.emit(self.event_factory.error(reason))
         self.clear_pending_step()
         self.state.transition_to(SessionPhase.STOPPED, reason=reason)
+
+    def _shape_and_trace(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Shape the model's view, recording which compaction rung really fired.
+
+        The shapers reshape a COPY (the transcript keeps the full history), so
+        nothing on disk would otherwise say which of the five rungs ran on a
+        given turn. This emits one ``context_shaping`` record per fired rung —
+        and exactly one ``rung="none"`` record when the turn passed through
+        untouched, so a reader can tell "nothing fired" from "nothing was
+        recorded". The rung labels are the shapers' own frozen names, which is
+        what lets a run be compared turn-by-turn against its assigned policy.
+
+        The pipeline stays a pure transform: it only reports, and the sink
+        lives here, where ``tracer``/``aid``/``step_count`` are already at hand.
+        """
+        if self.tracer is None:
+            return self.shaper.shape(messages) if self.shaper is not None else messages
+        # A ShaperPipeline names its own rungs; wrap anything else (a single
+        # shaper, or nothing wired at all) so every turn still reports.
+        pipeline = (
+            self.shaper
+            if isinstance(self.shaper, ShaperPipeline)
+            else ShaperPipeline(() if self.shaper is None else (self.shaper,))
+        )
+        shaped, reports = pipeline.shape_with_report(messages)
+        for report in reports:
+            self.tracer.log_step(
+                step_type="context_shaping",
+                payload={
+                    "seq": self.state.step_count,
+                    "aid": self.state.aid,
+                    **report,
+                },
+            )
+        return shaped
 
     def _maybe_trace_steering(self, level: str | None) -> None:
         """Emit a ``steering_nudge`` trace step on an UPWARD level crossing.
