@@ -41,6 +41,7 @@ from opencollab.bootstrap.team_config import (
     TESTER_TOOL_NAMES,
     default_team_config,
 )
+from opencollab.domain.scheduler import PER_AGENT_BUDGET_SHARE, per_agent_cap
 
 CONFIG = {
     "model": "gpt-4o",
@@ -225,22 +226,28 @@ async def test_prebuilding_twice_seats_nobody_twice(tmp_path):
         await scheduler.cleanup()
 
 
-async def test_a_team_the_budget_cannot_seat_fails_at_startup_and_rolls_back(tmp_path):
-    """All or nothing, and loudly.
+async def test_a_five_role_team_seats_and_every_seat_gets_the_same_cap(tmp_path):
+    """Team size is not a budget question any more.
 
-    Each agent reserves up to a quarter of the token pool, so a five-role team
-    cannot be seated. A run that quietly seated four of them would record an
-    assigned topology its own agents contradict; failing before the first token
-    is spent is the cheaper mistake, and it puts the allocation limit in front of
-    whoever hits it.
+    The pool used to be divided by reservation: each agent took up to a quarter
+    of it when it was created, so agent 0 plus three teammates emptied it and a
+    five-role team could not be seated at all. Nothing is reserved at seating
+    now — every agent draws from the one shared pool and is bounded by
+    ``per_agent_cap`` — so the declared roster decides how many agents there are
+    and the budget decides only how much each may spend.
+
+    The caps are equal, agent 0 included: it is seated under the same rule as
+    every teammate, and the session it was built with carries that same number
+    (which is what the model is told each turn).
     """
     team = tmp_path / "team.yaml"
+    names = ("lead", "a", "b", "c", "d")
     team.write_text(
         "entry: lead\n"
         "roles:\n"
         + "".join(
             f"  {name}:\n    prompt: work as the {name}\n    tools: [file_read]\n"
-            for name in ("lead", "a", "b", "c", "d")
+            for name in names
         ),
         encoding="utf-8",
     )
@@ -248,13 +255,21 @@ async def test_a_team_the_budget_cannot_seat_fails_at_startup_and_rolls_back(tmp
         tmp_path, prebuild_team=True, team_config_path=str(team)
     )
     try:
-        with pytest.raises(RuntimeError, match="token budget is fully allocated"):
-            await scheduler.ensure_team_prebuilt()
-        # Rolled back to the init process alone — no half-seated team is left
-        # behind, and no budget stays reserved for an agent that never existed.
-        assert sorted(scheduler._sessions) == [0]
-        assert sorted(scheduler.table.entries) == [0]
-        assert sorted(scheduler._turn_lease) == [0]
+        assert await scheduler.ensure_team_prebuilt() == (1, 2, 3, 4)
+        assert sorted(scheduler._sessions) == [0, 1, 2, 3, 4]
+        assert list(_roles(scheduler).values()) == list(names)
+
+        total = scheduler._max_budget_tokens
+        cap = per_agent_cap(total, len(names))
+        assert cap == int(total * PER_AGENT_BUDGET_SHARE / len(names))
+        assert scheduler._per_agent_cap() == cap
+        # One cap for the whole team — agent 0 has no larger allowance.
+        assert [
+            scheduler._sessions[aid].max_budget_tokens for aid in sorted(scheduler._sessions)
+        ] == [cap] * len(names)
+        # Seating five agents committed nothing: the pool is shared, so an agent
+        # that has not spent freezes nothing for the ones that have.
+        assert scheduler.allocated_tokens == 0
     finally:
         tracer.close()
         await scheduler.cleanup()

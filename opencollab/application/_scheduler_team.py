@@ -221,12 +221,13 @@ class SchedulerTeamMixin:
         from the pool, a session from the factory — so a prebuilt teammate and a
         spawned one differ in *why* they exist, not in what they are.
 
-        All or nothing. A declared role that cannot be built (most likely: the
-        token pool is fully allocated, since each agent reserves up to a quarter
-        of it and a team of five therefore cannot be seated) rolls the partial
-        team back and raises. A run that quietly seated four of five roles would
+        All or nothing. A declared role that cannot be built rolls the partial
+        team back and raises: a run that quietly seated four of five roles would
         record an assigned topology that its own agents contradict, which is
-        worse than failing at startup before a single token is spent.
+        worse than failing at startup before a single token is spent. Team size
+        is no longer one of the ways that can happen — seating an agent reserves
+        nothing from the token pool, so a team of any declared size seats, and
+        each seat is bounded afterwards by ``per_agent_cap`` instead.
 
         Returns the aids created, in declaration order.
         """
@@ -284,8 +285,8 @@ class SchedulerTeamMixin:
             budget = self._reserve_child_budget(aid)
             if budget <= 0:
                 raise RuntimeError(
-                    f"Cannot prebuild role '{role}': the team token budget is "
-                    f"fully allocated after {len(self.table.entries)} agents."
+                    f"Cannot prebuild role '{role}': a team token budget of "
+                    f"{self._max_budget_tokens} leaves nothing for it."
                 )
             env = await self._worktree_pool.acquire(role)
             session = self._session_factory.build_spawn_session(

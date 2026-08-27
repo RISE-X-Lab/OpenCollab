@@ -117,7 +117,7 @@ class SchedulerRunMixin:
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
         turn_start = len(session.state.messages)
         prior_lease = self._current_turn_lease(aid)
-        if aid == 0:
+        if self._entry_agent_takes_the_pool(aid):
             self._reserve_turn_lease(aid)
         elif not self._reserve_message_budget(aid):
             raise RuntimeError(

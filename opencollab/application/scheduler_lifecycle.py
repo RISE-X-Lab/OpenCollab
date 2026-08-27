@@ -63,11 +63,16 @@ class LifecycleMixin:
         scheduler owns the launch lifecycle: build via the factory, apply the
         launch spec (resume or seed), then register. The root-process mirror of
         ``spawn``.
+
+        The budget handed to the factory is what agent 0 may actually spend, not
+        the team total — under a declared roster its ``per_agent_cap``. The
+        session turns that number into the ``[Budget: ...]`` line the model reads
+        every turn, so the two must be the same number.
         """
         session = self._session_factory.create_lead_session(
             scheduler=self,
             launch=launch,
-            budget=self._max_budget_tokens,
+            budget=self._entry_start_budget(),
         )
         session.apply_launch(launch)
         return self.register_lead(session)
