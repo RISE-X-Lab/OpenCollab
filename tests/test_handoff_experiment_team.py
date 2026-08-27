@@ -112,3 +112,39 @@ def test_the_shipped_default_team_is_not_this_team() -> None:
     shipped = load_team_config()
     assert shipped == default_team_config()
     assert "message_agent" not in shipped.roles["analyst"].tools
+
+
+def test_the_analyst_could_finish_the_task_without_anyone(team) -> None:
+    """Delegation has to be a choice, or it is a fact about this file.
+
+    The shipped Analyst reads and delegates and holds no tool that edits a file
+    or runs a command. On a prebuilt team that starves it into messaging: every
+    handoff it makes is one it had no alternative to, so "the model delegated"
+    stops being evidence that the model collaborates. The same starvation makes
+    the Analyst weaker than the single agent this arm is compared against, so a
+    difference between the arms could be read off the tool bundles alone.
+
+    Here the Analyst holds the working tools, and messaging is one option among
+    others. Every one of these tools is load-bearing for that: reading is not
+    doing, so ``file_read``/``grep`` alone would leave the starvation in place.
+    """
+    analyst = set(team.roles["analyst"].tools)
+    for doing_tool in ("apply_patch", "bash", "run_tests"):
+        assert doing_tool in analyst, (
+            f"the Analyst cannot {doing_tool} and so cannot finish alone; "
+            "delegation would be forced rather than chosen"
+        )
+
+
+def test_no_capability_is_reachable_only_through_a_teammate(team) -> None:
+    """The Analyst's options are a superset of what delegating would buy it.
+
+    If the Coder or the Tester held a working tool the Analyst lacks, sending
+    them work would be the only way to use that tool, and the arm would measure
+    a tool gap rather than a decision.
+    """
+    working_tools = {"apply_patch", "bash", "run_tests"}
+    analyst = set(team.roles["analyst"].tools)
+    for role in ("coder", "tester"):
+        exclusive = (set(team.roles[role].tools) & working_tools) - analyst
+        assert not exclusive, f"only the {role} can {sorted(exclusive)}"

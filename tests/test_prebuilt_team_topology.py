@@ -593,7 +593,10 @@ async def test_a_seated_peer_gets_the_entry_agent_s_shell(tmp_path):
     # The Analyst carries no bash, so agent 0's shell answer is read off the
     # switch itself rather than off a tool it does not have.
     assert "ask_user" in {tool.name for tool in entry.agent.tools}
-    assert seats == {"coder": False, "tester": False}
+    # The Analyst carries the working tools too on this team, so it is a seat
+    # in this map as well: the point is that every seat answers the same, not
+    # that only the two workers do.
+    assert seats == {"analyst": False, "coder": False, "tester": False}
 
 
 async def test_a_child_the_model_spawns_is_not_a_seat_and_keeps_the_hard_default(
@@ -660,7 +663,7 @@ async def test_no_seat_gets_a_shell_the_entry_agent_would_not_have(tmp_path):
         tracer.close()
         await scheduler.cleanup()
 
-    assert seats == {"coder": True, "tester": True}
+    assert seats == {"analyst": True, "coder": True, "tester": True}
 
 
 # --- a declared edge nobody can walk -----------------------------------------
