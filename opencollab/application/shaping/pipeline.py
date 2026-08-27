@@ -7,7 +7,7 @@ from contextlib import contextmanager
 from typing import Any, Iterator
 
 from opencollab.application.ports import ShaperPort
-from opencollab.domain.token_estimation import estimate_messages_tokens
+from opencollab.domain.token_estimation import estimate_request_message_tokens
 
 # History-compaction thresholds (token estimates over the whole view). The
 # trigger/target gap is deliberate: a layer compacts down to ``TARGET`` (well
@@ -94,9 +94,12 @@ def approx_messages_tokens(messages: list[dict[str, Any]]) -> int:
     Additive per message so subtracting a group's estimate equals the estimate
     of the remainder — lets the history layers re-estimate incrementally. A
     real tokenizer-backed estimator is injected at wiring time; this fallback
-    uses the same serialized request fields as budget accounting.
+    uses the same serialized request fields as budget accounting, provider
+    state included, so a thinking-heavy history is not read as shorter here
+    than the budget check reads it. The once-per-request framing allowance is
+    excluded because a constant term would break additivity.
     """
-    return estimate_messages_tokens(messages)
+    return estimate_request_message_tokens(messages)
 
 
 @contextmanager

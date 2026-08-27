@@ -88,7 +88,26 @@ def estimate_request_tokens(
     (~19% over the bare estimate on realistic histories), so do not trim them
     without replacing the margin.
     """
-    total = _REQUEST_PROTOCOL_TOKEN_OVERHEAD
+    total = _REQUEST_PROTOCOL_TOKEN_OVERHEAD + estimate_request_message_tokens(messages)
+    if tools:
+        total += (
+            _TOOLS_PROTOCOL_TOKEN_OVERHEAD
+            + len(tools) * _TOOL_PROTOCOL_TOKEN_OVERHEAD
+            + _serialized_tokens(tools)
+        )
+    return total
+
+
+def estimate_request_message_tokens(messages: list[dict]) -> int:
+    """Estimate the per-message half of a request, without request framing.
+
+    Same fields and per-message framing as :func:`estimate_request_tokens`,
+    minus the once-per-request allowance, which is a constant and therefore
+    not additive: history compaction re-estimates incrementally and needs the
+    estimate of a message group plus the estimate of the remainder to equal
+    the estimate of the whole.
+    """
+    total = 0
     for message in messages:
         payload = {
             key: ("" if key == "content" and value is None else value)
@@ -96,10 +115,4 @@ def estimate_request_tokens(
             if key in _REQUEST_ESTIMATE_MESSAGE_FIELDS
         }
         total += _MESSAGE_PROTOCOL_TOKEN_OVERHEAD + _serialized_tokens(payload)
-    if tools:
-        total += (
-            _TOOLS_PROTOCOL_TOKEN_OVERHEAD
-            + len(tools) * _TOOL_PROTOCOL_TOKEN_OVERHEAD
-            + _serialized_tokens(tools)
-        )
     return total
