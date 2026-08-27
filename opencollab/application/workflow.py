@@ -446,6 +446,7 @@ class WorkflowContext(
             lease = await self._acquire_budget_lease(
                 budget,
                 over_budget_ok=over_budget_ok,
+                label=label,
             )
             budget_token = self._active_budget_lease.set(lease)
             permit = self._active_concurrency_permit.get()
@@ -600,13 +601,82 @@ class WorkflowContext(
         base = self._session_budget()
         return min(max(0, cap), base) if cap is not None else base
 
+    def _trace_budget_decision(
+        self,
+        step_type: str,
+        *,
+        cap: int | None,
+        remaining: float,
+        label: str | None,
+        over_budget_ok: bool = False,
+    ) -> None:
+        """Record one shared-pool gate decision. Observation only.
+
+        The pool's two decision points — the refusal that raises
+        ``WorkflowBudgetExceeded`` and the ``over_budget_ok`` escape that waves a
+        call through anyway — used to leave nothing behind: a finished run showed
+        only ``reason="budget_exceeded"``, never which call was stopped, where in
+        the run, or by how much, and the escape was invisible entirely.
+
+        ``seq`` is how many agent sessions this context had already created when
+        the decision was taken. The workflow layer keeps no step counter, and
+        this is the only ordinal that says *where* in the run the call sat.
+
+        ``agent_id`` is always ``None`` here, and that is the honest value: the
+        lease is taken before any session is built, and every workflow session's
+        agent is named ``workflow_agent`` regardless, so there is no agent to
+        name. ``label`` carries the caller's own name instead — the same string
+        that names that call's transcript file, hence the one key that joins to
+        anything on disk. They are separate fields because a ``label`` sitting
+        under an ``agent_id`` heading would join wrongly against the integer
+        ``aid`` the session-level records carry, and silently.
+
+        ``would_exceed_by`` measures the request against the live remaining
+        balance (``requested_cap - remaining``), so a pool already in the hole
+        makes it larger than the cap. ``None`` when no cap was named — an
+        uncapped request has no amount, and a number there would be invented.
+        ``remaining`` is that same live balance, unclamped, so an overdrawn pool
+        reads as the negative it is.
+
+        Guarded end to end: building this payload must never overturn the
+        decision it describes, so a failure is logged and dropped.
+        """
+        try:
+            payload: dict[str, Any] = {
+                "seq": len(self._sessions),
+                # Two separate slots on purpose. No agent exists yet, so the
+                # agent id is honestly empty rather than filled with something
+                # that merely looks like one; ``label`` is the caller's own
+                # name, which is what the field actually holds.
+                "agent_id": None,
+                "label": str(label)[:240] if label else None,
+                "requested_cap": cap,
+                "remaining": int(remaining),
+                "spent": self.budget.spent(),
+                "total": self.budget.total,
+                "would_exceed_by": (
+                    None if cap is None else max(0, cap) - int(remaining)
+                ),
+            }
+            if over_budget_ok:
+                payload["over_budget_ok"] = True
+        except Exception as exc:  # noqa: BLE001 — observability is non-authoritative
+            logger.error("workflow %s trace failed: %s", step_type, exc)
+            return
+        self._trace_step(step_type, payload)
+
     async def _acquire_budget_lease(
         self,
         cap: int | None,
         *,
         over_budget_ok: bool,
+        label: str | None = None,
     ) -> _BudgetLease:
-        """Atomically reserve one agent call's maximum token allocation."""
+        """Atomically reserve one agent call's maximum token allocation.
+
+        ``label`` is carried for the trace record only — it names the caller in
+        ``budget_refusal`` / ``budget_escape`` and changes no allocation.
+        """
         self._budget_waiters += 1
         try:
             # Let sibling tasks launched by one gather register as contenders
@@ -620,11 +690,24 @@ class WorkflowContext(
 
                 available = max(0, int(remaining))
                 if available <= 0 and not over_budget_ok:
+                    self._trace_budget_decision(
+                        "budget_refusal",
+                        cap=cap,
+                        remaining=remaining,
+                        label=label,
+                    )
                     raise WorkflowBudgetExceeded(
                         f"workflow budget exhausted: spent {self.budget.spent()} "
                         f"of {self.budget.total}"
                     )
                 if over_budget_ok and available <= 0:
+                    self._trace_budget_decision(
+                        "budget_escape",
+                        cap=cap,
+                        remaining=remaining,
+                        label=label,
+                        over_budget_ok=True,
+                    )
                     total = max(0, cap) if cap is not None else UNBOUNDED_SESSION_BUDGET
                     return _BudgetLease(total=total, reserved=0, sessions=[])
 
