@@ -24,6 +24,37 @@ _DIFF_HEADER = "diff --git "
 _BODY_MARKERS = ("@@", "GIT binary patch", "Binary files ")
 
 
+def _shell_state(agent: Any, env: Any) -> str:
+    """Whether this agent's ``bash`` would run a command or refuse one.
+
+    An experimental condition, not a code detail: a run that compares a lone
+    agent against a team has to be able to show from its records that both
+    sides could reach a shell, and "read the tool wiring" is not a record. So
+    the three answers are kept apart rather than collapsed into one boolean.
+
+    * ``absent`` — the role was never given ``bash``.
+    * ``available`` — a command sent to ``bash`` runs.
+    * ``sandbox_required`` — the role carries ``bash``, but the tool demands an
+      OS process sandbox this environment does not provide, so every command is
+      answered with a refusal instead of being run.
+    """
+    bash = next(
+        (
+            tool
+            for tool in getattr(agent, "tools", ())
+            if getattr(tool, "name", None) == "bash"
+        ),
+        None,
+    )
+    if bash is None:
+        return "absent"
+    if not getattr(bash, "require_process_isolation", False):
+        return "available"
+    if getattr(env, "process_isolated", False):
+        return "available"
+    return "sandbox_required"
+
+
 def _git_unquote(token: str) -> str:
     """Undo the C-style quoting git applies to paths with unusual bytes.
 
@@ -348,6 +379,11 @@ class SchedulerTeamMixin:
                     # True only for a real worktree. Under ``use_worktrees=False``
                     # every agent shares one directory, and this says so.
                     "workspace_isolated": isinstance(env, DiffCapablePort),
+                    # Whether this agent can actually run a shell command — see
+                    # ``_shell_state``. Recorded per node because "every arm had
+                    # the same capabilities" is a claim about the run, and it has
+                    # to be checkable from the run's own records.
+                    "shell": _shell_state(agent, env),
                 }
             )
         return nodes
@@ -377,7 +413,8 @@ class SchedulerTeamMixin:
 
         Two records, both written once at prebuild: ``assigned.topology_nodes``
         (who is seated, with which tools, under which permission mode, in which
-        workspace) and ``assigned.topology_edges`` (which role may address which,
+        workspace, and with or without a working shell) and
+        ``assigned.topology_edges`` (which role may address which,
         verbatim from the team config). They are the design-time half of the
         comparison the observed records support — ``worktree_changes`` says who
         actually touched what, ``spawn_refused`` says who tried to change the

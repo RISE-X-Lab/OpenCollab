@@ -484,6 +484,10 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             # use_worktrees=False: everyone shares one directory, and the record
             # says so rather than implying an isolation that is not there.
             "workspace_isolated": False,
+            # The Analyst was never given ``bash`` — a different fact from
+            # "carries bash and would be refused", which is what the Coder
+            # records here.
+            "shell": "absent",
         },
         {
             "aid": 1,
@@ -493,6 +497,10 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             "permission_mode": "auto",
             "workspace": workspaces[1],
             "workspace_isolated": False,
+            # ``interactive=False`` above, so nobody in this run may open a
+            # shell the OS does not sandbox — and a shared local directory is
+            # not one. Every command the Coder sends to bash is refused.
+            "shell": "sandbox_required",
         },
         {
             "aid": 2,
@@ -502,6 +510,8 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             "permission_mode": "auto",
             "workspace": workspaces[2],
             "workspace_isolated": False,
+            # The shipped Tester runs tests, not shell commands.
+            "shell": "absent",
         },
     ]
 
