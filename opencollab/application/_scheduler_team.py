@@ -565,6 +565,19 @@ class SchedulerTeamMixin:
         base until the agent adopts a teammate's commit and the environment
         moves the base onto it.
 
+        ``head_commit`` and ``commits`` are the other half of that base, and
+        they are what make a handoff countable rather than inferred. Under the
+        experimental handoff team a coder commits in its own worktree and a
+        tester runs ``git checkout <sha>`` in another; the tester's row already
+        named that sha in ``diff_base``, but nothing on disk said whose commit
+        it was, so "the tester adopted its teammate's output" could only be
+        recovered by regex over a shell command the model happened to choose.
+        ``commits`` is exactly the set of shas an agent could hand over — every
+        commit reachable from its HEAD but not from its base — so the join is
+        ``tester.diff_base in coder.commits``, over two structured fields.
+        ``commit_count`` is the untruncated length of that set, and it is
+        ``None`` rather than 0 where the list could not be read at all.
+
         Purely observational, unlike ``_append_worktree_diff``: a missing diff
         is a technical failure that fails the agent, but a missing record here
         must not. Every read is guarded on its own — binary content, a revoked
@@ -599,6 +612,13 @@ class SchedulerTeamMixin:
                     # the row states which starting point "changed" is relative
                     # to instead of leaving it to be assumed.
                     "diff_base": getattr(env, "diff_base", None),
+                    # Where this worktree stands now, and what it put between
+                    # the two. A row that names only its base cannot say
+                    # whether this agent committed, and a teammate that checks
+                    # one of these shas out has nothing to be joined against.
+                    "head_commit": getattr(env, "head_commit", None),
+                    "commits": list(getattr(env, "own_commits", ()) or ()),
+                    "commit_count": getattr(env, "own_commit_count", None),
                     "files": files,
                     "diff_sha": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
                     "diff_chars": len(diff),

@@ -189,3 +189,92 @@ async def test_a_non_git_worktree_names_no_base_and_diffs_as_before(tmp_path) ->
         assert env.diff_base is None
     finally:
         await env.cleanup()
+
+
+async def test_the_commits_an_agent_made_are_reported_beside_the_base(tmp_path) -> None:
+    """A base alone cannot say whether the agent committed, or what it can hand over.
+
+    ``diff_base`` names where a stretch of work started. What a teammate can be
+    handed is the other end of it — the commits reachable from HEAD but not from
+    that base — and until a run records them, a sha another agent checks out has
+    nothing on disk to be joined against.
+    """
+    source = _repo(tmp_path / "repo")
+    env = WorktreeEnvironment(str(source), branch_name="own-commits-coder")
+    try:
+        await env.setup()
+        creation_base = _git(env.workspace, "rev-parse", "HEAD")
+
+        await env.get_diff()
+        # Nothing committed yet: HEAD is the base, and the list is empty rather
+        # than unavailable.
+        assert env.head_commit == creation_base
+        assert env.own_commits == ()
+        assert env.own_commit_count == 0
+
+        await env.write_file("f1.txt", "first\n")
+        assert (await env.exec_cmd("git add -A && git commit -qm one")).returncode == 0
+        first = _git(env.workspace, "rev-parse", "HEAD")
+        await env.write_file("f2.txt", "second\n")
+        assert (await env.exec_cmd("git add -A && git commit -qm two")).returncode == 0
+        second = _git(env.workspace, "rev-parse", "HEAD")
+
+        await env.get_diff()
+
+        assert env.diff_base == creation_base
+        assert env.head_commit == second
+        # Newest first, and both are listed — a teammate may be handed either.
+        assert env.own_commits == (second, first)
+        assert env.own_commit_count == 2
+    finally:
+        await env.cleanup()
+
+
+async def test_a_commit_adopted_from_a_teammate_is_not_counted_as_the_takers_own(
+    tmp_path,
+) -> None:
+    """The join the handoff evidence rests on, from both ends."""
+    source = _repo(tmp_path / "repo")
+    coder = WorktreeEnvironment(str(source), branch_name="own-commits-handoff-coder")
+    tester = WorktreeEnvironment(str(source), branch_name="own-commits-handoff-tester")
+    try:
+        await coder.setup()
+        await coder.write_file("f1.txt", "coder work\n")
+        assert (await coder.exec_cmd("git add -A && git commit -qm coder")).returncode == 0
+        await coder.get_diff()
+        handoff_sha = coder.head_commit
+
+        await tester.setup()
+        assert (await tester.exec_cmd(f"git checkout -q {handoff_sha}")).returncode == 0
+        await tester.write_file("f2.txt", "tester work\n")
+        await tester.get_diff()
+
+        # What the coder can hand over, and that the tester took exactly that.
+        assert coder.own_commits == (handoff_sha,)
+        assert tester.diff_base == handoff_sha
+        # The taker committed nothing of its own, so it claims none.
+        assert tester.own_commits == ()
+        assert tester.own_commit_count == 0
+        assert tester.head_commit == handoff_sha
+    finally:
+        await tester.cleanup()
+        await coder.cleanup()
+
+
+async def test_a_non_git_worktree_names_no_head_and_no_commits(tmp_path) -> None:
+    """The directory-copy fallback has no revisions to report, and invents none."""
+    source = tmp_path / "plain"
+    source.mkdir()
+    (source / "tracked.txt").write_text("base\n", encoding="utf-8")
+    env = WorktreeEnvironment(str(source), branch_name="own-commits-copy")
+    try:
+        await env.setup()
+        await env.write_file("added.txt", "added\n")
+
+        await env.get_diff()
+
+        assert env.head_commit is None
+        assert env.own_commits == ()
+        assert env.own_commit_count is None
+    finally:
+        await env.cleanup()

@@ -51,6 +51,18 @@ class _RebasedEnv(_Env):
     """A worktree that took a handoff: its diff is measured against that commit."""
 
     diff_base = "9" * 40
+    head_commit = "9" * 40
+    own_commits = ()
+    own_commit_count = 0
+
+
+class _CommittedEnv(_Env):
+    """A worktree that committed twice on top of the base it started from."""
+
+    diff_base = "1" * 40
+    head_commit = "2" * 40
+    own_commits = ("2" * 40, "3" * 40)
+    own_commit_count = 2
 
 
 class _ChildSession:
@@ -207,6 +219,34 @@ def test_an_environment_that_names_no_base_records_a_null_one(tmp_path):
     payloads, _ = _run_one_child(tmp_path, env, "worktree-no-base")
 
     assert payloads[0]["diff_base"] is None
+    assert payloads[0]["head_commit"] is None
+    assert payloads[0]["commits"] == []
+    # Not zero: an environment with no revisions did not make no commits, it
+    # has nowhere for a commit to be counted.
+    assert payloads[0]["commit_count"] is None
+
+
+def test_the_row_lists_the_commits_this_agent_could_hand_a_teammate(tmp_path):
+    """A checked-out sha is only attributable if someone's row claims it."""
+    env = _CommittedEnv(THREE_FILE_DIFF, {"pkg/new.py": ADDED, "pkg/mod.py": MODIFIED})
+
+    payloads, _ = _run_one_child(tmp_path, env, "worktree-commits")
+
+    assert payloads[0]["diff_base"] == "1" * 40
+    assert payloads[0]["head_commit"] == "2" * 40
+    assert payloads[0]["commits"] == ["2" * 40, "3" * 40]
+    assert payloads[0]["commit_count"] == 2
+
+
+def test_an_agent_that_only_took_a_handoff_claims_no_commits(tmp_path):
+    """Adopting a base is not producing one, and the row must not blur them."""
+    env = _RebasedEnv(THREE_FILE_DIFF, {"pkg/new.py": ADDED, "pkg/mod.py": MODIFIED})
+
+    payloads, _ = _run_one_child(tmp_path, env, "worktree-took-handoff")
+
+    assert payloads[0]["diff_base"] == payloads[0]["head_commit"] == "9" * 40
+    assert payloads[0]["commits"] == []
+    assert payloads[0]["commit_count"] == 0
 
 
 def _long_diff(file_count: int) -> tuple[str, dict[str, str]]:

@@ -28,6 +28,9 @@ _REFLOG_ENTRY_RE = re.compile(r"^([0-9a-f]{40})\t(.*)$")
 # ``commit (merge)``. Every other way HEAD moves adopts a commit from elsewhere.
 _OWN_COMMIT_REFLOG_PREFIX = "commit"
 _PORCELAIN_STATUS_CHARS = frozenset(" MADRCU?!")
+# How many of a worktree's own commits are listed to a caller. The true total is
+# reported separately, so a capped list never reads as a shorter one.
+_OWN_COMMIT_LIMIT = 64
 
 
 def _dirty_path_preview(output: str, *, limit: int = 12) -> str:
@@ -82,6 +85,13 @@ class WorktreeEnvironment(Environment):
         # baseline; ``None`` until a diff has been taken, and on the non-Git
         # copy path, which has no revision to name.
         self._diff_base: str | None = None
+        # Where HEAD stood at that same moment, and the commits this worktree
+        # put between the two. Resolved with ``_diff_base`` so the three always
+        # describe one reading. ``_own_commit_count`` is ``None`` when the list
+        # could not be read at all, which is not the same as having made none.
+        self._head_commit: str | None = None
+        self._own_commits: tuple[str, ...] = ()
+        self._own_commit_count: int | None = None
 
     async def _git(self, *args: str, timeout: float = WORKTREE_GIT_TIMEOUT_SECONDS) -> ExecResult:
         result = await run_process(
@@ -425,6 +435,71 @@ class WorktreeEnvironment(Environment):
         """The revision the last ``get_diff`` measured against, if any."""
         return self._diff_base
 
+    @property
+    def head_commit(self) -> str | None:
+        """Where HEAD stood at the last ``get_diff``, if it could be read.
+
+        The other end of ``diff_base``. The base says where a stretch of work
+        started; this says where the worktree stands now, and the two together
+        are what make a row's file list mean anything. ``None`` on the non-Git
+        copy path, which has no revisions, and before the first diff.
+        """
+        return self._head_commit
+
+    @property
+    def own_commits(self) -> tuple[str, ...]:
+        """The commits this worktree made since ``diff_base``, newest first.
+
+        Exactly the shas this agent could hand to a teammate: everything
+        reachable from HEAD but not from the base it started this stretch of
+        work on. Capped at ``_OWN_COMMIT_LIMIT``; ``own_commit_count`` carries
+        the true total.
+        """
+        return self._own_commits
+
+    @property
+    def own_commit_count(self) -> int | None:
+        """How many commits ``own_commits`` was cut from, or ``None``.
+
+        ``None`` means the list could not be read, which is a different fact
+        from an agent that committed nothing — and the only reason the count is
+        recorded beside a list that is usually complete.
+        """
+        return self._own_commit_count
+
+    async def _resolve_own_commits(self, base_revision: str) -> None:
+        """Read HEAD and this worktree's commits since ``base_revision``.
+
+        Called from ``get_diff`` with the base it just resolved, so the three
+        values are one reading of one worktree rather than three that may have
+        been taken at different times.
+
+        Both readings are per-worktree facts git already keeps, and neither is
+        derivable from the other: an agent that adopted a teammate's commit and
+        made none of its own has ``head_commit == diff_base`` and an empty list,
+        while one that committed twice has a HEAD its own list explains. A
+        reading that fails leaves the honest gap (``None``) rather than a value
+        that would be counted.
+        """
+        self._head_commit = None
+        self._own_commits = ()
+        self._own_commit_count = None
+        worktree = self._worktree_dir
+        if worktree is None:
+            return
+        head = await self._git_in(worktree, "rev-parse", "HEAD")
+        if head.returncode != 0 or head.stdout_truncated or head.stderr_truncated:
+            return
+        self._head_commit = head.stdout.strip() or None
+        listed = await self._git_in(
+            worktree, "rev-list", f"{base_revision}..HEAD"
+        )
+        if listed.returncode != 0 or listed.stdout_truncated or listed.stderr_truncated:
+            return
+        commits = listed.stdout.split()
+        self._own_commits = tuple(commits[:_OWN_COMMIT_LIMIT])
+        self._own_commit_count = len(commits)
+
     async def _resolve_diff_base(self) -> str:
         """The commit this worktree's current stretch of work started from.
 
@@ -481,6 +556,9 @@ class WorktreeEnvironment(Environment):
             return ""
         if not self._git_mode:
             self._diff_base = None
+            self._head_commit = None
+            self._own_commits = ()
+            self._own_commit_count = None
             diff = await self._directory_copy_diff()
             self._copy_exported_diff = diff
             return diff
@@ -488,6 +566,7 @@ class WorktreeEnvironment(Environment):
             raise RuntimeError("worktree base commit is unavailable")
         base_revision = await self._resolve_diff_base()
         self._diff_base = base_revision
+        await self._resolve_own_commits(base_revision)
         self._git_diff_delivery_pending = True
         result = await self._local_env.exec_cmd(
             guarded_staged_diff_command(base_revision=base_revision)
