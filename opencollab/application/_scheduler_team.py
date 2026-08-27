@@ -560,7 +560,10 @@ class SchedulerTeamMixin:
         of a row would otherwise read the same as a recorder that broke.
 
         ``content_sha`` hashes file *content*, not diff text, so it lines up
-        with a working-tree hash taken any other way.
+        with a working-tree hash taken any other way. ``diff_base`` names the
+        revision the diff was measured against, which is the worktree's creation
+        base until the agent adopts a teammate's commit and the environment
+        moves the base onto it.
 
         Purely observational, unlike ``_append_worktree_diff``: a missing diff
         is a technical failure that fails the agent, but a missing record here
@@ -590,6 +593,12 @@ class SchedulerTeamMixin:
                 payload={
                     "aid": aid,
                     "role": role,
+                    # The revision the diff was measured against. Normally the
+                    # worktree's creation base; after a handoff (the agent
+                    # checked out a teammate's commit) the commit it adopted, so
+                    # the row states which starting point "changed" is relative
+                    # to instead of leaving it to be assumed.
+                    "diff_base": getattr(env, "diff_base", None),
                     "files": files,
                     "diff_sha": hashlib.sha256(diff.encode("utf-8")).hexdigest(),
                     "diff_chars": len(diff),

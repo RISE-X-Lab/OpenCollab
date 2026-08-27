@@ -47,6 +47,12 @@ class _UnreadableEnv(_Env):
         raise RuntimeError("no reading today")
 
 
+class _RebasedEnv(_Env):
+    """A worktree that took a handoff: its diff is measured against that commit."""
+
+    diff_base = "9" * 40
+
+
 class _ChildSession:
     def __init__(self, role: str, result: str, env: _Env):
         self.agent = type("_Agent", (), {"name": role})()
@@ -183,6 +189,24 @@ def test_added_modified_and_deleted_files_are_recorded_with_content_shas(tmp_pat
         {"path": "pkg/gone.py", "op": "deleted", "content_sha": None},
     ]
     assert row.status is RowStatus.DONE
+
+
+def test_the_row_names_the_revision_its_files_were_measured_against(tmp_path):
+    """A file counts as changed only relative to a base, so name the base."""
+    env = _RebasedEnv(THREE_FILE_DIFF, {"pkg/new.py": ADDED, "pkg/mod.py": MODIFIED})
+
+    payloads, _ = _run_one_child(tmp_path, env, "worktree-base")
+
+    assert payloads[0]["diff_base"] == "9" * 40
+
+
+def test_an_environment_that_names_no_base_records_a_null_one(tmp_path):
+    """A non-Git worktree has no revision to name, and must not invent one."""
+    env = _Env(THREE_FILE_DIFF, {"pkg/new.py": ADDED, "pkg/mod.py": MODIFIED})
+
+    payloads, _ = _run_one_child(tmp_path, env, "worktree-no-base")
+
+    assert payloads[0]["diff_base"] is None
 
 
 def _long_diff(file_count: int) -> tuple[str, dict[str, str]]:
