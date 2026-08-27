@@ -90,6 +90,11 @@ class Scheduler(
                                       batch has answered
       IDLE / run-ring /            -> process states: ready / running /
         DONE|STOPPED|ERROR            blocked / exit(0) | killed | crash
+
+    ``prebuild_team`` (off by default) switches the roster from an outcome of
+    the run to an input to it: every role the team config declares is seated
+    before the first model call and ``spawn`` is refused thereafter. See
+    ``SchedulerTeamMixin.ensure_team_prebuilt``.
     """
 
     def __init__(
@@ -104,6 +109,7 @@ class Scheduler(
         topology: Topology | None = None,
         roles: tuple[str, ...] = (),
         event_factory: SchedulerEventFactory | None = None,
+        prebuild_team: bool = False,
     ):
         self._session_factory = session_factory
         self._worktree_pool = worktree_pool
@@ -113,6 +119,15 @@ class Scheduler(
         self._max_budget_tokens = max_budget_tokens
         self._permission_policy = permission_policy
         self._topology = topology
+        # Static-topology mode. Off by default, and every behavioural difference
+        # is gated on it: the team is materialized from the config before the
+        # first turn (``ensure_team_prebuilt``), ``spawn`` then refuses, and the
+        # assigned topology is recorded. Left off, nothing below fires and the
+        # scheduler behaves exactly as it did.
+        self._prebuild_team = bool(prebuild_team)
+        self._team_prebuilt = False
+        # Created on first use: ``__init__`` may run without a running loop.
+        self._prebuild_lock: asyncio.Lock | None = None
         # Configured role names (from the team config), in declaration order.
         # Used by ``team_roster`` to surface the team before anything spawns.
         normalized_roles: list[str] = []

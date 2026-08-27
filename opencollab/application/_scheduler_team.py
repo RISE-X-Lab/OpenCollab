@@ -1,7 +1,8 @@
-"""Scheduler team views, topology checks, diffs, and event emission."""
+"""Scheduler team views, topology checks, prebuilt roster, diffs, and events."""
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 from typing import Any
@@ -12,6 +13,8 @@ from opencollab.application._scheduler_constants import (
 )
 from opencollab.application.ports import DiffCapablePort, EnvironmentPort
 from opencollab.domain.events import SchedulerEvent
+from opencollab.domain.identity import role_collision_key
+from opencollab.domain.scheduler import SessionControlBlock
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +196,221 @@ class SchedulerTeamMixin:
             if role not in live_roles
         ]
         return live + available
+
+    # ---- static topology: the team the config declares, built up front -------
+
+    async def ensure_team_prebuilt(self) -> tuple[int, ...]:
+        """Build every declared role as a live agent, once, before the first turn.
+
+        Off unless the scheduler was constructed with ``prebuild_team``; then it
+        is a no-op that returns ``()``, and nothing else in this block fires.
+
+        With it on, the roster stops being an outcome of the run and becomes an
+        input to it. Ordinarily the only agent that exists at startup is agent 0,
+        and every teammate is created mid-run by a model calling ``spawn`` — so
+        how many agents a run had, and which roles, is decided by the model and
+        knowable only afterwards. Here the scheduler creates one agent per role
+        in the team config before any model call, which is what makes an
+        *assigned* topology exist at all (see ``_trace_assigned_topology``).
+
+        Agent 0 is untouched: it was already created by ``create_init_process``
+        with the entry role and the real workspace, and is skipped here. Each
+        remaining role is built through the same path a spawn uses — a worktree
+        from the pool, a session from the factory — so a prebuilt teammate and a
+        spawned one differ in *why* they exist, not in what they are.
+
+        All or nothing. A declared role that cannot be built (most likely: the
+        token pool is fully allocated, since each agent reserves up to a quarter
+        of it and a team of five therefore cannot be seated) rolls the partial
+        team back and raises. A run that quietly seated four of five roles would
+        record an assigned topology that its own agents contradict, which is
+        worse than failing at startup before a single token is spent.
+
+        Returns the aids created, in declaration order.
+        """
+        if not self._prebuild_team or self._team_prebuilt:
+            return ()
+        if self._prebuild_lock is None:
+            self._prebuild_lock = asyncio.Lock()
+        async with self._prebuild_lock:
+            if self._team_prebuilt:
+                return ()
+            lead = self.table.get(0)
+            if lead is None:
+                raise RuntimeError(
+                    "Cannot prebuild the team: agent 0 does not exist yet. "
+                    "Call create_init_process() first."
+                )
+            entry_key = role_collision_key(lead.agent.name)
+            built: list[tuple[int, Any]] = []
+            try:
+                for role in self._roles:
+                    if role_collision_key(role) == entry_key:
+                        continue
+                    built.append(await self._prebuild_peer(role))
+            except BaseException:
+                for aid, env in reversed(built):
+                    await self._rollback_failed_spawn(aid, env)
+                raise
+            self._team_prebuilt = True
+            self._trace_assigned_topology()
+            self._write_manifest()
+            return tuple(aid for aid, _ in built)
+
+    async def _prebuild_peer(self, role: str) -> tuple[int, Any]:
+        """Create one declared teammate. Returns ``(aid, env)`` for rollback.
+
+        ``parent_aid`` is 0, not ``None``. Nothing created this agent in the
+        sense ``spawn`` means — a prebuilt peer has no parent that is blocked on
+        its result, and it is deliberately left out of ``_spawn_origin``, so the
+        join path (``_deliver_to_parent``) never routes anything for it and its
+        only channel to the rest of the team is ``send_message``. But
+        ``parent_aid=None`` is not free either: it is the scheduler's marker for
+        "this is agent 0, the root", and the hook bridge reads exactly that to
+        decide whether a completion is the whole team stopping (``Stop``) or one
+        teammate finishing (``SubagentStop``). Handing a peer ``None`` would
+        make each of them fire ``Stop``. 0 keeps the process tree honest — every
+        agent in the run descends from the init process — while leaving the join
+        semantics, which live in ``_spawn_origin``, untouched.
+
+        No task is seeded: a prebuilt teammate exists before anyone has decided
+        what it should do, and gets its work as a teammate message.
+        """
+        aid = self.table.allocate_aid()
+        env: Any | None = None
+        try:
+            budget = self._reserve_child_budget(aid)
+            if budget <= 0:
+                raise RuntimeError(
+                    f"Cannot prebuild role '{role}': the team token budget is "
+                    f"fully allocated after {len(self.table.entries)} agents."
+                )
+            env = await self._worktree_pool.acquire(role)
+            session = self._session_factory.build_spawn_session(
+                role=role,
+                env=env,
+                budget=budget,
+                aid=aid,
+                scheduler=self,
+                task=None,
+                context="",
+            )
+            session.agent.name = role
+            self.table.add(
+                SessionControlBlock(
+                    aid=aid,
+                    parent_aid=0,
+                    agent=session.agent,
+                    state=session.state,
+                )
+            )
+            self._sessions[aid] = session
+            await self.emit_scheduler_event(
+                self._events.agent_spawned(aid, 0, role, "")
+            )
+        except BaseException:
+            await self._rollback_failed_spawn(aid, env)
+            raise
+        return aid, env
+
+    def _assigned_topology_nodes(self) -> list[dict[str, Any]]:
+        """One record per seated agent: who it is and what it may do."""
+        entry_aid = 0
+        nodes: list[dict[str, Any]] = []
+        for aid in sorted(self.table.entries):
+            scb = self.table.entries[aid]
+            session = self._sessions.get(aid)
+            agent = getattr(session, "agent", None) or scb.agent
+            tools = sorted(
+                str(name)
+                for tool in getattr(agent, "tools", ())
+                if (name := getattr(tool, "name", None)) is not None
+            )
+            env = getattr(session, "env", None)
+            nodes.append(
+                {
+                    "aid": aid,
+                    "role": scb.agent.name,
+                    "entry": aid == entry_aid,
+                    "tools": tools,
+                    # What gates this agent's risky actions. "confirm" means a
+                    # permission policy is wired and something outside the agent
+                    # answers yes/no; "auto" means nothing does.
+                    "permission_mode": (
+                        "confirm"
+                        if getattr(session, "permission_policy", None) is not None
+                        else "auto"
+                    ),
+                    "workspace": getattr(env, "workspace", None),
+                    # True only for a real worktree. Under ``use_worktrees=False``
+                    # every agent shares one directory, and this says so.
+                    "workspace_isolated": isinstance(env, DiffCapablePort),
+                }
+            )
+        return nodes
+
+    def _assigned_topology_edges(self) -> list[dict[str, str]]:
+        """Every edge the team config declares, as ``(from_role, to_role)`` pairs.
+
+        Read from the same ``Topology`` object ``_topology_forbids`` consults, so
+        the recorded edge set is the one actually enforced. Roles declared with
+        no outgoing edge contribute no pair — they appear in the node record and
+        in ``roles`` instead.
+        """
+        topology = self._topology
+        if topology is None:
+            return []
+        return sorted(
+            (
+                {"from_role": source, "to_role": destination}
+                for source, destinations in topology.edges.items()
+                for destination in destinations
+            ),
+            key=lambda edge: (edge["from_role"], edge["to_role"]),
+        )
+
+    def _trace_assigned_topology(self) -> None:
+        """Record the organization the run was *assigned*, before it runs.
+
+        Two records, both written once at prebuild: ``assigned.topology_nodes``
+        (who is seated, with which tools, under which permission mode, in which
+        workspace) and ``assigned.topology_edges`` (which role may address which,
+        verbatim from the team config). They are the design-time half of the
+        comparison the observed records support — ``worktree_changes`` says who
+        actually touched what — and without a prebuilt team there is no assigned
+        value to compare against, which is why nothing is written when the switch
+        is off.
+
+        ``allow_all`` travels with the edges because an open topology declares no
+        edges at all: an empty list alone would read as "nobody may talk".
+
+        Observational end to end — a recorder that fails must not take the run
+        with it.
+        """
+        tracer = self._tracer
+        if tracer is None:
+            return
+        lead = self.table.get(0)
+        topology = self._topology
+        try:
+            tracer.log_step(
+                step_type="assigned.topology_nodes",
+                payload={
+                    "entry_role": lead.agent.name if lead is not None else None,
+                    "declared_roles": list(self._roles),
+                    "nodes": self._assigned_topology_nodes(),
+                },
+            )
+            tracer.log_step(
+                step_type="assigned.topology_edges",
+                payload={
+                    "allow_all": bool(topology is not None and topology.allow_all),
+                    "declared_roles": list(self._roles),
+                    "edges": self._assigned_topology_edges(),
+                },
+            )
+        except Exception as exc:
+            logger.error("assigned topology trace failed: %s", exc)
 
     def agent_step_count(self, aid: int) -> int:
         """Return the cumulative step count for one registered agent."""

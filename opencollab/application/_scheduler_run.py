@@ -69,6 +69,10 @@ class SchedulerRunMixin:
 
     async def _run_turn_exclusive(self, aid: int, user_message: str) -> str:
         """Drive one externally visible agent turn under its per-aid lock."""
+        # A prebuilt team must be seated before the first model call, so the
+        # roster an assigned topology names is the roster that ran. No-op unless
+        # the scheduler was constructed with ``prebuild_team``, and idempotent.
+        await self.ensure_team_prebuilt()
         session = self._sessions.get(aid)
         scb = self.table.get(aid)
         if session is None or scb is None:

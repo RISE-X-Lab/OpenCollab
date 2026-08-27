@@ -52,6 +52,7 @@ def build_scheduler(
     resolved_team_config: TeamConfig | None = None,
     save_dir: str | os.PathLike[str] | None = None,
     allow_unisolated_child_tests: bool = False,
+    prebuild_team: bool = False,
 ) -> Scheduler:
     """Build the Scheduler and let it create agent 0 (the init process).
 
@@ -67,6 +68,12 @@ def build_scheduler(
     ``HookEventSubscriber`` is attached to the team event bus so configured
     shell commands fire on lifecycle events. Disable (e.g. under eval) to keep
     runs free of hook side effects.
+
+    ``prebuild_team`` switches the run to a static topology: every role the team
+    config declares is seated before the first model call and ``spawn_agent`` is
+    refused thereafter, so the roster is an input to the run rather than
+    something the model decides mid-run. Off by default; the scheduler behaves
+    exactly as before while it is off.
     """
     if session_file is not None and not Path(session_file).is_file():
         raise ValueError(f"session file does not exist: {session_file}")
@@ -135,6 +142,7 @@ def build_scheduler(
         permission_policy=ctx.permission_policy,
         topology=team_cfg.topology,
         roles=tuple(team_cfg.roles),
+        prebuild_team=prebuild_team,
     )
 
     # Attach hooks after the scheduler exists so the runner can hold its handle
