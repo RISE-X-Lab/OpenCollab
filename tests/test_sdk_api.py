@@ -75,6 +75,10 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "artifacts",
             "trace",
             "use_worktrees",
+            # The two experimental conditions a Team arm is defined by: a roster
+            # seated before the first model call, and a seat whose shell runs.
+            "prebuild_team",
+            "allow_unisolated_shell",
         ),
         sdk.OpenCollab.workflow: (
             "self",

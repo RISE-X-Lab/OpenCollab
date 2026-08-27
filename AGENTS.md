@@ -30,9 +30,11 @@ adapters  →  application  →  domain
 - `opencollab/sdk/` — versioned integration surface for external workflow and evaluation packages.
 - `scripts/` — framework launchers and provider diagnostics.
 
-Never add an inward → outward import (`tests/test_*_boundaries.py` fail the build on it).
+Never add an inward → outward import (`lint-imports` fails the build on it; the
+contracts live in `.importlinter`).
 Need an outer capability inside? Add a **port** in `application/ports.py`, wire the
-concrete type in `bootstrap/`. When splitting a module, keep its public names re-exported.
+concrete type in `bootstrap/`. When splitting a module, judge the split by interface
+width — see the module rule below.
 
 ## Commits & pull requests
 
@@ -64,7 +66,15 @@ concrete type in `bootstrap/`. When splitting a module, keep its public names re
   the built PDFs; keep images small; put decks/datasets in release assets, not history.
 - **Don't copy-paste or `base64`-embed logic that already exists as a tested module** —
   import it through the owning package's public interface.
-- **Keep modules focused** (< 800 lines) — split by feature/domain, not by type.
+- **Split by interface width, not by line count.** A module's *width* is the number of
+  public top-level names it exports (`scripts/check_interface_width.py` measures it).
+  - **A good split** leaves the two new modules with **no more** public names in total than
+    the one they came from. Split by capability or by domain.
+  - **A bad split** is by type (`models/`, `helpers/`, `utils/`) or by line count
+    (`_foo_part2.py`) — both push the total number of public names up.
+  - **800 lines is a hint, not a red line.** Long with a narrow interface is a good module;
+    short with a wide one is not. When the hint fires, say in the PR description why this
+    module is deep.
 
 ## Executable evidence integrity
 

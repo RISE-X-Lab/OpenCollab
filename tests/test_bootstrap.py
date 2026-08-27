@@ -242,6 +242,104 @@ topology:
     assert run_tests.allow_extra_args is False
 
 
+def _shell_team_file(tmp_path):
+    """A two-role team whose teammate carries bash, written to disk."""
+    team_file = tmp_path / "shell-team.yaml"
+    team_file.write_text(
+        """
+entry: analyst
+roles:
+  analyst:
+    prompt: Analyze.
+    tools: [ask_user, message_agent]
+  coder:
+    prompt: Code.
+    tools: [bash, message_agent]
+topology:
+  analyst: [coder]
+  coder: [analyst]
+""".strip(),
+        encoding="utf-8",
+    )
+    return team_file
+
+
+@pytest.mark.parametrize("interactive", (False, True))
+def test_build_scheduler_shell_follows_interactive_when_unstated(tmp_path, interactive):
+    # The default must reproduce the old single-flag rule exactly, so that every
+    # existing call site keeps its behaviour without being touched.
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    scheduler = build_scheduler(
+        ctx,
+        use_worktrees=False,
+        interactive=interactive,
+        auto_save=False,
+        team_config_path=_shell_team_file(tmp_path),
+        prebuild_team=True,
+    )
+    factory = scheduler._session_factory
+
+    assert factory._unisolated_shell_allowed(seated_at_start=True) is interactive
+    assert factory._unisolated_shell_allowed(seated_at_start=False) is False
+
+
+def test_build_scheduler_can_seat_a_shell_with_no_human_to_ask(tmp_path):
+    # The case one boolean could not express: an unattended run whose declared
+    # teammates must be able to run commands. The shell is on; ``ask_user`` is
+    # not, because there is nobody to answer it.
+    from opencollab.adapters._env_local import LocalEnvironment
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    scheduler = build_scheduler(
+        ctx,
+        use_worktrees=False,
+        interactive=False,
+        auto_save=False,
+        team_config_path=_shell_team_file(tmp_path),
+        prebuild_team=True,
+        allow_unisolated_shell=True,
+    )
+
+    lead = scheduler.lead_session
+    assert lead.agent.find_tool("ask_user") is None
+
+    teammate = scheduler._session_factory.build_spawn_session(
+        role="coder",
+        env=LocalEnvironment(str(workspace)),
+        budget=1_000,
+        scheduler=scheduler,
+    )
+    assert teammate.agent.find_tool("bash").require_process_isolation is False
+    assert teammate.agent.find_tool("ask_user") is None
+
+
+def test_build_scheduler_can_withhold_the_shell_from_an_attended_run(tmp_path):
+    # The other direction: a human is present, and the run still says no shell.
+    # Only two independent inputs can say this.
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    ctx = build_runtime_context(str(workspace), _cfg(), trace=False)
+    scheduler = build_scheduler(
+        ctx,
+        use_worktrees=False,
+        interactive=True,
+        auto_save=False,
+        team_config_path=_shell_team_file(tmp_path),
+        prebuild_team=True,
+        allow_unisolated_shell=False,
+    )
+
+    assert scheduler.lead_session.agent.find_tool("ask_user") is not None
+    assert (
+        scheduler._session_factory._unisolated_shell_allowed(seated_at_start=True)
+        is False
+    )
+
+
 def test_build_runtime_context_resolves_workspace_and_tracer(tmp_path, monkeypatch):
     workspace = tmp_path / "ws"
     workspace.mkdir()

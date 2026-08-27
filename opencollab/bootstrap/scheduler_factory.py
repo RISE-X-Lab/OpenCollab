@@ -39,6 +39,64 @@ from opencollab.bootstrap.team_config import (
 )
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 
+# The one tool that carries a message from one live agent to another
+# (``adapters.tools.message.MessageAgentTool``). Named here rather than
+# imported from the registry so the composition root states the dependency it
+# actually has: a topology edge is walkable only if the source role holds this.
+_MESSAGING_TOOL_NAME = "message_agent"
+
+
+def _reject_unwalkable_edges(team: TeamConfig) -> None:
+    """Refuse a prebuilt team whose declared edges no agent can walk.
+
+    Only under ``prebuild_team``. There, ``spawn_agent`` is refused for the
+    whole run (``SchedulerTeamMixin._refuse_spawn_when_prebuilt``), so
+    ``message_agent`` is the only channel left between two seated agents. A role
+    that is given an outgoing edge but not that tool is seated mute: the
+    topology says it may address a teammate and nothing it can call will do so.
+    The run still starts, still records that edge as ``assigned.topology_edges``,
+    and produces a transcript in which the edge was simply never used — which
+    reads as a finding about the model rather than about the config.
+
+    Under the product default (``prebuild_team=False``) the same shape is
+    legitimate and must not be touched: the built-in Analyst has two outgoing
+    edges and no ``message_agent``, because it walks them with ``spawn_agent``
+    and receives results back through the join path. That is why this is called
+    from behind the switch and nowhere else.
+
+    Raised before anything is wired, so the failure lands before agent 0 exists
+    and before a single token is spent — the same bargain
+    ``ensure_team_prebuilt`` already makes for a seat it cannot fill.
+    """
+    offenders: list[tuple[str, list[str], list[str]]] = []
+    for source in sorted(team.topology.edges):
+        destinations = sorted(team.topology.edges[source])
+        role = team.roles.get(source)
+        if not destinations or role is None:
+            continue
+        if _MESSAGING_TOOL_NAME in role.tools:
+            continue
+        offenders.append((source, destinations, sorted(role.tools)))
+    if not offenders:
+        return
+    detail = "\n".join(
+        f"  - role '{source}' may address {', '.join(destinations)} "
+        f"but its tools are [{', '.join(tools)}]\n"
+        f"    unwalkable edges: "
+        + ", ".join(f"{source} -> {destination}" for destination in destinations)
+        for source, destinations, tools in offenders
+    )
+    named = ", ".join(f"'{source}'" for source, _, _ in offenders)
+    raise ValueError(
+        "prebuild_team: this team declares edges that no agent can walk.\n"
+        f"{detail}\n"
+        f"A prebuilt team refuses spawn_agent, so '{_MESSAGING_TOOL_NAME}' is "
+        "the only channel between seated agents. Add "
+        f"'{_MESSAGING_TOOL_NAME}' to the `tools:` list of {named}, or remove "
+        "those roles' entries from `topology:`."
+    )
+
+
 
 def build_scheduler(
     ctx: RuntimeContext,
@@ -52,6 +110,8 @@ def build_scheduler(
     resolved_team_config: TeamConfig | None = None,
     save_dir: str | os.PathLike[str] | None = None,
     allow_unisolated_child_tests: bool = False,
+    prebuild_team: bool = False,
+    allow_unisolated_shell: bool | None = None,
 ) -> Scheduler:
     """Build the Scheduler and let it create agent 0 (the init process).
 
@@ -67,6 +127,32 @@ def build_scheduler(
     ``HookEventSubscriber`` is attached to the team event bus so configured
     shell commands fire on lifecycle events. Disable (e.g. under eval) to keep
     runs free of hook side effects.
+
+    ``prebuild_team`` switches the run to a static topology: every role the team
+    config declares is seated before the first model call and ``spawn_agent`` is
+    refused thereafter, so the roster is an input to the run rather than
+    something the model decides mid-run. Off by default; the scheduler behaves
+    exactly as before while it is off.
+
+    ``interactive`` and ``allow_unisolated_shell`` are two different facts about
+    a run, and only one of them is about a human:
+
+    * ``interactive`` — is there a person at this run to put a question to? It
+      is what gives the entry role ``ask_user``, and nothing else here.
+    * ``allow_unisolated_shell`` — may an agent seated at the start execute
+      commands the OS does not sandbox? A worktree is not a sandbox, so this is
+      what decides whether a seated agent's ``bash`` runs a command or refuses
+      it.
+
+    They coincided while the only run with a shell was a run with a human
+    watching it, which is why one boolean used to answer both. An unattended
+    batch run pulls them apart: its agents must be able to run ``git`` in their
+    worktrees, and there is nobody for them to ask anything. Passing
+    ``allow_unisolated_shell=True`` with ``interactive=False`` is exactly that
+    run, and it is not expressible with one flag.
+
+    ``None`` — the default — means "whatever ``interactive`` says", so every
+    existing call site keeps its current behaviour without being touched.
     """
     if session_file is not None and not Path(session_file).is_file():
         raise ValueError(f"session file does not exist: {session_file}")
@@ -77,6 +163,8 @@ def build_scheduler(
         if resolved_team_config is not None
         else load_team_config(ctx.workspace, path=team_config_path)
     )
+    if prebuild_team:
+        _reject_unwalkable_edges(team_cfg)
     event_bus = EventBus(ctx.event_sink)
 
     # Per-run folder: every agent's transcript plus a team.json manifest land
@@ -123,6 +211,11 @@ def build_scheduler(
         interactive=interactive,
         save_dir=run_dir,
         allow_unisolated_child_tests=allow_unisolated_child_tests,
+        # A prebuilt roster's teammates are declared nodes seated before the
+        # first model call, so the factory gives them agent 0's shell instead of
+        # the hardened default it gives a child a model spawned mid-run.
+        prebuilt_roster=prebuild_team,
+        allow_unisolated_shell=allow_unisolated_shell,
     )
     worktree_pool = WorktreePool(ctx.workspace, use_worktrees=use_worktrees)
 
@@ -135,6 +228,7 @@ def build_scheduler(
         permission_policy=ctx.permission_policy,
         topology=team_cfg.topology,
         roles=tuple(team_cfg.roles),
+        prebuild_team=prebuild_team,
     )
 
     # Attach hooks after the scheduler exists so the runner can hold its handle

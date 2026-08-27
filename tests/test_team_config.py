@@ -544,3 +544,30 @@ def test_programmatic_team_config_uses_one_casefold_identity():
     assert team.role_for("coder") is coder
     assert team.role_for("CODER") is coder
     assert team.topology.allows("CODER", "REVIEWER") is True
+
+
+def test_a_team_file_passed_positionally_is_refused_not_silently_ignored(tmp_path):
+    """The first parameter is a workspace, so a team file there is discarded.
+
+    ``load_team_config`` would then return the built-in team and report nothing,
+    and a run configured against a team file would execute a different team than
+    the one it named — with no failure anywhere to notice it by. A caller
+    holding a team file is never asking for the default, so the call is refused
+    and the message names the keyword that was meant.
+    """
+    team_file = tmp_path / "team.yaml"
+    team_file.write_text(
+        "entry: solo\nroles:\n  solo:\n    tools: [file_read]\n"
+        "    prompt: |\n      You are Solo.\ntopology:\n  solo: []\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="keyword argument 'path'"):
+        load_team_config(str(team_file))
+
+    assert load_team_config(path=str(team_file)).entry == "solo"
+
+
+def test_a_workspace_directory_still_yields_the_built_in_team(tmp_path):
+    """Only a team file misroutes; a directory is the parameter's real use."""
+    assert load_team_config(str(tmp_path)).entry == default_team_config().entry

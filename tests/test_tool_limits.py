@@ -98,7 +98,7 @@ def test_configured_cap_actually_bounds_bash_output(tmp_path):
     ws.mkdir()
     [bash] = build_tools_for_role(
         ["bash"],
-        interactive=True,
+        allow_unisolated_shell=True,
         tool_limits={"bash": {"max_output_chars": 100}},
     )
     runtime = ToolRuntime(

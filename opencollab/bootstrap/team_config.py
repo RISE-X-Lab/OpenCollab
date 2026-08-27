@@ -561,6 +561,16 @@ def resolve_team_file(workspace: str | None = None) -> Path | None:
     return None
 
 
+def _looks_like_a_team_file(workspace: str) -> bool:
+    """True when a ``workspace`` argument is really a team file taking a wrong turn.
+
+    A YAML suffix settles it whether or not the file exists, so a typo'd path is
+    still reported as a misrouted team file rather than as a silent default.
+    Anything else — a real directory, a path with no suffix — is left alone.
+    """
+    return Path(workspace).suffix.lower() in {".yaml", ".yml"}
+
+
 def load_team_config(
     workspace: str | None = None,
     *,
@@ -571,7 +581,21 @@ def load_team_config(
     ``workspace`` remains accepted for compatibility but is intentionally not
     searched for conventional filenames. An explicit ``path`` takes precedence
     over ``OPENCOLLAB_TEAM_FILE``.
+
+    A team file must arrive as the keyword ``path``. Passing one positionally
+    lands it in ``workspace``, which is discarded — the call then returns the
+    built-in team and reports nothing, so a run configured with a team file
+    would silently execute a different team than the one it named. Refuse that
+    call instead: a caller holding a team file is never asking for the default.
     """
+    if workspace is not None and _looks_like_a_team_file(workspace):
+        raise ValueError(
+            "team config must be passed as the keyword argument 'path': "
+            f"load_team_config(path={workspace!r}). The first positional "
+            "parameter is a workspace directory and is not searched for team "
+            "files, so passing a file there would silently load the built-in "
+            "team instead."
+        )
     del workspace
     candidate = _configured_team_path(path)
     if candidate is None:

@@ -223,7 +223,9 @@ class WorkflowAgentsMixin:
 
         async def run_with_lease() -> dict[str, Any] | None:
             try:
-                lease = await self._acquire_budget_lease(budget, over_budget_ok=False)
+                lease = await self._acquire_budget_lease(
+                    budget, over_budget_ok=False, label=label
+                )
             except WorkflowBudgetExceeded:
                 return None
             token = self._active_budget_lease.set(lease)

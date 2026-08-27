@@ -17,13 +17,79 @@ from dataclasses import dataclass, field
 from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionState
 
+PER_AGENT_BUDGET_SHARE = 1.5
+"""``c`` in the per-agent budget cap ``c * total / N``. Dimensionless.
 
-def lead_reserve(total: int) -> int:
-    """Headroom the Lead (agent 0) keeps when children are spawned.
+Every agent on a declared team draws from one shared pool of ``total`` tokens
+and may spend at most ``c * total / N`` of it, where ``N`` is the number of
+roles the team config declares. Nothing is set aside for an agent when it is
+created, so ``c`` is the only thing that decides how unequally the pool may be
+consumed:
 
-    This is the pool the parent retains for its own coordination turns; it is
-    the seed value of the scheduler's running ``_allocated_tokens`` so the very
-    first child is granted from ``total - lead_reserve(total)``.
+- ``c = 1`` is a strict equal split. Every agent is capped at ``total / N``, the
+  caps sum to exactly the pool, and no agent can spend a token another agent did
+  not spend. This is the allocation most multi-agent harnesses implement.
+- ``c = N`` is full sharing. Each agent is capped at the whole pool, so the
+  first agent to run may consume all of it.
+- ``1 < c < N`` lets an agent that is doing the work draw on the allowance of an
+  agent that is idle, while still bounding how much of the pool any one agent
+  can take.
+
+The value is ``1.5``: one agent may spend up to half again an equal share. It is
+a free parameter of the allocation rule, not an estimate of any quantity, and it
+is fixed before data collection so the caps are a property of the design rather
+than of the runs.
+
+Overspend is bounded, not impossible. The caps sum to ``c * total``, which is
+more than the pool, so the caps alone do not bound the team; the aggregate
+ceiling does. Every session's precheck tests the team total before it starts a
+model call, so once aggregate spend reaches ``total`` no agent begins another
+turn. What can still be spent past ``total`` is therefore only what was already
+in flight when the ceiling was crossed: at most one turn per agent running
+concurrently, and on a pipeline topology, one turn. That is a bound on the order
+of a single turn's tokens, not of ``(c - 1) * total``. The realized figure is
+recorded per run rather than assumed, so it can be reported.
+
+The alternative this replaces — taking each agent's share out of the pool when
+the agent is created — has no overspend at all, but holds tokens for agents that
+never spend them, which makes an idle agent and an exhausted one
+indistinguishable in the accounts.
+"""
+
+
+def per_agent_cap(
+    total: int,
+    team_size: int,
+    share: float = PER_AGENT_BUDGET_SHARE,
+) -> int:
+    """The most one agent of a declared team of ``team_size`` may spend.
+
+    ``share * total / team_size``, floored to a whole number of tokens and
+    clamped to ``total`` — no single agent may be allowed more than the whole
+    pool, which binds whenever ``share >= team_size``.
+
+    A cap on cumulative spend, not a reservation. Seating an agent takes nothing
+    out of the pool, so an agent that is created and never used holds no tokens
+    and its allowance stays available to the agents that are working. That is
+    what keeps "the model never used this role" and "this role spent its whole
+    allowance" apart in the data.
+    """
+    if team_size <= 0:
+        return max(0, total)
+    return max(0, min(total, int(total * share / team_size)))
+
+
+def dynamic_roster_share(total: int) -> int:
+    """One agent's share of the pool when the roster is discovered at runtime.
+
+    On the dynamic-roster path the team is whatever the model spawns, so the
+    number of agents is unknown while the run is still deciding it. With no N to
+    divide by, each agent — agent 0 included — books a fixed quarter of the
+    pool, floored at 10k. That quarter is also where this path's ceiling of four
+    concurrent agents comes from: after the fourth booking the pool is gone.
+
+    When the team config declares the roster up front, N is known before the
+    first model call and ``per_agent_cap`` divides by it instead.
     """
     return min(total, max(10_000, total // 4))
 
@@ -32,17 +98,20 @@ def split_budget(total: int, allocated: int) -> int:
     """How many tokens a spawned agent gets, given the budget already handed out.
 
     ``allocated`` is the sum of budget already reserved against the global pool
-    (the Lead reserve plus every live child's granted cap). A live child receives
-    at most one lead-sized share, clamped to the unallocated remainder. This
-    preserves three-way fan-out under the default quarter-share policy while the
-    running sum remains bounded by ``total``. Once the pool is exhausted, the
-    grant is zero.
+    (every live agent's granted cap, agent 0's included). A live agent receives
+    at most one ``dynamic_roster_share``, clamped to the unallocated remainder,
+    so the running sum stays bounded by ``total``. Once the pool is exhausted,
+    the grant is zero.
+
+    Reserve-at-allocation, and therefore the dynamic-roster path only: the grant
+    is taken out of the pool when the agent is created, whether or not the agent
+    ever spends it. ``per_agent_cap`` is the declared-roster alternative.
 
     Kept pure: all running-total bookkeeping (add on spawn, reclaim on terminal)
     lives in the application-layer scheduler.
     """
     remaining = max(0, total - allocated)
-    return min(lead_reserve(total), remaining)
+    return min(dynamic_roster_share(total), remaining)
 
 
 @dataclass(frozen=True)
@@ -122,10 +191,12 @@ class SessionTable:
 
 
 __all__ = [
+    "PER_AGENT_BUDGET_SHARE",
     "DelegationTask",
     "ReviewVerdict",
     "SessionControlBlock",
     "SessionTable",
-    "lead_reserve",
+    "dynamic_roster_share",
+    "per_agent_cap",
     "split_budget",
 ]

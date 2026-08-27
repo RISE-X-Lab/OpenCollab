@@ -69,7 +69,9 @@ SCHED = object()  # tools only store the scheduler; build_agent never calls it.
 
 
 def test_lead_prompt_gets_topology_aware_team_section():
-    agent = ContextBuilder(_team(), _cfg()).build_agent("lead", scheduler=SCHED, interactive=True)
+    agent = ContextBuilder(_team(), _cfg()).build_agent(
+        "lead", scheduler=SCHED, ask_user_available=True
+    )
     assert "Lead base prompt." in agent.system_prompt
     assert "## Your team" in agent.system_prompt
     assert "- coder" in agent.system_prompt
@@ -83,12 +85,27 @@ def test_role_without_coordination_tools_gets_no_team_section():
     assert "## Your team" not in agent.system_prompt
 
 
-def test_ask_user_dropped_when_non_interactive():
+def test_ask_user_dropped_when_there_is_no_human_to_ask():
     builder = ContextBuilder(_team(), _cfg())
-    headless = builder.build_agent("lead", scheduler=SCHED, interactive=False)
-    interactive = builder.build_agent("lead", scheduler=SCHED, interactive=True)
+    headless = builder.build_agent("lead", scheduler=SCHED, ask_user_available=False)
+    attended = builder.build_agent("lead", scheduler=SCHED, ask_user_available=True)
     assert "ask_user" not in {t.name for t in headless.tools}
-    assert "ask_user" in {t.name for t in interactive.tools}
+    assert "ask_user" in {t.name for t in attended.tools}
+
+
+def test_the_shell_answer_does_not_ride_on_the_ask_user_answer():
+    """A role built without ``ask_user`` may still be given a shell.
+
+    Every teammate of a prebuilt team is exactly that shape, and while the two
+    answers came from one ``interactive`` flag they could not be.
+    """
+    builder = ContextBuilder(_team(), _cfg())
+    peer = builder.build_agent(
+        "coder", scheduler=SCHED, ask_user_available=False, allow_unisolated_shell=True
+    )
+    [bash] = [t for t in peer.tools if t.name == "bash"]
+    assert "ask_user" not in {t.name for t in peer.tools}
+    assert bash.require_process_isolation is False
 
 
 def test_model_override_and_default():

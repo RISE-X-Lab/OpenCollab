@@ -50,9 +50,9 @@ class LifecycleMixin:
         self._sessions[aid] = session
         self._lead_session = session
         self._restore_message_inbox(aid, session.state)
-        # Seed the running allocation with the Lead's reserve so the first child
-        # is granted from the pool minus the Lead's headroom.
-        self._seed_lead_lease()
+        # Book agent 0's own share of the pool so the first child is granted
+        # from what is left after it.
+        self._seed_entry_lease()
         self._write_manifest()
         return aid
 
@@ -63,11 +63,16 @@ class LifecycleMixin:
         scheduler owns the launch lifecycle: build via the factory, apply the
         launch spec (resume or seed), then register. The root-process mirror of
         ``spawn``.
+
+        The budget handed to the factory is what agent 0 may actually spend, not
+        the team total — under a declared roster its ``per_agent_cap``. The
+        session turns that number into the ``[Budget: ...]`` line the model reads
+        every turn, so the two must be the same number.
         """
         session = self._session_factory.create_lead_session(
             scheduler=self,
             launch=launch,
-            budget=self._max_budget_tokens,
+            budget=self._entry_start_budget(),
         )
         session.apply_launch(launch)
         return self.register_lead(session)
@@ -90,12 +95,21 @@ class LifecycleMixin:
         Raises ``PermissionError`` if the team topology forbids ``parent_aid``'s
         role from spawning ``role``; the tool executor turns that into a tool
         result so the parent's run loop continues uninterrupted.
+
+        Raises ``TeamPrebuiltError`` when the scheduler runs a prebuilt team: the
+        roster is then an input to the run, not an outcome of it, so no agent may
+        be added to it. The attempt itself is recorded before the refusal is
+        raised — see ``_refuse_spawn_when_prebuilt``.
         """
         if self._shutting_down:
             raise RuntimeError("Cannot spawn agent: scheduler is shutting down.")
         if self.table.get(parent_aid) is None or parent_aid not in self._sessions:
             raise ValueError(f"Cannot spawn agent: no parent with aid {parent_aid}.")
         role = validate_role_identity(role)
+        # Before the topology check, so one uniform record covers both a request
+        # for a declared role and one for a role this team was never given; the
+        # record carries whether the topology would have allowed the edge.
+        self._refuse_spawn_when_prebuilt(parent_aid, role, task, context)
         self._check_topology(parent_aid, role, verb="spawn")
         aid = self.table.allocate_aid()
         startup_task = asyncio.current_task()
@@ -422,6 +436,10 @@ class LifecycleMixin:
                 if not self._shutting_down:
                     await self._drain_ready_message_inboxes()
                 return
+            # Same changes, second destination: a structured, never-truncated
+            # per-file record. Observational, so it is deliberately outside the
+            # contract above — it may not fail the agent.
+            await self._trace_worktree_changes(aid, scb.agent.name, env)
 
         if self._shutting_down:
             self._finalize_cleanup_failure(aid)

@@ -69,6 +69,139 @@ async def test_team_is_first_class_and_passes_explicit_config(
     assert captured["use_worktrees"] is False
 
 
+async def test_team_defaults_leave_the_experiment_switches_off(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Product behaviour must not move: an SDK team run that says nothing still
+    # seats no roster up front and still hands out no unsandboxed shell.
+    captured = {}
+
+    async def fake_run_team(**kwargs):
+        captured.update(kwargs)
+        return ProgrammaticResult(
+            output="team done",
+            status="completed",
+            reason=None,
+            tokens=1,
+            artifacts=None,
+            metrics={},
+        )
+
+    monkeypatch.setattr(sdk_client, "run_team", fake_run_team)
+    await OpenCollab(tmp_path).team("solve it", use_worktrees=False)
+
+    assert captured["prebuild_team"] is False
+    assert captured["allow_unisolated_shell"] is None
+
+
+async def test_team_forwards_the_two_experiment_switches(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # An unattended experiment needs a declared roster whose agents can run
+    # git. Both halves have to survive the trip from the SDK to build_scheduler.
+    captured = {}
+
+    async def fake_run_team(**kwargs):
+        captured.update(kwargs)
+        return ProgrammaticResult(
+            output="team done",
+            status="completed",
+            reason=None,
+            tokens=1,
+            artifacts=None,
+            metrics={},
+        )
+
+    monkeypatch.setattr(sdk_client, "run_team", fake_run_team)
+    await OpenCollab(tmp_path).team(
+        "solve it",
+        use_worktrees=False,
+        prebuild_team=True,
+        allow_unisolated_shell=True,
+    )
+
+    assert captured["prebuild_team"] is True
+    assert captured["allow_unisolated_shell"] is True
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    (
+        ({"prebuild_team": "yes"}, "prebuild_team"),
+        ({"allow_unisolated_shell": "yes"}, "allow_unisolated_shell"),
+    ),
+)
+async def test_team_rejects_non_boolean_switches_before_delegating(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    kwargs: dict,
+    message: str,
+) -> None:
+    called = False
+
+    async def should_not_run(**_kwargs):
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(sdk_client, "run_team", should_not_run)
+
+    with pytest.raises(ValueError, match=message):
+        await OpenCollab(tmp_path).team("solve it", **kwargs)
+
+    assert not called
+
+
+async def test_shared_team_runtime_forwards_switches_to_build_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # programmatic.run_team is a forwarder; programmatic_team.run_team is what
+    # calls build_scheduler. This pins the whole chain, including the part that
+    # must stay fixed: an SDK run has no human, so interactive stays False even
+    # when the shell is on.
+    captured = {}
+
+    class FakeScheduler:
+        used_tokens = 0
+        table = SimpleNamespace(entries={0: object()})
+        lead_session = SimpleNamespace(
+            phase=SimpleNamespace(value="done"),
+            state=SimpleNamespace(terminal_reason="completed"),
+            step_count=1,
+        )
+
+        async def run(self, _prompt: str) -> str:
+            return "done"
+
+        async def cleanup(self, *, cleanup_timeout: float) -> None:
+            return None
+
+    def fake_build_scheduler(_ctx, **kwargs):
+        captured.update(kwargs)
+        return FakeScheduler()
+
+    monkeypatch.setattr(programmatic, "build_scheduler", fake_build_scheduler)
+    await programmatic.run_team(
+        prompt="solve",
+        config={"model": "model", "provider": "openai", "budget": 50},
+        workspace=str(tmp_path),
+        team_config_path=None,
+        max_tokens=50,
+        timeout=None,
+        artifacts=None,
+        trace=False,
+        use_worktrees=False,
+        prebuild_team=True,
+        allow_unisolated_shell=True,
+    )
+
+    assert captured["interactive"] is False
+    assert captured["prebuild_team"] is True
+    assert captured["allow_unisolated_shell"] is True
+
+
 async def test_team_rejects_invalid_cleanup_timeout_before_delegating(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

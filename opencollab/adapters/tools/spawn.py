@@ -6,7 +6,10 @@ from typing import Any
 
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.ports import SchedulerPort
-from opencollab.application.scheduler_types import DuplicateSpawnError
+from opencollab.application.scheduler_types import (
+    DuplicateSpawnError,
+    TeamPrebuiltError,
+)
 from opencollab.application.self_collaboration import validate_review_iterations
 from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 from opencollab.domain.identity import validate_role_identity
@@ -78,6 +81,12 @@ class SpawnAgentTool(Tool):
                 f"its result will be delivered to you as a tool result, and you "
                 f"can act on it then."
             )
+        except TeamPrebuiltError as exc:
+            # A fixed roster is a fact about the team, not a fault in the call.
+            # The scheduler already wrote the attempt down and phrased the reply
+            # for the model; pass it through unchanged rather than wrapping it in
+            # an error shape that reads as a malfunction.
+            return str(exc)
         # Defer with the child aid so the deferral path can register a pending
         # row keyed by this tool call; the child's result fills it on completion.
         return DeferredCall(ref=aid)

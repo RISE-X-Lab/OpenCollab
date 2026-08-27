@@ -1,0 +1,59 @@
+[importlinter]
+root_package = opencollab
+include_external_packages = True
+exclude_type_checking_imports = True
+
+[importlinter:contract:layers]
+name = Clean architecture: bootstrap > adapters > application > domain
+type = layers
+layers =
+    opencollab.bootstrap
+    opencollab.adapters
+    opencollab.application
+    opencollab.domain
+; TODO(#NNN): CLI reaches into the composition root. Remove these four lines
+; once config/session/workflow entry points are injected instead of imported.
+ignore_imports =
+    opencollab.adapters.cli.config_resolve -> opencollab.bootstrap.config
+    opencollab.adapters.cli.workflow -> opencollab.bootstrap.session_factory
+    opencollab.adapters.cli.workflow -> opencollab.bootstrap.workflow_runtime
+    opencollab.adapters.cli.main -> opencollab.bootstrap
+
+[importlinter:contract:domain-stdlib-only]
+name = Domain depends on the standard library only
+type = forbidden
+source_modules =
+    opencollab.domain
+forbidden_modules =
+    openai
+    anthropic
+    typer
+    rich
+    prompt_toolkit
+    filelock
+    pydantic
+    yaml
+
+[importlinter:contract:public-surface]
+name = Public modules never reach into adapters or domain
+type = forbidden
+source_modules =
+    opencollab.sdk
+    opencollab.tools
+    opencollab.environments
+    opencollab.workflows
+forbidden_modules =
+    opencollab.adapters
+    opencollab.domain
+allow_indirect_imports = True
+
+[importlinter:contract:no-sibling-cycles]
+name = No cycles between siblings
+type = acyclic_siblings
+ancestors =
+    opencollab.application
+    opencollab.adapters
+    opencollab.domain
+; TODO(#NNN): break the workflow/workflow_agents cycle, then delete.
+ignore_imports =
+    opencollab.application.workflow_agents -> opencollab.application.workflow

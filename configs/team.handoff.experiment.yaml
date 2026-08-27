@@ -1,0 +1,66 @@
+# Experimental team: three peers that can hand work to each other over git.
+#
+# NOT a product default and not loaded by any default path. Select it
+# explicitly — `--team-config configs/team.handoff.experiment.yaml`, or
+# OPENCOLLAB_TEAM_FILE — and run it with `prebuild_team=True`, which is what it
+# is built for. The shipped Self-Collaboration team in
+# `opencollab/bootstrap/team_config.py` is untouched by this file.
+#
+# It exists to measure one thing: whether models hand work to each other when
+# they are able to and nothing tells them to. So the prompts in
+# `handoff-experiment/` state what each role *can* do and stop there. Scripting
+# the exchange would mean measuring the script.
+#
+# What makes the handoff possible:
+#
+#   * Every role carries `message_agent`. A prebuilt team refuses `spawn_agent`
+#     for the whole run and the join path never routes a prebuilt peer's result
+#     anywhere, so a message is the only thing that crosses between two agents.
+#     A role with an outgoing edge and no `message_agent` is seated mute — and
+#     `build_scheduler` refuses such a team rather than running it silently.
+#   * Every role carries `bash`, so every role can run `git`: one can commit,
+#     another can check out what was committed. The Analyst carries the working
+#     tools too, and that is deliberate — see below.
+#   * Each agent works in its own git worktree of the one repository. Linked
+#     worktrees share `.git/objects`, so a sha committed in one is reachable
+#     from the others immediately — the sha is the whole payload of a handoff.
+#
+# Why the Analyst can do the work itself:
+#
+# The shipped Analyst reads and delegates and has no tool that edits a file or
+# runs a command. On this team it would have to delegate, and "the model
+# delegated" would then be a fact about this file rather than about the model.
+# The same starvation would make the Analyst weaker than the single agent it is
+# compared against, so a difference between the two arms could be read off the
+# tool bundles alone. Here the Analyst carries the single agent's working tools,
+# so it could finish the task alone, and every message it sends is a choice it
+# did not have to make.
+#
+# The tool bundles are the shipped ones with exactly those changes: the
+# Analyst's `spawn_agent` is replaced by `message_agent` and it gains the
+# working tools (`apply_patch`, `bash`, `run_tests`), `team_status` is added
+# everywhere so an agent can resolve a teammate's aid, and the Tester gains
+# `bash`. No role has `spawn_agent`: on a prebuilt team it can only be refused.
+entry: analyst
+
+roles:
+  analyst:
+    prompt_file: handoff-experiment/analyst.md
+    tools: [apply_patch, ask_user, bash, file_read, grep, message_agent, run_tests, team_status, use_skill]
+
+  coder:
+    prompt_file: handoff-experiment/coder.md
+    tools: [apply_patch, bash, file_read, grep, message_agent, run_tests, team_status]
+
+  tester:
+    prompt_file: handoff-experiment/tester.md
+    tools: [bash, file_read, git_diff, grep, message_agent, run_tests, team_status]
+
+# Six directed edges — every ordered pair. The return edges are the point: a
+# closed star (analyst -> coder, analyst -> tester, and nothing back) is what
+# makes a prebuilt team mute, because a prebuilt peer has no join path to
+# deliver a result on.
+topology:
+  analyst: [coder, tester]
+  coder: [analyst, tester]
+  tester: [analyst, coder]

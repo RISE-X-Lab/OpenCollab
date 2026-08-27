@@ -18,7 +18,7 @@ from opencollab.application._session_run_shared import (
 )
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import CompletionResponse
-from opencollab.application.shaping import forced_shape
+from opencollab.application.shaping import ShaperPipeline, forced_shape
 from opencollab.application.steering import (
     READS_NUDGE_SOFT,
     build_steering_block,
@@ -28,7 +28,7 @@ from opencollab.application.tool_execution import TERMINAL_CAPTURE_SKIP_MESSAGE
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase
-from opencollab.domain.token_estimation import request_tokens_upper_bound
+from opencollab.domain.token_estimation import estimate_request_tokens
 from opencollab.domain.tools import ToolProcessingResult
 
 logger = logging.getLogger(__name__)
@@ -383,7 +383,7 @@ class _SessionRunCompletionMixin:
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
             self.state.messages[-1] = fold_steering(self.state.messages[-1], steering["content"])
-        messages = self.shaper.shape(self.state.messages) if self.shaper is not None else self.state.messages
+        messages = self._shape_and_trace(self.state.messages)
         if steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
@@ -497,7 +497,7 @@ class _SessionRunCompletionMixin:
             DEFAULT_MAX_TOKENS_PER_STEP,
         )
         remaining_budget = int(self.max_budget_tokens) - int(self.state.used_tokens)
-        reserved_input_tokens = request_tokens_upper_bound(messages, tools)
+        reserved_input_tokens = estimate_request_tokens(messages, tools)
         output_budget = remaining_budget - reserved_input_tokens
         if output_budget < 1:
             raise _TokenBudgetStop(
@@ -506,7 +506,7 @@ class _SessionRunCompletionMixin:
             )
         # Precheck guarantees positive headroom before entering this call. Clamp
         # the provider's output ceiling to the live remainder after reserving an
-        # upper bound for request messages and registered tool schemas.
+        # estimate for request messages and registered tool schemas.
         max_output_tokens = min(
             max(1, int(configured_output_tokens)),
             output_budget,
@@ -589,6 +589,41 @@ class _SessionRunCompletionMixin:
         self.clear_pending_step()
         self.state.transition_to(SessionPhase.STOPPED, reason=reason)
 
+    def _shape_and_trace(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Shape the model's view, recording which compaction rung really fired.
+
+        The shapers reshape a COPY (the transcript keeps the full history), so
+        nothing on disk would otherwise say which of the five rungs ran on a
+        given turn. This emits one ``context_shaping`` record per fired rung —
+        and exactly one ``rung="none"`` record when the turn passed through
+        untouched, so a reader can tell "nothing fired" from "nothing was
+        recorded". The rung labels are the shapers' own frozen names, which is
+        what lets a run be compared turn-by-turn against its assigned policy.
+
+        The pipeline stays a pure transform: it only reports, and the sink
+        lives here, where ``tracer``/``aid``/``step_count`` are already at hand.
+        """
+        if self.tracer is None:
+            return self.shaper.shape(messages) if self.shaper is not None else messages
+        # A ShaperPipeline names its own rungs; wrap anything else (a single
+        # shaper, or nothing wired at all) so every turn still reports.
+        pipeline = (
+            self.shaper
+            if isinstance(self.shaper, ShaperPipeline)
+            else ShaperPipeline(() if self.shaper is None else (self.shaper,))
+        )
+        shaped, reports = pipeline.shape_with_report(messages)
+        for report in reports:
+            self.tracer.log_step(
+                step_type="context_shaping",
+                payload={
+                    "seq": self.state.step_count,
+                    "aid": self.state.aid,
+                    **report,
+                },
+            )
+        return shaped
+
     def _maybe_trace_steering(self, level: str | None) -> None:
         """Emit a ``steering_nudge`` trace step on an UPWARD level crossing.
 
@@ -641,6 +676,10 @@ class _SessionRunCompletionMixin:
             input_tokens = getattr(usage, "input_tokens", 0)
             total_tokens = getattr(usage, "total_tokens", input_tokens)
             payload = {
+                # Agent attribution: the same ``aid`` steering_nudge/commit_brake
+                # stamp, so every record in a multi-agent trajectory file joins
+                # on one field.
+                "aid": self.state.aid,
                 "model": self.agent.model,
                 "finish_reason": response.finish_reason,
                 "content": response.content,

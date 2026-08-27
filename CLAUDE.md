@@ -15,10 +15,10 @@ Dependencies point inward only: `adapters → application → domain`.
 - `bootstrap/` — composition root; the only layer that knows concrete types.
 - `sdk/` — versioned integration surface used by external workflow and evaluation packages.
 
-Never add an inward → outward import (enforced by `tests/test_*_boundaries.py`).
+Never add an inward → outward import (enforced by `lint-imports`, see `.importlinter`).
 Need an outer capability inside? Add a port in `application/ports.py`, wire the
-concrete type in `bootstrap/`. When splitting a module, keep its public names
-re-exported.
+concrete type in `bootstrap/`. When splitting a module, judge the split by interface
+width, not line count — see `AGENTS.md`.
 
 ## Commands
 
