@@ -392,6 +392,11 @@ class DefaultSessionFactory:
     call) or an outcome of it (children the model spawns mid-run). It is the
     only thing that separates a teammate from an ad-hoc child here, and it is
     read exclusively by ``_unisolated_shell_allowed``.
+
+    ``allow_unisolated_shell`` answers the shell question directly instead of
+    letting ``interactive`` answer it by implication. ``None`` keeps the old
+    coupling (a human at the run is what licensed an unsandboxed shell), so a
+    caller that does not pass it gets exactly the previous behaviour.
     """
 
     def __init__(
@@ -404,6 +409,7 @@ class DefaultSessionFactory:
         save_dir: str | None = None,
         allow_unisolated_child_tests: bool = False,
         prebuilt_roster: bool = False,
+        allow_unisolated_shell: bool | None = None,
     ):
         self._cfg = cfg
         self._provider_retry_budget = (
@@ -417,6 +423,9 @@ class DefaultSessionFactory:
         self._lead_workspace = lead_workspace
         self._allow_unisolated_child_tests = allow_unisolated_child_tests
         self._prebuilt_roster = bool(prebuilt_roster)
+        self._allow_unisolated_shell = (
+            interactive if allow_unisolated_shell is None else bool(allow_unisolated_shell)
+        )
         # Run folder where every agent's transcript is persisted. When set,
         # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
         self._save_dir = save_dir
@@ -489,8 +498,14 @@ class DefaultSessionFactory:
         both get agent 0's answer. A child a model spawned mid-run is not
         declared anywhere, and keeps the hardened default — it must be handed an
         OS-sandboxed environment before it can run a command.
+
+        The left half is ``allow_unisolated_shell``, which defaults to
+        ``interactive`` and so reproduces the old rule unless a caller states
+        otherwise. An unattended run that states it — a batch experiment whose
+        agents must be able to run ``git`` — gets the shell without also
+        acquiring a human it could put a question to.
         """
-        return self._interactive and seated_at_start
+        return self._allow_unisolated_shell and seated_at_start
 
     def _fresh_context_builder(self) -> ContextBuilder:
         """Snapshot bounded workspace context at the new session's start."""

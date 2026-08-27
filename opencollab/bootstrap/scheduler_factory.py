@@ -111,6 +111,7 @@ def build_scheduler(
     save_dir: str | os.PathLike[str] | None = None,
     allow_unisolated_child_tests: bool = False,
     prebuild_team: bool = False,
+    allow_unisolated_shell: bool | None = None,
 ) -> Scheduler:
     """Build the Scheduler and let it create agent 0 (the init process).
 
@@ -132,6 +133,26 @@ def build_scheduler(
     refused thereafter, so the roster is an input to the run rather than
     something the model decides mid-run. Off by default; the scheduler behaves
     exactly as before while it is off.
+
+    ``interactive`` and ``allow_unisolated_shell`` are two different facts about
+    a run, and only one of them is about a human:
+
+    * ``interactive`` — is there a person at this run to put a question to? It
+      is what gives the entry role ``ask_user``, and nothing else here.
+    * ``allow_unisolated_shell`` — may an agent seated at the start execute
+      commands the OS does not sandbox? A worktree is not a sandbox, so this is
+      what decides whether a seated agent's ``bash`` runs a command or refuses
+      it.
+
+    They coincided while the only run with a shell was a run with a human
+    watching it, which is why one boolean used to answer both. An unattended
+    batch run pulls them apart: its agents must be able to run ``git`` in their
+    worktrees, and there is nobody for them to ask anything. Passing
+    ``allow_unisolated_shell=True`` with ``interactive=False`` is exactly that
+    run, and it is not expressible with one flag.
+
+    ``None`` — the default — means "whatever ``interactive`` says", so every
+    existing call site keeps its current behaviour without being touched.
     """
     if session_file is not None and not Path(session_file).is_file():
         raise ValueError(f"session file does not exist: {session_file}")
@@ -194,6 +215,7 @@ def build_scheduler(
         # first model call, so the factory gives them agent 0's shell instead of
         # the hardened default it gives a child a model spawned mid-run.
         prebuilt_roster=prebuild_team,
+        allow_unisolated_shell=allow_unisolated_shell,
     )
     worktree_pool = WorktreePool(ctx.workspace, use_worktrees=use_worktrees)
 
