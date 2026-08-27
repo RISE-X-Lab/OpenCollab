@@ -18,12 +18,17 @@ from opencollab.domain.agent import Agent
 from opencollab.domain.session import SessionState
 
 
-def lead_reserve(total: int) -> int:
-    """Headroom the Lead (agent 0) keeps when children are spawned.
+def dynamic_roster_share(total: int) -> int:
+    """One agent's share of the pool when the roster is discovered at runtime.
 
-    This is the pool the parent retains for its own coordination turns; it is
-    the seed value of the scheduler's running ``_allocated_tokens`` so the very
-    first child is granted from ``total - lead_reserve(total)``.
+    On the dynamic-roster path the team is whatever the model spawns, so the
+    number of agents is unknown while the run is still deciding it. With no N to
+    divide by, each agent — agent 0 included — books a fixed quarter of the
+    pool, floored at 10k. That quarter is also where this path's ceiling of four
+    concurrent agents comes from: after the fourth booking the pool is gone.
+
+    When the team config declares the roster up front, N is known before the
+    first model call and ``per_agent_cap`` divides by it instead.
     """
     return min(total, max(10_000, total // 4))
 
@@ -32,17 +37,20 @@ def split_budget(total: int, allocated: int) -> int:
     """How many tokens a spawned agent gets, given the budget already handed out.
 
     ``allocated`` is the sum of budget already reserved against the global pool
-    (the Lead reserve plus every live child's granted cap). A live child receives
-    at most one lead-sized share, clamped to the unallocated remainder. This
-    preserves three-way fan-out under the default quarter-share policy while the
-    running sum remains bounded by ``total``. Once the pool is exhausted, the
-    grant is zero.
+    (every live agent's granted cap, agent 0's included). A live agent receives
+    at most one ``dynamic_roster_share``, clamped to the unallocated remainder,
+    so the running sum stays bounded by ``total``. Once the pool is exhausted,
+    the grant is zero.
+
+    Reserve-at-allocation, and therefore the dynamic-roster path only: the grant
+    is taken out of the pool when the agent is created, whether or not the agent
+    ever spends it. ``per_agent_cap`` is the declared-roster alternative.
 
     Kept pure: all running-total bookkeeping (add on spawn, reclaim on terminal)
     lives in the application-layer scheduler.
     """
     remaining = max(0, total - allocated)
-    return min(lead_reserve(total), remaining)
+    return min(dynamic_roster_share(total), remaining)
 
 
 @dataclass(frozen=True)
@@ -126,6 +134,6 @@ __all__ = [
     "ReviewVerdict",
     "SessionControlBlock",
     "SessionTable",
-    "lead_reserve",
+    "dynamic_roster_share",
     "split_budget",
 ]

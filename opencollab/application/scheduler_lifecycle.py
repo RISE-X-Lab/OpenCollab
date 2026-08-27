@@ -50,9 +50,9 @@ class LifecycleMixin:
         self._sessions[aid] = session
         self._lead_session = session
         self._restore_message_inbox(aid, session.state)
-        # Seed the running allocation with the Lead's reserve so the first child
-        # is granted from the pool minus the Lead's headroom.
-        self._seed_lead_lease()
+        # Book agent 0's own share of the pool so the first child is granted
+        # from what is left after it.
+        self._seed_entry_lease()
         self._write_manifest()
         return aid
 

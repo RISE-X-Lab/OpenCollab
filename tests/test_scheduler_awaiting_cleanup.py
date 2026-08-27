@@ -39,7 +39,7 @@ def test_scheduler_run_cancellation_tears_down_owned_team_before_propagating():
         assert scheduler._shutting_down is True
         assert scheduler._tasks == {}
         assert scheduler.table.get(0).state.phase is SessionPhase.STOPPED
-        assert scheduler._lead_lease is None
+        assert 0 not in scheduler._turn_lease
 
     run(scenario())
 
@@ -78,7 +78,7 @@ def test_cleanup_marks_interrupted_lead_message_as_technical_failure():
 
     run(scenario())
     assert scheduler._tasks == {}
-    assert scheduler._lead_lease is None
+    assert 0 not in scheduler._turn_lease
     assert scheduler.table.get(0).state.phase is SessionPhase.STOPPED
     assert lead.state.messages == []
     assert lead.state.message_timestamps == []
@@ -224,26 +224,26 @@ def test_cleanup_finalizes_driver_cancelled_before_first_timeslice():
 
     async def scenario():
         aid = await scheduler.spawn(0, "coder", "cancel immediately")
-        assert aid in scheduler._child_lease
+        assert aid in scheduler._turn_lease
         await scheduler.cleanup()
         return aid
 
     aid = run(scenario())
 
     assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
-    assert aid not in scheduler._child_lease
+    assert aid not in scheduler._turn_lease
     assert scheduler.inflight_spawn("coder", "cancel immediately") is None
     assert aid not in scheduler._spawn_origin
 
-def test_cleanup_releases_seeded_lead_lease_without_an_active_turn():
+def test_cleanup_releases_the_seeded_entry_lease_without_an_active_turn():
     lead = ScriptedSession("lead", [])
     scheduler, _ = build_scheduler(lead, [])
-    assert scheduler._lead_lease is not None
+    assert 0 in scheduler._turn_lease
     assert scheduler.allocated_tokens > 0
 
     run(scheduler.cleanup(cleanup_timeout=0.01))
 
-    assert scheduler._lead_lease is None
+    assert 0 not in scheduler._turn_lease
     assert scheduler.allocated_tokens == 0
 
 def test_cleanup_is_bounded_when_session_ignores_both_cancellations():
@@ -328,7 +328,7 @@ def test_cleanup_is_bounded_when_session_ignores_both_cancellations():
         assert row.error and "scheduler cleanup" in row.error
         assert scheduler.table.get(aid).state.phase is SessionPhase.STOPPED
         assert scheduler.table.get(aid).result.startswith("Error: scheduler cleanup")
-        assert aid not in scheduler._child_lease
+        assert aid not in scheduler._turn_lease
         assert scheduler.inflight_spawn("coder", "ignore cancellation") is None
         assert scheduler._tasks == {}
 

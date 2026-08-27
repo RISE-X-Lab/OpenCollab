@@ -59,7 +59,7 @@ def test_cleanup_rejects_invalid_timeout_before_any_side_effect(invalid_timeout)
         assert scheduler._shutting_down is False
         assert scheduler._tasks[aid] is driver
         assert driver.done() is False
-        assert aid in scheduler._child_lease
+        assert aid in scheduler._turn_lease
         assert pool.release_calls == 0
 
         release.set()

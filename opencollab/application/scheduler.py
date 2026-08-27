@@ -181,14 +181,12 @@ class Scheduler(
         # reserved at spawn and freed when the child reaches a terminal phase.
         self._inflight: dict[str, int] = {}
         self._inflight_key_of: dict[int, str] = {}
-        # Per-active-turn token leases. A lease records the session's token count
-        # when the grant was made, so consumed tokens replace reserved headroom
-        # instead of being counted twice. Releasing a terminal turn returns only
-        # its *unspent* grant; tokens already consumed remain in ``used_tokens``.
-        # The Lead lease is separate because several arithmetic tests seed it
-        # without registering a real aid=0 session.
-        self._lead_lease: tuple[int, int] | None = None
-        self._child_lease: dict[int, int] = {}
+        # Per-active-turn token leases — one table for every agent, agent 0
+        # included. A lease records the session's token count when the grant was
+        # made, so consumed tokens replace reserved headroom instead of being
+        # counted twice. Releasing a terminal turn returns only its *unspent*
+        # grant; tokens already consumed remain in ``used_tokens``.
+        self._turn_lease: dict[int, int] = {}
         self._lease_baseline: dict[int, int] = {}
         # aid -> queued teammate messages waiting to be appended as user
         # messages once that session is not running or suspended on pending work.

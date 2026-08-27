@@ -16,7 +16,7 @@ from opencollab.application import scheduler as scheduler_mod
 from opencollab.application.event_bus import EventBus
 from opencollab.application.tool_execution import DeferredCall, ToolRuntime
 from opencollab.bootstrap.container import SpawnConfig, build_spawn_session, build_workspace_safety_policy
-from opencollab.domain.scheduler import lead_reserve, split_budget
+from opencollab.domain.scheduler import dynamic_roster_share, split_budget
 
 
 def run(coro):
@@ -44,14 +44,14 @@ class FakeScheduler:
 # lead-sized share, clamped to the unallocated remainder.
 
 def test_lead_reserve_is_a_quarter_with_10k_floor():
-    assert lead_reserve(400_000) == 100_000  # total // 4
-    assert lead_reserve(30_000) == 10_000  # max(10_000, 7_500)
+    assert dynamic_roster_share(400_000) == 100_000  # total // 4
+    assert dynamic_roster_share(30_000) == 10_000  # max(10_000, 7_500)
 
 
 def test_split_budget_first_child_grant_is_one_fair_share():
-    # Fresh team: allocated seeded with lead_reserve(400_000) = 100_000.
+    # Fresh team: allocated seeded with dynamic_roster_share(400_000) = 100_000.
     # First child grant = one quarter, leaving room for two parallel siblings.
-    allocated = lead_reserve(400_000)
+    allocated = dynamic_roster_share(400_000)
     assert split_budget(total=400_000, allocated=allocated) == 100_000
 
 
@@ -59,7 +59,7 @@ def test_split_budget_grants_never_oversubscribe_global_pool():
     # Three live children consume the remaining three quarter-shares. A fourth
     # is rejected until one reservation is reclaimed.
     total = 400_000
-    allocated = lead_reserve(total)  # 100_000
+    allocated = dynamic_roster_share(total)  # 100_000
     grant_1 = split_budget(total=total, allocated=allocated)
     allocated += grant_1
     grant_2 = split_budget(total=total, allocated=allocated)

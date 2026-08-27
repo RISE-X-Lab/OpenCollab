@@ -254,7 +254,7 @@ async def test_a_team_the_budget_cannot_seat_fails_at_startup_and_rolls_back(tmp
         # behind, and no budget stays reserved for an agent that never existed.
         assert sorted(scheduler._sessions) == [0]
         assert sorted(scheduler.table.entries) == [0]
-        assert scheduler._child_lease == {}
+        assert sorted(scheduler._turn_lease) == [0]
     finally:
         tracer.close()
         await scheduler.cleanup()

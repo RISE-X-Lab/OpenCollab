@@ -8,7 +8,7 @@ from typing import Callable
 
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.events import SchedulerEventFactory
-from opencollab.domain.scheduler import lead_reserve, split_budget
+from opencollab.domain.scheduler import dynamic_roster_share, split_budget
 
 logger = logging.getLogger(__name__)
 
@@ -110,16 +110,17 @@ class SchedulerPersistenceMixin:
         """
         return self.used_tokens >= self._max_budget_tokens
 
-    def _seed_lead_lease(self) -> None:
-        """Seed the running allocation with the Lead's reserve (idempotent).
+    def _seed_entry_lease(self) -> None:
+        """Book agent 0's own share of the pool when it registers (idempotent).
 
-        Called when agent 0 is registered. The Lead keeps the full pool as its
-        own cap (it is the parent), but for the purpose of dividing the pool
-        among children it reserves only ``lead_reserve(total)``. Each live child
-        receives at most one equal share from the remaining pool.
+        Reserve-at-allocation divides the pool as agents appear, so agent 0 has
+        to book its share before any child books one — otherwise the children
+        would divide a pool nobody had left room in. It books exactly what a
+        child books, ``dynamic_roster_share(total)``, and into the same lease
+        table: agent 0 has no account of its own.
         """
-        used = self._session_used_tokens(0)
-        self._lead_lease = (lead_reserve(self._max_budget_tokens), used)
+        self._turn_lease[0] = dynamic_roster_share(self._max_budget_tokens)
+        self._lease_baseline[0] = self._session_used_tokens(0)
 
     def _session_used_tokens(self, aid: int) -> int:
         scb = self.table.get(aid)
@@ -132,14 +133,17 @@ class SchedulerPersistenceMixin:
         used = self._session_used_tokens(aid)
         return max(0, grant - max(0, used - baseline))
 
+    def _is_entry_session(self, aid: int) -> bool:
+        """True when ``aid`` names the registered agent 0 (the entry session)."""
+        return (
+            aid == 0
+            and self._lead_session is not None
+            and self._sessions.get(0) is self._lead_session
+        )
+
     def _budget_committed(self) -> int:
         committed = max(0, self.used_tokens)
-        if self._lead_lease is not None:
-            grant, baseline = self._lead_lease
-            has_registered_lead = self._lead_session is not None and self._sessions.get(0) is self._lead_session
-            lead_used = self._session_used_tokens(0) if has_registered_lead else baseline
-            committed += max(0, grant - max(0, lead_used - baseline))
-        for aid, grant in self._child_lease.items():
+        for aid, grant in self._turn_lease.items():
             committed += self._lease_remaining(aid, grant, self._lease_baseline.get(aid, 0))
         return committed
 
@@ -151,7 +155,7 @@ class SchedulerPersistenceMixin:
         Returns the granted cap.
         """
         grant = split_budget(self._max_budget_tokens, self._budget_committed())
-        self._child_lease[aid] = grant
+        self._turn_lease[aid] = grant
         self._lease_baseline[aid] = self._session_used_tokens(aid)
         return grant
 
@@ -159,12 +163,9 @@ class SchedulerPersistenceMixin:
         """Lease every currently available token to a resuming session turn."""
         self._release_turn_lease(aid)
         grant = max(0, self._max_budget_tokens - self._budget_committed())
-        session = self._sessions.get(aid)
         baseline = self._session_used_tokens(aid)
-        if aid == 0 and self._lead_session is not None and session is self._lead_session:
-            self._lead_lease = (grant, baseline) if grant > 0 else None
-        elif grant > 0:
-            self._child_lease[aid] = grant
+        if grant > 0:
+            self._turn_lease[aid] = grant
             self._lease_baseline[aid] = baseline
         self._set_session_budget_limit(aid, baseline + grant)
         return grant
@@ -184,27 +185,28 @@ class SchedulerPersistenceMixin:
         session = self._sessions.get(aid)
         if session is None:
             return False
-        if aid == 0 and self._lead_session is not None and session is self._lead_session:
+        if self._is_entry_session(aid):
             grant = self._reserve_turn_lease(aid)
-        elif aid in self._child_lease:
+        elif aid in self._turn_lease:
             return True
         else:
             grant = self._reserve_child_budget(aid)
             baseline = self._session_used_tokens(aid)
             self._set_session_budget_limit(aid, baseline + grant)
             if grant <= 0:
-                self._release_child_budget(aid)
+                self._release_turn_lease(aid)
         # When spend already reached the ceiling, run one zero-budget precheck so
         # the queued turn reaches an explicit budget terminal instead of leaving
         # a durable inbox entry that can never become runnable.
         return grant > 0 or self.budget_exhausted
 
     def _release_turn_lease(self, aid: int) -> tuple[int, int] | None:
-        if aid == 0 and self._lead_session is not None and self._sessions.get(0) is self._lead_session:
-            lease = self._lead_lease
-            self._lead_lease = None
-            return lease
-        grant = self._child_lease.pop(aid, None)
+        """Reclaim ``aid``'s reservation so a later turn can reuse the headroom.
+
+        Idempotent, and the same for every agent: agent 0 is released out of the
+        one lease table like any other.
+        """
+        grant = self._turn_lease.pop(aid, None)
         baseline = self._lease_baseline.pop(aid, None)
         if grant is None:
             return None
@@ -212,9 +214,7 @@ class SchedulerPersistenceMixin:
 
     def _current_turn_lease(self, aid: int) -> tuple[int, int] | None:
         """Snapshot ``aid``'s lease without mutating the shared allocation."""
-        if aid == 0 and self._lead_session is not None and self._sessions.get(0) is self._lead_session:
-            return self._lead_lease
-        grant = self._child_lease.get(aid)
+        grant = self._turn_lease.get(aid)
         if grant is None:
             return None
         return grant, self._lease_baseline.get(aid, 0)
@@ -223,24 +223,12 @@ class SchedulerPersistenceMixin:
         if lease is None:
             return
         old_grant, old_baseline = lease
-        session = self._sessions.get(aid)
         used = self._session_used_tokens(aid)
         old_remaining = max(0, old_grant - max(0, used - old_baseline))
         available = max(0, self._max_budget_tokens - self._budget_committed())
         grant = min(old_remaining, available)
         baseline = used
-        if aid == 0 and self._lead_session is not None and session is self._lead_session:
-            self._lead_lease = (grant, baseline) if grant > 0 else None
-        elif grant > 0:
-            self._child_lease[aid] = grant
+        if grant > 0:
+            self._turn_lease[aid] = grant
             self._lease_baseline[aid] = baseline
         self._set_session_budget_limit(aid, baseline + grant)
-
-    def _release_child_budget(self, aid: int) -> None:
-        """Reclaim a terminal child's reservation so later spawns can reuse it.
-
-        Idempotent: a child is finalized at most once per reservation.
-        """
-        grant = self._child_lease.pop(aid, None)
-        if grant is not None:
-            self._lease_baseline.pop(aid, None)
