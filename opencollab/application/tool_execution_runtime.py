@@ -537,6 +537,10 @@ class ToolExecutionRuntimeMixin:
             else tool_output[:2048] + "\n...[truncated]...\n" + tool_output[-2048:]
         )
         payload = {
+            # Agent attribution: the same ``aid`` the tool runtime and
+            # steering_nudge carry, so a tool_exec record can be traced back to
+            # the agent that ran it.
+            "aid": self.state.aid,
             "tool": tool_name,
             "args": args,
             "result_len": len(tool_output),

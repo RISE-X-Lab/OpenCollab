@@ -500,6 +500,7 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
     assert tracer.steps[0] == {
         "step_type": "llm_call",
         "payload": {
+                "aid": -1,
                 "model": "fake-model",
                 "thinking": False,
                 "reasoning_effort_policy": "configured",

@@ -641,6 +641,10 @@ class _SessionRunCompletionMixin:
             input_tokens = getattr(usage, "input_tokens", 0)
             total_tokens = getattr(usage, "total_tokens", input_tokens)
             payload = {
+                # Agent attribution: the same ``aid`` steering_nudge/commit_brake
+                # stamp, so every record in a multi-agent trajectory file joins
+                # on one field.
+                "aid": self.state.aid,
                 "model": self.agent.model,
                 "finish_reason": response.finish_reason,
                 "content": response.content,
