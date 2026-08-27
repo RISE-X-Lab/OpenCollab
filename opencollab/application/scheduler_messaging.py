@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 import xml.etree.ElementTree as ET
 from typing import Any
@@ -31,6 +32,7 @@ from opencollab.application._scheduler_constants import (
     MAX_TEAMMATE_INBOX_BYTES,
     MAX_TEAMMATE_INBOX_MESSAGES,
     MAX_TEAMMATE_MESSAGE_BYTES,
+    MESSAGE_TRACE_COMMIT_REFS,
     MESSAGE_TRACE_SUMMARY_CHARS,
 )
 from opencollab.application.scheduler_types import QueuedTeammateMessage
@@ -38,6 +40,36 @@ from opencollab.domain.identity import role_collision_key
 from opencollab.domain.session import SessionPhase
 
 logger = logging.getLogger(__name__)
+
+# A whole lowercase-hex word of git object-id length. Git accepts an
+# abbreviation from seven characters up, and a full object id is forty, so this
+# is every shape a sha can be written in and nothing longer — a sha256 content
+# digest is sixty-four and does not match.
+_COMMIT_REF_RE = re.compile(r"(?<![0-9A-Za-z])[0-9a-f]{7,40}(?![0-9A-Za-z])")
+
+
+def _commit_refs(*parts: str) -> list[str]:
+    """Every distinct git-object-shaped token in a message, in order.
+
+    Candidates, not confirmed commits: any lowercase-hex word of the right
+    length matches, and the record says so by carrying them next to nothing
+    that claims otherwise. They earn their meaning by being joined against
+    ``worktree_changes.commits``, which lists the shas an agent actually made —
+    a token that matches one of those was a commit, and one that matches none
+    was a hex word.
+
+    This exists because the sha *is* the payload of a git handoff: the teams
+    that hand work over do it by committing and sending the id, so a record of
+    the message that keeps its size and drops its object ids cannot answer
+    whether the work crossed that edge. Both worktrees of a repository can see
+    each other's commits (``git worktree list`` names them), so a tester holding
+    its teammate's sha is not by itself evidence that the teammate sent it.
+    """
+    seen: dict[str, None] = {}
+    for part in parts:
+        for match in _COMMIT_REF_RE.finditer(part or ""):
+            seen.setdefault(match.group(0), None)
+    return list(seen)
 
 
 class MessagingMixin:
@@ -240,6 +272,14 @@ class MessagingMixin:
         and is ``None`` when there is no agent behind it. Two aids and two roles
         are what let a row be attributed to a declared topology edge.
 
+        ``commit_refs`` is the one thing taken from the message body itself:
+        the git-object-shaped tokens in it, listed rather than summarized. The
+        body is not stored — it is already in the recipient's transcript, and a
+        second prose copy in a file meant for counting would only be a copy that
+        can disagree. What could not be recovered from anywhere countable is the
+        payload of a git handoff, which is a commit id and nothing else, so that
+        is what the row keeps. ``commit_refs_found`` is the untruncated count.
+
         Sizes are recorded twice over, because the two are limited separately:
         ``content_bytes`` is the payload the model wrote, and ``message_bytes``
         is the XML envelope actually measured against
@@ -256,6 +296,7 @@ class MessagingMixin:
             return
         try:
             inbox = self._message_inbox.get(to_aid, [])
+            refs = _commit_refs(summary, content)
             payload: dict[str, Any] = {"reason": reason} if reason is not None else {}
             payload.update(
                 {
@@ -267,6 +308,8 @@ class MessagingMixin:
                     "summary_chars": len(summary or ""),
                     "content_chars": len(content or ""),
                     "content_bytes": self._encoded_size(content or ""),
+                    "commit_refs": refs[:MESSAGE_TRACE_COMMIT_REFS],
+                    "commit_refs_found": len(refs),
                     "message_bytes": message_bytes,
                     "message_id": message_id,
                     "inbox_messages": (

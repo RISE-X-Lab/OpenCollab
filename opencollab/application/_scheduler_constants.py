@@ -22,3 +22,8 @@ SPAWN_REFUSAL_TASK_CHARS = 1000
 # ``message_refused`` / ``message_sent`` record keeps. The full length is
 # recorded beside it, so a truncated record still measures as long.
 MESSAGE_TRACE_SUMMARY_CHARS = 240
+
+# How many git-object-shaped tokens a ``message_refused`` / ``message_sent``
+# record lists out of one message. The true count is recorded beside the list,
+# so a message that names more of them still measures as naming more.
+MESSAGE_TRACE_COMMIT_REFS = 16

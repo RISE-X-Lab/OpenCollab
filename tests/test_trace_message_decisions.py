@@ -37,6 +37,7 @@ from opencollab.application._scheduler_constants import (
     MAX_TEAMMATE_INBOX_BYTES,
     MAX_TEAMMATE_INBOX_MESSAGES,
     MAX_TEAMMATE_MESSAGE_BYTES,
+    MESSAGE_TRACE_COMMIT_REFS,
     MESSAGE_TRACE_SUMMARY_CHARS,
 )
 from opencollab.application.event_bus import EventBus
@@ -144,6 +145,10 @@ def test_a_message_the_topology_forbids_is_recorded_in_full(tracer):
             "summary_chars": 13,
             "content_chars": 18,
             "content_bytes": 18,
+            # Nothing in this message is shaped like a git object id, and the
+            # count says so rather than the list being merely empty.
+            "commit_refs": [],
+            "commit_refs_found": 0,
             # No envelope is built on this branch, and a zero would read as an
             # empty message rather than as "not measured here".
             "message_bytes": None,
@@ -341,3 +346,79 @@ def test_no_tracer_means_no_records_and_no_failure(tmp_path):
     assert run(scheduler.send_message(0, 0, "s", "c")) == (
         "Error: an agent cannot message itself."
     )
+
+
+def test_the_git_object_ids_a_message_carries_are_listed(tracer):
+    """The payload of a git handoff is a sha, and a size cannot stand in for it.
+
+    A team that hands work over commits and sends the id. Two worktrees of one
+    repository can already see each other's commits (``git worktree list`` names
+    them), so a tester standing on its teammate's commit is not by itself
+    evidence that the teammate sent it there. What settles that is whether the
+    id crossed the edge, which is a fact about this message.
+    """
+    scheduler, _ = _scheduler(tracer)
+    sha = "8f14e45fceea167a5a36dedd4bea2543b7dbabcd"  # pragma: allowlist secret
+
+    async def scenario():
+        _hold_target_busy(scheduler, 1)
+        return await scheduler.send_message(
+            0,
+            1,
+            "handoff",
+            f"Fixed it and committed as {sha}. Short form is {sha[:9]}.",
+        )
+
+    assert run(scenario()) == "Message queued to aid 1."
+    tracer.flush()
+
+    payload = _payloads(tracer.path, "message_sent")[0]
+    # Both writings of the same commit, deduplicated and in the order written.
+    assert payload["commit_refs"] == [sha, sha[:9]]
+    assert payload["commit_refs_found"] == 2
+    # The body itself is not copied here: it is already in the recipient's
+    # transcript, and a trajectory file is for counting.
+    assert "content" not in payload
+
+
+def test_a_refused_handoff_records_the_id_it_was_carrying(tracer):
+    """A refusal is the observation; dropping its payload would empty it."""
+    closed = Topology(edges={"lead": frozenset(), "coder": frozenset()})
+    scheduler, _ = _scheduler(tracer, topology=closed)
+    sha = "0123456789abcdef0123456789abcdef01234567"  # pragma: allowlist secret
+
+    run(scheduler.send_message(0, 1, "handoff", f"check out {sha}"))
+    tracer.flush()
+
+    payload = _payloads(tracer.path, "message_refused")[0]
+    assert payload["reason"] == "topology_forbidden"
+    assert payload["commit_refs"] == [sha]
+
+
+def test_hex_that_is_not_object_shaped_is_not_listed(tracer):
+    """A candidate list is only useful if it does not accept everything."""
+    scheduler, _ = _scheduler(tracer)
+    content = (
+        "colour #ff00cc, six chars abc123, sha256 "
+        + "a" * 64
+        + ", capitalised DEADBEEF12, glued xdeadbeef1x"
+    )
+
+    run(scheduler.send_message(0, 0, "s", content))
+    tracer.flush()
+
+    payload = _payloads(tracer.path, "message_refused")[0]
+    assert payload["commit_refs"] == []
+    assert payload["commit_refs_found"] == 0
+
+
+def test_more_object_ids_than_are_listed_still_measure_as_more(tracer):
+    scheduler, _ = _scheduler(tracer)
+    refs = [f"{index:040x}" for index in range(1, MESSAGE_TRACE_COMMIT_REFS + 5)]
+
+    run(scheduler.send_message(0, 0, "s", " ".join(refs)))
+    tracer.flush()
+
+    payload = _payloads(tracer.path, "message_refused")[0]
+    assert payload["commit_refs"] == refs[:MESSAGE_TRACE_COMMIT_REFS]
+    assert payload["commit_refs_found"] == len(refs)
