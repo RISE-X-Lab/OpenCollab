@@ -422,6 +422,10 @@ class LifecycleMixin:
                 if not self._shutting_down:
                     await self._drain_ready_message_inboxes()
                 return
+            # Same changes, second destination: a structured, never-truncated
+            # per-file record. Observational, so it is deliberately outside the
+            # contract above — it may not fail the agent.
+            await self._trace_worktree_changes(aid, scb.agent.name, env)
 
         if self._shutting_down:
             self._finalize_cleanup_failure(aid)
