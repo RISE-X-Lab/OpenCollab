@@ -144,6 +144,27 @@ def test_every_seat_gets_the_same_cap_agent_zero_included():
     run(scenario())
 
 
+def test_agent_zero_no_longer_leases_the_whole_pool_for_a_turn():
+    """The privilege itself, and where it survives.
+
+    On the dynamic-roster path agent 0's turn is leased every unreserved token
+    while a teammate is held to one share — there is no N, so there is no cap to
+    hold agent 0 to either. Under a declared roster both take the same lease.
+    """
+
+    async def scenario():
+        declared, _ = _scheduler(prebuild_team=True)
+        await declared.ensure_team_prebuilt()
+        assert declared._entry_agent_takes_the_pool(0) is False
+        assert declared._reserve_turn_lease(0) == CAP < TOTAL
+
+        dynamic, _ = _scheduler(prebuild_team=False)
+        assert dynamic._entry_agent_takes_the_pool(0) is True
+        assert dynamic._reserve_turn_lease(0) == TOTAL
+
+    run(scenario())
+
+
 def test_agent_zero_is_told_the_budget_it_can_actually_spend():
     """The number in the prompt is the number the scheduler will enforce.
 
