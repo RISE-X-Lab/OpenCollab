@@ -67,9 +67,9 @@ def test_stateless_tools_resolve_without_any_dependency():
     assert {t.name for t in tools} == {"bash", "file_read"}
 
 
-def test_headless_registry_restricts_command_tools():
+def test_a_registry_denied_an_unisolated_shell_restricts_command_tools():
     bash, run_tests = build_tools_for_role(
-        ["bash", "run_tests"], interactive=False
+        ["bash", "run_tests"], allow_unisolated_shell=False
     )
 
     assert bash.require_process_isolation is True
@@ -78,10 +78,10 @@ def test_headless_registry_restricts_command_tools():
     assert run_tests.allow_extra_args is False
 
 
-def test_headless_registry_can_explicitly_allow_only_unisolated_tests():
+def test_a_denied_shell_can_explicitly_allow_only_unisolated_tests():
     bash, run_tests = build_tools_for_role(
         ["bash", "run_tests"],
-        interactive=False,
+        allow_unisolated_shell=False,
         allow_unisolated_tests=True,
     )
 
@@ -91,12 +91,36 @@ def test_headless_registry_can_explicitly_allow_only_unisolated_tests():
     assert run_tests.allow_extra_args is False
 
 
-def test_interactive_registry_keeps_user_command_controls():
+def test_an_allowed_unisolated_shell_keeps_user_command_controls():
     bash, run_tests = build_tools_for_role(
-        ["bash", "run_tests"], interactive=True
+        ["bash", "run_tests"], allow_unisolated_shell=True
     )
 
     assert bash.require_process_isolation is False
     assert run_tests.require_process_isolation is False
     assert run_tests.allow_runner_override is True
     assert run_tests.allow_extra_args is True
+
+
+def test_the_shell_decision_is_independent_of_the_ask_user_decision():
+    """The split itself: neither input may move the other's answer.
+
+    These were one ``interactive`` flag, and that is what left a prebuilt
+    team's peers without a shell — they are non-entry roles, so they were built
+    with ``ask_user`` off, and the same flag then took ``bash`` away.
+    """
+    tools = build_tools_for_role(
+        ["ask_user", "bash"],
+        ask_user_available=False,
+        allow_unisolated_shell=True,
+    )
+    assert [t.name for t in tools] == ["bash"]
+    assert tools[0].require_process_isolation is False
+
+    ask_user, bash = build_tools_for_role(
+        ["ask_user", "bash"],
+        ask_user_available=True,
+        allow_unisolated_shell=False,
+    )
+    assert (ask_user.name, bash.name) == ("ask_user", "bash")
+    assert bash.require_process_isolation is True

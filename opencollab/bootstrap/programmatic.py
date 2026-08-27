@@ -105,7 +105,9 @@ def resolve_tools(value: str | Sequence[Any] | None) -> tuple[Any, ...]:
             raise ValueError(
                 f"unknown tool preset {value!r}; choose from {sorted(_TOOL_PRESETS)}"
             ) from exc
-        return tuple(build_tools_for_role(list(names), interactive=True))
+        # No preset contains ``ask_user``; what the old ``interactive=True``
+        # bought here was the unsandboxed shell, so that is what is asked for.
+        return tuple(build_tools_for_role(list(names), allow_unisolated_shell=True))
     if not isinstance(value, Sequence):
         raise TypeError("tools must be a preset name or a sequence")
     return tuple(value)
