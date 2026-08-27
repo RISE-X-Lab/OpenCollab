@@ -228,13 +228,31 @@ class OpenCollab:
         artifacts: str | os.PathLike[str] | None = None,
         trace: bool = True,
         use_worktrees: bool = True,
+        prebuild_team: bool = False,
+        allow_unisolated_shell: bool | None = None,
     ) -> RunResult[str]:
-        """Run one scheduler-controlled team turn."""
+        """Run one scheduler-controlled team turn.
+
+        ``prebuild_team`` seats every role the team config declares before the
+        first model call and refuses ``spawn_agent`` thereafter, so the roster
+        is an input to the run instead of something the model decides mid-run.
+
+        ``allow_unisolated_shell`` says whether an agent seated at the start may
+        execute commands the OS does not sandbox. It is *not* the same question
+        as "is a human present": an SDK run never has one, so no agent here is
+        ever given ``ask_user``, but an unattended experiment may still need its
+        agents to run ``git`` in their worktrees. ``None`` leaves the shell
+        answer where it has always been for an SDK run — off.
+        """
         _non_empty(prompt, "prompt")
         if self._environment is not None:
             raise ValueError("team runs do not accept a custom environment")
         if not isinstance(trace, bool) or not isinstance(use_worktrees, bool):
             raise ValueError("trace and use_worktrees must be booleans")
+        if not isinstance(prebuild_team, bool):
+            raise ValueError("prebuild_team must be a boolean")
+        if allow_unisolated_shell is not None and not isinstance(allow_unisolated_shell, bool):
+            raise ValueError("allow_unisolated_shell must be a boolean or None")
         team_path = _path(config, "config")
         try:
             result = await run_team(
@@ -254,6 +272,8 @@ class OpenCollab:
                 artifacts=_path(artifacts, "artifacts"),
                 trace=trace,
                 use_worktrees=use_worktrees,
+                prebuild_team=prebuild_team,
+                allow_unisolated_shell=allow_unisolated_shell,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc

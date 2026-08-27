@@ -683,8 +683,15 @@ async def run_team(
     artifacts: Path | None,
     trace: bool,
     use_worktrees: bool,
+    prebuild_team: bool = False,
+    allow_unisolated_shell: bool | None = None,
 ) -> ProgrammaticResult:
-    """Run the scheduler regime once, including bounded team cleanup."""
+    """Run the scheduler regime once, including bounded team cleanup.
+
+    A forwarder kept so ``programmatic`` stays the one import surface for the
+    three regimes; the implementation lives in ``programmatic_team``, whose
+    docstring documents ``prebuild_team`` and ``allow_unisolated_shell``.
+    """
     from opencollab.bootstrap.programmatic_team import run_team as _run_team
 
     return await _run_team(
@@ -698,6 +705,8 @@ async def run_team(
         artifacts=artifacts,
         trace=trace,
         use_worktrees=use_worktrees,
+        prebuild_team=prebuild_team,
+        allow_unisolated_shell=allow_unisolated_shell,
     )
 
 

@@ -38,8 +38,19 @@ async def run_team(
     artifacts: Path | None,
     trace: bool,
     use_worktrees: bool,
+    prebuild_team: bool = False,
+    allow_unisolated_shell: bool | None = None,
 ) -> ProgrammaticResult:
-    """Run the scheduler regime once, including bounded team cleanup."""
+    """Run the scheduler regime once, including bounded team cleanup.
+
+    ``prebuild_team`` and ``allow_unisolated_shell`` are handed straight to
+    ``build_scheduler``; see its docstring for what each decides. Both default
+    to the values that reproduce today's run: no roster is seated up front, and
+    the shell answer still follows ``interactive``, which is ``False`` here
+    because a programmatic run has no human at it. Stating them is how an
+    unattended experiment gets a declared roster whose agents can run ``git``
+    without also being handed an ``ask_user`` there is nobody to answer.
+    """
     run_config = dict(config)
     run_config["budget"] = max_tokens
     context = build_runtime_context(workspace, run_config, trace=False)
@@ -55,11 +66,16 @@ async def run_team(
         scheduler = _programmatic.build_scheduler(
             context,
             use_worktrees=use_worktrees,
+            # No human is at a programmatic run, so nobody can answer
+            # ``ask_user``. Whether an agent may open an unsandboxed shell is a
+            # separate question, and the caller answers it.
             interactive=False,
+            allow_unisolated_shell=allow_unisolated_shell,
             auto_save=artifacts is not None,
             team_config_path=team_config_path,
             resolved_team_config=team_config,
             save_dir=artifacts,
+            prebuild_team=prebuild_team,
         )
     except BaseException as exc:
         tracer_failure = _programmatic._close_tracer(context.tracer)
