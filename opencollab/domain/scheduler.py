@@ -40,14 +40,20 @@ a free parameter of the allocation rule, not an estimate of any quantity, and it
 is fixed before data collection so the caps are a property of the design rather
 than of the runs.
 
-Overspend is bounded, not impossible. The caps sum to ``c * total``, so a team
-whose agents all run to their cap can exceed the pool by at most ``(c - 1) *
-total`` before the aggregate ceiling in the session precheck stops every
-session. That ceiling is what makes ``total`` a real bound; ``c`` only decides
-how the pool is shared before it is reached. The alternative it replaces —
-taking each agent's share out of the pool when the agent is created — has no
-overspend but does hold tokens for agents that never spend them, which makes an
-idle agent and an exhausted one indistinguishable in the accounts.
+Overspend is bounded, not impossible. The caps sum to ``c * total``, which is
+more than the pool, so the caps alone do not bound the team; the aggregate
+ceiling does. Every session's precheck tests the team total before it starts a
+model call, so once aggregate spend reaches ``total`` no agent begins another
+turn. What can still be spent past ``total`` is therefore only what was already
+in flight when the ceiling was crossed: at most one turn per agent running
+concurrently, and on a pipeline topology, one turn. That is a bound on the order
+of a single turn's tokens, not of ``(c - 1) * total``. The realized figure is
+recorded per run rather than assumed, so it can be reported.
+
+The alternative this replaces — taking each agent's share out of the pool when
+the agent is created — has no overspend at all, but holds tokens for agents that
+never spend them, which makes an idle agent and an exhausted one
+indistinguishable in the accounts.
 """
 
 
