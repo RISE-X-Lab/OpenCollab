@@ -6,6 +6,11 @@ scheduled in the background; if it is running or awaiting delegated work the
 message stays in an out-of-history inbox until the session can safely accept
 another user turn.
 
+Every decision ``send_message`` takes is recorded: ``message_refused`` for each
+rule that stops a message, ``message_sent`` for one that is queued. Together
+they are the only place a run says how much traffic each declared topology edge
+actually carried, and how much was attempted and stopped.
+
 ``MessagingMixin`` is composed into ``Scheduler`` and relies on the
 ``_sessions`` / ``_tasks`` / ``_locks`` / ``_message_inbox`` maps and the
 ``_role_of`` / ``_autosave_session`` / ``emit_scheduler_event`` / ``_drive_agent``
@@ -15,6 +20,7 @@ helpers defined on ``Scheduler``.
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 import xml.etree.ElementTree as ET
 from typing import Any
@@ -25,10 +31,13 @@ from opencollab.application._scheduler_constants import (
     MAX_TEAMMATE_INBOX_BYTES,
     MAX_TEAMMATE_INBOX_MESSAGES,
     MAX_TEAMMATE_MESSAGE_BYTES,
+    MESSAGE_TRACE_SUMMARY_CHARS,
 )
 from opencollab.application.scheduler_types import QueuedTeammateMessage
 from opencollab.domain.identity import role_collision_key
 from opencollab.domain.session import SessionPhase
+
+logger = logging.getLogger(__name__)
 
 
 class MessagingMixin:
@@ -42,27 +51,60 @@ class MessagingMixin:
         if it is running or awaiting delegated work, the message stays in an
         out-of-history inbox until the session can safely accept another user
         turn.
+
+        Every outcome is recorded. Each rule that stops a message writes one
+        ``message_refused`` row naming the rule, and a queued message writes one
+        ``message_sent`` row; both carry the same fields, so a run's traffic on
+        one topology edge and its refusals on that edge are counted the same
+        way. Recording never changes the decision: the ``refuse`` helper writes
+        the row and then returns the very error string the branch returned
+        before, and a tracer that fails is swallowed.
         """
+
+        def refuse(reason: str, error: str, **observed: Any) -> str:
+            """Record one refusal, then hand the model the string it always got.
+
+            Every early return in this method goes through here, so a rule
+            cannot be enforced without leaving a countable record that it was.
+            """
+            self._trace_message_decision(
+                "message_refused",
+                reason=reason,
+                from_aid=from_aid,
+                to_aid=to_aid,
+                summary=summary,
+                content=content,
+                **observed,
+            )
+            return error
+
         if to_aid == from_aid:
-            return "Error: an agent cannot message itself."
+            return refuse("self_message", "Error: an agent cannot message itself.")
         if self._shutting_down:
-            return "Error: scheduler is shutting down."
+            return refuse(
+                "scheduler_shutting_down", "Error: scheduler is shutting down."
+            )
         if self._sessions.get(from_aid) is None or self.table.get(from_aid) is None:
-            return f"Error: no sending agent with aid {from_aid}."
+            return refuse(
+                "unknown_sender", f"Error: no sending agent with aid {from_aid}."
+            )
         target = self._sessions.get(to_aid)
         if target is None:
-            return f"Error: no agent with aid {to_aid}."
+            return refuse("unknown_recipient", f"Error: no agent with aid {to_aid}.")
         if self._topology_forbids(self._role_of(from_aid), self._role_of(to_aid)):
-            return (
+            return refuse(
+                "topology_forbidden",
                 f"Error: role '{self._role_of(from_aid)}' is not permitted to "
-                f"message '{self._role_of(to_aid)}' under the team topology."
+                f"message '{self._role_of(to_aid)}' under the team topology.",
             )
 
         lock = self._locks.setdefault(to_aid, asyncio.Lock())
         delivered_events = []
         async with lock:
             if self._shutting_down:
-                return "Error: scheduler is shutting down."
+                return refuse(
+                    "scheduler_shutting_down", "Error: scheduler is shutting down."
+                )
             message_id = uuid.uuid4().hex
             from_role = self._role_of(from_aid)
             to_role = self._role_of(to_aid)
@@ -73,18 +115,35 @@ class MessagingMixin:
                 message_id=message_id,
             )
             message_bytes = self._encoded_size(xml)
+            observed: dict[str, Any] = {
+                "message_bytes": message_bytes,
+                "message_id": message_id,
+            }
             if message_bytes > MAX_TEAMMATE_MESSAGE_BYTES:
-                return (
+                return refuse(
+                    "message_too_large",
                     "Error: teammate message exceeds the "
-                    f"{MAX_TEAMMATE_MESSAGE_BYTES}-byte limit."
+                    f"{MAX_TEAMMATE_MESSAGE_BYTES}-byte limit.",
+                    **observed,
                 )
             inbox = self._message_inbox.get(to_aid, [])
-            if len(inbox) >= MAX_TEAMMATE_INBOX_MESSAGES:
-                return f"Error: teammate inbox for aid {to_aid} is full (backpressure)."
-            if self._inbox_size(inbox) + message_bytes > MAX_TEAMMATE_INBOX_BYTES:
-                return (
+            # Read once, before the append, so an accepted send and a refused
+            # one describe the same thing: the queue the decision was taken
+            # against.
+            observed["inbox_messages"] = len(inbox)
+            observed["inbox_bytes"] = self._inbox_size(inbox)
+            if observed["inbox_messages"] >= MAX_TEAMMATE_INBOX_MESSAGES:
+                return refuse(
+                    "inbox_message_limit",
+                    f"Error: teammate inbox for aid {to_aid} is full (backpressure).",
+                    **observed,
+                )
+            if observed["inbox_bytes"] + message_bytes > MAX_TEAMMATE_INBOX_BYTES:
+                return refuse(
+                    "inbox_byte_limit",
                     f"Error: teammate inbox for aid {to_aid} exceeds the "
-                    f"{MAX_TEAMMATE_INBOX_BYTES}-byte limit (backpressure)."
+                    f"{MAX_TEAMMATE_INBOX_BYTES}-byte limit (backpressure).",
+                    **observed,
                 )
             target.state.queue_pending_user_message(
                 {
@@ -114,6 +173,14 @@ class MessagingMixin:
             )
             inbox.append(message)
             self._message_inbox[to_aid] = inbox
+            self._trace_message_decision(
+                "message_sent",
+                from_aid=from_aid,
+                to_aid=to_aid,
+                summary=summary,
+                content=content,
+                **observed,
+            )
             self._autosave_session(to_aid)
             delivered_events = await self._drain_message_inbox_locked(to_aid)
         # Scheduler events are observational and may re-enter send_message. Emit
@@ -127,6 +194,101 @@ class MessagingMixin:
         for event in delivered_events:
             await self._safe_emit_scheduler_event(event)
         return f"Message queued to aid {to_aid}."
+
+    def _traced_role(self, aid: int) -> str | None:
+        """The agent's role for a trace record, or ``None`` when no agent exists.
+
+        ``_role_of`` answers ``"?"`` for an aid with no agent, which is the
+        right thing to show a model and the wrong thing to store: a recipient
+        that does not exist has no role, and ``"?"`` would be counted as one.
+        The aid stays as given — it is what the sender addressed.
+        """
+        scb = self.table.get(aid)
+        return scb.agent.name if scb is not None else None
+
+    def _trace_message_decision(
+        self,
+        step_type: str,
+        *,
+        from_aid: int,
+        to_aid: int,
+        summary: str,
+        content: str,
+        reason: str | None = None,
+        message_bytes: int | None = None,
+        message_id: str | None = None,
+        inbox_messages: int | None = None,
+        inbox_bytes: int | None = None,
+    ) -> None:
+        """Record one ``send_message`` outcome. Observation only.
+
+        The six rules in ``send_message`` used to leave nothing behind: a model
+        that tried to contact a role the topology forbids, and a collaboration
+        message dropped by inbox backpressure, both ended as a sentence handed
+        back to the model and nothing on disk. The first is the direct
+        observation the role-boundary axis is decided on; the second is read
+        downstream as "this agent did not communicate", which is the opposite of
+        what happened.
+
+        ``reason`` is the rule that said no, as a short enumerated token, so
+        refusals are counted by cause rather than parsed out of prose. It is
+        absent from a ``message_sent`` row, which by construction has no cause.
+
+        ``from_aid`` / ``from_role`` and ``to_aid`` / ``to_role`` are four
+        separate fields: the aid is what the sender addressed and is always
+        recorded as given, while the role is the roster's answer for that aid
+        and is ``None`` when there is no agent behind it. Two aids and two roles
+        are what let a row be attributed to a declared topology edge.
+
+        Sizes are recorded twice over, because the two are limited separately:
+        ``content_bytes`` is the payload the model wrote, and ``message_bytes``
+        is the XML envelope actually measured against
+        ``MAX_TEAMMATE_MESSAGE_BYTES``. The envelope is ``None`` on the branches
+        that refuse before one is built — an honest gap, not a zero. Each limit
+        is recorded beside the reading it bounds, so a row is readable without
+        the constants file that produced it.
+
+        Guarded end to end: a record that cannot be built must never overturn
+        the decision it describes.
+        """
+        tracer = self._tracer
+        if tracer is None:
+            return
+        try:
+            inbox = self._message_inbox.get(to_aid, [])
+            payload: dict[str, Any] = {"reason": reason} if reason is not None else {}
+            payload.update(
+                {
+                    "from_aid": from_aid,
+                    "from_role": self._traced_role(from_aid),
+                    "to_aid": to_aid,
+                    "to_role": self._traced_role(to_aid),
+                    "summary": str(summary)[:MESSAGE_TRACE_SUMMARY_CHARS],
+                    "summary_chars": len(summary or ""),
+                    "content_chars": len(content or ""),
+                    "content_bytes": self._encoded_size(content or ""),
+                    "message_bytes": message_bytes,
+                    "message_id": message_id,
+                    "inbox_messages": (
+                        len(inbox) if inbox_messages is None else inbox_messages
+                    ),
+                    "inbox_bytes": (
+                        self._inbox_size(inbox) if inbox_bytes is None else inbox_bytes
+                    ),
+                    "max_message_bytes": MAX_TEAMMATE_MESSAGE_BYTES,
+                    "max_inbox_messages": MAX_TEAMMATE_INBOX_MESSAGES,
+                    "max_inbox_bytes": MAX_TEAMMATE_INBOX_BYTES,
+                }
+            )
+            tracer.log_step(step_type=step_type, payload=payload)
+        except Exception as exc:  # noqa: BLE001 — observability is non-authoritative
+            logger.error(
+                "%s trace failed for aid %s to aid %s: %s",
+                step_type,
+                from_aid,
+                to_aid,
+                exc,
+            )
 
     async def _append_user_turn_txn(
         self, aid: int, session: Any, message: str, prior_lease: tuple[int, int] | None

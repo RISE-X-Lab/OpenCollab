@@ -17,3 +17,8 @@ MAX_TEAMMATE_DELIVERY_BYTES = 16 * 1024
 # The full length is recorded beside it, so a truncated record still measures as
 # long.
 SPAWN_REFUSAL_TASK_CHARS = 1000
+
+# How much of a refused (or accepted) teammate message's summary a
+# ``message_refused`` / ``message_sent`` record keeps. The full length is
+# recorded beside it, so a truncated record still measures as long.
+MESSAGE_TRACE_SUMMARY_CHARS = 240
