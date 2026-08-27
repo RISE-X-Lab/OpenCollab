@@ -152,7 +152,7 @@ A role opts in via one entry in `team.yaml`: `tools: [..., use_skill]`. Single s
 
 ## 7. Boundary check
 
-`FileSkillStore` / `UseSkillTool` (adapters) → `SkillStorePort` (application) → `SkillManifest` / `ContextSource` (domain). All inward; `tests/test_*_boundaries.py` stay green.
+`FileSkillStore` / `UseSkillTool` (adapters) → `SkillStorePort` (application) → `SkillManifest` / `ContextSource` (domain). All inward; the layer contract in `.importlinter` stays green.
 
 ## 8. Test plan
 
