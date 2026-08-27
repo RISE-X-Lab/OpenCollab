@@ -28,7 +28,7 @@ from opencollab.application.tool_execution import TERMINAL_CAPTURE_SKIP_MESSAGE
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase
-from opencollab.domain.token_estimation import request_tokens_upper_bound
+from opencollab.domain.token_estimation import estimate_request_tokens
 from opencollab.domain.tools import ToolProcessingResult
 
 logger = logging.getLogger(__name__)
@@ -497,7 +497,7 @@ class _SessionRunCompletionMixin:
             DEFAULT_MAX_TOKENS_PER_STEP,
         )
         remaining_budget = int(self.max_budget_tokens) - int(self.state.used_tokens)
-        reserved_input_tokens = request_tokens_upper_bound(messages, tools)
+        reserved_input_tokens = estimate_request_tokens(messages, tools)
         output_budget = remaining_budget - reserved_input_tokens
         if output_budget < 1:
             raise _TokenBudgetStop(
@@ -506,7 +506,7 @@ class _SessionRunCompletionMixin:
             )
         # Precheck guarantees positive headroom before entering this call. Clamp
         # the provider's output ceiling to the live remainder after reserving an
-        # upper bound for request messages and registered tool schemas.
+        # estimate for request messages and registered tool schemas.
         max_output_tokens = min(
             max(1, int(configured_output_tokens)),
             output_budget,
