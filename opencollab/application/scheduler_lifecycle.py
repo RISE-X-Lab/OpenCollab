@@ -90,12 +90,21 @@ class LifecycleMixin:
         Raises ``PermissionError`` if the team topology forbids ``parent_aid``'s
         role from spawning ``role``; the tool executor turns that into a tool
         result so the parent's run loop continues uninterrupted.
+
+        Raises ``TeamPrebuiltError`` when the scheduler runs a prebuilt team: the
+        roster is then an input to the run, not an outcome of it, so no agent may
+        be added to it. The attempt itself is recorded before the refusal is
+        raised — see ``_refuse_spawn_when_prebuilt``.
         """
         if self._shutting_down:
             raise RuntimeError("Cannot spawn agent: scheduler is shutting down.")
         if self.table.get(parent_aid) is None or parent_aid not in self._sessions:
             raise ValueError(f"Cannot spawn agent: no parent with aid {parent_aid}.")
         role = validate_role_identity(role)
+        # Before the topology check, so one uniform record covers both a request
+        # for a declared role and one for a role this team was never given; the
+        # record carries whether the topology would have allowed the edge.
+        self._refuse_spawn_when_prebuilt(parent_aid, role, task, context)
         self._check_topology(parent_aid, role, verb="spawn")
         aid = self.table.allocate_aid()
         startup_task = asyncio.current_task()

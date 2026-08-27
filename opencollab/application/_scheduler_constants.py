@@ -12,3 +12,8 @@ MAX_TEAMMATE_MESSAGE_BYTES = 8 * 1024
 MAX_TEAMMATE_INBOX_MESSAGES = 32
 MAX_TEAMMATE_INBOX_BYTES = 64 * 1024
 MAX_TEAMMATE_DELIVERY_BYTES = 16 * 1024
+
+# How much of a refused delegation's task text a ``spawn_refused`` record keeps.
+# The full length is recorded beside it, so a truncated record still measures as
+# long.
+SPAWN_REFUSAL_TASK_CHARS = 1000

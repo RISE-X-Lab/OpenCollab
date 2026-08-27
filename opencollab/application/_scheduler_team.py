@@ -8,10 +8,12 @@ import logging
 from typing import Any
 
 from opencollab.application._scheduler_constants import (
+    SPAWN_REFUSAL_TASK_CHARS,
     WORKTREE_DIFF_KEEP_CHARS,
     WORKTREE_DIFF_MAX_CHARS,
 )
 from opencollab.application.ports import DiffCapablePort, EnvironmentPort
+from opencollab.application.scheduler_types import TeamPrebuiltError
 from opencollab.domain.events import SchedulerEvent
 from opencollab.domain.identity import role_collision_key
 from opencollab.domain.scheduler import SessionControlBlock
@@ -377,9 +379,9 @@ class SchedulerTeamMixin:
         workspace) and ``assigned.topology_edges`` (which role may address which,
         verbatim from the team config). They are the design-time half of the
         comparison the observed records support — ``worktree_changes`` says who
-        actually touched what — and without a prebuilt team there is no assigned
-        value to compare against, which is why nothing is written when the switch
-        is off.
+        actually touched what, ``spawn_refused`` says who tried to change the
+        roster — and without a prebuilt team there is no assigned value to
+        compare against, which is why nothing is written when the switch is off.
 
         ``allow_all`` travels with the edges because an open topology declares no
         edges at all: an empty list alone would read as "nobody may talk".
@@ -411,6 +413,115 @@ class SchedulerTeamMixin:
             )
         except Exception as exc:
             logger.error("assigned topology trace failed: %s", exc)
+
+    def _live_roster(self) -> list[dict[str, Any]]:
+        return [
+            {"aid": aid, "role": self.table.entries[aid].agent.name}
+            for aid in sorted(self.table.entries)
+        ]
+
+    def _refuse_spawn_when_prebuilt(
+        self,
+        parent_aid: int,
+        role: str,
+        task: str,
+        context: str,
+    ) -> None:
+        """In static-topology mode, refuse to create an agent — and record it.
+
+        The ``spawn_agent`` tool is deliberately left in the tool set: removing
+        it would remove the observation. A model that wants a role the team does
+        not have is evidence about delegation, and it can only be collected if
+        the model is still able to ask. So the ask is answered with a refusal
+        that names the live roster, and the attempt is written down.
+
+        No-op unless ``prebuild_team`` is on.
+        """
+        if not self._prebuild_team:
+            return
+        roster = self._live_roster()
+        declared = {role_collision_key(name) for name in self._roles}
+        requested_key = role_collision_key(role)
+        seated = next(
+            (
+                entry
+                for entry in roster
+                if role_collision_key(entry["role"]) == requested_key
+            ),
+            None,
+        )
+        self._trace_spawn_refused(
+            parent_aid=parent_aid,
+            role=role,
+            task=task,
+            context=context,
+            roster=roster,
+            declared=requested_key in declared,
+        )
+        listing = ", ".join(f"{entry['role']} (aid {entry['aid']})" for entry in roster)
+        head = (
+            f"Not spawned: '{role}' is already on this team as aid "
+            f"{seated['aid']}."
+            if seated is not None
+            else f"Not spawned: '{role}' is not a role on this team."
+        )
+        raise TeamPrebuiltError(
+            f"{head} This team's roster is fixed before the run starts and no "
+            f"agent can be added to it. Your teammates are already running: "
+            f"{listing}. Send one of them this work with send_message instead — "
+            f"nothing about your request failed, only the way you asked for it.",
+            roster=tuple((entry["aid"], entry["role"]) for entry in roster),
+        )
+
+    def _trace_spawn_refused(
+        self,
+        *,
+        parent_aid: int,
+        role: str,
+        task: str,
+        context: str,
+        roster: list[dict[str, Any]],
+        declared: bool,
+    ) -> None:
+        """Record one refused agent-creation attempt as countable evidence.
+
+        Every field is here to be counted, not read. ``requested_role_declared``
+        is the one that carries the finding: false means the model asked for a
+        role the team was never given, which is a direct observation on
+        participation (who the model thinks should be in the run) and on
+        delegation (what it tried to hand off). ``topology_allowed`` records
+        whether the declared graph would have permitted that edge, so a refusal
+        caused by the fixed roster is never confused with one a closed topology
+        would have produced anyway. The task text is kept, capped, alongside its
+        true length, so a long delegation is still measurable as long.
+
+        Observational: a failed record must not overturn the refusal it
+        describes, so this never raises.
+        """
+        tracer = self._tracer
+        if tracer is None:
+            return
+        try:
+            tracer.log_step(
+                step_type="spawn_refused",
+                payload={
+                    "reason": "team_prebuilt",
+                    "requester_aid": parent_aid,
+                    "requester_role": self._role_of(parent_aid),
+                    "requested_role": role,
+                    "requested_role_declared": declared,
+                    "topology_allowed": not self._topology_forbids(
+                        self._role_of(parent_aid), role
+                    ),
+                    "declared_roles": list(self._roles),
+                    "live_roster": roster,
+                    "task": str(task)[:SPAWN_REFUSAL_TASK_CHARS],
+                    "task_chars": len(task or ""),
+                    "context_chars": len(context or ""),
+                },
+            )
+        except Exception as exc:
+            logger.error("spawn_refused trace failed for aid %s: %s", parent_aid, exc)
 
     def agent_step_count(self, aid: int) -> int:
         """Return the cumulative step count for one registered agent."""

@@ -8,7 +8,10 @@ one against, because nothing assigned one.
 
 ``prebuild_team`` inverts that. The scheduler seats one agent per role declared in
 the team config before the first model call, records that roster and the
-topology's edges as ``assigned.topology_nodes`` / ``assigned.topology_edges``.
+topology's edges as ``assigned.topology_nodes`` / ``assigned.topology_edges``, and
+from then on refuses ``spawn`` — recording each refused attempt as
+``spawn_refused``, which is the observation that a model wanted a role its team
+was not given.
 
 The switch is off by default and these tests pin that too: with it off, the
 roster, the spawn path, and the trace are exactly what they were.
@@ -30,6 +33,8 @@ from opencollab.adapters.trace import Tracer
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
+from opencollab.application.scheduler_types import TeamPrebuiltError
+from opencollab.application.tool_execution import ToolRuntime
 from opencollab.bootstrap import build_runtime_context, build_scheduler
 from opencollab.bootstrap.team_config import (
     CODER_TOOL_NAMES,
@@ -253,6 +258,120 @@ async def test_a_team_the_budget_cannot_seat_fails_at_startup_and_rolls_back(tmp
     finally:
         tracer.close()
         await scheduler.cleanup()
+
+
+# --- spawn, refused and recorded --------------------------------------------
+
+
+def _spawn_tool(scheduler):
+    tool = next(t for t in scheduler.lead_session.agent.tools if t.name == "spawn_agent")
+    runtime = ToolRuntime(
+        environment=scheduler.lead_session.env,
+        safety_policy=None,
+        permission_policy=None,
+        aid=0,
+        tool_call_id="call_1",
+    )
+    return tool, runtime
+
+
+async def test_the_spawn_tool_survives_but_refuses_and_names_the_live_roster(tmp_path):
+    """The tool is left in the tool set on purpose.
+
+    Removing ``spawn_agent`` would remove the observation: a model that never
+    gets to ask cannot be seen wanting a role its team does not have. So the ask
+    still reaches the scheduler, and the answer names the teammates it should
+    have messaged instead.
+    """
+    scheduler, tracer = _scheduler(tmp_path, prebuild_team=True)
+    try:
+        await scheduler.ensure_team_prebuilt()
+        assert "spawn_agent" in {t.name for t in scheduler.lead_session.agent.tools}
+
+        tool, runtime = _spawn_tool(scheduler)
+        answer = await tool.execute_with_runtime(
+            {"role": "reviewer", "task": "check the patch", "context": "ctx"}, runtime
+        )
+
+        assert isinstance(answer, str)
+        assert answer.startswith("Not spawned: 'reviewer' is not a role on this team.")
+        assert "analyst (aid 0), coder (aid 1), tester (aid 2)" in answer
+        assert "send_message" in answer
+        # Refused means refused: no agent, no aid burned, no worktree taken.
+        assert sorted(scheduler._sessions) == [0, 1, 2]
+        assert sorted(scheduler.table.entries) == [0, 1, 2]
+    finally:
+        tracer.close()
+        await scheduler.cleanup()
+
+
+async def test_a_refused_spawn_records_who_wanted_which_role_and_whether_it_existed(tmp_path):
+    scheduler, tracer = _scheduler(tmp_path, prebuild_team=True)
+    try:
+        await scheduler.ensure_team_prebuilt()
+        tool, runtime = _spawn_tool(scheduler)
+        # One role the team was never given, and one it already has. Both are
+        # refused, and the record has to tell them apart.
+        await tool.execute_with_runtime(
+            {"role": "reviewer", "task": "check the patch", "context": "abc"}, runtime
+        )
+        await tool.execute_with_runtime({"role": "coder", "task": "implement it"}, runtime)
+        tracer.flush()
+    finally:
+        tracer.close()
+        await scheduler.cleanup()
+
+    roster = [
+        {"aid": 0, "role": "analyst"},
+        {"aid": 1, "role": "coder"},
+        {"aid": 2, "role": "tester"},
+    ]
+    assert _payloads(tracer.path, "spawn_refused") == [
+        {
+            "reason": "team_prebuilt",
+            "requester_aid": 0,
+            "requester_role": "analyst",
+            "requested_role": "reviewer",
+            "requested_role_declared": False,
+            # The closed default topology would have refused this edge anyway;
+            # recording it keeps the two causes from being conflated later.
+            "topology_allowed": False,
+            "declared_roles": ["analyst", "coder", "tester"],
+            "live_roster": roster,
+            "task": "check the patch",
+            "task_chars": 15,
+            "context_chars": 3,
+        },
+        {
+            "reason": "team_prebuilt",
+            "requester_aid": 0,
+            "requester_role": "analyst",
+            "requested_role": "coder",
+            "requested_role_declared": True,
+            "topology_allowed": True,
+            "declared_roles": ["analyst", "coder", "tester"],
+            "live_roster": roster,
+            "task": "implement it",
+            "task_chars": 12,
+            "context_chars": 0,
+        },
+    ]
+
+
+async def test_a_long_delegation_is_still_measurable_as_long(tmp_path):
+    scheduler, tracer = _scheduler(tmp_path, prebuild_team=True)
+    try:
+        await scheduler.ensure_team_prebuilt()
+        with pytest.raises(TeamPrebuiltError):
+            await scheduler.spawn(0, "reviewer", "x" * 5000)
+        tracer.flush()
+    finally:
+        tracer.close()
+        await scheduler.cleanup()
+
+    payload = _payloads(tracer.path, "spawn_refused")[0]
+    assert payload["task"] == "x" * 1000
+    assert payload["task_chars"] == 5000
 
 
 # --- the assigned topology ---------------------------------------------------
