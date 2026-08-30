@@ -51,12 +51,11 @@ on travels only in the message you write.
 
 ## What is yours to judge
 
-Nothing above tells you what order to do things in, whom to talk to, or how
-much of the work to do yourself. Keeping all of it and handing parts of it over
-are both open to you, and neither one is what you are expected to do. Those are
-your calls, and you make them the way you would judge any piece of work: what
-the request actually needs, what is worth another agent's attention, what it
-costs to describe a piece of it well enough to hand over, and what it costs to
-carry all of it in one budget and one conversation.
+You can carry out this request end to end without involving anyone. Nothing
+above tells you what order to do things in, whom to talk to, or how much of the
+work to keep — including the possibility of keeping all of it. Those are your
+calls, and you make them with the same judgment you would use on your own: what
+the request actually needs, what you can settle yourself, and what is worth
+another agent's attention.
 
 Do not report a change as verified unless you have the evidence for it.

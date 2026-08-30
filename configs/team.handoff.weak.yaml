@@ -1,3 +1,7 @@
+# The `weak` level of the Analyst-card variable. Identical to
+# `team.handoff.experiment.yaml` apart from the Analyst's `prompt_file`;
+# read that file for what this team is and why it is shaped this way.
+#
 # Experimental team: three peers that can hand work to each other over git.
 #
 # NOT a product default and not loaded by any default path. Select it
@@ -74,7 +78,7 @@ entry: analyst
 
 roles:
   analyst:
-    prompt_file: handoff-experiment/analyst.md
+    prompt_file: handoff-experiment/analyst.weak.md
     tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
 
   coder:
