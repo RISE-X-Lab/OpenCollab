@@ -744,6 +744,14 @@ class _SessionRunCompletionMixin:
             reasoning = getattr(response, "reasoning", None)
             if reasoning:
                 payload["reasoning"] = reasoning
+            elif payload.get("usage", {}).get("reasoning_tokens"):
+                # The provider billed for reasoning and returned none of it. The
+                # step is then unreconstructible -- a turn that emitted tool calls
+                # and no text leaves nothing at all saying why it did that -- and
+                # the absence is invisible in a trajectory that simply has no
+                # reasoning field. Say it, so a run can be audited for this
+                # rather than discovered to have lost it afterwards.
+                payload["reasoning_withheld"] = True
             payload["thinking"] = bool(getattr(self.agent, "thinking", False))
             wire_protocol = getattr(self.agent, "wire_protocol", "chat_completions")
             if wire_protocol != "chat_completions":

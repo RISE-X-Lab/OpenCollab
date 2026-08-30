@@ -213,7 +213,7 @@ def test_unified_diff_treats_header_like_hunk_content_as_content(tmp_path):
     assert target.read_text(encoding="utf-8") == "++value\n"
 
 
-def test_unified_diff_rejects_malformed_hunk_without_writing(tmp_path):
+def test_unified_diff_recomputes_a_miscounted_hunk_header(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
     target = ws / "f.py"
@@ -231,8 +231,12 @@ def test_unified_diff_rejects_malformed_hunk_without_writing(tmp_path):
         )
     )
 
-    assert "declares 3 old lines" in result
-    assert target.read_text(encoding="utf-8") == original
+    # The header says 3 old and 3 new lines; the body describes 2 and 2. The
+    # applier never reads those counts -- it finds the hunk by matching " a"
+    # and "-b" against the file -- so the miscount is recomputed away rather
+    # than turned into a rejection of an edit that was described correctly.
+    assert result.startswith("Applied unified_diff")
+    assert target.read_text(encoding="utf-8") == "a\nx\nc\n"
 
 
 @pytest.mark.parametrize(
@@ -505,3 +509,165 @@ def test_str_replace_preserves_legal_utf8_with_cjk(tmp_path):
 
     assert "Replaced in" in result
     assert target.read_text(encoding="utf-8") == "\u4f60\u597d\uff0cOpenCollab\n"
+
+
+# ---------------------------------------------------------------------------
+# Coordinates are hints; content is the check.
+#
+# Measured over 30 pilot runs, 34 of the 35 apply_patch failures were a model
+# that had described its edit correctly and named the position wrongly: a
+# miscounted hunk header, a header with no numbers at all, or a line range that
+# had drifted under a correctly quoted expected_str. None of the three is
+# information this applier uses -- it locates every edit by content -- so none
+# of them rejects an edit any more. What still fails is text that does not
+# match the file, or matches it in more than one place.
+# ---------------------------------------------------------------------------
+
+
+def _apply(ws, params):
+    return run(ApplyPatchTool().execute_with_runtime(params, _runtime(ws)))
+
+
+def _file(tmp_path, text, name="f.py"):
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    target = ws / name
+    target.write_text(text, encoding="utf-8")
+    return ws, target
+
+
+def test_a_hunk_header_with_no_numbers_still_applies(tmp_path):
+    ws, target = _file(tmp_path, "a\nb\nc\n")
+
+    result = _apply(ws, {
+        "path": "f.py",
+        "mode": "unified_diff",
+        "patch": "@@\n a\n-b\n+x\n",
+    })
+
+    assert result.startswith("Applied unified_diff")
+    assert target.read_text(encoding="utf-8") == "a\nx\nc\n"
+
+
+def test_several_numberless_hunks_apply_in_the_order_they_are_written(tmp_path):
+    # Without a position each hunk takes the first match after the previous
+    # one, which is what a sequential diff means. "b" appears twice; the second
+    # hunk must land on the later one.
+    ws, target = _file(tmp_path, "b\nmiddle\nb\ntail\n")
+
+    result = _apply(ws, {
+        "path": "f.py",
+        "mode": "unified_diff",
+        "patch": "@@\n-b\n+first\n@@\n-b\n+second\n",
+    })
+
+    assert result.startswith("Applied unified_diff")
+    assert target.read_text(encoding="utf-8") == "first\nmiddle\nsecond\ntail\n"
+
+
+def test_a_hunk_whose_context_is_not_in_the_file_is_still_refused(tmp_path):
+    ws, target = _file(tmp_path, "a\nb\nc\n")
+
+    result = _apply(ws, {
+        "path": "f.py",
+        "mode": "unified_diff",
+        "patch": "@@ -1,2 +1,2 @@\n zzz\n-nope\n+x\n",
+    })
+
+    assert "did not match the file" in result
+    assert target.read_text(encoding="utf-8") == "a\nb\nc\n"
+
+
+def test_a_header_with_an_empty_body_is_still_refused(tmp_path):
+    ws, target = _file(tmp_path, "a\nb\n")
+
+    result = _apply(ws, {
+        "path": "f.py",
+        "mode": "unified_diff",
+        "patch": "@@\n@@\n a\n-b\n+x\n",
+    })
+
+    assert "has no body" in result
+    assert target.read_text(encoding="utf-8") == "a\nb\n"
+
+
+def test_line_replace_lands_on_a_uniquely_matching_expected_str(tmp_path):
+    ws, target = _file(tmp_path, "one\ntwo\nthree\nfour\n")
+
+    result = _apply(ws, {
+        "path": "f.py",
+        "mode": "line_replace",
+        "start_line": 1,
+        "end_line": 1,
+        "expected_str": "three",
+        "new_str": "THREE",
+    })
+
+    assert result.startswith("Applied line_replace")
+    assert target.read_text(encoding="utf-8") == "one\ntwo\nTHREE\nfour\n"
+
+
+def test_a_relocated_line_replace_says_where_it_actually_landed(tmp_path):
+    # Silence here would leave the caller planning its next edit against line
+    # numbers that were already wrong.
+    ws, _ = _file(tmp_path, "one\ntwo\nthree\nfour\n")
+
+    result = _apply(ws, {
+        "path": "f.py",
+        "mode": "line_replace",
+        "start_line": 1,
+        "end_line": 1,
+        "expected_str": "three",
+        "new_str": "THREE",
+    })
+
+    assert "did not match lines 1-1" in result
+    assert "matched lines 3-3 uniquely" in result
+
+
+def test_line_replace_refuses_an_expected_str_that_matches_twice(tmp_path):
+    ws, target = _file(tmp_path, "dup\nmiddle\ndup\n")
+
+    result = _apply(ws, {
+        "path": "f.py",
+        "mode": "line_replace",
+        "start_line": 2,
+        "end_line": 2,
+        "expected_str": "dup",
+        "new_str": "X",
+    })
+
+    assert "appears 2 times" in result
+    assert target.read_text(encoding="utf-8") == "dup\nmiddle\ndup\n"
+
+
+def test_line_replace_refuses_an_expected_str_that_is_not_in_the_file(tmp_path):
+    ws, target = _file(tmp_path, "a\nb\n")
+
+    result = _apply(ws, {
+        "path": "f.py",
+        "mode": "line_replace",
+        "start_line": 1,
+        "end_line": 1,
+        "expected_str": "absent",
+        "new_str": "X",
+    })
+
+    assert "does not appear anywhere in the file" in result
+    assert target.read_text(encoding="utf-8") == "a\nb\n"
+
+
+def test_an_unknown_mode_says_where_str_replace_actually_lives(tmp_path):
+    # Nine of the pilot rejections were `mode: "str_replace"` on this tool.
+    # The enum error alone never said that the mode exists on file_write.
+    ws, _ = _file(tmp_path, "a\n")
+
+    result = _apply(ws, {"path": "f.py", "mode": "str_replace"})
+
+    assert "file_write" in result
+
+
+def test_the_description_does_not_send_the_model_looking_for_str_replace():
+    description = ApplyPatchTool().description
+    assert "str_replace is a mode of the" in description
+    assert "`file_write` tool" in description

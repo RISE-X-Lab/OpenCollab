@@ -12,6 +12,11 @@ from typing import Any
 
 # A hunk header: @@ -<old_start>[,<old_len>] +<new_start>[,<new_len>] @@ [heading]
 _HUNK_RE = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+# A hunk header carrying no position at all. Models emit these constantly --
+# it is the dialect several diff-editing tools teach -- and they cost this
+# applier nothing, because hunks are located by content and the numbers were
+# only ever a hint about where to start looking.
+_BARE_HUNK_RE = re.compile(r"^@@[ \t]*(?:@@[ \t]*)?$")
 _NEWLINE_RE = re.compile(r"\r\n|\r|\n")
 _MIXED_NEWLINES = "mixed"
 
@@ -69,10 +74,44 @@ def _summary(path: str, mode: str, before: str, after: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _apply_line_replace(source: str, params: dict[str, Any]) -> tuple[str | None, str]:
+def _locate_expected(lines: list[str], wanted: str) -> tuple[tuple[int, int] | None, int]:
+    """Find ``wanted`` in ``lines``, but only when it occurs exactly once.
+
+    Returns ``((start_idx, end_idx), count)`` for a unique match and
+    ``(None, count)`` otherwise, so the caller can say which of the two
+    failures it hit.
+
+    A line range is a coordinate and the quoted text is evidence; when the two
+    disagree, the text is the one that can be checked against the file. A
+    single exact occurrence identifies the range at least as strongly as the
+    numbers did. Two occurrences identify nothing, and that stays an error
+    rather than becoming a guess.
+    """
+    block = wanted.split("\n")
+    if not block or len(block) > len(lines):
+        return None, 0
+    n = len(block)
+    hits = [
+        start
+        for start in range(0, len(lines) - n + 1)
+        if lines[start : start + n] == block
+    ]
+    if len(hits) != 1:
+        return None, len(hits)
+    return (hits[0], hits[0] + n), 1
+
+
+def _apply_line_replace(
+    source: str,
+    params: dict[str, Any],
+    notes: list[str] | None = None,
+) -> tuple[str | None, str]:
     """Replace the 1-based inclusive line range from ``params`` in ``source``.
 
     Returns ``(updated_text, "")`` on success or ``(None, error)`` on failure.
+    ``notes`` collects anything the caller must be told about how the edit was
+    placed -- specifically, that it landed somewhere other than the range asked
+    for.
     """
     newline_style = _detect_newline_style(source)
     if newline_style == _MIXED_NEWLINES:
@@ -113,13 +152,29 @@ def _apply_line_replace(source: str, params: dict[str, Any]) -> tuple[str | None
 
     expected = params.get("expected_str")
     if expected is not None:
+        wanted = expected.rstrip("\n")
         actual = "\n".join(lines[start_idx:end_idx])
-        if actual != expected.rstrip("\n"):
-            return None, (
-                "expected_str does not match the current content of lines "
-                f"{start_line}-{end_line}.\n--- expected ---\n{expected}\n"
-                f"--- actual ---\n{actual}"
-            )
+        if actual != wanted:
+            located, occurrences = _locate_expected(lines, wanted)
+            if located is None:
+                whereabouts = (
+                    "and it does not appear anywhere in the file"
+                    if occurrences == 0
+                    else f"and it appears {occurrences} times, so no single range "
+                    "is identified by it"
+                )
+                return None, (
+                    "expected_str does not match the current content of lines "
+                    f"{start_line}-{end_line}, {whereabouts}.\n"
+                    f"--- expected ---\n{expected}\n--- actual ---\n{actual}"
+                )
+            start_idx, end_idx = located
+            if notes is not None:
+                notes.append(
+                    f"expected_str did not match lines {start_line}-{end_line}; it "
+                    f"matched lines {start_idx + 1}-{end_idx} uniquely, and the edit "
+                    "was applied there"
+                )
 
     # Preserve the file's trailing-newline convention; new_str's own trailing
     # newline is normalised away since we re-split it into lines.
@@ -146,25 +201,20 @@ def _parse_hunks(patch: str) -> tuple[list[dict] | None, str]:
         raw_lines.pop()
     for line_number, raw in enumerate(raw_lines, 1):
         m = _HUNK_RE.match(raw)
-        if m:
+        bare = _BARE_HUNK_RE.match(raw) if m is None else None
+        if m is not None or bare is not None:
             if cur is not None:
-                err = _validate_hunk_counts(cur)
+                err = _finish_hunk(cur)
                 if err:
                     return None, err
             seen_header = True
-            old_start = int(m.group(1))
-            old_len = int(m.group(2) or 1)
-            new_start = int(m.group(3))
-            new_len = int(m.group(4) or 1)
-            if old_start == 0 and old_len != 0:
-                return None, f"hunk header on patch line {line_number} has invalid old range."
-            if new_start == 0 and new_len != 0:
-                return None, f"hunk header on patch line {line_number} has invalid new range."
             cur = {
-                "old_start": old_start,
-                "old_len": old_len,
-                "new_start": new_start,
-                "new_len": new_len,
+                # ``None`` means the header named no position. The applier then
+                # takes the first match after the previous hunk, which is what a
+                # sequential diff means anyway.
+                "old_start": int(m.group(1)) if m is not None else None,
+                "new_start": int(m.group(3)) if m is not None else None,
+                "header_line": line_number,
                 "lines": [],
                 "no_newline_after": set(),
             }
@@ -194,22 +244,44 @@ def _parse_hunks(patch: str) -> tuple[list[dict] | None, str]:
     if not hunks:
         return None, "patch contains no applicable hunks."
     assert cur is not None
-    err = _validate_hunk_counts(cur)
+    err = _finish_hunk(cur)
     if err:
         return None, err
     return hunks, ""
 
 
-def _validate_hunk_counts(hunk: dict) -> str:
-    """Return an error unless hunk body counts match its header exactly."""
-    old_count = sum(line[0] in " -" for line in hunk["lines"])
-    new_count = sum(line[0] in " +" for line in hunk["lines"])
-    if old_count != hunk["old_len"] or new_count != hunk["new_len"]:
-        return (
-            f"hunk near line {hunk['old_start']} declares {hunk['old_len']} old lines and "
-            f"{hunk['new_len']} new lines, but contains {old_count} old lines and "
-            f"{new_count} new lines."
-        )
+def _hunk_where(hunk: dict) -> str:
+    """Name a hunk in an error, whether or not its header carried a position."""
+    start = hunk.get("old_start")
+    if start is None:
+        return f"whose header is on patch line {hunk['header_line']}"
+    return f"near line {start}"
+
+
+def _finish_hunk(hunk: dict) -> str:
+    """Fill in a hunk's line counts from its body, and check what is checkable.
+
+    The ``@@ -a,b +c,d @@`` counts are redundant to this applier: every hunk is
+    located by matching its context and removed lines against the file, and
+    ``b`` and ``d`` are never read again. A model that miscounted them has still
+    described the edit exactly, so the body is taken as the truth and the
+    declared numbers are dropped rather than turned into a rejection -- a patch
+    that does not describe the file is still refused, by the content match,
+    which is the check that carries information.
+
+    What the body cannot settle is still an error: a hunk with no body at all,
+    and a header that starts at line 0 while keeping or removing lines, since
+    there is no line 0 to start from.
+    """
+    hunk["old_len"] = sum(line[0] in " -" for line in hunk["lines"])
+    hunk["new_len"] = sum(line[0] in " +" for line in hunk["lines"])
+    where = _hunk_where(hunk)
+    if not hunk["lines"]:
+        return f"hunk {where} has no body."
+    if hunk["old_start"] == 0 and hunk["old_len"] != 0:
+        return f"hunk {where} starts at old line 0 but keeps or removes lines."
+    if hunk["new_start"] == 0 and hunk["new_len"] != 0:
+        return f"hunk {where} starts at new line 0 but keeps or adds lines."
     return ""
 
 
@@ -287,12 +359,17 @@ def _apply_unified_diff(source: str, patch: str) -> tuple[str | None, str]:
                 if tag in " +":
                     new_no_newline_positions.append(len(new_block) - 1)
 
-        expected_idx = hunk["old_start"] if hunk["old_len"] == 0 else hunk["old_start"] - 1
+        if hunk["old_start"] is None:
+            expected_idx = src_idx
+        elif not old_block:
+            expected_idx = hunk["old_start"]
+        else:
+            expected_idx = hunk["old_start"] - 1
         pos = _find_block(src_lines, old_block, expected_idx, src_idx)
         if pos is None:
             snippet = "\n".join(old_block[:6]) or "(empty context)"
             return None, (
-                f"hunk #{n} (near line {hunk['old_start']}) did not match the file. "
+                f"hunk #{n} ({_hunk_where(hunk)}) did not match the file. "
                 f"The context/removed lines were not found:\n{snippet}"
             )
         if hunk["no_newline_after"]:

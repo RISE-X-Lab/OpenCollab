@@ -792,6 +792,46 @@ def test_reasoning_is_preserved_in_assistant_tool_call_history():
     assert state.messages[-1]["provider_state"] == response.provider_state
     assert state.messages[-1]["tool_calls"] == response.tool_calls
 
+def test_llm_trace_flags_reasoning_the_provider_billed_but_withheld():
+    # A turn that emits tool calls and no text, whose reasoning was charged for
+    # and not returned, cannot be reconstructed at all afterwards -- and a
+    # trajectory that simply lacks a reasoning field looks the same as one from
+    # a model that never reasoned. Fifteen measured runs lost 1.08M reasoning
+    # tokens this way before anyone noticed, so the absence is recorded.
+    state = SessionState(messages=_convo())
+    llm = FakeLLM([llm_response(content="answer", reasoning_tokens=135)])
+    tracer = FakeTracer()
+    runner = build_runner(state=state, llm=llm, tracer=tracer)
+
+    run(runner.run_loop())
+
+    payload = [s for s in tracer.steps if s["step_type"] == "llm_call"][0]["payload"]
+    assert payload["reasoning_withheld"] is True
+    assert "reasoning" not in payload
+
+def test_llm_trace_does_not_flag_a_model_that_simply_did_not_reason():
+    state = SessionState(messages=_convo())
+    llm = FakeLLM([llm_response(content="answer")])  # nothing billed, nothing returned
+    tracer = FakeTracer()
+    runner = build_runner(state=state, llm=llm, tracer=tracer)
+
+    run(runner.run_loop())
+
+    payload = [s for s in tracer.steps if s["step_type"] == "llm_call"][0]["payload"]
+    assert "reasoning_withheld" not in payload
+
+def test_llm_trace_does_not_flag_reasoning_that_did_come_back():
+    state = SessionState(messages=_convo())
+    llm = FakeLLM([llm_response(content="answer", reasoning="thoughts", reasoning_tokens=90)])
+    tracer = FakeTracer()
+    runner = build_runner(state=state, llm=llm, tracer=tracer)
+
+    run(runner.run_loop())
+
+    payload = [s for s in tracer.steps if s["step_type"] == "llm_call"][0]["payload"]
+    assert payload["reasoning"] == "thoughts"
+    assert "reasoning_withheld" not in payload
+
 def test_llm_trace_omits_reasoning_when_absent():
     state = SessionState(messages=_convo())
     llm = FakeLLM([llm_response(content="answer")])  # reasoning defaults to None

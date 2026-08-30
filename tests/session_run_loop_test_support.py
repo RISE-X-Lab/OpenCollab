@@ -30,6 +30,7 @@ def llm_response(
     reasoning=None,
     provider_state=None,
     output_tokens=0,
+    reasoning_tokens=None,
 ):
     return SimpleNamespace(
         content=content,
@@ -39,6 +40,7 @@ def llm_response(
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             estimated=False,
+            reasoning_tokens=reasoning_tokens,
         ),
         finish_reason=finish_reason,
         reasoning=reasoning,
