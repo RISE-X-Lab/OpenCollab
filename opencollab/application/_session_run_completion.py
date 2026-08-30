@@ -23,6 +23,7 @@ from opencollab.application.steering import (
     READS_NUDGE_SOFT,
     build_steering_block,
     fold_steering,
+    resolve_budget_nudge_mode,
 )
 from opencollab.application.tool_execution import TERMINAL_CAPTURE_SKIP_MESSAGE
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
@@ -400,7 +401,15 @@ class _SessionRunCompletionMixin:
             has_structured_output=_STRUCTURED_OUTPUT_TOOL in tool_names,
             structured_override=_submit_tool_choice(_STRUCTURED_OUTPUT_TOOL),
             write_landed=self.state.turn.has_landed_write,
+            budget_nudge_mode=resolve_budget_nudge_mode(),
+            prev_used_tokens=(
+                self.state.used_tokens
+                if self._steering_prev_used_tokens is None
+                else self._steering_prev_used_tokens
+            ),
         )
+        # Spend at the turn just built, so the next turn can see a band crossing.
+        self._steering_prev_used_tokens = self.state.used_tokens
         self._maybe_trace_steering(steering_level)
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
