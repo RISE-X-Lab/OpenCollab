@@ -460,10 +460,20 @@ async def test_forced_retry_carries_first_pass_exploration():
 
 
 @pytest.mark.asyncio
-async def test_structured_agent_forces_thinking_off():
-    """PART 3: both sessions a schema= call builds (free exploration + forced
-    corrective commit) must carry ``thinking=False`` — these are the death-slow
-    generations whose reasoning is disabled regardless of the run-wide default."""
+async def test_structured_agent_inherits_the_run_wide_reasoning_setting():
+    """PART 3: neither session a schema= call builds may pin ``thinking`` — both
+    pass ``None`` so the run-wide reasoning default reaches them.
+
+    These two sessions used to force ``thinking=False``, on the theory that
+    reasoning makes a model answer in free text instead of calling the capture
+    tool. Pinning it meant a run that declared a reasoning setting silently did
+    not apply it to any schema-bound agent, so two arms of the same experiment
+    ran under different reasoning settings while reporting the same
+    configuration -- and the trajectory recorded the difference as
+    ``reasoning_effort_policy: suppressed`` on one side only. The behaviour that
+    justified pinning is a property of an endpoint, not of this code path, and
+    belongs to whoever chooses the run-wide default.
+    """
     # First pass misses (_NO_CALL) so the corrective commit session is also built.
     factory = ScriptedFactory(payloads=[_NO_CALL, {"x": 7}])
     ctx = WorkflowContext(factory)
@@ -471,8 +481,23 @@ async def test_structured_agent_forces_thinking_off():
     await ctx.agent("give me x", schema=SCHEMA, tools=[object()])
 
     assert len(factory.builds) == 2
-    assert factory.builds[0]["thinking"] is False  # free-exploration pass
-    assert factory.builds[1]["thinking"] is False  # forced corrective commit
+    assert factory.builds[0]["thinking"] is None  # free-exploration pass
+    assert factory.builds[1]["thinking"] is None  # corrective commit
+
+
+@pytest.mark.asyncio
+async def test_schema_and_plain_agents_agree_on_the_reasoning_setting():
+    """A schema= call and a plain call must hand the factory the same
+    ``thinking`` value. The two differ in how the answer is captured, and an
+    experiment comparing them must not also be comparing reasoning on against
+    reasoning off."""
+    schema_factory = ScriptedFactory(payloads=[{"x": 7}])
+    await WorkflowContext(schema_factory).agent("give me x", schema=SCHEMA)
+
+    plain_factory = ScriptedFactory(payloads=[])
+    await WorkflowContext(plain_factory).agent("just do it")
+
+    assert schema_factory.builds[0]["thinking"] == plain_factory.builds[0]["thinking"]
 
 
 @pytest.mark.asyncio
