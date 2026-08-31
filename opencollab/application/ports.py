@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from opencollab.domain.hooks import HookOutcome
@@ -84,6 +84,32 @@ class WorkingTreeProbe(Protocol):
     async def changed(self) -> bool:
         """True when the working tree has uncommitted changes."""
         ...
+
+
+class CandidateWorkspaceLeasePort(Protocol):
+    """One isolated candidate worktree owned by a workflow call."""
+
+    environment: EnvironmentPort
+
+    async def diff(self) -> str: ...
+
+    async def cleanup(self) -> None: ...
+
+
+class CandidateWorkspacePort(Protocol):
+    """Creates isolated candidates and transactionally adopts one patch."""
+
+    async def acquire(self, label: str) -> CandidateWorkspaceLeasePort: ...
+
+    async def source_diff(self, exclude_paths: Sequence[str] = ()) -> str: ...
+
+    async def restore_source(self, patch: str) -> None: ...
+
+    async def adopt(
+        self,
+        patch: str,
+        preserve_paths: Sequence[str] = (),
+    ) -> None: ...
 
     async def changed_excluding(self, paths: Sequence[str]) -> bool:
         """True when the tree has changes OUTSIDE ``paths`` (e.g. harness-injected
@@ -224,7 +250,7 @@ class SessionFactoryPort(Protocol):
         *,
         role: str,
         env: EnvironmentPort,
-        budget: int,
+        budget: int | None,
         max_steps: int = 50,
         aid: int = -1,
         scheduler: SchedulerPort | None = None,
@@ -272,8 +298,19 @@ class WorkflowSessionFactoryPort(Protocol):
         label: str | None = None,
         tool_choice: Any = None,
         thinking: bool | None = None,
+        environment: EnvironmentPort | None = None,
     ) -> Any:
         ...    # ``thinking`` None -> factory default; False -> force reasoning off.
+
+    async def execute_verification(
+        self,
+        tool: ToolPort,
+        params: Mapping[str, object],
+        *,
+        environment: EnvironmentPort | None = None,
+    ) -> str:
+        """Execute one verification tool without creating an LLM session."""
+        ...
 
 
 class SchedulerPort(Protocol):

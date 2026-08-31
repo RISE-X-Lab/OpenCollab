@@ -76,8 +76,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         event_factory: SessionEventFactory | None = None,
         tool_execution: ToolExecutionUseCase,
         tracer: TracePort | None = None,
-        max_budget_tokens: int = 1_000_000,
-        max_steps: int = 100,
+        max_budget_tokens: int | None = 1_000_000,
+        max_steps: int | None = 100,
         deferrable_tool_names: frozenset[str] = DEFAULT_DEFERRABLE_TOOLS,
         shaper: ShaperPort | None = None,
         team_budget_exhausted: Callable[[], bool] | None = None,
@@ -222,6 +222,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             protected_call = self.state.wind_down_done
         if (
             protected_call
+            and self.max_budget_tokens is not None
             and self.state.used_tokens >= self.max_budget_tokens - self._commit_reserve
         ):
             self.state.budget_reserve_consumed = True
@@ -370,7 +371,11 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         effective_reserve = self._commit_reserve if commit_reserve is None else commit_reserve
         if isinstance(effective_reserve, bool) or not isinstance(effective_reserve, int) or effective_reserve <= 0:
             raise ValueError("commit_reserve must be a positive integer")
-        if enforcement_strength == ENFORCEMENT_ON and effective_reserve > self.max_budget_tokens:
+        if (
+            enforcement_strength == ENFORCEMENT_ON
+            and self.max_budget_tokens is not None
+            and effective_reserve > self.max_budget_tokens
+        ):
             raise ValueError("commit_reserve cannot exceed max_budget_tokens")
 
         self._enforcement_strength = enforcement_strength
@@ -493,8 +498,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             await self._stop_precheck("wind-down complete: forced commit within reserve")
             return True
 
-        explore_threshold = self.max_budget_tokens - self._commit_reserve
-        budget_spent = self.state.used_tokens >= explore_threshold
+        budget_spent = False
+        if self.max_budget_tokens is not None:
+            explore_threshold = self.max_budget_tokens - self._commit_reserve
+            budget_spent = self.state.used_tokens >= explore_threshold
         watchdog_tripped = self._brake_on() and self.state.turn.steps_since_progress >= self._watchdog_k
         low_yield_tripped = self._brake_on() and self.state.turn.low_yield_since_progress >= self._low_yield_m
         brake = budget_spent or watchdog_tripped or low_yield_tripped
@@ -542,7 +549,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             await self._stop_precheck(reason)
             return
 
-        if self.state.used_tokens >= self.max_budget_tokens:
+        if (
+            self.max_budget_tokens is not None
+            and self.state.used_tokens >= self.max_budget_tokens
+        ):
             reason = f"budget exceeded: {self.state.used_tokens} tokens used"
             await self._stop_precheck(reason)
             return
@@ -559,7 +569,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         if await self._apply_enforcement_gate():
             return
 
-        if self.state.step_count >= self.max_steps:
+        if self.max_steps is not None and self.state.step_count >= self.max_steps:
             reason = f"step limit reached: {self.state.step_count} steps"
             await self._stop_precheck(reason)
             return
@@ -601,7 +611,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.state.set_context_tokens(input_tokens)
 
         self.record_llm_trace(response, latency)
-        if self.state.used_tokens > self.max_budget_tokens:
+        if (
+            self.max_budget_tokens is not None
+            and self.state.used_tokens > self.max_budget_tokens
+        ):
             reason = (
                 "budget exceeded after model call: "
                 f"{self.state.used_tokens} tokens used"

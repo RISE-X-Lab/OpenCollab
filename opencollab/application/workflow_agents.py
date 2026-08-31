@@ -347,7 +347,7 @@ class WorkflowAgentsMixin:
             captured=submit_tool.captured,
             wind_down_done=bool(getattr(state, "wind_down_done", False)),
             used_tokens=int(getattr(state, "used_tokens", 0) or 0),
-            max_budget_tokens=int(getattr(session, "max_budget_tokens", 0) or 0),
+            max_budget_tokens=getattr(session, "max_budget_tokens", None),
             wind_down_token_mark=int(getattr(state, "wind_down_token_mark", 0) or 0),
             artifact=report or "",
         )

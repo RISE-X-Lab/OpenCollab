@@ -370,7 +370,7 @@ class _SessionRunCompletionMixin:
         tool_names = {getattr(t, "name", None) for t in getattr(self.agent, "tools", []) or []}
         steering, tool_choice_override, steering_level = build_steering_block(
             used_tokens=self.state.used_tokens,
-            max_budget_tokens=self.max_budget_tokens or 0,
+            max_budget_tokens=self.max_budget_tokens,
             step_count=self.state.step_count + 1,
             max_steps=self.max_steps,
             reads=self.state.turn.reads_since_last_edit,
@@ -496,21 +496,19 @@ class _SessionRunCompletionMixin:
             "max_tokens_per_step",
             DEFAULT_MAX_TOKENS_PER_STEP,
         )
-        remaining_budget = int(self.max_budget_tokens) - int(self.state.used_tokens)
-        reserved_input_tokens = request_tokens_upper_bound(messages, tools)
-        output_budget = remaining_budget - reserved_input_tokens
-        if output_budget < 1:
-            raise _TokenBudgetStop(
-                reserved_input_tokens=reserved_input_tokens,
-                remaining_budget=remaining_budget,
+        max_output_tokens = max(1, int(configured_output_tokens))
+        if self.max_budget_tokens is not None:
+            remaining_budget = int(self.max_budget_tokens) - int(
+                self.state.used_tokens
             )
-        # Precheck guarantees positive headroom before entering this call. Clamp
-        # the provider's output ceiling to the live remainder after reserving an
-        # upper bound for request messages and registered tool schemas.
-        max_output_tokens = min(
-            max(1, int(configured_output_tokens)),
-            output_budget,
-        )
+            reserved_input_tokens = request_tokens_upper_bound(messages, tools)
+            output_budget = remaining_budget - reserved_input_tokens
+            if output_budget < 1:
+                raise _TokenBudgetStop(
+                    reserved_input_tokens=reserved_input_tokens,
+                    remaining_budget=remaining_budget,
+                )
+            max_output_tokens = min(max_output_tokens, output_budget)
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
             extra["max_output_tokens"] = max_output_tokens
         reasoning_effort = getattr(self.agent, "reasoning_effort", None)

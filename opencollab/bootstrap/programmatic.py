@@ -315,7 +315,7 @@ async def run_agent(
     workspace: str,
     tools: str | Sequence[Any] | None,
     max_tokens: int,
-    max_steps: int,
+    max_steps: int | None,
     timeout: float | None,
     cleanup_timeout: float,
     artifacts: Path | None,

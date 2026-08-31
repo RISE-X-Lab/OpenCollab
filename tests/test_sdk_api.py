@@ -162,7 +162,7 @@ def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
         "local_environment",
         "worktree_environment",
     ]
-    assert workflows.__all__ == ["WorkflowContext", "workflow"]
+    assert workflows.__all__ == ["CandidateRun", "WorkflowContext", "workflow"]
     assert Tool is not None
     assert VerificationTool is not None
     assert builtin_tools is not None

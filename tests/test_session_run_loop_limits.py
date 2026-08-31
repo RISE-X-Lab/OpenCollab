@@ -371,3 +371,41 @@ def test_per_call_timeout_none_does_not_bound_the_call():
 
     assert result == "finished"
     assert state.phase is SessionPhase.DONE
+
+
+def test_unbounded_token_and_step_limits_keep_running_and_count_usage():
+    state = SessionState(
+        messages=[{"role": "system", "content": "sys"}],
+        used_tokens=9_000_000,
+        step_count=1_000,
+    )
+    llm = FakeLLM([llm_response(content="finished", total_tokens=17)])
+    runner = build_runner(
+        state=state,
+        llm=llm,
+        max_budget_tokens=None,
+        max_steps=None,
+    )
+
+    result = run(runner.run_loop())
+
+    assert result == "finished"
+    assert state.phase is SessionPhase.DONE
+    assert state.used_tokens == 9_000_017
+    assert state.step_count == 1_001
+
+
+def test_unbounded_token_limit_keeps_provider_step_output_ceiling():
+    agent = _agent_with_tools()
+    agent.max_tokens_per_step = 12_345
+    llm = FakeLLM([llm_response(content="done")])
+    runner = build_runner(
+        agent=agent,
+        llm=llm,
+        max_budget_tokens=None,
+        max_steps=None,
+    )
+
+    run(runner.run_loop())
+
+    assert llm.calls[0]["max_output_tokens"] == 12_345
