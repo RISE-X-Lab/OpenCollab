@@ -49,6 +49,15 @@ def _required_positive_timeout(value: object, name: str) -> float:
     return parsed
 
 
+def _unbounded_limits_requested() -> bool:
+    value = os.environ.get("OPENCOLLAB_UNBOUNDED_LIMITS", "").strip().lower()
+    if value in {"", "0", "false"}:
+        return False
+    if value in {"1", "true"}:
+        return True
+    raise ValueError("OPENCOLLAB_UNBOUNDED_LIMITS must be true or false")
+
+
 def _non_empty(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip() or "\x00" in value:
         raise ValueError(f"{name} must be non-empty text")
@@ -268,7 +277,7 @@ class OpenCollab:
         concurrency: int = 4,
         task_concurrency: int | None = None,
         timeout: float | None = None,
-        max_steps: int = 100,
+        max_steps: int | None = 100,
         system_prompt: str | None = None,
         cleanup_timeout: float = 2.0,
         artifacts: str | os.PathLike[str] | None = None,
@@ -292,17 +301,27 @@ class OpenCollab:
             _non_empty(system_prompt, "system_prompt")
         if not isinstance(trace, bool):
             raise ValueError("trace must be a boolean")
+        unbounded_limits = _unbounded_limits_requested()
+        resolved_budget = (
+            None
+            if unbounded_limits
+            else _positive_int(
+                self._config["budget"] if budget is None else budget,
+                "budget",
+            )
+        )
+        resolved_max_steps = (
+            None
+            if unbounded_limits
+            else _positive_int(max_steps, "max_steps")
+        )
         try:
             result = await run_workflow(
                 workflow=flow,
                 inputs=normalized_inputs,
                 config=self._config,
                 workspace=self._workspace,
-                max_tokens=(
-                    self._config["budget"]
-                    if budget is None
-                    else _positive_int(budget, "budget")
-                ),
+                max_tokens=resolved_budget,
                 max_concurrency=_positive_int(concurrency, "concurrency"),
                 task_concurrency=(
                     None
@@ -310,7 +329,7 @@ class OpenCollab:
                     else _positive_int(task_concurrency, "task_concurrency")
                 ),
                 timeout=_positive_timeout(timeout, "timeout"),
-                max_steps=_positive_int(max_steps, "max_steps"),
+                max_steps=resolved_max_steps,
                 system_prompt=system_prompt,
                 cleanup_timeout=_required_positive_timeout(
                     cleanup_timeout,
