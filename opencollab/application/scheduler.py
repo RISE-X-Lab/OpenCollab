@@ -22,6 +22,9 @@ import contextvars
 from typing import Any, Callable
 
 from opencollab.application._scheduler_cleanup import SchedulerCleanupMixin
+from opencollab.application._scheduler_delivery_tree import (
+    SchedulerDeliveryTreeMixin,
+)
 from opencollab.application._scheduler_persistence import SchedulerPersistenceMixin
 from opencollab.application._scheduler_review import SchedulerReviewMixin
 from opencollab.application._scheduler_run import SchedulerRunMixin
@@ -36,6 +39,7 @@ from opencollab.application.ports import (
     PermissionPort,
     SessionFactoryPort,
     TracePort,
+    WorkingTreeProbe,
     WorktreePoolPort,
 )
 from opencollab.application.scheduler_dedup import InflightDedupMixin
@@ -56,6 +60,7 @@ class Scheduler(
     SchedulerTeamMixin,
     SchedulerRunMixin,
     SchedulerCleanupMixin,
+    SchedulerDeliveryTreeMixin,
     SchedulerReviewMixin,
     LifecycleMixin,
     MessagingMixin,
@@ -111,6 +116,7 @@ class Scheduler(
         event_factory: SchedulerEventFactory | None = None,
         prebuild_team: bool = False,
         serialize_turns: bool = False,
+        delivery_tree_probe: WorkingTreeProbe | None = None,
     ):
         self._session_factory = session_factory
         self._worktree_pool = worktree_pool
@@ -134,6 +140,16 @@ class Scheduler(
         # to each other is untouched: the topology keeps every declared edge and
         # ``message_agent`` stays voluntary — only the timing changes.
         self._serialize_turns = bool(serialize_turns)
+        # Read-only probe over the tree this run is graded on (agent 0's
+        # workspace). Left unset -- every caller but the experiment harness --
+        # ``snapshot_delivery_tree`` is a no-op and no git command runs, so a
+        # run behaves exactly as it did before this existed.
+        self._delivery_tree_probe = delivery_tree_probe
+        self._delivery_tree_snapshots: list[dict[str, Any]] = []
+        # sha256 of a recorded diff -> the index of the row holding its text, so
+        # a boundary that repeats an earlier tree state stores a pointer rather
+        # than a second copy.
+        self._delivery_tree_shas: dict[str, int] = {}
         # Created on first use: ``__init__`` may run without a running loop.
         self._prebuild_lock: asyncio.Lock | None = None
         self._turn_gate_lock: asyncio.Lock | None = None

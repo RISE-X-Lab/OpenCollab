@@ -234,6 +234,7 @@ class OpenCollab:
         allow_unisolated_shell: bool | None = None,
         max_steps: int = SESSION_MAX_STEPS,
         serialize_turns: bool = False,
+        record_delivery_tree: bool = False,
     ) -> RunResult[str]:
         """Run one scheduler-controlled team turn.
 
@@ -268,6 +269,15 @@ class OpenCollab:
         hand work to each other is still theirs to decide. Off by default. The
         run records which way it was set, under
         ``assigned.topology_nodes.turns_serialized``.
+
+        ``record_delivery_tree`` returns ``metrics["tree_snapshots"]``: the diff
+        of the tree this run is graded on — agent 0's — taken before every turn
+        and at every teammate message that was queued. Two consecutive rows
+        bracket one seat's working period, so a line in the delivered patch can
+        be attributed to the seat that was working when it arrived, and the row
+        at the first message answers what had already been done before anyone
+        was asked. Off by default: it costs a ``git diff`` per boundary, and off
+        the key is absent rather than empty.
         """
         _non_empty(prompt, "prompt")
         if not isinstance(trace, bool) or not isinstance(use_worktrees, bool):
@@ -276,6 +286,8 @@ class OpenCollab:
             raise ValueError("prebuild_team must be a boolean")
         if not isinstance(serialize_turns, bool):
             raise ValueError("serialize_turns must be a boolean")
+        if not isinstance(record_delivery_tree, bool):
+            raise ValueError("record_delivery_tree must be a boolean")
         if allow_unisolated_shell is not None and not isinstance(allow_unisolated_shell, bool):
             raise ValueError("allow_unisolated_shell must be a boolean or None")
         resolved_team_max_steps = _positive_int(max_steps, "max_steps")
@@ -303,6 +315,7 @@ class OpenCollab:
                 max_steps=resolved_team_max_steps,
                 serialize_turns=serialize_turns,
                 environment=self._environment,
+                record_delivery_tree=record_delivery_tree,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc

@@ -89,6 +89,12 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             # belongs beside the two conditions above rather than in the team
             # config: the config says who is seated and who may address whom.
             "serialize_turns",
+            # Whether the run writes down the tree it is graded on at each seat
+            # boundary. Also a question about the run: without it a team run
+            # delivers a patch that cannot be attributed to a seat, and "the
+            # work moved between seats" is unanswerable from the run's own
+            # records. Off by default -- it costs a ``git diff`` per boundary.
+            "record_delivery_tree",
         ),
         sdk.OpenCollab.workflow: (
             "self",

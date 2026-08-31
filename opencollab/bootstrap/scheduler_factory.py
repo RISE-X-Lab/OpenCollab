@@ -13,9 +13,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-from opencollab.adapters.env import Environment
+from opencollab.adapters.env import Environment, LocalEnvironment
 from opencollab.adapters.hooks import ShellHookRunner
 from opencollab.adapters.storage import SessionStore
+from opencollab.adapters.working_tree import EnvWorkingTreeProbe
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.event_bus import EventBus
 from opencollab.application.hooks import HookEventSubscriber
@@ -117,6 +118,7 @@ def build_scheduler(
     max_steps: int = SESSION_MAX_STEPS,
     serialize_turns: bool = False,
     environment: Environment | None = None,
+    record_delivery_tree: bool = False,
 ) -> Scheduler:
     """Build the Scheduler and let it create agent 0 (the init process).
 
@@ -174,6 +176,14 @@ def build_scheduler(
 
     ``allow_unisolated_shell=True`` with ``interactive=False`` is exactly that
     run, and it is not expressible with one flag.
+
+    ``record_delivery_tree`` wires a read-only probe over the tree this run is
+    graded on -- agent 0's workspace, which is the environment when one is
+    given -- and the scheduler then records that tree's diff at each seat
+    boundary (``SchedulerDeliveryTreeMixin``). Off by default because it costs a
+    ``git diff`` per boundary and answers a question only an experiment asks:
+    which seat was working when a delivered line arrived. Off, no probe is
+    built and no git command runs.
 
     ``None`` — the default — means "whatever ``interactive`` says", so every
     existing call site keeps its current behaviour without being touched.
@@ -250,6 +260,18 @@ def build_scheduler(
         base_environment=environment,
     )
 
+    # The graded tree is where agent 0 works: the environment when the run was
+    # given one (a container the repository lives in), the host workspace
+    # otherwise. Same choice ``_workflow_runtime_session`` makes for the probe
+    # it hands a workflow, so both regimes measure the same directory.
+    delivery_tree_probe = (
+        EnvWorkingTreeProbe(
+            environment if environment is not None else LocalEnvironment(ctx.workspace)
+        )
+        if record_delivery_tree
+        else None
+    )
+
     scheduler = Scheduler(
         session_factory=session_factory,
         worktree_pool=worktree_pool,
@@ -261,6 +283,7 @@ def build_scheduler(
         roles=tuple(team_cfg.roles),
         prebuild_team=prebuild_team,
         serialize_turns=serialize_turns,
+        delivery_tree_probe=delivery_tree_probe,
     )
 
     # Attach hooks after the scheduler exists so the runner can hold its handle

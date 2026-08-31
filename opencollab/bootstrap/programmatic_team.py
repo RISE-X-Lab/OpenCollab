@@ -44,6 +44,7 @@ async def run_team(
     max_steps: int = SESSION_MAX_STEPS,
     serialize_turns: bool = False,
     environment: Environment | None = None,
+    record_delivery_tree: bool = False,
 ) -> ProgrammaticResult:
     """Run the scheduler regime once, including bounded team cleanup.
 
@@ -60,6 +61,13 @@ async def run_team(
     directory this run is anchored to -- skills, the repository map, and the
     session store are read from it -- while the environment is what agents
     execute in, which is how a team reaches a repository inside a container.
+
+    ``record_delivery_tree`` adds ``tree_snapshots`` to the returned metrics:
+    the diff of the tree this run is graded on, taken at every seat boundary,
+    so a delivered line can be attributed to the seat that was working when it
+    arrived. Off by default -- it costs a ``git diff`` per boundary and the key
+    is absent entirely when off, which is how a caller tells "not recorded"
+    from "recorded and nothing happened".
     """
     run_config = dict(config)
     run_config["budget"] = max_tokens
@@ -89,6 +97,7 @@ async def run_team(
             max_steps=max_steps,
             serialize_turns=serialize_turns,
             environment=environment,
+            record_delivery_tree=record_delivery_tree,
         )
     except BaseException as exc:
         tracer_failure = _programmatic._close_tracer(context.tracer)
@@ -205,6 +214,11 @@ async def run_team(
     if artifacts is not None:
         _programmatic._require_json_object(artifacts / "team.json", "team manifest")
     lead = scheduler.lead_session
+    delivery_tree: dict[str, Any] = (
+        {"tree_snapshots": [dict(row) for row in scheduler.delivery_tree_snapshots]}
+        if record_delivery_tree
+        else {}
+    )
     return ProgrammaticResult(
         output=output,
         status=status,
@@ -215,6 +229,7 @@ async def run_team(
         metrics={
             "steps": int(getattr(lead, "step_count", 0)),
             "sessions": len(scheduler.table.entries),
+            **delivery_tree,
             # A team run reports the same wind-down evidence a solo agent and a
             # workflow already do. Without it a caller cannot tell a team that
             # finished from one abandoned mid-flight, and one that reads the

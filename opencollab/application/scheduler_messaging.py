@@ -225,6 +225,15 @@ class MessagingMixin:
             )
             self._autosave_session(to_aid)
             delivered_events = await self._drain_message_inbox_locked(to_aid)
+        # The graded tree at the moment this handoff was made. Taken after the
+        # queue mutation is committed and outside the recipient's lock, so a
+        # probe that hangs or is cancelled cannot leave a half-queued message;
+        # and taken here rather than at the recipient's first turn because what
+        # the question asks is what the *sender* had already done before it
+        # asked anyone. A refused message reaches none of this: nothing crossed.
+        await self.snapshot_delivery_tree(
+            "message_sent", aid=from_aid, to_aid=to_aid
+        )
         # Scheduler events are observational and may re-enter send_message. Emit
         # only after releasing the per-target lock, and isolate sink failures so
         # durable queue mutation and the drive task cannot be rolled back halfway.
