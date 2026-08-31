@@ -21,6 +21,9 @@ Supported variables:
                             is on (OpenAI-compatible default
                             {"enable_thinking": true})
     OPENCOLLAB_LLM_TIMEOUT — provider request timeout in seconds
+    OPENCOLLAB_LLM_STREAM_CHAT — consume chat completions as a stream so the
+                            provider's reasoning text can be recorded (bool,
+                            default off; off == today's request body)
     OPENCOLLAB_FILTER_MESSAGES — deprecated TUI compatibility setting (bool)
     OPENCOLLAB_CONFIG_FILE — explicit path to an env file
 """
@@ -149,6 +152,7 @@ class OpenCollabConfig(BaseModel):
     llm_connect_timeout: float = Field(default=30.0, gt=0, allow_inf_nan=False)
     llm_first_event_timeout: float = Field(default=180.0, gt=0, allow_inf_nan=False)
     llm_stream_idle_timeout: float = Field(default=180.0, gt=0, allow_inf_nan=False)
+    llm_stream_chat: bool = Field(default=False)
     provider_error_time_budget: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     filter_messages: bool = Field(default=False)
 
@@ -441,6 +445,7 @@ def build_config(workspace: str | None = None, overrides: dict[str, Any] | None 
         "llm_stream_idle_timeout": resolve(
             "OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT", default="180"
         ),
+        "llm_stream_chat": resolve("OPENCOLLAB_LLM_STREAM_CHAT", default="false"),
         "provider_error_time_budget": resolve(
             "OPENCOLLAB_PROVIDER_ERROR_TIME_BUDGET", default="0"
         ),

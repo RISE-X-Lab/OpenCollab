@@ -23,6 +23,19 @@ class TransientProviderError(RuntimeError):
 class TransientEmptyOutputError(TransientProviderError):
     """A provider completed a request without usable model output."""
 
+
+class StreamedUsageUnavailableError(RuntimeError):
+    """A completed chat stream carried no usable token accounting.
+
+    Deliberately NOT a ``TransientProviderError``: the stream finished (its
+    ``finish_reason`` arrived), so the endpoint simply did not report usage for
+    a request that asked for it via ``stream_options.include_usage``. Repeating
+    the identical request would fail identically while paying for the output
+    again. Failing loudly beats the alternative — ``_parse_usage`` would fall
+    back to an *estimate*, and the budget meter, the USD ledger and every
+    cross-arm token comparison would silently run on invented numbers.
+    """
+
 # Status codes a context overflow takes. Anthropic and OpenAI-compatible
 # providers both surface it as an HTTP 400 (BadRequest).
 _OVERFLOW_STATUS_CODES = frozenset({400})

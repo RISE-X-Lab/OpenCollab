@@ -144,6 +144,7 @@ class OpenCollab:
             "llm_connect_timeout",
             "llm_first_event_timeout",
             "llm_stream_idle_timeout",
+            "llm_stream_chat",
         )
         public = {
             key: copy.deepcopy(self._config[key])

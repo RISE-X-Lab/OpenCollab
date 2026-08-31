@@ -65,6 +65,11 @@ class Agent:
     llm_max_retries: int = 3
     provider_error_time_budget: float = 0.0
     reasoning_effort_policy: str = "configured"
+    # Consume chat completions as a stream. OFF by default: streaming is the
+    # only way some endpoints return reasoning text, but it also changes the
+    # request body, so it stays opt-in and per-run. Appended last so the
+    # legacy positional field order is untouched.
+    llm_stream_chat: bool = False
 
     def __post_init__(self) -> None:
         self.name = validate_role_identity(self.name)

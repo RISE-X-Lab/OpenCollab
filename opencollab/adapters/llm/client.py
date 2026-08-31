@@ -64,6 +64,7 @@ class LLMClient:
         provider_error_time_budget: float = 0.0,
         provider_retry_budget: RetryTimeBudget | None = None,
         user_agent: str | None = None,
+        stream_chat: bool = False,
     ):
         if context_window is not None and (
             isinstance(context_window, bool)
@@ -90,6 +91,9 @@ class LLMClient:
         )
         self.first_event_timeout = first_event_timeout
         self.stream_idle_timeout = stream_idle_timeout
+        # Chat-completions streaming, OFF by default. When off,
+        # ``complete_openai`` builds the same request body it always has.
+        self.stream_chat = bool(stream_chat)
         self.provider_error_time_budget = provider_error_time_budget
         if provider_retry_budget is not None:
             if provider_retry_budget.total_seconds != float(provider_error_time_budget):
@@ -242,6 +246,9 @@ class LLMClient:
                     max_output_tokens=max_output_tokens,
                     reasoning_effort=reasoning_effort,
                     provider_error_time_budget=self.provider_retry_budget,
+                    stream=self.stream_chat,
+                    first_event_timeout=self.first_event_timeout,
+                    stream_idle_timeout=self.stream_idle_timeout,
                 )
             await _record_api_usage_async(
                 provider=self.provider,

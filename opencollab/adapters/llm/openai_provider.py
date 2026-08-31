@@ -6,10 +6,16 @@ Ollama, vLLM, etc.) via the OpenAI SDK.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+from dataclasses import dataclass, field
 from typing import Any
 
+from opencollab.adapters.llm.errors import (
+    StreamedUsageUnavailableError,
+    TransientProviderError,
+)
 from opencollab.adapters.llm.retry import RetryTimeBudget, with_retry
 from opencollab.adapters.llm.tool_contracts import (
     NormalizedToolChoice,
@@ -83,11 +89,14 @@ def _build_request_kwargs(
     top_p: float | None = None,
     max_output_tokens: int | None = None,
     reasoning_effort: str | None = None,
+    keep_reasoning_content: bool = True,
 ) -> dict[str, Any]:
     reasoning_model = _uses_reasoning_request_fields(model)
     kwargs: dict[str, Any] = {
         "model": model,
-        "messages": _normalize_request_messages(messages),
+        "messages": _normalize_request_messages(
+            messages, keep_reasoning_content=keep_reasoning_content
+        ),
     }
     if not reasoning_model:
         kwargs["temperature"] = temperature
@@ -127,21 +136,37 @@ def _build_request_kwargs(
     return kwargs
 
 
-def _normalize_request_messages(messages: list[dict]) -> list[dict]:
-    """Make message payloads acceptable to stricter OpenAI-compatible gateways."""
+# Message keys an OpenAI-compatible endpoint accepts on the request path.
+_REQUEST_MESSAGE_FIELDS = frozenset({
+    "role",
+    "content",
+    "reasoning_content",
+    "tool_calls",
+    "tool_call_id",
+    "name",
+})
+
+
+def _normalize_request_messages(
+    messages: list[dict], *, keep_reasoning_content: bool = True
+) -> list[dict]:
+    """Make message payloads acceptable to stricter OpenAI-compatible gateways.
+
+    ``keep_reasoning_content=False`` drops recorded chain-of-thought from the
+    outbound history. Streaming turns this on: streaming is what makes
+    ``reasoning_content`` non-empty in the first place, and echoing it back
+    would both inflate input tokens and diverge the request from the
+    non-streaming baseline by more than the two streaming keys. The reasoning
+    still reaches the trajectory — it is recorded, just not resent.
+    """
+    dropped = frozenset() if keep_reasoning_content else frozenset({"reasoning_content"})
+    allowed = _REQUEST_MESSAGE_FIELDS - dropped
     normalized: list[dict] = []
     for message in messages:
         item = {
             key: value
             for key, value in message.items()
-            if key in {
-                "role",
-                "content",
-                "reasoning_content",
-                "tool_calls",
-                "tool_call_id",
-                "name",
-            }
+            if key in allowed
         }
         if item.get("content") is None:
             item["content"] = ""
@@ -243,26 +268,35 @@ def _normalize_tool_arguments(arguments: str | None) -> str:
     return raw
 
 
-def _parse_response(
-    resp: Any, request_messages: list[dict], tools: list[dict] | None = None
+def _clean_provider_model(value: Any) -> str | None:
+    """The provider-reported model id, or ``None`` when absent/blank."""
+    return value if isinstance(value, str) and value else None
+
+
+def _build_chat_response(
+    content: str | None,
+    reasoning: str | None,
+    tool_calls: list[dict[str, Any]],
+    finish_reason: str | None,
+    provider_model: str | None,
+    *,
+    usage_source: Any,
+    usage_message: Any,
+    request_messages: list[dict],
+    tools: list[dict] | None,
 ) -> LLMResponse:
-    choice = resp.choices[0]
-    message = choice.message
+    """Turn already-extracted response fields into an ``LLMResponse``.
 
-    tool_calls = []
-    if message.tool_calls:
-        for tool_call in message.tool_calls:
-            tool_calls.append({
-                "id": tool_call.id,
-                "type": "function",
-                "function": {
-                    "name": tool_call.function.name,
-                    "arguments": _normalize_tool_arguments(tool_call.function.arguments),
-                },
-            })
+    Both wire shapes (one non-streaming ``ChatCompletion`` and a reassembled
+    chunk stream) end here, so the three contracts that live in this tail —
+    kimi markup recovery, usage parsing with its estimate fallback, and the
+    empty-turn rescue — apply to both by construction rather than by being
+    hand-mirrored on each path.
 
-    content = message.content
-    reasoning = getattr(message, "reasoning_content", None) or None
+    ``usage_source`` only needs a ``.usage`` attribute; ``usage_message`` is the
+    assistant message (SDK object or plain dict) used to estimate output tokens
+    when the endpoint reports none.
+    """
     # kimi (DashScope compat) sometimes emits tool calls as literal special-token
     # markup instead of structured ``tool_calls`` — in ``content`` or, under
     # thinking mode, inside ``reasoning_content`` (finish_reason='stop', empty
@@ -282,7 +316,7 @@ def _parse_response(
                 reasoning = cleaned_reasoning
                 markup_recovered = True
 
-    usage = _parse_usage(resp, request_messages, message, tools)
+    usage = _parse_usage(usage_source, request_messages, usage_message, tools)
     # Surface the P6 recovery as an observability counter (summed up the chain
     # into the run metrics) without altering the recovered response itself.
     usage.markup_recovered = 1 if markup_recovered else 0
@@ -295,13 +329,40 @@ def _parse_response(
         content=content,
         tool_calls=tool_calls,
         usage=usage,
-        finish_reason=choice.finish_reason,
+        finish_reason=finish_reason,
         reasoning=reasoning,
-        provider_model=(
-            value
-            if isinstance((value := getattr(resp, "model", None)), str) and value
-            else None
-        ),
+        provider_model=provider_model,
+    )
+
+
+def _parse_response(
+    resp: Any, request_messages: list[dict], tools: list[dict] | None = None
+) -> LLMResponse:
+    choice = resp.choices[0]
+    message = choice.message
+
+    tool_calls = []
+    if message.tool_calls:
+        for tool_call in message.tool_calls:
+            tool_calls.append({
+                "id": tool_call.id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.function.name,
+                    "arguments": _normalize_tool_arguments(tool_call.function.arguments),
+                },
+            })
+
+    return _build_chat_response(
+        message.content,
+        getattr(message, "reasoning_content", None) or None,
+        tool_calls,
+        choice.finish_reason,
+        _clean_provider_model(getattr(resp, "model", None)),
+        usage_source=resp,
+        usage_message=message,
+        request_messages=request_messages,
+        tools=tools,
     )
 
 
@@ -373,6 +434,354 @@ def _estimate_output_tokens(message: Any) -> int:
     return estimate_messages_tokens([{"role": "assistant", **plain_message}])
 
 
+# ---------------------------------------------------------------------------
+# Streaming (opt-in): reassembling one chat completion from its chunks
+# ---------------------------------------------------------------------------
+
+# Extra request keys the streaming path adds, and the ONLY difference between a
+# streamed request and today's. When streaming is off these are never built, so
+# the OpenAI SDK omits both from the JSON body entirely (it drops parameters
+# left at their ``omit`` sentinel) and the request stays byte-for-byte the one
+# the existing runs were produced with. Both keys are also in
+# ``_FRAMEWORK_CONTROLLED_THINKING_FIELDS``, so ``extra_body`` cannot switch
+# streaming on from the side.
+_STREAM_REQUEST_FIELDS: dict[str, Any] = {
+    "stream": True,
+    "stream_options": {"include_usage": True},
+}
+
+# Candidate delta keys carrying chain-of-thought text. The SDK's ``ChoiceDelta``
+# declares neither, but its BaseModel is ``extra="allow"``, so an unknown wire
+# key lands in pydantic extras and ``getattr`` finds it.
+#   reasoning_content — DeepSeek / DashScope compatible mode (verified against
+#                       the configured endpoint) and the spelling the
+#                       non-streaming path already reads
+#   reasoning         — OpenRouter-style gateways
+# The first spelling that carries text wins and is then locked for the turn: a
+# gateway that sends both would otherwise duplicate the whole chain-of-thought,
+# and duplicated reasoning is invisible to a human reader.
+_REASONING_DELTA_FIELDS: tuple[str, ...] = ("reasoning_content", "reasoning")
+
+
+@dataclass
+class _ToolCallSlot:
+    """One accumulating tool call, keyed by the delta's ``index``."""
+
+    call_id: str | None = None
+    name_parts: list[str] = field(default_factory=list)
+    argument_parts: list[str] = field(default_factory=list)
+
+
+@dataclass
+class _ChatStreamState:
+    content_parts: list[str] = field(default_factory=list)
+    reasoning_parts: list[str] = field(default_factory=list)
+    reasoning_field: str | None = None
+    tool_slots: dict[int, _ToolCallSlot] = field(default_factory=dict)
+    tool_order: list[int] = field(default_factory=list)
+    finish_reason: str | None = None
+    usage_object: Any = None
+    provider_model: str | None = None
+    chunk_count: int = 0
+
+
+@dataclass
+class _UsageCarrier:
+    """Minimal stand-in for the response object ``_parse_usage`` reads."""
+
+    usage: Any = None
+
+
+def _absorb_reasoning_delta(delta: Any, state: _ChatStreamState) -> None:
+    fields = (
+        (state.reasoning_field,)
+        if state.reasoning_field is not None
+        else _REASONING_DELTA_FIELDS
+    )
+    for name in fields:
+        piece = getattr(delta, name, None)
+        if isinstance(piece, str) and piece:
+            state.reasoning_field = name
+            state.reasoning_parts.append(piece)
+            return
+
+
+def _absorb_tool_call_delta(call_delta: Any, state: _ChatStreamState) -> None:
+    """Merge one tool-call fragment into the slot its ``index`` names.
+
+    ``index`` — not arrival order — identifies the call: with parallel tool
+    calls the fragments of index 0 and index 1 interleave, so appending in
+    arrival order splices one call's arguments onto another. That usually
+    surfaces as invalid JSON, but two fragments can concatenate into *valid*
+    JSON, which executes a tool with corrupted arguments and reports nothing.
+    ``id`` and ``name`` arrive only on a call's first fragment (later fragments
+    carry ``None`` or ``""``), so they are kept, never overwritten with blanks.
+    """
+    index = getattr(call_delta, "index", None)
+    if not isinstance(index, int) or isinstance(index, bool):
+        # Guessing an owner for an unlabelled fragment is exactly the move that
+        # answers wrongly in silence, so fail loudly instead.
+        raise TransientProviderError("streamed tool_call delta has no index")
+
+    slot = state.tool_slots.get(index)
+    if slot is None:
+        slot = _ToolCallSlot()
+        state.tool_slots[index] = slot
+        state.tool_order.append(index)
+
+    call_id = getattr(call_delta, "id", None)
+    if isinstance(call_id, str) and call_id:
+        if slot.call_id is not None and slot.call_id != call_id:
+            raise TransientProviderError(
+                f"streamed tool_call index {index} changed id "
+                f"{slot.call_id!r} -> {call_id!r}"
+            )
+        slot.call_id = call_id
+
+    function = getattr(call_delta, "function", None)
+    if function is None:
+        return
+
+    name = getattr(function, "name", None)
+    if isinstance(name, str) and name:
+        # Append rather than assign: the configured endpoint sends the whole
+        # name in the first fragment, but a gateway that splits it would
+        # otherwise leave only the last piece ('apply_patch' -> 'patch').
+        slot.name_parts.append(name)
+
+    arguments = getattr(function, "arguments", None)
+    if isinstance(arguments, str) and arguments:
+        slot.argument_parts.append(arguments)
+
+
+def _absorb_chunk(chunk: Any, state: _ChatStreamState) -> None:
+    state.chunk_count += 1
+
+    model = getattr(chunk, "model", None)
+    if state.provider_model is None:
+        state.provider_model = _clean_provider_model(model)
+
+    # Usage rides on the final chunk, whose ``choices`` is an EMPTY list — so it
+    # must be read before touching choices, and choices must never be indexed
+    # blindly the way the non-streaming path indexes ``resp.choices[0]``.
+    usage = getattr(chunk, "usage", None)
+    if usage is not None:
+        state.usage_object = usage
+
+    for choice in getattr(chunk, "choices", None) or ():
+        # ``n`` is never set today, so there is only ever one choice. Filtering
+        # costs nothing and stops a future ``n>1`` from interleaving two
+        # completions into one answer.
+        if getattr(choice, "index", 0) != 0:
+            continue
+
+        # finish_reason is not necessarily on the last chunk: with
+        # include_usage the configured endpoint puts it on the second to last.
+        # Record whichever chunk carries it.
+        finish = getattr(choice, "finish_reason", None)
+        if isinstance(finish, str) and finish:
+            state.finish_reason = finish
+
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+
+        text = getattr(delta, "content", None)
+        if isinstance(text, str) and text:
+            state.content_parts.append(text)
+
+        _absorb_reasoning_delta(delta, state)
+
+        for call_delta in getattr(delta, "tool_calls", None) or ():
+            _absorb_tool_call_delta(call_delta, state)
+
+
+def _finalize_tool_calls(
+    state: _ChatStreamState, tools: list[dict] | None
+) -> list[dict[str, Any]]:
+    """Emit the assembled tool calls in first-seen index order.
+
+    Two checks turn assembly bugs into errors instead of wrong answers:
+    the reassembled name must be one this request actually registered (we hold
+    that list, so the check is free), and the reassembled arguments must parse
+    as JSON. The second check differs from the non-streaming path on purpose —
+    there, malformed arguments can only come from the model, while here they can
+    also come from our own reassembly, and the two are indistinguishable
+    downstream. ``responses_provider`` sets the same precedent.
+    """
+    registered: set[str] = set()
+    for tool in tools or ():
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if isinstance(function, dict) and isinstance(function.get("name"), str):
+            registered.add(function["name"])
+
+    finalized: list[dict[str, Any]] = []
+    for index in state.tool_order:
+        slot = state.tool_slots[index]
+        name = "".join(slot.name_parts)
+        if not name:
+            raise TransientProviderError(
+                f"streamed tool_call {index} never carried a name"
+            )
+        if registered and name not in registered:
+            raise TransientProviderError(
+                f"streamed tool_call {index} assembled an unregistered name {name!r}"
+            )
+        if not slot.call_id:
+            raise TransientProviderError(
+                f"streamed tool_call {index} never carried an id"
+            )
+
+        # Repair the '{}{' prefix first, then validate: the other order would
+        # condemn a response the shared repair can still rescue.
+        arguments = _normalize_tool_arguments("".join(slot.argument_parts))
+        try:
+            json.loads(arguments)
+        except (TypeError, ValueError) as exc:
+            raise TransientProviderError(
+                f"streamed tool_call {slot.call_id!r} assembled invalid JSON arguments"
+            ) from exc
+
+        finalized.append({
+            "id": slot.call_id,
+            "type": "function",
+            "function": {"name": name, "arguments": arguments},
+        })
+    return finalized
+
+
+def _stream_state_to_response(
+    state: _ChatStreamState,
+    request_messages: list[dict],
+    tools: list[dict] | None,
+    *,
+    require_reported_usage: bool = True,
+) -> LLMResponse:
+    if state.chunk_count == 0:
+        raise TransientProviderError("chat completion stream produced no chunks")
+
+    # A finish_reason always exists on the non-streaming path, so its absence
+    # here means the stream broke, never that "the turn simply ended". Treating
+    # a truncated turn as a complete one is the worst failure available: the
+    # session's provider-truncation guard reads this field, and a tool call cut
+    # in half would be stored and then actually executed, with nothing in the
+    # trajectory marking it as damaged.
+    if state.finish_reason is None:
+        raise TransientProviderError(
+            "chat completion stream ended without a finish_reason after "
+            f"{state.chunk_count} chunks"
+        )
+
+    # No content fragments yields None, not "": both behave identically in the
+    # rescue and history rungs, but the trajectory stores this value verbatim
+    # and '"content": ""' is not '"content": null' to an analysis script.
+    content: str | None = "".join(state.content_parts) or None
+    reasoning: str | None = "".join(state.reasoning_parts) or None
+    tool_calls = _finalize_tool_calls(state, tools)
+
+    response = _build_chat_response(
+        content,
+        reasoning,
+        tool_calls,
+        state.finish_reason,
+        state.provider_model,
+        usage_source=_UsageCarrier(usage=state.usage_object),
+        usage_message={
+            "content": content,
+            "reasoning_content": reasoning,
+            "tool_calls": tool_calls or None,
+        },
+        request_messages=request_messages,
+        tools=tools,
+    )
+
+    # The stream asked for usage explicitly. Not getting it means the budget
+    # meter, the USD ledger and every cross-arm token comparison would run on
+    # ``_parse_usage``'s estimate, flagged only by a boolean nobody reads.
+    if require_reported_usage and response.usage.estimated:
+        raise StreamedUsageUnavailableError(
+            "chat completion stream reported no usable usage block "
+            "(endpoint may not honor stream_options.include_usage)"
+        )
+    return response
+
+
+async def _next_chunk(iterator: Any, budget: float, *, stage: str) -> Any:
+    try:
+        return await asyncio.wait_for(iterator.__anext__(), timeout=budget)
+    except asyncio.TimeoutError as exc:
+        raise TransientProviderError(
+            f"chat completion {stage} timeout after {budget:g}s"
+        ) from exc
+
+
+async def _close_stream(stream: Any) -> None:
+    close = getattr(stream, "close", None)
+    if close is None:
+        return
+    result = close()
+    if asyncio.iscoroutine(result):
+        await result
+
+
+async def _consume_chat_stream(
+    stream: Any, first_chunk_timeout: float, idle_timeout: float
+) -> _ChatStreamState:
+    """Drain one chat-completion stream into an aggregate state.
+
+    Two distinct clocks, because the httpx ``timeout`` bounds a single socket
+    read once the response is streamed: a stream that emits one byte every 599
+    seconds would otherwise never trip anything. The per-call wall clock upstream
+    is unchanged and still bounds the whole call.
+    """
+    state = _ChatStreamState()
+    iterator = stream.__aiter__()
+    first = True
+    try:
+        while True:
+            try:
+                chunk = await _next_chunk(
+                    iterator,
+                    first_chunk_timeout if first else idle_timeout,
+                    stage="first-chunk" if first else "stream-idle",
+                )
+            except StopAsyncIteration:
+                break
+            first = False
+            _absorb_chunk(chunk, state)
+    finally:
+        await _close_stream(stream)
+    return state
+
+
+async def _create_and_consume_chat_stream(
+    client: Any,
+    kwargs: dict[str, Any],
+    first_chunk_timeout: float,
+    idle_timeout: float,
+) -> _ChatStreamState:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + first_chunk_timeout
+    try:
+        event_stream = await asyncio.wait_for(
+            client.chat.completions.create(**kwargs),
+            timeout=first_chunk_timeout,
+        )
+    except asyncio.TimeoutError as exc:
+        raise TransientProviderError(
+            f"chat completion first-chunk timeout after {first_chunk_timeout:g}s"
+        ) from exc
+
+    # Opening the stream spends part of the first-chunk allowance; charge it.
+    remaining = deadline - loop.time()
+    if remaining <= 0:
+        await _close_stream(event_stream)
+        raise TransientProviderError(
+            f"chat completion first-chunk timeout after {first_chunk_timeout:g}s"
+        )
+    return await _consume_chat_stream(event_stream, remaining, idle_timeout)
+
+
 async def complete_openai(
     client: Any,
     model: str,
@@ -387,8 +796,18 @@ async def complete_openai(
     max_output_tokens: int | None = None,
     reasoning_effort: str | None = None,
     provider_error_time_budget: RetryTimeBudget | None = None,
+    stream: bool = False,
+    first_event_timeout: float = 180.0,
+    stream_idle_timeout: float = 180.0,
 ) -> LLMResponse:
-    """Single-shot completion against an OpenAI-compatible endpoint."""
+    """Single-shot completion against an OpenAI-compatible endpoint.
+
+    ``stream`` is OFF by default and, when off, this function executes exactly
+    the code it always has: no streaming keys are built, so the SDK sends the
+    same JSON body as before and the same parser reads the reply. Turning it on
+    is the only way to capture ``reasoning_content``, which several endpoints
+    (DeepSeek among them) return solely over the streamed wire format.
+    """
     kwargs = _build_request_kwargs(
         model,
         messages,
@@ -400,10 +819,34 @@ async def complete_openai(
         top_p,
         max_output_tokens,
         reasoning_effort,
+        # Streaming is what makes reasoning non-empty; recording it must not
+        # turn into resending it on the next turn.
+        keep_reasoning_content=not stream,
     )
-    resp = await with_retry(
-        lambda: client.chat.completions.create(**kwargs),
+    if not stream:
+        resp = await with_retry(
+            lambda: client.chat.completions.create(**kwargs),
+            max_retries=max_retries,
+            retry_time_budget=provider_error_time_budget,
+        )
+        return _parse_response(resp, kwargs["messages"], kwargs.get("tools"))
+
+    stream_kwargs = {**kwargs, **_STREAM_REQUEST_FIELDS}
+
+    async def request_once() -> LLMResponse:
+        # create() and the drain belong to the SAME retry unit. create()
+        # returns as soon as the response headers land, so wrapping only it
+        # would leave a mid-stream break outside the retry — a silent
+        # degradation, since a half-received answer looks like a whole one.
+        state = await _create_and_consume_chat_stream(
+            client, stream_kwargs, first_event_timeout, stream_idle_timeout
+        )
+        return _stream_state_to_response(
+            state, stream_kwargs["messages"], stream_kwargs.get("tools")
+        )
+
+    return await with_retry(
+        request_once,
         max_retries=max_retries,
         retry_time_budget=provider_error_time_budget,
     )
-    return _parse_response(resp, kwargs["messages"], kwargs.get("tools"))

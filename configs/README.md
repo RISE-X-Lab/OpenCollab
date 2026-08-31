@@ -54,6 +54,26 @@ API-key fallback is provider and endpoint specific:
 Keys from another provider are not used as fallbacks. Process-environment
 values beat the same variable in an env file, and blank values are ignored.
 
+## Streaming chat completions
+
+`OPENCOLLAB_LLM_STREAM_CHAT=true` consumes OpenAI-compatible chat completions
+as a stream. It is off by default, and off means the request body is exactly
+the one the non-streaming path has always sent — neither `stream` nor
+`stream_options` is added — so runs recorded before and after this setting
+existed remain comparable.
+
+Turn it on to record the model's reasoning: several endpoints, DeepSeek among
+them, return `reasoning_content` **only** over the streamed format, so a
+non-streamed request pays for the thinking and receives none of the text.
+While streaming, recorded reasoning is kept out of the outbound history: it
+reaches the trajectory, but is not echoed back to the model on the next turn.
+
+Streaming reuses `OPENCOLLAB_LLM_FIRST_EVENT_TIMEOUT` and
+`OPENCOLLAB_LLM_STREAM_IDLE_TIMEOUT` (both 180s) — the request timeout only
+bounds a single socket read once a response is streamed. A stream that ends
+without a `finish_reason`, or one whose endpoint reports no token usage, is
+an error rather than a silently partial answer.
+
 ## Model capability metadata
 
 Compatibility differences are recorded in

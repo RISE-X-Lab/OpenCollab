@@ -75,6 +75,7 @@ class SpawnConfig:
     llm_first_event_timeout: float = 180.0
     llm_stream_idle_timeout: float = 180.0
     provider_error_time_budget: float = 0.0
+    llm_stream_chat: bool = False
 
 
 class ContextBuilder:
@@ -256,6 +257,7 @@ class ContextBuilder:
             llm_connect_timeout=cfg.llm_connect_timeout,
             llm_first_event_timeout=cfg.llm_first_event_timeout,
             llm_stream_idle_timeout=cfg.llm_stream_idle_timeout,
+            llm_stream_chat=cfg.llm_stream_chat,
             provider_error_time_budget=cfg.provider_error_time_budget,
         )
 

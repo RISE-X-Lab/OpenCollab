@@ -76,6 +76,7 @@ class WorkflowSessionFactory:
         provider_error_time_budget: float = 0.0,
         save_dir: str | None = None,
         env: Any | None = None,
+        llm_stream_chat: bool = False,
     ) -> None:
         self._model = model
         self._provider = provider
@@ -99,6 +100,7 @@ class WorkflowSessionFactory:
         self._llm_connect_timeout = llm_connect_timeout
         self._llm_first_event_timeout = llm_first_event_timeout
         self._llm_stream_idle_timeout = llm_stream_idle_timeout
+        self._llm_stream_chat = llm_stream_chat
         self._provider_error_time_budget = provider_error_time_budget
         self._provider_retry_budget = (
             RetryTimeBudget(provider_error_time_budget)
@@ -229,6 +231,7 @@ class WorkflowSessionFactory:
             llm_connect_timeout=self._llm_connect_timeout,
             llm_first_event_timeout=self._llm_first_event_timeout,
             llm_stream_idle_timeout=self._llm_stream_idle_timeout,
+            llm_stream_chat=self._llm_stream_chat,
             provider_error_time_budget=self._provider_error_time_budget,
             tool_choice=tool_choice,
         )
@@ -307,6 +310,7 @@ def build_workflow_context(
         llm_connect_timeout=float(cfg.get("llm_connect_timeout", 30.0)),
         llm_first_event_timeout=float(cfg.get("llm_first_event_timeout", 180.0)),
         llm_stream_idle_timeout=float(cfg.get("llm_stream_idle_timeout", 180.0)),
+        llm_stream_chat=bool(cfg.get("llm_stream_chat", False)),
         provider_error_time_budget=float(cfg.get("provider_error_time_budget", 0.0)),
         save_dir=save_dir,
         env=environment,
