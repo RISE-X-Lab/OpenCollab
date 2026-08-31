@@ -24,6 +24,7 @@ from opencollab.application.steering import (
     build_steering_block,
     fold_steering,
     resolve_budget_nudge_mode,
+    resolve_write_nudge_mode,
 )
 from opencollab.application.tool_execution import TERMINAL_CAPTURE_SKIP_MESSAGE
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
@@ -402,6 +403,7 @@ class _SessionRunCompletionMixin:
             structured_override=_submit_tool_choice(_STRUCTURED_OUTPUT_TOOL),
             write_landed=self.state.turn.has_landed_write,
             budget_nudge_mode=resolve_budget_nudge_mode(),
+            write_nudge_mode=resolve_write_nudge_mode(),
             prev_used_tokens=(
                 self.state.used_tokens
                 if self._steering_prev_used_tokens is None

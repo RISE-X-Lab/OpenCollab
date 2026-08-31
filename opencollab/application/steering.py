@@ -19,6 +19,21 @@ from typing import Any
 READS_NUDGE_SOFT = 8
 READS_NUDGE_HARD = 16
 
+# Whether the reads-without-write family of nudges is emitted at all. ``on`` is
+# the default and is byte-for-byte today's behaviour; ``off`` emits none of the
+# three rungs (soft write advice, hard write demand, hard structured-output
+# demand) and sets no ``tool_choice`` override, leaving the ``[Budget: ...]``
+# status line untouched. ``off`` exists because the nudge is an instruction the
+# harness inserts into the outcome we measure: it tells an agent that is reading
+# in order to describe the work to STOP and act itself, which is exactly the
+# moment a delegation decision would be taken. All three rungs are switched
+# together because they are one instrument — the structured-output rung is the
+# one that dominates in an arm whose reading seat holds no write tool.
+WRITE_NUDGE_ON = "on"
+WRITE_NUDGE_OFF = "off"
+WRITE_NUDGE_MODES = (WRITE_NUDGE_ON, WRITE_NUDGE_OFF)
+WRITE_NUDGE_ENV_VAR = "OPENCOLLAB_WRITE_NUDGE_MODE"
+
 # Cadence of the budget status line. ``every-step`` repeats it on every turn;
 # ``thresholds`` emits it only on the turn that crosses one of
 # ``BUDGET_NUDGE_THRESHOLDS_FRACTIONS`` (once per band, since spend is
@@ -45,6 +60,18 @@ def resolve_budget_nudge_mode(env: Any = None) -> str:
     source = os.environ if env is None else env
     raw = str(source.get(BUDGET_NUDGE_ENV_VAR, "") or "").strip().lower()
     return raw if raw in BUDGET_NUDGE_MODES else BUDGET_NUDGE_EVERY_STEP
+
+
+def resolve_write_nudge_mode(env: Any = None) -> str:
+    """Return the configured write-nudge mode, defaulting to ``on``.
+
+    Unset, blank, or unrecognised values fall back to ``on`` so that a run with
+    no environment override behaves exactly as before this knob existed — the
+    already-recorded runs stay comparable.
+    """
+    source = os.environ if env is None else env
+    raw = str(source.get(WRITE_NUDGE_ENV_VAR, "") or "").strip().lower()
+    return raw if raw in WRITE_NUDGE_MODES else WRITE_NUDGE_ON
 
 
 def _crosses_budget_threshold(
@@ -77,6 +104,7 @@ def build_steering_block(
     structured_override: Any,
     write_landed: bool = False,
     budget_nudge_mode: str = BUDGET_NUDGE_EVERY_STEP,
+    write_nudge_mode: str = WRITE_NUDGE_ON,
     prev_used_tokens: int = 0,
 ) -> tuple[dict[str, Any] | None, Any | None, str | None]:
     """Build the per-turn steering message + any ``tool_choice`` force.
@@ -99,6 +127,12 @@ def build_steering_block(
     band, which needs ``prev_used_tokens`` — the spend at the previous turn.
     When the mode suppresses the line and there is no nudge to carry, the
     message is ``None`` and the caller adds nothing to the turn.
+
+    ``write_nudge_mode`` gates the reads-without-write family only (see
+    ``WRITE_NUDGE_MODES``); the status line is unchanged by it. Under ``off``
+    no rung fires, so the returned ``tool_choice`` override and ``level`` are
+    both ``None`` and the caller neither forces a tool nor traces a
+    ``steering_nudge``.
     """
     total = max_budget_tokens or 0
     remaining_k = max(0, total - used_tokens) // 1000
@@ -119,6 +153,9 @@ def build_steering_block(
     needs_structured_submit = has_structured_output and (
         write_landed or not has_write
     )
+    if write_nudge_mode == WRITE_NUDGE_OFF:
+        needs_write = False
+        needs_structured_submit = False
     if needs_write and reads >= READS_NUDGE_HARD:
         extra = (
             f" You have read {reads} times without making an edit. STOP reading"
