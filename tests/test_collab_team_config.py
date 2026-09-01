@@ -20,6 +20,7 @@ fails a test rather than quietly turning the team back into a solo Analyst.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -37,6 +38,7 @@ NOT_TOOLS = frozenset(
         "git commit",
         "git checkout <sha>",
         "git log --all",
+        "pytest",
         "git worktree list",
         "spawn_agent",
         "prebuild_team=True",
@@ -247,3 +249,33 @@ def test_the_runner_leaves_the_shell_sandboxed_unless_asked(monkeypatch, tmp_pat
     calls.clear()
     module.main(["--workspace", str(tmp_path), "--prompt", "fix it", "--allow-unisolated-shell"])
     assert calls[-1]["allow_unisolated_shell"] is True
+
+
+@pytest.mark.parametrize("role", ("coder", "tester"))
+def test_the_roles_that_run_tests_are_told_to_leave_no_ignored_files(team, role: str):
+    """A teammate's worktree that holds an ignored file cannot have its changes
+    read, and cleanup then raises *after* the answer is given: the team delivers
+    a correct patch and the run still reports failed. `pytest` alone causes it."""
+    card = " ".join(team.roles[role].prompt.split())
+    assert "Leave nothing behind in your worktree that git would ignore." in card
+    assert "-p no:cacheprovider" in card
+
+
+def test_the_runner_keeps_test_caches_out_of_the_worktrees(monkeypatch, tmp_path):
+    """The same failure, closed on the route this repository controls: the
+    agents' shell inherits this process's environment."""
+    module = _runner_module()
+    _record_calls(module, monkeypatch)
+    monkeypatch.delenv("PYTEST_ADDOPTS", raising=False)
+    monkeypatch.delenv("PYTHONDONTWRITEBYTECODE", raising=False)
+    module.main(["--workspace", str(tmp_path), "--prompt", "fix it"])
+    assert os.environ["PYTEST_ADDOPTS"] == "-p no:cacheprovider"
+    assert os.environ["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_the_runner_does_not_override_a_caller_who_set_them(monkeypatch, tmp_path):
+    module = _runner_module()
+    _record_calls(module, monkeypatch)
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-x")
+    module.main(["--workspace", str(tmp_path), "--prompt", "fix it"])
+    assert os.environ["PYTEST_ADDOPTS"] == "-x"

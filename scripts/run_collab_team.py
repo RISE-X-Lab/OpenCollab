@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
 from pathlib import Path
 
@@ -28,6 +29,19 @@ from opencollab import OpenCollab  # noqa: E402
 from opencollab.sdk.result import RunResult  # noqa: E402
 
 DEFAULT_CONFIG = REPO_ROOT / "configs" / "team.collab.yaml"
+
+#: Inherited by every agent's shell (the subprocess runner passes ``env=None``).
+#: A teammate's worktree whose changes cannot be read refuses to be cleaned up,
+#: and that failure is raised after the work is finished -- the team delivers a
+#: correct answer and the run still reports ``failed``. ``.pytest_cache/`` is
+#: enough to cause it: pytest writes a ``.gitignore`` inside it saying ``*``, so
+#: the directory ignores itself, and ignored files cannot appear in patch
+#: evidence. Both settings are overridable: an explicit value in the caller's
+#: environment wins.
+TEST_ARTIFACT_ENV = {
+    "PYTEST_ADDOPTS": "-p no:cacheprovider",
+    "PYTHONDONTWRITEBYTECODE": "1",
+}
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -83,6 +97,8 @@ def _handoff_summary(result: RunResult[str]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
+    for name, value in TEST_ARTIFACT_ENV.items():
+        os.environ.setdefault(name, value)
     client = OpenCollab(args.workspace, model=args.model)
     result = asyncio.run(
         client.team(

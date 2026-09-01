@@ -197,6 +197,12 @@ roles:
       modify a test to make your change pass. Never claim a test run you did not
       perform.
 
+      Leave nothing behind in your worktree that git would ignore. A worktree
+      holding an ignored file cannot have its changes read, and the run then
+      fails during cleanup — after the work is done and with the answer already
+      given. Running `pytest` writes such a directory unless you pass
+      `-p no:cacheprovider`.
+
   tester:
     # No tool that edits a file. That is a declared role boundary, not a
     # resource limit: the Tester finds out whether work is correct.
@@ -256,6 +262,12 @@ roles:
       specific defect and what would resolve it; "tests fail" is useless where
       the failing test, the assertion, and the reason are actionable. Say what
       you verified and what you did not.
+
+      Leave nothing behind in your worktree that git would ignore. A worktree
+      holding an ignored file cannot have its changes read, and the run then
+      fails during cleanup — after the work is done and with the answer already
+      given. Running `pytest` writes such a directory unless you pass
+      `-p no:cacheprovider`.
 
 # Six directed edges — every ordered pair. The return edges are the point: a
 # closed star (analyst -> coder, analyst -> tester, nothing back) leaves a
