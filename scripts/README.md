@@ -30,3 +30,23 @@ The handoff payload between roles is a commit sha, so the roles need a shell
 that can run `git`. Outside a sandboxed environment that requires
 `--allow-unisolated-shell`, which lets the roles execute commands on the host:
 pass it only for a workspace you trust.
+
+`analyst_cards.py` renders the Analyst cards of the handoff experiment from
+`configs/handoff-experiment/`: one shared body (`shared.md`) with two slots,
+one file per closing block (`blocks/`), one per statement of the Analyst's own
+tool bundle (`capabilities/`), and one registry (`variants.yaml`). The rendered
+cards are checked in beside those files and are what the team files load, so
+the script only writes when given `--write`; run bare it reports any card that
+has drifted from its declaration and exits non-zero.
+
+```bash
+uv run scripts/analyst_cards.py            # check
+uv run scripts/analyst_cards.py --write    # render after adding a cell
+```
+
+Every cell of that experiment claims two cards differ in one named place and
+nowhere else, so the shared body exists exactly once rather than once per card.
+`configs/handoff-experiment/legacy/` holds the eight first-generation cards,
+which are frozen: they carry the attribution of the batches measured under
+them, and porting one of their blocks onto the current body would produce a
+different cell rather than the same one.

@@ -81,7 +81,7 @@ entry: analyst
 
 roles:
   analyst:
-    prompt_file: handoff-experiment/analyst.default.md
+    prompt_file: handoff-experiment/legacy/analyst.default.md
     tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
 
   coder:

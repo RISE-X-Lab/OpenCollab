@@ -35,8 +35,16 @@ from opencollab.bootstrap.team_config import load_team_config
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIGS = REPO_ROOT / "configs"
 PROMPTS = CONFIGS / "handoff-experiment"
+BLOCKS = PROMPTS / "blocks"
 BASE_CARD = "analyst.facts-v2.md"
-JUDGE_HEADING = "## What is yours to judge"
+#: cell -> the block file its card is assembled from. ``facts-v2`` carries the
+#: ``judge`` block, which is what these three replace.
+BLOCK_OF = {
+    "decide-first": "decide-first",
+    "opt-out-message": "opt-out-message",
+    "role-identity": "role-identity",
+    BASE_CARD: "judge",
+}
 CLOSING_LINE = "Do not report a change as verified unless you have the evidence for it."
 ROLES = ("analyst", "coder", "tester")
 
@@ -65,22 +73,27 @@ def _flat(text: str) -> str:
     return " ".join(text.split())
 
 
-def _shared_prefix() -> str:
-    """Everything ``facts-v2`` says before its closing section.
+def _block(cell_or_card: str) -> str:
+    """The cell's closing section, read from the file its card is assembled from.
 
-    The closing section is what these cells replace, so this prefix is the part
-    that must survive byte for byte.
+    This used to be recovered by taking everything after ``facts-v2``'s judge
+    heading. That mechanism is retired: these three cells each carry a
+    *different* heading, so a hardcoded one cannot find their blocks.
     """
-    head, sep, _ = _card(BASE_CARD).partition(JUDGE_HEADING)
-    assert sep, "the base card has no closing section to replace"
-    return head
+    return (BLOCKS / f"{BLOCK_OF[cell_or_card]}.md").read_text(encoding="utf-8")
+
+
+def _shared_body_of(card_name: str, cell: str) -> str:
+    """The card with its block removed -- everything the cell may not vary."""
+    block = _block(cell)
+    assert card_name == BASE_CARD or _card(card_name).count(block) == 1, card_name
+    return _card(card_name).replace(block, "")
 
 
 def _closing(card_name: str) -> str:
-    card = _card(card_name)
-    prefix = _shared_prefix()
-    assert card.startswith(prefix), f"{card_name} diverges before its closing section"
-    return card[len(prefix) :]
+    cell = next(c for c, (name, _) in CELLS.items() if name == card_name) \
+        if card_name != BASE_CARD else BASE_CARD
+    return _block(cell)
 
 
 @pytest.fixture(scope="module")
@@ -104,10 +117,8 @@ def test_each_card_is_facts_v2_byte_for_byte_up_to_its_closing_section(cell: str
     between this cell and ``facts-v2`` would be reading two changes at once, and
     the axis would no longer be the thing the cell is named for.
     """
-    card = _card(CELLS[cell][0])
-    prefix = _shared_prefix()
-    assert card[: len(prefix)] == prefix
-    assert card != prefix, "the card has no closing section at all"
+    assert _shared_body_of(CELLS[cell][0], cell) == _shared_body_of(BASE_CARD, BASE_CARD)
+    assert _block(cell) in _card(CELLS[cell][0]), "the card does not carry its declared block"
 
 
 @pytest.mark.parametrize("cell", sorted(CELLS))

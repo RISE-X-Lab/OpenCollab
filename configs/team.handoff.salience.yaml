@@ -81,7 +81,7 @@ entry: analyst
 
 roles:
   analyst:
-    prompt_file: handoff-experiment/analyst.salience.md
+    prompt_file: handoff-experiment/legacy/analyst.salience.md
     tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
 
   coder:

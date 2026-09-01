@@ -20,12 +20,22 @@ from opencollab.bootstrap.team_config import load_team_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = REPO_ROOT / "configs" / "handoff-experiment"
+LEGACY = PROMPTS / "legacy"
 JUDGE_HEADING = "## What is yours to judge"
 ROLES = ("analyst", "coder", "tester")
+#: ``facts-v2``'s stance is ``blocks/judge.md``, read from the file the card is
+#: assembled from rather than recovered by splitting the card on a heading.
+JUDGE_BLOCK = PROMPTS / "blocks" / "judge.md"
+CLOSING_LINE = "Do not report a change as verified unless you have the evidence for it.\n"
 
 
 def _card(name: str) -> str:
     return (PROMPTS / name).read_text(encoding="utf-8")
+
+
+def _primary() -> str:
+    """The first-generation card this one was written to replace, frozen in ``legacy/``."""
+    return (LEGACY / "analyst.md").read_text(encoding="utf-8")
 
 
 def _split(card: str) -> tuple[str, str]:
@@ -50,12 +60,16 @@ def test_the_stance_block_is_primarys_byte_for_byte() -> None:
     If the judge block drifted, a difference measured between this card and
     primary would be reading the rewrite and a stance change at once.
     """
-    assert _split(_card("analyst.facts-v2.md"))[1] == _split(_card("analyst.md"))[1]
+    block = JUDGE_BLOCK.read_text(encoding="utf-8")
+    assert block in _card("analyst.facts-v2.md")
+    # ``primary`` predates ``blocks/``, so its copy is compared against the file.
+    # The closing evidence rule belongs to the shared body, not to the block.
+    assert _split(_primary())[1] == _split(block)[1] + "\n" + CLOSING_LINE
 
 
 def test_everything_outside_the_stance_block_did_change() -> None:
     """A card that says what primary says is primary, not a second axis."""
-    assert _split(_card("analyst.facts-v2.md"))[0] != _split(_card("analyst.md"))[0]
+    assert _split(_card("analyst.facts-v2.md"))[0] != _split(_primary())[0]
 
 
 def test_the_card_does_not_claim_the_tester_holds_the_analysts_tools(variant) -> None:
@@ -120,4 +134,4 @@ def test_the_variant_changes_nothing_but_the_analysts_card(variant, baseline) ->
 
 def test_the_card_is_shorter_than_the_one_it_replaces() -> None:
     """Same facts in fewer words was the brief, and it is checkable."""
-    assert len(_card("analyst.facts-v2.md")) < len(_card("analyst.md"))
+    assert len(_card("analyst.facts-v2.md")) < len(_primary())

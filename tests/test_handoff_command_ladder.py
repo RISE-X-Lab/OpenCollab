@@ -23,7 +23,8 @@ from opencollab.bootstrap.team_config import load_team_config
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = REPO_ROOT / "configs" / "handoff-experiment"
-HEADING = "## What this run asks of you"
+BLOCKS = PROMPTS / "blocks"
+LEGACY = PROMPTS / "legacy"
 #: rung order, from most to least of the alternative removed.
 LADDER = ("cmd-prohibit", "cmd-plain", "cmd-bare", "cmd-optout")
 PROHIBITION = "Do not apply the fix yourself."
@@ -36,9 +37,14 @@ def _card(name: str) -> str:
 
 
 def _closing(name: str) -> str:
-    head, sep, rest = _card(name).partition(HEADING)
-    assert sep, name
-    return rest
+    """The rung's block, read from the file the card is assembled from.
+
+    This used to be recovered by splitting the card on a hardcoded heading.
+    That mechanism is retired: the heading is not shared across cells -- three
+    of the current blocks carry a different one -- so it silently stopped being
+    a way to find a block at all.
+    """
+    return (BLOCKS / f"{name}.md").read_text(encoding="utf-8")
 
 
 def _paragraphs(name: str) -> list[str]:
@@ -48,8 +54,8 @@ def _paragraphs(name: str) -> list[str]:
 @pytest.mark.parametrize("rung", LADDER)
 def test_every_rung_keeps_the_facts_v2_shared_block(rung: str) -> None:
     """The ladder varies a stance. Anything else moving makes it two variables."""
-    shared = _card("facts-v2").partition("## What is yours to judge")[0]
-    assert _card(rung).startswith(shared), rung
+    shared = _card("facts-v2").replace(_closing("judge"), "")
+    assert _card(rung).replace(_closing(rung), "") == shared, rung
 
 
 @pytest.mark.parametrize("rung", LADDER)
@@ -108,7 +114,7 @@ def test_the_top_rung_carries_the_instructed_cards_three_load_bearing_sentences(
     command have to survive verbatim, or the anchor is not the anchor.
     """
     top = " ".join(_card("cmd-prohibit").split())
-    inst = " ".join(_card("instructed").split())
+    inst = " ".join((LEGACY / "analyst.instructed.md").read_text(encoding="utf-8").split())
     for fragment in (SUSPENSION, PROHIBITION, "Verification is the Tester's"):
         assert fragment in top, fragment
         assert fragment in inst, fragment

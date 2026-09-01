@@ -24,6 +24,11 @@ from opencollab.bootstrap.team_config import (
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PROMPTS = REPO_ROOT / "configs" / "handoff-experiment"
 JUDGE = "## What is yours to judge"
+#: ``starved``'s stance is the same block file ``facts-v2`` carries. The point
+#: of the cell is that only capability moved, so this is not a copy to compare
+#: -- it is the same file, named once in ``variants.yaml``.
+JUDGE_BLOCK = PROMPTS / "blocks" / "judge.md"
+LEGACY = PROMPTS / "legacy"
 WRITE_TOOLS = ("apply_patch", "file_write")
 
 
@@ -71,7 +76,13 @@ def test_the_coder_can_still_do_the_work_that_was_taken_away(starved) -> None:
 
 def test_the_stance_block_is_primarys_byte_for_byte() -> None:
     """Capability is the variable. The stance must not move with it."""
-    assert _card("analyst.starved.md").partition(JUDGE)[2] == _card("analyst.md").partition(JUDGE)[2]
+    block = JUDGE_BLOCK.read_text(encoding="utf-8")
+    assert block in _card("analyst.starved.md")
+    primary = (LEGACY / "analyst.md").read_text(encoding="utf-8")
+    assert primary.partition(JUDGE)[2].rstrip("\n") == (
+        block.partition(JUDGE)[2].rstrip("\n")
+        + "\n\nDo not report a change as verified unless you have the evidence for it."
+    )
 
 
 def test_the_card_states_the_bundle_it_actually_has() -> None:

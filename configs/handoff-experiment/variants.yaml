@@ -1,0 +1,136 @@
+# The registry of assembled Analyst cards. One entry per experimental cell.
+#
+# Each card in `configs/handoff-experiment/analyst.*.md` that is listed here is
+# assembled, not written: it is `shared.md` with two slots filled in.
+#
+#     card = shared.md
+#              {{CAPABILITIES}} <- capabilities/<capabilities>.md
+#              {{BLOCK}}        <- blocks/<block>.md
+#
+# The assembled text is checked in next to this file and is what the team files
+# load at run time, so nothing about a run changes when a cell is added here.
+# `scripts/analyst_cards.py` renders them; `tests/test_analyst_card_assembly.py`
+# fails if a checked-in card and its assembly ever disagree.
+#
+# WHY THE CARDS ARE ASSEMBLED RATHER THAN WRITTEN
+#
+# The cells are levels of a treatment. Any cell measured against any other one
+# claims that the two differ in a named place and nowhere else, so every
+# sentence outside that place has to be byte-identical across all of them. When
+# each card carried its own copy of the shared body, that property held only
+# because a test re-checked it after the fact, and it had already broken once:
+# the body split into two generations. Assembly makes it hold by construction --
+# there is one copy of the shared body, and a new cell cannot drift from it
+# because it never had a copy to drift from.
+#
+# TWO SLOTS, NOT ONE
+#
+# `{{BLOCK}}` is the closing section: the stance the cell is named for. Most
+# cells vary only this.
+#
+# `{{CAPABILITIES}}` is the paragraph pair under `## What you can do`, and it
+# exists because `starved` is not a wording cell at all -- it removes the
+# Analyst's edit tools. A card that still described tools the Analyst no longer
+# holds would put the model in front of a false premise, so the wording moves
+# with the bundle. Both halves of that pairing are declared below (`capabilities`
+# and `tools`), and a test refuses a cell whose card and bundle disagree.
+#
+# ADDING A CELL
+#
+# Write `blocks/<name>.md` -- the `## ` heading plus its body, no trailing
+# closing line -- add an entry here, and run `python scripts/analyst_cards.py`
+# to render the card. Then write the team file by copying an existing one and
+# changing the Analyst's `prompt_file` (and `tools`, if the cell moves those).
+#
+# MOVING A FIRST-GENERATION BLOCK ONTO THIS BODY MAKES A NEW CELL
+#
+# `legacy/` holds the eight cards written before the shared body was rewritten.
+# Their blocks are not registered here. Porting one of them onto `shared.md`
+# produces a *different* cell from the one whose name it borrows, because the
+# body around it is not the body those runs were produced under. Such an entry
+# must say so in `note`, in the form "ported from X; the shared body is a later
+# generation, so runs are not poolable with X" -- and it must be given a new
+# name rather than the old one.
+
+variants:
+
+  facts-v2:
+    team_file: team.handoff.facts-v2.yaml
+    block: judge
+    capabilities: full
+    note: >-
+      The reference cell for this generation. Its block is `primary`'s byte for
+      byte; the shared body around it is the corrected one. Not poolable with
+      primary/weak/strong, which ran on the older body.
+
+  starved:
+    team_file: team.handoff.starved.yaml
+    block: judge
+    capabilities: no-write
+    tools: [bash, file_read, grep, message_agent, submit, team_status]
+    note: >-
+      The capability cell: same stance as `facts-v2`, edit tools removed. The
+      only cell whose `capabilities` and `tools` are not the defaults, and the
+      two must agree -- the card states the bundle the team file actually grants.
+
+  decide-first:
+    team_file: team.handoff.decide-first.yaml
+    block: decide-first
+    capabilities: full
+    note: >-
+      Forced-action axis, cell 1: a stated choice is compelled, neither branch
+      of it is.
+
+  opt-out-message:
+    team_file: team.handoff.opt-out-message.yaml
+    block: opt-out-message
+    capabilities: full
+    note: >-
+      Forced-action axis, cell 2: one `message_agent` call is compelled, which
+      of two messages it carries is not. A non-zero call count here is NOT
+      evidence of delegation.
+
+  role-identity:
+    team_file: team.handoff.role-identity.yaml
+    block: role-identity
+    capabilities: full
+    note: >-
+      Forced-action axis, cell 3: nothing is compelled; the role is framed as an
+      identity while the tools are stated to be in hand and permitted.
+
+  cmd-prohibit:
+    team_file: team.handoff.cmd-prohibit.yaml
+    block: cmd-prohibit
+    capabilities: full
+    note: >-
+      Command ladder rung 1: command, suspension line, and the prohibition on
+      doing the work oneself. The anchor -- the stance that read 3/3.
+
+  cmd-plain:
+    team_file: team.handoff.cmd-plain.yaml
+    block: cmd-plain
+    capabilities: full
+    note: >-
+      Command ladder rung 2: rung 1 with the prohibition deleted and nothing
+      else changed.
+
+  cmd-bare:
+    team_file: team.handoff.cmd-bare.yaml
+    block: cmd-bare
+    capabilities: full
+    note: >-
+      Command ladder rung 3: rung 2 with the suspension line deleted too.
+
+  cmd-optout:
+    team_file: team.handoff.cmd-optout.yaml
+    block: cmd-optout
+    capabilities: full
+    note: >-
+      Command ladder rung 4: rung 3 plus explicit permission to depart.
+
+# The rungs of the command ladder, in order from most of the alternative removed
+# to least. Adjacent rungs must differ by exactly one move; the ladder cannot
+# attribute a difference otherwise.
+ladders:
+  command: [cmd-prohibit, cmd-plain, cmd-bare, cmd-optout]
+  forced_action: [decide-first, opt-out-message, role-identity]
