@@ -9,9 +9,15 @@ with, and reading that out of the file is the only way to get it right when the
 file changes.
 """
 
+import hashlib
+
 from opencollab.bootstrap.team_config import load_team_config
 
-__all__ = ["declared_role_names", "declared_role_tools"]
+__all__ = [
+    "declared_role_names",
+    "declared_role_prompt_digests",
+    "declared_role_tools",
+]
 
 
 def declared_role_names(path: str) -> tuple[str, ...]:
@@ -41,3 +47,26 @@ def declared_role_tools(path: str) -> dict[str, tuple[str, ...]]:
     """
     config = load_team_config(path=path)
     return {name: tuple(role.tools) for name, role in config.roles.items()}
+
+
+def declared_role_prompt_digests(path: str) -> dict[str, str]:
+    """Each declared role's system prompt as a sha256, role name to digest.
+
+    The digest is of the prompt text the run actually seats, after
+    ``prompt_file`` has been read -- so a caller recording it is recording the
+    card, not a path that may be repointed later. That distinction is the whole
+    reason this exists: an experiment whose treatment IS the wording of a role
+    card needs the wording itself as the grouping key. A run recorded by path
+    cannot be told apart from a run of a differently worded card that was moved
+    to the same path, and two generations of a card that share a name pool
+    silently into one condition.
+
+    Prompts can be long and are not secrets, but a digest is what a metrics row
+    should carry: it is fixed width, it compares exactly, and it says nothing
+    about the card beyond identity, which is all a grouping key may claim.
+    """
+    config = load_team_config(path=path)
+    return {
+        name: hashlib.sha256(role.prompt.encode("utf-8")).hexdigest()
+        for name, role in config.roles.items()
+    }
