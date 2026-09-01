@@ -14,6 +14,10 @@ on-demand agent skills. Contribution checks and vulnerability reporting are in
 The [0.5.0 migration guide](migrations/0.5.0.md) lists the explicit lifecycle,
 isolation, scheduler, and workflow-contract changes currently under review.
 
+[The collaborating team](2026-08-31-collab-team.md) documents
+`configs/team.collab.yaml`: what the three-role team is, the three ways to run
+it, and the four conditions that make a run a team's rather than one seat's.
+
 ## Design records
 
 Dated Markdown files in this directory and `archive/` record earlier design

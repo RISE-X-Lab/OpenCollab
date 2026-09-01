@@ -178,6 +178,14 @@ selected team file, the built-in `lead` may spawn any ad-hoc role. See
 `team.example.yaml` for the schema (lead/analyst/coder/reviewer plus a
 `topology` graph). A selected file that is missing or unsafe raises an error.
 
+`team.collab.yaml` is a ready-made three-role team (Analyst, Coder, Tester) that
+hands work over rather than doing it in one seat, with every role prompt inline.
+It requires a prebuilt roster, which the CLI cannot ask for: started through
+`uv run opencollab --team-config`, it seats the Analyst alone and produces a
+solo run that reads like a team's. Run it with `scripts/run_collab_team.py`, the
+SDK (`prebuild_team=True`), or the evaluation harness. See
+[the team handoff](../docs/2026-08-31-collab-team.md).
+
 ## Validation
 
 The final resolved configuration is validated by a Pydantic model. `budget`
