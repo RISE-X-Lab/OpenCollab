@@ -20,6 +20,7 @@ fails a test rather than quietly turning the team back into a solo Analyst.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from pathlib import Path
@@ -194,6 +195,7 @@ class _StubResult:
     reason = None
     tokens = 1
     metrics: dict = {}
+    artifacts = None
     ok = True
 
 
@@ -279,3 +281,47 @@ def test_the_runner_does_not_override_a_caller_who_set_them(monkeypatch, tmp_pat
     monkeypatch.setenv("PYTEST_ADDOPTS", "-x")
     module.main(["--workspace", str(tmp_path), "--prompt", "fix it"])
     assert os.environ["PYTEST_ADDOPTS"] == "-x"
+
+
+def test_the_runner_reports_whether_work_was_handed_over(tmp_path):
+    """A solo run and a delegating run are indistinguishable in a team's
+    metrics, which carry only agent 0's steps and a seat count. The line the
+    runner prints has to come from the transcripts or it says nothing."""
+    module = _runner_module()
+    (tmp_path / "agent_0_analyst-aaa.json").write_text(
+        json.dumps(
+            {
+                "messages": [
+                    {"tool_calls": [{"function": {"name": "message_agent"}}]},
+                    {"tool_calls": [{"function": {"name": "apply_patch"}}]},
+                    {"tool_calls": [{"function": {"name": "message_agent"}}]},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "agent_1_coder-bbb.json").write_text(
+        json.dumps({"messages": [{"tool_calls": [{"function": {"name": "apply_patch"}}]}]}),
+        encoding="utf-8",
+    )
+
+    class _Result:
+        metrics = {"sessions": 3, "steps": 12}
+        artifacts = tmp_path
+
+    line = module._handoff_summary(_Result())
+    assert "seats=3" in line
+    assert "analyst=2" in line
+    assert "coder=0" in line
+
+
+def test_the_runner_says_so_when_it_cannot_count_handoffs(tmp_path):
+    """Silence and zero are different answers; reporting zero without evidence
+    is the failure this avoids."""
+    module = _runner_module()
+
+    class _Result:
+        metrics = {"sessions": 3, "steps": 12}
+        artifacts = None
+
+    assert "handoffs=unknown" in module._handoff_summary(_Result())

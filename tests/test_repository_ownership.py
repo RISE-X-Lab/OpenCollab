@@ -149,6 +149,7 @@ def test_framework_scripts_contain_no_evaluation_entrypoints() -> None:
         "check_secret_history.py",
         "demo_team_issue.sh",
         "generate_brand_assets.py",
+        "run_collab_team.py",
         "start_opencollab.sh",
     ]
 
