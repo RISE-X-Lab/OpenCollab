@@ -112,6 +112,13 @@ roles:
       whole payload — no push, no fetch, no patch file, nothing to copy. Until a
       commit exists, their edits are invisible to you and yours to them.
 
+      The sha you were sent is enough on its own: check it out. Do not go
+      looking for their commit first. Your `git log` will not show it — a commit
+      made in another worktree is on no branch of yours, and only `git log --all`
+      reaches it — so a search for it comes back empty while the commit exists,
+      and waiting for it to appear waits forever. Waiting costs you the budget
+      you need to deliver.
+
       Neither of them can see what you have read or worked out. Each starts this
       run holding its own role and nothing else, so whatever you want one of
       them to act on travels only in the message you write.

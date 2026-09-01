@@ -325,3 +325,25 @@ def test_the_runner_says_so_when_it_cannot_count_handoffs(tmp_path):
         artifacts = None
 
     assert "handoffs=unknown" in module._handoff_summary(_Result())
+
+
+def test_the_file_is_self_contained(tmp_path):
+    """The point of inlining every card: copied on its own to an unrelated
+    directory it still loads. A `prompt_file` would resolve against the team
+    file's directory and this would fail."""
+    copied = tmp_path / "my-team.yaml"
+    copied.write_text(CONFIG.read_text(encoding="utf-8"), encoding="utf-8")
+    elsewhere = load_team_config(path=str(copied))
+    assert sorted(elsewhere.roles) == sorted(ROLES)
+    assert all(elsewhere.roles[r].prompt.strip() for r in ROLES)
+
+
+def test_the_analyst_is_told_a_teammates_commit_is_not_in_its_own_log(team):
+    """Measured failure this closes: the Coder committed, the Tester checked the
+    sha out and the suite passed, and the Analyst ran `git log` -- which does not
+    reach a commit held only by another worktree's detached HEAD -- concluded
+    nothing had been delivered, and spent its remaining budget on `sleep` waiting
+    for a commit that already existed."""
+    card = " ".join(team.roles["analyst"].prompt.split())
+    assert "The sha you were sent is enough on its own: check it out." in card
+    assert "only `git log --all` reaches it" in card
