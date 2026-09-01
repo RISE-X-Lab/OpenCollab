@@ -1,0 +1,159 @@
+# Forced-action axis, cell 1: a choice has to be stated, not made a
+# particular way.
+#
+# The Analyst is asked, before its first edit, to say in one line whether it is
+# keeping the implementation or handing it to the Coder. What is compelled is
+# the sentence; both answers are named as legitimate and neither is named as
+# expected. This is the smallest thing on this axis that is an action at all --
+# it changes the token sequence the model has to produce before it can start
+# working, which is what every zero-measuring wording failed to do.
+#
+# The axis these three sit on is whether the card forces an *action* rather
+# than restating a fact. Five wordings that only restated facts -- capability,
+# benefit, norm, default-with-an-opt-out, and the three-level stance ladder --
+# all measured `message_agent` at zero. The one wording that did not,
+# `analyst.instructed.md`, blocks the default action outright ("Do not apply
+# the fix yourself") and measured it at one. So this axis is ordered by how
+# much of an action is compelled, and nothing on it names delegation as the
+# outcome to reach:
+#
+#   * `team.handoff.decide-first.yaml`     -> a stated choice is compelled;
+#                                             neither branch is.
+#   * `team.handoff.opt-out-message.yaml`  -> one `message_agent` call is
+#                                             compelled; which of the two
+#                                             messages it carries is not.
+#   * `team.handoff.role-identity.yaml`    -> nothing is compelled; the role is
+#                                             framed as an identity while the
+#                                             tools are stated to be in hand
+#                                             and permitted.
+#
+# The card named here is byte-identical to `handoff-experiment/analyst.facts-v2.md`
+# apart from its closing section, and this file is byte-identical to
+# `team.handoff.facts-v2.yaml` apart from the Analyst's `prompt_file` and this
+# comment. Both are pinned in `tests/test_handoff_forced_action_cards.py`.
+#
+# Comparability: NOT poolable with any other cell -- not with primary, weak,
+# strong, the norm/salience/default rungs, `facts-v2`, `starved`, or with the
+# other two files on this axis. Each is its own cell; runs from two of them
+# must never be counted together.
+#
+# Three defects in the primary card's shared text are what this fixes:
+#
+#   * It said the Coder and the Tester "hold the same working tools you do".
+#     False of the Tester, which carries no `apply_patch` and no `file_write`
+#     (a declared role boundary, stated in the Tester's own card). The Analyst
+#     was being told something untrue about its own team.
+#   * The clause "so nothing is reachable only through them" answers the
+#     question "do I need them?" with "no". The same fact -- one bundle, held by
+#     more than one agent -- reads as substitutability just as accurately, and
+#     that is how it is stated here.
+#   * The teammates' budget and context were given as two negations of a cost
+#     ("not taken from your budget", "does not accumulate in your context") with
+#     no magnitude and no statement that the resource cannot be moved. A seat's
+#     cap is `pool / 3`, which is the single agent's budget, so "a budget the
+#     size of yours" is a fact about every batch this file is run in -- it holds
+#     only while the runner keeps `c = 1.0`.
+#
+# The `Where each of you works` section also went from four paragraphs of what
+# nobody can see to the two-step handoff recipe plus one clause of isolation.
+# Same facts, 2,976 characters against primary's 3,345.
+#
+# Comparability: a batch run under this file is NOT poolable with batches run
+# under primary, weak, strong, or any ladder rung. It shares their judge block
+# and differs everywhere else, which is the whole point of it.
+#
+# Experimental team: three peers that can hand work to each other over git.
+#
+# NOT a product default and not loaded by any default path. Select it
+# explicitly — `--team-config configs/team.handoff.experiment.yaml`, or
+# OPENCOLLAB_TEAM_FILE — and run it with `prebuild_team=True`, which is what it
+# is built for. The shipped Self-Collaboration team in
+# `opencollab/bootstrap/team_config.py` is untouched by this file.
+#
+# It exists to measure one thing: whether models hand work to each other when
+# they are able to. Scripting the exchange would mean measuring the script, so
+# no prompt here sequences it.
+#
+# How hard the Analyst's card leans on handing work over is the one thing that
+# is varied on purpose, over three declared levels. The card named here is
+# `primary`, the neutral one, and it is the level every reported quantity is
+# measured on. The other two are its siblings:
+#
+#   * `team.handoff.weak.yaml`   -> `handoff-experiment/analyst.weak.md`
+#   * `team.handoff.strong.yaml` -> `handoff-experiment/analyst.strong.md`
+#
+# The three Analyst cards are byte-identical apart from their closing
+# `## What is yours to judge` section, and the three team files are
+# byte-identical apart from the Analyst's `prompt_file`. Both are pinned in
+# `tests/test_handoff_experiment_team.py`, so a change to any shared sentence
+# fails a test rather than turning one level into a second variable.
+#
+# `weak` is the card the first measured batches were produced under: it says in
+# so many words that the Analyst can carry the request end to end without
+# involving anyone, which is a level of this variable and not a neutral
+# statement of what the role can do.
+#
+# What makes the handoff possible:
+#
+#   * Every role carries `message_agent`. A prebuilt team refuses `spawn_agent`
+#     for the whole run and the join path never routes a prebuilt peer's result
+#     anywhere, so a message is the only thing that crosses between two agents.
+#     A role with an outgoing edge and no `message_agent` is seated mute — and
+#     `build_scheduler` refuses such a team rather than running it silently.
+#   * Every role carries `bash`, so every role can run `git`: one can commit,
+#     another can check out what was committed. The Analyst carries the working
+#     tools too, and that is deliberate — see below.
+#   * Each agent works in its own git worktree of the one repository. Linked
+#     worktrees share `.git/objects`, so a sha committed in one is reachable
+#     from the others immediately — the sha is the whole payload of a handoff.
+#
+# Why the Analyst can do the work itself:
+#
+# The shipped Analyst reads and delegates and has no tool that edits a file or
+# runs a command. On this team it would have to delegate, and "the model
+# delegated" would then be a fact about this file rather than about the model.
+# The same starvation would make the Analyst weaker than the single agent it is
+# compared against, so a difference between the two arms could be read off the
+# tool bundles alone. Here the Analyst carries the single agent's working tools,
+# so it could finish the task alone, and every message it sends is a choice it
+# did not have to make.
+#
+# The working bundle is therefore literally the single agent's, not merely a
+# capable one: `apply_patch, bash, file_read, file_write, grep, run_tests,
+# submit`, the same seven names the single-agent arm passes to `builtin_tools`
+# (`WORKING_TOOL_NAMES` in OpenCollab-Eval's `gen_prediction_constants`). On top
+# of that the Analyst and the Coder carry only `message_agent` and
+# `team_status` -- the collaboration channel, which is the one thing this arm
+# is supposed to differ by. The Tester holds no tool that edits a file, which
+# is a declared role boundary rather than an arm difference, and it carries
+# `git_diff` to read what others changed.
+#
+# `ask_user` and `use_skill` were on the Analyst and are gone. Nobody answers
+# `ask_user` in an unattended run and no skill package reaches the container, so
+# both could only fail; a tool the single agent does not hold and this one
+# cannot use is a difference between the arms that buys nothing.
+#
+# No role has `spawn_agent`: on a prebuilt team it can only be refused.
+entry: analyst
+
+roles:
+  analyst:
+    prompt_file: handoff-experiment/analyst.decide-first.md
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+
+  coder:
+    prompt_file: handoff-experiment/coder.md
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+
+  tester:
+    prompt_file: handoff-experiment/tester.md
+    tools: [bash, file_read, git_diff, grep, message_agent, run_tests, submit, team_status]
+
+# Six directed edges — every ordered pair. The return edges are the point: a
+# closed star (analyst -> coder, analyst -> tester, and nothing back) is what
+# makes a prebuilt team mute, because a prebuilt peer has no join path to
+# deliver a result on.
+topology:
+  analyst: [coder, tester]
+  coder: [analyst, tester]
+  tester: [analyst, coder]
