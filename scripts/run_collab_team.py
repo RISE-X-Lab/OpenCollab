@@ -48,6 +48,15 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="share one directory instead of giving each role its own git worktree",
     )
     parser.add_argument(
+        "--allow-unisolated-shell",
+        action="store_true",
+        help=(
+            "let the roles run commands the OS does not sandbox. The handoff "
+            "payload is a commit sha, so without a sandbox this is what makes "
+            "`git` work at all; only pass it for a workspace you trust."
+        ),
+    )
+    parser.add_argument(
         "--concurrent",
         action="store_true",
         help="let woken teammates run beside the current turn (default: one at a time)",
@@ -90,6 +99,7 @@ def main(argv: list[str] | None = None) -> int:
             prebuild_team=True,
             use_worktrees=not args.no_worktrees,
             serialize_turns=not args.concurrent,
+            allow_unisolated_shell=args.allow_unisolated_shell or None,
         )
     )
     print(result.output or "")

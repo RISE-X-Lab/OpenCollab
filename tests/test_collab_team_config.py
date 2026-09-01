@@ -235,3 +235,15 @@ def test_the_runner_reads_a_task_from_a_file(monkeypatch, tmp_path):
     issue.write_text("the bug\n", encoding="utf-8")
     module.main(["--workspace", str(tmp_path), "--prompt-file", str(issue)])
     assert calls[-1]["prompt"] == "the bug\n"
+
+
+def test_the_runner_leaves_the_shell_sandboxed_unless_asked(monkeypatch, tmp_path):
+    """`bash` refuses to run with no OS sandbox, and the sha handoff is `git`.
+    The flag has to exist for a host run and must not be the default."""
+    module = _runner_module()
+    calls = _record_calls(module, monkeypatch)
+    module.main(["--workspace", str(tmp_path), "--prompt", "fix it"])
+    assert calls[-1]["allow_unisolated_shell"] is None
+    calls.clear()
+    module.main(["--workspace", str(tmp_path), "--prompt", "fix it", "--allow-unisolated-shell"])
+    assert calls[-1]["allow_unisolated_shell"] is True

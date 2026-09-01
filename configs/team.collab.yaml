@@ -44,6 +44,14 @@
 # That is why every role holds `bash` (it needs `git`). With `use_worktrees=False`
 # all three share one directory instead and the sha step is redundant but
 # harmless.
+#
+# NEEDS A SHELL THAT CAN RUN `git`. `bash` refuses to run when the environment
+# provides no OS process sandbox, unless the call site passes
+# `allow_unisolated_shell=True` (`--allow-unisolated-shell` on the runner). The
+# evaluation harness runs inside a container and needs nothing; a run against a
+# directory on your own machine does, and without it every role reports the same
+# refusal and no commit can ever cross between two seats. Pass it only for a
+# workspace you trust: it is the flag that lets agents execute code on the host.
 entry: analyst
 
 roles:
