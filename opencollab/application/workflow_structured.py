@@ -44,7 +44,11 @@ _STRUCTURED_RETRY = (
 # The corrective session has one tool and no exploration responsibility. Give
 # it enough time for one reasoning turn without letting an endpoint that
 # degrades forced tool choice to ``auto`` consume the caller's full role budget.
-DEFAULT_STRUCTURED_RETRY_TIMEOUT_SECONDS = 60.0
+# At or above the provider's own first-event timeout
+# (``openai_provider`` waits 180s for the first streamed event), otherwise the
+# window can expire before a single reasoning turn has emitted anything and the
+# corrective pass is cancelled having made no call at all.
+DEFAULT_STRUCTURED_RETRY_TIMEOUT_SECONDS = 180.0
 
 
 def _named_tool_choice(tool_name: str) -> dict[str, Any]:
