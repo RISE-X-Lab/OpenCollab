@@ -530,7 +530,17 @@ class _SessionRunCompletionMixin:
             DEFAULT_MAX_TOKENS_PER_STEP,
         )
         remaining_budget = int(self.max_budget_tokens) - int(self.state.used_tokens)
-        reserved_input_tokens = estimate_request_tokens(messages, tools)
+        # Reserve what the request will actually carry. The outbound normalizer
+        # strips ``reasoning_content`` on every streaming call
+        # (openai_provider._build_request_kwargs passes
+        # ``keep_reasoning_content=not stream``), so counting recorded reasoning
+        # here reserved input the provider never billed and stopped sessions
+        # that still held most of their budget.
+        reserved_input_tokens = estimate_request_tokens(
+            messages,
+            tools,
+            keep_reasoning_content=not getattr(self.agent, "llm_stream_chat", False),
+        )
         output_budget = remaining_budget - reserved_input_tokens
         if output_budget < 1:
             raise _TokenBudgetStop(

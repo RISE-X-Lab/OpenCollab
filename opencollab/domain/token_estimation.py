@@ -27,6 +27,14 @@ _REQUEST_MESSAGE_FIELDS = frozenset({
     "role", "content", "reasoning_content", "tool_calls", "tool_call_id", "name",
 })
 _REQUEST_ESTIMATE_MESSAGE_FIELDS = _REQUEST_MESSAGE_FIELDS | {"provider_state"}
+# The fields an outbound request actually carries when recorded chain-of-thought
+# is not resent: ``openai_provider._normalize_request_messages`` drops
+# ``reasoning_content`` whenever streaming is on, so counting it would reserve
+# input the request never sends. ``provider_state`` stays — Anthropic replays
+# its native thinking blocks as real request input.
+_REQUEST_ESTIMATE_MESSAGE_FIELDS_NO_REASONING = (
+    _REQUEST_ESTIMATE_MESSAGE_FIELDS - {"reasoning_content"}
+)
 _MESSAGE_TOKEN_OVERHEAD = 4
 _TOOLS_TOKEN_OVERHEAD = 4
 _REQUEST_PROTOCOL_TOKEN_OVERHEAD = 16
@@ -71,7 +79,10 @@ def estimate_messages_tokens(
 
 
 def estimate_request_tokens(
-    messages: list[dict], tools: list[dict] | None = None
+    messages: list[dict],
+    tools: list[dict] | None = None,
+    *,
+    keep_reasoning_content: bool = True,
 ) -> int:
     """Estimate the provider request input tokens a call will actually spend.
 
@@ -87,8 +98,15 @@ def estimate_request_tokens(
     budget. With it gone these allowances are the only safety margin left
     (~19% over the bare estimate on realistic histories), so do not trim them
     without replacing the margin.
+
+    ``keep_reasoning_content=False`` mirrors the outbound normalizer used for
+    streaming calls, which strips ``reasoning_content`` before the request
+    leaves. Recorded reasoning dominated these histories, so counting it made
+    the reservation ~3.5x the input the provider actually billed.
     """
-    total = _REQUEST_PROTOCOL_TOKEN_OVERHEAD + estimate_request_message_tokens(messages)
+    total = _REQUEST_PROTOCOL_TOKEN_OVERHEAD + estimate_request_message_tokens(
+        messages, keep_reasoning_content=keep_reasoning_content
+    )
     if tools:
         total += (
             _TOOLS_PROTOCOL_TOKEN_OVERHEAD
@@ -98,7 +116,9 @@ def estimate_request_tokens(
     return total
 
 
-def estimate_request_message_tokens(messages: list[dict]) -> int:
+def estimate_request_message_tokens(
+    messages: list[dict], *, keep_reasoning_content: bool = True
+) -> int:
     """Estimate the per-message half of a request, without request framing.
 
     Same fields and per-message framing as :func:`estimate_request_tokens`,
@@ -106,13 +126,21 @@ def estimate_request_message_tokens(messages: list[dict]) -> int:
     not additive: history compaction re-estimates incrementally and needs the
     estimate of a message group plus the estimate of the remainder to equal
     the estimate of the whole.
+
+    ``keep_reasoning_content`` selects the same field set the outbound request
+    will carry; see :func:`estimate_request_tokens`.
     """
+    fields = (
+        _REQUEST_ESTIMATE_MESSAGE_FIELDS
+        if keep_reasoning_content
+        else _REQUEST_ESTIMATE_MESSAGE_FIELDS_NO_REASONING
+    )
     total = 0
     for message in messages:
         payload = {
             key: ("" if key == "content" and value is None else value)
             for key, value in message.items()
-            if key in _REQUEST_ESTIMATE_MESSAGE_FIELDS
+            if key in fields
         }
         total += _MESSAGE_PROTOCOL_TOKEN_OVERHEAD + _serialized_tokens(payload)
     return total

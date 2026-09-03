@@ -17,6 +17,7 @@ from opencollab.application.shaping import (
     ToolOutputClearShaper,
 )
 from opencollab.application.shaping.pipeline import approx_messages_tokens
+from opencollab.domain.token_estimation import estimate_request_message_tokens
 
 
 def _tool_msg(content, tool_call_id="t1"):
@@ -709,3 +710,32 @@ def test_forced_shape_through_pipeline_reaches_nested_layers():
     assert pipeline.shape(messages) == messages  # normal: nothing to do
     out = forced_shape(pipeline, messages)
     assert not any(m.get("role") == "tool" for m in out)
+
+
+def test_compaction_estimate_still_counts_reasoning_content():
+    """B3 guard: shaping is a compaction threshold, not a budget reservation.
+
+    The pre-call reservation now drops ``reasoning_content`` because streaming
+    strips it from the outbound request. This estimator must NOT follow: the
+    recorded reasoning still sits in the local history that compaction sizes,
+    and shrinking it here would move every arm's compaction trigger — a new
+    behaviour change on all arms, which is exactly what the plan declined.
+    """
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "task"},
+        {
+            "role": "assistant",
+            "content": "short answer",
+            "reasoning_content": "thought " * 4_000,
+        },
+    ]
+    stripped = [
+        {key: value for key, value in message.items() if key != "reasoning_content"}
+        for message in messages
+    ]
+
+    assert approx_messages_tokens(messages) == estimate_request_message_tokens(
+        messages
+    )
+    assert approx_messages_tokens(messages) > 3 * approx_messages_tokens(stripped)
