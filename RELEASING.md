@@ -60,7 +60,7 @@ distribution just as CI does:
 
 ```bash
 set -euo pipefail
-release_version=0.5.0
+release_version=0.5.1
 artifact_root="$(mktemp -d -t "opencollab-${release_version}.XXXXXX")"
 mkdir -p "$artifact_root/sdist" "$artifact_root/wheel" "$artifact_root/assets"
 

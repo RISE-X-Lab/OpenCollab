@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from opencollab.sdk import OpenCollab, RunError, RunResult, workflow
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = ["OpenCollab", "RunError", "RunResult", "workflow"]
 _PUBLIC_MODULES = {

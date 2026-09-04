@@ -531,7 +531,10 @@ class DockerEnvironment(Environment):
             'mkdir -p -- "$(dirname -- "$target")" && '
             '(umask 077; set -C; : > "$temporary") && '
             'cat > "$temporary" && '
-            'bytes=$(wc -c < "$temporary") && '
+            # BSD ``wc`` pads its count with leading spaces while GNU ``wc``
+            # does not. Normalize the portable command's text output before
+            # comparing it with the byte count calculated by the caller.
+            'bytes=$(wc -c < "$temporary" | tr -d \'[:space:]\') && '
             'digest=$(sha256sum -- "$temporary" 2>/dev/null | awk \'{print $1}\' || '
             'shasum -a 256 -- "$temporary" | awk \'{print $1}\') && '
             '[ "$bytes" = "$expected_bytes" ] && [ "$digest" = "$expected_digest" ] && '

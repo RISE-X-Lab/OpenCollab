@@ -7,6 +7,13 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-05
+
+### Fixed
+- Normalized the whitespace-padded byte count emitted by BSD/macOS `wc -c`,
+  so verified Docker container writes use the same cross-platform contract as
+  GNU `wc`.
+
 ## [0.5.0] - 2026-08-13
 
 ### Added
@@ -124,7 +131,8 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/563027175e2cc2540d19324def73010a7e436dcc...v0.4.1
 [0.1.0]: https://github.com/RISE-X-Lab/OpenCollab/tree/563027175e2cc2540d19324def73010a7e436dcc
