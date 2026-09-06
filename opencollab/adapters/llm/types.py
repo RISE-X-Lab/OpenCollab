@@ -196,6 +196,47 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_forced_tool_choice=False,
         honors_workflow_thinking_override=False,
     ),
+    # Measured against the DashScope OpenAI-compatible endpoint on 2026-09-06.
+    # Both values below come from a probe of that endpoint; neither is copied
+    # from a neighbouring entry.
+    #
+    #  * ``context_window`` is the ceiling the endpoint reports for itself, and
+    #    it reports it twice: ``GET /models/qwen3.8-flash`` answers with
+    #    ``extra_info.default_envs.max_tokens = 131072``, and a completion sent
+    #    with ``max_tokens=131073`` is refused ("Range of max_tokens should be
+    #    [1, 131072]") while ``131072`` is accepted. It is recorded as the
+    #    conservative figure: a 355,594-token prompt was in fact answered with
+    #    a head sentinel and a tail sentinel both intact, so the window this
+    #    model really attends to is at least 2.7x the declared one. Understating
+    #    it only makes history compaction fire earlier than it has to;
+    #    overstating it would push a request past a limit we have not located.
+    #  * ``supports_forced_tool_choice`` is refused. With the exact request this
+    #    adapter builds (two function tools, ``reasoning_effort`` set, no
+    #    ``enable_thinking`` key), both ``tool_choice="required"`` and
+    #    ``tool_choice={"type": "function", ...}`` come back HTTP 400 "The
+    #    tool_choice parameter does not support being set to required or object
+    #    in thinking mode", while ``"auto"`` returns a tool call. The same probe
+    #    returns 200 for a forced choice once thinking is switched off
+    #    (``enable_thinking=false``), so the 400 is this model's behaviour in
+    #    the mode we run it in rather than a malformed request.
+    #
+    # The three Responses dimensions and ``honors_workflow_thinking_override``
+    # are deliberately left at their dataclass defaults. This model is reached
+    # only over ``chat_completions``, where the Responses fields are never read,
+    # and none of the four has been probed; leaving them out keeps the entry to
+    # what was measured and keeps today's behaviour unchanged.
+    "qwen3.8-flash": ModelCapabilities(
+        context_window=131_072,
+        supports_forced_tool_choice=False,
+    ),
+    # ``gpt-5.6-luna`` is deliberately absent, and stays absent. Its recorded
+    # runs were produced under the fallback an unlisted model gets here — no
+    # context window, forced tool choice allowed — at OpenCollab commit
+    # 9175297ed56be6a0377b38d6f5949e07d34d7073, and that fallback was measured
+    # to be inert for them: history compaction fired in 2 of 40 runs and every
+    # first ``message_agent`` came before any compaction in its run. Giving the
+    # model an entry now would change the instrument that data was produced on
+    # in exchange for nothing that was measured.
     "kimi-for-coding": ModelCapabilities(
         context_window=262_144,
         supports_forced_tool_choice=False,
