@@ -197,19 +197,33 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         honors_workflow_thinking_override=False,
     ),
     # Measured against the DashScope OpenAI-compatible endpoint on 2026-09-06.
-    # Both values below come from a probe of that endpoint; neither is copied
+    # Both values below come from probes of that endpoint; neither is copied
     # from a neighbouring entry.
     #
-    #  * ``context_window`` is the ceiling the endpoint reports for itself, and
-    #    it reports it twice: ``GET /models/qwen3.8-flash`` answers with
-    #    ``extra_info.default_envs.max_tokens = 131072``, and a completion sent
-    #    with ``max_tokens=131073`` is refused ("Range of max_tokens should be
-    #    [1, 131072]") while ``131072`` is accepted. It is recorded as the
-    #    conservative figure: a 355,594-token prompt was in fact answered with
-    #    a head sentinel and a tail sentinel both intact, so the window this
-    #    model really attends to is at least 2.7x the declared one. Understating
-    #    it only makes history compaction fire earlier than it has to;
-    #    overstating it would push a request past a limit we have not located.
+    #  * ``context_window`` is the largest *input* this model accepts in the
+    #    mode we run it in. DashScope publishes four different numbers for this
+    #    model and only one of them belongs in this field:
+    #      - total context ......................... 1,000,000
+    #      - max input, non-thinking mode ...........   991,808
+    #      - max input, thinking mode ...............   983,616  <- recorded
+    #      - max output tokens ......................   131,072
+    #    We send ``reasoning_effort=max``, i.e. thinking mode, so 983,616 is the
+    #    real per-request input ceiling. The endpoint distinguishes the input and
+    #    the output limit in its own 400s, and the two refusals are worded
+    #    differently: "Range of max_tokens should be [1, 131072]" for the output
+    #    limit against "Range of input length should be [1, 991808]" for the
+    #    input one. Two-sentinel probes confirmed the input side directly — a
+    #    991,787-token prompt was answered with both sentinels intact and a
+    #    991,809-token one was refused. An earlier revision of this entry
+    #    recorded 131,072 here; that was the *output* limit filed under the input
+    #    field, and it made history compaction fire at 98,072 tokens, roughly a
+    #    tenth of the window this model actually has.
+    #    Not 1,000,000: the total context is not a single-request input ceiling.
+    #    ``history_trigger_target`` reserves 33,000 tokens below this figure
+    #    (20,000 output reserve + 13,000 buffer), so a window of 1,000,000 would
+    #    put the trigger at 967,000 and leave only 16,616 tokens of headroom
+    #    against the real 983,616 limit — half the reserve the design asks for.
+    #    With 983,616 the trigger is 950,616 and the compaction target 712,962.
     #  * ``supports_forced_tool_choice`` is refused. With the exact request this
     #    adapter builds (two function tools, ``reasoning_effort`` set, no
     #    ``enable_thinking`` key), both ``tool_choice="required"`` and
@@ -220,13 +234,19 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     #    (``enable_thinking=false``), so the 400 is this model's behaviour in
     #    the mode we run it in rather than a malformed request.
     #
+    # Do not source any field here from ``GET /models``. That endpoint's
+    # ``extra_info`` block is byte-identical (same sha256) for ``qwen3.8-flash``
+    # and ``deepseek-v4-flash``, two models with different real limits, so it is
+    # gateway boilerplate rather than per-model capability. Only the published
+    # model card and the endpoint's own 400s are usable sources.
+    #
     # The three Responses dimensions and ``honors_workflow_thinking_override``
     # are deliberately left at their dataclass defaults. This model is reached
     # only over ``chat_completions``, where the Responses fields are never read,
     # and none of the four has been probed; leaving them out keeps the entry to
     # what was measured and keeps today's behaviour unchanged.
     "qwen3.8-flash": ModelCapabilities(
-        context_window=131_072,
+        context_window=983_616,
         supports_forced_tool_choice=False,
     ),
     # ``gpt-5.6-luna`` is deliberately absent, and stays absent. Its recorded

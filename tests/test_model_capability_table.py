@@ -12,19 +12,46 @@ from __future__ import annotations
 import dataclasses
 
 from opencollab.adapters.llm.types import ModelCapabilities, model_capabilities
+from opencollab.application.shaping.pipeline import history_trigger_target
 
 # Measured against the DashScope OpenAI-compatible endpoint on 2026-09-06 and
-# recorded in ``_EXACT_MODEL_CAPABILITIES``. ``context_window`` is the ceiling
-# the endpoint reports for itself (``GET /models/qwen3.8-flash`` and the
-# ``max_tokens`` range refusal agree on 131,072); ``supports_forced_tool_choice``
-# is False because the endpoint answers HTTP 400 to both a ``required`` and a
-# named ``tool_choice`` in the mode this adapter sends.
-QWEN_MEASURED_CONTEXT_WINDOW = 131_072
+# recorded in ``_EXACT_MODEL_CAPABILITIES``. ``context_window`` is the largest
+# *input* the model accepts in the mode this adapter runs it in (thinking, via
+# ``reasoning_effort=max``): 983,616. The endpoint publishes three other numbers
+# for this model — 1,000,000 total context, 991,808 max input with thinking off,
+# and 131,072 max *output* — and none of them belongs in this field.
+# ``supports_forced_tool_choice`` is False because the endpoint answers HTTP 400
+# to both a ``required`` and a named ``tool_choice`` in the mode this adapter
+# sends.
+QWEN_MEASURED_CONTEXT_WINDOW = 983_616
+QWEN_MAX_OUTPUT_TOKENS = 131_072
 QWEN_MEASURED_FORCED_TOOL_CHOICE = False
 
 
 def test_qwen_flash_carries_the_measured_context_window():
     assert model_capabilities("qwen3.8-flash").context_window == QWEN_MEASURED_CONTEXT_WINDOW
+
+
+def test_qwen_flash_context_window_is_not_the_max_output_limit():
+    """The two limits are different quantities and the endpoint words its 400s
+    differently ("Range of max_tokens" against "Range of input length"). Filing
+    the output limit under ``context_window`` is the exact regression this
+    pins: it silently moved compaction from 950,616 tokens down to 98,072.
+    """
+    assert model_capabilities("qwen3.8-flash").context_window != QWEN_MAX_OUTPUT_TOKENS
+
+
+def test_qwen_flash_window_leaves_the_designed_headroom_under_the_real_limit():
+    """``history_trigger_target`` reserves 33,000 tokens below the window.
+
+    Recording the 1,000,000-token *total context* instead would put the trigger
+    at 967,000, i.e. 16,616 below the real 983,616 input ceiling — under half
+    the reserve. Spelled out as literals so the test fails if either the window
+    or the reserve moves.
+    """
+    window = model_capabilities("qwen3.8-flash").context_window
+
+    assert history_trigger_target(window) == (950_616, 712_962)
 
 
 def test_qwen_flash_refuses_forced_tool_choice():
