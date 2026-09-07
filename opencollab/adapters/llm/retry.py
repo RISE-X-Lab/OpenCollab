@@ -62,6 +62,39 @@ _TRANSIENT_TRANSPORT_MESSAGE_FRAGMENTS = (
     "remote protocol error",
 )
 
+# Gateway saturation refusals arrive with NO HTTP status at all.  A gateway
+# that meters concurrency in front of the provider rejects the request before
+# any upstream response exists, so the SDK raises a bare ``APIError`` whose
+# ``status_code`` is unset and whose text is the gateway's own wording.  Both
+# the status set above and ``RETRYABLE_MESSAGE_FRAGMENTS`` miss it, so such a
+# call was retried zero times.  Measured on luna-cmdprimary40 (2026-09-05,
+# gpt-5.6-luna): 91 seat sessions ended on a provider error, of which 28 read
+# "APIError: Concurrency limit exceeded for user, please retry later" and 2
+# read "APIError: Upstream HTTP/2 stream failed" -- neither carries a status.
+# Repeating the identical request after a backoff can succeed, so both are
+# transient.
+#
+# The classification stays narrow in two ways at once, because the fragments
+# below are ordinary English that an application error could also contain:
+# the error must be a provider-SDK exception class AND carry no HTTP status.
+# An error that does carry a status was already decided by
+# ``RETRYABLE_STATUS_CODES`` above, so this rule can never flip a 400, a 401 or
+# a 404 to retryable, and a plain ``ValueError`` never matches the class gate.
+_STATUSLESS_PROVIDER_ERROR_CLASS_NAMES = frozenset(
+    {
+        "apierror",
+        "openaierror",
+        "anthropicerror",
+    }
+)
+_TRANSIENT_GATEWAY_MESSAGE_FRAGMENTS = (
+    "concurrency limit",
+    "too many concurrent",
+    "please retry later",
+    "try again later",
+    "stream failed",
+)
+
 # Small random jitter (seconds) added to each backoff to reduce thundering herd.
 RETRY_JITTER_MAX_SECONDS = 0.25
 MAX_RETRY_AFTER_SECONDS = 300.0
@@ -131,6 +164,19 @@ async def with_retry(
             attempt += 1
 
 
+def _http_status_of(error: BaseException) -> int | None:
+    """Best-effort HTTP status for ``error`` (direct attribute or ``.response``)."""
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        return status
+    response = getattr(error, "response", None)
+    if response is not None:
+        resp_status = getattr(response, "status_code", None)
+        if isinstance(resp_status, int) and not isinstance(resp_status, bool):
+            return resp_status
+    return None
+
+
 def is_retryable_error(error: Exception) -> bool:
     """Whether ``error`` looks transient (retryable status code or message)."""
     if isinstance(error, TransientProviderError):
@@ -168,6 +214,15 @@ def is_retryable_error(error: Exception) -> bool:
         if class_name in _TRANSIENT_TRANSPORT_CLASS_NAMES:
             return True
         message = str(current).lower()
+        if (
+            class_name in _STATUSLESS_PROVIDER_ERROR_CLASS_NAMES
+            and _http_status_of(current) is None
+            and any(
+                fragment in message
+                for fragment in _TRANSIENT_GATEWAY_MESSAGE_FRAGMENTS
+            )
+        ):
+            return True
         if any(
             fragment in message
             for fragment in _TRANSIENT_TRANSPORT_MESSAGE_FRAGMENTS
