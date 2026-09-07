@@ -64,6 +64,12 @@ class LLMResponse:
     # The application stores it without interpreting it, and each provider
     # removes data that does not belong on its request path.
     provider_state: dict[str, Any] | None = None
+    # When the first token of this response arrived, or why nobody could see it
+    # (``adapters.llm.first_token``). Filled by ``LLMClient.complete`` after the
+    # provider returns, so it is set on every arm's path and on none of the
+    # provider modules' own return contracts. ``None`` means the response was
+    # built outside the client (a test double, a replayed fixture).
+    transport_timing: dict[str, Any] | None = None
 
 
 def to_plain_data(value: Any) -> Any:

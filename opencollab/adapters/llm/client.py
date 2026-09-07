@@ -14,6 +14,7 @@ from typing import Any
 import openai
 
 from opencollab.adapters.llm.anthropic_provider import complete_anthropic
+from opencollab.adapters.llm.first_token import recording
 from opencollab.adapters.llm.openai_provider import complete_openai
 from opencollab.adapters.llm.providers import (
     RESPONSES,
@@ -195,81 +196,97 @@ class LLMClient:
         as the nucleus-sampling knob. Unset == byte-identical request as today.
         """
         start = time.monotonic()
-        try:
-            if self._anthropic:
-                response = await complete_anthropic(
-                    self._anthropic,
-                    self.model,
-                    messages,
-                    tools,
-                    temperature,
-                    self.max_retries,
-                    thinking=thinking,
-                    thinking_params=thinking_params,
-                    tool_choice=tool_choice,
-                    top_p=top_p,
-                    max_output_tokens=max_output_tokens,
+        # One timer per call, installed here and not in any provider module:
+        # every arm reaches its provider through this one method, so the
+        # record cannot be present on one arm's path and absent from another's.
+        with recording() as first_token:
+            try:
+                if self._anthropic:
+                    response = await complete_anthropic(
+                        self._anthropic,
+                        self.model,
+                        messages,
+                        tools,
+                        temperature,
+                        self.max_retries,
+                        thinking=thinking,
+                        thinking_params=thinking_params,
+                        tool_choice=tool_choice,
+                        top_p=top_p,
+                        max_output_tokens=max_output_tokens,
+                        reasoning_effort=reasoning_effort,
+                        provider_error_time_budget=self.provider_retry_budget,
+                    )
+                elif self.wire_protocol == RESPONSES:
+                    response = await complete_responses(
+                        self._openai,
+                        self.model,
+                        messages,
+                        tools,
+                        temperature,
+                        self.max_retries,
+                        tool_choice=tool_choice,
+                        top_p=top_p,
+                        max_output_tokens=max_output_tokens,
+                        reasoning_effort=reasoning_effort,
+                        prompt_cache_namespace=self._responses_prompt_cache_namespace,
+                        response_session_id=response_session_id or uuid.uuid4().hex,
+                        first_event_timeout=self.first_event_timeout,
+                        stream_idle_timeout=self.stream_idle_timeout,
+                        round_timeout=self.request_timeout,
+                        provider_error_time_budget=self.provider_retry_budget,
+                    )
+                else:
+                    response = await complete_openai(
+                        self._openai,
+                        self.model,
+                        messages,
+                        tools,
+                        temperature,
+                        self.max_retries,
+                        thinking=thinking,
+                        thinking_params=thinking_params,
+                        tool_choice=tool_choice,
+                        top_p=top_p,
+                        max_output_tokens=max_output_tokens,
+                        reasoning_effort=reasoning_effort,
+                        provider_error_time_budget=self.provider_retry_budget,
+                        stream=self.stream_chat,
+                        first_event_timeout=self.first_event_timeout,
+                        stream_idle_timeout=self.stream_idle_timeout,
+                    )
+                transport_timing = first_token.snapshot()
+                try:
+                    response.transport_timing = transport_timing
+                except (AttributeError, TypeError):
+                    # A provider that returned something other than
+                    # ``LLMResponse`` (a stub, a slotted object) must not have a
+                    # successful completion turned into a failure by an
+                    # observability field. The usage ledger below still records
+                    # the timing for such a call.
+                    pass
+                await _record_api_usage_async(
+                    provider=self.provider,
+                    model=self.model,
+                    wire_protocol=self.wire_protocol,
                     reasoning_effort=reasoning_effort,
-                    provider_error_time_budget=self.provider_retry_budget,
+                    base_url=self.base_url,
+                    latency_s=time.monotonic() - start,
+                    status="success",
+                    response=response,
+                    transport_timing=transport_timing,
                 )
-            elif self.wire_protocol == RESPONSES:
-                response = await complete_responses(
-                    self._openai,
-                    self.model,
-                    messages,
-                    tools,
-                    temperature,
-                    self.max_retries,
-                    tool_choice=tool_choice,
-                    top_p=top_p,
-                    max_output_tokens=max_output_tokens,
+                return response
+            except Exception as exc:
+                await _record_api_usage_async(
+                    provider=self.provider,
+                    model=self.model,
+                    wire_protocol=self.wire_protocol,
                     reasoning_effort=reasoning_effort,
-                    prompt_cache_namespace=self._responses_prompt_cache_namespace,
-                    response_session_id=response_session_id or uuid.uuid4().hex,
-                    first_event_timeout=self.first_event_timeout,
-                    stream_idle_timeout=self.stream_idle_timeout,
-                    round_timeout=self.request_timeout,
-                    provider_error_time_budget=self.provider_retry_budget,
+                    base_url=self.base_url,
+                    latency_s=time.monotonic() - start,
+                    status="error",
+                    error=exc,
+                    transport_timing=first_token.snapshot(),
                 )
-            else:
-                response = await complete_openai(
-                    self._openai,
-                    self.model,
-                    messages,
-                    tools,
-                    temperature,
-                    self.max_retries,
-                    thinking=thinking,
-                    thinking_params=thinking_params,
-                    tool_choice=tool_choice,
-                    top_p=top_p,
-                    max_output_tokens=max_output_tokens,
-                    reasoning_effort=reasoning_effort,
-                    provider_error_time_budget=self.provider_retry_budget,
-                    stream=self.stream_chat,
-                    first_event_timeout=self.first_event_timeout,
-                    stream_idle_timeout=self.stream_idle_timeout,
-                )
-            await _record_api_usage_async(
-                provider=self.provider,
-                model=self.model,
-                wire_protocol=self.wire_protocol,
-                reasoning_effort=reasoning_effort,
-                base_url=self.base_url,
-                latency_s=time.monotonic() - start,
-                status="success",
-                response=response,
-            )
-            return response
-        except Exception as exc:
-            await _record_api_usage_async(
-                provider=self.provider,
-                model=self.model,
-                wire_protocol=self.wire_protocol,
-                reasoning_effort=reasoning_effort,
-                base_url=self.base_url,
-                latency_s=time.monotonic() - start,
-                status="error",
-                error=exc,
-            )
-            raise
+                raise

@@ -16,6 +16,12 @@ from opencollab.adapters.llm.errors import (
     StreamedUsageUnavailableError,
     TransientProviderError,
 )
+from opencollab.adapters.llm.first_token import (
+    CHAT_STREAM,
+    NOT_STREAMED,
+    begin_attempt,
+    mark_first_token,
+)
 from opencollab.adapters.llm.retry import RetryTimeBudget, with_retry
 from opencollab.adapters.llm.tool_contracts import (
     NormalizedToolChoice,
@@ -747,6 +753,10 @@ async def _consume_chat_stream(
                 )
             except StopAsyncIteration:
                 break
+            if first:
+                # Before ``_absorb_chunk``: the measurement is when the bytes
+                # landed, not when parsing them finished.
+                mark_first_token(CHAT_STREAM)
             first = False
             _absorb_chunk(chunk, state)
     finally:
@@ -762,6 +772,7 @@ async def _create_and_consume_chat_stream(
 ) -> _ChatStreamState:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + first_chunk_timeout
+    begin_attempt(streamed=True)
     try:
         event_stream = await asyncio.wait_for(
             client.chat.completions.create(**kwargs),
@@ -824,8 +835,15 @@ async def complete_openai(
         keep_reasoning_content=not stream,
     )
     if not stream:
+
+        async def unstreamed_once() -> Any:
+            # Same call as before, wrapped only so the attempt's start time and
+            # "this one has no first token" are on the record.
+            begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
+            return await client.chat.completions.create(**kwargs)
+
         resp = await with_retry(
-            lambda: client.chat.completions.create(**kwargs),
+            unstreamed_once,
             max_retries=max_retries,
             retry_time_budget=provider_error_time_budget,
         )

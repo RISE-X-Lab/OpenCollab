@@ -408,6 +408,15 @@ class CompletionResponse(Protocol):
         """Provider-confirmed model identity, if the wire protocol reports it."""
         ...
 
+    @property
+    def transport_timing(self) -> dict[str, Any] | None:
+        """When this response's first token arrived, or why it is unmeasurable.
+
+        Optional, like ``reasoning``: implementations may omit it and the run
+        loop reads it defensively via ``getattr``.
+        """
+        ...
+
 
 class LLMPort(Protocol):
     """LLM client surface used by the session run loop and compaction."""

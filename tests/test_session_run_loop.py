@@ -593,6 +593,9 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
                 "model": "fake-model",
                 "thinking": False,
                 "reasoning_effort_policy": "configured",
+                # ``None`` because this stub response never went through
+                # ``LLMClient``; a real call carries the first-token timing here.
+                "transport_timing": None,
                 "finish_reason": "tool_calls",
             "content": "need tool",
             "tool_calls": [{"id": "call-1", "name": "fake_tool", "arguments": '{"value": 1}'}],

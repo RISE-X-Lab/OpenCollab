@@ -795,6 +795,12 @@ class _SessionRunCompletionMixin:
             provider_model = getattr(response, "provider_model", None)
             if provider_model is not None:
                 payload["provider_model"] = provider_model
+            # How long the provider took to say its first word, beside how long
+            # the whole call took. ``latency_s`` alone cannot say whether a slow
+            # call was queued or was generating; these two numbers can. Written
+            # unconditionally so "no key" means "this response did not come from
+            # the client" rather than "the call happened to be fast".
+            payload["transport_timing"] = getattr(response, "transport_timing", None)
             self.tracer.log_step(
                 step_type="llm_call",
                 payload=payload,

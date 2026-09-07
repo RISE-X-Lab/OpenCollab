@@ -9,6 +9,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from opencollab.adapters.llm.errors import TransientProviderError
+from opencollab.adapters.llm.first_token import (
+    NOT_STREAMED,
+    RESPONSES_STREAM,
+    begin_attempt,
+    mark_first_token,
+)
 from opencollab.adapters.llm.responses_errors import (
     ResponsesEmptyOutputError,
     ResponsesProtocolError,
@@ -374,6 +380,9 @@ async def _consume_stream(
                 first_event_timeout if first else idle_timeout,
                 stage="first-event" if first else "stream-idle",
             )
+            if first:
+                # Stamped on arrival, before the event is interpreted.
+                mark_first_token(RESPONSES_STREAM)
             first = False
             if _handle_event(event, state, expected_model):
                 break
@@ -397,6 +406,7 @@ async def _create_and_consume_stream(
 ) -> _StreamState:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + first_event_timeout
+    begin_attempt(streamed=True)
     try:
         event_stream = await asyncio.wait_for(
             client.responses.create(**kwargs),
@@ -674,6 +684,7 @@ async def complete_responses(
     async def request_once() -> LLMResponse:
         if not stream:
             kwargs["stream"] = False
+            begin_attempt(streamed=False, unavailable_reason=NOT_STREAMED)
             response = await client.responses.create(**kwargs)
             return parse_responses_response(
                 response,
