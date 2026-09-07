@@ -13,6 +13,7 @@ from opencollab.application._session_run_shared import (
     _WRITE_TOOLS,
     GenerationTimeoutError,
     _ContextOverflowStop,
+    _request_tool_names,
     _submit_tool_choice,
     _TokenBudgetStop,
 )
@@ -505,6 +506,14 @@ class _SessionRunCompletionMixin:
     async def _complete_with_choice(
         self, messages: list[dict], tools: list[dict] | None, tool_choice: Any | None
     ) -> CompletionResponse:
+        # Record-only capture of what this request offers, read back by
+        # ``record_llm_trace`` after the response returns. This is the single
+        # place a request is issued, so it sees the list AFTER the steering hard
+        # rung narrows it and the choice AFTER an override or a degrade to
+        # "auto" -- what went on the wire, not what the agent was registered
+        # with. Assignment only: nothing below branches on either field.
+        self._last_request_tool_names = _request_tool_names(tools)
+        self._last_request_tool_choice = tool_choice
         # ``thinking`` is read defensively (getattr) so duck-typed agent stubs
         # without the field keep working. When OFF (the default) the call is made
         # exactly as before — the thinking kwargs are omitted entirely so the LLM
@@ -727,6 +736,13 @@ class _SessionRunCompletionMixin:
                 "finish_reason": response.finish_reason,
                 "content": response.content,
                 "tool_calls": tool_calls_log,
+                # What the REQUEST offered, beside what the response returned.
+                # ``assigned.topology_nodes`` names each seat's tools once at
+                # prebuild; this names the list on this call, so a table that was
+                # narrowed mid-run (the steering hard rung drops ``message_agent``)
+                # is visible instead of having to be inferred.
+                "request_tool_names": list(self._last_request_tool_names),
+                "request_tool_choice": self._last_request_tool_choice,
             }
             if usage is not None:
                 output_tokens = getattr(usage, "output_tokens", max(total_tokens - input_tokens, 0))

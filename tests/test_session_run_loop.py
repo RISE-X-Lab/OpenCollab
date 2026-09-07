@@ -596,6 +596,8 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
                 "finish_reason": "tool_calls",
             "content": "need tool",
             "tool_calls": [{"id": "call-1", "name": "fake_tool", "arguments": '{"value": 1}'}],
+            "request_tool_names": ["fake_tool"],
+            "request_tool_choice": None,
             "usage": {
                 "input_tokens": 1,
                 "output_tokens": 0,

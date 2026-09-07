@@ -180,6 +180,12 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._low_yield_m = low_yield_m
         self._pending_tool_allowlist: frozenset[str] | None = None
         self._pending_tool_gate_label: str | None = None
+        # What the most recent provider request actually offered. Written by
+        # ``_complete_with_choice`` (the one place a request is issued) and read
+        # by ``record_llm_trace``; recording only, never consulted by control
+        # flow.
+        self._last_request_tool_names: list[str] = []
+        self._last_request_tool_choice: Any = None
         # Message index where the current user turn began. It survives a
         # deferred suspend/resume so the returned answer is scoped to this turn.
         self._turn_start_message_index: int | None = None
