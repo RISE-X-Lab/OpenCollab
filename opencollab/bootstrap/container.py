@@ -39,6 +39,7 @@ from opencollab.application.ports import (
     EventPublisherPort,
     LLMPort,
     PermissionPort,
+    PrecheckGuardPort,
     SafetyPolicyPort,
     SessionStorePort,
     ShaperPort,
@@ -308,6 +309,7 @@ def build_session_runtime(
     seed_system_messages: list[dict[str, Any]] | None = None,
     shaper: ShaperPort | None = None,
     team_budget_exhausted: Callable[[], bool] | None = None,
+    precheck_guards: tuple[tuple[PrecheckGuardPort, ...], tuple[PrecheckGuardPort, ...]] | None = None,
 ) -> SessionRuntime:
     """Build a ``SessionRuntime`` with the same construction order
     ``Session.__init__`` used to perform inline.
@@ -318,7 +320,9 @@ def build_session_runtime(
     ``seed_system_messages`` retain source-level provenance for layered system
     context; ``seed_user_messages`` are startup user-context messages appended
     after them (e.g. a spawned agent's task);
-    ``shaper`` reshapes the message list before each model call.
+    ``shaper`` reshapes the message list before each model call;
+    ``precheck_guards`` replaces the stop conditions run before each model
+    call (``None`` keeps the built-in five).
     """
     resolved_env = env if env is not None else LocalEnvironment()
     resolved_store: SessionStorePort = store if store is not None else SessionStore()
@@ -373,6 +377,7 @@ def build_session_runtime(
         max_steps=max_steps,
         shaper=resolved_shaper,
         team_budget_exhausted=team_budget_exhausted,
+        precheck_guards=precheck_guards,
         # The context-overflow classifier lives in the adapter layer; injected
         # as a plain callable so the application use case never imports it (same
         # boundary pattern as the team-budget predicate). Enables the

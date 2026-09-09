@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from opencollab.domain.hooks import HookOutcome
+from opencollab.domain.precheck import PrecheckContext, StopDecision
 from opencollab.domain.skill import SkillManifest
 
 if TYPE_CHECKING:
@@ -151,6 +152,20 @@ class ShaperPort(Protocol):
     """
 
     def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        ...
+
+
+class PrecheckGuardPort(Protocol):
+    """One stop condition evaluated before each model call.
+
+    A guard is a pure read of ``PrecheckContext``: it returns a ``StopDecision``
+    to halt the session (``reason`` becomes the terminal reason and the emitted
+    error; ``message`` overrides the visible system message) or ``None`` to let
+    the next guard run. ``SessionRunUseCase.precheck`` runs them in order and
+    the first decision wins, the way shapers compose left-to-right.
+    """
+
+    def check(self, ctx: PrecheckContext) -> StopDecision | None:
         ...
 
 

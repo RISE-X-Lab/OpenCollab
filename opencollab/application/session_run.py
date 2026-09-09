@@ -33,11 +33,14 @@ from opencollab.application.events import SessionEventFactory, default_session_e
 from opencollab.application.ports import (
     EventPublisherPort,
     LLMPort,
+    PrecheckGuardPort,
     ShaperPort,
     TracePort,
 )
+from opencollab.application.precheck_guards import default_precheck_guards
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.events import SessionRuntimeEvent
+from opencollab.domain.precheck import PrecheckContext
 from opencollab.domain.session import SessionPhase, SessionState
 
 logger = logging.getLogger(__name__)
@@ -83,6 +86,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         max_steps: int = 100,
         deferrable_tool_names: frozenset[str] = DEFAULT_DEFERRABLE_TOOLS,
         shaper: ShaperPort | None = None,
+        precheck_guards: tuple[tuple[PrecheckGuardPort, ...], tuple[PrecheckGuardPort, ...]] | None = None,
         team_budget_exhausted: Callable[[], bool] | None = None,
         is_context_overflow: Callable[[Exception], bool] | None = None,
         per_call_timeout: float | None = None,
@@ -110,6 +114,13 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.max_steps = max_steps
         self.deferrable_tool_names = deferrable_tool_names
         self.shaper = shaper
+        # Stop conditions run before each model call, in two runs around the
+        # enforcement gate: the first tuple before it, the second after it (a
+        # gate that picks the next phase itself skips the second). ``None``
+        # resolves to the built-in five, as ``event_factory`` resolves above.
+        self._guards_before_enforcement, self._guards_after_enforcement = (
+            precheck_guards if precheck_guards is not None else default_precheck_guards()
+        )
         # Defense-in-depth aggregate ceiling. An injected zero-arg predicate that
         # reports whether the *team total* spend has reached the global cap.
         # Passed as a plain callable (resolved in bootstrap/the factory) so the
@@ -587,45 +598,56 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.state.transition_to(SessionPhase.CALLING_LLM)
         return True
 
-    async def precheck(self, cancel_event: asyncio.Event | None) -> None:
-        """Gate the next LLM call: cancellation, loop-block, token budget, step limit.
+    def _precheck_context(self, cancel_event: asyncio.Event | None) -> PrecheckContext:
+        """Snapshot what the precheck guards read, once per pass.
 
-        Each guard appends a visible system message, emits an error event, and
-        stops the session via ``_stop_precheck`` (STOPPED with a reason string);
-        otherwise proceed to CALLING_LLM.
+        The caps are read live rather than captured at construction: the
+        scheduler's lease and the ``Session`` facade both rewrite them while
+        the session runs. The team predicate is evaluated here so a guard sees
+        a plain flag (``False`` when no team cap is wired).
         """
-        if cancel_event and cancel_event.is_set():
-            await self._stop_precheck(
-                "interrupted by user",
-                message="[Session interrupted by user]",
-            )
+        return PrecheckContext(
+            cancel_requested=bool(cancel_event and cancel_event.is_set()),
+            loop_blocked_since_progress=self.state.turn.loop_blocked_since_progress,
+            used_tokens=self.state.used_tokens,
+            max_budget_tokens=self.max_budget_tokens,
+            team_budget_exhausted=(
+                self._team_budget_exhausted is not None and self._team_budget_exhausted()
+            ),
+            step_count=self.state.step_count,
+            max_steps=self.max_steps,
+        )
+
+    async def _stop_on_first_guard(
+        self,
+        guards: tuple[PrecheckGuardPort, ...],
+        ctx: PrecheckContext,
+    ) -> bool:
+        """Run ``guards`` in order, stopping on the first decision; True if one fired."""
+        for guard in guards:
+            decision = guard.check(ctx)
+            if decision is not None:
+                await self._stop_precheck(decision.reason, message=decision.message)
+                return True
+        return False
+
+    async def precheck(self, cancel_event: asyncio.Event | None) -> None:
+        """Gate the next LLM call: the guards, the enforcement gate, then the rest.
+
+        A stopping guard halts the session via ``_stop_precheck``; otherwise
+        proceed to CALLING_LLM. Built-ins live in ``application/precheck_guards.py``.
+        """
+        ctx = self._precheck_context(cancel_event)
+        if await self._stop_on_first_guard(self._guards_before_enforcement, ctx):
             return
 
-        if self.state.turn.loop_blocked_since_progress >= DEFAULT_LOOP_BLOCKED_LIMIT:
-            reason = f"loop block limit reached: {self.state.turn.loop_blocked_since_progress} repeated tool calls"
-            await self._stop_precheck(reason)
-            return
-
-        if self.state.used_tokens >= self.max_budget_tokens:
-            reason = f"budget exceeded: {self.state.used_tokens} tokens used"
-            await self._stop_precheck(reason)
-            return
-
-        # Aggregate ceiling (defense-in-depth): even when this session is under
-        # its own cap, stop if the *team total* has reached the global cap. A
-        # single overshooting turn or fan-out could otherwise spend past the
-        # global pool that reserve-at-allocation is meant to protect.
-        if self._team_budget_exhausted is not None and self._team_budget_exhausted():
-            reason = "team budget exceeded: aggregate spend reached the global cap"
-            await self._stop_precheck(reason)
-            return
-
+        # Kept inline, not a guard: it can pick the next phase itself (wind-down
+        # -> CALLING_LLM), which ``StopDecision`` cannot express. Extracting it
+        # is the follow-up. Its no-op returns touch nothing the later guards read.
         if await self._apply_enforcement_gate():
             return
 
-        if self.state.step_count >= self.max_steps:
-            reason = f"step limit reached: {self.state.step_count} steps"
-            await self._stop_precheck(reason)
+        if await self._stop_on_first_guard(self._guards_after_enforcement, ctx):
             return
 
         self.state.transition_to(SessionPhase.CALLING_LLM)
