@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -143,3 +144,63 @@ def _submit_tool_choice(name: str) -> dict[str, Any]:
     submit-only toolset) is the remaining guarantee.
     """
     return {"type": "function", "function": {"name": name}}
+
+
+def _selector_names_tool_choice(selector: Any) -> bool:
+    """Return whether a structured error selector targets ``tool_choice``."""
+    values = selector if isinstance(selector, (list, tuple)) else [selector]
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        normalized = re.sub(r"[\s-]+", "_", value.strip().lower())
+        segments = re.split(r"[.\[\]/]+", normalized)
+        if "tool_choice" in segments:
+            return True
+    return False
+
+
+def _selector_has_named_segment(selector: Any) -> bool:
+    """Return whether a structured selector contains an authoritative name."""
+    values = selector if isinstance(selector, (list, tuple)) else [selector]
+    return any(isinstance(value, str) and bool(value.strip()) for value in values)
+
+
+def _is_tool_choice_rejection(exc: Exception) -> bool:
+    """Return whether a provider validation error specifically rejects choice."""
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+    if status is not None and status not in {400, 422}:
+        return False
+
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        detail = body.get("error", body)
+        if isinstance(detail, dict):
+            selector_keys = ("param", "field", "path")
+            selectors = [
+                detail[key]
+                for key in selector_keys
+                if key in detail and _selector_has_named_segment(detail[key])
+            ]
+            if selectors:
+                return any(_selector_names_tool_choice(value) for value in selectors)
+            code = detail.get("code")
+            if code in {"invalid_tool_choice", "unsupported_tool_choice"}:
+                return True
+
+    message = str(exc).lower()
+    choice = r"tool(?:_| )choice"
+    rejection = (
+        r"invalid|unsupported|not\s+supported|not\s+allowed|unknown|"
+        r"unrecognized|unexpected|rejected"
+    )
+    return any(
+        re.search(pattern, message)
+        for pattern in (
+            rf"\b(?:{rejection})\s+(?:(?:value\s+for|parameter|field)\s*:?\s+)?"
+            rf"{choice}\b",
+            rf"\b{choice}\b(?:\s+(?:parameter|field|value))?"
+            rf"\s+(?:(?:is|was)\s+)?(?:{rejection})\b",
+            rf"\b(?:does\s+not\s+support|doesn't\s+support|rejects?|rejected)"
+            rf"\s+(?:the\s+)?{choice}\b",
+        )
+    )
