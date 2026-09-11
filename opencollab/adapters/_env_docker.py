@@ -158,7 +158,14 @@ def _validate_container_reference(value: str) -> str:
 
 
 class DockerEnvironment(Environment):
-    """Run commands in a new network-isolated or caller-owned container."""
+    """Run commands in a new network-isolated or caller-owned container.
+
+    A recoverable command timeout retains the running container. If cancellation
+    cannot quiesce the command, owned containers are stopped and revoked while
+    preserving their filesystem for caller recovery (for example, docker cp).
+    abort() also preserves the container and backing workspace. The owner must
+    call cleanup() after collecting artifacts to remove these resources.
+    """
 
     process_isolated = True
 
@@ -293,7 +300,6 @@ class DockerEnvironment(Environment):
         args = [
             "run",
             "-d",
-            "--rm",
             "--network",
             "none",
             "--name",
@@ -433,10 +439,18 @@ class DockerEnvironment(Environment):
         if self._attached:
             self.revoke()
             return False
-        removed = await self._remove_container_if_owned()
-        if not removed:
-            self.revoke()
-        return removed
+        # Losing the command group must not discard the caller's workspace or
+        # masquerade as a recoverable tool timeout. Retain it until cleanup().
+        self.revoke()
+        await self._stop_owned_container()
+        return False
+
+    async def _stop_owned_container(self) -> None:
+        if self._container_id is None:
+            return
+        result = await self._docker("stop", "--time", "1", "--", self._container_id)
+        if result.returncode != 0:
+            raise ProcessCleanupError("owned container could not be stopped; workspace retained")
 
     async def _exec(
         self,
@@ -696,6 +710,10 @@ class DockerEnvironment(Environment):
 
     async def cleanup(self) -> None:
         async with self._lifecycle_lock:
+            if not self._attached:
+                self.revoke()
+                await await_owned_operation(self._cleanup_resources(), propagate_cancellation=True)
+                return
             await self._abort_resources_locked()
             if self._attached:
                 await await_owned_operation(
@@ -713,7 +731,7 @@ class DockerEnvironment(Environment):
         self.revoke()
         if not self._attached:
             await await_owned_operation(
-                self._cleanup_resources(),
+                self._stop_owned_container(),
                 propagate_cancellation=True,
             )
             return
