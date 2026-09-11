@@ -216,14 +216,12 @@ def test_cli_forwards_explicit_team_config(monkeypatch, tmp_path):
             "--prompt",
             "do work",
             "--hold",
-            "--allow-local-child-tests",
         ],
     )
 
     assert result.exit_code == 0, result.output
     assert captured["team_config_path"] == str(team_config)
     assert captured["hold_after_run"] is True
-    assert captured["allow_unisolated_child_tests"] is True
 
 
 def test_cli_hold_requires_one_shot_prompt():
@@ -256,11 +254,9 @@ async def test_cli_run_passes_team_config_path_to_scheduler(monkeypatch, tmp_pat
             False,
             team_config_path=str(team_config),
             one_shot_prompt="do work",
-            allow_unisolated_child_tests=True,
         )
 
     assert captured["team_config_path"] == str(team_config)
-    assert captured["allow_unisolated_child_tests"] is True
     assert tracer.closed is True
 
 

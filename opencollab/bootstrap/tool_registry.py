@@ -18,7 +18,6 @@ from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.tools.git_diff import GitDiffTool
 from opencollab.adapters.tools.human import AskUserTool
 from opencollab.adapters.tools.message import MessageAgentTool, TeamStatusTool
-from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.adapters.tools.spawn import SpawnAgentTool, SpawnWithReviewTool
 from opencollab.adapters.tools.submit import SubmitTool
 from opencollab.adapters.tools.use_skill import UseSkillTool
@@ -32,7 +31,6 @@ STATELESS_TOOL_FACTORIES: dict[str, Callable[[], Tool]] = {
     "file_read": FileReadTool,
     "file_write": FileWriteTool,
     "apply_patch": ApplyPatchTool,
-    "run_tests": RunTestsTool,
     "git_diff": GitDiffTool,
     "grep": GrepTool,
     "submit": SubmitTool,
@@ -62,13 +60,12 @@ COORDINATION_TOOL_NAMES: frozenset[str] = frozenset(SCHEDULER_TOOL_FACTORIES)
 # renamed/removed tool drops out automatically (driven from real names, not a
 # hardcoded library set). Edits/writes and coordination tools are excluded.
 COMPACTABLE_TOOL_NAMES: frozenset[str] = (
-    frozenset({"bash", "file_read", "grep", "git_diff", "run_tests"}) & KNOWN_TOOL_NAMES
+    frozenset({"bash", "file_read", "grep", "git_diff"}) & KNOWN_TOOL_NAMES
 )
 MAX_CONFIGURED_TOOL_OUTPUT_CHARS = 10_000_000
 TOOL_LIMIT_FIELDS: dict[str, frozenset[str]] = {
     "bash": frozenset({"max_output_chars"}),
     "git_diff": frozenset({"max_diff_chars", "max_status_chars"}),
-    "run_tests": frozenset({"max_traceback_chars"}),
     "file_read": frozenset({"max_read_chars"}),
     "grep": frozenset({"max_grep_chars"}),
 }
@@ -121,7 +118,6 @@ def build_tools_for_role(
     skill_store: SkillStorePort | None = None,
     ask_user_available: bool = False,
     allow_unisolated_shell: bool = False,
-    allow_unisolated_tests: bool = False,
     allow_file_creation: bool = True,
     tool_limits: dict[str, dict[str, int]] | None = None,
 ) -> list[Tool]:
@@ -133,8 +129,7 @@ def build_tools_for_role(
     * ``ask_user_available`` — is there a human this agent may put a question
       to? ``ask_user`` is dropped when there is not.
     * ``allow_unisolated_shell`` — may this agent execute commands the OS does
-      not sandbox? It sets ``bash``'s ``require_process_isolation`` (and the
-      matching controls on ``run_tests``, which also spawns a process).
+      not sandbox? It sets ``bash``'s ``require_process_isolation``.
 
     They used to be one ``interactive`` flag, because one fact — "a human is
     sitting at this run" — happened to answer both: a human can be asked a
@@ -146,8 +141,7 @@ def build_tools_for_role(
     ask. Folding them back into one boolean would hand every teammate a shell
     the entry agent does not have, or take away one it does.
 
-    ``allow_unisolated_tests`` stays the narrower, tests-only relaxation of the
-    same guard on ``run_tests``. Scheduler-bound tools require a ``scheduler``;
+    Scheduler-bound tools require a ``scheduler``;
     skill-bound tools require a ``skill_store``. ``tool_limits`` maps a tool name
     to constructor kwargs (output caps) so a team file can tune per-tool output
     budgets to its backend. Unknown names or kwargs raise — fail fast at startup.
@@ -170,7 +164,6 @@ def build_tools_for_role(
                     STATELESS_TOOL_FACTORIES[name],
                     limits,
                     allow_unisolated_shell=allow_unisolated_shell,
-                    allow_unisolated_tests=allow_unisolated_tests,
                     allow_file_creation=allow_file_creation,
                 )
             )
@@ -200,27 +193,15 @@ def _instantiate(
     limits: dict[str, dict[str, int]],
     *,
     allow_unisolated_shell: bool,
-    allow_unisolated_tests: bool,
     allow_file_creation: bool,
 ) -> Tool:
     """Build a stateless tool, applying any configured limit kwargs.
 
-    Both command-running tools read ``allow_unisolated_shell``: a run that may
-    not open an unsandboxed shell may not reach one through the test runner
-    either. ``allow_unisolated_tests`` can lift the sandbox requirement for
-    ``run_tests`` alone, and never lifts it for ``bash``.
+    Bash retains the caller's process-isolation requirement.
     """
     kwargs: dict[str, object] = dict(limits.get(name, {}))
     if name == "bash":
         kwargs["require_process_isolation"] = not allow_unisolated_shell
-    elif name == "run_tests":
-        kwargs.update(
-            allow_runner_override=allow_unisolated_shell,
-            allow_extra_args=allow_unisolated_shell,
-            require_process_isolation=not (
-                allow_unisolated_shell or allow_unisolated_tests
-            ),
-        )
     if name == "file_write":
         kwargs["allow_create"] = allow_file_creation
     try:

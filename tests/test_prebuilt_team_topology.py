@@ -544,8 +544,8 @@ async def test_the_recorded_nodes_are_the_agents_that_were_actually_seated(tmp_p
             "permission_mode": "auto",
             "workspace": workspaces[2],
             "workspace_isolated": False,
-            # The shipped Tester runs tests, not shell commands.
-            "shell": "absent",
+            # The tester uses the same sandboxed shell policy as the coder.
+            "shell": "sandbox_required",
         },
     ]
 

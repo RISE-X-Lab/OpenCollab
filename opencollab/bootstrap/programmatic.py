@@ -73,7 +73,6 @@ _TOOL_PRESETS: dict[str, tuple[str, ...]] = {
         "file_read",
         "file_write",
         "apply_patch",
-        "run_tests",
         "git_diff",
         "grep",
     ),

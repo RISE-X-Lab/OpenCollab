@@ -22,7 +22,6 @@ from tool_execution_test_support import (
 
 import opencollab.application.tool_execution as tool_execution_mod
 import opencollab.application.tool_execution_runtime as tool_execution_runtime
-from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.tool_execution import (
     DeferredCall,
     ToolExecutionUseCase,
@@ -285,7 +284,9 @@ def test_outer_timeout_uses_tool_default_timeout_before_framework_fallback():
         event_publisher=FakeEventPublisher(),
     )
 
-    assert use_case.tool_execution_timeout(RunTestsTool(), {}) == 310.0
+    tool = RuntimeNativeTool()
+    tool.default_timeout = 300.0
+    assert use_case.tool_execution_timeout(tool, {}) == 310.0
 
 
 def test_explicit_timeout_stays_in_tool_args():

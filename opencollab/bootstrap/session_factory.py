@@ -438,7 +438,6 @@ class DefaultSessionFactory:
         lead_environment: Environment | None = None,
         interactive: bool = False,
         save_dir: str | None = None,
-        allow_unisolated_child_tests: bool = False,
         prebuilt_roster: bool = False,
         allow_unisolated_shell: bool | None = None,
         max_steps: int = SESSION_MAX_STEPS,
@@ -454,7 +453,6 @@ class DefaultSessionFactory:
         self._validate_responses_tool_support()
         self._lead_workspace = lead_workspace
         self._lead_environment = lead_environment
-        self._allow_unisolated_child_tests = allow_unisolated_child_tests
         self._prebuilt_roster = bool(prebuilt_roster)
         self._allow_unisolated_shell = (
             interactive if allow_unisolated_shell is None else bool(allow_unisolated_shell)
@@ -609,7 +607,6 @@ class DefaultSessionFactory:
             allow_unisolated_shell=self._unisolated_shell_allowed(
                 seated_at_start=self._prebuilt_roster
             ),
-            allow_unisolated_tests=self._allow_unisolated_child_tests,
             plan=plan,
         )
         auto_save_path = (

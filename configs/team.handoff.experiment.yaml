@@ -37,7 +37,7 @@
 # did not have to make.
 #
 # The working bundle is therefore literally the single agent's, not merely a
-# capable one: `apply_patch, bash, file_read, file_write, grep, run_tests,
+# capable one: `apply_patch, bash, file_read, file_write, grep,
 # submit`, the same seven names the single-agent arm passes to `builtin_tools`
 # (`WORKING_TOOL_NAMES` in OpenCollab-Eval's `gen_prediction_constants`). On top
 # of that the Analyst and the Coder carry only `message_agent` and
@@ -57,15 +57,15 @@ entry: analyst
 roles:
   analyst:
     prompt_file: handoff-experiment/analyst.md
-    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, submit, team_status]
 
   coder:
     prompt_file: handoff-experiment/coder.md
-    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, submit, team_status]
 
   tester:
     prompt_file: handoff-experiment/tester.md
-    tools: [bash, file_read, git_diff, grep, message_agent, run_tests, submit, team_status]
+    tools: [bash, file_read, git_diff, grep, message_agent, submit, team_status]
 
 # Six directed edges — every ordered pair. The return edges are the point: a
 # closed star (analyst -> coder, analyst -> tester, and nothing back) is what

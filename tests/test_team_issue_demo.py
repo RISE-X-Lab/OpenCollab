@@ -17,8 +17,8 @@ def test_demo_team_has_three_roles_with_analyst_entry():
     assert team.entry == "analyst"
     assert set(team.roles) == {"analyst", "coder", "tester"}
     assert team.roles["analyst"].tools == ["file_read", "spawn_agent"]
-    assert team.roles["coder"].tools == ["file_read", "apply_patch", "run_tests"]
-    assert team.roles["tester"].tools == ["file_read", "run_tests"]
+    assert team.roles["coder"].tools == ["file_read", "apply_patch", "bash"]
+    assert team.roles["tester"].tools == ["file_read", "bash"]
     assert team.topology.allows("analyst", "coder")
     assert team.topology.allows("analyst", "tester")
     assert not team.topology.allows("coder", "tester")
@@ -48,5 +48,5 @@ def test_demo_launcher_uses_explicit_team_shared_workspace_and_tui_hold():
     assert "--team-config" in launcher
     assert "--prompt-file" in launcher
     assert "--no-worktrees" in launcher
-    assert "--allow-local-child-tests" in launcher
+    assert "--allow-local-child-tests" not in launcher
     assert "--hold" in launcher
