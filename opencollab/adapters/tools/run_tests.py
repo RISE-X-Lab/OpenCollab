@@ -1,26 +1,4 @@
-"""run_tests — structured test-runner wrapper.
-
-Agents lose budget (and credibility) reading raw pytest dumps and then claiming
-"it passes" without proof. This tool wraps the project's test runner with a
-FIXED calling convention and returns a *structured* result — pass/fail/error
-counts, the failing node-ids, and the head of the first traceback — instead of
-raw stdout. That gives the model a small, reliable signal it can act on and
-makes an unverified "it passes" claim much harder to make by accident.
-
-Defaults to ``python -m pytest`` and also supports Go ``go test``. Other native
-runners are detected but rejected before execution until they have a parser that
-can prove the requested target actually ran. Output is truncated to protect the
-context.
-
-Every run ALWAYS ends with a one-line ``Verdict: GREEN|RED`` (plus, on RED, a
-missing-substring hint and — when the same failing target keeps failing — an
-escalation nudge) so a downstream gate/model gets a reliable signal even when
-the runner prints no pytest-shaped summary line.
-
-Ref:
-- bash.py: same env + safety-policy handling, same head/tail truncation idea.
-- Patch verification: a green/red signal from the requested tests beats prose.
-"""
+"""Structured pytest, Go, and Django source-runner results with executed-test proof."""
 
 from __future__ import annotations
 
@@ -30,6 +8,14 @@ import shlex
 from typing import Any
 
 from opencollab.adapters.tools._output import require_positive_int, truncate
+from opencollab.adapters.tools._run_tests_django import (
+    InvalidDjangoTargetError,
+    detect_django_runner,
+    django_command,
+    django_evidence,
+    django_has_pass_proof,
+    is_django_runner,
+)
 from opencollab.adapters.tools._run_tests_go import (
     GO_PATH_PREFIX as GO_PATH_PREFIX,
 )
@@ -145,6 +131,7 @@ class RunTestsTool(Tool):
         "guessing. Pass `target` (a path or node-id like 'tests/test_x.py::test_y') "
         "to focus the run. "
         "Go projects are auto-detected when pytest is unavailable or collects no tests. "
+        "Django source repositories use tests/runtests.py with dotted test labels. "
         "Other native runners return RED before execution until a proof parser exists. "
         "For Go, pass `target` "
         "like './internal/server' or './internal/server::TestEvaluate'. Read the "
@@ -234,14 +221,14 @@ class RunTestsTool(Tool):
             return (
                 "Error: runner override is disabled for this run_tests tool. "
                 "Omit `runner`; run_tests auto-detects pytest and project-native "
-                "runners such as Go go.mod, sympy bin/test, Django manage.py, and "
+                "runners such as Go go.mod, sympy bin/test, Django tests/runtests.py, manage.py, and "
                 "tox. For Go, pass `target` like './internal/server' or "
                 "'./internal/server::TestEvaluate'."
             )
         if extra_args and not self.allow_extra_args:
             return "Error: extra_args is disabled for this run_tests tool."
 
-        runner = pinned_runner or DEFAULT_RUNNER
+        runner = pinned_runner or await detect_django_runner(env) or DEFAULT_RUNNER
         if pinned_runner is not None and not _is_supported_runner(runner):
             return self._unsupported_runner_report(target, runner)
         try:
@@ -274,6 +261,9 @@ class RunTestsTool(Tool):
                     combined = result.stdout + (
                         "\n" + result.stderr if result.stderr else ""
                     )
+        except InvalidDjangoTargetError as exc:
+            self._record(target, False)
+            return f"Command: not executed\nError: {exc}\nVerdict: RED"
         except _InvalidGoTargetError as exc:
             return self._invalid_go_target_report(target, exc)
 
@@ -450,7 +440,7 @@ def _is_pytest_runner(runner: str) -> bool:
 
 
 def _is_supported_runner(runner: str) -> bool:
-    return _is_pytest_runner(runner) or _is_go_runner(runner)
+    return _is_pytest_runner(runner) or _is_go_runner(runner) or is_django_runner(runner)
 
 
 def _validate_go_target_before_execution(
@@ -474,6 +464,8 @@ def _build_command(runner: str, target: str, extra_args: str) -> str:
         parts = [runner, "--tb=short", "-rfE", "-rA", "-p", "no:cacheprovider", "-q"]
         if target:
             parts.append(shlex.quote(target))
+    elif is_django_runner(runner):
+        parts = [django_command(runner, target)]
     elif _is_go_runner(runner):
         parts = [_go_runner_command(runner), "-json"]
         parts.extend(_translate_go_target_args(target))
@@ -613,6 +605,8 @@ def _is_green(
         # A bounded capture may have dropped the only pass/failure evidence;
         # a retained summary cannot certify the complete run.
         return False
+    if is_django_runner(runner):
+        return returncode == 0 and django_has_pass_proof(target, output)
     summaries = _summary_lines(output)
     if _is_pytest_runner(runner) and len(summaries) != 1:
         # One tool invocation represents one pytest session. Multiple result
@@ -691,7 +685,7 @@ def _format_report(
     max_chars: int = MAX_TRACEBACK_CHARS,
 ) -> str:
     if green is None:
-        green = _is_green(returncode, output)
+        green = _is_green(returncode, output, runner=runner, target=target)
     if _is_pytest_runner(runner) and _pytest_missing(returncode, output):
         # Still emit a parseable verdict so the gate/model is never left without
         # a signal. pytest-missing is RED (the named tests could not run) and
@@ -710,6 +704,9 @@ def _format_report(
     counts, warnings = _parse_counts(summary)
     failed = _failed_tests(output)
     passed = _passed_tests(output)
+    if is_django_runner(runner):
+        counts, passed, failed, total, _valid = django_evidence(output)
+        summary = f"Django unittest runner executed {total} tests" if total is not None else None
 
     parts = [f"Command: {cmd}", f"Exit code: {returncode}"]
     if counts:
