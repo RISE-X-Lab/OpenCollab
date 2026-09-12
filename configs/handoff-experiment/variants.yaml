@@ -128,6 +128,18 @@ variants:
     note: >-
       Command ladder rung 4: rung 3 plus explicit permission to depart.
 
+  cmd-verify:
+    team_file: team.handoff.cmd-verify.yaml
+    block: cmd-verify
+    capabilities: full
+    note: >-
+      Not a ladder rung. `cmd-plain`'s block with the verification paragraph
+      replaced by the return trip: commit the candidate, send the Tester the
+      sha and the command that should pass, treat a failing reply as unfinished
+      work, and be told that a seat's budget is its own. Outcome quantities are
+      poolable with `cmd-plain`; adherence is not measurable here, because the
+      card prescribes the call.
+
 # The rungs of the command ladder, in order from most of the alternative removed
 # to least. Adjacent rungs must differ by exactly one move; the ladder cannot
 # attribute a difference otherwise.

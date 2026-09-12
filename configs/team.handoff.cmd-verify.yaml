@@ -1,0 +1,60 @@
+# The closed-verification cell. `cmd-plain` with one paragraph of its closing
+# block replaced, and nothing else: the shared body, the Coder's card, the
+# Tester's card, the tool bundles and the six edges are byte for byte what
+# `team.handoff.cmd-plain.yaml` seats.
+#
+# WHAT IT CHANGES
+#
+# `cmd-plain` opens the verification loop and does not close it: it tells the
+# Analyst to ask the Tester for "the tests that should cover the change", which
+# is a request for work the Analyst never has to come back for. Measured on
+# forty qwen3.8-flash runs of that cell, teammates committed and sent a sha in
+# 33 of them and the Analyst checked one out in 13; what the Tester found was
+# not, in general, something the graded tree ever saw.
+#
+# This cell asks for the return trip instead: commit the candidate, send the
+# sha and the command that should pass, and treat a reply that says it fails as
+# work that is not finished. It also states the one piece of arithmetic that
+# makes a second agent worth addressing at all -- a seat's budget is its own and
+# does not come back, so a suite the Tester runs is a suite the Analyst did not
+# pay for out of the budget it has left to think with.
+#
+# WHAT IT IS NOT
+#
+# **Not a rung of the command ladder.** The ladder's four rungs differ from each
+# other by exactly one move on one axis (how hard the card leans on handing work
+# over) and exist to locate a sentence. This cell moves a different thing -- what
+# the Analyst does with what comes back -- and it is not poolable with the ladder
+# and does not sit anywhere on it.
+#
+# **Not a cell any adherence number may be read from.** It prescribes a
+# `message_agent` call and a wait, so a delegation count measured here is
+# compliance with this file, not a choice the model made. α is defined on cards
+# that leave the alternative open; this one does not.
+#
+# Runs under this file are poolable with `cmd-plain` on outcome quantities only
+# (resolve, tokens, steps), and only against a `cmd-plain` batch that shares
+# their model, endpoint, suite, budget, step cap and wall clock.
+entry: analyst
+
+roles:
+  analyst:
+    prompt_file: handoff-experiment/analyst.cmd-verify.md
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+
+  coder:
+    prompt_file: handoff-experiment/coder.md
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+
+  tester:
+    prompt_file: handoff-experiment/tester.md
+    tools: [bash, file_read, git_diff, grep, message_agent, run_tests, submit, team_status]
+
+# Six directed edges — every ordered pair. The return edges are the point: a
+# closed star (analyst -> coder, analyst -> tester, and nothing back) is what
+# makes a prebuilt team mute, because a prebuilt peer has no join path to
+# deliver a result on.
+topology:
+  analyst: [coder, tester]
+  coder: [analyst, tester]
+  tester: [analyst, coder]
