@@ -1,0 +1,62 @@
+# The two-candidates cell. `cmd-plain` with the Analyst's closing block
+# replaced, and nothing else: the shared body, the Coder's card, the Tester's
+# card, the tool bundles and the six directed edges are byte for byte what
+# `team.handoff.cmd-plain.yaml` seats.
+#
+# WHAT IT CHANGES
+#
+# `cmd-plain` sends the Coder a change to make. The Coder then implements a fix
+# the Analyst has already worked out, so its patch is not a second answer -- and
+# measured that way it is not one: reconstructing the Coder's own tree on forty
+# runs of that cell and scoring it gave 17 resolved, every one of them a task
+# the Analyst had also resolved, `|C \ A| = 0`.
+#
+# This cell asks the Coder for the diagnosis instead of for the edit, has the
+# Analyst write its own fix in parallel, and puts the Tester between them as the
+# selector. That makes the team's second and third budgets buy two things one
+# agent cannot buy at all: a second independent candidate, and a test run that
+# chooses between candidates without being paid for out of the budget that has
+# to do the thinking.
+#
+# It also names the step that ends the handoff: `git checkout <sha>` into the
+# Analyst's tree. On the forty 2M runs of `cmd-plain`, teammates committed and
+# sent a sha in 33 runs and the Analyst checked one out in 13.
+#
+# WHAT IT IS NOT
+#
+# **Not a rung of the command ladder** and not poolable with one: the ladder's
+# rungs differ by one move on how hard the card leans on handing work over.
+#
+# **Not a cell any adherence number may be read from.** It prescribes the calls,
+# so a delegation count here is compliance with this file rather than a choice.
+#
+# **Not best-of-n.** BoN in this project is D13: k=3 repeated samples from the
+# single agent, selected without a test. Here the two candidates come from two
+# different seats with different context, and the selection is a test run.
+#
+# Poolable with `cmd-plain` on outcome quantities only (resolve, tokens, steps),
+# and only against a `cmd-plain` batch sharing its model, endpoint, suite,
+# budget, step cap and wall clock.
+entry: analyst
+
+roles:
+  analyst:
+    prompt_file: handoff-experiment/analyst.cmd-propose.md
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+
+  coder:
+    prompt_file: handoff-experiment/coder.md
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+
+  tester:
+    prompt_file: handoff-experiment/tester.md
+    tools: [bash, file_read, git_diff, grep, message_agent, run_tests, submit, team_status]
+
+# Six directed edges — every ordered pair. The return edges are the point: a
+# closed star (analyst -> coder, analyst -> tester, and nothing back) is what
+# makes a prebuilt team mute, because a prebuilt peer has no join path to
+# deliver a result on.
+topology:
+  analyst: [coder, tester]
+  coder: [analyst, tester]
+  tester: [analyst, coder]
