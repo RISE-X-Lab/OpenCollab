@@ -140,6 +140,19 @@ variants:
       poolable with `cmd-plain`; adherence is not measurable here, because the
       card prescribes the call.
 
+  cmd-propose:
+    team_file: team.handoff.cmd-propose.yaml
+    block: cmd-propose
+    capabilities: full
+    note: >-
+      Not a ladder rung. Two candidates and a judge: the Coder is asked for its
+      own diagnosis rather than for an implementation of the Analyst's, the
+      Analyst writes a second fix in parallel, and the Tester says which sha
+      passes. The seat-oracle null (`|C \ A| = 0`) was measured under
+      dictation, where the Coder implemented a fix the Analyst had already
+      worked out, so it does not cover this cell. Adherence is not measurable
+      here either -- the card prescribes the calls.
+
 # The rungs of the command ladder, in order from most of the alternative removed
 # to least. Adjacent rungs must differ by exactly one move; the ladder cannot
 # attribute a difference otherwise.
