@@ -64,11 +64,11 @@ def test_title_accepts_repository_convention():
     assert validate_title("fix(runtime)!: preserve the session terminal state") is None
 
 
-def test_title_rejects_invalid_type_non_english_summary_and_multiple_lines():
+def test_title_rejects_invalid_type_unreadable_summary_and_multiple_lines():
     assert validate_title("change: update runtime") == "title must follow Conventional Commits"
-    assert validate_title("fix: \u4fee\u590d\u8fd0\u884c\u65f6") == "title summary must use English text"
-    assert validate_title("fix: repair \u8fd0\u884c\u65f6") == "title summary must use English text"
-    assert validate_title("fix: 123") == "title summary must use English text"
+    assert validate_title("fix: \u4fee\u590d\u8fd0\u884c\u65f6") is None
+    assert validate_title("fix: repair \u8fd0\u884c\u65f6") is None
+    assert validate_title("fix: 123") == "title summary must contain readable text"
     assert validate_title("fix: repair runtime\nsecond line") == "title must be a single line"
 
 
@@ -97,3 +97,8 @@ def test_commit_mode_accepts_github_merge_commit_subject(tmp_path):
 
     assert result.returncode == 0
     assert "merge commit" in result.stdout
+
+
+def test_title_rejects_hidden_controls_in_unicode_summary():
+    assert validate_title("fix: readable\u202etitle") == "title summary must contain readable text"
+    assert validate_title("fix: readable\u2028title") == "title summary must contain readable text"

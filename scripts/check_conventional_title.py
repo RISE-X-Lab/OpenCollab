@@ -6,13 +6,13 @@ from __future__ import annotations
 import argparse
 import re
 import subprocess
+import unicodedata
 from pathlib import Path
 
 _TITLE = re.compile(
     r"^(feat|fix|refactor|docs|test|chore|perf|ci|build|style|revert)"
     r"(\([a-z0-9._/ -]+\))?!?: .+$"
 )
-_ENGLISH_SUMMARY = re.compile(r"(?=.*[A-Za-z])[ -~]+")
 
 
 def validate_title(title: str) -> str | None:
@@ -22,8 +22,11 @@ def validate_title(title: str) -> str | None:
     if not _TITLE.fullmatch(title):
         return "title must follow Conventional Commits"
     summary = title.split(": ", 1)[1]
-    if not _ENGLISH_SUMMARY.fullmatch(summary):
-        return "title summary must use English text"
+    if not any(char.isalpha() for char in summary) or any(
+        unicodedata.category(char).startswith("C") or char in "\u2028\u2029"
+        for char in summary
+    ):
+        return "title summary must contain readable text"
     return None
 
 
