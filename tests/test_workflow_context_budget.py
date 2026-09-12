@@ -293,7 +293,12 @@ async def test_active_background_agent_is_visible_to_boundary_owner():
 @pytest.mark.asyncio
 async def test_pending_cleanup_callback_consumes_late_exception():
     class FailingCancelCleanupSession(CancelCleanupSession):
+        def __init__(self):
+            super().__init__()
+            self.entered = asyncio.Event()
+
         async def run_loop(self, cancel_event=None):
+            self.entered.set()
             try:
                 return await super().run_loop(cancel_event)
             except asyncio.CancelledError:
@@ -306,7 +311,9 @@ async def test_pending_cleanup_callback_consumes_late_exception():
     session = FailingCancelCleanupSession()
     ctx = WorkflowContext(FakeFactory([session]))
     try:
-        assert await ctx.agent("slow", timeout=0.05) is None
+        call = asyncio.create_task(ctx.agent("slow", timeout=1.0))
+        await asyncio.wait_for(session.entered.wait(), timeout=0.5)
+        assert await call is None
         await asyncio.wait_for(session.cancel_seen.wait(), timeout=0.5)
         session.release_cancel.set()
         await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=0.5)
