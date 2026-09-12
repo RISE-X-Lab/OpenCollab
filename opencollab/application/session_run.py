@@ -28,6 +28,7 @@ from opencollab.application._session_run_shared import (
     _submit_tool_choice,
     _TokenBudgetStop,
 )
+from opencollab.application._session_run_trace import _SessionRunTraceMixin
 from opencollab.application._session_run_usage import _normalize_completion_usage
 from opencollab.application.events import SessionEventFactory, default_session_event_factory
 from opencollab.application.ports import (
@@ -61,7 +62,7 @@ __all__ = [
 ]
 
 
-class SessionRunUseCase(_SessionRunCompletionMixin):
+class SessionRunUseCase(_SessionRunCompletionMixin, _SessionRunTraceMixin):
     """Application use case for the session run loop.
 
     The LLM response is structural (``CompletionResponse`` in
@@ -323,55 +324,6 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
     def is_terminal_phase(self) -> bool:
         """Whether the session has finished its turn (done/failed/limits)."""
         return self.state.phase.is_terminal()
-
-    def _trace_session_terminal(self) -> None:
-        """Record how this session ended, and what it had left when it did.
-
-        Two resources can stop a session: the tokens it was given and the steps
-        it was allowed. They cannot both be equalized across differently
-        organized runs — a solo agent carries one long history and pays more per
-        step than a teammate carrying a short one — so a comparison holds one of
-        them equal and lets the other vary. This repository holds tokens equal.
-
-        That makes the step ceiling a runaway guard rather than an allowance,
-        and a guard is only honest if it never actually fires. Nothing recorded
-        that. A session stopped at its step ceiling with tokens still unspent
-        looked exactly like a session that finished: the phase collapsed to
-        STOPPED, the reason string lived only in memory, and the trajectory —
-        the file the run is read from afterwards — said nothing at all. The
-        claim "steps were counted, never enforced" was unfalsifiable.
-
-        So each session writes one row naming its disposition beside both
-        counters and both ceilings. ``step_ceiling_reached`` is derivable from
-        the two step fields and is written anyway: it is the exact question this
-        record exists to answer, and a reader should not have to re-derive the
-        rule to ask it.
-
-        Observation only, and guarded: a record that cannot be built must not
-        change how the session ended.
-        """
-        if self._session_terminal_traced or self.tracer is None:
-            return
-        self._session_terminal_traced = True
-        try:
-            step_count = int(self.state.step_count)
-            max_steps = int(self.max_steps)
-            self.tracer.log_step(
-                step_type="session_terminal",
-                payload={
-                    "aid": self.state.aid,
-                    "role": getattr(self.agent, "name", None),
-                    "phase": self.state.phase.value,
-                    "terminal_reason": self.state.terminal_reason,
-                    "step_count": step_count,
-                    "max_steps": max_steps,
-                    "step_ceiling_reached": step_count >= max_steps,
-                    "used_tokens": int(self.state.used_tokens),
-                    "max_budget_tokens": int(self.max_budget_tokens),
-                },
-            )
-        except Exception as exc:  # noqa: BLE001 — observability is non-authoritative
-            logger.error("session terminal trace failed: %s", exc)
 
     def _should_suspend(self) -> bool:
         """The loop stops on a terminal phase (turn finished) OR on the
