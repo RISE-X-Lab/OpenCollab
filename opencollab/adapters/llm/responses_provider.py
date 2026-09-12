@@ -5,10 +5,19 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
-from opencollab.adapters.llm.errors import TransientEmptyOutputError, TransientProviderError
+from opencollab.adapters.llm.errors import TransientProviderError
+from opencollab.adapters.llm.responses_errors import (
+    _TRANSIENT_RESPONSE_CODES,
+    _TRANSIENT_RESPONSE_MESSAGES,
+    ResponsesEmptyOutputError,
+    ResponsesProtocolError,
+    ResponsesStreamInterruptedError,
+    ResponsesTransientEventError,
+)
 from opencollab.adapters.llm.responses_structured import (
     ForcedTextTool,
     forced_text_format,
@@ -46,29 +55,12 @@ _PASSIVE_EVENT_TYPES = frozenset(
         "response.reasoning_text.done",
     }
 )
-
-
-class ResponsesProtocolError(RuntimeError):
-    """The Responses endpoint returned an incomplete or invalid event sequence."""
-
-
-class ResponsesEmptyOutputError(ResponsesProtocolError, TransientEmptyOutputError):
-    """A completed Responses request contained no usable assistant output."""
-
-
-class ResponsesStreamInterruptedError(ResponsesProtocolError, TransientProviderError):
-    """A Responses stream ended without its required terminal event."""
-
-
-class ResponsesTransientEventError(ResponsesProtocolError, TransientProviderError):
-    """A typed Responses error identified a temporary provider failure."""
-
-
 @dataclass
 class _StreamState:
     output_items: list[dict[str, Any]] = field(default_factory=list)
     argument_fragments: dict[int, list[str]] = field(default_factory=dict)
     completed_response: Any = None
+    finish_reason: str = "stop"
 
 
 def _message_text(content: Any) -> str:
@@ -314,7 +306,9 @@ async def _next_event(iterator: Any, timeout: float, *, stage: str) -> Any:
     try:
         return await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
     except asyncio.TimeoutError as exc:
-        raise ResponsesProtocolError(f"Responses {stage} timeout after {timeout:g}s") from exc
+        raise ResponsesStreamInterruptedError(
+            f"Responses {stage} timeout after {timeout:g}s"
+        ) from exc
     except StopAsyncIteration as exc:
         raise ResponsesStreamInterruptedError("Responses stream ended before response.completed") from exc
 
@@ -392,13 +386,42 @@ def _validate_completed_response(response: Any, expected_model: str | None) -> s
     return actual_model
 
 
+def _validate_incomplete_response(response: Any, expected_model: str | None) -> str:
+    status = getattr(response, "status", None)
+    if status != "incomplete":
+        raise ResponsesProtocolError(f"Responses request ended with status {status!r}")
+    error = to_plain_data(getattr(response, "error", None))
+    if error is not None:
+        raise ResponsesProtocolError(f"incomplete Responses object contains error {error!r}")
+    incomplete = to_plain_data(getattr(response, "incomplete_details", None))
+    reason = incomplete.get("reason") if isinstance(incomplete, dict) else None
+    if reason != "max_output_tokens":
+        raise ResponsesProtocolError(
+            f"Responses request ended incomplete for reason {reason!r}"
+        )
+    actual_model = getattr(response, "model", None)
+    if not isinstance(actual_model, str) or not actual_model:
+        raise ResponsesProtocolError("incomplete Responses object is missing model identity")
+    return actual_model
+
+
 def _handle_event(event: Any, state: _StreamState, expected_model: str | None = None) -> bool:
     event_type = _event_type(event)
-    if event_type in {"error", "response.failed", "response.incomplete"}:
+    if event_type == "response.incomplete":
+        state.completed_response = getattr(event, "response", None)
+        if state.completed_response is None:
+            raise ResponsesProtocolError("response.incomplete is missing the response object")
+        _validate_incomplete_response(state.completed_response, expected_model)
+        state.finish_reason = "length"
+        return True
+    if event_type in {"error", "response.failed"}:
         error = _event_error_data(event)
         message = _event_error(event)
         code = error.get("code") if isinstance(error, dict) else None
-        if code in {"rate_limit_exceeded", "server_error", "vector_store_timeout"}:
+        lowered = message.lower()
+        if code in _TRANSIENT_RESPONSE_CODES or any(
+            fragment in lowered for fragment in _TRANSIENT_RESPONSE_MESSAGES
+        ):
             raise ResponsesTransientEventError(message)
         raise ResponsesProtocolError(message)
     if event_type == "response.function_call_arguments.delta":
@@ -438,7 +461,11 @@ async def _consume_stream(
     expected_model: str | None = None,
 ) -> _StreamState:
     state = _StreamState()
-    iterator = stream.__aiter__()
+    # OpenAI AsyncStream already owns its response-closing iterator and also
+    # exposes a wrapper-style __aiter__ async generator.  Iterating the stream
+    # directly avoids leaving that outer generator for interpreter shutdown,
+    # where it can athrow into an already closed httpcore PoolByteStream.
+    iterator = stream if callable(getattr(stream, "__anext__", None)) else stream.__aiter__()
     first = True
     try:
         while True:
@@ -476,7 +503,9 @@ async def _create_and_consume_stream(
             timeout=first_event_timeout,
         )
     except asyncio.TimeoutError as exc:
-        raise ResponsesProtocolError(f"Responses first-event timeout after {first_event_timeout:g}s") from exc
+        raise ResponsesStreamInterruptedError(
+            f"Responses first-event timeout after {first_event_timeout:g}s"
+        ) from exc
 
     remaining = deadline - loop.time()
     if remaining <= 0:
@@ -485,7 +514,9 @@ async def _create_and_consume_stream(
             result = close()
             if asyncio.iscoroutine(result):
                 await result
-        raise ResponsesProtocolError(f"Responses first-event timeout after {first_event_timeout:g}s")
+        raise ResponsesStreamInterruptedError(
+            f"Responses first-event timeout after {first_event_timeout:g}s"
+        )
     return await _consume_stream(
         event_stream,
         remaining,
@@ -588,7 +619,11 @@ def _parse_stream(
     expected_model: str | None = None,
     forced_text_tool: ForcedTextTool | None = None,
 ) -> LLMResponse:
-    actual_model = _validate_completed_response(state.completed_response, expected_model)
+    actual_model = (
+        _validate_incomplete_response(state.completed_response, expected_model)
+        if state.finish_reason == "length"
+        else _validate_completed_response(state.completed_response, expected_model)
+    )
     final_output = to_plain_data(getattr(state.completed_response, "output", None))
     final_items = _validated_response_items(final_output)
     if len(final_items) != len(state.output_items) or not all(
@@ -644,7 +679,9 @@ def _parse_stream(
             content,
             tool_calls,
         ),
-        finish_reason="tool_calls" if tool_calls else "stop",
+        finish_reason=(
+            "length" if state.finish_reason == "length" else "tool_calls" if tool_calls else "stop"
+        ),
         reasoning=reasoning,
         provider_items=state.output_items,
         provider_model=actual_model,
@@ -659,8 +696,13 @@ def parse_responses_response(
     forced_text_tool: ForcedTextTool | None = None,
 ) -> LLMResponse:
     """Parse one completed non-streaming Responses object."""
-    _validate_completed_response(response, expected_model)
-    state = _StreamState(completed_response=response)
+    status = getattr(response, "status", None)
+    if status == "incomplete":
+        _validate_incomplete_response(response, expected_model)
+        state = _StreamState(completed_response=response, finish_reason="length")
+    else:
+        _validate_completed_response(response, expected_model)
+        state = _StreamState(completed_response=response)
     output = to_plain_data(getattr(response, "output", None))
     if not isinstance(output, list):
         raise ResponsesProtocolError("completed Responses object is missing output items")
@@ -691,6 +733,9 @@ async def complete_responses(
     stream: bool = True,
 ) -> LLMResponse:
     """Run one locally replayable Responses request and require typed completion."""
+    external_isolation = os.environ.get("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION") == "1"
+    retry_limit = None if external_isolation else max_retries
+    retry_budget = None if external_isolation else provider_error_time_budget
     converted_tools = _responses_tools(tools)
     forced_text_tool = _forced_text_tool(model, converted_tools, tool_choice)
     kwargs = _build_request_kwargs(
@@ -726,7 +771,7 @@ async def complete_responses(
         )
         return _parse_stream(state, messages, model, forced_text_tool)
 
-    if provider_error_time_budget is not None:
+    if retry_budget is not None:
 
         async def bounded_request_once() -> LLMResponse:
             if round_timeout is None:
@@ -738,12 +783,12 @@ async def complete_responses(
 
         return await with_retry(
             bounded_request_once,
-            max_retries=max_retries,
-            retry_time_budget=provider_error_time_budget,
+            max_retries=retry_limit,
+            retry_time_budget=retry_budget,
         )
 
     async def run() -> LLMResponse:
-        return await with_retry(request_once, max_retries=max_retries)
+        return await with_retry(request_once, max_retries=retry_limit)
 
     try:
         if round_timeout is None:

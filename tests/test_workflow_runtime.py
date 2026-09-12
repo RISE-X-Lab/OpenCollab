@@ -92,7 +92,7 @@ def test_concrete_factory_rejects_unsupported_isolation_before_building_session(
 def test_explicit_thinking_false_disables_responses_reasoning_effort(monkeypatch):
     _patch_build_session(monkeypatch)
     factory = workflow_runtime.WorkflowSessionFactory(
-        model="deepseek-v4-flash",
+        model="gpt-5",
         provider="openai",
         wire_protocol="responses",
         api_key="fake",  # pragma: allowlist secret
@@ -111,6 +111,29 @@ def test_explicit_thinking_false_disables_responses_reasoning_effort(monkeypatch
     assert default_session.agent.reasoning_effort_policy == "configured"
     assert corrective_session.agent.reasoning_effort is None
     assert corrective_session.agent.reasoning_effort_policy == "suppressed"
+
+
+def test_deepseek_max_reasoning_survives_workflow_thinking_override(monkeypatch):
+    _patch_build_session(monkeypatch)
+    factory = workflow_runtime.WorkflowSessionFactory(
+        model="deepseek-v4-flash-0731",
+        provider="openai",
+        wire_protocol="responses",
+        api_key="fake",  # pragma: allowlist secret
+        base_url="https://example.test",
+        thinking=True,
+        reasoning_effort="max",
+    )
+
+    session = factory.build_workflow_session(
+        prompt="return structured evidence",
+        budget=100_000,
+        thinking=False,
+    )
+
+    assert session.agent.thinking is True
+    assert session.agent.reasoning_effort == "max"
+    assert session.agent.reasoning_effort_policy == "configured"
 
 
 @pytest.mark.asyncio

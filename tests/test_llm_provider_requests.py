@@ -196,6 +196,7 @@ def test_deepseek_flash_declares_verified_responses_json_schema_support():
     assert capabilities.context_window == 1_048_576
     assert capabilities.supports_forced_tool_choice is False
     assert capabilities.supports_responses_json_schema is True
+    assert capabilities.honors_workflow_thinking_override is False
 
 
 @pytest.mark.parametrize(

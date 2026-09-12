@@ -63,9 +63,7 @@ def test_run_loop_budget_exceeded_emits_error_and_sets_phase():
     state = SessionState(messages=[{"role": "system", "content": "sys"}], used_tokens=10)
     llm = FakeLLM()
     runner = build_runner(state=state, llm=llm, event_bus=bus, max_budget_tokens=10)
-
     result = run(runner.run_loop())
-
     assert result == ""
     assert llm.calls == []
     assert state.phase is SessionPhase.STOPPED
@@ -247,13 +245,14 @@ def test_actual_usage_overrun_is_traced_and_response_is_discarded():
         "error",
         "step_end",
     ]
-    assert len(tracer.steps) == 1
-    assert tracer.steps[0]["step_type"] == "llm_call"
-    assert tracer.steps[0]["tokens"] == reserved_input_tokens + 101
-    assert tracer.steps[0]["payload"]["usage"]["input_tokens"] == (
+    assert len(tracer.steps) == 2
+    assert tracer.steps[0]["step_type"] == "llm_call_started"
+    assert tracer.steps[1]["step_type"] == "llm_call"
+    assert tracer.steps[1]["tokens"] == reserved_input_tokens + 101
+    assert tracer.steps[1]["payload"]["usage"]["input_tokens"] == (
         reserved_input_tokens + 100
     )
-    assert tracer.steps[0]["latency"] >= 0
+    assert tracer.steps[1]["latency"] >= 0
 
 
 def test_remaining_budget_caps_configured_per_step_output_limit():
@@ -496,14 +495,18 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
     ]
     assert events[0] == ("step_start", {"step": 1, "aid": -1})
     assert events[2][1]["step"] == 1
-    assert events[2][1]["latency"] == tracer.steps[0]["latency"]
-    assert tracer.steps[0] == {
+    assert events[2][1]["latency"] == tracer.steps[1]["latency"]
+    assert tracer.steps[1] == {
         "step_type": "llm_call",
         "payload": {
                 "model": "fake-model",
                 "thinking": False,
                 "reasoning_effort_policy": "configured",
                 "finish_reason": "tool_calls",
+            "aid": -1,
+            "role": "fake-model",
+            "session_step": 1,
+            "response_session_id": tracer.steps[0]["payload"]["response_session_id"],
             "content": "need tool",
             "tool_calls": [{"id": "call-1", "name": "fake_tool", "arguments": '{"value": 1}'}],
             "usage": {
@@ -517,7 +520,7 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
             },
         },
         "tokens": 9,
-        "latency": tracer.steps[0]["latency"],
+        "latency": tracer.steps[1]["latency"],
     }
 
 def test_run_loop_without_tool_calls_marks_done():

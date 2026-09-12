@@ -29,8 +29,9 @@ import contextvars
 import logging
 import math
 import operator
+import os
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from opencollab.application.async_timeout import (
@@ -40,6 +41,7 @@ from opencollab.application.async_timeout import (
     abandon_on_timeout as abandon_on_timeout,
 )
 from opencollab.application.ports import (
+    CandidateWorkspacePort,
     EventPublisherPort,
     TracePort,
     WorkflowSessionFactoryPort,
@@ -54,6 +56,7 @@ from opencollab.application.workflow_budget import (
     _BudgetLease,
     _ConcurrencyPermit,
 )
+from opencollab.application.workflow_candidates import WorkflowCandidatesMixin
 from opencollab.application.workflow_collections import Stage as Stage
 from opencollab.application.workflow_collections import Thunk as Thunk
 from opencollab.application.workflow_collections import (
@@ -84,10 +87,13 @@ DEFAULT_MAX_CONCURRENCY = 4
 # it can still land a patch — the decisive fix for runs that locate the edit but
 # reach the hard wall before the final write completes.
 DEFAULT_DEADLINE_MARGIN_SECONDS = 120.0
-# Per-agent token budget handed to a session when the workflow budget is
-# unbounded (``budget_total is None``). The session still needs a finite cap.
-UNBOUNDED_SESSION_BUDGET = 1_000_000
 
+
+def _unbounded_limits_enabled() -> bool:
+    return os.environ.get("OPENCOLLAB_UNBOUNDED_LIMITS", "").strip().lower() in {
+        "1",
+        "true",
+    }
 def _positive_concurrency(value: object, name: str) -> int:
     if isinstance(value, bool):
         raise ValueError(f"{name} must be a positive integer")
@@ -102,6 +108,7 @@ def _positive_concurrency(value: object, name: str) -> int:
 
 class WorkflowContext(
     WorkflowAgentsMixin,
+    WorkflowCandidatesMixin,
     WorkflowStructuredMixin,
     WorkflowCollectionsMixin,
     WorkflowRuntimeMixin,
@@ -128,6 +135,7 @@ class WorkflowContext(
         task_concurrency: int | None = None,
         budget_total: int | None = None,
         tree_probe: WorkingTreeProbe | None = None,
+        candidate_workspace: CandidateWorkspacePort | None = None,
         deadline_monotonic: float | None = None,
         deadline_margin_seconds: float = DEFAULT_DEADLINE_MARGIN_SECONDS,
         workspace_root: str | None = None,
@@ -172,6 +180,7 @@ class WorkflowContext(
         self._agent_failures: list[dict[str, Any]] = []
         self._trace_failures: list[dict[str, str]] = []
         self._tree_probe = tree_probe
+        self._candidate_workspace = candidate_workspace
         # Absolute path of the repo the sessions edit/read (the workspace passed to
         # ``run_workflow``). Read-only metadata for workflows that need to run a
         # static pass over the source (e.g. the STEP-5a pre-recon fact sheet); it
@@ -183,6 +192,18 @@ class WorkflowContext(
         self._deadline_margin_seconds = deadline_margin_seconds
 
     # -- working-tree verification ---------------------------------------- #
+
+    async def execute_verification(
+        self,
+        tool: Any,
+        params: Mapping[str, object],
+    ) -> str:
+        """Run one verification tool in this workflow's bound environment."""
+        if not callable(getattr(tool, "execute_with_runtime", None)):
+            raise TypeError("tool must satisfy the verification tool contract")
+        if not isinstance(params, Mapping):
+            raise TypeError("verification params must be a mapping")
+        return await self._factory.execute_verification(tool, dict(params))
 
     async def tree_changed(self) -> bool | None:
         """Whether the working tree has uncommitted changes.
@@ -580,24 +601,29 @@ class WorkflowContext(
             timeout = min(timeout, remaining)
         return time.monotonic() + timeout
 
-    def _session_budget(self) -> int:
+    def _session_budget(self) -> int | None:
         lease = self._active_budget_lease.get()
         if lease is not None:
-            return lease.remaining()
+            remaining = lease.remaining()
+            return None if remaining == float("inf") else int(remaining)
         remaining = self.budget.remaining()
         if remaining == float("inf"):
-            return UNBOUNDED_SESSION_BUDGET
+            return None
         # Clamp to zero: a concurrent agent's spend can land between agent()'s
         # budget gate and this call, driving ``remaining`` negative. A negative
         # per-session budget is nonsensical, so floor it at 0.
         return max(0, int(remaining))
 
-    def _capped_session_budget(self, cap: int | None) -> int:
+    def _capped_session_budget(self, cap: int | None) -> int | None:
         """Session budget = the live global remaining, optionally lowered to a
         caller-supplied per-call ``cap``. ``min`` keeps a per-call allocation
         from overshooting the shared pool while the cap bounds a single runaway
         session; ``None`` reproduces the prior whole-pool behaviour."""
         base = self._session_budget()
+        if _unbounded_limits_enabled():
+            return None
+        if base is None:
+            return max(0, cap) if cap is not None else None
         return min(max(0, cap), base) if cap is not None else base
 
     async def _acquire_budget_lease(
@@ -607,6 +633,8 @@ class WorkflowContext(
         over_budget_ok: bool,
     ) -> _BudgetLease:
         """Atomically reserve one agent call's maximum token allocation."""
+        if _unbounded_limits_enabled():
+            return _BudgetLease(total=None, reserved=0, sessions=[])
         self._budget_waiters += 1
         try:
             # Let sibling tasks launched by one gather register as contenders
@@ -615,7 +643,7 @@ class WorkflowContext(
             async with self._budget_lock:
                 remaining = self.budget.remaining()
                 if remaining == float("inf"):
-                    total = max(0, cap) if cap is not None else UNBOUNDED_SESSION_BUDGET
+                    total = max(0, cap) if cap is not None else None
                     return _BudgetLease(total=total, reserved=0, sessions=[])
 
                 available = max(0, int(remaining))
@@ -625,7 +653,7 @@ class WorkflowContext(
                         f"of {self.budget.total}"
                     )
                 if over_budget_ok and available <= 0:
-                    total = max(0, cap) if cap is not None else UNBOUNDED_SESSION_BUDGET
+                    total = max(0, cap) if cap is not None else None
                     return _BudgetLease(total=total, reserved=0, sessions=[])
 
                 if cap is None:

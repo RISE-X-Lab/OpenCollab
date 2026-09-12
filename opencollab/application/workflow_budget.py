@@ -42,12 +42,14 @@ class WorkflowBudget:
 class _BudgetLease:
     """A per-call token allocation held while one workflow agent is active."""
 
-    total: int
+    total: int | None
     reserved: int
     sessions: list[Any]
     pending_tasks: list[asyncio.Task[Any]] | None = None
 
-    def remaining(self) -> int:
+    def remaining(self) -> float:
+        if self.total is None:
+            return float("inf")
         spent = sum(max(0, int(getattr(s, "used_tokens", 0))) for s in self.sessions)
         return max(0, self.total - spent)
 

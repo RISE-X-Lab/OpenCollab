@@ -339,9 +339,9 @@ async def test_stream_rejects_invalid_completed_terminal(response, match):
         (
             ns(
                 type="response.incomplete",
-                response=ns(error=None, incomplete_details={"reason": "max_output_tokens"}),
+                response=ns(status="incomplete", error=None, incomplete_details={"reason": "content_filter"}),
             ),
-            "max_output_tokens",
+            "content_filter",
         ),
     ],
 )

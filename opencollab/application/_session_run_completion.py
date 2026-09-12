@@ -370,7 +370,7 @@ class _SessionRunCompletionMixin:
         tool_names = {getattr(t, "name", None) for t in getattr(self.agent, "tools", []) or []}
         steering, tool_choice_override, steering_level = build_steering_block(
             used_tokens=self.state.used_tokens,
-            max_budget_tokens=self.max_budget_tokens or 0,
+            max_budget_tokens=self.max_budget_tokens,
             step_count=self.state.step_count + 1,
             max_steps=self.max_steps,
             reads=self.state.turn.reads_since_last_edit,
@@ -496,21 +496,19 @@ class _SessionRunCompletionMixin:
             "max_tokens_per_step",
             DEFAULT_MAX_TOKENS_PER_STEP,
         )
-        remaining_budget = int(self.max_budget_tokens) - int(self.state.used_tokens)
-        reserved_input_tokens = request_tokens_upper_bound(messages, tools)
-        output_budget = remaining_budget - reserved_input_tokens
-        if output_budget < 1:
-            raise _TokenBudgetStop(
-                reserved_input_tokens=reserved_input_tokens,
-                remaining_budget=remaining_budget,
+        max_output_tokens = max(1, int(configured_output_tokens))
+        if self.max_budget_tokens is not None:
+            remaining_budget = int(self.max_budget_tokens) - int(
+                self.state.used_tokens
             )
-        # Precheck guarantees positive headroom before entering this call. Clamp
-        # the provider's output ceiling to the live remainder after reserving an
-        # upper bound for request messages and registered tool schemas.
-        max_output_tokens = min(
-            max(1, int(configured_output_tokens)),
-            output_budget,
-        )
+            reserved_input_tokens = request_tokens_upper_bound(messages, tools)
+            output_budget = remaining_budget - reserved_input_tokens
+            if output_budget < 1:
+                raise _TokenBudgetStop(
+                    reserved_input_tokens=reserved_input_tokens,
+                    remaining_budget=remaining_budget,
+                )
+            max_output_tokens = min(max_output_tokens, output_budget)
         if max_output_tokens != DEFAULT_MAX_TOKENS_PER_STEP:
             extra["max_output_tokens"] = max_output_tokens
         reasoning_effort = getattr(self.agent, "reasoning_effort", None)
@@ -573,6 +571,23 @@ class _SessionRunCompletionMixin:
         await self.event_publisher.emit(
             self.event_factory.step_start(self.state.step_count)
         )
+        if self.tracer:
+            self.tracer.log_step(
+                step_type="llm_call_started",
+                payload={
+                    "aid": self.state.aid,
+                    "role": getattr(self.agent, "role", None)
+                    or getattr(self.agent, "label", None)
+                    or self.agent.model,
+                    "session_step": self.state.step_count,
+                    "response_session_id": self._response_session_id,
+                },
+                tokens=0,
+                latency=0.0,
+            )
+            flush = getattr(self.tracer, "flush", None)
+            if callable(flush):
+                flush()
         self._llm_step_started = True
 
     async def _stop_on_context_overflow(self) -> None:
@@ -645,6 +660,12 @@ class _SessionRunCompletionMixin:
                 "finish_reason": response.finish_reason,
                 "content": response.content,
                 "tool_calls": tool_calls_log,
+                "aid": self.state.aid,
+                "role": getattr(self.agent, "role", None)
+                or getattr(self.agent, "label", None)
+                or self.agent.model,
+                "session_step": self.state.step_count,
+                "response_session_id": self._response_session_id,
             }
             if usage is not None:
                 output_tokens = getattr(usage, "output_tokens", max(total_tokens - input_tokens, 0))
@@ -695,6 +716,26 @@ class _SessionRunCompletionMixin:
                 tokens=total_tokens,
                 latency=latency,
             )
+
+    def record_llm_cancelled(self) -> None:
+        if not self.tracer or not self._llm_step_started:
+            return
+        self.tracer.log_step(
+            step_type="llm_call_cancelled",
+            payload={
+                "aid": self.state.aid,
+                "role": getattr(self.agent, "role", None)
+                or getattr(self.agent, "label", None)
+                or self.agent.model,
+                "session_step": self.state.step_count,
+                "response_session_id": self._response_session_id,
+            },
+            tokens=0,
+            latency=0.0,
+        )
+        flush = getattr(self.tracer, "flush", None)
+        if callable(flush):
+            flush()
 
     def append_assistant_message(self, response: CompletionResponse) -> None:
         has_content = (

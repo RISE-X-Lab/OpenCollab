@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "opencollab"
-version = "0.5.1"
+version = "0.5.2.dev0"
 description = "Minimal multi-agent software development framework for explicit team and workflow orchestration."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,7 +38,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.5"]
+dev = [
+    "click>=8","pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.5"]
 
 [project.scripts]
 opencollab = "opencollab.adapters.cli.main:app"

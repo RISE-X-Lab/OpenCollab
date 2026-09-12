@@ -346,7 +346,7 @@ async def test_cancellation_during_timeout_cleanup_is_preserved(monkeypatch) -> 
         run_process(
             (sys.executable, "-c", "import time; time.sleep(5)"),
             shell=False,
-            timeout=0.01,
+            timeout=0.2,
         )
     )
     await cleanup_started.wait()
@@ -485,7 +485,7 @@ async def test_run_process_retains_unquiesced_process_for_registry_retry(
         await run_process(
             (sys.executable, "-c", "import time; time.sleep(5)"),
             shell=False,
-            timeout=0.01,
+            timeout=0.2,
             registry=registry,
         )
     assert len(registry._processes) == 1

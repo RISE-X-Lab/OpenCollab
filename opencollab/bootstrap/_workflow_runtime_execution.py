@@ -78,7 +78,7 @@ async def run_workflow(
     budget: int | None = None,
     max_concurrency: int = 4,
     task_concurrency: int | None = None,
-    max_steps: int = 100,
+    max_steps: int | None = None,
     system_prompt: str = WORKFLOW_AGENT_PROMPT,
     save_dir: str | None = None,
     trace: bool = True,

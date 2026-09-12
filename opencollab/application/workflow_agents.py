@@ -167,7 +167,7 @@ class WorkflowAgentsMixin:
                 isolation=False,
                 label=synth_label,
                 tool_choice=_named_tool_choice(SUBMIT_TOOL_NAME),
-                thinking=False,
+                thinking=None,
             )
         except Exception as exc:  # noqa: BLE001 — a failed salvage must not abort the fleet
             self._record_agent_failure(synth_label, exc)
@@ -261,7 +261,7 @@ class WorkflowAgentsMixin:
                 isolation=False,
                 label=label,
                 tool_choice=_named_tool_choice(SUBMIT_TOOL_NAME),
-                thinking=False,
+                thinking=None,
             )
         except Exception as exc:  # noqa: BLE001 — a failed draft must not abort the fleet
             self._record_agent_failure(draft_label, exc)
@@ -347,7 +347,7 @@ class WorkflowAgentsMixin:
             captured=submit_tool.captured,
             wind_down_done=bool(getattr(state, "wind_down_done", False)),
             used_tokens=int(getattr(state, "used_tokens", 0) or 0),
-            max_budget_tokens=int(getattr(session, "max_budget_tokens", 0) or 0),
+            max_budget_tokens=getattr(session, "max_budget_tokens", None),
             wind_down_token_mark=int(getattr(state, "wind_down_token_mark", 0) or 0),
             artifact=report or "",
         )

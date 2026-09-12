@@ -340,7 +340,7 @@ wheels = [
 
 [[package]]
 name = "opencollab"
-version = "0.5.1"
+version = "0.5.2.dev0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -355,6 +355,7 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
+    { name = "click" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "ruff" },
@@ -363,6 +364,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "anthropic", specifier = ">=0.78" },
+    { name = "click", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "filelock", specifier = ">=3.15" },
     { name = "openai", specifier = ">=1.30" },
     { name = "prompt-toolkit", specifier = ">=3.0" },
