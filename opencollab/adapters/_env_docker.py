@@ -179,8 +179,11 @@ class DockerEnvironment(Environment):
         command_prefix: Callable[[str], str] | str | None = None,
         timeout_returncode: int = -1,
         backing_environment: Environment | None = None,
+        init_process: bool = False,
     ) -> None:
         super().__init__()
+        if not isinstance(init_process, bool):
+            raise ValueError("init_process must be a boolean")
         if container_id is not None and backing_environment is not None:
             raise ValueError("an attached Docker environment cannot own a backing environment")
         if (
@@ -206,6 +209,7 @@ class DockerEnvironment(Environment):
         self._exec_workdir = exec_workdir
         self._command_prefix = command_prefix
         self._timeout_returncode = timeout_returncode
+        self._init_process = init_process
         self._backing_environment = backing_environment
         self.source_workspace = getattr(backing_environment, "source_workspace", None)
         self.host_workspace = None
@@ -307,6 +311,8 @@ class DockerEnvironment(Environment):
             "--label",
             f"{DOCKER_OWNER_LABEL}={self._owner_token}",
         ]
+        if self._init_process:
+            args.append("--init")
         if host_mount is not None:
             args.extend(("-v", f"{host_mount}:{self.workspace}"))
         args.extend(("-w", self.workspace, self._image, "sleep", "infinity"))

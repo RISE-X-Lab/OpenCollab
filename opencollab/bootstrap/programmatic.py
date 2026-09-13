@@ -187,11 +187,30 @@ def worktree_environment(
 def docker_environment(
     image: str,
     backing_environment: EnvironmentPort | None = None,
+    *,
+    init_process: bool = False,
 ) -> EnvironmentPort:
     """Create an uninitialized image-backed Docker environment."""
     return DockerEnvironment(
         image=image,
         backing_environment=backing_environment,
+        init_process=init_process,
+    )
+
+
+def remote_environment(
+    base_url: str,
+    *,
+    image: str,
+    request_timeout: float = 300.0,
+) -> EnvironmentPort:
+    """Create an uninitialized environment backed by an Execution Server."""
+    from opencollab.adapters.execution.remote import RemoteEnvironment
+
+    return RemoteEnvironment(
+        base_url,
+        image=image,
+        request_timeout=request_timeout,
     )
 
 
