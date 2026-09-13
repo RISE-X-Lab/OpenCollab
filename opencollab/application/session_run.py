@@ -594,6 +594,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.state.transition_to(SessionPhase.CALLING_LLM)
         return True
 
+    def _ensure_tool_environment_active(self) -> None:
+        if getattr(self.tool_execution, "environment_revoked", False):
+            raise RuntimeError("Execution environment has been revoked. Session cannot continue.")
+
     async def precheck(self, cancel_event: asyncio.Event | None) -> None:
         """Gate the next LLM call: cancellation, loop-block, token budget, step limit.
 
@@ -601,6 +605,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         stops the session via ``_stop_precheck`` (STOPPED with a reason string);
         otherwise proceed to CALLING_LLM.
         """
+        self._ensure_tool_environment_active()
         if cancel_event and cancel_event.is_set():
             await self._stop_precheck(
                 "interrupted by user",
@@ -651,6 +656,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         unhandled ERROR — mirroring the BUDGET_EXCEEDED degradation.
         """
         self._llm_step_started = False
+        self._ensure_tool_environment_active()
         start = time.monotonic()
 
         tools = self.build_tool_schemas()
