@@ -229,7 +229,7 @@ async def test_json_schema_text_projects_to_valid_structured_output_tool_call(st
 
 
 @pytest.mark.asyncio
-async def test_json_schema_text_rejects_incomplete_response():
+async def test_json_schema_text_rejects_filtered_incomplete_response():
     class Responses:
         async def create(self, **_kwargs):
             return FakeStream(
@@ -238,13 +238,13 @@ async def test_json_schema_text_rejects_incomplete_response():
                         type="response.incomplete",
                         response=completed_response(
                             status="incomplete",
-                            incomplete_details={"reason": "max_output_tokens"},
+                            incomplete_details={"reason": "content_filter"},
                         ),
                     )
                 ]
             )
 
-    with pytest.raises(ResponsesProtocolError, match="max_output_tokens"):
+    with pytest.raises(ResponsesProtocolError, match="content_filter"):
         await complete_responses(
             ns(responses=Responses()),
             "deepseek-v4-flash",

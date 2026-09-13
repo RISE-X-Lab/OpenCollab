@@ -28,9 +28,8 @@ import asyncio
 import contextvars
 import logging
 import math
-import operator
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from opencollab.application.async_timeout import (
@@ -40,6 +39,7 @@ from opencollab.application.async_timeout import (
     abandon_on_timeout as abandon_on_timeout,
 )
 from opencollab.application.ports import (
+    CandidateWorkspacePort,
     EventPublisherPort,
     TracePort,
     WorkflowSessionFactoryPort,
@@ -49,11 +49,15 @@ from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE, ENFORCEME
 from opencollab.application.structured_output import TOOL_NAME as STRUCTURED_OUTPUT_TOOL_NAME
 from opencollab.application.submit_findings import SUBMIT_TOOL_NAME
 from opencollab.application.workflow_agents import WorkflowAgentsMixin
+from opencollab.application.workflow_budget import UNBOUNDED_SESSION_BUDGET as UNBOUNDED_SESSION_BUDGET
 from opencollab.application.workflow_budget import (
     WorkflowBudget,
+    WorkflowBudgetMixin,
     _BudgetLease,
     _ConcurrencyPermit,
+    _positive_concurrency,
 )
+from opencollab.application.workflow_candidates import WorkflowCandidatesMixin
 from opencollab.application.workflow_collections import Stage as Stage
 from opencollab.application.workflow_collections import Thunk as Thunk
 from opencollab.application.workflow_collections import (
@@ -84,31 +88,14 @@ DEFAULT_MAX_CONCURRENCY = 4
 # it can still land a patch — the decisive fix for runs that locate the edit but
 # reach the hard wall before the final write completes.
 DEFAULT_DEADLINE_MARGIN_SECONDS = 120.0
-# Per-agent token budget handed to a session when the workflow budget is
-# unbounded (``budget_total is None``). The session still needs a finite cap.
-UNBOUNDED_SESSION_BUDGET = 1_000_000
-
-def _positive_concurrency(value: object, name: str) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be a positive integer")
-    try:
-        parsed = operator.index(value)
-    except TypeError as exc:
-        raise ValueError(f"{name} must be a positive integer") from exc
-    if parsed < 1:
-        raise ValueError(f"{name} must be a positive integer")
-    return parsed
 
 
-def _positive_budget(value: object, name: str = "budget") -> int | None:
-    """Normalize an optional per-call budget to a strictly positive integer."""
-    if value is None:
-        return None
-    return _positive_concurrency(value, name)
 
 
 class WorkflowContext(
     WorkflowAgentsMixin,
+    WorkflowBudgetMixin,
+    WorkflowCandidatesMixin,
     WorkflowStructuredMixin,
     WorkflowCollectionsMixin,
     WorkflowRuntimeMixin,
@@ -135,6 +122,7 @@ class WorkflowContext(
         task_concurrency: int | None = None,
         budget_total: int | None = None,
         tree_probe: WorkingTreeProbe | None = None,
+        candidate_workspace: CandidateWorkspacePort | None = None,
         deadline_monotonic: float | None = None,
         deadline_margin_seconds: float = DEFAULT_DEADLINE_MARGIN_SECONDS,
         workspace_root: str | None = None,
@@ -187,6 +175,7 @@ class WorkflowContext(
         self._agent_failures: list[dict[str, Any]] = []
         self._trace_failures: list[dict[str, str]] = []
         self._tree_probe = tree_probe
+        self._candidate_workspace = candidate_workspace
         # Absolute path of the repo the sessions edit/read (the workspace passed to
         # ``run_workflow``). Read-only metadata for workflows that need to run a
         # static pass over the source (e.g. the STEP-5a pre-recon fact sheet); it
@@ -198,6 +187,18 @@ class WorkflowContext(
         self._deadline_margin_seconds = deadline_margin_seconds
 
     # -- working-tree verification ---------------------------------------- #
+
+    async def execute_verification(
+        self,
+        tool: Any,
+        params: Mapping[str, object],
+    ) -> str:
+        """Run one verification tool in this workflow's bound environment."""
+        if not callable(getattr(tool, "execute_with_runtime", None)):
+            raise TypeError("tool must satisfy the verification tool contract")
+        if not isinstance(params, Mapping):
+            raise TypeError("verification params must be a mapping")
+        return await self._factory.execute_verification(tool, dict(params))
 
     async def tree_changed(self) -> bool | None:
         """Whether the working tree has uncommitted changes.
@@ -288,7 +289,7 @@ class WorkflowContext(
         self,
         *,
         label: str | None,
-        budget: int,
+        budget: int | None,
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
         **kwargs: Any,
@@ -662,170 +663,6 @@ class WorkflowContext(
         if math.isfinite(remaining):
             timeout = min(timeout, remaining)
         return time.monotonic() + timeout
-
-    def _session_budget(self) -> int:
-        lease = self._active_budget_lease.get()
-        if lease is not None:
-            return lease.remaining()
-        remaining = self.budget.remaining()
-        if remaining == float("inf"):
-            return UNBOUNDED_SESSION_BUDGET
-        # Clamp to zero: a concurrent agent's spend can land between agent()'s
-        # budget gate and this call, driving ``remaining`` negative. A negative
-        # per-session budget is nonsensical, so floor it at 0.
-        return max(0, int(remaining))
-
-    def _capped_session_budget(self, cap: int | None) -> int:
-        """Session budget = the live global remaining, optionally lowered to a
-        caller-supplied per-call ``cap``. ``min`` keeps a per-call allocation
-        from overshooting the shared pool while the cap bounds a single runaway
-        session; ``None`` reproduces the prior whole-pool behaviour."""
-        base = self._session_budget()
-        return min(max(0, cap), base) if cap is not None else base
-
-    def _trace_budget_decision(
-        self,
-        step_type: str,
-        *,
-        cap: int | None,
-        remaining: float,
-        label: str | None,
-        over_budget_ok: bool = False,
-    ) -> None:
-        """Record one shared-pool gate decision. Observation only.
-
-        The pool's two decision points — the refusal that raises
-        ``WorkflowBudgetExceeded`` and the ``over_budget_ok`` escape that waves a
-        call through anyway — used to leave nothing behind: a finished run showed
-        only ``reason="budget_exceeded"``, never which call was stopped, where in
-        the run, or by how much, and the escape was invisible entirely.
-
-        ``seq`` is how many agent sessions this context had already created when
-        the decision was taken. The workflow layer keeps no step counter, and
-        this is the only ordinal that says *where* in the run the call sat.
-
-        ``agent_id`` is always ``None`` here, and that is the honest value: the
-        lease is taken before any session is built, and every workflow session's
-        agent is named ``workflow_agent`` regardless, so there is no agent to
-        name. ``label`` carries the caller's own name instead — the same string
-        that names that call's transcript file, hence the one key that joins to
-        anything on disk. They are separate fields because a ``label`` sitting
-        under an ``agent_id`` heading would join wrongly against the integer
-        ``aid`` the session-level records carry, and silently.
-
-        ``would_exceed_by`` measures the request against the live remaining
-        balance (``requested_cap - remaining``), so a pool already in the hole
-        makes it larger than the cap. ``None`` when no cap was named — an
-        uncapped request has no amount, and a number there would be invented.
-        ``remaining`` is that same live balance, unclamped, so an overdrawn pool
-        reads as the negative it is.
-
-        Guarded end to end: building this payload must never overturn the
-        decision it describes, so a failure is logged and dropped.
-        """
-        try:
-            payload: dict[str, Any] = {
-                "seq": len(self._sessions),
-                # Two separate slots on purpose. No agent exists yet, so the
-                # agent id is honestly empty rather than filled with something
-                # that merely looks like one; ``label`` is the caller's own
-                # name, which is what the field actually holds.
-                "agent_id": None,
-                "label": str(label)[:240] if label else None,
-                "requested_cap": cap,
-                "remaining": int(remaining),
-                "spent": self.budget.spent(),
-                "total": self.budget.total,
-                "would_exceed_by": (
-                    None if cap is None else max(0, cap) - int(remaining)
-                ),
-            }
-            if over_budget_ok:
-                payload["over_budget_ok"] = True
-        except Exception as exc:  # noqa: BLE001 — observability is non-authoritative
-            logger.error("workflow %s trace failed: %s", step_type, exc)
-            return
-        self._trace_step(step_type, payload)
-
-    async def _acquire_budget_lease(
-        self,
-        cap: int | None,
-        *,
-        over_budget_ok: bool,
-        label: str | None = None,
-    ) -> _BudgetLease:
-        """Atomically reserve one agent call's maximum token allocation.
-
-        ``label`` is carried for the trace record only — it names the caller in
-        ``budget_refusal`` / ``budget_escape`` and changes no allocation.
-        """
-        cap = _positive_budget(cap)
-        self._budget_waiters += 1
-        try:
-            # Let sibling tasks launched by one gather register as contenders
-            # before the first uncapped caller chooses its share.
-            await asyncio.sleep(0)
-            async with self._budget_lock:
-                remaining = self.budget.remaining()
-                if remaining == float("inf"):
-                    total = max(0, cap) if cap is not None else UNBOUNDED_SESSION_BUDGET
-                    return _BudgetLease(total=total, reserved=0, sessions=[])
-
-                available = max(0, int(remaining))
-                if available <= 0 and not over_budget_ok:
-                    self._trace_budget_decision(
-                        "budget_refusal",
-                        cap=cap,
-                        remaining=remaining,
-                        label=label,
-                    )
-                    raise WorkflowBudgetExceeded(
-                        f"workflow budget exhausted: spent {self.budget.spent()} "
-                        f"of {self.budget.total}"
-                    )
-                if over_budget_ok and available <= 0:
-                    if self._over_budget_escape_used:
-                        self._trace_budget_decision(
-                            "budget_refusal",
-                            cap=cap,
-                            remaining=remaining,
-                            label=label,
-                            over_budget_ok=True,
-                        )
-                        raise WorkflowBudgetExceeded(
-                            f"workflow budget exhausted: spent {self.budget.spent()} "
-                            f"of {self.budget.total}; the one over-budget escape "
-                            "has already been used"
-                        )
-                    # Claim before tracing/building so failures cannot turn the
-                    # one-shot escape into a retry loop.
-                    self._over_budget_escape_used = True
-                    self._trace_budget_decision(
-                        "budget_escape",
-                        cap=cap,
-                        remaining=remaining,
-                        label=label,
-                        over_budget_ok=True,
-                    )
-                    total = max(0, cap) if cap is not None else UNBOUNDED_SESSION_BUDGET
-                    return _BudgetLease(total=total, reserved=0, sessions=[])
-
-                if cap is None:
-                    collection_share = self._active_collection_budget.get()
-                    if collection_share is not None:
-                        total = min(collection_share, available)
-                    else:
-                        total = max(
-                            1,
-                            available // max(1, self._budget_waiters),
-                        )
-                else:
-                    total = min(max(0, cap), available)
-                lease = _BudgetLease(total=total, reserved=total, sessions=[])
-                self.budget.reserve(lease)
-                return lease
-        finally:
-            self._budget_waiters -= 1
 
     def _track_session(self, session: Any) -> None:
         self._sessions.append(session)

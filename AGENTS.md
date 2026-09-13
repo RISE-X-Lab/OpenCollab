@@ -38,7 +38,7 @@ width — see the module rule below.
 
 ## Commits & pull requests
 
-- **Conventional Commits**, in **English**: `feat` `fix` `refactor` `docs` `test`
+- **Conventional Commits**, with Chinese descriptions and an English type: `feat` `fix` `refactor` `docs` `test`
   `chore` `perf` `ci` `build` `style` `revert`. e.g. `feat: add X`, `fix(tui): handle Y`.
 - **The PR title must itself be a valid Conventional Commit** — merges are squashed, so
   the PR title becomes the commit subject on `main`.
@@ -58,7 +58,7 @@ width — see the module rule below.
 
 ## Conventions that keep the repo clean
 
-- **English everywhere public-facing** — code, comments, docs, commit messages, and PR text.
+- **English code and canonical documentation** — code, comments, and docs use English; commit and PR descriptions use Chinese while retaining a Conventional Commit type.
 - **No hardcoded infrastructure.** Never bake a hostname, NFS path, username, private
   model name, or personal env-file path in as a default. Read them from env/CLI and
   fail fast if unset. (These leak topology and are useless to an external clone.)

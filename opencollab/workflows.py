@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, Protocol
 
+from opencollab.application.workflow_candidates import CandidateRun
 from opencollab.application.workflow_registry import workflow
-from opencollab.tools import Tool
+from opencollab.tools import Tool, VerificationTool
 
 
 class WorkflowContext(Protocol):
@@ -55,6 +56,40 @@ class WorkflowContext(Protocol):
 
     async def diff(self) -> str | None: ...
 
+    async def execute_verification(
+        self,
+        tool: VerificationTool,
+        params: Mapping[str, object],
+    ) -> str: ...
+
+    async def candidate_agent(
+        self,
+        prompt: str,
+        *,
+        label: str,
+        tools: Sequence[Tool] | None = None,
+        budget: int | None = None,
+        timeout: float | None = None,
+        tool_choice: Any = None,
+        thinking: bool | None = None,
+    ) -> CandidateRun: ...
+
+    async def candidate_workflow(
+        self,
+        workflow_fn: Callable[[Any, dict[str, Any]], Awaitable[Any]],
+        args: dict[str, Any],
+        *,
+        label: str,
+        budget: int | None = None,
+    ) -> CandidateRun: ...
+
+    async def adopt_candidate(
+        self,
+        candidate: CandidateRun,
+        *,
+        preserve_paths: Sequence[str] = (),
+    ) -> None: ...
+
     def tokens_spent(self) -> int: ...
 
     def tokens_remaining(self) -> float: ...
@@ -64,4 +99,4 @@ class WorkflowContext(Protocol):
     def time_low(self) -> bool: ...
 
 
-__all__ = ["WorkflowContext", "workflow"]
+__all__ = ["CandidateRun", "WorkflowContext", "workflow"]

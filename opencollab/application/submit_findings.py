@@ -381,7 +381,7 @@ def commitment_terminus_payload(
     captured: dict[str, Any] | None,
     wind_down_done: bool,
     used_tokens: int,
-    max_budget_tokens: int,
+    max_budget_tokens: int | None,
     wind_down_token_mark: int,
     artifact: str,
 ) -> dict[str, Any]:
@@ -401,7 +401,12 @@ def commitment_terminus_payload(
     return {
         "role": role,
         "terminus": terminus,
-        "budget_slack": max(0, int(max_budget_tokens) - int(used_tokens)),
+        "budget_limit": max_budget_tokens,
+        "budget_slack": (
+            None
+            if max_budget_tokens is None
+            else max(0, int(max_budget_tokens) - int(used_tokens))
+        ),
         "artifact_nonempty": bool(artifact and artifact.strip()),
         "submit_turn_cost": max(0, int(used_tokens) - int(wind_down_token_mark)) if wind_down_done else 0,
         "evidence_anchor_count": sum(

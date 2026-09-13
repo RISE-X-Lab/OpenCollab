@@ -267,6 +267,40 @@ async def test_workflow_delegates_evaluation_controls(
     assert captured["cleanup_timeout"] == 10.0
 
 
+async def test_workflow_unbounded_env_forwards_none_limits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured = {}
+
+    async def fake_run_workflow(**kwargs):
+        captured.update(kwargs)
+        return ProgrammaticResult(
+            status="completed",
+            output={"status": "done"},
+            reason=None,
+            tokens=123,
+            metrics={"steps": 7},
+            artifacts=None,
+        )
+
+    monkeypatch.setattr(sdk_client, "run_workflow", fake_run_workflow)
+    monkeypatch.setenv("OPENCOLLAB_UNBOUNDED_LIMITS", "true")
+
+    async def plain(_ctx, _inputs):
+        return None
+
+    result = await OpenCollab(tmp_path).workflow(
+        plain,
+        budget=123,
+        max_steps=9,
+    )
+
+    assert result.ok
+    assert captured["max_tokens"] is None
+    assert captured["max_steps"] is None
+
+
 async def test_workflow_exposes_sanitized_agent_failures(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
