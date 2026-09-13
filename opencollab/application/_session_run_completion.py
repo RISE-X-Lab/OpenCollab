@@ -164,6 +164,7 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
             self.state.append_message({"role": "assistant", "content": submitted})
         await self.finish_step(latency)
         self.clear_pending_step()
+        self._ensure_tool_environment_active()
         if submitted is not None:
             self._submitted_summary = None
             self.state.transition_to(SessionPhase.DONE, reason="submitted")
