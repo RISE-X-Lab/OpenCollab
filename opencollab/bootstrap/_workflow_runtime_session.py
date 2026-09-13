@@ -167,23 +167,23 @@ class WorkflowSessionFactory:
         will find them.
 
         ``label`` names the branch, so a leftover tree says which agent made it.
-        A run without a workspace has nothing to branch from, and the pool hands
-        back a plain local environment instead of failing — the same fallback it
-        gives a team told not to use worktrees.
+        The supplied environment owns the source repository. Without one, the
+        explicit workspace or current directory is copied or checked out into
+        a private worktree; an isolation request never shares the source tree.
         """
         if self._worktree_pool is None:
             self._worktree_pool = WorktreePool(
                 self._workspace or ".",
-                use_worktrees=self._workspace is not None,
+                use_worktrees=True,
+                base_environment=self._env,
             )
         return await self._worktree_pool.acquire(label or "workflow-agent")
 
     async def release_isolated_envs(self) -> None:
-        """Tear down every worktree this factory handed out. Safe to call twice."""
+        """Release worktrees while retaining the pool for retry or later use."""
         pool = self._worktree_pool
         if pool is None:
             return
-        self._worktree_pool = None
         await pool.release()
 
     def build_workflow_session(
