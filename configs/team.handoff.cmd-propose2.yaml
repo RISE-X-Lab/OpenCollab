@@ -1,0 +1,61 @@
+# `cmd-propose` with the two failures its own smoke measured, repaired. Same
+# shared body, same Coder card, same Tester card, same tool bundles, same six
+# edges; the Analyst's closing block is the only thing that differs from
+# `cmd-plain`, and from `cmd-propose` it differs by one added paragraph and one
+# added clause.
+#
+# WHAT THE SMOKE SHOWED
+#
+# Six runs of `cmd-propose` at 4M per seat, rows 1/14/18/21/23/28 of subset-50:
+#
+#   * the Coder, asked for an independent diagnosis with no instruction to
+#     report early, spent its ENTIRE budget and never sent anything -- three of
+#     six runs ended with the Coder at 3.91-3.96M, `terminal_reason` "budget
+#     exhausted before model call", and `message_agent` called zero times. Under
+#     `cmd-plain`, given a change to make rather than a problem to solve, the
+#     same seat finished in 0.65M.
+#   * the Tester was never addressed in two of six (zero tokens, zero turns).
+#   * a teammate's reply therefore reached the Analyst in only three of six.
+#
+# WHY A SEAT THAT RUNS OUT DELIVERS NOTHING
+#
+# The wind-down actuator that would force a commit inside a reserve is behind
+# `_apply_enforcement_gate`, and enforcement is off in these runs
+# (`session_run.py:545` -- "Off unless enforcement is on; the self-regulating
+# default never enters"). A seat that crosses its cap simply stops before its
+# next model call. Whatever it had worked out dies in its worktree, and the
+# budget is spent either way. A card that asks a seat for open-ended work is
+# therefore asking it to gamble its whole contribution.
+#
+# So this block asks for a bounded one: commit and send the sha as soon as the
+# change applies and runs, improve afterwards. And it makes the Tester call
+# unconditional -- send every sha you hold, even if the only one is your own.
+#
+# WHAT IT IS NOT
+#
+# Not a rung of the command ladder, not poolable with one, no adherence number
+# (the calls are prescribed), and not best-of-n (D13's BoN is k=3 samples from
+# one agent selected without a test).
+entry: analyst
+
+roles:
+  analyst:
+    prompt_file: handoff-experiment/analyst.cmd-propose2.md
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+
+  coder:
+    prompt_file: handoff-experiment/coder.md
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+
+  tester:
+    prompt_file: handoff-experiment/tester.md
+    tools: [bash, file_read, git_diff, grep, message_agent, run_tests, submit, team_status]
+
+# Six directed edges — every ordered pair. The return edges are the point: a
+# closed star (analyst -> coder, analyst -> tester, and nothing back) is what
+# makes a prebuilt team mute, because a prebuilt peer has no join path to
+# deliver a result on.
+topology:
+  analyst: [coder, tester]
+  coder: [analyst, tester]
+  tester: [analyst, coder]
