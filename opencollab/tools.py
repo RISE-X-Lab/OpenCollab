@@ -17,7 +17,6 @@ BuiltinToolName: TypeAlias = Literal[
     "file_read",
     "file_write",
     "apply_patch",
-    "run_tests",
     "git_diff",
     "grep",
     "submit",
@@ -29,7 +28,6 @@ _BUILTIN_TOOL_NAMES = frozenset(
         "file_read",
         "file_write",
         "apply_patch",
-        "run_tests",
         "git_diff",
         "grep",
         "submit",
@@ -53,8 +51,7 @@ def builtin_tools(
 ) -> tuple[Tool, ...]:
     """Build a fresh ordered set of public, stateless tools.
 
-    Headless composition requires process isolation for shell and test
-    execution, and disables model-supplied test runner overrides. Coordination
+    Headless composition requires process isolation for shell execution. Coordination
     and human-interaction tools remain scheduler-owned and are not available
     through this helper.
     """

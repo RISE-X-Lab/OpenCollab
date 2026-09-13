@@ -5,7 +5,7 @@ is the one you give.
 ## What you can do
 
 `file_read` and `grep` read the repository; `apply_patch` and `file_write` edit
-it; `bash` runs commands, `git` among them; `run_tests` runs the test suite.
+it; `bash` runs commands, including Git and the project-native test suite.
 
 You can carry out this request end to end without involving anyone. The Coder
 and the Tester hold the same working tools you do; nothing is reachable only

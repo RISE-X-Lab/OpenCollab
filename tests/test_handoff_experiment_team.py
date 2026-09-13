@@ -129,7 +129,7 @@ def test_the_analyst_could_finish_the_task_without_anyone(team) -> None:
     doing, so ``file_read``/``grep`` alone would leave the starvation in place.
     """
     analyst = set(team.roles["analyst"].tools)
-    for doing_tool in ("apply_patch", "bash", "run_tests"):
+    for doing_tool in ("apply_patch", "bash"):
         assert doing_tool in analyst, (
             f"the Analyst cannot {doing_tool} and so cannot finish alone; "
             "delegation would be forced rather than chosen"
@@ -143,7 +143,7 @@ def test_no_capability_is_reachable_only_through_a_teammate(team) -> None:
     them work would be the only way to use that tool, and the arm would measure
     a tool gap rather than a decision.
     """
-    working_tools = {"apply_patch", "bash", "run_tests"}
+    working_tools = {"apply_patch", "bash"}
     analyst = set(team.roles["analyst"].tools)
     for role in ("coder", "tester"):
         exclusive = (set(team.roles[role].tools) & working_tools) - analyst
@@ -155,7 +155,7 @@ def test_no_capability_is_reachable_only_through_a_teammate(team) -> None:
 #: ``generation/gen_prediction_constants.py``, which is what that arm passes to
 #: ``builtin_tools``. Both sides pin it, so a change on either fails a test.
 SINGLE_AGENT_WORKING_TOOLS = frozenset(
-    {"apply_patch", "bash", "file_read", "file_write", "grep", "run_tests", "submit"}
+    {"apply_patch", "bash", "file_read", "file_write", "grep", "submit"}
 )
 
 #: Everything else a role on this team may hold. The collaboration channel is
@@ -170,7 +170,7 @@ def test_the_analyst_holds_the_single_agent_s_tools_and_the_channel(team) -> Non
     This file's own comment already claimed the Analyst "carries the single
     agent's working tools", and it did not: the single agent has ``file_write``
     and no ``apply_patch``, the Analyst had ``apply_patch`` and no
-    ``file_write``, and the Analyst additionally held ``run_tests``,
+    ``file_write``, and the Analyst additionally held test execution,
     ``ask_user`` and ``use_skill``. Four capability differences on the axis this
     arm is not supposed to differ on, described in prose as none.
 

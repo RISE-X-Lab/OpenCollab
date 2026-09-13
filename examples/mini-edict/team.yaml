@@ -15,7 +15,7 @@ roles:
       memorial or an honest blocked result. Keep the user informed between stages.
 
   menxia:
-    tools: [file_read, run_tests, git_diff, grep]
+    tools: [file_read, bash, git_diff, grep]
     prompt: |
       You are the Menxia Chancellery. Review the supplied proposal or final
       memorial for feasibility, completeness, risk, resources, acceptance criteria,
@@ -42,13 +42,13 @@ roles:
     tools: [file_read, file_write, grep]
     prompt: You are the Ministry of Rites. Handle documentation, stakeholders, communication, and institutional fit.
   war:
-    tools: [bash, file_read, file_write, apply_patch, run_tests, grep]
+    tools: [bash, file_read, file_write, apply_patch, grep]
     prompt: You are the Ministry of War. Handle engineering, implementation, resilience, and operational risk.
   justice:
-    tools: [bash, file_read, run_tests, git_diff, grep]
+    tools: [bash, file_read, git_diff, grep]
     prompt: You are the Ministry of Justice. Handle testing, rules, accountability, compliance, and failure analysis.
   works:
-    tools: [bash, file_read, file_write, apply_patch, run_tests, grep]
+    tools: [bash, file_read, file_write, apply_patch, grep]
     prompt: You are the Ministry of Works. Handle infrastructure, deployment, tools, automation, and delivery.
 
 topology:

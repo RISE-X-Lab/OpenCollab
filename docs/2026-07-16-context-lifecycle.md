@@ -238,7 +238,7 @@ trigger, then degrade progressively.
 | A | `OldHistorySnipShaper` (`reactive.py:143`) | reactive | Delete whole *old tool-exchange groups* oldest-first down to target, keeping the last **4 groups** (`DEFAULT_HISTORY_KEEP_RECENT_GROUPS`, `pipeline.py:17`); never drops user / assistant-text turns. |
 | B | `AutoCompactShaper` (`reactive.py:180`) | reactive, **default-off** | Summarize the largest *pinned-free* run of old groups into one visible `[Context auto-compacted …]` marker. `summarizer is None ⇒ identity` (`:198`). |
 
-**Compactable tools** = `{bash, file_read, grep, git_diff, run_tests}`
+**Compactable tools** = `{bash, file_read, grep, git_diff}`
 (`DEFAULT_COMPACTABLE_TOOLS`, `reactive.py:30`).
 
 **Trigger / target math** (`pipeline.py:34`, `history_trigger_target`):

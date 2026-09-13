@@ -32,7 +32,7 @@ renderer glue), and the HTML template parts. Read `template.team.yaml` first.
 - **`tool_limits:`** (optional) — per-tool output caps; NOT for coordination tools.
 
 **Tool MENU (the only valid names):**
-- work: `bash` `file_read` `file_write` `apply_patch` `run_tests` `git_diff`
+- work: `bash` `file_read` `file_write` `apply_patch` `git_diff`
   `grep` `ask_user`
 - coordination (pair with topology edges): `spawn_agent` `spawn_with_review`
   `message_agent` `team_status`

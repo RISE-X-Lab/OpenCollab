@@ -118,17 +118,18 @@ from opencollab.tools import builtin_tools
 tools = builtin_tools(
     "file_read",
     "file_write",
-    "run_tests",
+    "bash",
     allow_file_creation=False,
 )
 ```
 
-The helper returns fresh tools in caller order. Headless shell and test tools
-require process-isolated environments, test-runner overrides stay disabled,
-and limits for unselected tools are rejected. The `run_tests` instance satisfies
-the public `VerificationTool` protocol. Its read-only `verified_targets`
-property contains exact requested targets whose latest parser-backed verdict
-was green.
+The helper returns fresh tools in caller order. Headless shell tools require
+process-isolated environments, and limits for unselected tools are rejected.
+Use `bash` to run the repository's native test command and inspect its exit code
+and output. The `VerificationTool` protocol remains available for custom tools
+that provide parser-backed test evidence; no built-in tool implements it.
+See [test-runner migration](../docs/migrations/remove-run-tests.md) for existing
+team files, saved runs, and verifier integrations.
 
 Environment composition uses the same narrow public module.
 
