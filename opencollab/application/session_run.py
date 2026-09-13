@@ -42,6 +42,11 @@ from opencollab.domain.session import SessionPhase, SessionState
 
 logger = logging.getLogger(__name__)
 
+_REQUIRED_TOOL_RETRY_NUDGE = (
+    "Your previous response did not call the required tool. Call one of the "
+    "currently available tools to complete this step."
+)
+
 __all__ = [
     "DEFAULT_COMMIT_RESERVE",
     "DEFAULT_DEFERRABLE_TOOLS",
@@ -174,6 +179,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._low_yield_m = low_yield_m
         self._pending_tool_allowlist: frozenset[str] | None = None
         self._pending_tool_gate_label: str | None = None
+        self._required_tool_retried = False
         # Message index where the current user turn began. It survives a
         # deferred suspend/resume so the returned answer is scoped to this turn.
         self._turn_start_message_index: int | None = None
@@ -190,6 +196,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.agent.tool_choice = copy.deepcopy(self._initial_agent_tool_choice)
         self._pending_tool_allowlist = None
         self._pending_tool_gate_label = None
+        self._required_tool_retried = False
 
     def reset_for_restore(self) -> None:
         """Discard process-local turn state before publishing a snapshot."""
@@ -608,6 +615,11 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             )
             return
 
+        environment = getattr(self.tool_execution, "environment", None)
+        if bool(getattr(environment, "revoked", False)):
+            await self._stop_precheck("execution environment has been revoked")
+            return
+
         if self.state.turn.loop_blocked_since_progress >= DEFAULT_LOOP_BLOCKED_LIMIT:
             reason = f"loop block limit reached: {self.state.turn.loop_blocked_since_progress} repeated tool calls"
             await self._stop_precheck(reason)
@@ -745,6 +757,27 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
 
         if response.tool_calls:
             self.state.transition_to(SessionPhase.EXECUTING_TOOLS)
+            return
+
+        if self._pending_tool_allowlist and response.finish_reason in (None, "stop"):
+            if not self._required_tool_retried:
+                self._required_tool_retried = True
+                if self.tracer:
+                    self.tracer.log_step(
+                        step_type="required_tool_retry",
+                        payload={"allowed_tools": sorted(self._pending_tool_allowlist)},
+                        latency=pending.latency,
+                    )
+                if not has_content:
+                    self.state.append_message({"role": "assistant", "content": _EMPTY_STOP_PLACEHOLDER})
+                self.state.append_message({"role": "user", "content": _REQUIRED_TOOL_RETRY_NUDGE})
+                self.state.transition_to(SessionPhase.AUTOSAVING)
+                return
+            await self.finish_step(pending.latency)
+            self.clear_pending_step()
+            self.state.transition_to(
+                SessionPhase.STOPPED, reason="required tool was not called after correction"
+            )
             return
 
         # Empty-stop: a clean ``stop`` turn that produced neither text nor a tool

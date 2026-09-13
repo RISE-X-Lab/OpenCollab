@@ -208,6 +208,11 @@ class OpenCollab:
             raise ValueError("trace must be a boolean")
         if max_steps is not None and steps is not None:
             raise ValueError("max_steps and steps cannot both be set")
+        unbounded_limits = _unbounded_limits_requested()
+        resolved_budget = _positive_int(
+            self._config["budget"] if budget is None else budget,
+            "budget",
+        )
         resolved_max_steps = (
             100
             if max_steps is None and steps is None
@@ -222,11 +227,8 @@ class OpenCollab:
                 config=self._config,
                 workspace=self._workspace,
                 tools=tools,
-                max_tokens=_positive_int(
-                    self._config["budget"] if budget is None else budget,
-                    "budget",
-                ),
-                max_steps=resolved_max_steps,
+                max_tokens=None if unbounded_limits else resolved_budget,
+                max_steps=None if unbounded_limits else resolved_max_steps,
                 timeout=_positive_timeout(timeout, "timeout"),
                 cleanup_timeout=_required_positive_timeout(
                     cleanup_timeout,

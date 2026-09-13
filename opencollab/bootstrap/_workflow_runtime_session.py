@@ -124,6 +124,10 @@ class WorkflowSessionFactory:
         # between two agents means the same thing in either arm.
         self._worktree_pool: WorktreePool | None = None
 
+    @property
+    def environment_revoked(self) -> bool:
+        return self._env is not None and bool(getattr(self._env, "revoked", False))
+
     def _next_aid(self) -> int:
         """Allocate this session's agent id.
 
