@@ -29,7 +29,9 @@ from opencollab.application.exception_notes import add_exception_note
 
 DOCKER_OWNER_LABEL = "opencollab.owner"
 DOCKER_SETUP_TIMEOUT_SECONDS = 120.0
-DOCKER_CONTROL_TIMEOUT_SECONDS = 10.0
+# Daemon control calls can outlive process exit while storage/network cleanup
+# completes, especially when many evaluation containers finish together.
+DOCKER_CONTROL_TIMEOUT_SECONDS = 60.0
 DOCKER_WRITE_TIMEOUT_SECONDS = 120.0
 
 _IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}$")
