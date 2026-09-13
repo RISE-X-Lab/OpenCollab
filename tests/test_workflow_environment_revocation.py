@@ -105,8 +105,9 @@ async def test_revocation_during_a_tool_stops_the_same_session_before_another_mo
     llm = FakeLLMClient([llm_response(tool_calls=[tool_call()], finish_reason="tool_calls")])
     session = build_session(agent=FakeAgent([tool]), env=env, llm=llm)
     await session.add_user_message("do the task")
-    await session.run_loop()
-    assert session.state.phase is SessionPhase.STOPPED
+    with pytest.raises(RuntimeError, match="environment has been revoked"):
+        await session.run_loop()
+    assert session.state.phase is SessionPhase.ERROR
     assert "environment has been revoked" in session.state.terminal_reason
     assert len(llm.calls) == len(tool.calls) == 1
     assert session.state.used_tokens == 2

@@ -302,3 +302,37 @@ def test_container_paths_must_be_absolute_and_not_the_root(repository_root, work
             repository_root=repository_root,
             worktree_root=worktree_root,
         )
+
+
+async def test_workflow_factory_isolates_inside_the_supplied_container(
+    local_docker, tmp_path, monkeypatch
+):
+    from opencollab.adapters import worktree_pool
+    from opencollab.adapters.env import DockerEnvironment
+    from opencollab.bootstrap.workflow_runtime import WorkflowSessionFactory
+
+    repo = _repo(tmp_path / 'testbed')
+    anchor = _repo(tmp_path / 'host')
+    monkeypatch.setattr(worktree_pool, 'CONTAINER_WORKTREE_ROOT', str(tmp_path / 'worktrees'))
+    prefix = 'export WORKFLOW_IMAGE_MARKER=task-image'
+    base = DockerEnvironment(
+        workspace=str(repo), container_id=CONTAINER_ID, command_prefix=prefix
+    )
+    factory = WorkflowSessionFactory(
+        model='test-model', provider='openai', api_key=None, base_url=None,
+        workspace=str(anchor), env=base,
+    )
+    isolated = await factory.acquire_isolated_env(label='coder')
+    try:
+        assert isinstance(isolated, ContainerWorktreeEnvironment)
+        assert isolated.container_reference == CONTAINER_ID
+        assert isolated.source_workspace == str(repo)
+        assert isolated.command_prefix == prefix
+        await isolated.write_file('candidate.txt', 'isolated change')
+        assert not (repo / 'candidate.txt').exists()
+        assert not (anchor / 'candidate.txt').exists()
+        assert (await isolated.exec_cmd('echo "$WORKFLOW_IMAGE_MARKER"')).stdout.strip() == 'task-image'
+    finally:
+        await factory.release_isolated_envs()
+    assert base.revoked is False
+    assert not Path(isolated.workspace).exists()
