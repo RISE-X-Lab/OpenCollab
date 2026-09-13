@@ -153,6 +153,19 @@ variants:
       worked out, so it does not cover this cell. Adherence is not measurable
       here either -- the card prescribes the calls.
 
+  cmd-propose2:
+    team_file: team.handoff.cmd-propose2.yaml
+    block: cmd-propose2
+    capabilities: full
+    note: >-
+      Not a ladder rung. `cmd-propose` with the two failures its own smoke
+      showed: the coder spent its whole budget and never reported (3 of 6 runs,
+      3.91-3.96M, `message_agent` zero times), and the tester was never
+      addressed at all (2 of 6, zero tokens). This block adds the bounded ask --
+      commit and send the sha as soon as the change runs, improve afterwards --
+      and makes the tester call unconditional. Adherence is not measurable here
+      either.
+
 # The rungs of the command ladder, in order from most of the alternative removed
 # to least. Adjacent rungs must differ by exactly one move; the ladder cannot
 # attribute a difference otherwise.
