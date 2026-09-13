@@ -153,7 +153,8 @@ def test_direct_duplicate_spawn_is_rejected_before_allocating_resources():
         assert caught.value.existing_aid == aid
         assert set(scheduler._sessions) == {0, aid}
         assert set(scheduler._tasks) == {aid}
-        assert set(scheduler._child_lease) == {aid}
+        # Agent 0's own booking shares the one lease table.
+        assert set(scheduler._turn_lease) == {0, aid}
 
         gate.set()
         await scheduler._tasks[aid]
@@ -186,7 +187,7 @@ def test_concurrent_direct_duplicate_spawns_create_only_one_child():
         assert duplicates[0].existing_aid == aids[0]
         assert set(scheduler._sessions) == {0, aids[0]}
         assert set(scheduler._tasks) == {aids[0]}
-        assert set(scheduler._child_lease) == {aids[0]}
+        assert set(scheduler._turn_lease) == {0, aids[0]}
 
         gate.set()
         await scheduler._tasks[aids[0]]

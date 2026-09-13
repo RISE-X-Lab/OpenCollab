@@ -62,7 +62,7 @@ class _Factory:
         self.environments: list[Any] = []
 
     def build_workflow_session(self, **kwargs: Any) -> _EditingSession:
-        environment = self.fallback if self.ignore_override else kwargs.get("environment")
+        environment = self.fallback if self.ignore_override else kwargs.get("env")
         if environment is None:
             environment = self.fallback
         self.environments.append(environment)

@@ -1,16 +1,9 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Awaitable, Callable
 
 from opencollab.application.ports import AskUserPort, EventPublisherPort, PermissionPort
-
-
-class SuspendableRender(Protocol):
-    """A render target whose live output can be paused for user input."""
-
-    def suspend_live(self) -> bool: ...
-    def resume_live(self, was_suspended: bool) -> None: ...
 
 
 class TuiEventSink(EventPublisherPort):
@@ -31,46 +24,33 @@ class TuiEventSink(EventPublisherPort):
 
 
 class TuiPermissionPolicy(PermissionPort):
-    """Permission policy that pauses a live render around the y/N prompt."""
+    """Permission policy that asks its y/N through the terminal's one input line.
 
-    def __init__(
-        self,
-        render: SuspendableRender,
-        read_line: Callable[[str], Awaitable[str]],
-    ):
-        self._render = render
+    Nothing is suspended around the question any more: the prompt owns the
+    bottom of the screen for the whole session, so an agent asking for
+    permission is one more thing that input line is asked to read.
+    """
+
+    def __init__(self, read_line: Callable[[str], Awaitable[str]]):
         self._read_line = read_line
 
     async def confirm(self, prompt: str) -> bool:
-        was_suspended = self._render.suspend_live()
         try:
             answer = await self._read_line(f"{prompt} [y/N] ")
         except (EOFError, KeyboardInterrupt):
             return False
-        finally:
-            self._render.resume_live(was_suspended)
         return answer.strip().lower() in ("y", "yes")
 
 
 class TuiAskUserPolicy(AskUserPort):
-    """Ask policy that pauses a live render around a free-text prompt.
+    """Ask policy that reads a free-text answer from the same input line.
 
-    Reuses the same suspend/resume seam as ``TuiPermissionPolicy`` so the
-    ``ask_user`` tool's question is not clobbered by the Rich Live frame. On
-    EOF/interrupt it raises ``EOFError`` so the tool reports the user declined.
+    On EOF/interrupt it raises ``EOFError`` so the tool reports the user
+    declined.
     """
 
-    def __init__(
-        self,
-        render: SuspendableRender,
-        read_line: Callable[[str], Awaitable[str]],
-    ):
-        self._render = render
+    def __init__(self, read_line: Callable[[str], Awaitable[str]]):
         self._read_line = read_line
 
     async def ask(self, question: str) -> str:
-        was_suspended = self._render.suspend_live()
-        try:
-            return await self._read_line(f"[Agent asks] {question}\n> ")
-        finally:
-            self._render.resume_live(was_suspended)
+        return await self._read_line(f"[Agent asks] {question}\n> ")

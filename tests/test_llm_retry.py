@@ -30,3 +30,10 @@ def test_transport_cause_chain_is_retryable():
 
 def test_unrelated_application_error_is_not_retryable():
     assert is_retryable_error(ValueError("connection error in candidate schema")) is False
+
+
+def test_anthropic_overloaded_status_is_retryable():
+    error = RuntimeError("provider unavailable")
+    error.status_code = 529
+
+    assert is_retryable_error(error) is True

@@ -43,6 +43,18 @@ def _format_captured_stream(
     return captured_head[:head_budget] + marker + tail
 
 
+# What a reader can do about a cut result. The marker alone says only that
+# something is missing, which leaves re-running the same command as the obvious
+# next move -- and it produces the same cut. Naming the ways to ask a narrower
+# question makes the second attempt different from the first.
+_TRUNCATION_ADVICE = (
+    "note: output above was cut to fit. Re-running this command produces the "
+    "same cut. To see a specific part, ask a narrower question instead: pipe "
+    "through `head`/`tail`/`sed -n 'A,Bp'`, filter with `grep -n`, or redirect "
+    "to a file and read the part you need."
+)
+
+
 class BashTool(Tool):
     """Execute a shell command in the workspace.
 
@@ -136,4 +148,6 @@ class BashTool(Tool):
             parts.append(f"stdout:\n{stdout}")
         if stderr:
             parts.append(f"stderr:\n{stderr}")
+        if len(stdout) < len(result.stdout) or len(stderr) < len(result.stderr):
+            parts.append(_TRUNCATION_ADVICE)
         return "\n".join(parts)

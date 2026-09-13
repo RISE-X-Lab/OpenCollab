@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from opencollab.adapters.llm.providers import RESPONSES
+from opencollab.adapters.llm.types import model_capabilities
 from opencollab.adapters.skills.null_skill_store import NullSkillStore
 from opencollab.adapters.trace import Tracer
 from opencollab.application.event_bus import EventBus
@@ -185,10 +187,19 @@ class ContextBuilder:
         role_name: str,
         *,
         scheduler: SchedulerPort | None = None,
-        interactive: bool = False,
+        ask_user_available: bool = False,
+        allow_unisolated_shell: bool = False,
         allow_unisolated_tests: bool = False,
         plan: ContextPlan | None = None,
     ) -> Agent:
+        """Assemble the ``Agent`` for ``role_name``.
+
+        ``ask_user_available`` (is there a human to ask?) and
+        ``allow_unisolated_shell`` (may this agent run commands the OS does not
+        sandbox?) are two separate inputs on purpose — see
+        ``build_tools_for_role`` for why they were once a single ``interactive``
+        flag and what a prebuilt team does to that conflation.
+        """
         role = self._team.role_for(role_name)
         if plan is None:
             plan = self.build_plan(role_name)
@@ -196,11 +207,22 @@ class ContextBuilder:
             role.tools,
             scheduler=scheduler,
             skill_store=self._skill_store,
-            interactive=interactive,
+            ask_user_available=ask_user_available,
+            allow_unisolated_shell=allow_unisolated_shell,
             allow_unisolated_tests=allow_unisolated_tests,
             tool_limits=self._team.tool_limits,
         )
         cfg = self._cfg
+        model = role.model or cfg.model
+        if (
+            cfg.wire_protocol == RESPONSES
+            and tools
+            and not model_capabilities(model).supports_responses_tools
+        ):
+            raise ValueError(
+                f"role {role_name!r} model {model!r} does not support "
+                "Responses tools"
+            )
         # A role override of 0.0 is meaningful (fully deterministic), so fall
         # back to the global default only when the role left it unset (None).
         temperature = (
@@ -218,7 +240,7 @@ class ContextBuilder:
             name=role_name,
             system_prompt=plan.system_prompt(),
             tools=tools,
-            model=role.model or cfg.model,
+            model=model,
             provider=cfg.provider,
             wire_protocol=cfg.wire_protocol,
             api_key=cfg.api_key,

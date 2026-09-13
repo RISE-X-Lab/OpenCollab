@@ -18,6 +18,9 @@ class PerToolResultBudgetShaper:
     re-reading a narrower range. The result is guaranteed to fit the budget.
     """
 
+    #: Frozen trajectory label for this rung (see ``ShaperPipeline``).
+    rung = "per_tool_budget"
+
     def __init__(self, max_chars: int = DEFAULT_TOOL_RESULT_BUDGET):
         if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars <= 0:
             raise ValueError("max_chars must be a positive integer")

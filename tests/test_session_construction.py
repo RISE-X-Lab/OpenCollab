@@ -10,6 +10,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
+
+import pytest
 
 from opencollab.adapters.storage import SessionStore
 from opencollab.application.autosave import AutoSaveSubscriber
@@ -184,6 +187,217 @@ def test_apply_launch_recovers_journal_when_atomic_base_is_absent(tmp_path):
 
     assert session.step_count == 7
     assert session.messages[-1]["content"] == "durable step"
+
+
+def test_checkpoint_compaction_does_not_erase_concurrent_journal_delta(tmp_path):
+    path = tmp_path / "race.json"
+    store = SessionStore()
+    store.append_snapshot_delta(
+        str(path),
+        sequence=2,
+        replace_from=0,
+        messages=[
+            {"role": "system", "content": "system"},
+            {"role": "assistant", "content": "base"},
+        ],
+        meta={"snapshot_version": 1, "session_state": {}},
+    )
+    base_written = threading.Event()
+    release_compaction = threading.Event()
+    original_write = store._atomic_json_write
+
+    def paused_write(target, value):
+        original_write(target, value)
+        base_written.set()
+        assert release_compaction.wait(timeout=2)
+
+    store._atomic_json_write = paused_write
+    checkpoint = threading.Thread(
+        target=store.checkpoint_snapshot,
+        args=(
+            str(path),
+            [{"role": "system", "content": "system"},
+             {"role": "assistant", "content": "base"}],
+        ),
+        kwargs={"meta": {"snapshot_version": 1, "session_state": {}}, "sequence": 2},
+    )
+    checkpoint.start()
+    assert base_written.wait(timeout=2)
+    append_errors = []
+
+    def append_new_delta():
+        try:
+            store.append_snapshot_delta(
+                str(path),
+                sequence=3,
+                replace_from=2,
+                messages=[{"role": "assistant", "content": "new"}],
+                meta={"snapshot_version": 1, "session_state": {}},
+            )
+        except BaseException as exc:  # pragma: no cover - diagnostic assertion below
+            append_errors.append(exc)
+
+    append = threading.Thread(target=append_new_delta)
+    append.start()
+    # The append must wait for compaction's lock rather than racing its clear.
+    release_compaction.set()
+    append.join(timeout=2)
+    release_compaction.set()
+    checkpoint.join(timeout=2)
+    assert not append.is_alive()
+    assert not checkpoint.is_alive()
+    assert append_errors == []
+    restored = store.load_snapshot(str(path), "system")
+    assert restored["_autosave_sequence"] == 3
+    assert restored["messages"][-1]["content"] == "new"
+
+
+def test_load_snapshot_serializes_base_and_journal_reads(tmp_path):
+    path = str(tmp_path / "reader-race.json")
+    store = SessionStore()
+    base = [
+        {"role": "system", "content": "system"},
+        {"role": "assistant", "content": "base"},
+    ]
+    meta = {"snapshot_version": 1, "session_state": {}}
+    store.checkpoint_snapshot(path, base, meta=meta, sequence=1)
+    store.append_snapshot_delta(
+        path,
+        sequence=2,
+        replace_from=2,
+        messages=[{"role": "assistant", "content": "delta"}],
+        meta=meta,
+    )
+
+    base_read = threading.Event()
+    release_reader = threading.Event()
+    checkpoint_write = threading.Event()
+    original_read = store._read_snapshot_text
+    original_write = store._atomic_json_write
+
+    def paused_read(target):
+        text = original_read(target)
+        if os.path.abspath(target) == os.path.abspath(path):
+            base_read.set()
+            if not release_reader.wait(timeout=2):
+                raise TimeoutError("test reader was not released")
+        return text
+
+    def marked_write(target, value):
+        checkpoint_write.set()
+        return original_write(target, value)
+
+    store._read_snapshot_text = paused_read
+    store._atomic_json_write = marked_write
+    loaded = []
+    reader_errors = []
+
+    def read_snapshot():
+        try:
+            loaded.append(store.load_snapshot(path, "system"))
+        except BaseException as exc:  # pragma: no cover - diagnostic assertion below
+            reader_errors.append(exc)
+
+    reader = threading.Thread(target=read_snapshot)
+    reader.start()
+    assert base_read.wait(timeout=2)
+
+    checkpoint = threading.Thread(
+        target=store.checkpoint_snapshot,
+        args=(path, [*base, {"role": "assistant", "content": "delta"}]),
+        kwargs={"meta": meta, "sequence": 2},
+    )
+    checkpoint.start()
+    # The checkpoint must wait for the reader's operation lock instead of
+    # replacing the base and clearing the journal under the paused reader.
+    assert not checkpoint_write.wait(timeout=0.1)
+    release_reader.set()
+    reader.join(timeout=2)
+    checkpoint.join(timeout=2)
+
+    assert not reader.is_alive()
+    assert not checkpoint.is_alive()
+    assert reader_errors == []
+    assert loaded[0]["_autosave_sequence"] == 2
+    assert loaded[0]["messages"][-1]["content"] == "delta"
+
+
+def test_checkpoint_rejects_sequence_older_than_persisted_journal(tmp_path):
+    path = tmp_path / "stale-checkpoint.json"
+    store = SessionStore()
+    base = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "base"},
+    ]
+    meta = {"snapshot_version": 1, "session_state": {}}
+    store.checkpoint_snapshot(str(path), base, meta=meta, sequence=1)
+    store.append_snapshot_delta(
+        str(path),
+        sequence=2,
+        replace_from=2,
+        messages=[{"role": "assistant", "content": "newer-delta"}],
+        meta=meta,
+    )
+
+    with pytest.raises(ValueError, match="persisted sequence 2"):
+        store.checkpoint_snapshot(str(path), base, meta=meta, sequence=1)
+
+    restored = store.load_snapshot(str(path), "system")
+    assert restored["_autosave_sequence"] == 2
+    assert restored["messages"][-1]["content"] == "newer-delta"
+
+
+def test_checkpoint_rejects_conflicting_same_sequence_journal(tmp_path):
+    path = tmp_path / "same-sequence-checkpoint.json"
+    store = SessionStore()
+    base = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "base"},
+    ]
+    meta = {"snapshot_version": 1, "session_state": {}}
+    store.checkpoint_snapshot(str(path), base, meta=meta, sequence=1)
+    store.append_snapshot_delta(
+        str(path),
+        sequence=2,
+        replace_from=2,
+        messages=[{"role": "assistant", "content": "newer-delta"}],
+        meta=meta,
+    )
+
+    with pytest.raises(ValueError, match="conflicts with persisted journal state"):
+        store.checkpoint_snapshot(str(path), base, meta=meta, sequence=2)
+
+    restored = store.load_snapshot(str(path), "system")
+    assert restored["_autosave_sequence"] == 2
+    assert restored["messages"][-1]["content"] == "newer-delta"
+
+
+def test_checkpoint_rejects_ambiguous_duplicate_journal_sequence(tmp_path):
+    path = str(tmp_path / "duplicate-sequence-checkpoint.json")
+    store = SessionStore()
+    base = [{"role": "system", "content": "system"}]
+    meta = {"snapshot_version": 1, "session_state": {}}
+    store.checkpoint_snapshot(path, base, meta=meta, sequence=1)
+    for content in ("first", "second"):
+        store.append_snapshot_delta(
+            path,
+            sequence=2,
+            replace_from=1,
+            messages=[{"role": "assistant", "content": content}],
+            meta=meta,
+        )
+
+    with pytest.raises(ValueError, match="duplicate sequence records"):
+        store.checkpoint_snapshot(
+            path,
+            [*base, {"role": "assistant", "content": "first"}],
+            meta=meta,
+            sequence=2,
+        )
+
+    # The ambiguous journal remains intact rather than being truncated.
+    with open(path + ".journal", encoding="utf-8") as journal:
+        assert journal.read().count("\n") == 2
 
 
 def test_apply_launch_checkpoints_restore_into_distinct_autosave_target(tmp_path):

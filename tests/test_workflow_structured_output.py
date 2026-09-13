@@ -164,6 +164,7 @@ class ScriptedFactory:
         isolation: bool = False,
         label: str | None = None,
         tool_choice: str | None = None,
+        env: Any | None = None,
         thinking: bool | None = None,
     ) -> CapturingSession:
         self.builds.append(

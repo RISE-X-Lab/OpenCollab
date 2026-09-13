@@ -1,4 +1,6 @@
-"""Typed Responses failures and transient provider error identifiers."""
+"""Typed errors emitted while parsing OpenAI Responses streams."""
+
+from __future__ import annotations
 
 from opencollab.adapters.llm.errors import TransientEmptyOutputError, TransientProviderError
 
@@ -28,6 +30,22 @@ class ResponsesProtocolError(RuntimeError):
     """The Responses endpoint returned an incomplete or invalid event sequence."""
 
 
+class ResponsesTerminalEventError(ResponsesProtocolError):
+    """A typed terminal event preserved its provider error identity."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str | None = None,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+        self.body = {"error": {"code": code, "message": message}}
+
+
 class ResponsesEmptyOutputError(ResponsesProtocolError, TransientEmptyOutputError):
     """A completed Responses request contained no usable assistant output."""
 
@@ -36,5 +54,5 @@ class ResponsesStreamInterruptedError(ResponsesProtocolError, TransientProviderE
     """A Responses stream ended without its required terminal event."""
 
 
-class ResponsesTransientEventError(ResponsesProtocolError, TransientProviderError):
+class ResponsesTransientEventError(ResponsesTerminalEventError, TransientProviderError):
     """A typed Responses error identified a temporary provider failure."""

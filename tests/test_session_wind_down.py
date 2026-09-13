@@ -638,7 +638,7 @@ class _EnforcedFakeFactory:
         self.builds = []
 
     def build_workflow_session(self, *, prompt, budget, tools=None, isolation=False,
-                               label=None, tool_choice=None, thinking=None):
+                               label=None, tool_choice=None, thinking=None, env=None):
         self.builds.append({"tools": list(tools or []), "label": label})
         for tool in tools or []:
             if getattr(tool, "name", None) == SUBMIT_TOOL_NAME:
@@ -704,7 +704,11 @@ def test_commitment_trace_failure_does_not_overturn_harvested_result():
     )
 
     assert "root cause located" in result
+    # Both of this path's observational records failed against the dead sink —
+    # the one naming the agent that started and the one naming how it wound
+    # down — and neither took the harvested result with it.
     assert ctx.trace_failures == (
+        {"step_type": "workflow_agent_started", "exception_type": "OSError"},
         {"step_type": "commitment_terminus", "exception_type": "OSError"},
     )
 

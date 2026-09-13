@@ -160,11 +160,33 @@ async def _quiesce_and_finalize_workflow_context(
         timeout=timeout,
     )
     resources_closed = await close_session_resources(ctx.sessions, timeout=timeout)
+    # After the sessions are closed, never before: removing a worktree an agent
+    # still holds would take the tree out from under a live tool call.
+    workspaces_released = await _release_isolated_workspaces(ctx, timeout=timeout)
     return (
         final_quiesced,
-        succeeded and enqueued and final_succeeded and resources_closed,
+        succeeded
+        and enqueued
+        and final_succeeded
+        and resources_closed
+        and workspaces_released,
         (*lingering, *final_lingering),
     )
+
+
+async def _release_isolated_workspaces(ctx: WorkflowContext, *, timeout: float) -> bool:
+    """Remove the worktrees lent to isolated agents; report whether it worked.
+
+    A failure here leaves directories behind but must not fail the run: the work
+    the agents produced is already committed or already read back out. Bounded
+    by the same cleanup timeout as the rest, so a wedged git call cannot hang
+    the run's exit.
+    """
+    try:
+        await asyncio.wait_for(ctx.release_isolated_workspaces(), timeout)
+    except (Exception, asyncio.TimeoutError):
+        return False
+    return True
 
 
 async def _await_owned_with_cancellation(

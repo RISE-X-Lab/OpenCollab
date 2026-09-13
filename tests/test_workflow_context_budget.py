@@ -19,6 +19,33 @@ from opencollab.application.workflow import (
     WorkflowBudgetExceeded,
     WorkflowContext,
 )
+from opencollab.application.workflow_runtime import (
+    DEFAULT_INTERNAL_COMMIT_TIMEOUT_SECONDS,
+)
+
+# Waits on work that must SUCCEED. It is event-loop bookkeeping with no
+# intrinsic duration, so a sub-second budget bounds how starved the machine is
+# rather than the code, and reports work that finished as a red build. The
+# waits meant to EXPIRE keep their own small timeouts.
+MUST_SETTLE_SECONDS = 10.0
+
+# The deadline test below hands the synth a caller deadline and checks that the
+# synth is bounded by it. A millisecond deadline cannot do that: it can expire
+# while the synth session is still being built, and ``_remaining_timeout`` then
+# raises before ``run_loop`` is ever called — the synth never starts, and the
+# test reads that as a cancellation failure. Half a second is far above the
+# scheduling jitter that costs, so the synth is certain to have started.
+DEAD_SCOUT_CALLER_TIMEOUT_SECONDS = 0.5
+
+# The bound the deadline is *checked* against is a separate number from the
+# hang guard: a guard sized to tell a honoured deadline from the internal commit
+# cap would also pass an implementation that overran the caller by a second.
+# This one is generous against a loaded machine — half a second of slack on top
+# of the deadline, against the scheduling jitter actually measured here (a 10 ms
+# deadline was missed once in fifteen runs on a machine held busy) — while still
+# failing an overrun long before the internal cap could explain it.
+CALLER_DEADLINE_HONOURED_SECONDS = DEAD_SCOUT_CALLER_TIMEOUT_SECONDS + 0.5
+assert CALLER_DEADLINE_HONOURED_SECONDS < DEFAULT_INTERNAL_COMMIT_TIMEOUT_SECONDS
 
 
 @pytest.mark.asyncio
@@ -234,6 +261,48 @@ async def test_pending_cleanup_wait_covers_unreserved_over_budget_lease():
     timed_out.release_cancel.set()
     await waiter
 
+
+@pytest.mark.asyncio
+async def test_over_budget_escape_is_single_use():
+    """Only one exhausted-pool call may use the forced-write escape."""
+    factory = FakeFactory(
+        [FakeSession(reply="forced"), FakeSession(reply="must not run")]
+    )
+    ctx = WorkflowContext(factory, budget_total=0)
+
+    assert await ctx.agent("forced write", over_budget_ok=True) == "forced"
+    with pytest.raises(WorkflowBudgetExceeded):
+        await ctx.agent("second forced write", over_budget_ok=True)
+
+    assert len(factory.builds) == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_over_budget_escapes_allow_only_one_call():
+    """The one-shot escape is claimed atomically when calls race."""
+    release = asyncio.Event()
+    factory = FakeFactory([FakeSession(reply="forced", gate=release)])
+    ctx = WorkflowContext(factory, budget_total=0, max_concurrency=2)
+
+    tasks = [
+        asyncio.create_task(ctx.agent(f"forced-{index}", over_budget_ok=True))
+        for index in range(2)
+    ]
+    try:
+        for _ in range(20):
+            await asyncio.sleep(0)
+            if len(factory.builds) == 1:
+                break
+        release.set()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    finally:
+        release.set()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    assert sum(isinstance(result, WorkflowBudgetExceeded) for result in results) == 1
+    assert sum(isinstance(result, str) and result == "forced" for result in results) == 1
+
+
 @pytest.mark.asyncio
 async def test_timeout_keeps_concurrency_slot_until_cancel_cleanup_finishes():
     active = 0
@@ -258,7 +327,7 @@ async def test_timeout_keeps_concurrency_slot_until_cancel_cleanup_finishes():
     ctx = WorkflowContext(factory, max_concurrency=1)
 
     assert await ctx.agent("slow", timeout=0.05) is None
-    await asyncio.wait_for(timed_out.cancel_seen.wait(), timeout=0.5)
+    await asyncio.wait_for(timed_out.cancel_seen.wait(), timeout=MUST_SETTLE_SECONDS)
 
     second_task = asyncio.create_task(ctx.agent("second"))
     for _ in range(20):
@@ -267,7 +336,7 @@ async def test_timeout_keeps_concurrency_slot_until_cancel_cleanup_finishes():
     assert second_task.done() is False
 
     timed_out.release_cancel.set()
-    assert await asyncio.wait_for(second_task, timeout=0.5) == "second"
+    assert await asyncio.wait_for(second_task, timeout=MUST_SETTLE_SECONDS) == "second"
     assert overlapped is False
 
 @pytest.mark.asyncio
@@ -282,11 +351,11 @@ async def test_active_background_agent_is_visible_to_boundary_owner():
     ctx = WorkflowContext(FakeFactory([session]))
     agent_task = asyncio.create_task(ctx.agent("background"))
 
-    await asyncio.wait_for(started.wait(), timeout=0.5)
+    await asyncio.wait_for(started.wait(), timeout=MUST_SETTLE_SECONDS)
     assert agent_task in ctx.pending_cleanup_tasks
 
     release.set()
-    assert await asyncio.wait_for(agent_task, timeout=0.5) == "done"
+    assert await asyncio.wait_for(agent_task, timeout=MUST_SETTLE_SECONDS) == "done"
     await asyncio.sleep(0)
     assert ctx.pending_cleanup_tasks == ()
 
@@ -312,11 +381,11 @@ async def test_pending_cleanup_callback_consumes_late_exception():
     ctx = WorkflowContext(FakeFactory([session]))
     try:
         call = asyncio.create_task(ctx.agent("slow", timeout=1.0))
-        await asyncio.wait_for(session.entered.wait(), timeout=0.5)
+        await asyncio.wait_for(session.entered.wait(), timeout=MUST_SETTLE_SECONDS)
         assert await call is None
-        await asyncio.wait_for(session.cancel_seen.wait(), timeout=0.5)
+        await asyncio.wait_for(session.cancel_seen.wait(), timeout=MUST_SETTLE_SECONDS)
         session.release_cancel.set()
-        await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=0.5)
+        await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=MUST_SETTLE_SECONDS)
         for _ in range(3):
             await asyncio.sleep(0)
         gc.collect()
@@ -348,9 +417,9 @@ async def test_enforced_timeout_does_not_start_synth_while_scout_cleans_up():
 
     assert result is not None and "evidence cards" in result
     assert len(factory.builds) == 1
-    await asyncio.wait_for(timed_out.cancel_seen.wait(), timeout=0.5)
+    await asyncio.wait_for(timed_out.cancel_seen.wait(), timeout=MUST_SETTLE_SECONDS)
     timed_out.release_cancel.set()
-    await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=0.5)
+    await asyncio.wait_for(ctx.wait_for_pending_cleanup(), timeout=MUST_SETTLE_SECONDS)
 
 
 @pytest.mark.asyncio
@@ -362,9 +431,11 @@ async def test_dead_scout_synth_respects_the_callers_deadline():
     class BlockingSynth(FakeSession):
         def __init__(self) -> None:
             super().__init__()
+            self.started = asyncio.Event()
             self.cancelled = asyncio.Event()
 
         async def run_loop(self, cancel_event=None):
+            self.started.set()
             try:
                 await asyncio.Event().wait()
             except asyncio.CancelledError:
@@ -387,17 +458,22 @@ async def test_dead_scout_synth_respects_the_callers_deadline():
         result = await asyncio.wait_for(
             ctx.agent(
                 "scout",
-                timeout=0.01,
+                timeout=DEAD_SCOUT_CALLER_TIMEOUT_SECONDS,
                 enforcement_strength=ENFORCEMENT_ON,
             ),
-            timeout=0.2,
+            # A hang guard, nothing more — the elapsed bound below is what
+            # actually holds the implementation to the caller's deadline.
+            timeout=MUST_SETTLE_SECONDS,
         )
     finally:
         await ctx.wait_for_pending_cleanup()
 
     assert result is not None and "evidence cards" in result
+    # Separate "the synth never ran" from "the synth ran and the deadline
+    # cancelled it": only the second says the deadline reached the synth.
+    assert synth.started.is_set()
     assert synth.cancelled.is_set()
-    assert asyncio.get_running_loop().time() - started_at < 0.1
+    assert asyncio.get_running_loop().time() - started_at < CALLER_DEADLINE_HONOURED_SECONDS
 
 
 @pytest.mark.asyncio
@@ -485,14 +561,14 @@ async def test_budget_lease_release_cannot_be_cancelled_while_lock_is_held():
     )
 
     first_task = asyncio.create_task(ctx.agent("first", budget=80))
-    await asyncio.wait_for(first_started.wait(), timeout=0.5)
+    await asyncio.wait_for(first_started.wait(), timeout=MUST_SETTLE_SECONDS)
     await ctx._budget_lock.acquire()
     try:
         release_first.set()
         for _ in range(5):
             await asyncio.sleep(0)
         first_task.cancel()
-        assert await asyncio.wait_for(first_task, timeout=0.5) == "first"
+        assert await asyncio.wait_for(first_task, timeout=MUST_SETTLE_SECONDS) == "first"
         assert ctx.budget._leases == []
     finally:
         ctx._budget_lock.release()

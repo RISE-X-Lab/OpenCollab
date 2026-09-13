@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import math
 import os
 import stat
-import sys
 import time
 import uuid
 from collections.abc import Callable
@@ -14,41 +14,28 @@ from pathlib import Path
 from typing import BinaryIO, TextIO
 
 from opencollab.adapters._env_base import TextFileRange
+from opencollab.adapters._safe_file_common import (
+    _RANGE_TOTAL_COUNT_LIMIT_BYTES,
+    _READ_CHUNK_BYTES,
+    _read_text_line,
+    _require_limit,
+)
+from opencollab.adapters.safe_anchored_files import (
+    create_regular_bytes_atomic_at,
+    open_directory_anchor,
+    read_regular_bytes_at,
+    read_regular_text_range_at,
+    unlink_regular_file_durable_at,
+    write_regular_bytes_atomic_at,
+    write_regular_file_atomic_at,
+)
+from opencollab.adapters.safe_paths import canonicalize_system_path
 
 _LOCK_TIMEOUT_SECONDS = 10.0
-_READ_CHUNK_BYTES = 1024 * 1024
-_RANGE_READ_CHUNK_CHARS = 64 * 1024
-_RANGE_TOTAL_COUNT_LIMIT_BYTES = 256 * 1024
-_MACOS_SYSTEM_ALIASES = (
-    (Path("/tmp"), Path("/private/tmp")),
-    (Path("/var"), Path("/private/var")),
-)
-
-
-def _canonicalize_system_alias(path: Path) -> Path:
-    if sys.platform != "darwin":
-        return path
-    for alias, canonical in _MACOS_SYSTEM_ALIASES:
-        try:
-            relative = path.relative_to(alias)
-        except ValueError:
-            continue
-        if Path(os.path.realpath(alias)) == canonical and canonical.is_dir():
-            return canonical / relative
-    return path
 
 
 def _absolute(path: str | os.PathLike[str]) -> Path:
-    value = os.fspath(path)
-    if not value or "\0" in value:
-        raise ValueError("path must be non-empty text without NUL bytes")
-    return _canonicalize_system_alias(Path(os.path.abspath(value)))
-
-
-def _require_limit(max_bytes: int) -> int:
-    if isinstance(max_bytes, bool) or not isinstance(max_bytes, int) or max_bytes < 0:
-        raise ValueError("max_bytes must be a non-negative integer")
-    return max_bytes
+    return canonicalize_system_path(path)
 
 
 def _check_directory_components(path: str | os.PathLike[str], *, create: bool) -> None:
@@ -87,10 +74,7 @@ def read_regular_bytes(
     _check_directory_components(target.parent, create=False)
     fd = os.open(
         target,
-        os.O_RDONLY
-        | getattr(os, "O_NONBLOCK", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
     )
     try:
         opened = os.fstat(fd)
@@ -123,33 +107,6 @@ def read_regular_text(
     return read_regular_bytes(path, max_bytes=max_bytes).decode(encoding)
 
 
-def _read_text_line(
-    handle: TextIO,
-    *,
-    collect_limit: int | None,
-) -> tuple[str | None, bool, bool]:
-    parts: list[str] = []
-    seen_content = False
-    remaining = collect_limit
-    while True:
-        chunk = handle.readline(_RANGE_READ_CHUNK_CHARS)
-        if chunk == "":
-            if not seen_content:
-                return None, True, False
-            return "".join(parts), True, False
-        seen_content = True
-        ended = chunk.endswith("\n")
-        content = chunk[:-1] if ended else chunk
-        if remaining is not None:
-            if len(content) > remaining:
-                parts.append(content[:remaining])
-                return "".join(parts), False, True
-            parts.append(content)
-            remaining -= len(content)
-        if ended:
-            return "".join(parts), False, False
-
-
 def read_regular_text_range(
     path: str | os.PathLike[str],
     *,
@@ -175,10 +132,7 @@ def read_regular_text_range(
     _check_directory_components(target.parent, create=False)
     fd = os.open(
         target,
-        os.O_RDONLY
-        | getattr(os, "O_NONBLOCK", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
     )
     try:
         opened = os.fstat(fd)
@@ -300,8 +254,20 @@ def open_regular_text_append(
     return os.fdopen(fd, "a", encoding="utf-8")
 
 
-def _acquire_append_lock(fd: int) -> None:
-    deadline = time.monotonic() + _LOCK_TIMEOUT_SECONDS
+def acquire_exclusive_lock(
+    fd: int,
+    *,
+    timeout_seconds: float = _LOCK_TIMEOUT_SECONDS,
+    context: str = "file lock",
+) -> None:
+    """Acquire an advisory lock with a bounded non-blocking retry loop."""
+    if (
+        isinstance(timeout_seconds, bool)
+        or not math.isfinite(timeout_seconds)
+        or timeout_seconds < 0
+    ):
+        raise ValueError("lock timeout must be finite and non-negative")
+    deadline = time.monotonic() + timeout_seconds
     while True:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -310,8 +276,12 @@ def _acquire_append_lock(fd: int) -> None:
             if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK}:
                 raise
             if time.monotonic() >= deadline:
-                raise TimeoutError("timed out acquiring append lock") from exc
+                raise TimeoutError(f"timed out acquiring {context}") from exc
             time.sleep(0.01)
+
+
+def _acquire_append_lock(fd: int) -> None:
+    acquire_exclusive_lock(fd, context="append lock")
 
 
 def write_locked_text(handle: TextIO, text: str) -> None:
@@ -346,10 +316,7 @@ def _current_regular(path: Path, *, context: str) -> os.stat_result | None:
 def _fsync_directory(path: Path) -> None:
     fd = os.open(
         path,
-        os.O_RDONLY
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
     )
     try:
         if not stat.S_ISDIR(os.fstat(fd).st_mode):
@@ -379,11 +346,7 @@ def write_regular_file_atomic(
     temporary = target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
     fd = os.open(
         temporary,
-        os.O_RDWR
-        | os.O_CREAT
-        | os.O_EXCL
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
+        os.O_RDWR | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
         publish_mode,
     )
     try:
@@ -463,15 +426,24 @@ def unlink_regular_file_durable(path: str | os.PathLike[str]) -> bool:
 
 
 __all__ = [
+    "acquire_exclusive_lock",
     "append_regular_text",
     "create_regular_bytes_atomic",
+    "create_regular_bytes_atomic_at",
+    "canonicalize_system_path",
     "ensure_directory_no_symlinks",
+    "open_directory_anchor",
     "open_regular_text_append",
     "read_regular_bytes",
+    "read_regular_bytes_at",
     "read_regular_text",
     "read_regular_text_range",
+    "read_regular_text_range_at",
     "unlink_regular_file_durable",
+    "unlink_regular_file_durable_at",
     "write_locked_text",
     "write_regular_bytes_atomic",
+    "write_regular_bytes_atomic_at",
     "write_regular_file_atomic",
+    "write_regular_file_atomic_at",
 ]

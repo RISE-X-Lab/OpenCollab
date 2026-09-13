@@ -12,7 +12,7 @@ from opencollab.adapters.llm.anthropic_provider import _build_request_kwargs as 
 from opencollab.adapters.llm.anthropic_provider import convert_to_anthropic_messages
 from opencollab.adapters.llm.openai_provider import _build_request_kwargs as build_openai_kwargs
 from opencollab.adapters.llm.openai_provider import _parse_response as parse_openai_response
-from opencollab.adapters.llm.types import model_capabilities
+from opencollab.adapters.llm.types import model_capabilities, model_matches_family
 
 # ---------------------------------------------------------------------------
 # Thinking passthrough — OpenAI-compatible extra_body (DashScope compatible mode)
@@ -219,6 +219,9 @@ def test_known_model_capabilities_accept_bounded_provider_aliases(model):
     [
         "vendor/kimi-for-coding-preview",
         "vendor/not-kimi-for-coding",
+        "gateway/kimi-for-coding-20260807",
+        "gateway/kimi-for-coding-2026-8-07",
+        "gateway/kimi-for-coding-2026-08-07-preview",
     ],
 )
 def test_known_model_capabilities_reject_prefixed_near_misses(model):
@@ -226,6 +229,18 @@ def test_known_model_capabilities_reject_prefixed_near_misses(model):
 
     assert capabilities.context_window is None
     assert capabilities.supports_forced_tool_choice is True
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gateway/kimi-for-coding-20260807",
+        "gateway/kimi-for-coding-2026-8-07",
+        "gateway/kimi-for-coding-2026-08-07-preview",
+    ],
+)
+def test_model_family_matching_rejects_unbounded_kimi_aliases(model):
+    assert not model_matches_family(model, "kimi-for-coding")
 
 
 def test_unknown_model_capabilities_use_neutral_defaults():

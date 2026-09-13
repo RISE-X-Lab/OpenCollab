@@ -114,6 +114,34 @@ def test_run_tests_falls_back_to_native_runner_when_pytest_missing():
     assert "without an executed-target proof parser" in result
 
 
+def test_run_tests_does_not_treat_generic_127_as_missing_pytest():
+    """A real pytest failure with status 127 must not switch runners."""
+    env = ScriptedEnv(
+        [
+            ("python -m pytest", 127, "pytest runtime failed"),
+            ("test -f go.mod", 0, ""),
+            (
+                "go test -json",
+                0,
+                '{"Action":"pass","Package":"module/internal/server",'
+                '"Test":"TestEvaluate"}',
+            ),
+        ]
+    )
+    runtime = runtime_for(env)
+
+    result = run(
+        RunTestsTool().execute_with_runtime(
+            {"target": "internal/server"},
+            runtime,
+        )
+    )
+
+    assert "Verdict: GREEN" not in result
+    assert len(env.exec_calls) == 1
+    assert not any(command.startswith("test -f") for command, _ in env.exec_calls)
+
+
 def test_run_tests_does_not_fallback_from_a_green_pytest_message():
     env = FakeEnv(
         stdout=PLAIN_PASS_OUTPUT + "\nNo module named pytest\n",
@@ -130,6 +158,15 @@ def test_run_tests_does_not_fallback_from_a_green_pytest_message():
 
     assert "Verdict: GREEN" in result
     assert len(env.exec_calls) == 1
+
+
+def test_root_level_pytest_selector_accepts_matching_node_from_any_file():
+    from opencollab.adapters.tools.run_tests import _is_green
+
+    output = "PASSED tests/test_x.py::test_one\n1 passed in 0.01s\n"
+
+    assert _is_green(0, output, target="::test_one")
+    assert not _is_green(0, output, target="::test_other")
 
 
 def test_run_tests_does_not_fallback_from_failed_test_output_text():

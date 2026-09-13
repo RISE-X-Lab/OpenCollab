@@ -1,10 +1,16 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from typing import Any, BinaryIO
 
 from opencollab.adapters.safe_files import (
+    acquire_exclusive_lock,
     ensure_directory_no_symlinks,
     open_regular_text_append,
     read_regular_bytes,
@@ -18,6 +24,62 @@ _JSON_WRITE_CHUNK_CHARS = 64 * 1024
 _AUTOSAVE_SEQUENCE_KEY = "_autosave_sequence"
 _AUTOSAVE_JOURNAL_VERSION = 1
 _AUTOSAVE_JOURNAL_SUFFIX = ".journal"
+_AUTOSAVE_JOURNAL_LOCK_SUFFIX = ".lock"
+_JOURNAL_LOCK_TIMEOUT_SECONDS = 10.0
+
+
+@dataclass
+class _JournalLockEntry:
+    lock: threading.Lock = field(default_factory=threading.Lock)
+    users: int = 0
+
+
+_JOURNAL_LOCKS: dict[str, _JournalLockEntry] = {}
+_JOURNAL_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _journal_thread_lock(path: str) -> Iterator[None]:
+    key = os.path.abspath(path)
+    with _JOURNAL_LOCKS_GUARD:
+        entry = _JOURNAL_LOCKS.setdefault(key, _JournalLockEntry())
+        entry.users += 1
+    acquired = False
+    try:
+        acquired = entry.lock.acquire(timeout=_JOURNAL_LOCK_TIMEOUT_SECONDS)
+        if not acquired:
+            raise TimeoutError("timed out acquiring journal thread lock")
+        yield
+    finally:
+        if acquired:
+            entry.lock.release()
+        with _JOURNAL_LOCKS_GUARD:
+            entry.users -= 1
+            if entry.users == 0 and _JOURNAL_LOCKS.get(key) is entry:
+                del _JOURNAL_LOCKS[key]
+
+
+@contextmanager
+def _journal_operation_lock(path: str) -> Iterator[None]:
+    """Serialize compaction and append on a stable cross-process lockfile.
+
+    The lockfile is deliberately persistent. Removing it after unlock can split
+    waiters across old and newly-created inodes, allowing two critical sections
+    to overlap. The snapshot and journal themselves are replaced by rename, so
+    neither data inode can safely serve as this coordination point.
+    """
+    with _journal_thread_lock(path):
+        lock_path = f"{path}{_AUTOSAVE_JOURNAL_SUFFIX}{_AUTOSAVE_JOURNAL_LOCK_SUFFIX}"
+        with open_regular_text_append(lock_path) as handle:
+            acquire_exclusive_lock(
+                handle.fileno(),
+                timeout_seconds=_JOURNAL_LOCK_TIMEOUT_SECONDS,
+                context="journal operation lock",
+            )
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class _BoundedUTF8Writer:
@@ -73,6 +135,15 @@ class SessionStore:
 
     def load_snapshot(self, path: str, system_prompt: str) -> dict[str, Any]:
         """Load the versioned snapshot, accepting legacy list/JSONL files."""
+        # A checkpoint replaces the base file and then truncates the journal.
+        # Keep both reads in the same critical section so a reader cannot
+        # observe the old base together with the already-compacted journal (or
+        # vice versa).
+        with _journal_operation_lock(path):
+            return self._load_snapshot_unlocked(path, system_prompt)
+
+    def _load_snapshot_unlocked(self, path: str, system_prompt: str) -> dict[str, Any]:
+        """Load a snapshot while the journal operation lock is held."""
         try:
             text = self._read_snapshot_text(path)
         except FileNotFoundError:
@@ -394,12 +465,45 @@ class SessionStore:
             _AUTOSAVE_SEQUENCE_KEY: sequence,
             "messages": messages,
         }
-        self._atomic_json_write(path, obj)
-        write_regular_bytes_atomic(
-            self._journal_path(path),
-            b"",
-            max_bytes=0,
-        )
+        with _journal_operation_lock(path):
+            persisted_sequence = self._newest_persisted_sequence(path)
+            if persisted_sequence > sequence:
+                raise ValueError(
+                    "refusing stale checkpoint sequence "
+                    f"{sequence}; persisted sequence {persisted_sequence} is newer"
+                )
+            journal_records = self._read_journal_records(path)
+            same_sequence_records = [
+                record
+                for record in journal_records
+                if self._record_integer(record, "sequence", minimum=1) == sequence
+            ]
+            if len(same_sequence_records) > 1:
+                # Multiple records at one cursor are ambiguous: replay skips
+                # the second and later records, so accepting this checkpoint
+                # would clear data that cannot be proven equivalent.
+                raise ValueError(
+                    "refusing checkpoint sequence "
+                    f"{sequence}; persisted journal contains duplicate sequence records"
+                )
+            if same_sequence_records:
+                # A same-sequence journal record may belong to another writer.
+                # Only compact it when the proposed checkpoint is exactly the
+                # state obtained by replaying the durable base and journal;
+                # otherwise retaining the journal is safer than silently
+                # discarding a peer's update.
+                persisted = self._load_snapshot_unlocked(path, "")
+                if not self._checkpoint_states_equal(persisted, obj):
+                    raise ValueError(
+                        "refusing checkpoint sequence "
+                        f"{sequence}; it conflicts with persisted journal state"
+                    )
+            self._atomic_json_write(path, obj)
+            write_regular_bytes_atomic(
+                self._journal_path(path),
+                b"",
+                max_bytes=0,
+            )
 
     @staticmethod
     def _journal_path(path: str) -> str:
@@ -417,33 +521,34 @@ class SessionStore:
         )
 
     def _append_journal_record(self, path: str, record: dict[str, Any]) -> None:
-        journal_path = self._journal_path(path)
-        payload = self._encode_journal_record(record)
-        payload_size = len(payload.encode("utf-8"))
-        if payload_size > MAX_SESSION_SNAPSHOT_BYTES:
-            raise ValueError(
-                "autosave journal record exceeds "
-                f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
-                f"{journal_path}"
-            )
-        with open_regular_text_append(journal_path, readable=True) as handle:
-            current_size = os.fstat(handle.fileno()).st_size
-            complete_size = self._complete_journal_size(
-                handle.fileno(),
-                current_size,
-            )
-            if complete_size < current_size:
-                os.ftruncate(handle.fileno(), complete_size)
-                current_size = complete_size
-            if current_size + payload_size > MAX_SESSION_SNAPSHOT_BYTES:
+        with _journal_operation_lock(path):
+            journal_path = self._journal_path(path)
+            payload = self._encode_journal_record(record)
+            payload_size = len(payload.encode("utf-8"))
+            if payload_size > MAX_SESSION_SNAPSHOT_BYTES:
                 raise ValueError(
-                    "autosave journal exceeds "
+                    "autosave journal record exceeds "
                     f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
                     f"{journal_path}"
                 )
-            write_locked_text(handle, payload)
-            handle.flush()
-            os.fsync(handle.fileno())
+            with open_regular_text_append(journal_path, readable=True) as handle:
+                current_size = os.fstat(handle.fileno()).st_size
+                complete_size = self._complete_journal_size(
+                    handle.fileno(),
+                    current_size,
+                )
+                if complete_size < current_size:
+                    os.ftruncate(handle.fileno(), complete_size)
+                    current_size = complete_size
+                if current_size + payload_size > MAX_SESSION_SNAPSHOT_BYTES:
+                    raise ValueError(
+                        "autosave journal exceeds "
+                        f"{MAX_SESSION_SNAPSHOT_BYTES} UTF-8 bytes while writing: "
+                        f"{journal_path}"
+                    )
+                write_locked_text(handle, payload)
+                handle.flush()
+                os.fsync(handle.fileno())
 
     @staticmethod
     def _complete_journal_size(fd: int, size: int) -> int:
@@ -496,6 +601,48 @@ class SessionStore:
                 )
             records.append(record)
         return records
+
+    def _newest_persisted_sequence(self, path: str) -> int:
+        newest = 0
+        try:
+            text = self._read_snapshot_text(path)
+        except FileNotFoundError:
+            pass
+        else:
+            parsed = self._parse_document(text)
+            if isinstance(parsed, dict):
+                newest = self._snapshot_sequence(parsed)
+        for record in self._read_journal_records(path):
+            newest = max(
+                newest,
+                self._record_integer(record, "sequence", minimum=1),
+            )
+        return newest
+
+    @staticmethod
+    def _checkpoint_states_equal(
+        persisted: dict[str, Any], candidate: dict[str, Any]
+    ) -> bool:
+        """Compare a replayed state with a checkpoint after replay normalization.
+
+        Journal replay materializes ``session_state.seen_result_hashes`` and
+        sorts it, while a caller's full checkpoint payload may omit that empty
+        field or retain insertion order.  Those representations are
+        semantically identical; comparing the raw dictionaries would reject a
+        legitimate idempotent compaction and leave the journal unbounded.
+        """
+
+        def normalize(value: dict[str, Any]) -> dict[str, Any]:
+            normalized = dict(value)
+            raw_state = normalized.get("session_state")
+            state = dict(raw_state) if isinstance(raw_state, dict) else {}
+            seen = state.get("seen_result_hashes", [])
+            if isinstance(seen, list) and all(isinstance(item, str) for item in seen):
+                state["seen_result_hashes"] = sorted(set(seen))
+            normalized["session_state"] = state
+            return normalized
+
+        return normalize(persisted) == normalize(candidate)
 
     @staticmethod
     def _snapshot_sequence(snapshot: dict[str, Any]) -> int:

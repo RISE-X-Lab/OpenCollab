@@ -20,6 +20,7 @@ BuiltinToolName: TypeAlias = Literal[
     "run_tests",
     "git_diff",
     "grep",
+    "submit",
 ]
 
 _BUILTIN_TOOL_NAMES = frozenset(
@@ -31,6 +32,7 @@ _BUILTIN_TOOL_NAMES = frozenset(
         "run_tests",
         "git_diff",
         "grep",
+        "submit",
     }
 )
 
@@ -81,7 +83,10 @@ def builtin_tools(
     return tuple(
         build_tools_for_role(
             list(names),
-            interactive=not headless,
+            # ``ask_user`` is not a built-in name here, so ``headless`` only
+            # ever meant one of the two things the registry now asks about:
+            # whether the shell may run outside an OS process sandbox.
+            allow_unisolated_shell=not headless,
             allow_file_creation=allow_file_creation,
             tool_limits=normalized_limits,
         )

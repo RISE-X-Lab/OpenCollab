@@ -8,9 +8,16 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from typing import Any
 
 from opencollab.adapters.llm.retry import RetryTimeBudget, with_retry
+from opencollab.adapters.llm.tool_contracts import (
+    NormalizedToolChoice,
+    normalize_function_tools,
+    normalize_tool_choice,
+    validate_tool_choice_target,
+)
 from opencollab.adapters.llm.types import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     LLMResponse,
@@ -18,8 +25,75 @@ from opencollab.adapters.llm.types import (
     rescue_empty_turn,
 )
 
+_ANTHROPIC_REASONING_EFFORTS = frozenset({"low", "medium", "high", "xhigh", "max"})
+_ANTHROPIC_VERSION_RE = re.compile(
+    r"^claude-(?P<family>opus|sonnet|haiku|fable|mythos)-"
+    r"(?P<major>\d+)(?:-(?P<minor>\d+))?(?:-|$)"
+)
 
-def _anthropic_tool_choice(tool_choice: Any) -> dict[str, Any] | None:
+
+def _anthropic_model_version(model: str) -> tuple[str, int, int] | None:
+    leaf = model.strip().lower().rsplit("/", 1)[-1]
+    match = _ANTHROPIC_VERSION_RE.match(leaf)
+    if match is None:
+        return None
+    return (
+        match.group("family"),
+        int(match.group("major")),
+        int(match.group("minor") or 0),
+    )
+
+
+def _anthropic_requires_default_sampling(model: str) -> bool:
+    """Whether a known native Claude model rejects non-default sampling."""
+    leaf = model.strip().lower().rsplit("/", 1)[-1]
+    if leaf.startswith("claude-mythos-preview"):
+        return True
+    version = _anthropic_model_version(model)
+    if version is None:
+        return False
+    _, major, minor = version
+    return major >= 5 or (major == 4 and minor >= 7)
+
+
+def _anthropic_defaults_to_thinking(model: str) -> bool:
+    leaf = model.strip().lower().rsplit("/", 1)[-1]
+    if leaf.startswith("claude-mythos-preview"):
+        return True
+    version = _anthropic_model_version(model)
+    return version is not None and version[1] >= 5
+
+
+def _anthropic_thinking_is_always_on(model: str) -> bool:
+    leaf = model.strip().lower().rsplit("/", 1)[-1]
+    if leaf.startswith("claude-mythos-preview"):
+        return True
+    version = _anthropic_model_version(model)
+    return (
+        version is not None
+        and version[0] in {"fable", "mythos"}
+        and version[1] >= 5
+    )
+
+
+def _validate_anthropic_thinking_mode(model: str, thinking_type: str) -> None:
+    """Reject mode and native-model combinations known to return HTTP 400."""
+    version = _anthropic_model_version(model)
+    if (
+        thinking_type == "enabled"
+        and version is not None
+        and _anthropic_requires_default_sampling(model)
+    ):
+        raise ValueError(f"Anthropic model {model!r} requires adaptive thinking")
+    if thinking_type == "adaptive" and version is not None:
+        _, major, minor = version
+        if major < 4 or (major == 4 and minor < 6):
+            raise ValueError(f"Anthropic model {model!r} does not support adaptive thinking")
+
+
+def _anthropic_tool_choice(
+    tool_choice: NormalizedToolChoice | None,
+) -> dict[str, Any] | None:
     """Map OpenAI-style ``tool_choice`` values to Anthropic's dict form.
 
     Anthropic expects ``{"type": "auto"|"any"|"tool"}``; OpenAI's ``"required"``
@@ -28,26 +102,19 @@ def _anthropic_tool_choice(tool_choice: Any) -> dict[str, Any] | None:
     """
     if tool_choice is None:
         return None
-    if tool_choice == "none":
+    if tool_choice.mode == "none":
         return {"type": "none"}
-    if tool_choice == "required":
+    if tool_choice.mode == "required":
         return {"type": "any"}
-    if tool_choice == "auto":
+    if tool_choice.mode == "auto":
         return {"type": "auto"}
-    if isinstance(tool_choice, dict):
-        if tool_choice.get("type") == "function":
-            function = tool_choice.get("function") or {}
-            name = function.get("name")
-            if name:
-                return {"type": "tool", "name": name}
-        if tool_choice.get("type") == "tool" and tool_choice.get("name"):
-            return {"type": "tool", "name": tool_choice["name"]}
-    return None
+    return {"type": "tool", "name": tool_choice.name}
 
 
 def _anthropic_thinking_kwargs(
     thinking_params: dict | None,
     *,
+    model: str,
     max_tokens: int,
 ) -> dict[str, Any]:
     """Validate provider-native thinking settings for one Anthropic request."""
@@ -72,6 +139,7 @@ def _anthropic_thinking_kwargs(
         raise ValueError(
             "Anthropic thinking_params.thinking.type must be enabled or adaptive"
         )
+    _validate_anthropic_thinking_mode(model, thinking_type)
     allowed_thinking = (
         {"type", "budget_tokens", "display"}
         if thinking_type == "enabled"
@@ -132,6 +200,25 @@ def _validate_anthropic_output_format(value: Any) -> None:
         raise ValueError("Anthropic output_config.format must contain a JSON schema")
 
 
+def _merge_anthropic_reasoning_effort(
+    request: dict[str, Any],
+    reasoning_effort: str | None,
+) -> None:
+    """Merge the provider-agnostic effort into Anthropic output_config."""
+    if reasoning_effort is None:
+        return
+    if reasoning_effort not in _ANTHROPIC_REASONING_EFFORTS:
+        raise ValueError("unsupported Anthropic reasoning_effort")
+    output_config = copy.deepcopy(request.get("output_config") or {})
+    native_effort = output_config.get("effort")
+    if native_effort is not None and native_effort != reasoning_effort:
+        raise ValueError(
+            "reasoning_effort conflicts with thinking_params.output_config.effort"
+        )
+    output_config["effort"] = reasoning_effort
+    request["output_config"] = output_config
+
+
 def _build_request_kwargs(
     model: str,
     messages: list[dict],
@@ -142,14 +229,31 @@ def _build_request_kwargs(
     tool_choice: Any = None,
     top_p: float | None = None,
     max_output_tokens: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     system_parts, anthropic_messages = convert_to_anthropic_messages(messages)
     max_tokens = int(max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
     thinking_kwargs = (
-        _anthropic_thinking_kwargs(thinking_params, max_tokens=max_tokens)
+        _anthropic_thinking_kwargs(
+            thinking_params,
+            model=model,
+            max_tokens=max_tokens,
+        )
         if thinking
         else {}
     )
+    _merge_anthropic_reasoning_effort(thinking_kwargs, reasoning_effort)
+
+    if (
+        not thinking
+        and reasoning_effort is None
+        and _anthropic_defaults_to_thinking(model)
+    ):
+        if _anthropic_thinking_is_always_on(model):
+            raise ValueError(
+                f"Anthropic model {model!r} cannot disable adaptive thinking"
+            )
+        thinking_kwargs["thinking"] = {"type": "disabled"}
 
     kwargs: dict[str, Any] = {
         "model": model,
@@ -159,19 +263,27 @@ def _build_request_kwargs(
     # Anthropic requires the default temperature while thinking is enabled.
     # Omitting it also works for compatible gateways and avoids turning the
     # ordinary OpenCollab temperature default into a provider-side 400.
-    if not thinking:
+    default_sampling_only = _anthropic_requires_default_sampling(model)
+    if not thinking and not default_sampling_only:
         kwargs["temperature"] = temperature
     # Nucleus sampling rides along ONLY when explicitly set; when None the key is
     # omitted so the request is byte-for-byte identical to today's behavior.
     if thinking and top_p is not None:
         raise ValueError("Anthropic thinking requires the provider-default top_p")
-    if top_p is not None:
+    if default_sampling_only and top_p is not None and top_p != 1.0:
+        raise ValueError(
+            f"Anthropic model {model!r} requires the provider-default top_p"
+        )
+    if top_p is not None and not default_sampling_only:
         kwargs["top_p"] = top_p
     if system_parts:
         kwargs["system"] = "\n\n".join(system_parts)
-    if tools:
-        kwargs["tools"] = [_convert_tool(tool) for tool in tools]
-        choice = _anthropic_tool_choice(tool_choice)
+    converted_tools = normalize_function_tools(tools)
+    normalized_choice = normalize_tool_choice(tool_choice)
+    validate_tool_choice_target(normalized_choice, converted_tools)
+    if converted_tools:
+        kwargs["tools"] = [_convert_tool(tool) for tool in converted_tools]
+        choice = _anthropic_tool_choice(normalized_choice)
         if choice is not None:
             if (
                 thinking_kwargs.get("thinking", {}).get("type") == "enabled"
@@ -186,11 +298,14 @@ def _build_request_kwargs(
 def _convert_tool(tool: dict) -> dict:
     """Convert an OpenAI function-tool definition to Anthropic's schema."""
     func = tool["function"]
-    return {
+    converted = {
         "name": func["name"],
         "description": func.get("description", ""),
         "input_schema": func.get("parameters", {"type": "object", "properties": {}}),
     }
+    if "strict" in func:
+        converted["strict"] = func["strict"]
+    return converted
 
 
 async def complete_anthropic(
@@ -205,6 +320,7 @@ async def complete_anthropic(
     tool_choice: Any = None,
     top_p: float | None = None,
     max_output_tokens: int | None = None,
+    reasoning_effort: str | None = None,
     provider_error_time_budget: RetryTimeBudget | None = None,
 ) -> LLMResponse:
     """Single-shot completion against the Anthropic API."""
@@ -218,6 +334,7 @@ async def complete_anthropic(
         tool_choice,
         top_p,
         max_output_tokens,
+        reasoning_effort,
     )
     resp = await with_retry(
         lambda: client.messages.create(**kwargs),
@@ -260,9 +377,14 @@ def _parse_response(resp: Any) -> LLMResponse:
         usage=_parse_usage(resp.usage),
         finish_reason=resp.stop_reason,
         reasoning=reasoning,
+        provider_model=(
+            value
+            if isinstance((value := getattr(resp, "model", None)), str) and value
+            else None
+        ),
         provider_state=(
             {"anthropic_content": provider_content}
-            if has_thinking
+            if has_thinking or tool_calls
             else None
         ),
     )
@@ -321,16 +443,20 @@ def _parse_usage(usage: Any) -> Usage:
     cache_read = getattr(usage, "cache_read_input_tokens", 0) or 0
     cache_creation = getattr(usage, "cache_creation_input_tokens", 0) or 0
     uncached_input = getattr(usage, "input_tokens", 0) or 0
+    output_details = getattr(usage, "output_tokens_details", None)
+    thinking_tokens = getattr(output_details, "thinking_tokens", 0) or 0
     return Usage(
         input_tokens=uncached_input + cache_read + cache_creation,
         output_tokens=getattr(usage, "output_tokens", 0) or 0,
         cache_read_tokens=cache_read,
         cache_creation_tokens=cache_creation,
+        reasoning_tokens=max(0, int(thinking_tokens)) or None,
         raw_usage={
             "input_tokens": uncached_input,
             "output_tokens": getattr(usage, "output_tokens", 0) or 0,
             "cache_read_input_tokens": cache_read,
             "cache_creation_input_tokens": cache_creation,
+            "output_tokens_details": {"thinking_tokens": thinking_tokens},
         },
     )
 
@@ -393,6 +519,8 @@ def convert_to_anthropic_messages(messages: list[dict]) -> tuple[list[str], list
                 anthropic_messages.append({"role": "assistant", "content": content_blocks})
         elif role == "tool":
             _append_tool_result(anthropic_messages, message)
+        else:
+            raise ValueError(f"message {message_index} has unsupported role {role!r}")
 
     return system_parts, anthropic_messages
 

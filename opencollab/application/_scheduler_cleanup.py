@@ -129,8 +129,7 @@ class SchedulerCleanupMixin:
         self._startup_origin.clear()
         self._message_delivery_tasks.clear()
         self._active_run_tasks.clear()
-        self._lead_lease = None
-        self._child_lease.clear()
+        self._turn_lease.clear()
         self._lease_baseline.clear()
         self._inflight.clear()
         self._inflight_key_of.clear()

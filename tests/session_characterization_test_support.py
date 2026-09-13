@@ -124,7 +124,7 @@ class FakeTracer:
         self.steps = []
         self.flush_count = 0
 
-    def log_step(self, step_type, payload, tokens, latency):
+    def log_step(self, step_type, payload, tokens=0, latency=0.0):
         self.steps.append({
             "step_type": step_type,
             "payload": copy.deepcopy(payload),

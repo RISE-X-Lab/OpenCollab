@@ -77,6 +77,33 @@ def test_grep_tool_applies_max_results_globally():
         )
     )
 
+    lines = [line for line in result.splitlines() if line]
+    assert lines[:2] == [
+        "src/file_0.py:1:needle",
+        "src/file_1.py:1:needle",
+    ]
+    # The cap has to be visible. Two matches out of six and two matches out of
+    # two used to be the same output, so "the symbol appears twice" could not be
+    # told from "the symbol appears at least twice".
+    assert lines[2:] == [
+        "... [4 more matching lines not shown; raise max_results, or narrow "
+        "the search with path or glob] ..."
+    ]
+
+
+def test_grep_tool_says_nothing_extra_when_nothing_was_capped():
+    env = FakeEnv(
+        stdout="\n".join(f"src/file_{index}.py:1:needle" for index in range(2))
+    )
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+
+    result = run(
+        GrepTool().execute_with_runtime(
+            {"pattern": "needle", "max_results": 2},
+            runtime,
+        )
+    )
+
     assert result.splitlines() == [
         "src/file_0.py:1:needle",
         "src/file_1.py:1:needle",

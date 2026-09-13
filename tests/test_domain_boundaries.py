@@ -1,25 +1,11 @@
-import re
-from pathlib import Path
+"""Structural tests for the domain layer's published shape.
 
-_PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "opencollab"
-
-# The domain is the innermost layer: it may import nothing else in the package
-# (application included — the rule that the application-boundary glob does not
-# cover). Match real import statements only; a docstring mention is fine.
-_FORBIDDEN = re.compile(
-    r"^\s*(?:from|import)\s+opencollab\."
-    r"(?:core|application|tools|bootstrap|cli|adapters|team)\b",
-    re.MULTILINE,
-)
-
-
-def test_domain_modules_do_not_import_outer_layers():
-    offenders = [
-        str(p.relative_to(_PACKAGE_ROOT))
-        for p in (_PACKAGE_ROOT / "domain").rglob("*.py")
-        if _FORBIDDEN.search(p.read_text(encoding="utf-8"))
-    ]
-    assert offenders == []
+The dependency rule itself (nothing inward may import outward) is enforced by
+``lint-imports`` against the contracts in ``.importlinter``, which walks the
+real import graph and therefore also catches indirect edges and cycles. What
+stays here is the part an import graph cannot check: that the concrete tool
+adapter and the application-layer port still satisfy the domain's ``ToolSpec``.
+"""
 
 
 def test_tool_base_satisfies_tool_spec():

@@ -27,7 +27,7 @@ from opencollab.domain.session import (
 )
 from opencollab.domain.token_estimation import (
     estimate_messages_tokens,
-    request_tokens_upper_bound,
+    estimate_request_tokens,
 )
 from opencollab.domain.tools import ToolProcessingResult
 
@@ -47,7 +47,7 @@ def _first_call_messages(messages):
 
 
 def _reserved_first_call_input(messages):
-    return request_tokens_upper_bound(_first_call_messages(messages))
+    return estimate_request_tokens(_first_call_messages(messages))
 
 
 @pytest.mark.parametrize(
@@ -135,10 +135,10 @@ def test_conservative_input_reservation_blocks_estimator_overshoot():
     messages = [{"role": "system", "content": "\u754c" * 3}]
     provider_messages = _first_call_messages(messages)
     ordinary_estimate = estimate_messages_tokens(provider_messages)
-    upper_bound = request_tokens_upper_bound(provider_messages)
+    reserved = estimate_request_tokens(provider_messages)
     reported_input_tokens = 143
-    assert ordinary_estimate == 43
-    assert ordinary_estimate + 1 < reported_input_tokens <= upper_bound
+    assert ordinary_estimate == 47
+    assert ordinary_estimate + 1 < reported_input_tokens <= reserved
 
     state = SessionState(
         messages=messages,
@@ -166,7 +166,81 @@ def test_conservative_input_reservation_blocks_estimator_overshoot():
     assert state.terminal_reason.startswith("budget exhausted before model call")
 
 
+def test_english_input_reservation_stays_within_twice_the_ordinary_estimate():
+    """Guard the unit the reservation is denominated in.
+
+    The reservation used to charge one token per serialized UTF-8 byte, which
+    ran 3-5x the ordinary estimate on English histories and stopped sessions
+    that still held most of their budget. Reserving in the same unit the
+    estimator uses keeps the framing allowances as the only margin; a ratio
+    creeping back toward 3x means the unit slipped again, not that the margin
+    was tuned.
+    """
+    messages = [{"role": "system", "content": "You are a careful engineer."}]
+    for turn in range(12):
+        messages.append({
+            "role": "user",
+            "content": f"Please inspect module number {turn} and report defects.",
+        })
+        messages.append({
+            "role": "assistant",
+            "content": "",
+            "provider_state": {
+                "anthropic_content": [
+                    {
+                        "type": "thinking",
+                        "thinking": (
+                            f"Reading module {turn}, then checking its callers "
+                            "before answering."
+                        ),
+                        "signature": f"sig-{turn}",
+                    }
+                ]
+            },
+            "tool_calls": [
+                {
+                    "id": f"call-{turn}",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": f'{{"path": "src/module_{turn}.py"}}',
+                    },
+                }
+            ],
+        })
+        messages.append({
+            "role": "tool",
+            "tool_call_id": f"call-{turn}",
+            "content": f"module {turn} body " * 60,
+        })
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a UTF-8 text file from the workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "Relative path."}
+                    },
+                    "required": ["path"],
+                },
+            },
+        }
+    ]
+    assert len(messages) > 20
+
+    ordinary_estimate = estimate_messages_tokens(messages, tools)
+    reserved = estimate_request_tokens(messages, tools)
+    assert reserved >= ordinary_estimate
+    # Byte-per-token reservation put this ratio at 3.81; it is now ~1.6, all of
+    # it the per-request/per-message/per-tool framing allowances.
+    assert reserved < 2 * ordinary_estimate
+
+
 def test_anthropic_provider_state_is_reserved_before_model_call():
+    thinking_chars = 256
     base_messages = [
         {"role": "system", "content": "sys"},
         {"role": "assistant", "content": ""},
@@ -179,23 +253,25 @@ def test_anthropic_provider_state_is_reserved_before_model_call():
                 "anthropic_content": [
                     {
                         "type": "thinking",
-                        "thinking": "\u754c" * 256,
+                        "thinking": "\u754c" * thinking_chars,
                         "signature": "signed-state",
                     }
                 ]
             },
         },
     ]
-    baseline_bound = request_tokens_upper_bound(_first_call_messages(base_messages))
-    provider_state_bound = request_tokens_upper_bound(_first_call_messages(messages))
-    assert provider_state_bound > baseline_bound + 700
+    baseline_reserved = estimate_request_tokens(_first_call_messages(base_messages))
+    provider_state_reserved = estimate_request_tokens(_first_call_messages(messages))
+    # The replayed thinking block is real Anthropic request input, so reserving
+    # it must cost at least one token per CJK character the block carries.
+    assert provider_state_reserved >= baseline_reserved + thinking_chars
 
     llm = FakeLLM([llm_response(content="should not run")])
     state = SessionState(messages=messages)
     runner = build_runner(
         state=state,
         llm=llm,
-        max_budget_tokens=baseline_bound + 1,
+        max_budget_tokens=baseline_reserved + 1,
     )
 
     assert run(runner.run_loop()) == ""
@@ -245,14 +321,19 @@ def test_actual_usage_overrun_is_traced_and_response_is_discarded():
         "error",
         "step_end",
     ]
-    assert len(tracer.steps) == 2
-    assert tracer.steps[0]["step_type"] == "llm_call_started"
-    assert tracer.steps[1]["step_type"] == "llm_call"
-    assert tracer.steps[1]["tokens"] == reserved_input_tokens + 101
-    assert tracer.steps[1]["payload"]["usage"]["input_tokens"] == (
+    # Closing row: how the session ended, beside both counters (see
+    # ``_trace_session_terminal``).
+    assert [step["step_type"] for step in tracer.steps] == [
+        "context_shaping",
+        "llm_call_started",
+        "llm_call",
+        "session_terminal",
+    ]
+    assert tracer.steps[2]["tokens"] == reserved_input_tokens + 101
+    assert tracer.steps[2]["payload"]["usage"]["input_tokens"] == (
         reserved_input_tokens + 100
     )
-    assert tracer.steps[1]["latency"] >= 0
+    assert tracer.steps[2]["latency"] >= 0
 
 
 def test_remaining_budget_caps_configured_per_step_output_limit():
@@ -495,18 +576,27 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
     ]
     assert events[0] == ("step_start", {"step": 1, "aid": -1})
     assert events[2][1]["step"] == 1
-    assert events[2][1]["latency"] == tracer.steps[1]["latency"]
-    assert tracer.steps[1] == {
+    assert [step["step_type"] for step in tracer.steps] == [
+        "context_shaping",
+        "llm_call_started",
+        "llm_call",
+        "context_shaping",
+        "llm_call_started",
+        "llm_call",
+        "session_terminal",
+    ]
+    assert events[2][1]["latency"] == tracer.steps[2]["latency"]
+    assert tracer.steps[2] == {
         "step_type": "llm_call",
         "payload": {
+                "aid": -1,
                 "model": "fake-model",
                 "thinking": False,
                 "reasoning_effort_policy": "configured",
                 "finish_reason": "tool_calls",
-            "aid": -1,
             "role": "fake-model",
             "session_step": 1,
-            "response_session_id": tracer.steps[0]["payload"]["response_session_id"],
+            "response_session_id": tracer.steps[1]["payload"]["response_session_id"],
             "content": "need tool",
             "tool_calls": [{"id": "call-1", "name": "fake_tool", "arguments": '{"value": 1}'}],
             "usage": {
@@ -520,7 +610,7 @@ def test_run_loop_llm_step_events_trace_and_message_shape():
             },
         },
         "tokens": 9,
-        "latency": tracer.steps[1]["latency"],
+        "latency": tracer.steps[2]["latency"],
     }
 
 def test_run_loop_without_tool_calls_marks_done():
@@ -717,7 +807,9 @@ def test_llm_trace_omits_reasoning_when_absent():
     llm_calls = [s for s in tracer.steps if s["step_type"] == "llm_call"]
     assert "reasoning" not in llm_calls[0]["payload"]
 
-@pytest.mark.parametrize("finish_reason", ["length", "max_tokens"])
+@pytest.mark.parametrize(
+    "finish_reason", ["length", "max_tokens", "model_context_window_exceeded"]
+)
 @pytest.mark.parametrize("content", [None, "partial answer"])
 def test_length_finish_reason_stops_with_partial_output(content, finish_reason):
     # A provider length stop is truncated regardless of whether it returned a
@@ -797,3 +889,85 @@ def test_shaper_bounds_model_view_but_leaves_state_messages_full():
     assert "re-read a narrower range" in sent_tool["content"]
     # ...while the persisted history kept the full result.
     assert state.messages[1]["content"] == big
+
+
+def test_a_session_stopped_by_its_step_ceiling_says_so_on_disk():
+    """The ceiling is a guard, so a run has to be able to prove it never fired.
+
+    Tokens are the resource these arms are held to; steps vary and are counted.
+    A session stopped at its step ceiling with budget still unspent is that
+    story falling apart, and before this record it looked identical to a session
+    that simply finished: one STOPPED phase, a reason string that lived only in
+    memory, nothing in the trajectory.
+    """
+    tracer = FakeTracer()
+    calls = [tool_call()]
+    runner = build_runner(
+        agent=FakeAgent([{"type": "function", "function": {"name": "fake_tool"}}]),
+        # Never finishes on its own: every turn asks for another tool call, so
+        # the only thing that can stop it is a ceiling.
+        llm=FakeLLM(
+            [
+                llm_response(
+                    content="still working",
+                    tool_calls=calls,
+                    total_tokens=5,
+                    finish_reason="tool_calls",
+                )
+            ]
+            * 6
+        ),
+        tool_execution=FakeToolExecution(
+            ToolProcessingResult(
+                messages_to_append=[
+                    {"role": "tool", "tool_call_id": "call-1", "content": "ok"}
+                ]
+            )
+        ),
+        tracer=tracer,
+        max_steps=2,
+        max_budget_tokens=1_000_000,
+    )
+
+    run(runner.run_loop())
+
+    terminal = [step for step in tracer.steps if step["step_type"] == "session_terminal"]
+    assert len(terminal) == 1
+    payload = terminal[0]["payload"]
+    assert payload["step_ceiling_reached"] is True
+    assert payload["terminal_reason"] == "step limit reached: 2 steps"
+    # The other resource was nowhere near spent, which is what makes the stop a
+    # limit acting rather than a run finishing.
+    assert payload["used_tokens"] < payload["max_budget_tokens"]
+
+
+def test_a_session_that_finishes_on_its_own_reports_an_unreached_ceiling():
+    """The control. Without it the field above proves nothing: a record that
+    said "reached" for every session would pass the test above unchanged."""
+    tracer = FakeTracer()
+    runner = build_runner(
+        llm=FakeLLM([llm_response(content="done", total_tokens=5)]),
+        tracer=tracer,
+        max_steps=50,
+    )
+
+    run(runner.run_loop())
+
+    payload = [s for s in tracer.steps if s["step_type"] == "session_terminal"][0]["payload"]
+    assert payload["step_ceiling_reached"] is False
+    assert payload["step_count"] < payload["max_steps"]
+
+
+def test_a_finished_session_re_entered_for_its_answer_does_not_sign_off_twice():
+    """``run_loop`` doubles as a read-only query on a DONE session. One session
+    is one disposition; a second row would double-count it."""
+    tracer = FakeTracer()
+    runner = build_runner(
+        llm=FakeLLM([llm_response(content="done", total_tokens=5)]),
+        tracer=tracer,
+    )
+
+    run(runner.run_loop())
+    run(runner.run_loop())
+
+    assert len([s for s in tracer.steps if s["step_type"] == "session_terminal"]) == 1

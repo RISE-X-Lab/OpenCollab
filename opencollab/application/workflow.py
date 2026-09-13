@@ -28,8 +28,6 @@ import asyncio
 import contextvars
 import logging
 import math
-import operator
-import os
 import time
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -51,10 +49,13 @@ from opencollab.application.session_run import DEFAULT_COMMIT_RESERVE, ENFORCEME
 from opencollab.application.structured_output import TOOL_NAME as STRUCTURED_OUTPUT_TOOL_NAME
 from opencollab.application.submit_findings import SUBMIT_TOOL_NAME
 from opencollab.application.workflow_agents import WorkflowAgentsMixin
+from opencollab.application.workflow_budget import UNBOUNDED_SESSION_BUDGET as UNBOUNDED_SESSION_BUDGET
 from opencollab.application.workflow_budget import (
     WorkflowBudget,
+    WorkflowBudgetMixin,
     _BudgetLease,
     _ConcurrencyPermit,
+    _positive_concurrency,
 )
 from opencollab.application.workflow_candidates import WorkflowCandidatesMixin
 from opencollab.application.workflow_collections import Stage as Stage
@@ -89,25 +90,11 @@ DEFAULT_MAX_CONCURRENCY = 4
 DEFAULT_DEADLINE_MARGIN_SECONDS = 120.0
 
 
-def _unbounded_limits_enabled() -> bool:
-    return os.environ.get("OPENCOLLAB_UNBOUNDED_LIMITS", "").strip().lower() in {
-        "1",
-        "true",
-    }
-def _positive_concurrency(value: object, name: str) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{name} must be a positive integer")
-    try:
-        parsed = operator.index(value)
-    except TypeError as exc:
-        raise ValueError(f"{name} must be a positive integer") from exc
-    if parsed < 1:
-        raise ValueError(f"{name} must be a positive integer")
-    return parsed
 
 
 class WorkflowContext(
     WorkflowAgentsMixin,
+    WorkflowBudgetMixin,
     WorkflowCandidatesMixin,
     WorkflowStructuredMixin,
     WorkflowCollectionsMixin,
@@ -159,9 +146,17 @@ class WorkflowContext(
         self._semaphore = asyncio.Semaphore(max_concurrency)
         self._task_semaphore = asyncio.Semaphore(task_concurrency)
         self._sessions: list[Any] = []
+        # Title of the most recent ``phase()`` call, carried onto every agent
+        # started after it. Without it a run's agents are an undifferentiated
+        # sequence and nothing says which stage of the script each belonged to.
+        self._phase_title: str | None = None
         self.budget = WorkflowBudget(budget_total, self._sessions)
         self._budget_lock = asyncio.Lock()
         self._budget_waiters = 0
+        # ``over_budget_ok`` is a one-shot escape for a forced final write.
+        # Claiming it under the budget lock prevents concurrent callers from
+        # turning the escape hatch into an unbounded tail.
+        self._over_budget_escape_used = False
         self._active_budget_lease: contextvars.ContextVar[_BudgetLease | None] = (
             contextvars.ContextVar("workflow_budget_lease", default=None)
         )
@@ -289,6 +284,75 @@ class WorkflowContext(
                 }
             )
             logger.error("workflow %s trace failed: %s", step_type, exc)
+
+    async def _build_workflow_session(
+        self,
+        *,
+        label: str | None,
+        budget: int | None,
+        tools: Sequence[Any] | None = None,
+        isolation: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        """Build one one-shot session and record that this agent existed.
+
+        Every workflow agent is created here, so this is where a run says who
+        ran. It has to be said out loud: a workflow keeps its sessions in a
+        plain list, and the only other place a script's own name for an agent
+        survives is the transcript filename — which exists only when the run was
+        given a folder to save into. An ephemeral run left no way to tell one
+        agent from another at all.
+
+        The ``aid`` is the same integer the agent's ``llm_call``, ``tool_exec``
+        and ``session_terminal`` records carry, so this record is what joins
+        those to a role: it names the agent the script asked for, the phase it
+        was asked for in, and what it was given to work with.
+
+        Emitted after the build, because an agent that failed to build has no
+        id to attribute anything to; the caller records that failure instead.
+        """
+        env = await self._factory.acquire_isolated_env(label=label) if isolation else None
+        session = self._factory.build_workflow_session(
+            label=label,
+            budget=budget,
+            tools=tools,
+            isolation=isolation,
+            env=env,
+            **kwargs,
+        )
+        state = getattr(session, "state", None)
+        self._trace_step(
+            "workflow_agent_started",
+            {
+                "aid": getattr(state, "aid", None),
+                "label": label,
+                "phase": self._phase_title,
+                "tools": [
+                    name
+                    for tool in tools or ()
+                    if isinstance((name := getattr(tool, "name", None)), str)
+                ],
+                "budget": budget,
+                # Whether this agent got a workspace of its own. Read with
+                # ``tools``: an isolated agent that can write is one whose edits
+                # no sibling can see, so a handoff out of it has to be carried
+                # by something the run records rather than by the file system.
+                "isolated": bool(isolation),
+            },
+        )
+        return session
+
+    async def release_isolated_workspaces(self) -> None:
+        """Give back every workspace the factory lent to an isolated agent.
+
+        Called once the run's sessions are closed, so a tree is never removed
+        while an agent still holds it. Duck-typed on purpose: a factory that
+        never hands out isolated workspaces needs no such method, and a run that
+        asked for no isolation must not start caring that one exists.
+        """
+        release = getattr(self._factory, "release_isolated_envs", None)
+        if callable(release):
+            await release()
 
     def _record_agent_failure(self, label: str | None, exc: Exception) -> None:
         status_code = getattr(exc, "status_code", None)
@@ -440,8 +504,6 @@ class WorkflowContext(
         controlled way inside the workflow (its on-disk edits survive) rather than
         being truncated by the outer wall.
         """
-        if isolation:
-            raise ValueError("workflow agent isolation is not available")
         supplied_tool_names = [
             name
             for tool in tools or ()
@@ -467,6 +529,7 @@ class WorkflowContext(
             lease = await self._acquire_budget_lease(
                 budget,
                 over_budget_ok=over_budget_ok,
+                label=label,
             )
             budget_token = self._active_budget_lease.set(lease)
             permit = self._active_concurrency_permit.get()
@@ -542,7 +605,7 @@ class WorkflowContext(
         deadline = self._timeout_deadline(timeout)
         session_budget = self._capped_session_budget(budget)
         try:
-            session = self._factory.build_workflow_session(
+            session = await self._build_workflow_session(
                 prompt=prompt,
                 budget=session_budget,
                 tools=tools,
@@ -601,78 +664,6 @@ class WorkflowContext(
             timeout = min(timeout, remaining)
         return time.monotonic() + timeout
 
-    def _session_budget(self) -> int | None:
-        lease = self._active_budget_lease.get()
-        if lease is not None:
-            remaining = lease.remaining()
-            return None if remaining == float("inf") else int(remaining)
-        remaining = self.budget.remaining()
-        if remaining == float("inf"):
-            return None
-        # Clamp to zero: a concurrent agent's spend can land between agent()'s
-        # budget gate and this call, driving ``remaining`` negative. A negative
-        # per-session budget is nonsensical, so floor it at 0.
-        return max(0, int(remaining))
-
-    def _capped_session_budget(self, cap: int | None) -> int | None:
-        """Session budget = the live global remaining, optionally lowered to a
-        caller-supplied per-call ``cap``. ``min`` keeps a per-call allocation
-        from overshooting the shared pool while the cap bounds a single runaway
-        session; ``None`` reproduces the prior whole-pool behaviour."""
-        base = self._session_budget()
-        if _unbounded_limits_enabled():
-            return None
-        if base is None:
-            return max(0, cap) if cap is not None else None
-        return min(max(0, cap), base) if cap is not None else base
-
-    async def _acquire_budget_lease(
-        self,
-        cap: int | None,
-        *,
-        over_budget_ok: bool,
-    ) -> _BudgetLease:
-        """Atomically reserve one agent call's maximum token allocation."""
-        if _unbounded_limits_enabled():
-            return _BudgetLease(total=None, reserved=0, sessions=[])
-        self._budget_waiters += 1
-        try:
-            # Let sibling tasks launched by one gather register as contenders
-            # before the first uncapped caller chooses its share.
-            await asyncio.sleep(0)
-            async with self._budget_lock:
-                remaining = self.budget.remaining()
-                if remaining == float("inf"):
-                    total = max(0, cap) if cap is not None else None
-                    return _BudgetLease(total=total, reserved=0, sessions=[])
-
-                available = max(0, int(remaining))
-                if available <= 0 and not over_budget_ok:
-                    raise WorkflowBudgetExceeded(
-                        f"workflow budget exhausted: spent {self.budget.spent()} "
-                        f"of {self.budget.total}"
-                    )
-                if over_budget_ok and available <= 0:
-                    total = max(0, cap) if cap is not None else None
-                    return _BudgetLease(total=total, reserved=0, sessions=[])
-
-                if cap is None:
-                    collection_share = self._active_collection_budget.get()
-                    if collection_share is not None:
-                        total = min(collection_share, available)
-                    else:
-                        total = max(
-                            1,
-                            available // max(1, self._budget_waiters),
-                        )
-                else:
-                    total = min(max(0, cap), available)
-                lease = _BudgetLease(total=total, reserved=total, sessions=[])
-                self.budget.reserve(lease)
-                return lease
-        finally:
-            self._budget_waiters -= 1
-
     def _track_session(self, session: Any) -> None:
         self._sessions.append(session)
         lease = self._active_budget_lease.get()
@@ -690,7 +681,8 @@ class WorkflowContext(
     # -- observability ----------------------------------------------------- #
 
     async def phase(self, title: str) -> None:
-        """Mark a workflow phase. No-op when no sink/tracer is wired."""
+        """Mark a workflow phase, and carry it onto the agents started next."""
+        self._phase_title = title
         await self._emit("phase", title)
 
     async def log(self, message: str) -> None:

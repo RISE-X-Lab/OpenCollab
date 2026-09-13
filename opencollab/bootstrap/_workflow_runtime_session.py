@@ -9,12 +9,14 @@ from typing import Any
 
 from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
 from opencollab.adapters.env import LocalEnvironment
+from opencollab.adapters.llm.providers import RESPONSES
 from opencollab.adapters.llm.retry import RetryTimeBudget
 from opencollab.adapters.llm.types import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     model_capabilities,
 )
 from opencollab.adapters.working_tree import EnvWorkingTreeProbe
+from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.ports import EventPublisherPort, TracePort
 from opencollab.application.tool_execution_runtime import ToolRuntime
 from opencollab.application.workflow import WorkflowContext
@@ -26,7 +28,11 @@ from opencollab.bootstrap.config import (
     DEFAULT_TOP_P,
     resolve_thinking_params,
 )
-from opencollab.bootstrap.session_factory import build_session, workflow_transcript_path
+from opencollab.bootstrap.session_factory import (
+    build_session,
+    validate_responses_model_controls,
+    workflow_transcript_path,
+)
 from opencollab.domain.agent import Agent
 
 _WORKFLOW_ENV_OVERRIDE: contextvars.ContextVar[Any | None] = contextvars.ContextVar(
@@ -40,8 +46,9 @@ class WorkflowSessionFactory:
 
     Each ``build_workflow_session`` call assembles a fresh one-shot ``Agent``
     (carrying the resolved LLM config) and a self-wiring ``Session``. ``tools``
-    from the caller become the agent's toolset. ``isolation=True`` is rejected
-    until this factory can provide a distinct worktree-backed environment.
+    from the caller become the agent's toolset. ``isolation=True`` is served by
+    ``acquire_isolated_env``, which lends the session a worktree of its own from
+    the same pool the scheduler uses for teammates.
     """
 
     def __init__(
@@ -110,22 +117,70 @@ class WorkflowSessionFactory:
         self._save_dir = save_dir
         self._env = env
         self._session_seq = 0
+        # Created on the first ``isolation=True`` build, so a run that isolates
+        # nobody never touches git. The pool is the same one the scheduler lends
+        # teammate worktrees from, which is the point: an isolated workflow agent
+        # and an isolated teammate get the same kind of workspace, so a handoff
+        # between two agents means the same thing in either arm.
+        self._worktree_pool: WorktreePool | None = None
 
-    def _next_save_path(self, label: str | None) -> str | None:
-        """Per-session transcript path: ``<save_dir>/<seq>_<role>.json``.
+    def _next_aid(self) -> int:
+        """Allocate this session's agent id.
 
-        Returns ``None`` when no run folder is configured. The sequence number
-        orders sessions by creation and guarantees uniqueness; incrementing it
-        has no ``await`` so it is atomic under the event loop's cooperative
-        scheduling even when ``parallel``/``pipeline`` build many sessions
-        concurrently. The caller's ``label`` (e.g. ``coder:s1r2``) is slugged
-        into the name so a run folder reads as its workflow phases at a glance.
+        One integer per session, handed to ``build_session`` as ``aid`` and
+        reused as the transcript's ``seq`` prefix so a run folder's filenames
+        and its trace records name the same agent. Allocation happens on every
+        build, not only when a run folder is configured: without it every
+        workflow agent would keep ``build_session``'s ``aid=-1`` default and a
+        ``tool_exec`` record could not be traced back to the agent that ran it.
+
+        Incrementing has no ``await`` so it is atomic under the event loop's
+        cooperative scheduling even when ``parallel``/``pipeline`` build many
+        sessions concurrently.
+        """
+        aid = self._session_seq
+        self._session_seq += 1
+        return aid
+
+    def _save_path(self, aid: int, label: str | None) -> str | None:
+        """Per-session transcript path: ``<save_dir>/<aid>_<role>.json``.
+
+        Returns ``None`` when no run folder is configured. The caller's
+        ``label`` (e.g. ``coder:s1r2``) is slugged into the name so a run folder
+        reads as its workflow phases at a glance.
         """
         if self._save_dir is None:
             return None
-        seq = self._session_seq
-        self._session_seq += 1
-        return workflow_transcript_path(self._save_dir, seq, label)
+        return workflow_transcript_path(self._save_dir, aid, label)
+
+    async def acquire_isolated_env(self, *, label: str | None = None) -> Any:
+        """Check out a working tree this agent alone edits.
+
+        A linked worktree, so it shares ``.git/objects`` with the workspace it
+        came from: a commit made in here is reachable from every other agent's
+        tree the moment it exists, which is what lets one agent hand its work to
+        another by naming a sha instead of by leaving files where the other one
+        will find them.
+
+        ``label`` names the branch, so a leftover tree says which agent made it.
+        A run without a workspace has nothing to branch from, and the pool hands
+        back a plain local environment instead of failing — the same fallback it
+        gives a team told not to use worktrees.
+        """
+        if self._worktree_pool is None:
+            self._worktree_pool = WorktreePool(
+                self._workspace or ".",
+                use_worktrees=self._workspace is not None,
+            )
+        return await self._worktree_pool.acquire(label or "workflow-agent")
+
+    async def release_isolated_envs(self) -> None:
+        """Tear down every worktree this factory handed out. Safe to call twice."""
+        pool = self._worktree_pool
+        if pool is None:
+            return
+        self._worktree_pool = None
+        await pool.release()
 
     def build_workflow_session(
         self,
@@ -137,10 +192,8 @@ class WorkflowSessionFactory:
         label: str | None = None,
         tool_choice: Any = None,
         thinking: bool | None = None,
-        environment: Any | None = None,
+        env: Any | None = None,
     ) -> Any:
-        if isolation and environment is None:
-            raise ValueError("workflow agent isolation is not available")
         use_thinking = self._thinking if thinking is None else thinking
         use_reasoning_effort = None if thinking is False else self._reasoning_effort
         reasoning_effort_policy = "suppressed" if thinking is False else "configured"
@@ -149,30 +202,35 @@ class WorkflowSessionFactory:
             use_thinking = True
             use_reasoning_effort = self._reasoning_effort
             reasoning_effort_policy = "configured"
-        env = environment if environment is not None else self._env
-        if env is None:
-            env = (
+        # An isolated agent brings its own tree; everyone else shares the run's.
+        session_env = env if env is not None else self._env
+        if session_env is None:
+            session_env = (
                 LocalEnvironment(self._workspace)
                 if self._workspace
                 else LocalEnvironment()
             )
         system_prompt = self._system_prompt
-        environment_workspace = getattr(env, "workspace", None)
+        environment_workspace = getattr(session_env, "workspace", None)
         if (
-            isinstance(self._workspace, str)
-            and self._workspace
-            and isinstance(environment_workspace, str)
-            and environment_workspace
+            isinstance(self._workspace, str) and self._workspace
+            and isinstance(environment_workspace, str) and environment_workspace
             and environment_workspace != self._workspace
         ):
-            system_prompt = system_prompt.replace(
-                self._workspace,
-                environment_workspace,
+            system_prompt = system_prompt.replace(self._workspace, environment_workspace)
+        resolved_tools = list(tools or [])
+        if self._wire_protocol == RESPONSES:
+            validate_responses_model_controls(
+                self._model,
+                role_name="workflow_agent",
+                tools_present=bool(resolved_tools),
+                top_p=self._top_p,
+                reasoning_effort=use_reasoning_effort,
             )
         agent = Agent(
             name="workflow_agent",
             system_prompt=system_prompt,
-            tools=list(tools or []),
+            tools=resolved_tools,
             model=self._model,
             provider=self._provider,
             wire_protocol=self._wire_protocol,
@@ -193,16 +251,18 @@ class WorkflowSessionFactory:
             provider_error_time_budget=self._provider_error_time_budget,
             tool_choice=tool_choice,
         )
+        aid = self._next_aid()
         return build_session(
             agent=agent,
-            env=env,
+            env=session_env,
             tracer=self._tracer,
             max_budget_tokens=budget,
             max_steps=self._max_steps,
             event_sink=self._event_sink,
             llm_timeout=self._llm_timeout,
             provider_retry_budget=self._provider_retry_budget,
-            auto_save_path=self._next_save_path(label),
+            aid=aid,
+            auto_save_path=self._save_path(aid, label),
         )
 
     async def execute_verification(

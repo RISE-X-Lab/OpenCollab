@@ -16,11 +16,11 @@ from opencollab.application._session_run_shared import (
     _submit_tool_choice,
     _TokenBudgetStop,
 )
+from opencollab.application._session_run_trace import _SessionRunTraceMixin
 from opencollab.application.async_timeout import CallerTimeoutError, abandon_on_timeout
 from opencollab.application.ports import CompletionResponse
 from opencollab.application.shaping import forced_shape
 from opencollab.application.steering import (
-    READS_NUDGE_SOFT,
     build_steering_block,
     fold_steering,
 )
@@ -28,7 +28,7 @@ from opencollab.application.tool_execution import TERMINAL_CAPTURE_SKIP_MESSAGE
 from opencollab.domain.agent import DEFAULT_MAX_TOKENS_PER_STEP
 from opencollab.domain.pending import PendingEventTable, PendingRow, RowKind, RowStatus
 from opencollab.domain.session import SessionPhase
-from opencollab.domain.token_estimation import request_tokens_upper_bound
+from opencollab.domain.token_estimation import estimate_request_tokens
 from opencollab.domain.tools import ToolProcessingResult
 
 logger = logging.getLogger(__name__)
@@ -94,7 +94,7 @@ def _is_tool_choice_rejection(exc: Exception) -> bool:
     )
 
 
-class _SessionRunCompletionMixin:
+class _SessionRunCompletionMixin(_SessionRunTraceMixin):
     """Implementation details composed into ``SessionRunUseCase``."""
 
     async def _execute_deferred_tools(
@@ -138,16 +138,36 @@ class _SessionRunCompletionMixin:
                 immediate.append(tc)
         return immediate, deferred
 
+    def _record_submission(self, result: Any) -> None:
+        """Remember that this step called ``submit``, and with what."""
+        if getattr(result, "turn_submitted", False):
+            self._submitted_summary = getattr(result, "submitted_summary", None) or ""
+
     async def autosave_pending_step(self) -> None:
-        """Emit step_end (the autosave trigger) and loop back to PRECHECK."""
+        """Emit step_end (the autosave trigger), then PRECHECK -- or DONE.
+
+        DONE when the step that just ran called ``submit``. The summary the
+        model gave it is appended as this turn's assistant answer first, so a
+        submitted turn returns the agent's own account of what it handed over
+        rather than whatever text happened to precede the tool call. Everything
+        before the branch is unchanged, so a submitted step is saved exactly
+        like any other.
+        """
         pending = self._pending
         latency = (
             pending.latency
             if pending is not None
             else (self.state.pending_step_latency or 0.0)
         )
+        submitted = self._submitted_summary
+        if submitted is not None:
+            self.state.append_message({"role": "assistant", "content": submitted})
         await self.finish_step(latency)
         self.clear_pending_step()
+        if submitted is not None:
+            self._submitted_summary = None
+            self.state.transition_to(SessionPhase.DONE, reason="submitted")
+            return
         self.state.transition_to(SessionPhase.PRECHECK)
 
     def clear_pending_step(self) -> None:
@@ -271,6 +291,7 @@ class _SessionRunCompletionMixin:
                 blocked_messages,
             )
             result.apply_to(self.state)
+            self._record_submission(result)
             self._pending_tool_allowlist = None
             self._pending_tool_gate_label = None
             self.state.transition_to(SessionPhase.AUTOSAVING)
@@ -306,6 +327,7 @@ class _SessionRunCompletionMixin:
             observations.tool_step_attempted |= proc.tool_step_attempted
             completed_messages.extend(proc.messages_to_append)
             terminal_capture_accepted = proc.terminal_capture_accepted
+            self._record_submission(proc)
 
         observations.apply_read_write_counter_to(self.state)
         observations.apply_evidence_counter_to(self.state)
@@ -383,7 +405,7 @@ class _SessionRunCompletionMixin:
         persisted = steering is not None and bool(self.state.messages) and self.state.messages[-1].get("role") == "user"
         if persisted:
             self.state.messages[-1] = fold_steering(self.state.messages[-1], steering["content"])
-        messages = self.shaper.shape(self.state.messages) if self.shaper is not None else self.state.messages
+        messages = self._shape_and_trace(self.state.messages)
         if steering is not None and not persisted:
             messages = [*messages, steering]
         if steering_level == "hard":
@@ -501,7 +523,7 @@ class _SessionRunCompletionMixin:
             remaining_budget = int(self.max_budget_tokens) - int(
                 self.state.used_tokens
             )
-            reserved_input_tokens = request_tokens_upper_bound(messages, tools)
+            reserved_input_tokens = estimate_request_tokens(messages, tools)
             output_budget = remaining_budget - reserved_input_tokens
             if output_budget < 1:
                 raise _TokenBudgetStop(
@@ -603,139 +625,6 @@ class _SessionRunCompletionMixin:
         await self.event_publisher.emit(self.event_factory.error(reason))
         self.clear_pending_step()
         self.state.transition_to(SessionPhase.STOPPED, reason=reason)
-
-    def _maybe_trace_steering(self, level: str | None) -> None:
-        """Emit a ``steering_nudge`` trace step on an UPWARD level crossing.
-
-        ``reads_since_last_edit`` can jump past 8/16 in one batch, so the high-
-        water mark (``_last_steering_level``), not equality, decides whether this
-        is a new escalation. A genuine write reset re-arms so a later re-escalation
-        traces again. The mark advances even when no tracer is wired, so the next
-        escalation still computes correctly.
-        """
-        rank = {None: 0, "soft": 1, "hard": 2}
-        if level is None:
-            # ``level is None`` means no active write nudge this turn. Re-arm the
-            # high-water mark only when a write reset actually dropped reads below
-            # the soft rung; if reads is still high (e.g. a read-only session that
-            # never escalates), the escalation has NOT de-escalated, so leave the
-            # mark intact (re-arming would let a later still-high turn re-fire a
-            # duplicate steering_nudge).
-            if self.state.turn.reads_since_last_edit < READS_NUDGE_SOFT:
-                self._last_steering_level = None
-            return
-        if rank[level] > rank[self._last_steering_level] and self.tracer is not None:
-            self.tracer.log_step(
-                step_type="steering_nudge",
-                payload={
-                    "aid": self.state.aid,
-                    "agent": getattr(self.agent, "role", None)
-                    or getattr(self.agent, "label", None)
-                    or self.agent.model,
-                    "reads_since_last_edit": self.state.turn.reads_since_last_edit,
-                    "level": level,
-                    "tool_choice_override": level == "hard",
-                    "step": self.state.step_count,
-                },
-            )
-        self._last_steering_level = level  # update high-water mark even with no tracer
-
-    def record_llm_trace(self, response: CompletionResponse, latency: float) -> None:
-        if self.tracer:
-            tool_calls_log = None
-            if response.tool_calls:
-                tool_calls_log = [
-                    {
-                        "id": tc.get("id"),
-                        "name": tc.get("function", {}).get("name"),
-                        "arguments": tc.get("function", {}).get("arguments", ""),
-                    }
-                    for tc in response.tool_calls
-                ]
-            usage = response.usage
-            input_tokens = getattr(usage, "input_tokens", 0)
-            total_tokens = getattr(usage, "total_tokens", input_tokens)
-            payload = {
-                "model": self.agent.model,
-                "finish_reason": response.finish_reason,
-                "content": response.content,
-                "tool_calls": tool_calls_log,
-                "aid": self.state.aid,
-                "role": getattr(self.agent, "role", None)
-                or getattr(self.agent, "label", None)
-                or self.agent.model,
-                "session_step": self.state.step_count,
-                "response_session_id": self._response_session_id,
-            }
-            if usage is not None:
-                output_tokens = getattr(usage, "output_tokens", max(total_tokens - input_tokens, 0))
-                cache_read_tokens = getattr(usage, "cache_read_tokens", 0)
-                cache_creation_tokens = getattr(usage, "cache_creation_tokens", 0)
-                payload["usage"] = {
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                    "total_tokens": total_tokens,
-                    "cache_read_tokens": cache_read_tokens,
-                    "cache_creation_tokens": cache_creation_tokens,
-                    "uncached_input_tokens": (
-                        max(input_tokens - cache_read_tokens - cache_creation_tokens, 0)
-                        if cache_read_tokens is not None and cache_creation_tokens is not None
-                        else None
-                    ),
-                    "estimated": getattr(usage, "estimated", False),
-                }
-                reasoning_tokens = getattr(usage, "reasoning_tokens", None)
-                if reasoning_tokens is not None:
-                    payload["usage"]["reasoning_tokens"] = reasoning_tokens
-                raw_usage = getattr(usage, "raw_usage", None)
-                if raw_usage:
-                    payload["usage"]["raw_usage"] = raw_usage
-            # Record provider chain-of-thought to the trajectory when present
-            # (omitted otherwise, so non-thinking traces keep their prior shape).
-            reasoning = getattr(response, "reasoning", None)
-            if reasoning:
-                payload["reasoning"] = reasoning
-            payload["thinking"] = bool(getattr(self.agent, "thinking", False))
-            wire_protocol = getattr(self.agent, "wire_protocol", "chat_completions")
-            if wire_protocol != "chat_completions":
-                payload["wire_protocol"] = wire_protocol
-            reasoning_effort = getattr(self.agent, "reasoning_effort", None)
-            if reasoning_effort is not None:
-                payload["reasoning_effort"] = reasoning_effort
-            payload["reasoning_effort_policy"] = getattr(
-                self.agent,
-                "reasoning_effort_policy",
-                "configured",
-            )
-            provider_model = getattr(response, "provider_model", None)
-            if provider_model is not None:
-                payload["provider_model"] = provider_model
-            self.tracer.log_step(
-                step_type="llm_call",
-                payload=payload,
-                tokens=total_tokens,
-                latency=latency,
-            )
-
-    def record_llm_cancelled(self) -> None:
-        if not self.tracer or not self._llm_step_started:
-            return
-        self.tracer.log_step(
-            step_type="llm_call_cancelled",
-            payload={
-                "aid": self.state.aid,
-                "role": getattr(self.agent, "role", None)
-                or getattr(self.agent, "label", None)
-                or self.agent.model,
-                "session_step": self.state.step_count,
-                "response_session_id": self._response_session_id,
-            },
-            tokens=0,
-            latency=0.0,
-        )
-        flush = getattr(self.tracer, "flush", None)
-        if callable(flush):
-            flush()
 
     def append_assistant_message(self, response: CompletionResponse) -> None:
         has_content = (

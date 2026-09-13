@@ -623,6 +623,16 @@ def _named_runtime_tool(name: str, output: str = "ok"):
         ("printf '%s' '>'", False),
         ("cat input 2>&1", False),
         ("cat input >/dev/null", False),
+        # A discarded stream stays discarded when another command follows it.
+        # Reading it as a write silently switches off the read-loop steering,
+        # because every such command resets the reads-since-last-edit counter.
+        ("ls / 2>/dev/null; echo done", False),
+        ("ls -la /root 2>/dev/null; ls -la /tmp 2>/dev/null", False),
+        ("find / -name x 2>/dev/null | head; ls 2>/dev/null", False),
+        ("cat a 2>/dev/null && grep b c", False),
+        # ... and a real write after a discarded stream is still a write.
+        ("ls 2>/dev/null; echo hi > target", True),
+        ("cat a 2>/dev/null && echo x > b", True),
         ("cp source target", True),
         ("mv source target", True),
         ("install source target", True),

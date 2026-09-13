@@ -11,6 +11,8 @@ import logging
 import uuid
 
 from opencollab.adapters.env import (
+    ContainerWorktreeEnvironment,
+    DockerEnvironment,
     Environment,
     LocalEnvironment,
     WorktreeEnvironment,
@@ -20,6 +22,12 @@ from opencollab.application.exception_notes import add_exception_note
 from opencollab.domain.identity import role_storage_slug, validate_role_identity
 
 logger = logging.getLogger(__name__)
+
+# Where per-agent checkouts go inside a container. Deliberately not under the
+# repository root: an archive of that root is what a harness reads the run's
+# result out of, and a worktree nested in it would arrive there as a directory
+# full of files no agent wrote.
+CONTAINER_WORKTREE_ROOT = "/opencollab-worktrees"
 
 
 async def _finish_cleanup(operation):
@@ -31,23 +39,46 @@ class WorktreePool:
 
     When use_worktrees is False, hands out LocalEnvironment(workspace) instead
     — caller code does not need to branch on the mode.
+
+    ``base_environment`` says where the repository being worked on actually
+    lives. Left unset, it is the host file system and a worktree is made there.
+    Set to a container this run is attached to, every worktree is carved out
+    inside that container instead, because a repository that exists only there
+    cannot be reached from the host without a mount — and a harness that reads
+    its result out of a bounded container archive is precisely one that cannot
+    allow a mount. Either way the agents get the same isolation and report the
+    same evidence; only the side of the wall changes.
     """
 
-    def __init__(self, workspace: str, *, use_worktrees: bool):
+    def __init__(
+        self,
+        workspace: str,
+        *,
+        use_worktrees: bool,
+        base_environment: Environment | None = None,
+    ):
         self._workspace = workspace
         self._use_worktrees = use_worktrees
+        self._base_environment = base_environment
         self._envs: list[Environment] = []
 
     async def acquire(self, role: str) -> Environment:
         """Create (and remember) an isolated env for a spawned agent of this role."""
         role = validate_role_identity(role)
+        base = self._base_environment
         if not self._use_worktrees:
+            # Without isolation every agent works where the run works, which is
+            # the supplied environment when there is one and the host workspace
+            # otherwise. The shared environment is not tracked for cleanup here:
+            # it belongs to whoever handed it in.
+            if base is not None:
+                return base
             env = LocalEnvironment(self._workspace)
             self._envs.append(env)
             return env
 
         branch = f"opencollab-{role_storage_slug(role)}-{uuid.uuid4().hex[:8]}"
-        env = WorktreeEnvironment(self._workspace, branch_name=branch)
+        env = self._build_worktree(branch, base)
         try:
             await env.setup()
         except BaseException as original:
@@ -64,6 +95,25 @@ class WorktreePool:
             raise original
         self._envs.append(env)
         return env
+
+    def _build_worktree(self, branch: str, base: Environment | None) -> Environment:
+        """An isolated view of wherever the run's repository actually is."""
+        if base is None:
+            return WorktreeEnvironment(self._workspace, branch_name=branch)
+        if isinstance(base, DockerEnvironment) and base.container_reference is not None:
+            return ContainerWorktreeEnvironment(
+                container_id=base.container_reference,
+                repository_root=base.workspace,
+                worktree_root=CONTAINER_WORKTREE_ROOT,
+                branch_name=branch,
+                command_prefix=base.command_prefix,
+            )
+        if getattr(base, "local_filesystem", False):
+            return WorktreeEnvironment(base.workspace, branch_name=branch)
+        raise TypeError(
+            "worktree isolation is not available for this environment: "
+            f"{type(base).__name__}"
+        )
 
     async def release(self) -> None:
         """Tear down every environment this pool has handed out.

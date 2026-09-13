@@ -14,7 +14,7 @@ from typing import Any
 from opencollab.adapters.llm.errors import TransientProviderError, is_context_overflow_error
 
 # HTTP statuses worth retrying: timeouts, conflicts, rate limits, server errors.
-RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
+RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504, 529}
 
 # Error-message fragments that signal a transient failure when no status is set.
 RETRYABLE_MESSAGE_FRAGMENTS = (

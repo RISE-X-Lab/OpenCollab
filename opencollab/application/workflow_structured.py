@@ -41,9 +41,6 @@ _STRUCTURED_RETRY = (
     "required schema. Do not explore further or answer in prose."
 )
 
-# The corrective session has one tool and no exploration responsibility. Give
-# it enough time for one reasoning turn without letting an endpoint that
-# degrades forced tool choice to ``auto`` consume the caller's full role budget.
 def _named_tool_choice(tool_name: str) -> dict[str, Any]:
     """OpenAI-style named-function ``tool_choice`` forcing exactly ``tool_name``.
 
@@ -131,7 +128,7 @@ class WorkflowStructuredMixin:
         combined_tools = [capture_tool, *(tools or [])]
         session_budget = self._capped_session_budget(budget)
         try:
-            session = self._factory.build_workflow_session(
+            session = await self._build_workflow_session(
                 prompt=seeded_prompt,
                 budget=session_budget,
                 tools=combined_tools,
@@ -225,7 +222,7 @@ class WorkflowStructuredMixin:
         retry_prompt = prompt + "\n\n" + _STRUCTURED_RETRY
         session_budget = self._capped_session_budget(budget)
         try:
-            session = self._factory.build_workflow_session(
+            session = await self._build_workflow_session(
                 prompt=retry_prompt,
                 budget=session_budget,
                 tools=[capture_tool],

@@ -225,3 +225,30 @@ def test_tool_round_preserves_all_anthropic_content_in_order():
             {"type": "tool_result", "tool_use_id": "call-1", "content": "passed"}
         ],
     }
+
+
+def test_non_thinking_tool_round_preserves_interleaved_content_in_order():
+    blocks = [
+        SimpleNamespace(type="text", text="First."),
+        SimpleNamespace(type="tool_use", id="call-1", name="run", input={"cmd": "one"}),
+        SimpleNamespace(type="text", text="Second."),
+        SimpleNamespace(type="tool_use", id="call-2", name="run", input={"cmd": "two"}),
+    ]
+    response = parse_anthropic_response(
+        SimpleNamespace(
+            content=blocks,
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            stop_reason="tool_use",
+        )
+    )
+    state = SessionState(messages=[{"role": "user", "content": "inspect"}])
+    build_runner(state=state).append_assistant_message(response)
+
+    _, messages = convert_to_anthropic_messages(state.messages)
+
+    assert messages[1]["content"] == [
+        {"type": "text", "text": "First."},
+        {"type": "tool_use", "id": "call-1", "name": "run", "input": {"cmd": "one"}},
+        {"type": "text", "text": "Second."},
+        {"type": "tool_use", "id": "call-2", "name": "run", "input": {"cmd": "two"}},
+    ]

@@ -12,3 +12,18 @@ MAX_TEAMMATE_MESSAGE_BYTES = 8 * 1024
 MAX_TEAMMATE_INBOX_MESSAGES = 32
 MAX_TEAMMATE_INBOX_BYTES = 64 * 1024
 MAX_TEAMMATE_DELIVERY_BYTES = 16 * 1024
+
+# How much of a refused delegation's task text a ``spawn_refused`` record keeps.
+# The full length is recorded beside it, so a truncated record still measures as
+# long.
+SPAWN_REFUSAL_TASK_CHARS = 1000
+
+# How much of a refused (or accepted) teammate message's summary a
+# ``message_refused`` / ``message_sent`` record keeps. The full length is
+# recorded beside it, so a truncated record still measures as long.
+MESSAGE_TRACE_SUMMARY_CHARS = 240
+
+# How many git-object-shaped tokens a ``message_refused`` / ``message_sent``
+# record lists out of one message. The true count is recorded beside the list,
+# so a message that names more of them still measures as naming more.
+MESSAGE_TRACE_COMMIT_REFS = 16

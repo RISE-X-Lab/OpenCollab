@@ -65,7 +65,7 @@ class _CandidateWorkflowSessionFactory:
         return self._factory.build_workflow_session(
             **{
                 **kwargs,
-                "environment": self._environment,
+                "env": self._environment,
             }
         )
 
@@ -139,7 +139,7 @@ class WorkflowCandidatesMixin:
                     label=label,
                     tool_choice=tool_choice,
                     thinking=thinking,
-                    environment=lease.environment,
+                    env=lease.environment,
                 )
                 self._track_session(session)
                 try:

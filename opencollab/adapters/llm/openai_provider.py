@@ -11,6 +11,12 @@ import re
 from typing import Any
 
 from opencollab.adapters.llm.retry import RetryTimeBudget, with_retry
+from opencollab.adapters.llm.tool_contracts import (
+    NormalizedToolChoice,
+    normalize_function_tools,
+    normalize_tool_choice,
+    validate_tool_choice_target,
+)
 from opencollab.adapters.llm.types import (
     LLMResponse,
     Usage,
@@ -29,6 +35,7 @@ _FRAMEWORK_CONTROLLED_THINKING_FIELDS = frozenset({
     "max_tokens",
     "messages",
     "model",
+    "reasoning_effort",
     "stream",
     "stream_options",
     "temperature",
@@ -36,7 +43,7 @@ _FRAMEWORK_CONTROLLED_THINKING_FIELDS = frozenset({
     "tools",
     "top_p",
 })
-_OPENAI_REASONING_MODEL_RE = re.compile(r"^o(?:1|3)(?:$|[-.])")
+_OPENAI_REASONING_MODEL_RE = re.compile(r"^(?:o(?:1|3|4)|gpt-5)(?:$|[-.])")
 
 
 def _validated_thinking_params(thinking_params: dict | None) -> dict:
@@ -57,6 +64,14 @@ def _uses_reasoning_request_fields(model: str) -> bool:
     return _OPENAI_REASONING_MODEL_RE.match(leaf) is not None
 
 
+def _openai_tool_choice(choice: NormalizedToolChoice | None) -> Any:
+    if choice is None:
+        return "auto"
+    if choice.mode == "named":
+        return {"type": "function", "function": {"name": choice.name}}
+    return choice.mode
+
+
 def _build_request_kwargs(
     model: str,
     messages: list[dict],
@@ -67,6 +82,7 @@ def _build_request_kwargs(
     tool_choice: Any = None,
     top_p: float | None = None,
     max_output_tokens: int | None = None,
+    reasoning_effort: str | None = None,
 ) -> dict[str, Any]:
     reasoning_model = _uses_reasoning_request_fields(model)
     kwargs: dict[str, Any] = {
@@ -82,15 +98,23 @@ def _build_request_kwargs(
     if max_output_tokens is not None:
         token_field = "max_completion_tokens" if reasoning_model else "max_tokens"
         kwargs[token_field] = int(max_output_tokens)
-    if tools:
-        kwargs["tools"] = tools
-        choice = tool_choice or "auto"
-        capabilities = model_capabilities(model)
+    if reasoning_effort is not None:
+        kwargs["reasoning_effort"] = reasoning_effort
+    converted_tools = normalize_function_tools(tools)
+    choice = normalize_tool_choice(tool_choice)
+    capabilities = model_capabilities(model)
+    if converted_tools:
+        kwargs["tools"] = converted_tools
+        provider_choice = _openai_tool_choice(choice)
         if not capabilities.supports_forced_tool_choice and (
-            choice == "required" or isinstance(choice, dict)
+            provider_choice == "required" or isinstance(provider_choice, dict)
         ):
-            choice = "auto"
-        kwargs["tool_choice"] = choice
+            provider_choice = "auto"
+        else:
+            validate_tool_choice_target(choice, converted_tools)
+        kwargs["tool_choice"] = provider_choice
+    elif capabilities.supports_forced_tool_choice:
+        validate_tool_choice_target(choice, converted_tools)
     # Thinking passthrough: when on, the provider-specific reasoning params ride
     # along as ``extra_body`` (a valid OpenAI SDK create() kwarg) — for DashScope
     # compatible mode this is ``{"enable_thinking": True}``. When off, nothing is
@@ -273,6 +297,11 @@ def _parse_response(
         usage=usage,
         finish_reason=choice.finish_reason,
         reasoning=reasoning,
+        provider_model=(
+            value
+            if isinstance((value := getattr(resp, "model", None)), str) and value
+            else None
+        ),
     )
 
 
@@ -302,6 +331,8 @@ def _parse_usage(
     output_tokens = _usage_int(raw_usage, "completion_tokens")
     prompt_details = raw_usage.get("prompt_tokens_details") or {}
     cached_tokens = _usage_int(prompt_details, "cached_tokens")
+    completion_details = raw_usage.get("completion_tokens_details") or {}
+    reasoning_tokens = _usage_int(completion_details, "reasoning_tokens")
 
     estimated = False
     if input_tokens <= 0:
@@ -315,6 +346,7 @@ def _parse_usage(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         cache_read_tokens=cached_tokens,
+        reasoning_tokens=reasoning_tokens or None,
         estimated=estimated,
         raw_usage=raw_usage,
     )
@@ -353,6 +385,7 @@ async def complete_openai(
     tool_choice: Any = None,
     top_p: float | None = None,
     max_output_tokens: int | None = None,
+    reasoning_effort: str | None = None,
     provider_error_time_budget: RetryTimeBudget | None = None,
 ) -> LLMResponse:
     """Single-shot completion against an OpenAI-compatible endpoint."""
@@ -366,6 +399,7 @@ async def complete_openai(
         tool_choice,
         top_p,
         max_output_tokens,
+        reasoning_effort,
     )
     resp = await with_retry(
         lambda: client.chat.completions.create(**kwargs),

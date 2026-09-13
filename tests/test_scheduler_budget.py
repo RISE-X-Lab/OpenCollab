@@ -21,7 +21,7 @@ import pytest
 
 from opencollab.application.event_bus import EventBus
 from opencollab.application.scheduler import Scheduler
-from opencollab.domain.scheduler import SessionControlBlock, lead_reserve
+from opencollab.domain.scheduler import SessionControlBlock, dynamic_roster_share
 from opencollab.domain.session import SessionPhase, SessionState
 
 
@@ -154,7 +154,7 @@ def test_concurrent_grants_never_exceed_global_pool():
         grants = factory.grants
         assert grants == [100_000, 100_000, 100_000]
         # The allocation tracker reflects every booked grant.
-        assert sched.allocated_tokens == lead_reserve(total) + sum(grants)
+        assert sched.allocated_tokens == dynamic_roster_share(total) + sum(grants)
         assert sched.allocated_tokens <= total
         assert sched.inflight_spawn("coder", "task-3") is None
 
@@ -176,12 +176,12 @@ def test_finished_child_reservation_is_reclaimed():
 
         aid0 = await sched.spawn(0, "coder", "first", tool_call_id="c-0")
         assert factory.grants[0] == 100_000
-        assert sched.allocated_tokens == lead_reserve(total) + 100_000
+        assert sched.allocated_tokens == dynamic_roster_share(total) + 100_000
 
         # Finish the first child — its 100_000 reservation must be reclaimed.
         gate.set()
         await sched._tasks[aid0]
-        assert sched.allocated_tokens == lead_reserve(total)  # back to 100_000
+        assert sched.allocated_tokens == dynamic_roster_share(total)  # back to 100_000
 
         # A fresh spawn gets the reclaimed fair share again.
         gate.clear()
@@ -213,7 +213,7 @@ def test_failed_worktree_acquire_releases_reservations():
         _register_budget_lead(sched, total)
 
         before = sched.allocated_tokens
-        assert before == lead_reserve(total)
+        assert before == dynamic_roster_share(total)
         assert sched.inflight_spawn("coder", "leaky") is None
 
         # The failing spawn must propagate the original exception.
@@ -265,7 +265,7 @@ def test_failed_session_build_releases_reservations_then_respawn_succeeds():
         sched._worktree_pool = _NoopWorktreePool()
 
         aid = await sched.spawn(0, "coder", "retry-me", tool_call_id="c-1")
-        assert good.grants[0] == lead_reserve(total)  # 100_000 fair share
+        assert good.grants[0] == dynamic_roster_share(total)  # 100_000 fair share
         assert sched.inflight_spawn("coder", "retry-me") == aid
 
         gate.set()
@@ -297,7 +297,7 @@ def test_spawn_event_failure_rolls_back_all_child_state():
         assert sched._spawn_origin == {}
         assert sched._tasks == {}
         assert sched.inflight_spawn("coder", "ghost") is None
-        assert sched.allocated_tokens == lead_reserve(total)
+        assert sched.allocated_tokens == dynamic_roster_share(total)
 
     run(scenario())
 
@@ -329,7 +329,7 @@ def test_cancelled_spawn_rolls_back_reservations_before_driver_exists():
         assert sched._spawn_origin == {}
         assert sched._tasks == {}
         assert sched.inflight_spawn("coder", "cancelled") is None
-        assert sched.allocated_tokens == lead_reserve(total)
+        assert sched.allocated_tokens == dynamic_roster_share(total)
 
     run(scenario())
 
@@ -378,7 +378,7 @@ def test_lead_reservation_seeded_at_registration():
 
         lead = BlockingChild("lead", total, gate)
         sched.register_lead(lead)
-        assert sched.allocated_tokens == lead_reserve(total)
+        assert sched.allocated_tokens == dynamic_roster_share(total)
 
     run(scenario())
 
@@ -421,8 +421,8 @@ def test_consumed_child_tokens_are_not_reclaimed_as_fresh_headroom():
         await sched._tasks[aid]
 
         # The lease is gone, while its consumed tokens stay committed.
-        assert aid not in sched._child_lease
-        assert sched.allocated_tokens == lead_reserve(total) + grant
+        assert aid not in sched._turn_lease
+        assert sched.allocated_tokens == dynamic_roster_share(total) + grant
 
         gate.clear()
         await sched.spawn(0, "coder", "next-1")
@@ -488,7 +488,7 @@ def test_message_revival_reacquires_child_budget_before_starting_turn():
         gate.clear()
 
         await sched.send_message(0, aid, "again", "continue")
-        assert aid in sched._child_lease
+        assert aid in sched._turn_lease
         assert not sched._tasks[aid].done()
 
         await sched.spawn(0, "coder", "second")
@@ -539,7 +539,7 @@ def test_cancelled_agent_retries_other_messages_waiting_for_budget():
             await sched._tasks[running[0]]
 
         assert 99 in sched._tasks
-        assert 99 in sched._child_lease
+        assert 99 in sched._turn_lease
         assert sched._message_inbox[99] == []
 
         gate.set()

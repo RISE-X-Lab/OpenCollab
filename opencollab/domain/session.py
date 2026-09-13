@@ -90,7 +90,11 @@ PHASE_TRANSITIONS: dict[SessionPhase, frozenset[SessionPhase]] = {
         {SessionPhase.AUTOSAVING, SessionPhase.AWAITING_EVENTS}
     ),
     SessionPhase.AWAITING_EVENTS: frozenset({SessionPhase.AUTOSAVING}),
-    SessionPhase.AUTOSAVING: frozenset({SessionPhase.PRECHECK}),
+    # PRECHECK on every ordinary step; DONE when the step that just
+    # finished included a ``submit`` call. The step is saved either way --
+    # the edge is taken after ``finish_step``, so a submitted turn is
+    # persisted exactly like any other before it ends.
+    SessionPhase.AUTOSAVING: frozenset({SessionPhase.PRECHECK, SessionPhase.DONE}),
     # Terminal phases resume back to IDLE for a fresh user turn or a re-run.
     SessionPhase.DONE: frozenset({SessionPhase.IDLE}),
     SessionPhase.STOPPED: frozenset({SessionPhase.IDLE}),

@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from opencollab.adapters._env_base import Environment, ExecResult
+from opencollab.adapters._env_container_worktree import ContainerWorktreeEnvironment
 from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters._env_process import PROCESS_OUTPUT_CAPTURE_BYTES
@@ -32,6 +33,7 @@ class DockerWorkspaceEnvironment(DockerEnvironment):
 
 
 __all__ = [
+    "ContainerWorktreeEnvironment",
     "DockerEnvironment",
     "DockerWorkspaceEnvironment",
     "Environment",

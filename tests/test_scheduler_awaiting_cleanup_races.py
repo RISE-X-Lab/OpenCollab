@@ -452,7 +452,7 @@ def test_spawn_blocked_in_acquire_cannot_resurrect_after_cleanup():
         assert scheduler._startup_tasks == {}
         assert scheduler._startup_origin == {}
         assert scheduler._startup_envs == {}
-        assert scheduler._child_lease == {}
+        assert scheduler._turn_lease == {}
         assert scheduler.inflight_spawn("coder", "blocked startup") is None
         startup_row = lead.state.pending_events.rows["startup-race"]
         assert startup_row.status is RowStatus.FAILED
@@ -465,7 +465,7 @@ def test_spawn_blocked_in_acquire_cannot_resurrect_after_cleanup():
         assert set(scheduler.table.entries) == {0}
         assert set(scheduler._sessions) == {0}
         assert scheduler._tasks == {}
-        assert scheduler._child_lease == {}
+        assert scheduler._turn_lease == {}
         assert scheduler.inflight_spawn("coder", "blocked startup") is None
         assert pool.release_env_calls == 1
 
@@ -537,6 +537,6 @@ def test_message_add_blocked_during_cleanup_cannot_create_late_driver():
         assert child.state.turn.scout_ledger == [{"tool": "grep", "outcome": "hit"}]
         assert len(scheduler._message_inbox[aid]) == 1
         assert len(child.state.pending_user_messages) == 1
-        assert aid not in scheduler._child_lease
+        assert aid not in scheduler._turn_lease
 
     run(scenario())

@@ -138,6 +138,9 @@ class EagerToolOutputClearShaper:
     every call with no estimate / trigger dependency.
     """
 
+    #: Frozen trajectory label for this rung (see ``ShaperPipeline``).
+    rung = "eager_clear"
+
     def __init__(
         self,
         *,

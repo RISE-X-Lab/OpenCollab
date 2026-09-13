@@ -63,7 +63,7 @@ class WorkflowAgentsMixin:
         submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
         combined_tools = [*(tools or []), submit_tool]
         try:
-            session = self._factory.build_workflow_session(
+            session = await self._build_workflow_session(
                 prompt=prompt,
                 budget=session_budget,
                 tools=combined_tools,
@@ -160,7 +160,7 @@ class WorkflowAgentsMixin:
         synth_label = f"{label}:synth" if label else "synth"
         session_budget = self._capped_session_budget(commit_reserve)
         try:
-            session = self._factory.build_workflow_session(
+            session = await self._build_workflow_session(
                 prompt=prompt,
                 budget=session_budget,
                 tools=[submit_tool],
@@ -203,7 +203,7 @@ class WorkflowAgentsMixin:
         sheet) BEFORE any exploration, returning the captured payload (or ``None``).
 
         Reuses the validated dead-scout-synth wiring exactly — ``tools=[submit_findings]``
-        only, a named-function (forced) ``tool_choice``, ``thinking=False`` — so the
+        only, a named-function (forced) ``tool_choice``, the configured reasoning policy — so the
         draft cannot wander or fabricate and the call is a single constrained turn.
         It touches NO part of the session FSM: the exploring scout that consumes this
         draft runs the unchanged capture→cancel→harvest path. Cost is one bounded
@@ -223,7 +223,9 @@ class WorkflowAgentsMixin:
 
         async def run_with_lease() -> dict[str, Any] | None:
             try:
-                lease = await self._acquire_budget_lease(budget, over_budget_ok=False)
+                lease = await self._acquire_budget_lease(
+                    budget, over_budget_ok=False, label=label
+                )
             except WorkflowBudgetExceeded:
                 return None
             token = self._active_budget_lease.set(lease)
@@ -254,7 +256,7 @@ class WorkflowAgentsMixin:
         submit_tool = SubmitFindingsTool(on_capture=capture_done.set)
         draft_label = f"{label}:draft" if label else "draft"
         try:
-            session = self._factory.build_workflow_session(
+            session = await self._build_workflow_session(
                 prompt=prompt,
                 budget=session_budget,
                 tools=[submit_tool],

@@ -24,7 +24,7 @@ from opencollab.workflows import WorkflowContext
 
 def test_root_and_sdk_export_one_small_surface() -> None:
     expected = ["OpenCollab", "RunError", "RunResult", "workflow"]
-    assert opencollab.__version__ == "0.5.2.dev0"
+    assert opencollab.__version__ == "0.6.1.dev0"
     assert opencollab.__all__ == expected
     assert sdk.__all__ == expected
     assert all(getattr(opencollab, name) is getattr(sdk, name) for name in expected)
@@ -75,6 +75,20 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "artifacts",
             "trace",
             "use_worktrees",
+            # The two experimental conditions a Team arm is defined by: a roster
+            # seated before the first model call, and a seat whose shell runs.
+            "prebuild_team",
+            "allow_unisolated_shell",
+            # And the ceiling that must not become a third one: a team run holds
+            # tokens equal to a solo run's, so its step ceiling has to sit above
+            # what those tokens can pay for. ``agent`` and ``workflow`` already
+            # took this; ``team`` is where it could not be set at all.
+            "max_steps",
+            # Whether the seated roster may work at the same time. It answers a
+            # question about the run, not about any one agent, which is why it
+            # belongs beside the two conditions above rather than in the team
+            # config: the config says who is seated and who may address whom.
+            "serialize_turns",
         ),
         sdk.OpenCollab.workflow: (
             "self",
@@ -158,6 +172,9 @@ def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
     assert environments.__all__ == [
         "Environment",
         "attach_container",
+        # A workspace an agent reads is not always on this host, so the listing
+        # of it is asked of the environment rather than walked here.
+        "build_repo_map_via_env",
         "docker_environment",
         "local_environment",
         "worktree_environment",
@@ -228,6 +245,8 @@ def test_attach_container_validates_non_owning_workspace() -> None:
         attach_container(container_id="container-1", workspace="/tmp/../testbed")
     with pytest.raises(ValueError, match="container_id"):
         attach_container(container_id=" container-1 ", workspace="/testbed")
+    with pytest.raises(ValueError, match="non-root"):
+        attach_container(container_id="container-1", workspace="/")
 
 
 def test_builtin_tools_are_fresh_ordered_and_headless_safe() -> None:

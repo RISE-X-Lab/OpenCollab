@@ -102,6 +102,9 @@ def test_cli_preserves_nonblank_unicode_prompt():
 
 
 class FakeConsole:
+    # Chrome lines are truncated to the console width, as a real Console has.
+    width = 80
+
     def print(self, *args, **kwargs):
         return None
 
@@ -126,16 +129,31 @@ class FakeTUI:
     def reset(self):
         return None
 
-    def start_live(self):
+    def set_redraw(self, redraw):
         return None
 
-    async def hold_live(self):
+    def set_queued_turns(self, count):
+        return None
+
+    def status_ansi(self, width=None):
+        return None
+
+    def hud_ansi(self, width=None):
+        return None
+
+    def start_turn(self, aid):
+        return None
+
+    def settle_turn(self, **kwargs):
+        return None
+
+    def drained_partial_answer(self, aid):
         return False
 
-    def stop_live(self, **kwargs):
+    def print_stats(self, *args):
         return None
 
-    def print_stats(self, *args):
+    def print_turn_divider(self):
         return None
 
 
@@ -260,7 +278,7 @@ async def test_cli_one_shot_failure_still_cleans_scheduler_and_closes_tracer(
         def team_roster(self):
             return []
 
-        async def run_turn(self, aid, line):
+        async def run_turn(self, aid, line, *, cancel_event=None):
             assert aid == 0
             raise RuntimeError("scheduler failed")
 
@@ -273,11 +291,6 @@ async def test_cli_one_shot_failure_still_cleans_scheduler_and_closes_tracer(
 
     tracer = FakeTracer()
     install_cli_fakes(monkeypatch, Scheduler(), tracer)
-
-    async def fail_if_held(self):
-        pytest.fail("failed one-shot runs must not enter hold mode")
-
-    monkeypatch.setattr(FakeTUI, "hold_live", fail_if_held)
 
     with pytest.raises(RuntimeError, match="scheduler failed"):
         await cli_main._run(
@@ -296,10 +309,7 @@ async def test_cli_one_shot_failure_still_cleans_scheduler_and_closes_tracer(
 
 
 @pytest.mark.asyncio
-async def test_cli_successful_one_shot_holds_before_stopping_and_cleanup(
-    monkeypatch,
-    tmp_path,
-):
+async def test_cli_successful_one_shot_settles_then_cleans_up(monkeypatch, tmp_path):
     events: list[str] = []
 
     class Scheduler:
@@ -309,8 +319,9 @@ async def test_cli_successful_one_shot_holds_before_stopping_and_cleanup(
         def team_roster(self):
             return []
 
-        async def run_turn(self, aid, line):
+        async def run_turn(self, aid, line, *, cancel_event=None):
             assert (aid, line) == (0, "do work")
+            assert isinstance(cancel_event, asyncio.Event)
             events.append("run")
 
         def agent_step_count(self, aid):
@@ -321,12 +332,8 @@ async def test_cli_successful_one_shot_holds_before_stopping_and_cleanup(
             events.append("cleanup")
 
     class LifecycleTUI(FakeTUI):
-        async def hold_live(self):
-            events.append("hold")
-            return True
-
-        def stop_live(self, **kwargs):
-            events.append("stop")
+        def settle_turn(self, **kwargs):
+            events.append("settle")
 
     tracer = FakeTracer()
     install_cli_fakes(monkeypatch, Scheduler(), tracer)
@@ -340,11 +347,139 @@ async def test_cli_successful_one_shot_holds_before_stopping_and_cleanup(
         True,
         False,
         one_shot_prompt="do work",
-        hold_after_run=True,
     )
 
-    assert events == ["run", "hold", "stop", "cleanup"]
+    assert events == ["run", "settle", "cleanup"]
     assert tracer.closed is True
+
+
+@pytest.mark.asyncio
+async def test_cli_hold_without_a_screen_still_ends_when_the_turn_drains(
+    monkeypatch,
+    tmp_path,
+):
+    """``--hold`` keeps the prompt up, so a run with no prompt has none to keep.
+
+    Redirected output has no bottom region to hold open; waiting for a user to
+    leave one would hang a run that nobody is watching.
+    """
+    class Scheduler:
+        used_tokens = 0
+        lead_session = SimpleNamespace(auto_save_path=None, step_count=0)
+
+        def team_roster(self):
+            return []
+
+        async def run_turn(self, aid, line, *, cancel_event=None):
+            return None
+
+        def agent_step_count(self, aid):
+            return 0
+
+        async def cleanup(self):
+            return None
+
+    install_cli_fakes(monkeypatch, Scheduler(), FakeTracer())
+    monkeypatch.setattr(cli_main.sys.stdin, "isatty", lambda: False, raising=False)
+
+    await asyncio.wait_for(
+        cli_main._run(
+            str(tmp_path),
+            config(),
+            None,
+            True,
+            True,
+            False,
+            one_shot_prompt="do work",
+            hold_after_run=True,
+        ),
+        timeout=5,
+    )
+
+
+@pytest.mark.asyncio
+async def test_one_shot_prints_the_answer_even_if_focus_wandered_to_a_teammate(
+    monkeypatch,
+    tmp_path,
+):
+    """A one-shot run has no "later" in which to Tab back to the lead.
+
+    Only the focused agent's blocks reach scrollback, so a run that ends while
+    the user is watching a teammate would exit with the answer it was asked for
+    settled in memory and never printed.
+
+    Exactly once, too: the flush is a tail drain, not a focus switch. A focus
+    switch reprints an agent in full, which would repeat every row the lead had
+    already put on screen before the user wandered off.
+    """
+    from io import StringIO
+
+    from rich.console import Console
+
+    from opencollab.adapters.tui import TUI
+    from opencollab.domain.events import SessionRuntimeEvent
+
+    console = Console(file=StringIO(), width=100, color_system=None)
+    holder: dict[str, TUI] = {}
+
+    class OneShotTUI(TUI):
+        def __init__(self, *args, **kwargs):
+            super().__init__(console)
+            holder["tui"] = self
+
+    class Scheduler:
+        used_tokens = 7
+        lead_session = SimpleNamespace(auto_save_path=None, step_count=1)
+
+        def team_roster(self):
+            return []
+
+        async def run_turn(self, aid, line, *, cancel_event=None):
+            tui = holder["tui"]
+            # Settled while the lead still holds focus: already in scrollback.
+            tui.event_handler(
+                SessionRuntimeEvent("text_delta", {"content": "an early lead line", "aid": 0})
+            )
+            tui.event_handler(
+                SessionRuntimeEvent("tool_start", {"tool": "bash", "args": {"command": "pwd"}, "aid": 0})
+            )
+            tui.event_handler(
+                SessionRuntimeEvent("text_delta", {"content": "the final answer", "aid": 0})
+            )
+            tui.event_handler(
+                SessionRuntimeEvent("text_delta", {"content": "teammate notes", "aid": 1})
+            )
+            # Settles the teammate's text, so focusing it has something to show.
+            tui.event_handler(
+                SessionRuntimeEvent("tool_start", {"tool": "bash", "args": {"command": "ls"}, "aid": 1})
+            )
+            # The user Tabs to the teammate to read its trajectory, and the run
+            # ends there.
+            tui.select_agent(1)
+
+        def agent_step_count(self, aid):
+            return 1
+
+        async def cleanup(self):
+            return None
+
+    install_cli_fakes(monkeypatch, Scheduler(), FakeTracer())
+    monkeypatch.setattr(tui_mod, "TUI", OneShotTUI)
+
+    await cli_main._run(
+        str(tmp_path),
+        config(),
+        None,
+        True,
+        True,
+        False,
+        one_shot_prompt="do work",
+    )
+
+    scrollback = console.file.getvalue()
+    assert "teammate notes" in scrollback
+    assert scrollback.count("the final answer") == 1
+    assert scrollback.count("an early lead line") == 1
 
 
 @pytest.mark.asyncio
@@ -367,7 +502,7 @@ async def test_cli_warns_when_event_log_persistence_is_degraded(
         def team_roster(self):
             return []
 
-        async def run_turn(self, aid, line):
+        async def run_turn(self, aid, line, *, cancel_event=None):
             assert (aid, line) == (0, "do work")
 
         def agent_step_count(self, aid):
@@ -411,7 +546,7 @@ async def test_cli_double_cancel_waits_for_cleanup_then_closes_tracer(
         def team_roster(self):
             return []
 
-        async def run_turn(self, aid, line):
+        async def run_turn(self, aid, line, *, cancel_event=None):
             assert aid == 0
             run_started.set()
             await asyncio.Event().wait()
@@ -521,7 +656,7 @@ async def test_cli_trajectory_print_failure_does_not_mask_primary_error(
         def team_roster(self):
             return []
 
-        async def run_turn(self, aid, line):
+        async def run_turn(self, aid, line, *, cancel_event=None):
             assert aid == 0
             raise RuntimeError("primary scheduler failure")
 

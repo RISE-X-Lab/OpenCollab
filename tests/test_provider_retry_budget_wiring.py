@@ -99,7 +99,12 @@ async def test_all_provider_paths_receive_the_shared_retry_budget(monkeypatch, m
     captured = []
 
     async def fake_complete(*_args, **kwargs):
-        captured.append(kwargs["provider_error_time_budget"])
+        captured.append(
+            (
+                kwargs["provider_error_time_budget"],
+                kwargs["reasoning_effort"],
+            )
+        )
         return object()
 
     async def skip_usage(**_kwargs):
@@ -122,6 +127,9 @@ async def test_all_provider_paths_receive_the_shared_retry_budget(monkeypatch, m
         client._anthropic = object()
         client._openai = None
 
-    await client.complete([{"role": "user", "content": "hello"}])
+    await client.complete(
+        [{"role": "user", "content": "hello"}],
+        reasoning_effort="max",
+    )
 
-    assert captured == [budget]
+    assert captured == [(budget, "max")]

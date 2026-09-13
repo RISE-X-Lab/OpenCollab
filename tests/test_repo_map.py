@@ -269,26 +269,85 @@ def test_build_repo_map_via_env_limits_enumeration_work() -> None:
     assert "truncated" in result
     assert "mkfifo" in env.cmds[0]
     assert "head -n 6" in env.cmds[0]
-    assert "| head" not in env.cmds[0]
-    assert "| sort" not in env.cmds[0]
+    # ``find`` writes to the fifo and is waited on by pid, so ordering the
+    # listing before the cut cannot cost us its exit status -- which is the
+    # property this used to protect by forbidding the words "| sort" and
+    # "| head" outright. It is stated as the property now, because the cut has
+    # to be applied to an *ordered* stream (see below) and that needs a pipe.
+    assert '>"$repo_map_fifo"' in env.cmds[0]
+    assert 'wait "$repo_map_find_pid"' in env.cmds[0]
+    assert "repo_map_find_status=$?" in env.cmds[0]
 
 
-def test_build_repo_map_via_env_checks_find_before_sorting():
-    env = _FakeEnv(stdout="./zeta.py\n./alpha.py\n")
+def test_build_repo_map_via_env_reports_nothing_when_find_itself_failed():
+    """Ordering the listing must not be able to dress up a failed traversal."""
+    env = _FakeEnv(stdout="./alpha.py\n./zeta.py\n", returncode=71)
+
+    assert run(build_repo_map_via_env(env)) == ""
+
+
+def test_build_repo_map_via_env_puts_the_top_of_the_tree_first():
+    """Shallowest first, then alphabetical -- so a cut keeps the top level.
+
+    ``find`` emits its own traversal order, which is neither sorted nor
+    stable, so taking its first N entries kept an arbitrary sample. Observed
+    on django-11292: 300 paths survived and none of them were under
+    ``django/`` -- the source tree the task was about -- while ``js_tests/``
+    and ``tests/`` were listed in detail. Sorting after the cut, which is what
+    used to happen, made that arbitrary sample look systematic.
+    """
+    env = _FakeEnv(
+        stdout="./tests/admin/deep.py\n./zeta.py\n./django/db\n./alpha.py\n./django\n"
+    )
 
     result = run(build_repo_map_via_env(env))
 
-    assert "| sort" not in env.cmds[0]
-    assert result.index("alpha.py") < result.index("zeta.py")
+    listed = [line for line in result.splitlines() if line and not line.startswith("#")]
+    assert [line for line in listed if line] == [
+        "alpha.py",
+        "django",
+        "zeta.py",
+        "django/db",
+        "tests/admin/deep.py",
+    ]
 
 
 def test_build_repo_map_via_env_rejects_find_diagnostics():
-    env = _FakeEnv(
-        stdout="./visible.py\n",
-        stderr="find: unreadable directory",
-    )
+    """A partial traversal must not be presented as a complete map.
+
+    The check moved into the script, because a diagnostic on the process's
+    stderr does not say whose it was. It now decides there, where find's own
+    stream is still separate, and reports the refusal as a status the caller
+    already rejects.
+    """
+    env = _FakeEnv(stdout="./visible.py\n", returncode=71)
 
     assert run(build_repo_map_via_env(env)) == ""
+    # The guard itself, pinned where it now lives.
+    probe = _FakeEnv(stdout="")
+    run(build_repo_map_via_env(probe))
+    assert 'if [ -s "$repo_map_err" ]' in probe.cmds[0]
+    assert "exit 71" in probe.cmds[0]
+
+
+def test_build_repo_map_via_env_ignores_stderr_that_is_not_the_traversal_s():
+    """The shell around the listing writes to the same stream, every time.
+
+    With a command prefix the environment runs a *login* shell, so its profile
+    scripts print on every command. Treating any stderr as fatal meant the map
+    was empty in exactly the case it exists for -- a repository the caller
+    cannot walk itself -- and ``append_repository_layout`` drops an empty map
+    without a word, so nothing said so.
+    """
+    env = _FakeEnv(
+        stdout="./src\n./src/core.py\n",
+        stderr="Unable to determine terminal type\nconda: no such env\n",
+    )
+
+    result = run(build_repo_map_via_env(env))
+
+    assert result.startswith(MAP_HEADER)
+    assert "src/core.py" in result
 
 
 def test_build_repo_map_via_env_rejects_truncated_traversal_output():
@@ -459,3 +518,55 @@ def test_session_factory_without_workspace_injects_no_map(tmp_path):
     )
 
     assert MAP_HEADER not in session.agent.system_prompt
+
+
+class _ElsewhereEnvironment:
+    """An environment whose files are not on this host's file system."""
+
+    local_filesystem = False
+    workspace = "/testbed"
+
+    async def setup(self) -> None:  # pragma: no cover - never run here
+        return None
+
+    async def cleanup(self) -> None:  # pragma: no cover - never run here
+        return None
+
+    async def exec_cmd(self, *_args, **_kwargs):  # pragma: no cover - never run here
+        raise AssertionError("this test never executes anything")
+
+
+def test_no_repo_map_when_the_agents_cannot_read_the_lead_workspace(tmp_path):
+    """A map of the launch directory is a false claim about a container run.
+
+    The lead workspace anchors the run's own bookkeeping and stays a host path.
+    Once the agents work inside a container, that directory is not the one they
+    can read, and a map of it sends them looking for files that are not there —
+    which costs them steps and tells them nothing.
+    """
+    ws = _workspace(tmp_path)
+    factory = DefaultSessionFactory(
+        _spawn_cfg(), lead_workspace=str(ws), lead_environment=_ElsewhereEnvironment()
+    )
+
+    session = factory.build_spawn_session(
+        role="coder", env=_ElsewhereEnvironment(), budget=10_000, aid=1
+    )
+
+    assert MAP_HEADER not in session.agent.system_prompt
+    assert "core.py" not in session.agent.system_prompt
+
+
+def test_repo_map_still_ships_when_the_run_works_on_this_host(tmp_path):
+    """The control: a host environment handed in is still the same directory."""
+    ws = _workspace(tmp_path)
+    factory = DefaultSessionFactory(
+        _spawn_cfg(), lead_workspace=str(ws), lead_environment=LocalEnvironment(str(ws))
+    )
+
+    session = factory.build_spawn_session(
+        role="coder", env=LocalEnvironment(str(ws)), budget=10_000, aid=1
+    )
+
+    assert MAP_HEADER in session.agent.system_prompt
+    assert "core.py" in session.agent.system_prompt

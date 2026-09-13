@@ -55,7 +55,7 @@ def test_run_tests_accepts_plain_pytest_q_summary():
     assert "Verdict: GREEN" in result
 
 
-def test_run_tests_accepts_pass_proof_from_retained_capture_tail():
+def test_run_tests_rejects_pass_proof_from_truncated_capture():
     class TruncatedOutputEnv(FakeEnv):
         async def exec_cmd(self, cmd: str, timeout: float = 120.0):
             self.exec_calls.append((cmd, timeout))
@@ -79,7 +79,7 @@ def test_run_tests_accepts_pass_proof_from_retained_capture_tail():
     )
 
     assert "passed=1" in result
-    assert "Verdict: GREEN" in result
+    assert "Verdict: RED" in result
 
 
 def test_run_tests_directory_target_requires_a_descendant_pass():

@@ -5,7 +5,7 @@ All notable changes to OpenCollab are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
-## [0.5.2.dev0] - Unreleased
+## [0.6.1.dev0] - Unreleased
 
 ### Added
 
@@ -14,12 +14,40 @@ Paired evaluation runtime support with candidate workspace isolation, configured
 
 ## [Unreleased]
 
-## [0.5.1] - 2026-09-05
+## [0.6.0] - 2026-09-04
+
+### Added
+- Added public team and workflow controls for prebuilt rosters, turn
+  serialization, per-seat step limits, caller-supplied environments, and
+  declared team-role inspection.
+- Added public handoff and submit tools, worktree-backed teammate execution,
+  structured worktree and trace evidence, and the handoff experiment example.
+- Added provider capability contracts, Responses non-streaming support, richer
+  usage accounting, and explicit model/provider request validation.
+
+### Changed
+- Expanded the SDK and workflow-authoring contracts with explicit agent
+  identity, isolation, budgets, deadlines, cancellation, cleanup, and
+  lifecycle results. Teams now use the caller's environment when supplied and
+  keep their declared topology and resource decisions in the run evidence.
+- Hardened scheduler, session, storage, repository-map, and environment
+  boundaries so ownership, snapshots, path containment, terminal state, and
+  partial work remain explicit across retries and restored runs.
+- Reworked the CLI/TUI turn queue and display lifecycle, and split the runtime
+  into narrower architecture-bound modules with import-layer checks.
 
 ### Fixed
-- Normalized the whitespace-padded byte count emitted by BSD/macOS `wc -c`,
-  so verified Docker container writes use the same cross-platform contract as
-  GNU `wc`.
+- Fixed per-call budget validation, one-shot budget escapes, cancellation-state
+  reset, complete test-run evidence checks, command-safety checks, and
+  provider usage estimates. Normalized BSD/macOS `wc -c` output so verified
+  container file writes work across host and image shells.
+- Fixed handoff accounting, shell-output traversal, container git identity,
+  worktree diff bases, stale history sizing, and team/workflow resource
+  attribution.
+
+### Removed
+- Removed the legacy toolbar and keyboard modules superseded by the current
+  CLI/TUI turn-queue implementation.
 
 ## [0.5.0] - 2026-08-13
 
@@ -138,10 +166,10 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.1...HEAD
-[0.5.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.0...v0.5.1
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/563027175e2cc2540d19324def73010a7e436dcc...v0.4.1
 [0.1.0]: https://github.com/RISE-X-Lab/OpenCollab/tree/563027175e2cc2540d19324def73010a7e436dcc
 
-[0.5.2.dev0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.1...HEAD
+[0.6.1.dev0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.1...HEAD

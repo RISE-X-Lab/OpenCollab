@@ -22,6 +22,7 @@ class WorkflowContext(Protocol):
         schema: dict[str, Any] | None = None,
         label: str | None = None,
         tools: Sequence[Tool] | None = None,
+        isolation: bool = False,
         budget: int | None = None,
         timeout: float | None = None,
         tool_choice: Any = None,

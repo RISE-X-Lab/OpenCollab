@@ -14,6 +14,7 @@ helpers).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
 from typing import Any
@@ -50,9 +51,9 @@ class LifecycleMixin:
         self._sessions[aid] = session
         self._lead_session = session
         self._restore_message_inbox(aid, session.state)
-        # Seed the running allocation with the Lead's reserve so the first child
-        # is granted from the pool minus the Lead's headroom.
-        self._seed_lead_lease()
+        # Book agent 0's own share of the pool so the first child is granted
+        # from what is left after it.
+        self._seed_entry_lease()
         self._write_manifest()
         return aid
 
@@ -63,11 +64,16 @@ class LifecycleMixin:
         scheduler owns the launch lifecycle: build via the factory, apply the
         launch spec (resume or seed), then register. The root-process mirror of
         ``spawn``.
+
+        The budget handed to the factory is what agent 0 may actually spend, not
+        the team total — under a declared roster its ``per_agent_cap``. The
+        session turns that number into the ``[Budget: ...]`` line the model reads
+        every turn, so the two must be the same number.
         """
         session = self._session_factory.create_lead_session(
             scheduler=self,
             launch=launch,
-            budget=self._max_budget_tokens,
+            budget=self._entry_start_budget(),
         )
         session.apply_launch(launch)
         return self.register_lead(session)
@@ -90,12 +96,21 @@ class LifecycleMixin:
         Raises ``PermissionError`` if the team topology forbids ``parent_aid``'s
         role from spawning ``role``; the tool executor turns that into a tool
         result so the parent's run loop continues uninterrupted.
+
+        Raises ``TeamPrebuiltError`` when the scheduler runs a prebuilt team: the
+        roster is then an input to the run, not an outcome of it, so no agent may
+        be added to it. The attempt itself is recorded before the refusal is
+        raised — see ``_refuse_spawn_when_prebuilt``.
         """
         if self._shutting_down:
             raise RuntimeError("Cannot spawn agent: scheduler is shutting down.")
         if self.table.get(parent_aid) is None or parent_aid not in self._sessions:
             raise ValueError(f"Cannot spawn agent: no parent with aid {parent_aid}.")
         role = validate_role_identity(role)
+        # Before the topology check, so one uniform record covers both a request
+        # for a declared role and one for a role this team was never given; the
+        # record carries whether the topology would have allowed the edge.
+        self._refuse_spawn_when_prebuilt(parent_aid, role, task, context)
         self._check_topology(parent_aid, role, verb="spawn")
         aid = self.table.allocate_aid()
         startup_task = asyncio.current_task()
@@ -304,6 +319,28 @@ class LifecycleMixin:
         except Exception as exc:
             logger.error("background task for aid %s failed: %s", aid, exc)
 
+    def _turn_gate(self) -> Any:
+        """The team-wide turn gate every driver runs its loop inside.
+
+        Under ``serialize_turns`` this is one lock shared by every agent, so
+        exactly one turn is in flight at a time. Off, it is a no-op and
+        independent aids proceed concurrently, which is what ``_run_locks``
+        (one per aid) has always allowed.
+
+        Holding it across ``run_loop`` cannot deadlock, and not because of any
+        one team's configuration: ``run_loop`` *returns* when a session suspends
+        on ``AWAITING_EVENTS`` instead of blocking on its children, so the gate
+        is released at every suspension point and no driver ever holds it while
+        waiting for another agent to finish.
+
+        Created on first use: ``__init__`` may run without a running loop.
+        """
+        if not self._serialize_turns:
+            return contextlib.nullcontext()
+        if self._turn_gate_lock is None:
+            self._turn_gate_lock = asyncio.Lock()
+        return self._turn_gate_lock
+
     async def _drive_agent(self, aid: int, session: Any) -> None:
         """Run a session's loop once and finalize.
 
@@ -323,11 +360,12 @@ class LifecycleMixin:
 
         try:
             cancel_event = self._turn_cancel_events.get(aid)
-            result = (
-                await session.run_loop(cancel_event)
-                if cancel_event is not None
-                else await session.run_loop()
-            )
+            async with self._turn_gate():
+                result = (
+                    await session.run_loop(cancel_event)
+                    if cancel_event is not None
+                    else await session.run_loop()
+                )
         except asyncio.CancelledError:
             self._release_leases(aid)
             scb.state.cancel()
@@ -352,6 +390,7 @@ class LifecycleMixin:
             scb.state.fail(terminal_reason)
             reason = f"Error: {terminal_reason}"
             scb.result = reason
+            await self._trace_worktree_evidence(aid, scb, session)
             try:
                 await self.emit_scheduler_event(
                     self._events.agent_failed(aid, scb.agent.name, terminal_reason)
@@ -388,6 +427,7 @@ class LifecycleMixin:
         terminal_failure = self._terminal_failure_result(scb, result)
         if terminal_failure is not None:
             scb.result = terminal_failure
+            await self._trace_worktree_evidence(aid, scb, session)
             await self._safe_emit_scheduler_event(
                 self._events.agent_failed(aid, scb.agent.name, terminal_failure)
             )
@@ -422,6 +462,10 @@ class LifecycleMixin:
                 if not self._shutting_down:
                     await self._drain_ready_message_inboxes()
                 return
+            # Same changes, second destination: a structured, never-truncated
+            # per-file record. Observational, so it is deliberately outside the
+            # contract above — it may not fail the agent.
+            await self._trace_worktree_changes(aid, scb.agent.name, env)
 
         if self._shutting_down:
             self._finalize_cleanup_failure(aid)
@@ -461,6 +505,30 @@ class LifecycleMixin:
         await self._drain_message_inbox(aid, allow_current_task=True)
         if not self._shutting_down:
             await self._drain_ready_message_inboxes()
+
+    async def _trace_worktree_evidence(self, aid: int, scb: Any, session: Any) -> None:
+        """Record what an agent left in its worktree, whatever ended the agent.
+
+        The completion path already writes this row. Every other terminal path
+        returned before reaching it, so an agent that spent its whole budget
+        writing code wrote no row at all -- and neither does an agent that
+        changed nothing, which is the reading ``_trace_worktree_changes``
+        exists to rule out. The two are opposite outcomes and they looked
+        identical on disk.
+
+        That matters beyond tidiness because per-agent adherence is scored off
+        these rows: a run whose coder was stopped at its cap after committing
+        scores as a coder that never touched a file, so the collaboration it
+        did do is counted as collaboration that did not happen.
+
+        Observational, like the call it mirrors: ``_trace_worktree_changes``
+        guards every read and swallows its own failures, so a diff that cannot
+        be taken here leaves the terminal path exactly as it was.
+        """
+        env = getattr(session, "env", None)
+        if env is None:
+            return
+        await self._trace_worktree_changes(aid, scb.agent.name, env)
 
     @staticmethod
     def _terminal_failure_result(scb: Any, result: str) -> str | None:

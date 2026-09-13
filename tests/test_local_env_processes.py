@@ -33,9 +33,7 @@ def _descendant_command(ready, sentinel, *, delay: float = 0.35) -> str:
         f"pathlib.Path({str(sentinel)!r}).write_text('leaked')"
     )
     parent = (
-        "import subprocess,sys;"
-        f"child=subprocess.Popen([sys.executable,'-c',{child!r}]);"
-        "raise SystemExit(child.wait())"
+        f"import subprocess,sys;child=subprocess.Popen([sys.executable,'-c',{child!r}]);raise SystemExit(child.wait())"
     )
     return f"exec {shlex.quote(sys.executable)} -c {shlex.quote(parent)}"
 
@@ -49,6 +47,136 @@ async def test_local_exec_returns_command_output(tmp_path) -> None:
     assert not result.stdout_truncated
     assert result.stdout_dropped_bytes == 0
     assert result.stderr_dropped_bytes == 0
+
+
+async def test_local_file_operations_reject_absolute_paths_outside_workspace(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside.txt"
+    workspace.mkdir()
+    outside.write_text("secret", encoding="utf-8")
+    env = LocalEnvironment(str(workspace))
+
+    with pytest.raises(PermissionError, match="workspace"):
+        await env.read_file(str(outside))
+    with pytest.raises(PermissionError, match="workspace"):
+        await env.write_file(str(outside), "overwritten")
+    assert outside.read_text(encoding="utf-8") == "secret"
+
+
+async def test_local_read_is_anchored_when_parent_is_replaced_by_symlink(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    parent = workspace / "parent"
+    moved_parent = workspace / "moved-parent"
+    outside = tmp_path / "outside"
+    parent.mkdir(parents=True)
+    outside.mkdir()
+    (parent / "value.txt").write_text("inside", encoding="utf-8")
+    (outside / "value.txt").write_text("outside-secret", encoding="utf-8")
+    env = LocalEnvironment(str(workspace))
+
+    final_open_started = threading.Event()
+    resume_final_open = threading.Event()
+    real_open = local_module.read_regular_bytes_at.__globals__["os"].open
+
+    def barrier_open(path, flags, mode=0o777, *, dir_fd=None):
+        if not final_open_started.is_set() and os.path.basename(os.fspath(path)) == "value.txt":
+            final_open_started.set()
+            if not resume_final_open.wait(timeout=2):
+                raise AssertionError("timed out waiting to resume final file open")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(
+        "opencollab.adapters.safe_anchored_files.os.open",
+        barrier_open,
+    )
+    read = asyncio.create_task(env.read_file("parent/value.txt"))
+    assert await asyncio.to_thread(final_open_started.wait, 2)
+    parent.rename(moved_parent)
+    parent.symlink_to(outside, target_is_directory=True)
+    resume_final_open.set()
+
+    assert await read == "inside"
+    assert (outside / "value.txt").read_text(encoding="utf-8") == "outside-secret"
+
+
+@pytest.mark.parametrize("operation", ["range", "write"])
+async def test_local_file_operations_stay_anchored_during_parent_replacement(
+    tmp_path,
+    monkeypatch,
+    operation,
+) -> None:
+    workspace = tmp_path / "workspace"
+    parent = workspace / "parent"
+    moved_parent = workspace / "moved-parent"
+    outside = tmp_path / "outside"
+    parent.mkdir(parents=True)
+    outside.mkdir()
+    (parent / "value.txt").write_text("inside\nsecond", encoding="utf-8")
+    outside_value = outside / "value.txt"
+    outside_value.write_text("outside-secret", encoding="utf-8")
+    env = LocalEnvironment(str(workspace))
+
+    final_operation_started = threading.Event()
+    resume_final_operation = threading.Event()
+    if operation == "range":
+        real_call = local_module.read_regular_text_range_at.__globals__["os"].open
+
+        def barrier(path, flags, mode=0o777, *, dir_fd=None):
+            if not final_operation_started.is_set() and os.path.basename(os.fspath(path)) == "value.txt":
+                final_operation_started.set()
+                assert resume_final_operation.wait(timeout=2)
+            return real_call(path, flags, mode, dir_fd=dir_fd)
+
+        monkeypatch.setattr(
+            "opencollab.adapters.safe_anchored_files.os.open",
+            barrier,
+        )
+        task = asyncio.create_task(env.read_text_range("parent/value.txt", offset=1, limit=1, max_chars=20))
+    else:
+        real_call = local_module.write_regular_bytes_atomic_at.__globals__["os"].rename
+
+        def barrier(src, dst, *, src_dir_fd=None, dst_dir_fd=None):
+            if not final_operation_started.is_set() and dst == "value.txt":
+                final_operation_started.set()
+                assert resume_final_operation.wait(timeout=2)
+            return real_call(
+                src,
+                dst,
+                src_dir_fd=src_dir_fd,
+                dst_dir_fd=dst_dir_fd,
+            )
+
+        monkeypatch.setattr(
+            "opencollab.adapters.safe_anchored_files.os.rename",
+            barrier,
+        )
+        task = asyncio.create_task(env.write_file("parent/value.txt", "updated"))
+
+    assert await asyncio.to_thread(final_operation_started.wait, 2)
+    parent.rename(moved_parent)
+    parent.symlink_to(outside, target_is_directory=True)
+    resume_final_operation.set()
+    result = await task
+
+    if operation == "range":
+        assert result.lines == ["inside"]
+    else:
+        assert (moved_parent / "value.txt").read_text(encoding="utf-8") == "updated"
+    assert outside_value.read_text(encoding="utf-8") == "outside-secret"
+
+
+async def test_local_range_rejects_absolute_path_outside_workspace(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "outside.txt"
+    workspace.mkdir()
+    outside.write_text("secret", encoding="utf-8")
+    env = LocalEnvironment(str(workspace))
+
+    with pytest.raises(PermissionError, match="workspace"):
+        await env.read_text_range(str(outside), offset=1, limit=1, max_chars=10)
 
 
 async def test_local_exec_bounds_output(tmp_path, monkeypatch) -> None:
@@ -114,9 +242,7 @@ async def test_local_timeout_kills_descendant_before_it_mutates_workspace(tmp_pa
     # guarantee does not need a tight window.
     late_write_delay = 1.0
     env = LocalEnvironment(str(tmp_path))
-    owner = asyncio.create_task(
-        env.exec_cmd(_descendant_command(ready, sentinel, delay=late_write_delay), timeout=0.5)
-    )
+    owner = asyncio.create_task(env.exec_cmd(_descendant_command(ready, sentinel, delay=late_write_delay), timeout=0.5))
     await _wait_for(ready)
     result = await owner
     assert result.returncode == -1
@@ -200,6 +326,20 @@ async def test_process_timeout_covers_blocked_stdin_writer(tmp_path) -> None:
         )
 
 
+# ``terminate_process`` may spend a SIGTERM grace and then two kill graces
+# reaping the group, so a deadline below that sum reports a cleanup that worked
+# as a hang. The two spawn tests below wait on cleanup that really runs, so they
+# have to allow what the implementation allows itself.
+CLEANUP_WORST_CASE_SECONDS = (
+    process_module.PROCESS_TERM_GRACE_SECONDS + 2 * process_module.PROCESS_KILL_GRACE_SECONDS
+)
+
+# The gated spawn never completes while the gate is held, so a task that failed
+# to give up would miss any deadline at all; this one only has to sit above a
+# loaded machine's scheduling jitter.
+GATED_TASK_SETTLES_SECONDS = 2.0
+
+
 async def test_process_timeout_covers_subprocess_spawn(monkeypatch, tmp_path) -> None:
     gate = asyncio.Event()
     terminated = asyncio.Event()
@@ -231,7 +371,7 @@ async def test_process_timeout_covers_subprocess_spawn(monkeypatch, tmp_path) ->
     )
 
     try:
-        done, _pending = await asyncio.wait({task}, timeout=0.1)
+        done, _pending = await asyncio.wait({task}, timeout=GATED_TASK_SETTLES_SECONDS)
         assert task in done
         with pytest.raises(asyncio.TimeoutError):
             task.result()
@@ -240,7 +380,7 @@ async def test_process_timeout_covers_subprocess_spawn(monkeypatch, tmp_path) ->
         if not task.done():
             with pytest.raises(asyncio.TimeoutError):
                 await task
-        await asyncio.wait_for(terminated.wait(), timeout=1)
+        await asyncio.wait_for(terminated.wait(), timeout=CLEANUP_WORST_CASE_SECONDS + 1)
 
 
 async def test_process_cancellation_during_spawn_is_bounded(
@@ -279,7 +419,7 @@ async def test_process_cancellation_during_spawn_is_bounded(
     task.cancel()
 
     try:
-        done, _pending = await asyncio.wait({task}, timeout=0.1)
+        done, _pending = await asyncio.wait({task}, timeout=GATED_TASK_SETTLES_SECONDS)
         assert task in done
         with pytest.raises(asyncio.CancelledError):
             task.result()
@@ -288,7 +428,7 @@ async def test_process_cancellation_during_spawn_is_bounded(
         if not task.done():
             with pytest.raises(asyncio.CancelledError):
                 await task
-        await asyncio.wait_for(terminated.wait(), timeout=1)
+        await asyncio.wait_for(terminated.wait(), timeout=CLEANUP_WORST_CASE_SECONDS + 1)
 
 
 async def test_registry_abort_bounds_unfinished_spawn_handoff(monkeypatch) -> None:
@@ -615,3 +755,46 @@ async def test_local_rejects_invalid_timeout_before_spawn(tmp_path) -> None:
     env = LocalEnvironment(str(tmp_path))
     with pytest.raises(ValueError, match="positive"):
         await env.exec_cmd("true", timeout=0)
+
+
+async def test_a_timed_out_command_returns_what_it_had_already_written(tmp_path):
+    """A killed command must not come back as if it had produced nothing.
+
+    Everything printed before the deadline was read into the capture buffers
+    and then discarded when the reader tasks were cancelled, so a test run that
+    hung after reporting nine failures and one that hung immediately reached the
+    model as the same empty result. The only move left was to run it again --
+    and hit the same deadline.
+
+    Uses ``/bin/sh`` rather than a Python child on purpose: the interpreter's
+    cold start is a large fraction of a short deadline, and the deadline here is
+    already generous enough to sit above the worst case the terminate path
+    allows itself.
+    """
+    env = LocalEnvironment(str(tmp_path))
+    try:
+        result = await env.exec_cmd(
+            "printf 'nine failures so far\\n'; printf 'and a warning\\n' >&2; sleep 30",
+            timeout=1.0,
+        )
+    finally:
+        await env.cleanup()
+
+    assert result.returncode == -1
+    assert "nine failures so far" in result.stdout
+    # The notice comes first so a reader scanning for the failure still finds it.
+    assert result.stderr.splitlines()[0] == "Command timed out after 1s"
+    assert "and a warning" in result.stderr
+
+
+async def test_a_timeout_with_nothing_written_still_reports_only_the_notice(tmp_path):
+    """The empty case has to stay clean: no blank lines, no invented output."""
+    env = LocalEnvironment(str(tmp_path))
+    try:
+        result = await env.exec_cmd("sleep 30", timeout=1.0)
+    finally:
+        await env.cleanup()
+
+    assert result.returncode == -1
+    assert result.stdout == ""
+    assert result.stderr == "Command timed out after 1s"

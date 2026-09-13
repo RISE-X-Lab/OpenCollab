@@ -52,6 +52,22 @@ async def test_agent_returns_final_text_and_seeds_prompt():
     assert session.prompt == "solve it"
     assert factory.builds[0]["prompt"] == "solve it"
 
+
+@pytest.mark.parametrize(
+    "budget",
+    [0, -1, 1.5, True, False, "2", float("nan"), float("inf")],
+)
+@pytest.mark.asyncio
+async def test_agent_rejects_invalid_per_call_budget_before_building_session(budget):
+    factory = FakeFactory([])
+    ctx = WorkflowContext(factory)
+
+    with pytest.raises(ValueError, match="budget must be a positive integer"):
+        await ctx.agent("must not start", budget=budget)
+
+    assert factory.builds == []
+
+
 @pytest.mark.parametrize("timeout", [0, -1, float("nan"), True, "bad"])
 @pytest.mark.asyncio
 async def test_agent_rejects_invalid_timeout_before_building_session(timeout):
@@ -298,15 +314,35 @@ async def test_dead_scout_synth_failures_are_recorded_with_stage_label(fail_at):
 
 
 @pytest.mark.asyncio
-async def test_agent_rejects_unsupported_isolation_before_building_session():
+async def test_an_isolated_agent_is_built_on_a_workspace_of_its_own():
+    """``isolation=True`` reaches the factory as a workspace, not as a flag.
+
+    The engine asks the factory for the workspace first and hands it back as
+    ``env``, so an isolated agent is one whose session was built somewhere no
+    sibling is editing. A factory that only recorded the flag would let the
+    agent share the run's tree while the run claimed it was isolated.
+    """
     session = FakeSession()
     factory = FakeFactory([session])
     ctx = WorkflowContext(factory)
 
-    with pytest.raises(ValueError, match="isolation is not available"):
-        await ctx.agent("p", tools=["t1"], isolation=True)
+    await ctx.agent("p", tools=["t1"], isolation=True)
 
-    assert factory.builds == []
+    built = factory.builds[0]
+    assert built["isolation"] is True
+    assert built["env"] is factory.handed_out[0]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_without_isolation_is_not_given_a_workspace():
+    session = FakeSession()
+    factory = FakeFactory([session])
+    ctx = WorkflowContext(factory)
+
+    await ctx.agent("p", tools=["t1"])
+
+    assert factory.handed_out == []
+    assert factory.builds[0]["env"] is None
 
 @pytest.mark.asyncio
 async def test_agent_threads_tool_choice_to_factory():

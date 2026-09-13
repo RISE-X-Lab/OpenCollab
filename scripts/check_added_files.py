@@ -9,6 +9,13 @@ Appending to an existing module is the way these limits actually get broken, so
 A file that already broke a ceiling before the change stays that way without
 failing every later pull request that happens to touch it. Those are caught by
 the complete-tree run on ``main`` instead, which measures every file absolutely.
+
+The two ceilings carry different weight. The byte ceiling is a hard gate: a
+large binary in history cannot be taken back out. The line ceiling is advisory
+— module size predicts little on its own, and splitting a file to satisfy a
+number usually widens its public interface instead of narrowing it. So a broken
+line ceiling is reported as a warning and does not fail the run; interface width
+is the gate that judges a split.
 """
 
 from __future__ import annotations
@@ -20,9 +27,20 @@ import sys
 import tempfile
 from argparse import ArgumentParser
 from pathlib import Path
+from typing import NamedTuple
 
 MAX_BYTES = 512_000
+# Advisory only: reported as a warning, never counted towards the exit code.
 MAX_PY_LINES = 800
+ADVISORY_LIMITS = frozenset({"lines"})
+
+
+class Violation(NamedTuple):
+    """A broken ceiling: which one, where, and how it was broken."""
+
+    limit: str
+    path: str
+    message: str
 
 
 def _changed_paths(repository: Path, base: str, head: str) -> list[str]:
@@ -104,11 +122,19 @@ def _command_message(value: str) -> str:
     return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
 
 
-def _error(path: str, message: str) -> None:
+def _annotate(severity: str, path: str, message: str) -> None:
     print(
-        f"::error file={_command_property(path)}::{_command_message(message)}",
+        f"::{severity} file={_command_property(path)}::{_command_message(message)}",
         flush=True,
     )
+
+
+def _error(path: str, message: str) -> None:
+    _annotate("error", path, message)
+
+
+def _warning(path: str, message: str) -> None:
+    _annotate("warning", path, message)
 
 
 def check_added_files(
@@ -119,12 +145,18 @@ def check_added_files(
     max_bytes: int = MAX_BYTES,
     max_py_lines: int = MAX_PY_LINES,
     require_files: bool = False,
-) -> list[str]:
-    """Return human-readable violations for ceilings this change breaks."""
-    violations: list[str] = []
+) -> list[Violation]:
+    """Return the ceilings this change breaks, tagged with which ceiling each is."""
+    violations: list[Violation] = []
     changed_paths = _changed_paths(repository, base, head)
     if require_files and not changed_paths:
-        return ["repository: no files were available for the complete-tree check"]
+        return [
+            Violation(
+                "repository",
+                "repository",
+                "no files were available for the complete-tree check",
+            )
+        ]
     for relative in changed_paths:
         path = repository / relative
         try:
@@ -155,7 +187,7 @@ def check_added_files(
         for limit, description in broken.items():
             if limit in already_broken:
                 continue
-            violations.append(f"{relative}: {description} ({origin} this change)")
+            violations.append(Violation(limit, relative, f"{description} ({origin} this change)"))
     return violations
 
 
@@ -176,13 +208,17 @@ def main(argv: list[str] | None = None) -> int:
     except subprocess.CalledProcessError as exc:
         print(f"git diff failed with exit code {exc.returncode}", file=sys.stderr)
         return 2
-    if not violations:
-        print("File hygiene checks passed.")
-        return 0
+    failures = 0
     for violation in violations:
-        path, _separator, message = violation.partition(": ")
-        _error(path, message)
-    return 1
+        if violation.limit in ADVISORY_LIMITS:
+            _warning(violation.path, violation.message)
+            continue
+        _error(violation.path, violation.message)
+        failures += 1
+    if failures:
+        return 1
+    print("File hygiene checks passed.")
+    return 0
 
 
 if __name__ == "__main__":

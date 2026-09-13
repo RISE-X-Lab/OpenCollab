@@ -19,8 +19,12 @@ from typing import Any, Literal
 from opencollab.adapters.env import (
     DockerEnvironment,
     DockerWorkspaceEnvironment,
+    Environment,
     LocalEnvironment,
     WorktreeEnvironment,
+)
+from opencollab.adapters.repo_map import (
+    build_repo_map_via_env as _build_repo_map_via_env,
 )
 from opencollab.adapters.safe_files import (
     create_regular_bytes_atomic,
@@ -42,6 +46,7 @@ from opencollab.bootstrap.agent_runtime import (
 )
 from opencollab.bootstrap.config import resolve_thinking_params
 from opencollab.bootstrap.scheduler_factory import build_scheduler  # noqa: F401
+from opencollab.bootstrap.session_factory import SESSION_MAX_STEPS
 from opencollab.bootstrap.tool_registry import build_tools_for_role
 from opencollab.bootstrap.workflow_runtime import (
     WORKFLOW_AGENT_PROMPT,
@@ -105,7 +110,9 @@ def resolve_tools(value: str | Sequence[Any] | None) -> tuple[Any, ...]:
             raise ValueError(
                 f"unknown tool preset {value!r}; choose from {sorted(_TOOL_PRESETS)}"
             ) from exc
-        return tuple(build_tools_for_role(list(names), interactive=True))
+        # No preset contains ``ask_user``; what the old ``interactive=True``
+        # bought here was the unsandboxed shell, so that is what is asked for.
+        return tuple(build_tools_for_role(list(names), allow_unisolated_shell=True))
     if not isinstance(value, Sequence):
         raise TypeError("tools must be a preset name or a sequence")
     return tuple(value)
@@ -134,8 +141,13 @@ def attach_container(
     """Attach to a caller-owned container workspace."""
     container_id = _trimmed(container_id, "container_id")
     workspace = _trimmed(workspace, "workspace")
-    if not posixpath.isabs(workspace) or posixpath.normpath(workspace) != workspace:
-        raise ValueError("workspace must be a normalized absolute container path")
+    if (
+        workspace.startswith("//")
+        or not posixpath.isabs(workspace)
+        or posixpath.normpath(workspace) != workspace
+        or workspace == "/"
+    ):
+        raise ValueError("workspace must be a normalized absolute non-root container path")
     if isinstance(timeout_returncode, bool) or not isinstance(timeout_returncode, int):
         raise ValueError("timeout_returncode must be an integer")
     return DockerWorkspaceEnvironment(
@@ -144,6 +156,20 @@ def attach_container(
         command_prefix=command_prefix,
         timeout_returncode=timeout_returncode,
     )
+
+
+async def build_repo_map_via_env(env: Any, **budgets: int) -> str:
+    """A bounded listing of the paths an environment's workspace holds.
+
+    Public because the workspace an agent reads is not always on this host. A
+    caller that runs agents inside a container cannot walk the repository with
+    ``os.walk`` -- the directory it would walk is the one the run was launched
+    from, not the one the agent sees -- so it asks the environment instead.
+
+    Returns ``""`` when the listing cannot be taken, so a caller can append the
+    result unconditionally.
+    """
+    return await _build_repo_map_via_env(env, **budgets)
 
 
 def local_environment(workspace: str | os.PathLike[str]) -> EnvironmentPort:
@@ -333,13 +359,21 @@ async def run_agent(
         tools=list(resolved_tools),
         model=config["model"],
         provider=config["provider"],
+        wire_protocol=config.get("wire_protocol", "chat_completions"),
         api_key=config.get("api_key"),
         base_url=config.get("base_url"),
+        context_window=config.get("context_window"),
         max_tokens_per_step=config.get("max_output_tokens", 8_192),
         temperature=config.get("temperature", 0.2),
         top_p=config.get("top_p"),
         thinking=config.get("thinking", False),
         thinking_params=resolve_thinking_params(config.get("thinking_params")),
+        reasoning_effort=config.get("reasoning_effort"),
+        llm_connect_timeout=config.get("llm_connect_timeout", 30.0),
+        llm_first_event_timeout=config.get("llm_first_event_timeout", 180.0),
+        llm_stream_idle_timeout=config.get("llm_stream_idle_timeout", 180.0),
+        llm_max_retries=config.get("llm_max_retries", 3),
+        provider_error_time_budget=config.get("provider_error_time_budget", 0.0),
     )
     _claim_artifacts(artifacts)
     owned_environment = environment is None
@@ -681,8 +715,19 @@ async def run_team(
     artifacts: Path | None,
     trace: bool,
     use_worktrees: bool,
+    prebuild_team: bool = False,
+    allow_unisolated_shell: bool | None = None,
+    max_steps: int = SESSION_MAX_STEPS,
+    serialize_turns: bool = False,
+    environment: Environment | None = None,
 ) -> ProgrammaticResult:
-    """Run the scheduler regime once, including bounded team cleanup."""
+    """Run the scheduler regime once, including bounded team cleanup.
+
+    A forwarder kept so ``programmatic`` stays the one import surface for the
+    three regimes; the implementation lives in ``programmatic_team``, whose
+    docstring documents ``prebuild_team``, ``allow_unisolated_shell``,
+    ``max_steps``, ``serialize_turns`` and ``environment``.
+    """
     from opencollab.bootstrap.programmatic_team import run_team as _run_team
 
     return await _run_team(
@@ -696,6 +741,11 @@ async def run_team(
         artifacts=artifacts,
         trace=trace,
         use_worktrees=use_worktrees,
+        prebuild_team=prebuild_team,
+        allow_unisolated_shell=allow_unisolated_shell,
+        max_steps=max_steps,
+        serialize_turns=serialize_turns,
+        environment=environment,
     )
 
 

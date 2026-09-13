@@ -69,6 +69,10 @@ class SchedulerRunMixin:
 
     async def _run_turn_exclusive(self, aid: int, user_message: str) -> str:
         """Drive one externally visible agent turn under its per-aid lock."""
+        # A prebuilt team must be seated before the first model call, so the
+        # roster an assigned topology names is the roster that ran. No-op unless
+        # the scheduler was constructed with ``prebuild_team``, and idempotent.
+        await self.ensure_team_prebuilt()
         session = self._sessions.get(aid)
         scb = self.table.get(aid)
         if session is None or scb is None:
@@ -113,7 +117,7 @@ class SchedulerRunMixin:
             raise RuntimeError("Cannot run scheduler: scheduler is shutting down.")
         turn_start = len(session.state.messages)
         prior_lease = self._current_turn_lease(aid)
-        if aid == 0:
+        if self._entry_agent_takes_the_pool(aid):
             self._reserve_turn_lease(aid)
         elif not self._reserve_message_budget(aid):
             raise RuntimeError(
@@ -159,13 +163,17 @@ class SchedulerRunMixin:
                 if cancellation_requested:
                     await self._settle_cancelled_suspended_turn(aid)
                 pending = self._active_scheduler_tasks()
-                if cancel_waiter is not None:
-                    pending.add(cancel_waiter)
                 if not pending:
                     if self._quiescent():
                         break
                     await self._wait_for_scheduler_progress(aid)
                     continue
+                # The waiter joins the wait, never the liveness question: it
+                # never completes on its own, so counting it as pending work
+                # would keep a quiescent team's turn running until someone
+                # cancelled it.
+                if cancel_waiter is not None:
+                    pending.add(cancel_waiter)
                 await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
         finally:
             if cancel_waiter is not None:

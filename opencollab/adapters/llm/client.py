@@ -205,6 +205,7 @@ class LLMClient:
                     tool_choice=tool_choice,
                     top_p=top_p,
                     max_output_tokens=max_output_tokens,
+                    reasoning_effort=reasoning_effort,
                     provider_error_time_budget=self.provider_retry_budget,
                 )
             elif self.wire_protocol == RESPONSES:
@@ -239,6 +240,7 @@ class LLMClient:
                     tool_choice=tool_choice,
                     top_p=top_p,
                     max_output_tokens=max_output_tokens,
+                    reasoning_effort=reasoning_effort,
                     provider_error_time_budget=self.provider_retry_budget,
                 )
             await _record_api_usage_async(

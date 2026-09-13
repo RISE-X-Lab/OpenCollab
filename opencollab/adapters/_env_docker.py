@@ -22,6 +22,7 @@ from opencollab.adapters._env_process import (
     PROCESS_OUTPUT_CAPTURE_BYTES,
     ProcessCleanupError,
     run_process,
+    timed_out_result,
 )
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
@@ -35,6 +36,30 @@ _IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,511}$")
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$")
 _FULL_ID_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _WRITE_LOCKS: dict[str, asyncio.Lock] = {}
+
+# Git refuses to commit without an author, and a benchmark image is not
+# configured with one: ``git commit`` inside the container fails with "Please
+# tell me who you are" before it writes anything. That is fatal to a team whose
+# handoff payload is a commit sha -- the agent doing the work has nothing to
+# hand over, and the failure surfaces as a shell error inside one turn rather
+# than as anything the run records.
+#
+# Passed per exec rather than written into the repository's config, because the
+# repository the agent works in is evidence: the evaluation harness rebuilds it
+# as a single anonymous commit and reads it back afterwards, so a key this
+# process added to ``.git/config`` would be a difference between the workspace
+# it prepared and the one it verifies. An environment variable leaves the
+# workspace byte-identical.
+#
+# The identity is deliberately not a person and its address is unroutable: the
+# commits never leave the container, and ``worktree_changes`` already attributes
+# each sha to an agent, so nothing reads this back.
+_GIT_IDENTITY_ENV: tuple[tuple[str, str], ...] = (
+    ("GIT_AUTHOR_NAME", "OpenCollab Agent"),
+    ("GIT_AUTHOR_EMAIL", "agent@opencollab.invalid"),
+    ("GIT_COMMITTER_NAME", "OpenCollab Agent"),
+    ("GIT_COMMITTER_EMAIL", "agent@opencollab.invalid"),
+)
 
 _EXEC_WRAPPER = r"""
 pidfile=$1
@@ -133,7 +158,14 @@ def _validate_container_reference(value: str) -> str:
 
 
 class DockerEnvironment(Environment):
-    """Run commands in a new network-isolated or caller-owned container."""
+    """Run commands in a new network-isolated or caller-owned container.
+
+    A recoverable command timeout retains the running container. If cancellation
+    cannot quiesce the command, owned containers are stopped and revoked while
+    preserving their filesystem for caller recovery (for example, docker cp).
+    abort() also preserves the container and backing workspace. The owner must
+    call cleanup() after collecting artifacts to remove these resources.
+    """
 
     process_isolated = True
 
@@ -178,6 +210,25 @@ class DockerEnvironment(Environment):
         self.source_workspace = getattr(backing_environment, "source_workspace", None)
         self.host_workspace = None
         self._temporary_files: set[str] = set()
+
+    @property
+    def container_reference(self) -> str | None:
+        """The container this was attached to, or ``None`` when it owns one.
+
+        Read by whatever needs to open a second view onto the same container --
+        a per-agent worktree, say -- without reaching into how attaching works.
+        """
+        return self._attached_reference
+
+    @property
+    def command_prefix(self) -> Callable[[str], str] | str | None:
+        """What an agent's commands here are wrapped with, if anything.
+
+        A container built for a benchmark usually needs its interpreter
+        activated first, and a second view onto the same container has to run
+        commands the same way for its results to mean the same thing.
+        """
+        return self._command_prefix
 
     async def _docker(
         self,
@@ -249,7 +300,6 @@ class DockerEnvironment(Environment):
         args = [
             "run",
             "-d",
-            "--rm",
             "--network",
             "none",
             "--name",
@@ -346,6 +396,8 @@ class DockerEnvironment(Environment):
             args.append("-i")
         if self._exec_workdir:
             args.extend(("-w", self._exec_workdir))
+        for name, value in _GIT_IDENTITY_ENV:
+            args.extend(("-e", f"{name}={value}"))
         shell_flag = "-lc" if self._command_prefix is not None else "-c"
         args.extend(
             (
@@ -387,10 +439,18 @@ class DockerEnvironment(Environment):
         if self._attached:
             self.revoke()
             return False
-        removed = await self._remove_container_if_owned()
-        if not removed:
-            self.revoke()
-        return removed
+        # Losing the command group must not discard the caller's workspace or
+        # masquerade as a recoverable tool timeout. Retain it until cleanup().
+        self.revoke()
+        await self._stop_owned_container()
+        return False
+
+    async def _stop_owned_container(self) -> None:
+        if self._container_id is None:
+            return
+        result = await self._docker("stop", "--time", "1", "--", self._container_id)
+        if result.returncode != 0:
+            raise ProcessCleanupError("owned container could not be stopped; workspace retained")
 
     async def _exec(
         self,
@@ -413,17 +473,17 @@ class DockerEnvironment(Environment):
                 timeout=timeout,
                 input_bytes=input_bytes,
             )
-        except asyncio.TimeoutError:
+        except asyncio.TimeoutError as exc:
             if not await await_owned_operation(
                 self._recover_inner(token),
                 propagate_cancellation=True,
             ):
                 raise ProcessCleanupError("timed out container command did not quiesce")
-            return ExecResult(
-                self._timeout_returncode,
-                "",
-                f"Command timed out after {timeout:g}s",
-            )
+            # Everything the command printed before the deadline goes back with
+            # the timeout. A test run that hung after reporting nine failures
+            # and one that hung immediately used to be the same empty result,
+            # and the only move left was to run it again.
+            return timed_out_result(exc, self._timeout_returncode, timeout)
         except asyncio.CancelledError as exc:
             if not await await_owned_operation(self._recover_inner(token)):
                 add_exception_note(exc, "cancelled container command did not quiesce")
@@ -650,6 +710,10 @@ class DockerEnvironment(Environment):
 
     async def cleanup(self) -> None:
         async with self._lifecycle_lock:
+            if not self._attached:
+                self.revoke()
+                await await_owned_operation(self._cleanup_resources(), propagate_cancellation=True)
+                return
             await self._abort_resources_locked()
             if self._attached:
                 await await_owned_operation(
@@ -667,7 +731,7 @@ class DockerEnvironment(Environment):
         self.revoke()
         if not self._attached:
             await await_owned_operation(
-                self._cleanup_resources(),
+                self._stop_owned_container(),
                 propagate_cancellation=True,
             )
             return

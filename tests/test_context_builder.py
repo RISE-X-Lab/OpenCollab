@@ -6,6 +6,7 @@ import pytest
 
 from opencollab.application.event_bus import EventBus
 from opencollab.bootstrap.container import ContextBuilder, SpawnConfig
+from opencollab.bootstrap.session_factory import DefaultSessionFactory
 from opencollab.bootstrap.team_config import BASE_TOOL_NAMES, RoleConfig, TeamConfig
 from opencollab.domain.context import ContextLayer, ContextPosition
 from opencollab.domain.skill import SkillManifest
@@ -68,7 +69,9 @@ SCHED = object()  # tools only store the scheduler; build_agent never calls it.
 
 
 def test_lead_prompt_gets_topology_aware_team_section():
-    agent = ContextBuilder(_team(), _cfg()).build_agent("lead", scheduler=SCHED, interactive=True)
+    agent = ContextBuilder(_team(), _cfg()).build_agent(
+        "lead", scheduler=SCHED, ask_user_available=True
+    )
     assert "Lead base prompt." in agent.system_prompt
     assert "## Your team" in agent.system_prompt
     assert "- coder" in agent.system_prompt
@@ -82,18 +85,109 @@ def test_role_without_coordination_tools_gets_no_team_section():
     assert "## Your team" not in agent.system_prompt
 
 
-def test_ask_user_dropped_when_non_interactive():
+def test_ask_user_dropped_when_there_is_no_human_to_ask():
     builder = ContextBuilder(_team(), _cfg())
-    headless = builder.build_agent("lead", scheduler=SCHED, interactive=False)
-    interactive = builder.build_agent("lead", scheduler=SCHED, interactive=True)
+    headless = builder.build_agent("lead", scheduler=SCHED, ask_user_available=False)
+    attended = builder.build_agent("lead", scheduler=SCHED, ask_user_available=True)
     assert "ask_user" not in {t.name for t in headless.tools}
-    assert "ask_user" in {t.name for t in interactive.tools}
+    assert "ask_user" in {t.name for t in attended.tools}
+
+
+def test_the_shell_answer_does_not_ride_on_the_ask_user_answer():
+    """A role built without ``ask_user`` may still be given a shell.
+
+    Every teammate of a prebuilt team is exactly that shape, and while the two
+    answers came from one ``interactive`` flag they could not be.
+    """
+    builder = ContextBuilder(_team(), _cfg())
+    peer = builder.build_agent(
+        "coder", scheduler=SCHED, ask_user_available=False, allow_unisolated_shell=True
+    )
+    [bash] = [t for t in peer.tools if t.name == "bash"]
+    assert "ask_user" not in {t.name for t in peer.tools}
+    assert bash.require_process_isolation is False
 
 
 def test_model_override_and_default():
     builder = ContextBuilder(_team(), _cfg(model="default-model"))
     assert builder.build_agent("coder", scheduler=SCHED).model == "coder-model"
     assert builder.build_agent("reviewer", scheduler=SCHED).model == "default-model"
+
+
+def test_responses_team_rejects_unsupported_model_tools_before_session_start():
+    team = TeamConfig(
+        roles={
+            "lead": RoleConfig(
+                prompt="Lead.",
+                model="o1-mini",
+                tools=["file_read"],
+            )
+        },
+        topology=Topology(),
+    )
+    cfg = _cfg(model="gpt-5")
+    cfg.wire_protocol = "responses"
+
+    with pytest.raises(ValueError, match="o1-mini.*does not support Responses tools"):
+        DefaultSessionFactory(cfg, team_cfg=team)
+
+
+def test_responses_team_allows_unsupported_tool_model_when_role_has_no_tools():
+    team = TeamConfig(
+        roles={"lead": RoleConfig(prompt="Lead.", model="o1-mini", tools=[])},
+        topology=Topology(),
+    )
+    cfg = _cfg(model="gpt-5")
+    cfg.wire_protocol = "responses"
+
+    DefaultSessionFactory(cfg, team_cfg=team)
+
+
+def test_responses_builder_rejects_unsupported_model_after_tool_resolution():
+    team = TeamConfig(
+        roles={
+            "lead": RoleConfig(
+                prompt="Lead.",
+                model="o1-mini",
+                tools=["file_read"],
+            )
+        },
+        topology=Topology(),
+    )
+    cfg = _cfg(model="gpt-5")
+    cfg.wire_protocol = "responses"
+
+    with pytest.raises(ValueError, match="o1-mini.*does not support Responses tools"):
+        ContextBuilder(team, cfg).build_agent("lead")
+
+
+def test_responses_factory_rejects_unsupported_ad_hoc_role_model():
+    team = TeamConfig(
+        roles={"lead": RoleConfig(prompt="Lead.", tools=[])},
+        topology=Topology(allow_all=True),
+    )
+    cfg = _cfg(model="o1-mini")
+    cfg.wire_protocol = "responses"
+
+    with pytest.raises(ValueError, match="default model.*ad-hoc roles"):
+        DefaultSessionFactory(cfg, team_cfg=team)
+
+
+def test_responses_headless_factory_allows_ask_user_only_unsupported_model():
+    team = TeamConfig(
+        roles={
+            "lead": RoleConfig(
+                prompt="Lead.",
+                model="o1-mini",
+                tools=["ask_user"],
+            )
+        },
+        topology=Topology(),
+    )
+    cfg = _cfg(model="gpt-5")
+    cfg.wire_protocol = "responses"
+
+    DefaultSessionFactory(cfg, team_cfg=team, interactive=False)
 
 
 def test_temperature_global_default_applies_when_role_unset():
@@ -121,9 +215,7 @@ def test_temperature_role_override_and_zero_is_honored():
 
 
 def test_sampling_and_output_limits_flow_into_agent():
-    agent = ContextBuilder(
-        _team(), _cfg(top_p=0.37, max_output_tokens=32_768)
-    ).build_agent("reviewer")
+    agent = ContextBuilder(_team(), _cfg(top_p=0.37, max_output_tokens=32_768)).build_agent("reviewer")
 
     assert agent.top_p == 0.37
     assert agent.max_tokens_per_step == 32_768

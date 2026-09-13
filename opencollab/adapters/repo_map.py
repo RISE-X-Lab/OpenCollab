@@ -368,13 +368,45 @@ async def build_repo_map_via_env(
         'mkfifo "$repo_map_fifo" || exit 70\n'
         f'{find_cmd} >"$repo_map_fifo" 2>"$repo_map_err" &\n'
         "repo_map_find_pid=$!\n"
-        f'head -n {max_entries + 1} <"$repo_map_fifo"\n'
+        # Shallowest paths first, and only then alphabetical. Cutting the
+        # listing to a budget is only defensible if what survives the cut is
+        # the top of the tree; ``find`` emits its own traversal order, which is
+        # neither sorted nor stable, so taking the first N of it kept an
+        # arbitrary sample. On django-11292 that sample was 300 paths out of
+        # thousands and did not contain ``django/`` at all -- the whole source
+        # tree the task was about -- while listing ``js_tests/`` and ``tests/``
+        # in detail. Sorting afterwards, which is what used to happen, only
+        # made an arbitrary sample look like a systematic one.
+        #
+        # The ordering runs here rather than after transport because the cut
+        # has to happen before the listing crosses the wire: a whole repository
+        # of paths would hit the command's own output cap and come back
+        # truncated, which this function reports as no map at all.
+        #
+        # ``awk`` pads the depth to a fixed width so a plain byte sort orders
+        # by depth first, and ``sort`` drains the pipe, so ``find`` finishes
+        # normally instead of dying of SIGPIPE.
+        "repo_map_order() {\n"
+        "  awk -F/ '{ printf \"%03d\\t%s\\n\", NF, $0 }' \\\n"
+        '    | LC_ALL=C sort | cut -f2-\n'
+        "}\n"
+        f'repo_map_order <"$repo_map_fifo" | head -n {max_entries + 1}\n'
         "repo_map_head_status=$?\n"
         'wait "$repo_map_find_pid"\n'
         "repo_map_find_status=$?\n"
         'cat "$repo_map_err" >&2\n'
         'if [ "$repo_map_head_status" -ne 0 ]; then\n'
         '  exit "$repo_map_head_status"\n'
+        "fi\n"
+        # A partial traversal must not be presented as a complete map, and
+        # ``find`` can write a diagnostic without the caller being able to see
+        # whose it was: the shell around this script writes to the same stream.
+        # Under a command prefix the environment runs a *login* shell, whose
+        # profile scripts print there on every single command, so "the process
+        # wrote to stderr" says nothing about the listing. This says it here,
+        # where find's own stream is still separate from everyone else's.
+        'if [ -s "$repo_map_err" ]; then\n'
+        "  exit 71\n"
         "fi\n"
         'case "$repo_map_find_status" in\n'
         "  0|141) exit 0 ;;\n"
@@ -385,18 +417,22 @@ async def build_repo_map_via_env(
         result = await env.exec_cmd(cmd)
     except Exception:
         return ""
-    if (
-        result.returncode != 0
-        or result.stderr.strip()
-        or result.stdout_truncated
-        or result.stderr_truncated
-    ):
+    # Deliberately not ``result.stderr``: see the ``repo_map_err`` guard in the
+    # script above. Everything that makes this listing untrustworthy -- find
+    # failed, find complained, the listing was cut off in transport -- reaches
+    # here as a non-zero status or a truncation flag.
+    if result.returncode != 0 or result.stdout_truncated:
         return ""
     paths = sorted(
-        line[2:] if line.startswith("./") else line
-        for line in result.stdout.splitlines()
-        if line.strip() and line.strip() != "."
-        and _keep_relative_path(line)
+        (
+            line[2:] if line.startswith("./") else line
+            for line in result.stdout.splitlines()
+            if line.strip() and line.strip() != "."
+            and _keep_relative_path(line)
+        ),
+        # The same order the shell applied, restated here so the invariant
+        # survives a change on either side: shallowest first, then alphabetical.
+        key=lambda path: (path.count("/"), path),
     )
     if not paths:
         return ""

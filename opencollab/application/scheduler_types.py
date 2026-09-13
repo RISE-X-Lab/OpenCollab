@@ -24,6 +24,22 @@ class DuplicateSpawnError(RuntimeError):
         )
 
 
+class TeamPrebuiltError(RuntimeError):
+    """A pre-built team refused to create an agent that was not declared for it.
+
+    Raised by ``Scheduler.spawn`` when the scheduler was started with
+    ``prebuild_team``: the roster is fixed at startup, so the delegation verb
+    available to a model is ``send_message`` to a teammate that already exists,
+    not the creation of a new one. The message is written to be shown to the
+    model verbatim — it names the live roster so the refusal reads as "use these"
+    rather than as an unexplained failure.
+    """
+
+    def __init__(self, message: str, *, roster: tuple[tuple[int, str], ...] = ()) -> None:
+        self.roster = roster
+        super().__init__(message)
+
+
 class SchedulerTurnError(RuntimeError):
     """A targeted public turn reached a non-success terminal session phase."""
 
@@ -117,5 +133,6 @@ __all__ = [
     "RosterEntry",
     "SchedulerStalledError",
     "SchedulerTurnError",
+    "TeamPrebuiltError",
     "roster_display_state",
 ]

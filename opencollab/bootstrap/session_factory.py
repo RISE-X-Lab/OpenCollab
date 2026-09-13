@@ -20,7 +20,9 @@ from pathlib import Path
 from typing import Any, Callable
 
 from opencollab.adapters.env import Environment, LocalEnvironment
+from opencollab.adapters.llm.providers import RESPONSES
 from opencollab.adapters.llm.retry import RetryTimeBudget
+from opencollab.adapters.llm.types import model_capabilities
 from opencollab.adapters.repo_map import build_repo_map
 from opencollab.adapters.safe_files import ensure_directory_no_symlinks
 from opencollab.adapters.trace import Tracer
@@ -39,13 +41,48 @@ from opencollab.application.session import Session
 from opencollab.bootstrap.container import build_session_runtime, build_skill_store
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
-from opencollab.bootstrap.team_config import TeamConfig, default_team_config
+from opencollab.bootstrap.team_config import (
+    BASE_TOOL_NAMES,
+    TeamConfig,
+    default_team_config,
+)
 from opencollab.domain.agent import Agent
 from opencollab.domain.identity import role_storage_slug, validate_role_identity
 
 
 class SnapshotSessionError(RuntimeError):
     """An independent session snapshot could not be created safely."""
+
+
+def validate_responses_model_controls(
+    model: str | None,
+    *,
+    role_name: str,
+    tools_present: bool = False,
+    top_p: float | None = None,
+    reasoning_effort: str | None = None,
+) -> None:
+    """Reject known-incompatible Responses controls before side effects.
+
+    Capability metadata is deliberately dimension-specific: unknown models keep
+    neutral tool/streaming defaults, while known reasoning families fail closed
+    for sampling and reasoning controls.  This helper is shared by team and
+    workflow bootstrap paths; the provider adapter remains the final runtime
+    guard for dynamically assembled requests.
+    """
+    capabilities = model_capabilities(model)
+    if tools_present and not capabilities.supports_responses_tools:
+        raise ValueError(
+            f"role {role_name!r} model {model!r} does not support Responses tools"
+        )
+    if top_p is not None and not capabilities.supports_responses_sampling:
+        raise ValueError(
+            f"role {role_name!r} model {model!r} does not support Responses sampling"
+        )
+    if reasoning_effort is not None and not capabilities.supports_responses_reasoning:
+        raise ValueError(
+            f"role {role_name!r} model {model!r} does not support Responses reasoning_effort"
+        )
 
 
 def _team_budget_guard(scheduler: SchedulerPort | None) -> Callable[[], bool] | None:
@@ -305,6 +342,32 @@ def _fork_snapshot_environment(environment: Any) -> Environment:
     return snapshot_environment
 
 
+SESSION_MAX_STEPS = 100
+"""The step ceiling every session in a run is built with.
+
+A runaway guard, not an allowance. Steps and tokens cannot both be equalized
+across differently-organized runs: a solo agent carries one long history and
+pays more per step, while a team's members each carry a short one and pay less,
+so holding the token pool equal makes the team's step count higher and holding
+the step count equal makes its token spend lower. Exactly one of the two can be
+the aligned resource, and it is tokens — that is the cost, the thing the
+provider bills, and the thing a budget claim is about. Steps are counted and
+reported instead, which makes them a result rather than a control.
+
+A guard is therefore only useful if it never fires: a session stopped by this
+ceiling while it still held tokens would be a limit acting under the name of a
+statistic. It has to sit above what the pool can physically fund, and every
+step must send the system prompt and the tool schemas, which compaction cannot
+remove — so the cheapest possible step has a floor and the pool divided by that
+floor bounds the steps a run can reach. Measured on the arms this repository
+ships, that bound is under 500 steps for a 1,000,000-token pool.
+
+The value is the same for every seat. A teammate used to get half the entry
+agent's allowance for no reason anyone could state, which is the same kind of
+unearned privilege difference the shell gate had.
+"""
+
+
 def build_spawn_session(
     *,
     role: str,
@@ -320,7 +383,7 @@ def build_spawn_session(
 ) -> Session:
     """Build the Agent + Session bundle for a spawned child agent.
 
-    ``team_cfg`` defaults to the lead-only default team, so roles resolve to the
+    ``team_cfg`` defaults to the Self-Collaboration team, so roles resolve to the
     generic spec (base tools). The safety policy is derived from the child's
     environment. When ``task`` is given it is seeded as the agent's first
     user-context message (the TASK-layer source), so no separate
@@ -346,9 +409,24 @@ class DefaultSessionFactory:
 
     Holds the shared ``SpawnConfig`` (LLM config inherited by every session),
     the resolved ``TeamConfig`` (role prompts/tools + topology), and the
-    lead-only composition bits (``lead_workspace`` for the local environment and
+    agent-0 composition bits (``lead_workspace`` for the local environment and
     ``interactive`` for the ask-user tool). All role -> Agent assembly is
     delegated to a single ``ContextBuilder``.
+
+    ``prebuilt_roster`` says whether this run's roster is an input to the run
+    (every agent declared in the team file and seated before the first model
+    call) or an outcome of it (children the model spawns mid-run). It is the
+    only thing that separates a teammate from an ad-hoc child here, and it is
+    read exclusively by ``_unisolated_shell_allowed``.
+
+    ``allow_unisolated_shell`` answers the shell question directly instead of
+    letting ``interactive`` answer it by implication. ``None`` keeps the old
+    coupling (a human at the run is what licensed an unsandboxed shell), so a
+    caller that does not pass it gets exactly the previous behaviour.
+
+    ``lead_environment`` is where agent 0 works. Unset, it is the lead workspace
+    on this host; set, it is whatever the caller handed in, which is how a run
+    reaches a repository that exists only inside a container.
     """
 
     def __init__(
@@ -357,9 +435,13 @@ class DefaultSessionFactory:
         *,
         team_cfg: TeamConfig | None = None,
         lead_workspace: str | None = None,
+        lead_environment: Environment | None = None,
         interactive: bool = False,
         save_dir: str | None = None,
         allow_unisolated_child_tests: bool = False,
+        prebuilt_roster: bool = False,
+        allow_unisolated_shell: bool | None = None,
+        max_steps: int = SESSION_MAX_STEPS,
     ):
         self._cfg = cfg
         self._provider_retry_budget = (
@@ -368,19 +450,122 @@ class DefaultSessionFactory:
             else None
         )
         self._team = team_cfg or default_team_config()
-        self._lead_workspace = lead_workspace
         self._interactive = interactive
+        self._validate_responses_tool_support()
+        self._lead_workspace = lead_workspace
+        self._lead_environment = lead_environment
         self._allow_unisolated_child_tests = allow_unisolated_child_tests
+        self._prebuilt_roster = bool(prebuilt_roster)
+        self._allow_unisolated_shell = (
+            interactive if allow_unisolated_shell is None else bool(allow_unisolated_shell)
+        )
         # Run folder where every agent's transcript is persisted. When set,
         # spawned children get their own ``agent_<aid>_<role>.json`` autosave.
         self._save_dir = save_dir
+        self._max_steps = int(max_steps)
+
+    def _validate_responses_tool_support(self) -> None:
+        """Reject statically incompatible team roles before opening a workspace."""
+        if self._cfg.wire_protocol != RESPONSES:
+            return
+
+        # A restricted topology may name an undeclared destination.  Such a
+        # destination is still spawnable and ``TeamConfig.role_for`` resolves it
+        # to the generic BASE_TOOL_NAMES role, so it must participate in the
+        # same startup preflight as explicitly declared roles.
+        reachable_roles = dict(self._team.roles)
+        for source, destinations in self._team.topology.edges.items():
+            reachable_roles.setdefault(source, self._team.role_for(source))
+            for destination in destinations:
+                reachable_roles.setdefault(
+                    destination,
+                    self._team.role_for(destination),
+                )
+
+        for role_name, role in reachable_roles.items():
+            model = role.model or self._cfg.model
+            tool_names = set(role.tools)
+            if role_name != self._team.entry or not self._interactive:
+                tool_names.discard("ask_user")
+            validate_responses_model_controls(
+                model,
+                role_name=role_name,
+                tools_present=bool(tool_names),
+                top_p=self._cfg.top_p,
+                reasoning_effort=self._cfg.reasoning_effort,
+            )
+        fallback_tool_names = set(BASE_TOOL_NAMES) - {"ask_user"}
+        if self._team.topology.allow_all:
+            capabilities = model_capabilities(self._cfg.model)
+            if fallback_tool_names and not capabilities.supports_responses_tools:
+                raise ValueError(
+                    f"default model {self._cfg.model!r} does not support Responses "
+                    "tools required by ad-hoc roles"
+                )
+            if self._cfg.top_p is not None and not capabilities.supports_responses_sampling:
+                raise ValueError(
+                    f"default model {self._cfg.model!r} does not support Responses "
+                    "sampling required by ad-hoc roles"
+                )
+            if (
+                self._cfg.reasoning_effort is not None
+                and not capabilities.supports_responses_reasoning
+            ):
+                raise ValueError(
+                    f"default model {self._cfg.model!r} does not support Responses "
+                    "reasoning_effort required by ad-hoc roles"
+                )
+
+    def _unisolated_shell_allowed(self, *, seated_at_start: bool) -> bool:
+        """May this agent run commands the OS does not sandbox?
+
+        The one source every session in this run reads, so agent 0 and its
+        teammates cannot end up on different answers. ``ask_user`` is decided
+        separately (``interactive`` plus the entry-role rule) — the two used to
+        be the same boolean, which is how teammates came to be seated without a
+        working shell while agent 0 had one.
+
+        ``seated_at_start`` is what distinguishes an agent the run was given
+        from one the run invented. Agent 0 is seated at the start by
+        definition, and so is every teammate of a prebuilt roster: both are
+        nodes a human declared in the team file, running where agent 0 runs, so
+        both get agent 0's answer. A child a model spawned mid-run is not
+        declared anywhere, and keeps the hardened default — it must be handed an
+        OS-sandboxed environment before it can run a command.
+
+        The left half is ``allow_unisolated_shell``, which defaults to
+        ``interactive`` and so reproduces the old rule unless a caller states
+        otherwise. An unattended run that states it — a batch experiment whose
+        agents must be able to run ``git`` — gets the shell without also
+        acquiring a human it could put a question to.
+        """
+        return self._allow_unisolated_shell and seated_at_start
+
+    def _lead_workspace_is_readable_by_the_agents(self) -> bool:
+        """Whether the lead workspace is the directory the agents actually read.
+
+        It is, whenever the run works on this host: no environment was handed in,
+        or the one that was reads and writes this same file system. It is not,
+        when the repository exists only inside a container -- the lead workspace
+        is then the host directory the run was launched from, and an agent that
+        goes looking for what a map of it lists finds nothing there.
+
+        Only the repository map turns on this. A skill package is read off this
+        host once, at build time, and reaches the agent as text it can use from
+        anywhere; a repository map is a claim about a directory the agent is
+        expected to go and read.
+        """
+        env = self._lead_environment
+        if env is None:
+            return True
+        return bool(getattr(env, "local_filesystem", False))
 
     def _fresh_context_builder(self) -> ContextBuilder:
         """Snapshot bounded workspace context at the new session's start."""
         skill_store = build_skill_store(self._lead_workspace)
         project_context = (
             build_repo_map(self._lead_workspace)
-            if self._lead_workspace
+            if self._lead_workspace and self._lead_workspace_is_readable_by_the_agents()
             else None
         )
         return ContextBuilder(
@@ -396,13 +581,17 @@ class DefaultSessionFactory:
         role: str,
         env: Environment,
         budget: int,
-        max_steps: int = 50,
+        max_steps: int | None = None,
         aid: int = -1,
         scheduler: SchedulerPort | None = None,
         task: str | None = None,
         context: str = "",
     ) -> Session:
         role = validate_role_identity(role)
+        # ``None`` means "whatever this run is using", which is the run's single
+        # ceiling. A caller that names a number still gets it, so the standalone
+        # ``build_spawn_session`` helper keeps its own documented default.
+        max_steps = self._max_steps if max_steps is None else int(max_steps)
         cfg = self._cfg
         safety_policy = (
             cfg.safety_policy_factory(env)
@@ -414,7 +603,12 @@ class DefaultSessionFactory:
         agent = context_builder.build_agent(
             role,
             scheduler=scheduler,
-            interactive=False,
+            # Never: a spawned agent is not the entry role, and a peer has no
+            # human of its own to ask.
+            ask_user_available=False,
+            allow_unisolated_shell=self._unisolated_shell_allowed(
+                seated_at_start=self._prebuilt_roster
+            ),
             allow_unisolated_tests=self._allow_unisolated_child_tests,
             plan=plan,
         )
@@ -460,13 +654,19 @@ class DefaultSessionFactory:
         left to ``Session.apply_launch``.
         """
         cfg = self._cfg
-        env = LocalEnvironment(self._lead_workspace)
+        # Agent 0 works where the run works. A caller that supplied an
+        # environment -- a container holding the repository under test, say --
+        # gets that one; otherwise the lead workspace on this host.
+        env = self._lead_environment or LocalEnvironment(self._lead_workspace)
         context_builder = self._fresh_context_builder()
         plan = context_builder.build_plan(self._team.entry)
         agent = context_builder.build_agent(
             self._team.entry,
             scheduler=scheduler,
-            interactive=self._interactive,
+            ask_user_available=self._interactive,
+            allow_unisolated_shell=self._unisolated_shell_allowed(
+                seated_at_start=True
+            ),
             plan=plan,
         )
         return build_session(
@@ -474,6 +674,7 @@ class DefaultSessionFactory:
             env=env,
             tracer=cfg.tracer,
             max_budget_tokens=budget,
+            max_steps=self._max_steps,
             event_sink=cfg.event_bus,
             permission_policy=cfg.permission_policy,
             ask_policy=cfg.ask_policy,
@@ -495,10 +696,12 @@ __all__ = [
     "SnapshotSessionError",
     "agent_save_path",
     "build_session",
+    "SESSION_MAX_STEPS",
     "build_spawn_session",
     "load_session",
     "make_run_dir",
     "slug_label",
     "snapshot_session",
+    "validate_responses_model_controls",
     "workflow_transcript_path",
 ]

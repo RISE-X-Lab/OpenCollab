@@ -12,6 +12,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Literal
 
+from opencollab.adapters.env import Environment
 from opencollab.adapters.trace import Tracer
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.scheduler_types import SchedulerTurnError
@@ -22,6 +23,7 @@ from opencollab.bootstrap.programmatic import (
     ProgrammaticResult,
 )
 from opencollab.bootstrap.runtime_context import build_runtime_context
+from opencollab.bootstrap.session_factory import SESSION_MAX_STEPS
 from opencollab.bootstrap.team_config import load_team_config
 from opencollab.domain.session import SessionPhase
 
@@ -38,8 +40,28 @@ async def run_team(
     artifacts: Path | None,
     trace: bool,
     use_worktrees: bool,
+    prebuild_team: bool = False,
+    allow_unisolated_shell: bool | None = None,
+    max_steps: int = SESSION_MAX_STEPS,
+    serialize_turns: bool = False,
+    environment: Environment | None = None,
 ) -> ProgrammaticResult:
-    """Run the scheduler regime once, including bounded team cleanup."""
+    """Run the scheduler regime once, including bounded team cleanup.
+
+    ``prebuild_team``, ``allow_unisolated_shell``, ``max_steps`` and
+    ``serialize_turns`` are handed straight to ``build_scheduler``; see its
+    docstring for what each decides. All default to the values that reproduce
+    today's run: no roster is seated up front, turns may overlap, and the shell
+    answer still follows ``interactive``, which is ``False`` here because a
+    programmatic run has no human at it. Stating them is how an unattended
+    experiment gets a declared roster whose agents can run ``git`` without also
+    being handed an ``ask_user`` there is nobody to answer.
+
+    ``environment`` is where the run works. ``workspace`` still names the
+    directory this run is anchored to -- skills, the repository map, and the
+    session store are read from it -- while the environment is what agents
+    execute in, which is how a team reaches a repository inside a container.
+    """
     run_config = dict(config)
     run_config["budget"] = max_tokens
     context = build_runtime_context(workspace, run_config, trace=False)
@@ -55,11 +77,19 @@ async def run_team(
         scheduler = _programmatic.build_scheduler(
             context,
             use_worktrees=use_worktrees,
+            # No human is at a programmatic run, so nobody can answer
+            # ``ask_user``. Whether an agent may open an unsandboxed shell is a
+            # separate question, and the caller answers it.
             interactive=False,
+            allow_unisolated_shell=allow_unisolated_shell,
             auto_save=artifacts is not None,
             team_config_path=team_config_path,
             resolved_team_config=team_config,
             save_dir=artifacts,
+            prebuild_team=prebuild_team,
+            max_steps=max_steps,
+            serialize_turns=serialize_turns,
+            environment=environment,
         )
     except BaseException as exc:
         tracer_failure = _programmatic._close_tracer(context.tracer)
@@ -172,6 +202,25 @@ async def run_team(
         metrics={
             "steps": int(getattr(lead, "step_count", 0)),
             "sessions": len(scheduler.table.entries),
+            # A team run reports the same wind-down evidence a solo agent and a
+            # workflow already do. Without it a caller cannot tell a team that
+            # finished from one abandoned mid-flight, and one that reads the
+            # absence as "not settled" treats every completed team run as a
+            # failure -- which is what a harness deciding whether to trust the
+            # workspace does.
+            #
+            # Reaching this line is the evidence: ``scheduler.cleanup`` returned,
+            # which means every scheduler-owned task stopped and the terminal
+            # snapshot persisted, and each failure above raises rather than
+            # falling through. Worktrees are released inside that same call, so
+            # a run that owns its environments has cleaned them up by now; one
+            # handed an environment never cleans it and says nothing about it.
+            **_programmatic._quiescence_metrics(
+                session_quiesced=True,
+                environment_owned=environment is None,
+                environment_cleanup_quiesced=None if environment is not None else True,
+                environment_quiesced=None if environment is not None else True,
+            ),
         },
         agent_failures=_programmatic._team_agent_failures(scheduler),
     )

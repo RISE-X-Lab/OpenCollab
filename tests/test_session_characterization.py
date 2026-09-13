@@ -239,6 +239,39 @@ async def test_session_rejects_user_message_while_provider_turn_is_active():
         await run_task
 
 
+@pytest.mark.asyncio
+async def test_direct_run_loop_cancellation_leaves_session_reusable():
+    class GatedLLM:
+        def __init__(self):
+            self.calls = 0
+            self.started = asyncio.Event()
+
+        async def complete(self, messages, tools=None, temperature=0.0):
+            del messages, tools, temperature
+            self.calls += 1
+            if self.calls == 1:
+                self.started.set()
+                await asyncio.Event().wait()
+            return llm_response(content="fresh answer")
+
+    llm = GatedLLM()
+    session = Session(agent=FakeAgent(), llm=llm)
+    cancelled = asyncio.create_task(session.run_loop())
+    await asyncio.wait_for(llm.started.wait(), timeout=0.5)
+
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(cancelled, timeout=0.5)
+
+    assert session.state.phase is SessionPhase.STOPPED
+    assert session.state.terminal_reason == "cancelled"
+
+    await session.add_user_message("retry after cancellation")
+    assert await asyncio.wait_for(session.run_loop(), timeout=0.5) == "fresh answer"
+    assert session.state.phase is SessionPhase.DONE
+    assert llm.calls == 2
+
+
 def test_session_rejects_user_message_for_a_suspended_turn():
     session = Session(agent=FakeAgent(), llm=FakeLLMClient())
     session.phase = SessionPhase.AWAITING_EVENTS
@@ -383,8 +416,13 @@ def test_no_tool_calls_marks_done_and_emits_text_delta():
     assert session.messages[-1] == {"role": "assistant", "content": "plain answer"}
     assert [event.type for event in events] == ["step_start", "text_delta", "step_end"]
     assert fake_llm.calls[0]["tools"] is None
-    assert tracer.steps[1]["step_type"] == "llm_call"
-    assert tracer.steps[1]["payload"]["content"] == "plain answer"
+    assert [step["step_type"] for step in tracer.steps] == [
+        "context_shaping",
+        "llm_call_started",
+        "llm_call",
+        "session_terminal",
+    ]
+    assert tracer.steps[2]["payload"]["content"] == "plain answer"
 
 def test_session_accepts_explicit_llm_client():
     fake_llm = FakeLLMClient([
@@ -493,7 +531,14 @@ def test_tool_calls_execute_append_tool_result_and_continue():
         "step_end",
     ]
     assert [step["step_type"] for step in tracer.steps] == [
-        "llm_call_started", "llm_call", "tool_exec", "llm_call_started", "llm_call",
+        "context_shaping",
+        "llm_call_started",
+        "llm_call",
+        "tool_exec",
+        "context_shaping",
+        "llm_call_started",
+        "llm_call",
+        "session_terminal",
     ]
     assert fake_llm.calls[0]["tools"][0]["function"]["name"] == "fake_tool"
 

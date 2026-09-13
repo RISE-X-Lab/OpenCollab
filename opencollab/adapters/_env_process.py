@@ -11,6 +11,7 @@ from typing import Any
 
 from opencollab.adapters._env_base import ExecResult
 from opencollab.application.async_timeout import await_owned_operation
+from opencollab.application.exception_notes import add_exception_note
 
 PROCESS_OUTPUT_CAPTURE_BYTES = 1024 * 1024
 PROCESS_TERM_GRACE_SECONDS = 0.05
@@ -20,6 +21,26 @@ _BACKGROUND_SPAWN_CLEANUPS: set[asyncio.Task[None]] = set()
 
 class ProcessCleanupError(RuntimeError):
     """A subprocess group remained alive after bounded cleanup."""
+
+
+class ProcessTimeout(asyncio.TimeoutError):
+    """A command was killed at its deadline, carrying what it had written.
+
+    A timed-out command used to reach the model as an empty result and one
+    sentence saying it timed out. Everything the command had already printed --
+    which for a test run is the failures it got through before it hung, and for
+    a build is where it stopped -- was read into the capture buffers, then
+    discarded when the reader tasks were cancelled. The model was left to guess
+    whether the command had done nothing or nearly everything, and its only
+    move was to run it again.
+
+    Subclasses ``asyncio.TimeoutError`` so every existing ``except`` clause
+    still catches it; a caller that wants the partial output reads ``partial``.
+    """
+
+    def __init__(self, message: str, partial: ProcessResult | None = None):
+        super().__init__(message)
+        self.partial = partial
 
 
 @dataclass(slots=True)
@@ -200,8 +221,25 @@ class ProcessRegistry:
         for process, result in zip(processes, results, strict=True):
             if result is True:
                 self._processes.discard(process)
-        if any(result is not True for result in results):
-            raise ProcessCleanupError("one or more subprocess groups did not quiesce")
+        failures = [result for result in results if result is not True]
+        if failures:
+            failure = ProcessCleanupError(
+                "one or more subprocess groups did not quiesce"
+            )
+            for result in failures:
+                detail = (
+                    f"{type(result).__name__}: {result}"
+                    if isinstance(result, BaseException)
+                    else "termination returned an unproven result"
+                )
+                add_exception_note(failure, f"subprocess cleanup failure: {detail}")
+            cause = next(
+                (result for result in failures if isinstance(result, BaseException)),
+                None,
+            )
+            if cause is not None:
+                raise failure from cause
+            raise failure
 
     async def abort(self) -> None:
         await await_owned_operation(self._abort_owned(), propagate_cancellation=True)
@@ -281,6 +319,60 @@ async def _spawn_before_deadline(
     return spawn_owner.result()
 
 
+def timed_out_result(
+    exc: BaseException, returncode: int, timeout: float
+) -> ExecResult:
+    """A timeout the model can act on: the notice plus what was already written.
+
+    The notice goes at the top of stderr rather than replacing it, so a reader
+    scanning for why a command failed still finds it first.
+    """
+    notice = f"Command timed out after {timeout:g}s"
+    partial = getattr(exc, "partial", None)
+    if partial is None:
+        return ExecResult(returncode, "", notice)
+    result = partial.to_exec_result()
+    stderr = f"{notice}\n{result.stderr}" if result.stderr else notice
+    return ExecResult(
+        returncode,
+        result.stdout,
+        stderr,
+        result.stdout_truncated,
+        result.stderr_truncated,
+        result.stdout_dropped_bytes,
+        result.stderr_dropped_bytes,
+    )
+
+
+async def _drain_partial_output(
+    stdout_task: asyncio.Task,
+    stderr_task: asyncio.Task,
+    *,
+    returncode: int | None,
+) -> ProcessResult | None:
+    """What the killed command had written, or ``None`` if it cannot be read.
+
+    The process is already gone by the time this runs, so both readers are at
+    EOF and the gather returns at once; the grace period is there for the case
+    where a pipe is still being drained. Returning ``None`` rather than raising
+    keeps a failure here from replacing the timeout the caller is reporting.
+    """
+    try:
+        (stdout, stdout_dropped), (stderr, stderr_dropped) = await asyncio.wait_for(
+            asyncio.gather(stdout_task, stderr_task),
+            timeout=PROCESS_KILL_GRACE_SECONDS,
+        )
+    except (asyncio.TimeoutError, asyncio.CancelledError, OSError, ValueError):
+        return None
+    return ProcessResult(
+        returncode=returncode if returncode is not None else -1,
+        stdout=stdout,
+        stderr=stderr,
+        stdout_dropped_bytes=stdout_dropped,
+        stderr_dropped_bytes=stderr_dropped,
+    )
+
+
 async def run_process(
     command: str | Sequence[str],
     *,
@@ -350,7 +442,12 @@ async def run_process(
         except asyncio.TimeoutError as exc:
             await _require_process_exit(process, "timed out command did not quiesce", exc)
             quiesced = True
-            raise
+            raise ProcessTimeout(
+                f"command exceeded its {timeout_seconds:g}s deadline",
+                await _drain_partial_output(
+                    stdout_task, stderr_task, returncode=process.returncode
+                ),
+            ) from exc
         except asyncio.CancelledError as cancellation:
             await _require_process_exit(
                 process, "cancelled command did not quiesce", propagate=False
@@ -392,6 +489,8 @@ async def run_process(
 __all__ = [
     "PROCESS_OUTPUT_CAPTURE_BYTES",
     "ProcessCleanupError",
+    "ProcessTimeout",
+    "timed_out_result",
     "ProcessRegistry",
     "ProcessResult",
     "run_process",

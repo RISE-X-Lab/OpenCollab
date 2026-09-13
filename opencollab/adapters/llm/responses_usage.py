@@ -34,8 +34,15 @@ def parse_responses_usage(
     messages: list[dict[str, Any]],
     content: str | None,
     tool_calls: list[dict[str, Any]],
+    tools: list[dict[str, Any]] | None = None,
 ) -> Usage:
-    """Build normalized usage while retaining provider-native counters."""
+    """Build normalized usage while retaining provider-native counters.
+
+    ``input_tokens`` is estimated when a Responses endpoint omits its usage
+    counters.  The request's registered tool schemas are part of that input,
+    so callers must pass the provider-shaped tool list through to the
+    estimator as well as the conversational messages.
+    """
     raw = usage_to_dict(getattr(response, "usage", None))
     input_tokens = _positive_usage_int(raw, "input_tokens")
     output_tokens = _positive_usage_int(raw, "output_tokens")
@@ -46,7 +53,7 @@ def parse_responses_usage(
         cache_creation_tokens = _optional_usage_int(raw, "cache_write_tokens")
     estimated = input_tokens is None or output_tokens is None
     if input_tokens is None:
-        input_tokens = estimate_messages_tokens(messages)
+        input_tokens = estimate_messages_tokens(messages, tools)
     if output_tokens is None:
         text = content or ""
         for call in tool_calls:

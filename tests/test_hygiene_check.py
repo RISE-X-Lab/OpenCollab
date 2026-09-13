@@ -9,6 +9,12 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SCRIPT = _REPO_ROOT / "scripts" / "check_added_files.py"
 
+# The line ceiling was demoted from a hard gate to a hint on 2026-08-27: module
+# size predicts little on its own, and splitting a file to satisfy a number
+# widens its public interface. The four tests below still pin every detection
+# path — a new module, a grown one, a renamed one, and the complete-tree run —
+# and now also pin that each is reported as a warning without failing the run.
+
 
 def _git(repository: Path, *args: str) -> str:
     completed = subprocess.run(
@@ -82,7 +88,7 @@ def test_hygiene_accepts_small_files_with_git_legal_special_names(tmp_path):
     assert "checks passed" in result.stdout
 
 
-def test_hygiene_rejects_python_module_over_line_limit(tmp_path):
+def test_hygiene_warns_about_a_python_module_over_line_limit(tmp_path):
     repository, base = _repository(tmp_path)
     (repository / "large.py").write_text("pass\n" * 801, encoding="utf-8")
     _git(repository, "add", "large.py")
@@ -90,7 +96,8 @@ def test_hygiene_rejects_python_module_over_line_limit(tmp_path):
 
     result = _run(repository, base, "HEAD")
 
-    assert result.returncode == 1
+    assert result.returncode == 0
+    assert "::warning" in result.stdout
     assert "801 lines" in result.stdout
 
 
@@ -101,14 +108,15 @@ def _committed_module(repository: Path, name: str, lines: int) -> str:
     return _git(repository, "rev-parse", "HEAD")
 
 
-def test_hygiene_rejects_a_change_that_grows_a_module_past_the_line_limit(tmp_path):
+def test_hygiene_warns_about_a_change_that_grows_a_module_past_the_line_limit(tmp_path):
     repository, _base = _repository(tmp_path)
     base = _committed_module(repository, "module.py", 700)
     _committed_module(repository, "module.py", 801)
 
     result = _run(repository, base, "HEAD")
 
-    assert result.returncode == 1
+    assert result.returncode == 0
+    assert "::warning" in result.stdout
     assert "801 lines" in result.stdout
     assert "grown past the limit by this change" in result.stdout
 
@@ -135,14 +143,15 @@ def test_hygiene_leaves_a_module_that_was_already_oversized_to_the_main_tree_che
     assert "checks passed" in result.stdout
 
 
-def test_hygiene_still_rejects_an_already_oversized_module_on_the_complete_tree(tmp_path):
+def test_hygiene_still_reports_an_already_oversized_module_on_the_complete_tree(tmp_path):
     repository, _base = _repository(tmp_path)
     _committed_module(repository, "module.py", 900)
     empty_tree = _git(repository, "hash-object", "-t", "tree", "/dev/null")
 
     result = _run(repository, empty_tree, "HEAD", "--require-files")
 
-    assert result.returncode == 1
+    assert result.returncode == 0
+    assert "::warning" in result.stdout
     assert "900 lines" in result.stdout
 
 
@@ -173,7 +182,8 @@ def test_hygiene_measures_a_module_renamed_and_grown_in_one_step(tmp_path):
 
     result = _run(repository, base, "HEAD")
 
-    assert result.returncode == 1
+    assert result.returncode == 0
+    assert "::warning" in result.stdout
     assert "801 lines" in result.stdout
 
 

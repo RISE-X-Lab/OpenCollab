@@ -447,6 +447,19 @@ class GrepTool(Tool):
                 diagnostic += " (stderr truncated)"
             return f"Error: {backend} search failed: {truncate(diagnostic, 1000)}"
         if result.stdout.strip():
-            matches = result.stdout.strip().splitlines()[:max_results]
-            return truncate("\n".join(matches), self.max_grep_chars)
+            found = result.stdout.strip().splitlines()
+            matches = found[:max_results]
+            body = truncate("\n".join(matches), self.max_grep_chars)
+            # A capped list used to look exactly like a complete one. A reader
+            # that saw fifty matches and no more had no way to tell whether the
+            # fiftieth was the last, so "the symbol appears fifty times" and
+            # "the symbol appears at least fifty times" were the same output --
+            # and narrowing the search is only worth doing in the second case.
+            if len(found) > len(matches):
+                body += (
+                    f"\n\n... [{len(found) - len(matches)} more matching lines "
+                    f"not shown; raise max_results, or narrow the search with "
+                    f"path or glob] ..."
+                )
+            return body
         return f"No matches found for pattern: {pattern}"

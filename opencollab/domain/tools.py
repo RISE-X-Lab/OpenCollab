@@ -113,6 +113,12 @@ class ToolProcessingResult:
     # batch. The session runner uses this to reject later deferred calls while
     # still emitting a result for every provider-issued tool call id.
     terminal_capture_accepted: bool = False
+    # A ``submit`` call in this batch. Terminal for the batch like a
+    # structured capture, and terminal for the turn as well: the session
+    # runner ends at DONE instead of looping back to PRECHECK, and uses
+    # ``submitted_summary`` as the turn's answer.
+    turn_submitted: bool = False
+    submitted_summary: str | None = None
 
     def apply_to(self, state: SessionState, max_window: int = MAX_CALL_HASH_WINDOW) -> None:
         for message in self.messages_to_append:

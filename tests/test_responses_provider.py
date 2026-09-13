@@ -21,7 +21,6 @@ from opencollab.adapters.llm.responses_provider import (
     _messages_to_input,
     _parse_stream,
     complete_responses,
-    parse_responses_response,
 )
 
 
@@ -521,15 +520,29 @@ async def test_first_event_timeout_includes_waiting_for_response_headers():
 
 
 @pytest.mark.asyncio
-async def test_response_header_timeout_retries_the_same_request():
+async def test_response_header_timeout_retries_the_same_request(monkeypatch):
     calls = 0
+
+    # The first-event budget is spent by attempt 1 *and* re-imposed on attempt 2,
+    # which has to create its stream and yield its first event inside whatever is
+    # left of it. Keep the budget far above the microseconds that costs: a value
+    # small enough to be interesting on attempt 1 is a coin flip on attempt 2.
+    first_event_timeout = 0.25
+
+    async def skip_delay(_seconds):
+        return None
+
+    # Patching ``retry.asyncio.sleep`` mutates the one shared ``asyncio`` module,
+    # so the stalled attempt below must hang on something other than a sleep.
+    monkeypatch.setattr("opencollab.adapters.llm.retry.asyncio.sleep", skip_delay)
+    never = asyncio.Event()
 
     class Responses:
         async def create(self, **_kwargs):
             nonlocal calls
             calls += 1
             if calls == 1:
-                await asyncio.sleep(10)
+                await never.wait()
             item = message_item("OK")
             return FakeStream(
                 [
@@ -546,9 +559,9 @@ async def test_response_header_timeout_retries_the_same_request():
         None,
         0,
         1,
-        first_event_timeout=0.001,
+        first_event_timeout=first_event_timeout,
         stream_idle_timeout=1,
-        round_timeout=2,
+        round_timeout=5,
     )
 
     assert calls == 2
@@ -701,73 +714,3 @@ def test_prompt_cache_key_is_stable_within_one_run_and_isolated_between_runs():
     assert first["prompt_cache_key"] != other_run["prompt_cache_key"]
     assert first["prompt_cache_key"] != other_client["prompt_cache_key"]
     assert len(first["prompt_cache_key"]) == 64
-
-
-def test_non_streaming_text_and_missing_usage_are_supported():
-    response = completed_response(output=[message_item("done")])
-    parsed = parse_responses_response(
-        response,
-        [{"role": "user", "content": "work"}],
-        expected_model="gpt-fake",
-    )
-    assert parsed.content == "done"
-    assert parsed.usage.estimated is False
-
-    response.usage = None
-    estimated = parse_responses_response(
-        response,
-        [{"role": "user", "content": "work"}],
-        expected_model="gpt-fake",
-    )
-    assert estimated.usage.estimated is True
-    assert estimated.usage.cache_read_tokens is None
-    assert estimated.usage.reasoning_tokens is None
-
-
-def test_non_streaming_usage_accepts_top_level_cache_write_fallback():
-    response = completed_response(output=[message_item("done")])
-    del response.usage.input_tokens_details.cache_write_tokens
-    response.usage.cache_write_tokens = 4
-
-    parsed = parse_responses_response(
-        response,
-        [{"role": "user", "content": "work"}],
-        expected_model="gpt-fake",
-    )
-
-    assert parsed.usage.cache_creation_tokens == 4
-
-
-def test_non_streaming_requires_provider_model_identity():
-    response = completed_response(output=[message_item("done")], model="")
-
-    with pytest.raises(ResponsesProtocolError, match="missing model identity"):
-        parse_responses_response(
-            response,
-            [{"role": "user", "content": "work"}],
-            expected_model="gpt-fake",
-        )
-
-
-def test_non_streaming_records_provider_resolved_model_alias_and_estimates_invalid_usage():
-    aliased = completed_response(output=[message_item("done")], model="other-model")
-    parsed_alias = parse_responses_response(
-        aliased,
-        [{"role": "user", "content": "work"}],
-        expected_model="gpt-fake",
-    )
-    assert parsed_alias.provider_model == "other-model"
-
-    response = completed_response(output=[message_item("done")])
-    response.usage.input_tokens = -1
-    response.usage.output_tokens = 0
-    response.usage.input_tokens_details.cached_tokens = -4
-    parsed = parse_responses_response(
-        response,
-        [{"role": "user", "content": "work"}],
-        expected_model="gpt-fake",
-    )
-    assert parsed.usage.estimated is True
-    assert parsed.usage.input_tokens > 0
-    assert parsed.usage.output_tokens > 0
-    assert parsed.usage.cache_read_tokens is None

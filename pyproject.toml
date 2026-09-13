@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "opencollab"
-version = "0.5.2.dev0"
+version = "0.6.1.dev0"
 description = "Minimal multi-agent software development framework for explicit team and workflow orchestration."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,7 +27,7 @@ classifiers = [
     "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
 dependencies = [
-    "openai>=1.30",
+    "openai>=1.99.2",
     "anthropic>=0.78",
     "typer>=0.12",
     "rich>=13.0",
@@ -38,8 +38,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = [
-    "click>=8","pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.5"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "ruff>=0.5", "import-linter>=2.7", "deptry>=0.20"]
 
 [project.scripts]
 opencollab = "opencollab.adapters.cli.main:app"
@@ -54,6 +53,19 @@ packages = ["opencollab"]
 
 # Ruff configuration lives in the repo-root ruff.toml, so a single config governs
 # the whole repository tree.
+
+[tool.deptry]
+# `examples/` holds fixture workspaces that are run, not imported by the package.
+extend_exclude = ["examples"]
+
+[tool.deptry.per_rule_ignores]
+# Tools invoked as commands or loaded as pytest plugins; never imported.
+# `pytest` is here because deptry excludes `tests/` by default, so its only
+# import sites are invisible to this scan.
+DEP002 = ["pytest", "pytest-asyncio", "ruff", "import-linter", "deptry"]
+# `scripts/generate_brand_assets.py` runs out of project via
+# `uv run --no-project --with fonttools`, so fontTools is not a project dependency.
+DEP001 = ["fontTools"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

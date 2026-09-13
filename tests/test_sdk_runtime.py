@@ -104,6 +104,58 @@ async def test_client_resolves_config_once_and_delegates_plain_arguments(
     assert captured["max_steps"] == 4
 
 
+async def test_agent_forwards_all_llm_configuration_to_runtime_agent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured = {}
+
+    async def fake_runtime(**kwargs):
+        captured["agent"] = kwargs["agent"]
+        raise RuntimeError("stop after composition")
+
+    monkeypatch.setattr(programmatic, "_run_agent", fake_runtime)
+    client = OpenCollab(
+        tmp_path,
+        config={
+            "model": "unit-model",
+            "provider": "openai",
+            "wire_protocol": "responses",
+            "context_window": 12_345,
+            "max_output_tokens": 777,
+            "temperature": 0.4,
+            "top_p": 0.6,
+            "thinking": True,
+            "thinking_params": {"budget_tokens": 256},
+            "reasoning_effort": "high",
+            "llm_max_retries": 0,
+            "llm_connect_timeout": 1.25,
+            "llm_first_event_timeout": 2.5,
+            "llm_stream_idle_timeout": 3.75,
+            "provider_error_time_budget": 9.0,
+        },
+        environment=object(),
+    )
+
+    with pytest.raises(RuntimeError, match="stop after composition"):
+        await client.agent("compose only", tools=(), trace=False)
+
+    agent = captured["agent"]
+    assert agent.wire_protocol == "responses"
+    assert agent.context_window == 12_345
+    assert agent.max_tokens_per_step == 777
+    assert agent.temperature == 0.4
+    assert agent.top_p == 0.6
+    assert agent.thinking is True
+    assert agent.thinking_params == {"budget_tokens": 256}
+    assert agent.reasoning_effort == "high"
+    assert agent.llm_max_retries == 0
+    assert agent.llm_connect_timeout == 1.25
+    assert agent.llm_first_event_timeout == 2.5
+    assert agent.llm_stream_idle_timeout == 3.75
+    assert agent.provider_error_time_budget == 9.0
+
+
 def _completed_agent_metrics() -> dict[str, object]:
     return {
         "steps": 1,

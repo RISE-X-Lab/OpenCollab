@@ -86,6 +86,37 @@ def test_targeted_cancel_event_stops_only_addressed_agent_and_scheduler_reuses_i
 
     run(scenario())
 
+def test_a_turn_offered_a_cancel_event_still_ends_when_the_team_goes_quiet():
+    """The waiter is how a turn hears about cancellation, not work it waits on.
+
+    Counting it as pending work means a turn that is offered a cancel event and
+    never cancelled never returns: every agent is idle, the team is quiescent,
+    and the loop is still waiting on an event nobody will set. The interactive
+    CLI offers one on every turn so Ctrl+C has something to reach.
+    """
+    class AnsweringSession(ScriptedSession):
+        async def add_user_message(self, content: str) -> None:
+            await super().add_user_message(content)
+            self.state.reset_for_user_turn()
+
+        async def run_loop(self, cancel_event=None) -> str:
+            self.state.set_phase(SessionPhase.DONE)
+            self.state.append_message({"role": "assistant", "content": "the answer"})
+            return "the answer"
+
+    lead = AnsweringSession("lead", [])
+    scheduler, _ = build_scheduler(lead, [])
+
+    async def scenario():
+        answer = await asyncio.wait_for(
+            scheduler.run_turn(0, "a question", cancel_event=asyncio.Event()),
+            timeout=2,
+        )
+        assert answer == "the answer"
+
+    run(scenario())
+
+
 def test_targeted_cancel_event_settles_suspended_descendants_before_they_finish():
     child_started = asyncio.Event()
     release_child = asyncio.Event()

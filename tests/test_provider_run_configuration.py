@@ -16,7 +16,7 @@ from opencollab.application.workflow_candidates import _candidate_budget_total
 from opencollab.bootstrap import inspection
 
 
-def test_output_limit_retains_content_usage_and_length_disposition():
+def test_output_limit_retains_content_usage_and_output_limit_disposition():
     response = completed_response(
         output=[message_item("partial but useful answer")],
         status="incomplete",
@@ -25,7 +25,7 @@ def test_output_limit_retains_content_usage_and_length_disposition():
     response.usage = {"input_tokens": 4, "output_tokens": 2, "total_tokens": 6}
     result = parse_responses_response(response, [], expected_model="gpt-fake")
     assert result.content == "partial but useful answer"
-    assert result.finish_reason == "length"
+    assert result.finish_reason == "max_tokens"
     assert result.provider_model == response.model
     assert result.usage.total_tokens > 0
 

@@ -95,7 +95,7 @@ class ScriptedFactory:
         sess.scheduler = scheduler
         return sess
 
-def build_scheduler(lead, children):
+def build_scheduler(lead, children, *, serialize_turns=False):
     captured: list = []
 
     async def sink(event):
@@ -107,6 +107,7 @@ def build_scheduler(lead, children):
         session_factory=factory,
         worktree_pool=WorktreePool(".", use_worktrees=False),
         event_sink=EventBus(sink),
+        serialize_turns=serialize_turns,
     )
     holder["scheduler"] = scheduler
     lead.scheduler = scheduler

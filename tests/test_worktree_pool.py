@@ -12,7 +12,13 @@ import pytest
 
 from opencollab.adapters import _env_worktree as worktree_module
 from opencollab.adapters import worktree_pool as pool_module
-from opencollab.adapters.env import ExecResult, LocalEnvironment, WorktreeEnvironment
+from opencollab.adapters.env import (
+    ContainerWorktreeEnvironment,
+    DockerWorkspaceEnvironment,
+    ExecResult,
+    LocalEnvironment,
+    WorktreeEnvironment,
+)
 from opencollab.adapters.worktree_pool import WorktreePool
 
 
@@ -729,3 +735,66 @@ async def test_pool_finishes_cleanup_before_forwarding_cancellation(tmp_path, mo
     with pytest.raises(asyncio.CancelledError):
         await owner
     assert cleaned.is_set()
+
+
+async def test_pool_isolates_inside_the_container_the_run_was_given(tmp_path) -> None:
+    """A repository that exists only in a container is worked on there.
+
+    Reaching it from the host would take a bind mount, and a harness that reads
+    a run's result out of a bounded container archive is exactly one that cannot
+    allow a mount -- so the isolation has to be built on the far side.
+    """
+    base = DockerWorkspaceEnvironment(container_id="d" * 64, repo_root="/testbed")
+    pool = WorktreePool(str(tmp_path), use_worktrees=True, base_environment=base)
+
+    env = pool._build_worktree("opencollab-coder-1234abcd", base)
+
+    assert isinstance(env, ContainerWorktreeEnvironment)
+    assert env.source_workspace == "/testbed"
+    assert env.workspace == "/opencollab-worktrees/opencollab-coder-1234abcd"
+    # Outside the repository root, so it never lands in the harness's archive.
+    assert not env.workspace.startswith("/testbed/")
+
+
+async def test_pool_isolates_inside_a_supplied_host_workspace(tmp_path) -> None:
+    """A supplied host environment is still where its agents' worktrees come from."""
+    elsewhere = _repo(tmp_path / "elsewhere")
+    base = LocalEnvironment(str(elsewhere))
+    pool = WorktreePool(str(tmp_path), use_worktrees=True, base_environment=base)
+
+    env = pool._build_worktree("opencollab-coder-5678ef01", base)
+
+    assert isinstance(env, WorktreeEnvironment)
+    assert env.source_workspace == os.path.realpath(str(elsewhere))
+
+
+async def test_pool_without_worktrees_hands_back_the_supplied_environment(
+    tmp_path,
+) -> None:
+    """Isolation off means every agent works where the run works.
+
+    The shared environment is the caller's, so the pool does not take it over
+    for cleanup: releasing the pool must not close something it was lent.
+    """
+    base = LocalEnvironment(str(tmp_path))
+    pool = WorktreePool(str(tmp_path), use_worktrees=False, base_environment=base)
+
+    first = await pool.acquire("coder")
+    second = await pool.acquire("tester")
+
+    assert first is base and second is base
+    await pool.release()
+    assert not base.revoked
+
+
+async def test_pool_refuses_to_isolate_an_environment_it_cannot_split(tmp_path) -> None:
+    """Better a named refusal than agents silently sharing one workspace."""
+
+    class Opaque(LocalEnvironment):
+        local_filesystem = False
+
+    base = Opaque(str(tmp_path))
+    pool = WorktreePool(str(tmp_path), use_worktrees=True, base_environment=base)
+
+    with pytest.raises(TypeError, match="worktree isolation is not available"):
+        await pool.acquire("coder")

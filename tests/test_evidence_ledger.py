@@ -240,7 +240,7 @@ class _ScriptedFactory:
         self.builds = []
 
     def build_workflow_session(self, *, prompt, budget, tools=None, isolation=False,
-                               label=None, tool_choice=None, thinking=None):
+                               label=None, tool_choice=None, thinking=None, env=None):
         self.builds.append(
             {"tools": list(tools or []), "label": label, "tool_choice": tool_choice, "prompt": prompt}
         )

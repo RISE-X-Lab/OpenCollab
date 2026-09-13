@@ -98,7 +98,7 @@ def test_configured_cap_actually_bounds_bash_output(tmp_path):
     ws.mkdir()
     [bash] = build_tools_for_role(
         ["bash"],
-        interactive=True,
+        allow_unisolated_shell=True,
         tool_limits={"bash": {"max_output_chars": 100}},
     )
     runtime = ToolRuntime(
@@ -112,7 +112,43 @@ def test_configured_cap_actually_bounds_bash_output(tmp_path):
     )
 
     assert "truncated" in result
-    assert len(result) < 400  # 100-char cap + exit-code line + marker
+    # The cap bounds the captured stream, which is what it is for. Asserting a
+    # total instead made this test sensitive to every line the tool adds around
+    # the output -- and one such line, the advice below, was added later.
+    stdout_section = result.split("stdout:\n", 1)[1].split("\nnote:", 1)[0]
+    assert len(stdout_section) <= 100
+
+
+def test_a_cut_result_says_how_to_ask_a_narrower_question(tmp_path):
+    """A marker alone leaves re-running the same command as the obvious move.
+
+    And re-running produces the same cut. Naming the ways to ask for a specific
+    part is what makes the second attempt different from the first.
+    """
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    [bash] = build_tools_for_role(
+        ["bash"],
+        allow_unisolated_shell=True,
+        tool_limits={"bash": {"max_output_chars": 100}},
+    )
+    runtime = ToolRuntime(
+        environment=LocalEnvironment(str(ws)), safety_policy=None, permission_policy=None
+    )
+
+    cut = run(
+        bash.execute_with_runtime(
+            {"command": "printf 'x%.0s' $(seq 1 5000)"}, runtime
+        )
+    )
+    whole = run(bash.execute_with_runtime({"command": "printf 'short'"}, runtime))
+
+    assert "Re-running this command produces the same cut" in cut
+    for suggestion in ("head", "tail", "sed -n", "grep -n", "redirect"):
+        assert suggestion in cut
+    # Not on a result that was never cut: advice about output that is all there
+    # is noise on every single call.
+    assert "note:" not in whole
 
 
 def test_bash_reports_capture_loss_and_preserves_real_tail(tmp_path, monkeypatch):

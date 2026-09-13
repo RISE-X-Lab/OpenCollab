@@ -290,6 +290,17 @@ class Session:
             primary_error: BaseException | None = None
             try:
                 return await self.runner.run_loop(cancel_event)
+            except asyncio.CancelledError as exc:
+                # A public caller may cancel the task directly instead of
+                # setting ``cancel_event``.  The runner intentionally lets that
+                # cancellation propagate, but leaving an in-flight phase in
+                # place would make the facade permanently reject the next user
+                # turn as busy.  Record the same terminal state used by the
+                # scheduler's out-of-band cancellation path before re-raising.
+                primary_error = exc
+                if not self.state.phase.is_terminal():
+                    self.state.cancel()
+                raise
             except BaseException as exc:
                 primary_error = exc
                 raise

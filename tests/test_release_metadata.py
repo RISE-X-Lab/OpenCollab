@@ -23,7 +23,9 @@ def test_release_metadata_keeps_versions_aligned_and_includes_license() -> None:
     assert opencollab.__version__
     assert f'version = "{opencollab.__version__}"' in pyproject
     assert f"## [{opencollab.__version__}]" in changelog
-    assert f'name = "opencollab"\nversion = "{opencollab.__version__}"' in lockfile
+    assert (
+        f'name = "opencollab"\nversion = "{opencollab.__version__}"' in lockfile
+    )
     assert 'license = "MulanPSL-2.0"' in pyproject
     assert 'license-files = ["LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.md"]' in pyproject
     assert license_bytes.startswith(_COPYRIGHT_NOTICE)

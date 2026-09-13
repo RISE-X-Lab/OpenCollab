@@ -9,14 +9,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shlex
 import sys
 import threading
+import time
 from types import SimpleNamespace
 
 import pytest
 
 from opencollab.adapters import hooks as hooks_adapter
+from opencollab.adapters._env_process import (
+    PROCESS_KILL_GRACE_SECONDS,
+    PROCESS_TERM_GRACE_SECONDS,
+)
 from opencollab.adapters.hooks import ShellHookRunner
 from opencollab.application.hooks import HookEventSubscriber
 from opencollab.bootstrap import build_runtime_context, build_scheduler
@@ -167,27 +173,88 @@ def test_runner_swallows_nonzero_exit():
     assert outcome.allow is True
 
 
+# Killing one hook may cost the hook's own timeout, then a SIGTERM grace, then
+# two kill graces reaping the group. A test deadline below that sum reports a
+# kill that worked as a failure on any machine slow enough to need the graces.
+HOOK_KILL_WORST_CASE_SECONDS = PROCESS_TERM_GRACE_SECONDS + 2 * PROCESS_KILL_GRACE_SECONDS
+
+
 def test_runner_kills_on_timeout_without_raising():
-    spec = HookSpec(event="Stop", action_type="command", command="sleep 5", timeout=0.2)
+    hook_timeout = 0.2
+    # The command outlives the deadline by an order of magnitude, so a hook that
+    # was waited out instead of killed trips the deadline rather than passing.
+    spec = HookSpec(event="Stop", action_type="command", command="sleep 60", timeout=hook_timeout)
     runner = ShellHookRunner((spec,))
+    deadline = hook_timeout + HOOK_KILL_WORST_CASE_SECONDS + 1.0
 
     async def _run():
-        return await asyncio.wait_for(runner.fire("Stop", {"hook_event_name": "Stop"}), timeout=2.0)
+        return await asyncio.wait_for(
+            runner.fire("Stop", {"hook_event_name": "Stop"}),
+            timeout=deadline,
+        )
 
     # Returns well under the sleep duration and does not raise.
     outcome = asyncio.run(_run())
     assert outcome.allow is True
 
 
+# The descendant must still be sleeping when a *slow but correct* cleanup gets
+# round to killing it. Cleanup is allowed the whole kill window, so a descendant
+# that wakes inside it writes ``finished`` on cleanup that worked — the same
+# mismatch this module fixes elsewhere, pointing the other way.
+DESCENDANT_OUTLIVES_CLEANUP_SECONDS = HOOK_KILL_WORST_CASE_SECONDS + 5.0
+
+
 def _delayed_sentinel_command(started, finished) -> str:
-    code = (
-        "import pathlib,time; "
-        f"pathlib.Path({str(started)!r}).touch(); "
-        "time.sleep(0.6); "
-        f"pathlib.Path({str(finished)!r}).touch()"
+    """A backgrounded descendant that records its pid, sleeps, then marks its end.
+
+    The marks are shell builtins rather than a launched program: the callers
+    below kill this group on a sub-second timeout, and an interpreter's startup
+    does not reliably fit inside one — measured at 0.04-0.35s on the machines
+    this suite runs on, against a 0.2s hook timeout.
+
+    ``started`` carries the sleeping descendant's pid, so a caller asks whether
+    that process is gone rather than waiting out a wall-clock window. ``finished``
+    is written only when the sleep runs to completion (``&&`` drops it when a
+    signal ends the wait), and the sleep outlasts every grace the cleanup path
+    may spend, so a cleanup that worked cannot lose a race to it.
+    """
+    child = (
+        f"sleep {DESCENDANT_OUTLIVES_CLEANUP_SECONDS} & "
+        f"echo $! > {shlex.quote(str(started))}; "
+        f"wait $! && : > {shlex.quote(str(finished))}"
     )
-    child = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
-    return f"{child} & wait"
+    return f"{{ {child}; }} & wait"
+
+
+async def _await_descendant_reaped(started) -> None:
+    """Wait, on the loop, until the recorded descendant is gone.
+
+    Bounded by what ``terminate_process`` permits itself rather than by a fixed
+    sleep, so a loaded machine buys time instead of a false failure. The wait
+    has to happen *on the running loop*: the cancellation path finishes its
+    cleanup there, so a caller that closed the loop first would be asking about
+    a descendant nobody is left to kill.
+    """
+    deadline = time.monotonic() + HOOK_KILL_WORST_CASE_SECONDS + 1.0
+    # ``started`` exists as soon as the redirection opens it, which can be a
+    # moment before the pid lands in it.
+    while True:
+        recorded = started.read_text().strip() if started.exists() else ""
+        if recorded:
+            break
+        if time.monotonic() >= deadline:
+            pytest.fail("descendant never recorded its pid")
+        await asyncio.sleep(0.01)
+    descendant = int(recorded)
+    while True:
+        try:
+            os.kill(descendant, 0)
+        except ProcessLookupError:
+            return
+        if time.monotonic() >= deadline:
+            pytest.fail(f"descendant {descendant} outlived the cleanup path")
+        await asyncio.sleep(0.01)
 
 
 def test_runner_timeout_kills_descendant_process_group(tmp_path):
@@ -200,10 +267,12 @@ def test_runner_timeout_kills_descendant_process_group(tmp_path):
         timeout=0.2,
     )
 
-    asyncio.run(ShellHookRunner((spec,)).fire("Stop", {"hook_event_name": "Stop"}))
+    async def _run() -> None:
+        await ShellHookRunner((spec,)).fire("Stop", {"hook_event_name": "Stop"})
+        assert started.exists()
+        await _await_descendant_reaped(started)
 
-    assert started.exists()
-    asyncio.run(asyncio.sleep(0.7))
+    asyncio.run(_run())
     assert not finished.exists()
 
 
@@ -252,7 +321,7 @@ def test_runner_caller_cancellation_kills_descendant_process_group(tmp_path):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        await asyncio.sleep(0.7)
+        await _await_descendant_reaped(started)
 
     asyncio.run(_run())
     assert not finished.exists()

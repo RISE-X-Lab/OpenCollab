@@ -101,6 +101,9 @@ class ToolOutputClearShaper(_ReactiveHistoryShaper):
     The dropped content survives in ``state.messages`` / the transcript.
     """
 
+    #: Frozen trajectory label for this rung (see ``ShaperPipeline``).
+    rung = "tool_output_clear"
+
     def __init__(
         self,
         *,
@@ -171,6 +174,9 @@ class OldHistorySnipShaper(_ReactiveHistoryShaper):
     survives in ``state.messages`` / the transcript, so a resume rebuilds it.
     """
 
+    #: Frozen trajectory label for this rung (see ``ShaperPipeline``).
+    rung = "old_history_snip"
+
     def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if not self._over_trigger(messages):
             return messages
@@ -230,6 +236,9 @@ class AutoCompactShaper(_ReactiveHistoryShaper):
     no ``tool_call_id`` is orphaned. The original messages remain in
     ``state.messages`` / the transcript for a lossless resume.
     """
+
+    #: Frozen trajectory label for this rung (see ``ShaperPipeline``).
+    rung = "auto_compact"
 
     def __init__(
         self,

@@ -772,3 +772,45 @@ async def test_docker_writes_reject_oversize_utf8_before_transport(
 async def test_only_docker_declares_os_process_isolation(tmp_path) -> None:
     assert DockerEnvironment().process_isolated
     assert not LocalEnvironment(str(tmp_path)).process_isolated
+
+
+async def test_every_exec_carries_a_git_identity(monkeypatch) -> None:
+    """A commit is the whole payload of a handoff, so it has to be possible.
+
+    A benchmark image configures no ``user.name``/``user.email``, and git
+    refuses to commit without one. The agent doing the work would then have no
+    sha to hand a teammate, and the only trace of it would be a shell error
+    inside a single turn.
+
+    The identity travels as exec environment rather than as repository config
+    on purpose: the harness rebuilds the workspace as a single anonymous commit
+    and verifies it afterwards, so writing a key into ``.git/config`` would make
+    the workspace differ from the one that was prepared.
+    """
+    def respond(command, _kwargs):
+        if command[1] == "run":
+            return _result(stdout=f"{CONTAINER_ID}\n".encode())
+        if command[1] == "exec":
+            return _result(stdout=b"done")
+        raise AssertionError(command)
+
+    fake = FakeDocker(respond)
+    _patch(monkeypatch, fake)
+    env = DockerEnvironment()
+    await env.setup()
+    await env.exec_cmd("git commit -m fix")
+
+    argv = list(fake.calls[-1][0])
+    passed = {
+        argv[index + 1].split("=", 1)[0]: argv[index + 1].split("=", 1)[1]
+        for index, token in enumerate(argv)
+        if token == "-e"
+    }
+    assert passed == {
+        "GIT_AUTHOR_NAME": "OpenCollab Agent",
+        "GIT_AUTHOR_EMAIL": "agent@opencollab.invalid",
+        "GIT_COMMITTER_NAME": "OpenCollab Agent",
+        "GIT_COMMITTER_EMAIL": "agent@opencollab.invalid",
+    }
+    # Every ``-e`` precedes ``--``, or docker reads it as part of the command.
+    assert all(argv.index(name) < argv.index("--") for name in ("-e",))

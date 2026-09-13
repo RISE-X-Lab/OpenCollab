@@ -56,9 +56,10 @@ New behavior needs tests, and the suite must stay green.
 To run the same hooks locally, use
 `pip install pre-commit && pre-commit install`.
 
-## The architecture rule (enforced by tests)
+## The architecture rule (enforced by `lint-imports`)
 
-`tests/test_*_boundaries.py` fail the build on any inward → outward import.
+`lint-imports` fails the build on any inward → outward import. The contracts live in
+`.importlinter`; run it locally with `uv run lint-imports`.
 
 - Never import an outer layer from an inner one (e.g. `domain` importing `adapters`).
 - Need an outer capability inside? Add a **port** in `application/ports.py`, then
