@@ -8,6 +8,7 @@ env for a given role, remember it for cleanup, tear them all down at the end.
 from __future__ import annotations
 
 import logging
+import posixpath
 import uuid
 
 from opencollab.adapters.env import (
@@ -27,7 +28,7 @@ logger = logging.getLogger(__name__)
 # repository root: an archive of that root is what a harness reads the run's
 # result out of, and a worktree nested in it would arrive there as a directory
 # full of files no agent wrote.
-CONTAINER_WORKTREE_ROOT = "/opencollab-worktrees"
+CONTAINER_WORKTREE_ROOT = "/tmp/opencollab-worktrees"
 
 
 async def _finish_cleanup(operation):
@@ -101,10 +102,13 @@ class WorktreePool:
         if base is None:
             return WorktreeEnvironment(self._workspace, branch_name=branch)
         if isinstance(base, DockerEnvironment) and base.container_reference is not None:
+            worktree_root = CONTAINER_WORKTREE_ROOT
+            if posixpath.commonpath((base.workspace, worktree_root)) == base.workspace:
+                worktree_root = "/var/tmp/opencollab-worktrees"
             return ContainerWorktreeEnvironment(
                 container_id=base.container_reference,
                 repository_root=base.workspace,
-                worktree_root=CONTAINER_WORKTREE_ROOT,
+                worktree_root=worktree_root,
                 branch_name=branch,
                 command_prefix=base.command_prefix,
             )

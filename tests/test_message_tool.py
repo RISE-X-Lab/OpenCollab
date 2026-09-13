@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from opencollab.adapters.tools.message import MessageAgentTool, TeamStatusTool
 from opencollab.application.tool_execution import ToolRuntime
 
@@ -131,3 +133,14 @@ def test_team_status_tool_formats_roster():
 def test_team_status_tool_handles_empty_team():
     out = run(TeamStatusTool(FakeScheduler()).execute_with_runtime({}, _runtime()))
     assert "No agents" in out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(('stored', 'address'), [('Straße', 'STRASSE'), ('Café', 'Cafe\u0301')])
+async def test_role_address_uses_the_scheduler_identity(stored, address):
+    scheduler = FakeScheduler([{'aid': 1, 'role': stored}])
+    reply = await MessageAgentTool(scheduler).execute_with_runtime(
+        {'to_role': address, 'summary': 'result', 'content': 'done'}, _runtime()
+    )
+    assert scheduler.sent == [(0, 1, 'result', 'done')]
+    assert reply.startswith('Message queued')

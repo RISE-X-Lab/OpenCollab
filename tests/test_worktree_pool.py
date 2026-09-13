@@ -751,7 +751,7 @@ async def test_pool_isolates_inside_the_container_the_run_was_given(tmp_path) ->
 
     assert isinstance(env, ContainerWorktreeEnvironment)
     assert env.source_workspace == "/testbed"
-    assert env.workspace == "/opencollab-worktrees/opencollab-coder-1234abcd"
+    assert env.workspace == "/tmp/opencollab-worktrees/opencollab-coder-1234abcd"
     # Outside the repository root, so it never lands in the harness's archive.
     assert not env.workspace.startswith("/testbed/")
 
@@ -798,3 +798,34 @@ async def test_pool_refuses_to_isolate_an_environment_it_cannot_split(tmp_path) 
 
     with pytest.raises(TypeError, match="worktree isolation is not available"):
         await pool.acquire("coder")
+
+
+@pytest.mark.parametrize("workspace", ["/app", "/tmp"])
+async def test_container_worktree_can_start_as_an_unprivileged_image_user(monkeypatch, workspace):
+    from opencollab.adapters._env_process import ProcessResult
+    from opencollab.adapters.env import DockerEnvironment
+
+    container_id = 'f' * 64
+    commands = []
+
+    async def docker(self, *args, **kwargs):
+        commands.append(args)
+        if args[0] == 'inspect':
+            return ProcessResult(0, f'{container_id}\t/task\ttrue'.encode(), b'')
+        if 'mkdir' in args:
+            destination = args[-1]
+            if not destination.startswith(('/tmp/', '/var/tmp/')):
+                return ProcessResult(1, b'', b'mkdir: permission denied outside writable temporary directory')
+        if 'rev-parse' in args:
+            return ProcessResult(0, ('a' * 40 + '\n').encode(), b'')
+        return ProcessResult(0, b'', b'')
+
+    monkeypatch.setattr(ContainerWorktreeEnvironment, '_docker', docker)
+    base = DockerEnvironment(container_id=container_id, workspace=workspace, exec_workdir=workspace)
+    pool = WorktreePool(workspace, use_worktrees=True, base_environment=base)
+    env = await pool.acquire('coder')
+    try:
+        assert isinstance(env, ContainerWorktreeEnvironment)
+        assert any('worktree' in command and 'add' in command for command in commands)
+    finally:
+        await pool.release()
