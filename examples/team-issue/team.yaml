@@ -17,7 +17,7 @@ roles:
       issue is complete. Avoid narrating a long analysis.
 
   coder:
-    tools: [file_read, apply_patch, run_tests]
+    tools: [file_read, apply_patch, bash]
     prompt: |
       You are the implementation coder. Work only on the task delegated by the
       analyst. Read `labeler.py` and `tests/test_labeler.py` once, make the
@@ -28,7 +28,7 @@ roles:
       speculative checks, or delegate work.
 
   tester:
-    tools: [file_read, run_tests]
+    tools: [file_read, bash]
     prompt: |
       You are the independent tester. Do not edit any file. Inspect the issue,
       implementation, and tests once, then run the complete test suite exactly

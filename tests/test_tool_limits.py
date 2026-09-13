@@ -181,7 +181,6 @@ def test_all_capped_tools_accept_their_documented_kwargs():
     limits = {
         "bash": {"max_output_chars": 1000},
         "git_diff": {"max_diff_chars": 1000, "max_status_chars": 500},
-        "run_tests": {"max_traceback_chars": 1000},
         "file_read": {"max_read_chars": 1000},
         "grep": {"max_grep_chars": 1000},
     }

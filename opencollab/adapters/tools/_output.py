@@ -1,6 +1,6 @@
 """Shared output truncation for tool results.
 
-Several tools (bash, git_diff, run_tests) bound their stdout/stderr so one huge
+Several tools (bash, git_diff) bound their stdout/stderr so one huge
 result can't blow up the model's context. They all keep a head + tail and drop
 the middle; this is the single copy of that rule. ``label`` names the truncated
 stream in the marker when given (e.g. ``stdout``).

@@ -36,7 +36,7 @@ from opencollab.application.shaping.pipeline import (
 DEFAULT_CLEARED_TOOL_CONTENT = "[Old tool result content cleared]"
 DEFAULT_TOOL_CLEAR_KEEP_RECENT = 5
 DEFAULT_COMPACTABLE_TOOLS = frozenset(
-    {"bash", "file_read", "grep", "git_diff", "run_tests"}
+    {"bash", "file_read", "grep", "git_diff"}
 )
 
 # Visible marker prefix for an auto-compacted segment — the summary announces

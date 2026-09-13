@@ -111,9 +111,9 @@ def build_scheduler(
     team_config_path: str | os.PathLike[str] | None = None,
     resolved_team_config: TeamConfig | None = None,
     save_dir: str | os.PathLike[str] | None = None,
-    allow_unisolated_child_tests: bool = False,
     prebuild_team: bool = False,
     allow_unisolated_shell: bool | None = None,
+    allow_unisolated_child_shell: bool = False,
     max_steps: int = SESSION_MAX_STEPS,
     serialize_turns: bool = False,
     environment: Environment | None = None,
@@ -175,6 +175,11 @@ def build_scheduler(
     ``allow_unisolated_shell=True`` with ``interactive=False`` is exactly that
     run, and it is not expressible with one flag.
 
+    ``allow_unisolated_child_shell`` explicitly authorizes host shell commands
+    for dynamically spawned children. It defaults to False, independently of
+    the entry agent and prebuilt roster permissions. Command confirmation
+    continues to use the run's permission policy.
+
     ``None`` — the default — means "whatever ``interactive`` says", so every
     existing call site keeps its current behaviour without being touched.
     """
@@ -235,12 +240,12 @@ def build_scheduler(
         lead_environment=environment,
         interactive=interactive,
         save_dir=run_dir,
-        allow_unisolated_child_tests=allow_unisolated_child_tests,
         # A prebuilt roster's teammates are declared nodes seated before the
         # first model call, so the factory gives them agent 0's shell instead of
         # the hardened default it gives a child a model spawned mid-run.
         prebuilt_roster=prebuild_team,
         allow_unisolated_shell=allow_unisolated_shell,
+        allow_unisolated_child_shell=allow_unisolated_child_shell,
         max_steps=max_steps,
     )
     worktree_pool = WorktreePool(
