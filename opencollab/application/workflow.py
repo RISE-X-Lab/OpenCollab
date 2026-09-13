@@ -67,6 +67,9 @@ from opencollab.application.workflow_collections import (
     WorkflowCollectionsMixin,
     _TaskConcurrencyPermit,
 )
+from opencollab.application.workflow_collections import (
+    WorkflowEnvironmentRevoked as WorkflowEnvironmentRevoked,
+)
 from opencollab.application.workflow_events import WorkflowEvent
 from opencollab.application.workflow_runtime import (
     DEFAULT_INTERNAL_COMMIT_TIMEOUT_SECONDS,
@@ -504,6 +507,7 @@ class WorkflowContext(
         controlled way inside the workflow (its on-disk edits survive) rather than
         being truncated by the outer wall.
         """
+        self._raise_if_environment_revoked()
         supplied_tool_names = [
             name
             for tool in tools or ()
@@ -542,6 +546,7 @@ class WorkflowContext(
                         pending_cleanup_tasks=[],
                     )
                 )
+            self._raise_if_environment_revoked()
             if schema is not None:
                 return await self._run_structured_agent(
                     prompt, schema=schema, label=label, tools=tools,
@@ -680,6 +685,12 @@ class WorkflowContext(
 
     # -- observability ----------------------------------------------------- #
 
+    def _raise_if_environment_revoked(self) -> None:
+        if bool(getattr(self._factory, "environment_revoked", False)):
+            raise WorkflowEnvironmentRevoked(
+                "shared workflow execution environment has been revoked"
+            )
+
     async def phase(self, title: str) -> None:
         """Mark a workflow phase, and carry it onto the agents started next."""
         self._phase_title = title
@@ -702,5 +713,6 @@ __all__ = [
     "WorkflowBudget",
     "WorkflowBudgetExceeded",
     "WorkflowContext",
+    "WorkflowEnvironmentRevoked",
     "WorkflowEvent",
 ]

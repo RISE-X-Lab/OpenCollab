@@ -140,7 +140,8 @@ def test_overflow_retry_preserves_hard_steering_tool_choice():
     )
 
     assert run(runner.run_loop()) == "recovered"
-    assert llm.calls == ["required", "required"]
+    assert llm.calls == ["required", "required", "required"]
+    assert state.phase.value == "stopped"
 
 
 def test_call_llm_emits_recompaction_event_on_overflow():

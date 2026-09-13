@@ -9,3 +9,25 @@ Request lifecycle traces contain start, complete, and cancellation events with t
 `OpenCollab.create_model_client()` constructs a caller-owned native model transport from the resolved configuration. The caller closes it after use and may pass a protocol-compatible wrapper to `OpenCollab.agent(llm=...)`. Public configuration metadata includes context size, retry count, and provider error time allowance alongside the existing non-secret fields. `OpenCollab.read_session_snapshot(path)` delegates to native snapshot and journal loading without running the saved session.
 
 These public methods let the companion evaluator collect model and role observations through the supported facade. Candidate workspaces, request parsing, finite budgets, cancellation, and snapshot replay have regression coverage. Install this development version with the paired OCE revision described in its evaluation suite guide.
+
+The explicit unbounded switch also applies to native Single calls through
+`OpenCollab.agent()`. Numeric token and step arguments are still validated,
+then the configured switch carries `None` into the actual session limits.
+Provider output size, context capacity, cancellation, and cleanup remain explicit.
+
+A revoked execution environment stops its current session before another model
+call. Workflow calls also check the shared environment before acquiring work and
+after waiting for an agent slot, so queued roles terminate with the revocation
+error while existing transcript, usage, and candidate recovery records survive.
+An isolated candidate's environment remains distinct from its parent environment.
+
+Rejected, oversized malformed tool arguments are shortened in the model's
+read-time view, with both chat tool calls and Responses items kept paired. The
+original transcript retains the rejected arguments. Successful and pending tool
+calls remain exact. Small context windows retain the two most recent evidence
+groups while using the existing pressure-triggered history processing.
+
+If a role already requires a write or structured submission and the model returns
+only prose, the session retries that requirement once with the same tool set. A
+second prose-only response stops the session instead of declaring the requirement
+complete. Both responses remain in its usage and transcript.

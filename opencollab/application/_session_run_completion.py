@@ -277,6 +277,8 @@ class _SessionRunCompletionMixin(_SessionRunTraceMixin):
         tool_calls, blocked_messages = self._apply_pending_tool_allowlist(
             original_tool_calls
         )
+        if tool_calls:
+            self._required_tool_retried = False
         _immediate, deferred = self._split_tool_calls(tool_calls)
 
         if not deferred:

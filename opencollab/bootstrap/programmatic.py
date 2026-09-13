@@ -340,7 +340,7 @@ async def run_agent(
     config: Mapping[str, Any],
     workspace: str,
     tools: str | Sequence[Any] | None,
-    max_tokens: int,
+    max_tokens: int | None,
     max_steps: int | None,
     timeout: float | None,
     cleanup_timeout: float,

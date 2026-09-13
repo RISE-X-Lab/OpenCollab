@@ -48,6 +48,8 @@ from opencollab.application.ports import (
 from opencollab.application.session import SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.shaping import (
+    DEFAULT_HISTORY_KEEP_RECENT_GROUPS,
+    DEFAULT_TOOL_CLEAR_KEEP_RECENT,
     DEFAULT_TOOL_RESULT_BUDGET,
     AutoCompactShaper,
     OldHistorySnipShaper,
@@ -247,6 +249,9 @@ def _build_default_shaper(
     # to fixed defaults when the model is unrecognised.
     context_window = getattr(resolved_llm, "context_window", lambda: None)()
     history_trigger, history_target = history_trigger_target(context_window)
+    # A small input allowance cannot retain the same number of maximum-size
+    # tool exchanges as a large window. Keep the latest location/evidence pair.
+    affordable_groups = max(2, history_target // (DEFAULT_TOOL_RESULT_BUDGET // 4))
 
     # Inject the shaping module's own estimator rather than reaching past it:
     # the layers must size history the way the *request* is sized, provider
@@ -256,11 +261,16 @@ def _build_default_shaper(
         "estimate_tokens": approx_messages_tokens,
         "trigger_tokens": history_trigger,
         "target_tokens": history_target,
+        "keep_recent_groups": min(DEFAULT_HISTORY_KEEP_RECENT_GROUPS, affordable_groups),
     }
     return ShaperPipeline(
         (
             PerToolResultBudgetShaper(DEFAULT_TOOL_RESULT_BUDGET),
-            ToolOutputClearShaper(compactable_tools=COMPACTABLE_TOOL_NAMES, **history_kwargs),
+            ToolOutputClearShaper(
+                compactable_tools=COMPACTABLE_TOOL_NAMES,
+                keep_recent=min(DEFAULT_TOOL_CLEAR_KEEP_RECENT, affordable_groups),
+                **history_kwargs,
+            ),
             OldHistorySnipShaper(**history_kwargs),
             AutoCompactShaper(summarizer=summarizer, **history_kwargs),
         )

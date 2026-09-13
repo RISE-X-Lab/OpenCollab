@@ -18,6 +18,10 @@ class WorkflowBudgetExceeded(Exception):
     """Raised when the shared budget is exhausted before an agent starts."""
 
 
+class WorkflowEnvironmentRevoked(RuntimeError):
+    """The shared workflow environment can no longer execute agent work."""
+
+
 @dataclass
 class _TaskPermitState:
     """Shared state for one context-wide task-concurrency slot."""
@@ -180,7 +184,7 @@ class WorkflowCollectionsMixin:
         async def guard(thunk: Thunk) -> Any:
             try:
                 return await thunk()
-            except WorkflowBudgetExceeded:
+            except (WorkflowBudgetExceeded, WorkflowEnvironmentRevoked):
                 raise
             except Exception:
                 return None
@@ -205,7 +209,7 @@ class WorkflowCollectionsMixin:
                     result = await stage(result, item, idx)
                     if result is None and stop_on_none:
                         return None
-                except WorkflowBudgetExceeded:
+                except (WorkflowBudgetExceeded, WorkflowEnvironmentRevoked):
                     raise
                 except Exception:
                     return None

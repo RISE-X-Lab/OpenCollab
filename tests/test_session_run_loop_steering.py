@@ -83,7 +83,7 @@ def test_steering_hard_rung_forces_tool_choice_through_run_loop():
         step_count=1,
         turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
     )
-    llm = FakeLLM([llm_response(content="done")])
+    llm = FakeLLM([llm_response(content="done"), llm_response(content="done")])
     runner = build_runner(
         state=state, llm=llm, agent=_agent_with_tools("file_read", "apply_patch")
     )
@@ -92,6 +92,8 @@ def test_steering_hard_rung_forces_tool_choice_through_run_loop():
 
     assert llm.calls[0]["tool_choice"] == "required"
 
+    assert runner.state.phase.value == "stopped"
+
 def test_steering_structured_hard_rung_forces_structured_output():
     state = SessionState(
         messages=[{"role": "tool", "content": "prev"}],
@@ -99,7 +101,7 @@ def test_steering_structured_hard_rung_forces_structured_output():
         step_count=1,
         turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
     )
-    llm = FakeLLM([llm_response(content="done")])
+    llm = FakeLLM([llm_response(content="done"), llm_response(content="done")])
     runner = build_runner(
         state=state,
         llm=llm,
@@ -116,13 +118,15 @@ def test_steering_structured_hard_rung_forces_structured_output():
     }
     assert "structured_output using" in llm.calls[0]["messages"][-1]["content"]
 
+    assert runner.state.phase.value == "stopped"
+
 
 def test_dual_contract_forces_write_before_structured_submission():
     state = SessionState(
         messages=[{"role": "tool", "content": "prev"}],
         turn=TurnEnforcementState(reads_since_last_edit=READS_NUDGE_HARD),
     )
-    llm = FakeLLM([llm_response(content="done")])
+    llm = FakeLLM([llm_response(content="done"), llm_response(content="done")])
     runner = build_runner(
         state=state,
         llm=llm,
@@ -140,6 +144,8 @@ def test_dual_contract_forces_write_before_structured_submission():
     ] == ["file_write"]
     assert llm.calls[0]["tool_choice"] == "required"
 
+    assert runner.state.phase.value == "stopped"
+
 
 def test_dual_contract_forces_structured_submission_after_write():
     state = SessionState(
@@ -149,7 +155,7 @@ def test_dual_contract_forces_structured_submission_after_write():
             has_landed_write=True,
         ),
     )
-    llm = FakeLLM([llm_response(content="done")])
+    llm = FakeLLM([llm_response(content="done"), llm_response(content="done")])
     runner = build_runner(
         state=state,
         llm=llm,
@@ -169,6 +175,8 @@ def test_dual_contract_forces_structured_submission_after_write():
         "type": "function",
         "function": {"name": "structured_output"},
     }
+
+    assert runner.state.phase.value == "stopped"
 
 
 def test_unrelated_bad_request_does_not_retry_forced_choice():
@@ -368,6 +376,7 @@ def test_steering_hard_rung_blocks_read_tool_call_before_execution():
         [
             llm_response(content="try read", tool_calls=[read_call], finish_reason="tool_calls"),
             llm_response(content="done"),
+            llm_response(content="done"),
         ]
     )
     tool_execution = FakeToolExecution()
@@ -389,6 +398,8 @@ def test_steering_hard_rung_blocks_read_tool_call_before_execution():
     assert tool_messages[0]["tool_call_id"] == "r1"
     assert "not allowed during the hard write gate" in tool_messages[0]["content"]
     assert state.turn.reads_since_last_edit == READS_NUDGE_HARD
+
+    assert runner.state.phase.value == "stopped"
 
 def test_steering_hard_rung_executes_allowed_write_from_mixed_batch():
     state = SessionState(
