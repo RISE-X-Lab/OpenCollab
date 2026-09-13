@@ -240,6 +240,10 @@ class ToolRuntime:
 
 
 class ToolExecutionRuntimeMixin:
+    @property
+    def environment_revoked(self) -> bool:
+        return bool(getattr(self.environment, "revoked", False))
+
     async def execute_tool(
         self,
         tool,
@@ -253,6 +257,8 @@ class ToolExecutionRuntimeMixin:
         tool cannot abort the rest of the batch.
         """
         start = time.monotonic()
+        if self.environment_revoked:
+            return "Error: Skipped because the execution environment has been revoked.", 0.0
         runtime = self.tool_runtime(tool_call_id=tool_id)
         timeout = self.tool_execution_timeout(tool, args)
         execution_task: asyncio.Task[Any] | None = None
@@ -451,6 +457,8 @@ class ToolExecutionRuntimeMixin:
         Deferred tools bypass ``process`` (and thus loop-detection hashing) by
         design — a spawn is never a doom-loop the way a repeated read is.
         """
+        if self.environment_revoked:
+            return None, "Error: Skipped because the execution environment has been revoked."
         func = tc["function"]
         tool_name = func["name"]
         try:

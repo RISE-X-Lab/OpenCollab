@@ -42,6 +42,11 @@ from opencollab.domain.session import SessionPhase, SessionState
 
 logger = logging.getLogger(__name__)
 
+_REQUIRED_TOOL_RETRY_NUDGE = (
+    "Your previous response did not call the required tool. Call one of the "
+    "currently available tools to complete this step."
+)
+
 __all__ = [
     "DEFAULT_COMMIT_RESERVE",
     "DEFAULT_DEFERRABLE_TOOLS",
@@ -79,8 +84,8 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         event_factory: SessionEventFactory | None = None,
         tool_execution: ToolExecutionUseCase,
         tracer: TracePort | None = None,
-        max_budget_tokens: int = 1_000_000,
-        max_steps: int = 100,
+        max_budget_tokens: int | None = 1_000_000,
+        max_steps: int | None = 100,
         deferrable_tool_names: frozenset[str] = DEFAULT_DEFERRABLE_TOOLS,
         shaper: ShaperPort | None = None,
         team_budget_exhausted: Callable[[], bool] | None = None,
@@ -174,6 +179,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._low_yield_m = low_yield_m
         self._pending_tool_allowlist: frozenset[str] | None = None
         self._pending_tool_gate_label: str | None = None
+        self._required_tool_retried = False
         # Message index where the current user turn began. It survives a
         # deferred suspend/resume so the returned answer is scoped to this turn.
         self._turn_start_message_index: int | None = None
@@ -190,6 +196,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.agent.tool_choice = copy.deepcopy(self._initial_agent_tool_choice)
         self._pending_tool_allowlist = None
         self._pending_tool_gate_label = None
+        self._required_tool_retried = False
 
     def reset_for_restore(self) -> None:
         """Discard process-local turn state before publishing a snapshot."""
@@ -234,6 +241,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             protected_call = self.state.wind_down_done
         if (
             protected_call
+            and self.max_budget_tokens is not None
             and self.state.used_tokens >= self.max_budget_tokens - self._commit_reserve
         ):
             self.state.budget_reserve_consumed = True
@@ -434,7 +442,11 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         effective_reserve = self._commit_reserve if commit_reserve is None else commit_reserve
         if isinstance(effective_reserve, bool) or not isinstance(effective_reserve, int) or effective_reserve <= 0:
             raise ValueError("commit_reserve must be a positive integer")
-        if enforcement_strength == ENFORCEMENT_ON and effective_reserve > self.max_budget_tokens:
+        if (
+            enforcement_strength == ENFORCEMENT_ON
+            and self.max_budget_tokens is not None
+            and effective_reserve > self.max_budget_tokens
+        ):
             raise ValueError("commit_reserve cannot exceed max_budget_tokens")
 
         self._enforcement_strength = enforcement_strength
@@ -557,8 +569,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             await self._stop_precheck("wind-down complete: forced commit within reserve")
             return True
 
-        explore_threshold = self.max_budget_tokens - self._commit_reserve
-        budget_spent = self.state.used_tokens >= explore_threshold
+        budget_spent = False
+        if self.max_budget_tokens is not None:
+            explore_threshold = self.max_budget_tokens - self._commit_reserve
+            budget_spent = self.state.used_tokens >= explore_threshold
         watchdog_tripped = self._brake_on() and self.state.turn.steps_since_progress >= self._watchdog_k
         low_yield_tripped = self._brake_on() and self.state.turn.low_yield_since_progress >= self._low_yield_m
         brake = budget_spent or watchdog_tripped or low_yield_tripped
@@ -587,6 +601,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.state.transition_to(SessionPhase.CALLING_LLM)
         return True
 
+    def _ensure_tool_environment_active(self) -> None:
+        if getattr(self.tool_execution, "environment_revoked", False):
+            raise RuntimeError("Execution environment has been revoked. Session cannot continue.")
+
     async def precheck(self, cancel_event: asyncio.Event | None) -> None:
         """Gate the next LLM call: cancellation, loop-block, token budget, step limit.
 
@@ -594,6 +612,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         stops the session via ``_stop_precheck`` (STOPPED with a reason string);
         otherwise proceed to CALLING_LLM.
         """
+        self._ensure_tool_environment_active()
         if cancel_event and cancel_event.is_set():
             await self._stop_precheck(
                 "interrupted by user",
@@ -601,12 +620,20 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
             )
             return
 
+        environment = getattr(self.tool_execution, "environment", None)
+        if bool(getattr(environment, "revoked", False)):
+            await self._stop_precheck("execution environment has been revoked")
+            return
+
         if self.state.turn.loop_blocked_since_progress >= DEFAULT_LOOP_BLOCKED_LIMIT:
             reason = f"loop block limit reached: {self.state.turn.loop_blocked_since_progress} repeated tool calls"
             await self._stop_precheck(reason)
             return
 
-        if self.state.used_tokens >= self.max_budget_tokens:
+        if (
+            self.max_budget_tokens is not None
+            and self.state.used_tokens >= self.max_budget_tokens
+        ):
             reason = f"budget exceeded: {self.state.used_tokens} tokens used"
             await self._stop_precheck(reason)
             return
@@ -623,7 +650,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         if await self._apply_enforcement_gate():
             return
 
-        if self.state.step_count >= self.max_steps:
+        if self.max_steps is not None and self.state.step_count >= self.max_steps:
             reason = f"step limit reached: {self.state.step_count} steps"
             await self._stop_precheck(reason)
             return
@@ -641,11 +668,20 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         unhandled ERROR — mirroring the BUDGET_EXCEEDED degradation.
         """
         self._llm_step_started = False
+        self._ensure_tool_environment_active()
         start = time.monotonic()
 
         tools = self.build_tool_schemas()
         try:
             response = await self.call_llm(tools)
+        except asyncio.CancelledError as cancellation:
+            try:
+                self.record_llm_cancelled()
+            except Exception as observation_error:
+                add_note = getattr(cancellation, "add_note", None)
+                if callable(add_note):
+                    add_note(f"cancellation trace failed: {type(observation_error).__name__}")
+            raise
         except _TokenBudgetStop as exc:
             reason = (
                 "budget exhausted before model call: conservative input reservation "
@@ -665,7 +701,10 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self.state.set_context_tokens(input_tokens)
 
         self.record_llm_trace(response, latency)
-        if self.state.used_tokens > self.max_budget_tokens:
+        if (
+            self.max_budget_tokens is not None
+            and self.state.used_tokens > self.max_budget_tokens
+        ):
             reason = (
                 "budget exceeded after model call: "
                 f"{self.state.used_tokens} tokens used"
@@ -724,6 +763,27 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
 
         if response.tool_calls:
             self.state.transition_to(SessionPhase.EXECUTING_TOOLS)
+            return
+
+        if self._pending_tool_allowlist and response.finish_reason in (None, "stop"):
+            if not self._required_tool_retried:
+                self._required_tool_retried = True
+                if self.tracer:
+                    self.tracer.log_step(
+                        step_type="required_tool_retry",
+                        payload={"allowed_tools": sorted(self._pending_tool_allowlist)},
+                        latency=pending.latency,
+                    )
+                if not has_content:
+                    self.state.append_message({"role": "assistant", "content": _EMPTY_STOP_PLACEHOLDER})
+                self.state.append_message({"role": "user", "content": _REQUIRED_TOOL_RETRY_NUDGE})
+                self.state.transition_to(SessionPhase.AUTOSAVING)
+                return
+            await self.finish_step(pending.latency)
+            self.clear_pending_step()
+            self.state.transition_to(
+                SessionPhase.STOPPED, reason="required tool was not called after correction"
+            )
             return
 
         # Empty-stop: a clean ``stop`` turn that produced neither text nor a tool

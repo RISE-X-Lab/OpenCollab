@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from typing import Any
 
 from opencollab.adapters.llm.errors import TransientProviderError
 from opencollab.adapters.llm.responses_errors import (
+    _TRANSIENT_RESPONSE_CODES,
+    _TRANSIENT_RESPONSE_MESSAGES,
     ResponsesEmptyOutputError,
     ResponsesProtocolError,
     ResponsesStreamInterruptedError,
@@ -215,7 +218,9 @@ async def _next_event(iterator: Any, timeout: float, *, stage: str) -> Any:
     try:
         return await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
     except asyncio.TimeoutError as exc:
-        raise ResponsesProtocolError(f"Responses {stage} timeout after {timeout:g}s") from exc
+        raise ResponsesStreamInterruptedError(
+            f"Responses {stage} timeout after {timeout:g}s"
+        ) from exc
     except StopAsyncIteration as exc:
         raise ResponsesStreamInterruptedError("Responses stream ended before response.completed") from exc
 
@@ -302,13 +307,16 @@ def _validate_terminal_response(
     return actual_model, finish_reason
 
 
+
 def _handle_event(event: Any, state: _StreamState, expected_model: str | None = None) -> bool:
     event_type = _event_type(event)
     if event_type in {"error", "response.failed"}:
         error = _event_error_data(event)
         message = _event_error(event)
         code = error.get("code") if isinstance(error, dict) else None
-        if code in {"rate_limit_exceeded", "server_error", "vector_store_timeout"}:
+        if code in _TRANSIENT_RESPONSE_CODES or any(
+            fragment in message.lower() for fragment in _TRANSIENT_RESPONSE_MESSAGES
+        ):
             status_code = 429 if code == "rate_limit_exceeded" else 503
             raise ResponsesTransientEventError(
                 message,
@@ -365,7 +373,11 @@ async def _consume_stream(
     expected_model: str | None = None,
 ) -> _StreamState:
     state = _StreamState()
-    iterator = stream.__aiter__()
+    # OpenAI AsyncStream already owns its response-closing iterator and also
+    # exposes a wrapper-style __aiter__ async generator.  Iterating the stream
+    # directly avoids leaving that outer generator for interpreter shutdown,
+    # where it can athrow into an already closed httpcore PoolByteStream.
+    iterator = stream if callable(getattr(stream, "__anext__", None)) else stream.__aiter__()
     first = True
     try:
         while True:
@@ -403,7 +415,9 @@ async def _create_and_consume_stream(
             timeout=first_event_timeout,
         )
     except asyncio.TimeoutError as exc:
-        raise ResponsesProtocolError(f"Responses first-event timeout after {first_event_timeout:g}s") from exc
+        raise ResponsesStreamInterruptedError(
+            f"Responses first-event timeout after {first_event_timeout:g}s"
+        ) from exc
 
     remaining = deadline - loop.time()
     if remaining <= 0:
@@ -412,7 +426,9 @@ async def _create_and_consume_stream(
             result = close()
             if asyncio.iscoroutine(result):
                 await result
-        raise ResponsesProtocolError(f"Responses first-event timeout after {first_event_timeout:g}s")
+        raise ResponsesStreamInterruptedError(
+            f"Responses first-event timeout after {first_event_timeout:g}s"
+        )
     return await _consume_stream(
         event_stream,
         remaining,
@@ -654,6 +670,9 @@ async def complete_responses(
     stream: bool = True,
 ) -> LLMResponse:
     """Run one locally replayable Responses request and require typed completion."""
+    external_isolation = os.environ.get("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION") == "1"
+    retry_limit = None if external_isolation else max_retries
+    retry_budget = None if external_isolation else provider_error_time_budget
     converted_tools = _responses_tools(tools)
     forced_text_tool = _forced_text_tool(model, converted_tools, tool_choice)
     kwargs = _build_request_kwargs(
@@ -698,7 +717,7 @@ async def complete_responses(
             converted_tools,
         )
 
-    if provider_error_time_budget is not None:
+    if retry_budget is not None:
 
         async def bounded_request_once() -> LLMResponse:
             if round_timeout is None:
@@ -710,12 +729,12 @@ async def complete_responses(
 
         return await with_retry(
             bounded_request_once,
-            max_retries=max_retries,
-            retry_time_budget=provider_error_time_budget,
+            max_retries=retry_limit,
+            retry_time_budget=retry_budget,
         )
 
     async def run() -> LLMResponse:
-        return await with_retry(request_once, max_retries=max_retries)
+        return await with_retry(request_once, max_retries=retry_limit)
 
     try:
         if round_timeout is None:

@@ -675,6 +675,7 @@ async def test_budget_none_never_raises():
     assert await ctx.agent("b") == "b"
     assert ctx.budget.total is None
     assert ctx.budget.remaining() == float("inf")
+    assert [build["budget"] for build in ctx._factory.builds] == [None, None]
 
 @pytest.mark.asyncio
 async def test_parallel_propagates_budget_exceeded():

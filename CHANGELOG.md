@@ -5,6 +5,13 @@ All notable changes to OpenCollab are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [0.6.1.dev0] - Unreleased
+
+### Added
+
+Paired evaluation runtime support with candidate workspace isolation, configured unbounded limits, public model and snapshot inspection, and durable request lifecycle observations.
+
+
 ## [Unreleased]
 
 ## [0.6.0] - 2026-09-04
@@ -164,3 +171,5 @@ clean architecture where everything but the model sits behind swappable ports.
 [0.5.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/563027175e2cc2540d19324def73010a7e436dcc...v0.4.1
 [0.1.0]: https://github.com/RISE-X-Lab/OpenCollab/tree/563027175e2cc2540d19324def73010a7e436dcc
+
+[0.6.1.dev0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.1...HEAD

@@ -96,7 +96,7 @@ class RetryTimeBudget:
 
 async def with_retry(
     call_factory,
-    max_retries: int,
+    max_retries: int | None,
     *,
     retry_time_budget: RetryTimeBudget | None = None,
 ) -> Any:
@@ -115,15 +115,16 @@ async def with_retry(
             retry_time_available = retry_time_budget is None or retry_time_budget.consume(
                 time.monotonic() - started
             )
-            if attempt >= max_retries:
+            if max_retries is not None and attempt >= max_retries:
                 raise
             if not retry_time_available:
                 raise
 
             retry_after = extract_retry_after_seconds(e)
-            base = retry_after if retry_after is not None else 2.0 ** attempt
-            if retry_time_budget is not None:
-                base = min(base, MAX_EXPONENTIAL_RETRY_DELAY_SECONDS)
+            base = retry_after if retry_after is not None else min(
+                2.0 ** min(attempt, 30),
+                MAX_EXPONENTIAL_RETRY_DELAY_SECONDS,
+            )
             delay = max(0.0, base + random.uniform(0.0, RETRY_JITTER_MAX_SECONDS))
             if retry_time_budget is not None and not retry_time_budget.consume(delay):
                 raise
