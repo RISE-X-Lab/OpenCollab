@@ -26,6 +26,27 @@ Saved runs or external workflows that reconstruct that tool need migration
 before resuming with this version. Existing installations and their saved
 artifacts remain usable with their original version.
 
+## Test command timeouts
+
+Bash keeps its shared default timeout of **120 seconds**. The removed
+`run_tests` tool defaulted to **300 seconds**, so migrating a test invocation
+also changes its default time allowance. For a longer test command, supply
+`timeout` in seconds as a Bash tool-call argument. Use `timeout=300` to preserve
+the previous test-tool allowance, or a larger value such as `timeout=600` when
+the suite needs more time.
+
+For example, the agent or calling code can provide these tool-call arguments.
+
+```python
+test_call = dict(
+    command="python -m pytest -q",
+    timeout=600,
+)
+```
+
+An explicit `timeout` applies to that invocation. Calls that omit it continue
+to use the shared 120-second Bash default.
+
 ## Execution permissions
 
 Bash requires a process-isolated environment unless the caller explicitly
