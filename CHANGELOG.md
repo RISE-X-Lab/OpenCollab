@@ -5,11 +5,24 @@ All notable changes to OpenCollab are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
-## [0.6.1.dev0] - Unreleased
+## [0.7.0] - 2026-09-14
 
 ### Added
 
 Paired evaluation runtime support with candidate workspace isolation, configured unbounded limits, public model and snapshot inspection, and durable request lifecycle observations.
+
+### Changed
+
+Native project tests run through Bash; the built-in `run_tests` tool is removed.
+OpenCollab-Eval 0.7.0 owns parser-backed verification for research workflows.
+Docker control operations now allow 60 seconds for daemon cleanup.
+
+### Fixed
+
+Revoked execution environments terminate their sessions instead of continuing
+ineffective tool calls. Candidate worktrees retain the correct environment and
+cleanup ownership. Redirected CLI input preserves queued tasks and answers,
+including pipes, ordinary files, encodings and concurrent questions.
 
 
 ## [Unreleased]
@@ -166,10 +179,10 @@ clean architecture where everything but the model sits behind swappable ports.
 - Trimmed the GLM SWE-bench experiment archive to the final report and prediction files.
 - Moved Chinese working notes into `docs/archive/`.
 
-[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.7.0...HEAD
 [0.6.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/RISE-X-Lab/OpenCollab/compare/563027175e2cc2540d19324def73010a7e436dcc...v0.4.1
 [0.1.0]: https://github.com/RISE-X-Lab/OpenCollab/tree/563027175e2cc2540d19324def73010a7e436dcc
 
-[0.6.1.dev0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.5.1...HEAD
+[0.7.0]: https://github.com/RISE-X-Lab/OpenCollab/compare/v0.6.0...v0.7.0
