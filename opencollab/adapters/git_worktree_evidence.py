@@ -58,12 +58,15 @@ def select_diff_base(reflog: str, *, fallback: str) -> str:
     answer when there is nothing to read -- a repository with
     ``core.logAllRefUpdates`` off keeps no such record.
     """
-    for line in reflog.splitlines():
-        entry = REFLOG_ENTRY_RE.match(line)
-        if entry is None:
-            continue
-        commit, message = entry.group(1), entry.group(2)
+    entries = [
+        match.groups() for line in reflog.split("\n")
+        if (match := REFLOG_ENTRY_RE.match(line)) is not None
+    ]
+    for index, (commit, message) in enumerate(entries):
         if message.startswith(OWN_COMMIT_REFLOG_PREFIX):
+            continue
+        # Creating a branch at the current HEAD does not adopt a new base.
+        if index + 1 < len(entries) and entries[index + 1][0] == commit:
             continue
         return commit
     return fallback

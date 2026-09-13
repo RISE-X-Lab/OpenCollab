@@ -79,7 +79,7 @@ def _side_path(token: str, prefix: str) -> str | None:
     Git appends a tab after the path when the path contains a space, so the
     tab is stripped before anything else looks at the token.
     """
-    token = _git_unquote(token.split("\t", 1)[0].strip())
+    token = _git_unquote(token.split("\t", 1)[0])
     if token == "/dev/null":
         return None
     return token[len(prefix):] if token.startswith(prefix) else token
@@ -94,7 +94,7 @@ def _header_line_paths(line: str) -> tuple[str | None, str | None]:
     of every non-rename entry, and a rename carries explicit ``rename
     from``/``rename to`` lines anyway.
     """
-    rest = line[len(_DIFF_HEADER):].strip()
+    rest = line[len(_DIFF_HEADER):]
     if rest.startswith('"'):
         closing = rest.find('" "')
         if closing == -1:
@@ -127,9 +127,9 @@ def _classify_block(block: list[str]) -> list[tuple[str, str]]:
         elif line.startswith("deleted file mode"):
             deleted = True
         elif line.startswith("rename from "):
-            rename_from = _git_unquote(line[len("rename from "):].strip())
+            rename_from = _git_unquote(line[len("rename from "):])
         elif line.startswith("rename to "):
-            rename_to = _git_unquote(line[len("rename to "):].strip())
+            rename_to = _git_unquote(line[len("rename to "):])
         elif line.startswith("--- "):
             old_path = _side_path(line[4:], "a/")
         elif line.startswith("+++ "):
@@ -155,7 +155,7 @@ def _parse_worktree_diff(diff: str) -> list[tuple[str, str]]:
     line is always prefixed by ``+``, ``-``, or a space.
     """
     blocks: list[list[str]] = []
-    for line in diff.splitlines():
+    for line in diff.split("\n"):
         if line.startswith(_DIFF_HEADER):
             blocks.append([line])
         elif blocks:
@@ -264,9 +264,13 @@ class SchedulerTeamMixin:
         """
         if not self._prebuild_team or self._team_prebuilt:
             return ()
+        if self._shutting_down:
+            raise RuntimeError("Cannot prebuild the team: scheduler is shutting down.")
         if self._prebuild_lock is None:
             self._prebuild_lock = asyncio.Lock()
         async with self._prebuild_lock:
+            if self._shutting_down:
+                raise RuntimeError("Cannot prebuild the team: scheduler is shutting down.")
             if self._team_prebuilt:
                 return ()
             lead = self.table.get(0)
@@ -320,6 +324,8 @@ class SchedulerTeamMixin:
                     f"{self._max_budget_tokens} leaves nothing for it."
                 )
             env = await self._worktree_pool.acquire(role)
+            if self._shutting_down:
+                raise RuntimeError("Cannot prebuild the team: scheduler is shutting down.")
             session = self._session_factory.build_spawn_session(
                 role=role,
                 env=env,
@@ -342,6 +348,8 @@ class SchedulerTeamMixin:
             await self.emit_scheduler_event(
                 self._events.agent_spawned(aid, 0, role, "")
             )
+            if self._shutting_down:
+                raise RuntimeError("Cannot prebuild the team: scheduler is shutting down.")
         except BaseException:
             await self._rollback_failed_spawn(aid, env)
             raise

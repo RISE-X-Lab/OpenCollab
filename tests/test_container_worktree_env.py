@@ -336,3 +336,50 @@ async def test_workflow_factory_isolates_inside_the_supplied_container(
         await factory.release_isolated_envs()
     assert base.revoked is False
     assert not Path(isolated.workspace).exists()
+
+
+@pytest.mark.parametrize("command", ["git reset --hard HEAD", "git checkout -b fix-topic"])
+async def test_noop_reset_does_not_hide_a_committed_candidate(local_docker, tmp_path, command):
+    repo = _repo(tmp_path / 'testbed')
+    env = _env(repo, tmp_path, 'candidate-reset')
+    try:
+        await env.setup()
+        await env.write_file('fix.txt', 'candidate change')
+        assert (await env.exec_cmd('git add -A && git commit -qm fix')).returncode == 0
+        before = await env.get_diff()
+        assert 'fix.txt' in before
+        assert (await env.exec_cmd(command)).returncode == 0
+        assert await env.get_diff() == before
+    finally:
+        await env.cleanup()
+
+
+async def test_locked_container_worktree_reports_failure_and_can_retry(local_docker, tmp_path):
+    repo = _repo(tmp_path / 'testbed')
+    env = _env(repo, tmp_path, 'candidate-locked')
+    await env.setup()
+    _git(repo, 'worktree', 'lock', env.workspace)
+    try:
+        with pytest.raises(OSError, match='worktree'):
+            await env.cleanup()
+        assert Path(env.workspace).exists()
+    finally:
+        _git(repo, 'worktree', 'unlock', env.workspace)
+        await env.cleanup()
+    assert not Path(env.workspace).exists()
+
+
+@pytest.mark.parametrize('root', ['/app/children', '/app', '/app/../app/worktrees'])
+def test_worktree_root_cannot_contaminate_the_exported_repository(root):
+    with pytest.raises(ValueError, match='outside'):
+        ContainerWorktreeEnvironment(
+            container_id=CONTAINER_ID, repository_root='/app', worktree_root=root,
+        )
+
+
+@pytest.mark.parametrize(('repository', 'worktrees'), [('//', '/tmp/worktrees'), ('//app', '/app/children')])
+def test_redundant_slashes_do_not_bypass_repository_boundaries(repository, worktrees):
+    with pytest.raises(ValueError):
+        ContainerWorktreeEnvironment(
+            container_id=CONTAINER_ID, repository_root=repository, worktree_root=worktrees,
+        )

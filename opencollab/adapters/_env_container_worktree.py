@@ -68,6 +68,8 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
         )
         repository_root = _absolute_container_path(repository_root, "repository root")
         worktree_root = _absolute_container_path(worktree_root, "worktree root")
+        if posixpath.commonpath((repository_root, worktree_root)) == repository_root:
+            raise ValueError("container worktree root must be outside the source repository")
         worktree_dir = posixpath.join(worktree_root, branch)
         super().__init__(
             workspace=worktree_dir,
@@ -233,16 +235,16 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
     async def cleanup(self) -> None:
         """Remove the worktree and release its branch lease, then detach.
 
-        Every step is best effort and reported rather than raised: the container
-        is the harness's to tear down, and a worktree left behind inside one
-        that is about to be removed costs nothing, while a raising cleanup would
-        turn a finished run into a failed one.
+        Retained resources are reported to the pool so ownership survives for
+        cleanup retry. The caller-owned container is never removed here.
         """
+        failures: list[str] = []
         if self._worktree_registered:
             removed = await self._git(
                 self._repository_root, "worktree", "remove", "--force", self._worktree_dir
             )
             if removed.returncode != 0:
+                failures.append(f"worktree retained at {self._worktree_dir}: {removed.stderr.strip()}")
                 logger.warning(
                     "container worktree not removed at %s: %s",
                     self._worktree_dir,
@@ -263,16 +265,19 @@ class ContainerWorktreeEnvironment(DockerEnvironment):
             if released.returncode == 0:
                 self._branch_owned = False
             else:
+                failures.append(f"worktree branch retained: {released.stderr.strip()}")
                 logger.warning(
                     "container worktree branch lease retained: %s", released.stderr.strip()
                 )
         await super().cleanup()
+        if failures:
+            raise OSError("container worktree cleanup failed: " + "; ".join(failures))
 
 
 def _absolute_container_path(path: str, label: str) -> str:
     if not isinstance(path, str) or not path.startswith("/") or "\0" in path:
         raise ValueError(f"container {label} must be an absolute path without NUL bytes")
-    normalized = posixpath.normpath(path)
+    normalized = posixpath.normpath("/" + path.lstrip("/"))
     if normalized == "/":
         raise ValueError(f"container {label} must not be the container root")
     return normalized
