@@ -14,10 +14,10 @@ starts with one failing and two passing tests without modifying this fixture.
 It then starts OpenCollab with the explicit `team.yaml`, the issue as a one-shot
 prompt, shared filesystem mode, and the completed-run TUI hold.
 
-The launcher enables `--allow-local-child-tests` so the coder and tester can
-execute this known fixture on the host. The flag is disabled by default. Use it
-only for a trusted workspace because project tests run code outside an OS
-process sandbox.
+The coder and tester use `bash` for the fixture's native test command. They
+inherit the interactive entry agent's shell permission and existing command
+confirmation policy. Headless integrations must provide a process-isolated
+environment for shell execution.
 
 While the team runs, use `Tab` or `Shift+Tab` to follow any live agent. After
 the run completes, the same keys inspect the final analyst, coder, and tester

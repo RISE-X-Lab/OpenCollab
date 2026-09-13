@@ -67,9 +67,10 @@ class BashTool(Tool):
     default_timeout = DEFAULT_TIMEOUT
     description = (
         "Execute a shell command in the workspace. Returns stdout and stderr. "
-        "Use this for installing packages, build/setup commands, and one-off "
-        "inspection. Prefer the dedicated tool when one exists: `run_tests` to "
-        "run tests (structured result), `git_diff` to view uncommitted changes, "
+        "Use this for installing packages, build/setup commands, one-off "
+        "inspection, and the project's native test commands. "
+        "Check the executed tests and their output before claiming a pass. "
+        "Prefer `git_diff` to view uncommitted changes, "
         "`grep` to search file contents, `file_read`/`file_write` to read or "
         "edit files. "
         "Runs non-interactively with no TTY: pass non-interactive flags (e.g. -y), "

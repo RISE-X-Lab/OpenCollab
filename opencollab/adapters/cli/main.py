@@ -75,11 +75,6 @@ def main_callback(
     trace: bool = typer.Option(False, "--trace", help="Enable trajectory recording"),
     yolo: bool = typer.Option(False, "--yolo", help="Auto-approve risky commands"),
     no_worktrees: bool = typer.Option(False, "--no-worktrees", help="Disable git worktree isolation"),
-    allow_local_child_tests: bool = typer.Option(
-        False,
-        "--allow-local-child-tests",
-        help="Allow spawned agents to run project tests on the host without OS isolation",
-    ),
     team_config: Optional[str] = typer.Option(
         None,
         "--team-config",
@@ -120,7 +115,6 @@ def main_callback(
             team_config_path=team_config,
             one_shot_prompt=one_shot,
             hold_after_run=hold,
-            allow_unisolated_child_tests=allow_local_child_tests,
         )
     )
 
@@ -326,7 +320,6 @@ async def _run(
     team_config_path: str | None = None,
     one_shot_prompt: str | None = None,
     hold_after_run: bool = False,
-    allow_unisolated_child_tests: bool = False,
 ):
     from opencollab.adapters.event_log import JsonlEventSink
     from opencollab.adapters.tui import (
@@ -385,7 +378,6 @@ async def _run(
             ctx, use_worktrees=use_worktrees, interactive=True,
             session_file=session_file, auto_save=True,
             team_config_path=team_config_path,
-            allow_unisolated_child_tests=allow_unisolated_child_tests,
         )
         tui.set_team_provider(scheduler.team_roster)
         lead = scheduler.lead_session

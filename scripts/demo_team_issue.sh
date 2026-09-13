@@ -15,6 +15,5 @@ exec uv run opencollab \
   --team-config "$REPO_ROOT/examples/team-issue/team.yaml" \
   --prompt-file "$REPO_ROOT/examples/team-issue/issue.md" \
   --no-worktrees \
-  --allow-local-child-tests \
   --hold \
   "$@"

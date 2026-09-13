@@ -253,24 +253,17 @@ def test_builtin_tools_are_fresh_ordered_and_headless_safe() -> None:
     first = builtin_tools(
         "bash",
         "file_write",
-        "run_tests",
         allow_file_creation=False,
     )
-    second = builtin_tools("bash", "file_write", "run_tests")
+    second = builtin_tools("bash", "file_write")
 
     assert tuple(tool.name for tool in first) == (
         "bash",
         "file_write",
-        "run_tests",
     )
     assert all(left is not right for left, right in zip(first, second, strict=True))
     assert first[0].require_process_isolation is True
     assert first[1].allow_create is False
-    assert first[2].require_process_isolation is True
-    assert first[2].allow_runner_override is False
-    assert first[2].allow_extra_args is False
-    assert isinstance(first[2], VerificationTool)
-    assert first[2].verified_targets == frozenset()
 
 
 def test_builtin_tools_reject_unsupported_or_ambiguous_requests() -> None:

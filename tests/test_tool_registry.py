@@ -68,38 +68,20 @@ def test_stateless_tools_resolve_without_any_dependency():
 
 
 def test_a_registry_denied_an_unisolated_shell_restricts_command_tools():
-    bash, run_tests = build_tools_for_role(
-        ["bash", "run_tests"], allow_unisolated_shell=False
-    )
-
+    (bash,) = build_tools_for_role(["bash"], allow_unisolated_shell=False)
     assert bash.require_process_isolation is True
-    assert run_tests.require_process_isolation is True
-    assert run_tests.allow_runner_override is False
-    assert run_tests.allow_extra_args is False
 
 
-def test_a_denied_shell_can_explicitly_allow_only_unisolated_tests():
-    bash, run_tests = build_tools_for_role(
-        ["bash", "run_tests"],
-        allow_unisolated_shell=False,
-        allow_unisolated_tests=True,
-    )
-
-    assert bash.require_process_isolation is True
-    assert run_tests.require_process_isolation is False
-    assert run_tests.allow_runner_override is False
-    assert run_tests.allow_extra_args is False
+def test_removed_test_runner_is_rejected_instead_of_granting_a_shell():
+    with pytest.raises(ValueError, match="Unknown tool"):
+        build_tools_for_role(["run_tests"])
+    with pytest.raises(TypeError):
+        build_tools_for_role(["bash"], allow_unisolated_tests=True)
 
 
 def test_an_allowed_unisolated_shell_keeps_user_command_controls():
-    bash, run_tests = build_tools_for_role(
-        ["bash", "run_tests"], allow_unisolated_shell=True
-    )
-
+    (bash,) = build_tools_for_role(["bash"], allow_unisolated_shell=True)
     assert bash.require_process_isolation is False
-    assert run_tests.require_process_isolation is False
-    assert run_tests.allow_runner_override is True
-    assert run_tests.allow_extra_args is True
 
 
 def test_the_shell_decision_is_independent_of_the_ask_user_decision():

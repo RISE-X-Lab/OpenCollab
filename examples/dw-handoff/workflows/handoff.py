@@ -53,11 +53,11 @@ MAX_REPAIR_ROUNDS = 1
 ROLE_TOOLS = {
     # The team's analyst bundle minus the coordination tools, which is the
     # single agent's working set: it could finish the task without anyone.
-    "analyst": ("apply_patch", "bash", "file_read", "grep", "run_tests"),
-    "coder": ("apply_patch", "bash", "file_read", "grep", "run_tests"),
+    "analyst": ("apply_patch", "bash", "file_read", "grep"),
+    "coder": ("apply_patch", "bash", "file_read", "grep"),
     # No ``apply_patch``: the team's tester carries ``git_diff`` in its place,
     # so this one does too.
-    "tester": ("bash", "file_read", "git_diff", "grep", "run_tests"),
+    "tester": ("bash", "file_read", "git_diff", "grep"),
 }
 
 HANDOFF_RULES = """\

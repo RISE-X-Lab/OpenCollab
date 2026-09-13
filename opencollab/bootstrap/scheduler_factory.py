@@ -111,7 +111,6 @@ def build_scheduler(
     team_config_path: str | os.PathLike[str] | None = None,
     resolved_team_config: TeamConfig | None = None,
     save_dir: str | os.PathLike[str] | None = None,
-    allow_unisolated_child_tests: bool = False,
     prebuild_team: bool = False,
     allow_unisolated_shell: bool | None = None,
     max_steps: int = SESSION_MAX_STEPS,
@@ -235,7 +234,6 @@ def build_scheduler(
         lead_environment=environment,
         interactive=interactive,
         save_dir=run_dir,
-        allow_unisolated_child_tests=allow_unisolated_child_tests,
         # A prebuilt roster's teammates are declared nodes seated before the
         # first model call, so the factory gives them agent 0's shell instead of
         # the hardened default it gives a child a model spawned mid-run.

@@ -21,7 +21,6 @@ from opencollab.adapters.tools.fs import (
     FileWriteTool,
     GrepTool,
 )
-from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.tool_execution import ToolRuntime
 
 
@@ -43,7 +42,7 @@ def _workspace(tmp_path):
 
 def test_bash_description_deflects_to_dedicated_tools():
     desc = BashTool.description
-    assert "run_tests" in desc
+    assert "test" in desc
     assert "git_diff" in desc
     # The old phrasing steered models to bash for tests and git operations.
     assert "Use this for running tests" not in desc
@@ -101,17 +100,7 @@ def test_headless_command_tools_and_grep_cannot_read_outside_secret(tmp_path):
             {"command": f"cat {secret}"}, runtime
         )
     )
-    tests_result = run(
-        RunTestsTool(
-            allow_runner_override=False,
-            allow_extra_args=False,
-            require_process_isolation=True,
-        ).execute_with_runtime(
-            {"runner": f"cat {secret}"}, runtime
-        )
-    )
-
-    for result in (grep_result, bash_result, tests_result):
+    for result in (grep_result, bash_result):
         assert "SWE_ANSWER_TOKEN" not in result
         assert result.startswith("Error:")
 

@@ -42,13 +42,13 @@ roles:
     prompt: |
       You are the Coder. You implement the plan with the smallest correct change
       to the source, verify locally, and report exactly what you changed.
-    tools: [bash, file_read, file_write, apply_patch, run_tests, grep]
+    tools: [bash, file_read, file_write, apply_patch, grep]
 
   reviewer:
     prompt: |
       You are the Reviewer. You check the fix for correctness against the goal and
       the tests. End with a single `VERDICT: PASS` or `VERDICT: FAIL` line.
-    tools: [bash, file_read, run_tests, git_diff, grep]
+    tools: [bash, file_read, git_diff, grep]
 
 # topology: a directed graph. For each source role, list the roles it may
 # spawn/message. A role can only reach the roles listed for it here.
@@ -66,7 +66,6 @@ topology:
 #     file_read     read a file (ranged reads supported)
 #     file_write    create / str_replace edit a file
 #     apply_patch   apply a content-anchored unified diff
-#     run_tests     run the project's test suite
 #     git_diff      inspect the working-tree diff / status
 #     grep          search the codebase
 #     ask_user      ask the human (dropped automatically in headless runs)
@@ -90,7 +89,6 @@ topology:
 # tool_limits:
 #   bash: { max_output_chars: 8000 }
 #   git_diff: { max_diff_chars: 8000, max_status_chars: 2000 }
-#   run_tests: { max_traceback_chars: 6000 }
 #   file_read: { max_read_chars: 30000 }
 #   grep: { max_grep_chars: 10000 }
 

@@ -189,7 +189,6 @@ class ContextBuilder:
         scheduler: SchedulerPort | None = None,
         ask_user_available: bool = False,
         allow_unisolated_shell: bool = False,
-        allow_unisolated_tests: bool = False,
         plan: ContextPlan | None = None,
     ) -> Agent:
         """Assemble the ``Agent`` for ``role_name``.
@@ -209,7 +208,6 @@ class ContextBuilder:
             skill_store=self._skill_store,
             ask_user_available=ask_user_available,
             allow_unisolated_shell=allow_unisolated_shell,
-            allow_unisolated_tests=allow_unisolated_tests,
             tool_limits=self._team.tool_limits,
         )
         cfg = self._cfg
