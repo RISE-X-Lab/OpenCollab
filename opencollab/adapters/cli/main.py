@@ -75,6 +75,10 @@ def main_callback(
     trace: bool = typer.Option(False, "--trace", help="Enable trajectory recording"),
     yolo: bool = typer.Option(False, "--yolo", help="Auto-approve risky commands"),
     no_worktrees: bool = typer.Option(False, "--no-worktrees", help="Disable git worktree isolation"),
+    allow_local_child_shell: bool = typer.Option(
+        False, "--allow-local-child-shell",
+        help="Allow dynamically spawned children to execute host shell commands without an OS sandbox",
+    ),
     team_config: Optional[str] = typer.Option(
         None,
         "--team-config",
@@ -112,6 +116,7 @@ def main_callback(
             trace=trace,
             yolo=yolo,
             use_worktrees=not no_worktrees,
+            allow_local_child_shell=allow_local_child_shell,
             team_config_path=team_config,
             one_shot_prompt=one_shot,
             hold_after_run=hold,
@@ -320,6 +325,7 @@ async def _run(
     team_config_path: str | None = None,
     one_shot_prompt: str | None = None,
     hold_after_run: bool = False,
+    allow_local_child_shell: bool = False,
 ):
     from opencollab.adapters.event_log import JsonlEventSink
     from opencollab.adapters.tui import (
@@ -378,6 +384,7 @@ async def _run(
             ctx, use_worktrees=use_worktrees, interactive=True,
             session_file=session_file, auto_save=True,
             team_config_path=team_config_path,
+            allow_unisolated_child_shell=allow_local_child_shell,
         )
         tui.set_team_provider(scheduler.team_roster)
         lead = scheduler.lead_session

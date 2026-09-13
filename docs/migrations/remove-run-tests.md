@@ -28,10 +28,20 @@ artifacts remain usable with their original version.
 
 ## Execution permissions
 
-Headless Bash still requires a process-isolated environment. Its existing
+Bash requires a process-isolated environment unless the caller explicitly
+authorizes host execution. Its existing
 command policy, permission handling, timeout, process cancellation, and bounded
 output remain unchanged. Tester defaults and shipped examples now include Bash.
-Interactive teammates inherit the existing entry-agent shell policy.
+Prebuilt teammates inherit the existing entry-agent shell policy. Dynamically
+spawned children retain the process-isolation requirement even in interactive
+mode. The CLI option `--allow-local-child-shell` or the scheduler builder option
+`allow_unisolated_child_shell=True` explicitly authorizes host commands for those
+children. This permission is broader than the removed tests-only permission and
+keeps the existing command confirmation policy.
+
+The team-issue demo requires this explicit opt-in. Run
+`./scripts/demo_team_issue.sh --allow-local-child-shell` to allow its dynamically
+spawned Coder and Tester to execute tests on the host.
 
 The `--allow-local-child-tests` CLI switch and the internal
 `allow_unisolated_tests` / `allow_unisolated_child_tests` options are removed with
