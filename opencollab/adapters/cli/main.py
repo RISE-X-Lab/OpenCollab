@@ -226,6 +226,8 @@ async def _read_loop(
     because it asked first and the user can see whose question is on screen.
     """
     while True:
+        if not getattr(prompt, "interactive", True):
+            await queue.drain()
         try:
             line = await prompt.read()
         except EOFError:

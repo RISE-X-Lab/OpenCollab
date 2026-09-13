@@ -25,8 +25,13 @@ turn, ahead of whatever the user was typing.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import contextlib
+import io
+import os
+import stat
 import sys
+import weakref
 from collections import deque
 from dataclasses import dataclass
 from typing import Any
@@ -65,38 +70,89 @@ class _Question:
     future: asyncio.Future
 
 
+class _ConsoleInput:
+    """One buffered, serialized reader for a redirected input stream."""
+
+    def __init__(self, stream: Any):
+        self.lock = asyncio.Lock()
+        decoder = codecs.getincrementaldecoder(getattr(stream, "encoding", None) or "utf-8")(
+            errors=getattr(stream, "errors", None) or "strict"
+        )
+        self.decoder = io.IncrementalNewlineDecoder(decoder, translate=True)
+        self.buffer = ""
+        self.eof = False
+
+    def _take_line(self) -> str | None:
+        end = self.buffer.find("\n")
+        if end >= 0:
+            line, self.buffer = self.buffer[:end], self.buffer[end + 1:]
+            return line
+        if self.eof and self.buffer:
+            line, self.buffer = self.buffer, ""
+            return line
+        return None
+
+    async def read(self, fd: int) -> str:
+        line = self._take_line()
+        if line is not None:
+            return line
+        if self.eof:
+            raise EOFError
+        loop = asyncio.get_running_loop()
+        result: asyncio.Future[str] = loop.create_future()
+
+        def on_readable() -> None:
+            if result.done():
+                return
+            try:
+                chunk = os.read(fd, 4096)
+                self.eof = not chunk
+                self.buffer += self.decoder.decode(chunk, final=self.eof)
+                line = self._take_line()
+                if line is not None:
+                    result.set_result(line)
+                elif self.eof:
+                    result.set_exception(EOFError())
+            except BaseException as exc:
+                result.set_exception(exc)
+
+        try:
+            loop.add_reader(fd, on_readable)
+        except (AttributeError, NotImplementedError) as exc:
+            raise RuntimeError("console input fallback is unavailable on this event loop") from exc
+        try:
+            return await result
+        finally:
+            loop.remove_reader(fd)
+
+
+_CONSOLE_INPUTS: weakref.WeakKeyDictionary[Any, _ConsoleInput] = weakref.WeakKeyDictionary()
+
+
 async def read_console_line(console: Any, prompt_text: str) -> str:
-    """Read a terminal line without leaving an executor thread on cancellation."""
-    loop = asyncio.get_running_loop()
+    """Read a line while preserving input order, buffering, and cancellation."""
+    stream = sys.stdin
     try:
-        stdin_fd = sys.stdin.fileno()
+        fd = stream.fileno()
     except (AttributeError, OSError) as exc:
         raise RuntimeError("console input fallback requires a selectable stdin") from exc
-
-    console.print(prompt_text, end="")
-    result: asyncio.Future[str] = loop.create_future()
-
-    def on_readable() -> None:
-        if result.done():
-            return
-        try:
-            line = sys.stdin.readline()
-        except BaseException as exc:
-            result.set_exception(exc)
-            return
-        if line == "":
-            result.set_exception(EOFError())
-            return
-        result.set_result(line.rstrip("\r\n"))
-
-    try:
-        loop.add_reader(stdin_fd, on_readable)
-    except (AttributeError, NotImplementedError) as exc:
-        raise RuntimeError("console input fallback is unavailable on this event loop") from exc
-    try:
-        return await result
-    finally:
-        loop.remove_reader(stdin_fd)
+    reader = _CONSOLE_INPUTS.get(stream)
+    if reader is None:
+        reader = _ConsoleInput(stream)
+        _CONSOLE_INPUTS[stream] = reader
+    async with reader.lock:
+        console.print(prompt_text, end="")
+        # Regular files are immediately readable but cannot be registered with
+        # every event-loop selector (notably Linux epoll).
+        metadata = os.fstat(fd)
+        if stat.S_ISCHR(metadata.st_mode) and metadata.st_rdev == os.stat(os.devnull).st_rdev:
+            raise EOFError
+        if stat.S_ISREG(metadata.st_mode):
+            line = stream.readline()
+            if line == "":
+                raise EOFError
+            return line.rstrip("\r\n")
+        return await reader.read(fd)
 
 
 def _pin_status_row_under_input(session: Any) -> None:
@@ -249,6 +305,7 @@ class LivePrompt:
     def pending_question(self) -> str | None:
         """The question currently holding the input line, if any."""
         return self._questions[0].text if self._questions else None
+
 
     # -- internals ----------------------------------------------------------
 

@@ -283,3 +283,68 @@ def test_a_partial_answer_already_in_scrollback_is_not_printed_again():
     printed = output.getvalue()
     assert "partial answer" not in printed
     assert "Agent 2 stopped: token budget exhausted" in printed
+
+
+@pytest.mark.asyncio
+async def test_piped_input_finishes_all_turns_before_eof():
+    prompt = _FakePrompt(['first', 'second'])
+    prompt.interactive = False
+    completed = []
+
+    async def turn(line, aid, cancel):
+        await asyncio.sleep(0.01)
+        completed.append(line)
+
+    queue = TurnQueue(turn)
+    await cli_main._drive(
+        queue, reader=cli_main._read_loop(prompt, queue, _tui(), object()),
+        until_drained=False,
+    )
+    assert completed == ['first', 'second']
+
+
+@pytest.mark.asyncio
+async def test_piped_reply_belongs_to_the_current_agent_question():
+    prompt = _FakePrompt(['first', 'yes', 'second'])
+    prompt.interactive = False
+    completed, answers = [], []
+
+    async def turn(line, aid, cancel):
+        await asyncio.sleep(0.01)
+        if line == 'first':
+            answers.append(await prompt.read())
+        completed.append(line)
+
+    queue = TurnQueue(turn)
+    await cli_main._drive(
+        queue, reader=cli_main._read_loop(prompt, queue, _tui(), object()),
+        until_drained=False,
+    )
+    assert answers == ['yes']
+    assert completed == ['first', 'second']
+
+
+@pytest.mark.asyncio
+async def test_real_redirected_prompt_runs_serially(monkeypatch, tmp_path):
+    import sys
+
+    from opencollab.adapters.cli.live_prompt import LivePrompt
+
+    source = tmp_path / 'input.txt'
+    source.write_text('first\nsecond\n')
+    stream = source.open()
+    monkeypatch.setattr(sys, 'stdin', stream)
+    prompt = LivePrompt(_tui(), console=Console(file=StringIO()), interactive=False)
+    completed = []
+
+    async def turn(line, aid, cancel):
+        await asyncio.sleep(0.01)
+        completed.append(line)
+
+    queue = TurnQueue(turn)
+    await cli_main._drive(
+        queue, reader=cli_main._read_loop(prompt, queue, _tui(), object()),
+        until_drained=False,
+    )
+    assert completed == ['first', 'second']
+    stream.close()
