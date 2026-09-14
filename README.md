@@ -118,6 +118,9 @@ shows a nine-role institutional workflow. The [skills guide](https://github.com/
 documents on-demand instructions. The [scripts guide](https://github.com/RISE-X-Lab/OpenCollab/blob/main/scripts/README.md)
 documents launchers and provider diagnostics.
 
+The [Execution Server guide](docs/execution-server/README.md) explains remote
+Docker and Linux sandboxes reached over HTTP.
+
 Repository development is documented in [CONTRIBUTING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md).
 Maintainers can follow [RELEASING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/main/RELEASING.md)
 when preparing a release.
