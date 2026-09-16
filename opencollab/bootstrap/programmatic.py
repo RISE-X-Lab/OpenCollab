@@ -349,9 +349,14 @@ async def run_agent(
     name: str = "agent",
     system_prompt: str = DEFAULT_AGENT_SYSTEM_PROMPT,
     llm: Any | None = None,
+    agent_profile: Any | None = None,
 ) -> ProgrammaticResult:
     """Run one directly configured agent behind the hardened lifecycle."""
-    resolved_tools = resolve_tools(tools)
+    resolved_tools = (
+        resolve_tools(tools)
+        if agent_profile is None
+        else agent_profile.resolve_tools(tools)
+    )
     agent = Agent(
         name=name,
         system_prompt=system_prompt,
@@ -405,6 +410,7 @@ async def run_agent(
                 llm=llm,
                 llm_timeout_seconds=config.get("llm_timeout", 600.0),
                 cleanup_environment=owned_environment,
+                agent_profile=agent_profile,
             )
         except AgentRuntimeLifecycleError as exc:
             raise ProgrammaticLifecycleError(str(exc)) from exc
@@ -430,6 +436,11 @@ async def run_agent(
                 "terminal_reason": internal.terminal_reason,
                 "markup_recovered": internal.markup_recovered,
                 **quiescence,
+                **(
+                    {"agent_profile": agent_profile.name}
+                    if agent_profile is not None
+                    else {}
+                ),
             },
         )
     except BaseException as exc:

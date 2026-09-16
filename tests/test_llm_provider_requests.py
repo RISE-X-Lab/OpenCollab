@@ -199,6 +199,15 @@ def test_deepseek_flash_declares_verified_responses_json_schema_support():
     assert capabilities.honors_workflow_thinking_override is False
 
 
+def test_luna_declares_verified_responses_reasoning_support():
+    capabilities = model_capabilities("gateway/gpt-5.6-luna")
+
+    assert capabilities.context_window == 1_048_576
+    assert capabilities.supports_forced_tool_choice is True
+    assert capabilities.supports_responses_reasoning is True
+    assert capabilities.honors_workflow_thinking_override is False
+
+
 @pytest.mark.parametrize(
     "model",
     [

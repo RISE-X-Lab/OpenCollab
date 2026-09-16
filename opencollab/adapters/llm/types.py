@@ -184,6 +184,11 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     ),
     "gpt-4o": ModelCapabilities(context_window=128_000, supports_responses_reasoning=False),
     "gpt-4o-mini": ModelCapabilities(context_window=128_000, supports_responses_reasoning=False),
+    "gpt-5.6-luna": ModelCapabilities(
+        context_window=1_048_576,
+        supports_responses_reasoning=True,
+        honors_workflow_thinking_override=False,
+    ),
     "deepseek-v4-flash": ModelCapabilities(
         context_window=1_048_576,
         supports_forced_tool_choice=False,

@@ -225,6 +225,29 @@ def test_deepseek_max_reasoning_survives_workflow_thinking_override(monkeypatch)
     assert session.agent.reasoning_effort_policy == "configured"
 
 
+def test_luna_max_reasoning_survives_workflow_thinking_override(monkeypatch):
+    _patch_build_session(monkeypatch)
+    factory = workflow_runtime.WorkflowSessionFactory(
+        model="gpt-5.6-luna",
+        provider="openai",
+        wire_protocol="responses",
+        api_key="fake",  # pragma: allowlist secret
+        base_url="https://example.test",
+        thinking=True,
+        reasoning_effort="max",
+    )
+
+    session = factory.build_workflow_session(
+        prompt="return structured evidence",
+        budget=100_000,
+        thinking=False,
+    )
+
+    assert session.agent.thinking is True
+    assert session.agent.reasoning_effort == "max"
+    assert session.agent.reasoning_effort_policy == "configured"
+
+
 @pytest.mark.asyncio
 async def test_built_context_injects_sampling_and_output_limits(monkeypatch):
     calls = _patch_build_session(monkeypatch)

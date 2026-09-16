@@ -55,6 +55,57 @@ async def test_stream_text_requires_matching_completed_output():
 
 
 @pytest.mark.asyncio
+async def test_terminal_mismatch_remains_strict_by_default():
+    streamed = message_item("streamed")
+    terminal = message_item("terminal")
+    stream = FakeStream(
+        [
+            ns(type="response.output_item.done", output_index=0, item=streamed),
+            ns(
+                type="response.completed",
+                response=completed_response(output=[terminal]),
+            ),
+        ]
+    )
+
+    state = await _consume_stream(stream, 1, 1)
+
+    with pytest.raises(ResponsesProtocolError, match="terminal Responses output"):
+        _parse_stream(state, [{"role": "user", "content": "answer"}], "gpt-fake")
+
+
+@pytest.mark.asyncio
+async def test_compatibility_mode_keeps_validated_streamed_output_on_terminal_mismatch(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "OPENCOLLAB_TRUST_STREAMED_OUTPUT_ON_TERMINAL_MISMATCH",
+        "1",
+    )
+    streamed = message_item("streamed")
+    terminal = message_item("terminal")
+    stream = FakeStream(
+        [
+            ns(type="response.output_item.done", output_index=0, item=streamed),
+            ns(
+                type="response.completed",
+                response=completed_response(output=[terminal]),
+            ),
+        ]
+    )
+
+    state = await _consume_stream(stream, 1, 1)
+    parsed = _parse_stream(
+        state,
+        [{"role": "user", "content": "answer"}],
+        "gpt-fake",
+    )
+
+    assert parsed.content == "streamed"
+    assert parsed.provider_items == [streamed]
+
+
+@pytest.mark.asyncio
 async def test_stream_aggregates_multiple_tool_calls_and_validates_arguments():
     first = function_item("call_1", "read_file", '{"path":"a.py"}')
     second = function_item("call_2", "read_file", '{"path":"b.py"}')

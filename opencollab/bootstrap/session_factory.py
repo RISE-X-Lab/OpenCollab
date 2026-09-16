@@ -212,6 +212,7 @@ def build_session(
     seed_system_messages: list[dict[str, Any]] | None = None,
     shaper: ShaperPort | None = None,
     team_budget_exhausted: Callable[[], bool] | None = None,
+    agent_profile: Any | None = None,
 ) -> Session:
     """Self-wiring ``Session`` factory.
 
@@ -242,6 +243,7 @@ def build_session(
         seed_system_messages=seed_system_messages,
         shaper=shaper,
         team_budget_exhausted=team_budget_exhausted,
+        agent_profile=agent_profile,
     )
     Session.__init__(
         session,
