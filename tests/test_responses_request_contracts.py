@@ -253,6 +253,19 @@ def test_responses_known_deepseek_reasoning_is_explicitly_opted_in():
     assert kwargs["reasoning"] == {"effort": "max"}
 
 
+def test_responses_known_luna_reasoning_is_explicitly_opted_in():
+    kwargs = _build_request_kwargs(
+        "gpt-5.6-luna",
+        [{"role": "user", "content": "work"}],
+        None,
+        1.0,
+        reasoning_effort="max",
+    )
+
+    assert kwargs["include"] == ["reasoning.encrypted_content"]
+    assert kwargs["reasoning"] == {"effort": "max"}
+
+
 @pytest.mark.parametrize("model", ["o1-preview", "gateway/o3-pro"])
 def test_responses_reasoning_family_keeps_known_context_window(model):
     capabilities = model_capabilities(model)

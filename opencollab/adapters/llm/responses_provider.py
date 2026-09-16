@@ -562,15 +562,26 @@ def _parse_stream(
         raise ResponsesProtocolError(f"JSON Schema tool response incomplete: {incomplete!r}")
     final_output = to_plain_data(getattr(state.completed_response, "output", None))
     final_items = _validated_response_items(final_output)
-    if len(final_items) != len(state.output_items) or not all(
+    output_mismatch = len(final_items) != len(state.output_items) or not all(
         _output_items_agree(streamed, terminal)
         for streamed, terminal in zip(state.output_items, final_items, strict=True)
-    ):
-        raise ResponsesProtocolError("terminal Responses output disagrees with streamed output items")
-    state.output_items = [
-        _merge_terminal_projection(streamed, terminal)
-        for streamed, terminal in zip(state.output_items, final_items, strict=True)
-    ]
+    )
+    if output_mismatch:
+        compatibility_enabled = (
+            os.environ.get(
+                "OPENCOLLAB_TRUST_STREAMED_OUTPUT_ON_TERMINAL_MISMATCH"
+            )
+            == "1"
+        )
+        if not compatibility_enabled or not state.output_items:
+            raise ResponsesProtocolError(
+                "terminal Responses output disagrees with streamed output items"
+            )
+    else:
+        state.output_items = [
+            _merge_terminal_projection(streamed, terminal)
+            for streamed, terminal in zip(state.output_items, final_items, strict=True)
+        ]
     content = "".join(_output_text(item) for item in state.output_items) or None
     reasoning = "\n".join(text for text in (_reasoning_text(item) for item in state.output_items) if text) or None
     tool_calls: list[dict[str, Any]] = []

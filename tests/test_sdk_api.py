@@ -64,7 +64,9 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "name",
             "system_prompt",
             "llm",
+            "profile",
         ),
+        sdk.OpenCollab.agent2: ("self", "prompt", "kwargs"),
         sdk.OpenCollab.team: (
             "self",
             "prompt",

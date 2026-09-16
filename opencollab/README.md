@@ -94,6 +94,10 @@ must be new or empty because each run claims it for executable evidence.
 argument names a team YAML file. Its `cleanup_timeout` bounds scheduler
 shutdown and must be a finite positive number.
 
+Use `agent2(...)`, or `agent(..., profile="single2")`, to select the isolated
+[OC Single2 profile](../docs/single2.md). The ordinary `agent(...)` behavior and
+all team and workflow construction remain the defaults.
+
 `OpenCollab.configuration` is a read-only snapshot of effective model,
 provider, budget, timeout, sampling, output-token, and thinking settings.
 `thinking_params` is deep-copied, so callers receive an independent snapshot. API keys

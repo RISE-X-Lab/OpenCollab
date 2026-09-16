@@ -198,9 +198,13 @@ class OpenCollab:
         name: str = "agent",
         system_prompt: str | None = None,
         llm: Any | None = None,
+        profile: str | None = None,
     ) -> RunResult[str]:
         """Run one directly configured agent."""
         _non_empty(prompt, "prompt")
+        from opencollab.bootstrap.agent_profiles import resolve_agent_profile
+
+        agent_profile = resolve_agent_profile(profile)
         _non_empty(name, "name")
         if system_prompt is not None:
             _non_empty(system_prompt, "system_prompt")
@@ -209,12 +213,18 @@ class OpenCollab:
         if max_steps is not None and steps is not None:
             raise ValueError("max_steps and steps cannot both be set")
         unbounded_limits = _unbounded_limits_requested()
+        explicit_budget = budget is not None
+        explicit_steps = max_steps is not None or steps is not None
         resolved_budget = _positive_int(
             self._config["budget"] if budget is None else budget,
             "budget",
         )
         resolved_max_steps = (
-            100
+            (
+                SESSION_MAX_STEPS
+                if agent_profile is None
+                else agent_profile.default_steps
+            )
             if max_steps is None and steps is None
             else _positive_int(
                 max_steps if max_steps is not None else steps,
@@ -227,8 +237,26 @@ class OpenCollab:
                 config=self._config,
                 workspace=self._workspace,
                 tools=tools,
-                max_tokens=None if unbounded_limits else resolved_budget,
-                max_steps=None if unbounded_limits else resolved_max_steps,
+                max_tokens=(
+                    None
+                    if unbounded_limits
+                    and not (
+                        agent_profile is not None
+                        and agent_profile.honor_explicit_limits
+                        and explicit_budget
+                    )
+                    else resolved_budget
+                ),
+                max_steps=(
+                    None
+                    if unbounded_limits
+                    and not (
+                        agent_profile is not None
+                        and agent_profile.honor_explicit_limits
+                        and explicit_steps
+                    )
+                    else resolved_max_steps
+                ),
                 timeout=_positive_timeout(timeout, "timeout"),
                 cleanup_timeout=_required_positive_timeout(
                     cleanup_timeout,
@@ -238,12 +266,26 @@ class OpenCollab:
                 trace=trace,
                 environment=self._environment,
                 name=name,
-                system_prompt=system_prompt or DEFAULT_AGENT_SYSTEM_PROMPT,
+                system_prompt=system_prompt or (
+                    DEFAULT_AGENT_SYSTEM_PROMPT
+                    if agent_profile is None
+                    else agent_profile.system_prompt
+                ),
                 llm=llm,
+                agent_profile=agent_profile,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc
         return _public_result(result)
+
+    async def agent2(self, prompt: str, **kwargs: Any) -> RunResult[str]:
+        """Run the isolated OC Single2 standalone-agent profile."""
+        if "profile" in kwargs:
+            raise ValueError(
+                "agent2 selects profile='single2'; use agent to select another profile"
+            )
+        kwargs.setdefault("name", "single2")
+        return await self.agent(prompt, profile="single2", **kwargs)
 
     async def team(
         self,
