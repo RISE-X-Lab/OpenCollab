@@ -264,10 +264,10 @@ class WorkflowStructuredMixin:
 
         The corrective session is built fresh (seeded only with the system
         prompt), so without this it would have none of the first pass's
-        exploration. We copy a *shallow list copy* of the prior messages — the
-        new list is independent (so the corrective turn's own appends don't
-        mutate the first session's history) while the message dicts are shared,
-        which is safe because neither side mutates a message in place.
+        exploration. The fresh session's system messages govern its current
+        role and tool permissions. Keep those messages and append a shallow
+        copy of the prior conversation. The new list is independent while the
+        message dicts are shared, because neither side mutates them in place.
 
         The workflow-session port promises ``state.messages``. A top-level
         ``messages`` property remains a compatibility fallback for older custom
@@ -283,10 +283,18 @@ class WorkflowStructuredMixin:
 
         session_state = getattr(session, "state", None)
         try:
+            current = getattr(session_state, "messages", None)
+            if current is None:
+                current = getattr(session, "messages", None)
+            system = [message for message in current or [] if message.get("role") == "system"]
+            carried = (
+                system + [message for message in prior if message.get("role") != "system"]
+                if system else list(prior)
+            )
             if session_state is not None and hasattr(session_state, "messages"):
-                session_state.messages = list(prior)
+                session_state.messages = carried
             else:
-                session.messages = list(prior)
+                session.messages = carried
         except Exception:  # noqa: BLE001 — carry-over is best-effort, never fatal
             return False
         return True

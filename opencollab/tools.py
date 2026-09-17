@@ -10,6 +10,7 @@ from collections.abc import Mapping
 from typing import Literal, Protocol, TypeAlias, runtime_checkable
 
 from opencollab.application.ports import ToolPort as Tool
+from opencollab.bootstrap.agent_profiles import _PROFILE_TOOL_LIMITS, resolve_agent_profile
 from opencollab.bootstrap.tool_registry import build_tools_for_role
 
 BuiltinToolName: TypeAlias = Literal[
@@ -43,6 +44,15 @@ class VerificationTool(Tool, Protocol):
     def verified_targets(self) -> frozenset[str]: ...
 
 
+def profile_tool_limits(profile: str | None) -> dict[str, dict[str, int]]:
+    """Return an independent copy of a profile's built-in tool defaults."""
+    resolved = resolve_agent_profile(profile)
+    return (
+        {} if resolved is None
+        else {name: dict(values) for name, values in resolved.tool_limits.items()}
+    )
+
+
 def builtin_tools(
     *names: BuiltinToolName,
     headless: bool = True,
@@ -53,7 +63,8 @@ def builtin_tools(
 
     Headless composition requires process isolation for shell execution. Coordination
     and human-interaction tools remain scheduler-owned and are not available
-    through this helper.
+    through this helper. During a profiled workflow, built-in tools inherit the
+    profile's defaults. Explicit ``limits`` override those defaults.
     """
     if not isinstance(headless, bool):
         raise ValueError("headless must be a boolean")
@@ -75,8 +86,12 @@ def builtin_tools(
         if not isinstance(values, Mapping):
             raise ValueError(f"limits for {name!r} must be a mapping")
     normalized_limits = {
-        name: dict(values) for name, values in (limits or {}).items()
+        name: dict(values)
+        for name, values in (_PROFILE_TOOL_LIMITS.get() or {}).items()
+        if name in names
     }
+    for name, values in (limits or {}).items():
+        normalized_limits.setdefault(name, {}).update(values)
     return tuple(
         build_tools_for_role(
             list(names),
@@ -90,4 +105,4 @@ def builtin_tools(
     )
 
 
-__all__ = ["BuiltinToolName", "Tool", "VerificationTool", "builtin_tools"]
+__all__ = ["BuiltinToolName", "Tool", "VerificationTool", "builtin_tools", "profile_tool_limits"]

@@ -473,6 +473,7 @@ def _workflow_metrics(
     environment_owned: bool,
     environment_cleanup_quiesced: bool | None,
     environment_quiesced: bool | None,
+    agent_profile: Any | None = None,
 ) -> dict[str, Any]:
     metrics = {
         "steps": 0 if details is None else details.steps,
@@ -487,6 +488,8 @@ def _workflow_metrics(
             environment_quiesced=environment_quiesced,
         )
     )
+    if agent_profile is not None:
+        metrics["agent_profile"] = agent_profile.name
     return metrics
 
 
@@ -500,12 +503,13 @@ async def run_workflow(
     max_concurrency: int,
     task_concurrency: int | None = None,
     timeout: float | None,
-    max_steps: int,
+    max_steps: int | None,
     system_prompt: str | None,
     cleanup_timeout: float,
     artifacts: Path | None,
     trace: bool,
     environment: Any | None = None,
+    agent_profile: Any | None = None,
 ) -> ProgrammaticResult:
     """Run one workflow and return its live metrics directly."""
     workflow_inputs = dict(inputs)
@@ -546,6 +550,7 @@ async def run_workflow(
                 deadline_monotonic=deadline,
                 max_steps=max_steps,
                 system_prompt=system_prompt or WORKFLOW_AGENT_PROMPT,
+                agent_profile=agent_profile,
                 return_details=True,
                 cleanup_environment=owned_environment,
                 defer_manifest_completion=(
@@ -613,6 +618,7 @@ async def run_workflow(
         details = stopped_error.result
         metrics = _workflow_metrics(
             details,
+            agent_profile=agent_profile,
             environment_owned=owned_environment,
             environment_cleanup_quiesced=(
                 True if owned_environment else environment_cleanup_quiesced
@@ -642,6 +648,7 @@ async def run_workflow(
             error=failed_error,
             metrics=_workflow_metrics(
                 details,
+                agent_profile=agent_profile,
                 environment_owned=owned_environment,
                 environment_cleanup_quiesced=environment_cleanup_quiesced,
                 environment_quiesced=environment_quiesced,
@@ -660,6 +667,7 @@ async def run_workflow(
         artifacts=artifacts,
         metrics=_workflow_metrics(
             details,
+            agent_profile=agent_profile,
             environment_owned=owned_environment,
             environment_cleanup_quiesced=environment_cleanup_quiesced,
             environment_quiesced=environment_quiesced,

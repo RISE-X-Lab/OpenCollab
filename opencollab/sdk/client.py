@@ -387,6 +387,7 @@ class OpenCollab:
         timeout: float | None = None,
         max_steps: int | None = 100,
         system_prompt: str | None = None,
+        agent_profile: str | None = None,
         cleanup_timeout: float = 2.0,
         artifacts: str | os.PathLike[str] | None = None,
         trace: bool = True,
@@ -397,7 +398,13 @@ class OpenCollab:
         limits active parallel/pipeline units across the workflow and defaults
         to ``concurrency``. Mixed agent and task work may therefore peak at the
         sum of both limits.
+
+        ``agent_profile`` selects the shared agent configuration for every
+        workflow role while preserving each role's explicit tool permissions.
         """
+        from opencollab.bootstrap.agent_profiles import resolve_agent_profile
+
+        resolved_agent_profile = resolve_agent_profile(agent_profile)
         if not callable(flow) and not callable(getattr(flow, "fn", None)):
             raise TypeError("flow must be a workflow function or spec")
         if inputs is not None and not isinstance(inputs, Mapping):
@@ -439,6 +446,7 @@ class OpenCollab:
                 timeout=_positive_timeout(timeout, "timeout"),
                 max_steps=resolved_max_steps,
                 system_prompt=system_prompt,
+                agent_profile=resolved_agent_profile,
                 cleanup_timeout=_required_positive_timeout(
                     cleanup_timeout,
                     "cleanup_timeout",
