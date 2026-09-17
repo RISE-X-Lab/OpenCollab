@@ -102,6 +102,7 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "timeout",
             "max_steps",
             "system_prompt",
+            "agent_profile",
             "cleanup_timeout",
             "artifacts",
             "trace",
@@ -170,6 +171,7 @@ def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
         "Tool",
         "VerificationTool",
         "builtin_tools",
+        "profile_tool_limits",
     ]
     assert environments.__all__ == [
         "Environment",
