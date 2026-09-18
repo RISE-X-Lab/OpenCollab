@@ -16,6 +16,7 @@ from opencollab.environments import (
     attach_container,
     docker_environment,
     local_environment,
+    remote_environment,
     worktree_environment,
 )
 from opencollab.tools import Tool, VerificationTool, builtin_tools
@@ -181,6 +182,7 @@ def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
         "build_repo_map_via_env",
         "docker_environment",
         "local_environment",
+        "remote_environment",
         "worktree_environment",
     ]
     assert workflows.__all__ == ["CandidateRun", "WorkflowContext", "workflow"]
@@ -223,6 +225,23 @@ def test_environment_factories_preserve_caller_owned_lifecycle(tmp_path: Path) -
     assert not local.revoked
     assert not worktree.revoked
     assert not container.revoked
+
+
+def test_docker_environment_factory_accepts_container_init() -> None:
+    container = docker_environment("python:3.11-slim", init_process=True)
+
+    assert container._init_process is True
+
+
+def test_remote_environment_factory_is_public_and_lazy() -> None:
+    environment = remote_environment(
+        "http://execution.example:8080",
+        image="python:3.11-slim",
+    )
+
+    assert environment.workspace == "."
+    assert environment.local_filesystem is False
+    assert environment.process_isolated is True
 
 
 async def test_public_environment_setup_has_one_shared_contract(tmp_path: Path) -> None:

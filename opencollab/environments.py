@@ -6,6 +6,7 @@ from opencollab.bootstrap.programmatic import (
     build_repo_map_via_env,
     docker_environment,
     local_environment,
+    remote_environment,
     worktree_environment,
 )
 
@@ -15,5 +16,6 @@ __all__ = [
     "build_repo_map_via_env",
     "docker_environment",
     "local_environment",
+    "remote_environment",
     "worktree_environment",
 ]
