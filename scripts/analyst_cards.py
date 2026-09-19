@@ -23,7 +23,8 @@ from pathlib import Path
 
 import yaml
 
-CARDS_DIR = Path(__file__).resolve().parents[1] / "configs" / "handoff-experiment"
+CONFIGS_DIR = Path(__file__).resolve().parents[1] / "configs"
+CARDS_DIR = CONFIGS_DIR / "handoff-experiment"
 CAPABILITIES_SLOT = "{{CAPABILITIES}}\n"
 BLOCK_SLOT = "{{BLOCK}}\n"
 #: Every card ends on this. It is an outcome-side rule -- what counts as a
@@ -39,6 +40,36 @@ DEFAULT_TOOLS = [
 
 
 @dataclass(frozen=True)
+class CardSet:
+    """One instrument's cards: where they live and which seat carries them.
+
+    A card set is not a level of anything -- it is a different team. The
+    handoff ladder seats an Analyst, a Coder and a Tester over a complete
+    graph; the dual-candidate family seats an Adopter and two Coders over a
+    partial one. Two cards from different sets share the closing evidence rule
+    and nothing else, so each set has its own body, its own registry and its
+    own test module, and no test in one set's module reads the other's files.
+    """
+
+    name: str
+    directory: Path
+    #: The seat the assembled card is written for. Also the card's filename
+    #: stem, because a card that says "You are the Adopter" filed as
+    #: ``analyst.<cell>.md`` is a card nobody can find by the name it uses.
+    entry_role: str
+    body: str = "shared.md"
+
+
+HANDOFF_CARDS = CardSet(name="handoff", directory=CARDS_DIR, entry_role="analyst")
+DUAL_CARDS = CardSet(
+    name="dual-candidate",
+    directory=CONFIGS_DIR / "dual-candidate",
+    entry_role="adopter",
+)
+CARD_SETS: dict[str, CardSet] = {s.name: s for s in (HANDOFF_CARDS, DUAL_CARDS)}
+
+
+@dataclass(frozen=True)
 class Variant:
     """One cell: which block it carries, and what bundle it is seated with."""
 
@@ -48,31 +79,34 @@ class Variant:
     capabilities: str
     note: str
     tools: tuple[str, ...]
+    card_set: CardSet = HANDOFF_CARDS
 
     @property
     def card_name(self) -> str:
-        return f"analyst.{self.name}.md"
+        return f"{self.card_set.entry_role}.{self.name}.md"
 
     @property
     def card_path(self) -> Path:
-        return CARDS_DIR / self.card_name
+        return self.card_set.directory / self.card_name
 
 
 def _read(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def shared_body() -> str:
-    """The one copy of everything no cell may vary."""
-    body = _read(CARDS_DIR / "shared.md")
+def shared_body(card_set: CardSet = HANDOFF_CARDS) -> str:
+    """The one copy of everything no cell in this set may vary."""
+    body = _read(card_set.directory / card_set.body)
     if body.count(CAPABILITIES_SLOT) != 1 or body.count(BLOCK_SLOT) != 1:
         raise ValueError("shared.md must contain each slot exactly once")
     return body
 
 
-def load_registry() -> tuple[dict[str, Variant], dict[str, tuple[str, ...]]]:
-    """The registered cells and the ladders declared over them."""
-    raw = yaml.safe_load(_read(CARDS_DIR / "variants.yaml"))
+def load_registry(
+    card_set: CardSet = HANDOFF_CARDS,
+) -> tuple[dict[str, Variant], dict[str, tuple[str, ...]]]:
+    """The registered cells of one card set, and the ladders declared over them."""
+    raw = yaml.safe_load(_read(card_set.directory / "variants.yaml"))
     variants: dict[str, Variant] = {}
     for name, entry in raw["variants"].items():
         variants[name] = Variant(
@@ -82,6 +116,7 @@ def load_registry() -> tuple[dict[str, Variant], dict[str, tuple[str, ...]]]:
             capabilities=entry.get("capabilities", "full"),
             note=entry["note"],
             tools=tuple(entry.get("tools", DEFAULT_TOOLS)),
+            card_set=card_set,
         )
     ladders = {name: tuple(rungs) for name, rungs in raw.get("ladders", {}).items()}
     return variants, ladders
@@ -89,14 +124,26 @@ def load_registry() -> tuple[dict[str, Variant], dict[str, tuple[str, ...]]]:
 
 def render(variant: Variant) -> str:
     """The card this cell's declaration assembles to."""
-    capabilities = _read(CARDS_DIR / "capabilities" / f"{variant.capabilities}.md")
-    block = _read(CARDS_DIR / "blocks" / f"{variant.block}.md")
-    return shared_body().replace(CAPABILITIES_SLOT, capabilities).replace(BLOCK_SLOT, block)
+    directory = variant.card_set.directory
+    capabilities = _read(directory / "capabilities" / f"{variant.capabilities}.md")
+    block = _read(directory / "blocks" / f"{variant.block}.md")
+    return (
+        shared_body(variant.card_set)
+        .replace(CAPABILITIES_SLOT, capabilities)
+        .replace(BLOCK_SLOT, block)
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     write = "--write" in (argv if argv is not None else sys.argv[1:])
-    variants, _ = load_registry()
+    variants: dict[str, Variant] = {}
+    for card_set in CARD_SETS.values():
+        registered, _ = load_registry(card_set)
+        for name, variant in registered.items():
+            key = f"{card_set.name}/{name}"
+            if key in variants:
+                raise ValueError(f"two card sets register {key!r}")
+            variants[key] = variant
     drifted = 0
     for name in sorted(variants):
         variant = variants[name]
