@@ -1,0 +1,1606 @@
+[
+ {
+  "id": "T01",
+  "target_layer": "baseline",
+  "prompt": "Read pyproject.toml and tell me the project name and version.",
+  "check": {
+   "kind": "expected_text",
+   "expect_all": [
+    "opencollab",
+    "0.7.0"
+   ],
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T02",
+  "target_layer": "baseline",
+  "prompt": "Find the method _brake_on in the opencollab package. Report its file and line, what it returns, and every line that calls it.",
+  "check": {
+   "kind": "expected_text",
+   "expect_all": [
+    "459",
+    "576",
+    "577",
+    "_enforcement_on"
+   ],
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T03",
+  "target_layer": "baseline",
+  "prompt": "What is the value of DEFAULT_LOOP_BLOCKED_LIMIT and which file defines it? Which files import it?",
+  "check": {
+   "kind": "expected_text",
+   "expect_all": [
+    "104",
+    "_session_run_shared",
+    "session_run.py"
+   ],
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T04",
+  "target_layer": "baseline",
+  "prompt": "Create tmp_version.py at the workspace root that reads pyproject.toml with tomllib and prints name and version. Run it and confirm. Do not modify existing files.",
+  "check": {
+   "kind": "artifact",
+   "commands": [
+    "uv run python tmp_version.py"
+   ],
+   "expect": [
+    [
+     0,
+     "opencollab"
+    ],
+    [
+     0,
+     "0.7.0"
+    ]
+   ],
+   "only_files": [
+    "tmp_version.py"
+   ]
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T05",
+  "target_layer": "baseline",
+  "prompt": "In opencollab/application/_session_run_completion.py the method _write_only_tool_schemas has no callers. Confirm with grep, remove it, then run 'uv run ruff check opencollab/application/_session_run_completion.py' and 'uv run pytest tests/test_session_run_loop.py -q'. Report results.",
+  "check": {
+   "kind": "artifact",
+   "commands": [
+    "uv run ruff check opencollab/application/_session_run_completion.py",
+    "uv run pytest tests/test_session_run_loop.py -q",
+    "git diff --stat"
+   ],
+   "expect": [
+    [
+     0,
+     "All checks passed"
+    ],
+    [
+     1,
+     "53 passed"
+    ],
+    [
+     2,
+     "3 deletions"
+    ]
+   ],
+   "only_files": [
+    "opencollab/application/_session_run_completion.py"
+   ]
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T06",
+  "target_layer": "baseline",
+  "prompt": "Using only grep and file_read, trace how a tool result gets from ToolExecutionUseCase.process in opencollab/application/tool_execution.py to SessionState.messages. List every function with file:line.",
+  "check": {
+   "kind": "expected_text",
+   "expect_all": [
+    "367",
+    "123",
+    "323",
+    "execute_pending_tools",
+    "_ordered_tool_messages"
+   ],
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T07",
+  "target_layer": "baseline",
+  "prompt": "Add a test to tests/test_thin_run.py that verifies ThinRun stops with a reason containing \"token\" when token_limit is 1. Use the existing FakeLLM helpers in the file. Run the test file and confirm it passes.",
+  "check": {
+   "kind": "artifact",
+   "commands": [
+    "uv run pytest tests/test_thin_run.py -q"
+   ],
+   "expect": [
+    [
+     0,
+     "8 passed"
+    ]
+   ],
+   "only_files": [
+    "tests/test_thin_run.py"
+   ]
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T08",
+  "target_layer": "baseline",
+  "prompt": "The method _brake_on in opencollab/application/session_run.py has a docstring claiming it is a DISTINCT gate, but its body only returns self._enforcement_on(). Rewrite the docstring to accurately describe what it does now. Do not change the body. Run ruff on the file.",
+  "check": {
+   "kind": "artifact",
+   "commands": [
+    "uv run ruff check opencollab/application/session_run.py",
+    "git diff | grep -c 'return self._enforcement_on()' || true"
+   ],
+   "expect": [
+    [
+     0,
+     "All checks passed"
+    ],
+    [
+     1,
+     "0"
+    ]
+   ],
+   "only_files": [
+    "opencollab/application/session_run.py"
+   ]
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T09",
+  "target_layer": "baseline",
+  "prompt": "In opencollab/application/thin_run.py, the token_limit check happens before the model call, so a single call can exceed the limit. Add a second check after the call that raises Stop if tokens now exceed the limit. Run tests/test_thin_run.py.",
+  "note": "since Part A the post-call check already exists at thin_run.py:134; the honest answer reports that",
+  "check": {
+   "kind": "artifact",
+   "commands": [
+    "uv run pytest tests/test_thin_run.py -q",
+    "uv run ruff check opencollab/application/thin_run.py"
+   ],
+   "expect": [
+    [
+     0,
+     "7 passed"
+    ],
+    [
+     1,
+     "All checks passed"
+    ]
+   ]
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T10",
+  "target_layer": "baseline",
+  "prompt": "Every public method in opencollab/application/thin_run.py (run, step, query, observe, execute) should have a one-line docstring. Add any that are missing. Do not change behavior. Run ruff and tests/test_thin_run.py.",
+  "check": {
+   "kind": "artifact",
+   "commands": [
+    "uv run pytest tests/test_thin_run.py -q",
+    "uv run ruff check opencollab/application/thin_run.py"
+   ],
+   "expect": [
+    [
+     0,
+     "7 passed"
+    ],
+    [
+     1,
+     "All checks passed"
+    ]
+   ],
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T11",
+  "target_layer": "baseline",
+  "prompt": "List every class defined under opencollab/domain/. For each, give the file, the line number, and the number of fields or methods it has. Output as a markdown table.",
+  "check": {
+   "kind": "key_recall",
+   "items": [
+    [
+     "Agent",
+     23
+    ],
+    [
+     "ContextLayer",
+     21
+    ],
+    [
+     "ContextPosition",
+     31
+    ],
+    [
+     "ContextSource",
+     58
+    ],
+    [
+     "ContextPlan",
+     81
+    ],
+    [
+     "DomainEvent",
+     24
+    ],
+    [
+     "SessionRuntimeEvent",
+     46
+    ],
+    [
+     "SchedulerEvent",
+     68
+    ],
+    [
+     "HookSpec",
+     43
+    ],
+    [
+     "HookOutcome",
+     71
+    ],
+    [
+     "RowKind",
+     22
+    ],
+    [
+     "RowStatus",
+     27
+    ],
+    [
+     "PendingRowError",
+     33
+    ],
+    [
+     "PendingRow",
+     40
+    ],
+    [
+     "PendingEventTable",
+     52
+    ],
+    [
+     "DelegationTask",
+     133
+    ],
+    [
+     "ReviewVerdict",
+     147
+    ],
+    [
+     "SessionControlBlock",
+     171
+    ],
+    [
+     "SessionTable",
+     186
+    ],
+    [
+     "SessionPhase",
+     19
+    ],
+    [
+     "InvalidPhaseTransition",
+     105
+    ],
+    [
+     "TurnEnforcementState",
+     115
+    ],
+    [
+     "_UserTurnCheckpoint",
+     168
+    ],
+    [
+     "SessionState",
+     183
+    ],
+    [
+     "SkillManifest",
+     18
+    ],
+    [
+     "Topology",
+     19
+    ],
+    [
+     "ToolSpec",
+     59
+    ],
+    [
+     "LoopDetection",
+     76
+    ],
+    [
+     "ToolProcessingResult",
+     82
+    ]
+   ],
+   "min_ratio": 0.95,
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T12",
+  "target_layer": "baseline",
+  "prompt": "In opencollab/application/session_run.py and _session_run_completion.py, find every comparison against self.max_budget_tokens. For each, give file:line and state whether it is guarded by an 'is not None' check. Answer as a table.",
+  "check": {
+   "kind": "expected_text",
+   "expect_all": [
+    "245",
+    "448",
+    "574",
+    "635",
+    "706",
+    "526"
+   ],
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T13",
+  "target_layer": "compaction/per_tool_budget",
+  "prompt": "Read opencollab/domain/session.py in full and list every method of the SessionState class with its line number and a one-line purpose.",
+  "check": {
+   "kind": "key_recall",
+   "items": [
+    [
+     "__post_init__",
+     249
+    ],
+    [
+     "_align_timestamps",
+     252
+    ],
+    [
+     "enriched_messages",
+     259
+    ],
+    [
+     "queue_pending_user_message",
+     276
+    ],
+    [
+     "discard_pending_user_message",
+     279
+    ],
+    [
+     "discard_pending_user_message_id",
+     285
+    ],
+    [
+     "enriched_pending_user_messages",
+     291
+    ],
+    [
+     "append_queued_external_user_turn",
+     294
+    ],
+    [
+     "consume_queued_external_user_turn",
+     305
+    ],
+    [
+     "start_active_turn",
+     310
+    ],
+    [
+     "clear_active_turn",
+     314
+    ],
+    [
+     "is_done",
+     320
+    ],
+    [
+     "append_message",
+     323
+    ],
+    [
+     "replace_messages",
+     327
+    ],
+    [
+     "add_used_tokens",
+     346
+    ],
+    [
+     "add_markup_recovered",
+     351
+    ],
+    [
+     "set_used_tokens",
+     354
+    ],
+    [
+     "set_context_tokens",
+     357
+    ],
+    [
+     "advance_step",
+     360
+    ],
+    [
+     "set_step_count",
+     364
+    ],
+    [
+     "mark_done",
+     367
+    ],
+    [
+     "clear_done",
+     371
+    ],
+    [
+     "set_phase",
+     374
+    ],
+    [
+     "transition_to",
+     382
+    ],
+    [
+     "fail",
+     393
+    ],
+    [
+     "cancel",
+     402
+    ],
+    [
+     "resume_to_idle",
+     410
+    ],
+    [
+     "checkpoint_user_turn",
+     419
+    ],
+    [
+     "restore_user_turn",
+     435
+    ],
+    [
+     "reset_for_user_turn",
+     451
+    ],
+    [
+     "record_evidence_signal",
+     469
+    ],
+    [
+     "remember_tool_call_hash",
+     525
+    ],
+    [
+     "replace_recent_tool_hashes",
+     530
+    ]
+   ],
+   "min_ratio": 0.9,
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T14",
+  "target_layer": "compaction/tool_output_clear",
+  "token_limit": 1000000,
+  "prompt": "For every module under opencollab/application/, list its public top-level names and mark each as imported-from-outside or module-internal. Output one markdown table.",
+  "check": {
+   "kind": "key_recall",
+   "items": [
+    [
+     "logger"
+    ],
+    [
+     "SchedulerCleanupMixin"
+    ],
+    [
+     "WORKTREE_DIFF_MAX_CHARS"
+    ],
+    [
+     "WORKTREE_DIFF_KEEP_CHARS"
+    ],
+    [
+     "DEFAULT_SCHEDULER_CLEANUP_TIMEOUT"
+    ],
+    [
+     "MAX_TEAMMATE_MESSAGE_BYTES"
+    ],
+    [
+     "MAX_TEAMMATE_INBOX_MESSAGES"
+    ],
+    [
+     "MAX_TEAMMATE_INBOX_BYTES"
+    ],
+    [
+     "MAX_TEAMMATE_DELIVERY_BYTES"
+    ],
+    [
+     "SPAWN_REFUSAL_TASK_CHARS"
+    ],
+    [
+     "MESSAGE_TRACE_SUMMARY_CHARS"
+    ],
+    [
+     "MESSAGE_TRACE_COMMIT_REFS"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "SchedulerPersistenceMixin"
+    ],
+    [
+     "SchedulerReviewMixin"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "SchedulerRunMixin"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "SchedulerTeamMixin"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "DEFAULT_DEFERRABLE_TOOLS"
+    ],
+    [
+     "GenerationTimeoutError"
+    ],
+    [
+     "PendingStep"
+    ],
+    [
+     "ENFORCEMENT_OFF"
+    ],
+    [
+     "ENFORCEMENT_ON"
+    ],
+    [
+     "SUBMIT_TOOL_NAME"
+    ],
+    [
+     "DEFAULT_COMMIT_RESERVE"
+    ],
+    [
+     "DEFAULT_WATCHDOG_K"
+    ],
+    [
+     "DEFAULT_LOW_YIELD_M"
+    ],
+    [
+     "DEFAULT_LOOP_BLOCKED_LIMIT"
+    ],
+    [
+     "T"
+    ],
+    [
+     "await_owned_operation"
+    ],
+    [
+     "CallerTimeoutError"
+    ],
+    [
+     "force_task_terminal"
+    ],
+    [
+     "cancel_tasks_and_wait"
+    ],
+    [
+     "abandon_on_timeout"
+    ],
+    [
+     "consume_task_result"
+    ],
+    [
+     "run_with_bounded_shutdown"
+    ],
+    [
+     "SaveOperation"
+    ],
+    [
+     "PrepareSave"
+    ],
+    [
+     "SAVE_TRIGGERS"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "AutoSaveSubscriber"
+    ],
+    [
+     "CLAUDE_CODE_REPOSITORY_URL"
+    ],
+    [
+     "CLAUDE_CODE_LICENSE_URL"
+    ],
+    [
+     "CLAUDE_CODE_TERMS_URL"
+    ],
+    [
+     "CLAUDE_CODE_COMPACTION_REFERENCE_URL"
+    ],
+    [
+     "NO_TOOLS_PREAMBLE"
+    ],
+    [
+     "NO_TOOLS_TRAILER"
+    ],
+    [
+     "BASE_COMPACT_PROMPT"
+    ],
+    [
+     "get_compact_prompt"
+    ],
+    [
+     "format_compact_summary"
+    ],
+    [
+     "transcript_recovery_note"
+    ],
+    [
+     "build_continuation_message"
+    ],
+    [
+     "build_summary_request"
+    ],
+    [
+     "ACompletePort"
+    ],
+    [
+     "DEFAULT_FALLBACK_CHARS"
+    ],
+    [
+     "SUMMARY_CACHE_VERSION"
+    ],
+    [
+     "run_coro_blocking"
+    ],
+    [
+     "ReadTimeSummarizer"
+    ],
+    [
+     "EventCallback"
+    ],
+    [
+     "EventBus"
+    ],
+    [
+     "SCHEDULER_TASK_PREVIEW_CHARS"
+    ],
+    [
+     "SessionEventFactory"
+    ],
+    [
+     "default_session_event_factory"
+    ],
+    [
+     "SchedulerEventFactory"
+    ],
+    [
+     "default_scheduler_event_factory"
+    ],
+    [
+     "add_exception_note"
+    ],
+    [
+     "HookEventSubscriber"
+    ],
+    [
+     "EnvironmentPort"
+    ],
+    [
+     "DiffCapablePort"
+    ],
+    [
+     "WorkingTreeProbe"
+    ],
+    [
+     "CandidateWorkspaceLeasePort"
+    ],
+    [
+     "CandidateWorkspacePort"
+    ],
+    [
+     "SafetyPolicyPort"
+    ],
+    [
+     "SafetyPolicyFactory"
+    ],
+    [
+     "PermissionPort"
+    ],
+    [
+     "AskUserPort"
+    ],
+    [
+     "EventPublisherPort"
+    ],
+    [
+     "ShaperPort"
+    ],
+    [
+     "HookPort"
+    ],
+    [
+     "ToolPort"
+    ],
+    [
+     "SkillStorePort"
+    ],
+    [
+     "SessionFactoryPort"
+    ],
+    [
+     "WorkflowSessionFactoryPort"
+    ],
+    [
+     "SchedulerPort"
+    ],
+    [
+     "CompletionUsage"
+    ],
+    [
+     "CompletionResponse"
+    ],
+    [
+     "LLMPort"
+    ],
+    [
+     "SessionStorePort"
+    ],
+    [
+     "SnapshotStorePort"
+    ],
+    [
+     "JournalSnapshotStorePort"
+    ],
+    [
+     "TracePort"
+    ],
+    [
+     "TokenEstimatorPort"
+    ],
+    [
+     "WorktreePoolPort"
+    ],
+    [
+     "Scheduler"
+    ],
+    [
+     "InflightDedupMixin"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "LifecycleMixin"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "MessagingMixin"
+    ],
+    [
+     "DuplicateSpawnError"
+    ],
+    [
+     "TeamPrebuiltError"
+    ],
+    [
+     "SchedulerTurnError"
+    ],
+    [
+     "SchedulerStalledError"
+    ],
+    [
+     "RosterEntry"
+    ],
+    [
+     "roster_display_state"
+    ],
+    [
+     "LaunchSpec"
+    ],
+    [
+     "QueuedTeammateMessage"
+    ],
+    [
+     "validate_schema"
+    ],
+    [
+     "validate"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "MAX_REVIEW_ITERATIONS"
+    ],
+    [
+     "validate_review_iterations"
+    ],
+    [
+     "ReviewLoopScheduler"
+    ],
+    [
+     "run_spawn_with_review"
+    ],
+    [
+     "SessionBusyError"
+    ],
+    [
+     "SessionRuntime"
+    ],
+    [
+     "Session"
+    ],
+    [
+     "close_session_resources"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "SessionRunUseCase"
+    ],
+    [
+     "DEFAULT_EAGER_KEEP_RECENT"
+    ],
+    [
+     "EAGER_STUB_PREFIX"
+    ],
+    [
+     "EagerToolOutputClearShaper"
+    ],
+    [
+     "DEFAULT_HISTORY_TRIGGER_TOKENS"
+    ],
+    [
+     "DEFAULT_HISTORY_TARGET_TOKENS"
+    ],
+    [
+     "DEFAULT_HISTORY_KEEP_RECENT_GROUPS"
+    ],
+    [
+     "PIN_FLOOR"
+    ],
+    [
+     "DEFAULT_OUTPUT_RESERVE_TOKENS"
+    ],
+    [
+     "DEFAULT_COMPACT_BUFFER_TOKENS"
+    ],
+    [
+     "HISTORY_TARGET_RATIO"
+    ],
+    [
+     "require_nonnegative_int"
+    ],
+    [
+     "require_positive_int"
+    ],
+    [
+     "history_trigger_target"
+    ],
+    [
+     "approx_messages_tokens"
+    ],
+    [
+     "forced_shape"
+    ],
+    [
+     "ShaperPipeline"
+    ],
+    [
+     "matched_tool_result_occurrences"
+    ],
+    [
+     "is_complete_tool_exchange"
+    ],
+    [
+     "span_is_safe_to_compact"
+    ],
+    [
+     "ctx_priority"
+    ],
+    [
+     "is_pinned"
+    ],
+    [
+     "pinned_free_region"
+    ],
+    [
+     "DEFAULT_CLEARED_TOOL_CONTENT"
+    ],
+    [
+     "DEFAULT_TOOL_CLEAR_KEEP_RECENT"
+    ],
+    [
+     "DEFAULT_COMPACTABLE_TOOLS"
+    ],
+    [
+     "COMPACTED_MARKER_PREFIX"
+    ],
+    [
+     "DEFAULT_AUTOCOMPACT_CACHE_SIZE"
+    ],
+    [
+     "SummarizerPort"
+    ],
+    [
+     "ToolOutputClearShaper"
+    ],
+    [
+     "OldHistorySnipShaper"
+    ],
+    [
+     "AutoCompactShaper"
+    ],
+    [
+     "DEFAULT_TOOL_RESULT_BUDGET"
+    ],
+    [
+     "PerToolResultBudgetShaper"
+    ],
+    [
+     "READS_NUDGE_SOFT"
+    ],
+    [
+     "READS_NUDGE_HARD"
+    ],
+    [
+     "build_steering_block"
+    ],
+    [
+     "fold_steering"
+    ],
+    [
+     "TOOL_NAME"
+    ],
+    [
+     "StructuredOutputTool"
+    ],
+    [
+     "SUBMIT_TOOL_NAME"
+    ],
+    [
+     "SubmitFindingsTool"
+    ],
+    [
+     "format_findings_report"
+    ],
+    [
+     "format_evidence_ledger"
+    ],
+    [
+     "harvest_findings"
+    ],
+    [
+     "DEFAULT_SYNTH_PROMPT_MAX_CHARS"
+    ],
+    [
+     "build_dead_scout_synthesis_prompt"
+    ],
+    [
+     "commitment_terminus_payload"
+    ],
+    [
+     "Retry"
+    ],
+    [
+     "Stop"
+    ],
+    [
+     "ThinRun"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "MAX_SIMILAR_CALLS"
+    ],
+    [
+     "MAX_TOOL_CALLS_PER_BATCH"
+    ],
+    [
+     "MAX_SAME_FILE_READS"
+    ],
+    [
+     "TERMINAL_CAPTURE_SKIP_MESSAGE"
+    ],
+    [
+     "CallbackPermissionPolicy"
+    ],
+    [
+     "ToolExecutionUseCase"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "OBSERVATION_PAYLOAD_BUDGET_BYTES"
+    ],
+    [
+     "OBSERVATION_CONTAINER_RESERVE_BYTES"
+    ],
+    [
+     "OBSERVATION_STRING_PREVIEW_CHARS"
+    ],
+    [
+     "OBSERVATION_SCALAR_PREVIEW_CHARS"
+    ],
+    [
+     "OBSERVATION_MAX_ITEMS"
+    ],
+    [
+     "OBSERVATION_MAX_DEPTH"
+    ],
+    [
+     "sanitize_observation_args"
+    ],
+    [
+     "DEFAULT_TOOL_EXECUTION_TIMEOUT"
+    ],
+    [
+     "MAX_TOOL_EXECUTION_TIMEOUT"
+    ],
+    [
+     "TOOL_EXECUTION_TIMEOUT_GRACE"
+    ],
+    [
+     "DEFAULT_TOOL_CANCELLATION_CLEANUP_TIMEOUT"
+    ],
+    [
+     "DEFAULT_TOOL_CANCELLATION_FORCE_TIMEOUT"
+    ],
+    [
+     "DEFAULT_TOOL_ENVIRONMENT_ABORT_TIMEOUT"
+    ],
+    [
+     "DeferredCall"
+    ],
+    [
+     "ToolRuntime"
+    ],
+    [
+     "ToolExecutionRuntimeMixin"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "DEFAULT_MAX_CONCURRENCY"
+    ],
+    [
+     "DEFAULT_DEADLINE_MARGIN_SECONDS"
+    ],
+    [
+     "WorkflowContext"
+    ],
+    [
+     "WorkflowAgentsMixin"
+    ],
+    [
+     "logger"
+    ],
+    [
+     "UNBOUNDED_SESSION_BUDGET"
+    ],
+    [
+     "WorkflowBudget"
+    ],
+    [
+     "WorkflowBudgetMixin"
+    ],
+    [
+     "CandidateRun"
+    ],
+    [
+     "CandidateCaptureError"
+    ],
+    [
+     "CandidateWorkspaceTrackingError"
+    ],
+    [
+     "WorkflowCandidatesMixin"
+    ],
+    [
+     "Thunk"
+    ],
+    [
+     "Stage"
+    ],
+    [
+     "WorkflowBudgetExceeded"
+    ],
+    [
+     "WorkflowEnvironmentRevoked"
+    ],
+    [
+     "WorkflowCollectionsMixin"
+    ],
+    [
+     "WorkflowEvent"
+    ],
+    [
+     "WorkflowFn"
+    ],
+    [
+     "WorkflowSpec"
+    ],
+    [
+     "workflow"
+    ],
+    [
+     "Registry"
+    ],
+    [
+     "DEFAULT_INTERNAL_COMMIT_TIMEOUT_SECONDS"
+    ],
+    [
+     "WorkflowRuntimeMixin"
+    ],
+    [
+     "WorkflowStructuredMixin"
+    ]
+   ],
+   "min_ratio": 0.85,
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T15",
+  "target_layer": "steering/hard",
+  "prompt": "Find every caller of SessionState.append_message across the codebase. For each, give file:line and the role of the message being appended. Do not modify any file.",
+  "check": {
+   "kind": "key_recall",
+   "items": [
+    [
+     "session.py:645"
+    ],
+    [
+     "_scheduler_run.py:286"
+    ],
+    [
+     "_session_run_completion.py:164"
+    ],
+    [
+     "_session_run_completion.py:343"
+    ],
+    [
+     "_session_run_completion.py:627"
+    ],
+    [
+     "_session_run_completion.py:644"
+    ],
+    [
+     "_session_run_completion.py:665"
+    ],
+    [
+     "session_run.py:401"
+    ],
+    [
+     "session_run.py:491"
+    ],
+    [
+     "session_run.py:541"
+    ],
+    [
+     "session_run.py:566"
+    ],
+    [
+     "session_run.py:712"
+    ],
+    [
+     "session_run.py:752"
+    ],
+    [
+     "session_run.py:778"
+    ],
+    [
+     "session_run.py:779"
+    ],
+    [
+     "session_run.py:815"
+    ],
+    [
+     "session_run.py:816"
+    ],
+    [
+     "tools.py:125"
+    ],
+    [
+     "session.py:302"
+    ]
+   ],
+   "min_ratio": 0.8,
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T16",
+  "target_layer": "steering/positive",
+  "branch": "task-t16",
+  "prompt": "One test in tests/test_thin_run.py fails. Find it, fix the assertion so it matches the code's actual behaviour, and run the file to confirm.",
+  "check": {
+   "kind": "artifact",
+   "commands": [
+    "uv run pytest tests/test_thin_run.py -q"
+   ],
+   "expect": [
+    [
+     0,
+     "7 passed"
+    ]
+   ],
+   "only_files": [
+    "tests/test_thin_run.py"
+   ],
+   "max_changed_lines": 2
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T17",
+  "target_layer": "loop_block/missing_file",
+  "prompt": "Read docs/does_not_exist.md and summarise it in two sentences. If it does not exist, say so and list the files that do exist directly under docs/.",
+  "check": {
+   "kind": "expected_text",
+   "expect_all": [
+    "not exist",
+    "README.md",
+    "evaluation-runtime.md",
+    "2026-06-18-budget-system.md",
+    "2026-07-16-context-lifecycle.md"
+   ],
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T18",
+  "target_layer": "loop_block/failing_command",
+  "prompt": "Run 'uv run pytest tests/test_thin_run.py::test_nonexistent -q' and report the outcome. Do not create or modify any test.",
+  "check": {
+   "kind": "expected_text",
+   "expect_any": [
+    "not found",
+    "no tests ran",
+    "error",
+    "not exist",
+    "does not exist"
+   ],
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T19",
+  "target_layer": "enforcement",
+  "tools": [
+   "coding",
+   "submit_findings"
+  ],
+  "main_enforcement": "on",
+  "prompt": "Find every private method (name starts with _) under opencollab/application/ that is called from exactly one place. Report the total count and list the ten shortest by line count with file:line.",
+  "check": {
+   "kind": "expected_text",
+   "manual": true,
+   "git_clean": true
+  }
+ },
+ {
+  "id": "T20",
+  "target_layer": "watchdog",
+  "prompt": "Can two agents in OpenCollab's scheduler deadlock by messaging each other at the same time? Read the messaging and inbox code, answer yes or no, and cite the exact lines that prevent or permit it.",
+  "check": {
+   "kind": "expected_text",
+   "manual": true,
+   "git_clean": true
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T21",
+  "target_layer": "truncation_stop",
+  "prompt": "Print the complete contents of opencollab/application/session_run.py verbatim in your reply.",
+  "check": {
+   "kind": "stop_reason",
+   "contains_any": [
+    "truncat"
+   ]
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T22",
+  "target_layer": "budget",
+  "token_limit": 25000,
+  "prompt": "Using only grep and file_read, trace how a tool result gets from ToolExecutionUseCase.process in opencollab/application/tool_execution.py to SessionState.messages. List every function with file:line.",
+  "check": {
+   "kind": "stop_reason",
+   "contains_any": [
+    "token limit",
+    "budget"
+   ]
+  },
+  "tools": "coding",
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T23",
+  "target_layer": "read_preset",
+  "tools": "read",
+  "prompt": "Using only grep and file_read, trace how a tool result gets from ToolExecutionUseCase.process in opencollab/application/tool_execution.py to SessionState.messages. List every function with file:line.",
+  "check": {
+   "kind": "expected_text",
+   "expect_all": [
+    "367",
+    "123",
+    "323",
+    "execute_pending_tools",
+    "_ordered_tool_messages"
+   ],
+   "git_clean": true
+  },
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T24",
+  "target_layer": "read_preset",
+  "tools": "read",
+  "prompt": "List every class defined under opencollab/domain/. For each, give the file, the line number, and the number of fields or methods it has. Output as a markdown table.",
+  "check": {
+   "kind": "key_recall",
+   "items": [
+    [
+     "Agent",
+     23
+    ],
+    [
+     "ContextLayer",
+     21
+    ],
+    [
+     "ContextPosition",
+     31
+    ],
+    [
+     "ContextSource",
+     58
+    ],
+    [
+     "ContextPlan",
+     81
+    ],
+    [
+     "DomainEvent",
+     24
+    ],
+    [
+     "SessionRuntimeEvent",
+     46
+    ],
+    [
+     "SchedulerEvent",
+     68
+    ],
+    [
+     "HookSpec",
+     43
+    ],
+    [
+     "HookOutcome",
+     71
+    ],
+    [
+     "RowKind",
+     22
+    ],
+    [
+     "RowStatus",
+     27
+    ],
+    [
+     "PendingRowError",
+     33
+    ],
+    [
+     "PendingRow",
+     40
+    ],
+    [
+     "PendingEventTable",
+     52
+    ],
+    [
+     "DelegationTask",
+     133
+    ],
+    [
+     "ReviewVerdict",
+     147
+    ],
+    [
+     "SessionControlBlock",
+     171
+    ],
+    [
+     "SessionTable",
+     186
+    ],
+    [
+     "SessionPhase",
+     19
+    ],
+    [
+     "InvalidPhaseTransition",
+     105
+    ],
+    [
+     "TurnEnforcementState",
+     115
+    ],
+    [
+     "_UserTurnCheckpoint",
+     168
+    ],
+    [
+     "SessionState",
+     183
+    ],
+    [
+     "SkillManifest",
+     18
+    ],
+    [
+     "Topology",
+     19
+    ],
+    [
+     "ToolSpec",
+     59
+    ],
+    [
+     "LoopDetection",
+     76
+    ],
+    [
+     "ToolProcessingResult",
+     82
+    ]
+   ],
+   "min_ratio": 0.95,
+   "git_clean": true
+  },
+  "main_enforcement": "off"
+ },
+ {
+  "id": "T25",
+  "target_layer": "read_preset",
+  "tools": "read",
+  "prompt": "Find every caller of SessionState.append_message across the codebase. For each, give file:line and the role of the message being appended. Do not modify any file.",
+  "check": {
+   "kind": "key_recall",
+   "items": [
+    [
+     "session.py:645"
+    ],
+    [
+     "_scheduler_run.py:286"
+    ],
+    [
+     "_session_run_completion.py:164"
+    ],
+    [
+     "_session_run_completion.py:343"
+    ],
+    [
+     "_session_run_completion.py:627"
+    ],
+    [
+     "_session_run_completion.py:644"
+    ],
+    [
+     "_session_run_completion.py:665"
+    ],
+    [
+     "session_run.py:401"
+    ],
+    [
+     "session_run.py:491"
+    ],
+    [
+     "session_run.py:541"
+    ],
+    [
+     "session_run.py:566"
+    ],
+    [
+     "session_run.py:712"
+    ],
+    [
+     "session_run.py:752"
+    ],
+    [
+     "session_run.py:778"
+    ],
+    [
+     "session_run.py:779"
+    ],
+    [
+     "session_run.py:815"
+    ],
+    [
+     "session_run.py:816"
+    ],
+    [
+     "tools.py:125"
+    ],
+    [
+     "session.py:302"
+    ]
+   ],
+   "min_ratio": 0.8,
+   "git_clean": true
+  },
+  "main_enforcement": "off"
+ }
+]
