@@ -26,6 +26,7 @@ import argparse
 import asyncio
 import json
 import pathlib
+import shutil
 import statistics
 import subprocess
 import sys
@@ -253,11 +254,19 @@ def sh(cmd: str, timeout: float = 600) -> str:
 
 
 def dirty_paths() -> list[str]:
-    return [
-        line
-        for line in sh("git status --porcelain").splitlines()
-        if not line.endswith(".idea/") and "configs/.env" not in line
-    ]
+    """``git status --porcelain`` entries as ``"XY path"`` with the status letters kept."""
+    proc = subprocess.run("git status --porcelain", shell=True, cwd=REPO, capture_output=True, text=True)
+    entries = []
+    for line in proc.stdout.splitlines():
+        if not line.strip() or line.endswith(".idea/") or "configs/.env" in line:
+            continue
+        status, path = line[:2].strip() or "??", line[3:]
+        entries.append(f"{status} {path}")
+    return entries
+
+
+def changed_path(entry: str) -> str:
+    return entry.split(" ", 1)[1]
 
 
 def restore(original_branch: str) -> None:
@@ -318,7 +327,7 @@ def save_evidence(task: dict, run_dir: pathlib.Path) -> tuple[list[str], dict[st
     parts = ["# git status --porcelain", *changed, "", "# git diff", sh("git diff")]
     for line in changed:
         if line.startswith("??"):
-            path = REPO / line[3:].strip()
+            path = REPO / changed_path(line)
             if path.is_file() and path.stat().st_size < 20_000:
                 parts += ["", f"# new file: {line[3:].strip()}", path.read_text(errors="replace")]
     outputs: dict[str, str] = {}
@@ -356,7 +365,7 @@ def judge(task: dict, record: dict, changed: list[str], outputs: dict[str, str])
         if check.get("git_clean") and changed:
             ok, notes = False, notes + [f"changed {changed}"]
         if "only_files" in check:
-            extra = [c for c in changed if c[3:].strip() not in check["only_files"]]
+            extra = [c for c in changed if changed_path(c) not in check["only_files"]]
             if extra:
                 ok, notes = False, notes + [f"unexpected {extra}"]
         for i, needle in check.get("expect", []):
@@ -391,8 +400,10 @@ def run_one(
     task: dict, run_index: int, loop: str, run_root: pathlib.Path, out: pathlib.Path, original_branch: str
 ) -> dict:
     run_dir = run_root / task["id"] / f"run{run_index}" / loop
+    if (run_dir / "result.json").exists() and (run_dir / "evidence.txt").exists():
+        return None  # finished earlier; a rerun resumes after it
     if run_dir.exists():
-        raise SystemExit(f"run dir exists: {run_dir}")
+        shutil.rmtree(run_dir)  # a run that died before saving its evidence starts over
     run_dir.mkdir(parents=True)
     if dirty_paths():
         raise SystemExit(f"tree not clean before {task['id']} run{run_index} {loop}: {dirty_paths()}")
@@ -431,7 +442,8 @@ def run_one(
                 "final_text": "",
             }
     except subprocess.TimeoutExpired as exc:
-        (run_dir / "stdout.txt").write_text(exc.stdout or "")
+        stdout = exc.stdout.decode(errors="replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
+        (run_dir / "stdout.txt").write_text(stdout)
         record = {
             "steps": None,
             "tokens": None,
@@ -480,6 +492,8 @@ def parent(args: argparse.Namespace) -> int:
         for run_index in range(1, args.runs + 1):
             for loop in loops:
                 row = run_one(task, run_index, loop, run_root, pathlib.Path(args.out), original_branch)
+                if row is None:
+                    continue
                 summary = {
                     k: row[k]
                     for k in (
