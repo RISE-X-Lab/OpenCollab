@@ -114,7 +114,11 @@ def _apply_line_replace(source: str, params: dict[str, Any]) -> tuple[str | None
     expected = params.get("expected_str")
     if expected is not None:
         actual = "\n".join(lines[start_idx:end_idx])
-        if actual != expected.rstrip("\n"):
+        # Split the guard the way the source is split, so a range that ends in
+        # a blank line ("a\nb\n\n") compares line for line instead of losing
+        # the blank line to a trailing-newline strip.
+        expected_lines, _ = _split_lines(expected)
+        if lines[start_idx:end_idx] != expected_lines:
             return None, (
                 "expected_str does not match the current content of lines "
                 f"{start_line}-{end_line}.\n--- expected ---\n{expected}\n"

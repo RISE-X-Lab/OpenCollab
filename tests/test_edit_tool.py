@@ -83,6 +83,33 @@ def test_line_replace_applies_range_and_stale_guard_keeps_file_unchanged(tmp_pat
     assert target.read_text(encoding="utf-8") == "a\nX\nY\nd\n"
 
 
+def test_line_replace_guard_accepts_a_range_that_ends_in_a_blank_line(tmp_path):
+    """A model quoting lines 1-3 of ``a / b / <blank>`` writes ``"a\\nb\\n\\n"``;
+    the guard must read that as three lines, not strip the blank line away."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    target = ws / "f.py"
+    target.write_text("a\nb\n\nc\n", encoding="utf-8")
+    tool, runtime = ApplyPatchTool(), _runtime(ws)
+
+    result = run(
+        tool.execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "line_replace",
+                "start_line": 1,
+                "end_line": 3,
+                "new_str": "X\n",
+                "expected_str": "a\nb\n\n",
+            },
+            runtime,
+        )
+    )
+
+    assert "Applied line_replace" in result
+    assert target.read_text(encoding="utf-8") == "X\nc\n"
+
+
 def test_unified_diff_matches_by_content_despite_line_drift(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
