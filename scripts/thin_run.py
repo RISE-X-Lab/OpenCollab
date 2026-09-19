@@ -16,6 +16,7 @@ import argparse
 import asyncio
 import inspect
 import json
+import os
 import sys
 from types import SimpleNamespace
 from typing import Any
@@ -28,10 +29,12 @@ from opencollab.bootstrap.programmatic import resolve_tools
 from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
 from opencollab.domain.agent import Agent
 
+# ``{workspace}`` is filled with the absolute workspace path at run time.
 SYSTEM_PROMPT = (
-    "You are a software engineer working inside the given workspace. Use the tools to "
-    "inspect and change files. When the task is finished, reply with a short plain-text "
-    "summary and no tool call."
+    "You are a software engineer working inside the workspace at {workspace}. All paths are "
+    "relative to it; do not search outside it. Use the tools to inspect and change files. When "
+    "the task is finished, reply with a plain-text summary of what you did and what you "
+    "verified, and make no tool call."
 )
 
 
@@ -117,7 +120,7 @@ async def main(args: argparse.Namespace) -> int:
     environment = LocalEnvironment(args.workspace)
     agent = Agent(
         name="solo",
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=SYSTEM_PROMPT.format(workspace=os.path.abspath(args.workspace)),
         tools=list(resolve_tools("coding")),
         model=cfg.model,
         provider=cfg.provider,
