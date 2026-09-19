@@ -108,3 +108,41 @@ def test_token_limit_stops_the_next_query():
     assert reason == "token limit reached: 120 tokens used"
     assert loop.tokens == 120
     assert len(llm.calls) == 2
+
+
+def test_a_call_that_crosses_the_token_limit_stops_before_its_tools_run():
+    tool = EchoTool()
+    llm = FakeLLM([llm_response(tool_calls=[_call()], total_tokens=100), llm_response(content="never")])
+    loop = ThinRun(llm, _agent(tool), None, token_limit=100)
+
+    reason, text = run(loop.run("go"))
+
+    assert reason == "token limit reached: 100 tokens used"
+    assert text == ""
+    assert tool.calls == []
+    assert len(llm.calls) == 1
+
+
+class RecordingTracer:
+    def __init__(self):
+        self.steps = []
+
+    def log_step(self, *, step_type, payload, tokens=0, latency=0.0):
+        self.steps.append((step_type, payload, tokens))
+
+    def flush(self):
+        return None
+
+
+def test_tracer_gets_one_llm_call_row_per_query_and_one_tool_exec_row_per_call():
+    tool = EchoTool()
+    tracer = RecordingTracer()
+    llm = FakeLLM([llm_response(tool_calls=[_call("7")], total_tokens=9), llm_response(content="done")])
+    loop = ThinRun(llm, _agent(tool), None, tracer=tracer)
+
+    run(loop.run("go"))
+
+    assert [step_type for step_type, _p, _t in tracer.steps] == ["llm_call", "tool_exec", "llm_call"]
+    first_call, tool_exec = tracer.steps[0], tracer.steps[1]
+    assert first_call[1]["step"] == 1 and first_call[2] == 9
+    assert tool_exec[1] == {"step": 1, "tool": "echo", "args": {"value": "7"}, "output_chars": len("echo: 7")}

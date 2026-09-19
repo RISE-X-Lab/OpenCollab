@@ -147,6 +147,8 @@ def test_framework_scripts_contain_no_evaluation_entrypoints() -> None:
         "check_dashscope.py",
         "check_interface_width.py",
         "check_secret_history.py",
+        "compare_loops.py",
+        "compare_tasks_r3.json",
         "demo_team_issue.sh",
         "generate_brand_assets.py",
         "start_opencollab.sh",
