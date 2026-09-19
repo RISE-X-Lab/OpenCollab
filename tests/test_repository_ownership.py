@@ -150,6 +150,7 @@ def test_framework_scripts_contain_no_evaluation_entrypoints() -> None:
         "demo_team_issue.sh",
         "generate_brand_assets.py",
         "start_opencollab.sh",
+        "thin_run.py",
     ]
 
 
