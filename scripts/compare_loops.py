@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import pathlib
 import shutil
 import statistics
@@ -243,8 +244,10 @@ async def child(args: argparse.Namespace) -> int:
         (run_dir / "crash.txt").write_text(record["crash"])
     record.pop("crash", None)
     (run_dir / "result.json").write_text(json.dumps(record, indent=1, ensure_ascii=False))
-    print("RESULT " + json.dumps(record, ensure_ascii=False))
-    return 0
+    print("RESULT " + json.dumps(record, ensure_ascii=False), flush=True)
+    # The session's autosave worker can keep the interpreter alive after the run
+    # has ended; the measurement is written, so leave without waiting for it.
+    os._exit(0)
 
 
 # --------------------------------------------------------------------------- parent
