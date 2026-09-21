@@ -61,9 +61,9 @@ TEAM_TOOLS = (
 )
 #: The sentence in Single2's own prompt that is false for a team seat, and the
 #: card's correction of it. A card that lost the correction would leave a seat
-#: believing its silence ends the run.
+#: believing its silence ends the whole run rather than its own turn.
 PROFILE_SENTENCE = "A final response without tool calls ends the agent session."
-CORRECTION = "A response with no tool call does not end this run."
+CORRECTION = "A response with no tool call ends your turn, not the run."
 
 VARIANTS, LADDERS = load_registry(S2DUAL_CARDS)
 NAMES = sorted(VARIANTS)
@@ -121,8 +121,12 @@ def test_the_seated_prompt_is_single2s_with_the_card_after_it(name: str) -> None
 
 @pytest.mark.parametrize("name", NAMES)
 def test_the_card_corrects_what_the_profile_says_about_ending_a_run(name: str) -> None:
-    """Single2's prompt ends a session on a reply with no tool call. A team seat
-    ends a run by calling `submit`, and a Coder's silence is how it waits."""
+    """Single2's prompt ends a session on a reply with no tool call. Here that
+    reply ends a turn: a teammate's message reopens it, and the run ends only
+    once the team is quiescent -- nobody working, no message in flight. So the
+    card cannot repeat the profile's sentence, and it must not replace it with
+    "`submit` ends the run" either: ``submit`` records a deliberate ending, it
+    does not move where the run stops."""
     assert PROFILE_SENTENCE in SINGLE2_SYSTEM_PROMPT
     for text in (_card_on_disk(name),
                  (PROMPTS / "coder-a.md").read_text(encoding="utf-8"),

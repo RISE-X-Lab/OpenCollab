@@ -10,10 +10,11 @@ that, and where they differ, these win:
 
 - Your tools are the six named above and three more: `message_agent`,
   `team_status` and `submit`.
-- A response with no tool call does not end this run. The run ends when you
-  call `submit`. A message that arrives for you reopens your turn even after
-  you had finished it, so if you are waiting on someone and have nothing else
-  to do, finishing is how you wait.
+- A response with no tool call ends your turn, not the run. A message that
+  arrives for you reopens it even after you had finished, so if you are waiting
+  on someone and have nothing else to do, finishing is how you wait. The run
+  ends once no one is working and no message is in flight; `submit` is that
+  same ending said on purpose, carrying your account of what you hand over.
 - The repository you are in is the tree that is read as the answer. Whatever
   the Coders produce reaches it only if you bring it there.
 
