@@ -1,0 +1,94 @@
+# WHAT THIS FAMILY IS
+#
+# G22 (`validation-council-dual-coder-selection-v2`) seated as a team, with its
+# own prompts rather than this repository's. It exists so the team arm and the
+# workflow arm can be compared with the cards held equal: `team.dual-*.yaml`
+# restates G22's ORGANIZATION in this repository's voice, this file restates
+# G22's WORDS. The two answer different questions and do not pool.
+#
+# ONE CELL, NO LADDER. There is nothing to vary here: a rung would be a
+# departure from G22's text, which is the one thing this cell holds fixed.
+#
+# THE SOURCE
+#
+#   opencollab_eval/workflows/validation_council_dual_coder_selection.py
+#     -> validation_council_dual_coder_contract.py
+#        MINIMAL_CODER_PROMPT          -> g22-mirror/coder-a.md
+#        CROSS_COMPONENT_CODER_PROMPT  -> g22-mirror/coder-b.md
+#        CONTRACT_PROMPT               -> g22-mirror/adopter.md
+#        SHARED_RULES (from _validation_council_solve_defs.py) -> the `Rules:`
+#        block in all three
+#
+# WHAT WAS CHANGED, AND WHY EACH CHANGE WAS FORCED
+#
+# Everything below is a collaboration difference. No task instruction, judging
+# rule, or evidence rule was reworded; a reader comparing this cell's numbers
+# with G22's is entitled to that, so any future edit outside this list makes
+# this a different instrument and must say so.
+#
+#   1. `Do not run git commit.` is inverted for the two Coders. In G22 a
+#      candidate's patch is collected by Python from its candidate worktree;
+#      here a commit is the ONLY thing that crosses between worktrees, so
+#      forbidding it would make the arm unable to deliver at all. The Adopter
+#      keeps the rule: it checks out, it does not commit.
+#   2. `Work only in this isolated candidate worktree` becomes the worktree and
+#      sha paragraphs. Same isolation, stated in the terms this runtime gives
+#      it.
+#   3. `Public issue {goal}` becomes "the issue arrives in the Adopter's
+#      message". G22 formats the goal into each candidate's prompt; a team seat
+#      is seeded with its role and nothing else, so the Adopter has to carry it.
+#   4. `Shared public command observed from candidate A {public_command}`
+#      becomes "if the Adopter's message names the command A used". In G22 that
+#      string is lifted from A's record by Python and injected into B's prompt.
+#      Here it is something the Adopter may or may not pass on -- which is a
+#      real difference in what is measured, not only in wording, and is the
+#      reason this cell can be read at all.
+#   5. `Candidate evidence {candidates}` becomes the two Coders' messages plus
+#      `git checkout <sha>` + `git_diff`. G22 hands the adjudicator an assembled
+#      block; nothing assembles one here.
+#   6. Sequencing. G22 `await`s A, then B, then adjudicates. The card tells the
+#      Adopter to do the same, because it is G22's structure rather than a
+#      choice G22 leaves open.
+#   7. Adoption. G22's `_adopt` is Python; here it is the Adopter's
+#      `git checkout <sha>`, which is why the read-only seat holds `bash`.
+#
+# WHAT HAS NO TEAM EQUIVALENT
+#
+# G22 runs `_mechanical_choice` BEFORE the adjudicator and only calls the model
+# when that judgement is inconclusive. A team has no such step: the Adopter
+# judges every run. So this cell corresponds to G22's "two candidates, one
+# adjudication, one adoption" and NOT to its five phases. Do not report the two
+# as the same pipeline.
+#
+# TOOLS
+#
+# The Coders carry G22's candidate bundle exactly -- bash, file_read,
+# file_write, apply_patch, grep, git_diff -- plus the three tools a team seat
+# needs to take part at all. `run_tests` is absent because G22 dropped it
+# (OpenCollab-Eval 9474eed, this repository #95) and tests run through bash.
+#
+# The Adopter is read-only for editing, matching G22's `tools=[]` adjudicator
+# as closely as a team allows: it can read and it can check out, and it holds
+# neither apply_patch nor file_write.
+entry: adopter
+
+roles:
+  adopter:
+    prompt_file: g22-mirror/adopter.md
+    tools: [bash, file_read, git_diff, grep, message_agent, submit, team_status]
+
+  coder_a:
+    prompt_file: g22-mirror/coder-a.md
+    tools: [apply_patch, bash, file_read, file_write, git_diff, grep, message_agent, submit, team_status]
+
+  coder_b:
+    prompt_file: g22-mirror/coder-b.md
+    tools: [apply_patch, bash, file_read, file_write, git_diff, grep, message_agent, submit, team_status]
+
+# Four directed edges, not six -- G22's candidates never see each other, and
+# the scheduler refuses a message between them, so the independence is the
+# roster's rather than the model's restraint.
+topology:
+  adopter: [coder_a, coder_b]
+  coder_a: [adopter]
+  coder_b: [adopter]
