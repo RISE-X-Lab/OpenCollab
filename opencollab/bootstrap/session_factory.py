@@ -38,6 +38,10 @@ from opencollab.application.ports import (
 )
 from opencollab.application.scheduler import LaunchSpec
 from opencollab.application.session import Session
+from opencollab.bootstrap.agent_profiles import (
+    SingleAgentProfile,
+    resolve_agent_profile,
+)
 from opencollab.bootstrap.container import build_session_runtime, build_skill_store
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.runtime_context import build_workspace_safety_policy
@@ -642,7 +646,18 @@ class DefaultSessionFactory:
             seed_user_messages=plan.startup_user_messages(),
             seed_system_messages=plan.startup_system_messages(),
             team_budget_exhausted=_team_budget_guard(scheduler),
+            agent_profile=self._role_profile(role),
         )
+
+    def _role_profile(self, role_name: str) -> SingleAgentProfile | None:
+        """The agent profile this seat runs under, or ``None`` for OpenCollab's.
+
+        The prompt half of a profile is folded in by ``ContextBuilder``; this is
+        the other half — the shaper and the safety wrapper, which the session
+        runtime applies. Both halves read the same declaration, so a seat cannot
+        take a profile's words while running OpenCollab's own history handling.
+        """
+        return resolve_agent_profile(self._team.role_for(role_name).profile)
 
     def create_lead_session(
         self,
@@ -693,6 +708,7 @@ class DefaultSessionFactory:
             aid=aid,
             seed_system_messages=plan.startup_system_messages(),
             team_budget_exhausted=_team_budget_guard(scheduler),
+            agent_profile=self._role_profile(self._team.entry),
         )
 
 

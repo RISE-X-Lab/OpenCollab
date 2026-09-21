@@ -15,6 +15,7 @@ from opencollab.bootstrap.team_config import load_team_config
 
 __all__ = [
     "declared_role_names",
+    "declared_role_profiles",
     "declared_role_prompt_digests",
     "declared_role_tools",
 ]
@@ -70,3 +71,21 @@ def declared_role_prompt_digests(path: str) -> dict[str, str]:
         name: hashlib.sha256(role.prompt.encode("utf-8")).hexdigest()
         for name, role in config.roles.items()
     }
+
+
+def declared_role_profiles(path: str) -> dict[str, str | None]:
+    """Each declared role's agent profile, role name to profile name or ``None``.
+
+    A profile decides the seat's base system prompt, its history shaping, its
+    safety wrapper and its tool output caps, so two runs of the same card under
+    different profiles are two different agents doing the same job. The card
+    digest cannot show that: ``declared_role_prompt_digests`` hashes the role's
+    own card, which is what a treatment varies, and the profile supplies the
+    base the card is appended to. A row that records one without the other can
+    name its condition only halfway.
+
+    ``None`` is OpenCollab's own agent, which is what every role that does not
+    declare a profile runs as.
+    """
+    config = load_team_config(path=path)
+    return {name: role.profile for name, role in config.roles.items()}

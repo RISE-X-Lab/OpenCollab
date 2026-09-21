@@ -68,6 +68,27 @@ workflows have independent defaults, which expire when their workflow ends.
 inspection. Workflow budget, step, and unbounded-limit behavior follows the
 existing `workflow` API, including its 100-step default.
 
+A team file selects the profile per seat, so a roster can be built out of the
+same agent the single-agent arm runs.
+
+```yaml
+roles:
+  adopter:
+    profile: single2
+    prompt_file: s2dual/adopter.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep,
+            message_agent, team_status, submit]
+```
+
+The seat receives Single2's base prompt, shaper, safety policy and tool output
+caps; its `prompt`/`prompt_file` card is appended to the base prompt rather than
+replacing it, and the team section follows the card. A seat still carries the
+tools its team file declares, in the order the file declares them, so a roster
+adds the coordination tools a team needs on top of Single2's six. A team file
+that states its own `tool_limits` keeps them. `declared_role_profiles` reports
+which profile each declared seat runs under, alongside the existing card
+digests, so a recorded run can name both halves of its condition.
+
 The source evaluation harness appends its bounded repository map, prepares the
 anonymous solver workspace, isolates hidden tests, extracts the candidate, and
 runs official grading. Those operations remain evaluation responsibilities and

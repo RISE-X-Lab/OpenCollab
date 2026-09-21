@@ -24,6 +24,10 @@ from opencollab.application.ports import (
     SchedulerPort,
     SkillStorePort,
 )
+from opencollab.bootstrap.agent_profiles import (
+    SingleAgentProfile,
+    resolve_agent_profile,
+)
 from opencollab.bootstrap.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_THINKING,
@@ -125,14 +129,30 @@ class ContextBuilder:
         RAG) are an honest gap, not registered-but-empty placeholders.
         """
         role = self._team.role_for(role_name)
-        sources: list[ContextSource] = [
+        sources: list[ContextSource] = []
+        # A profiled seat is that profile's agent first and this team's role
+        # second: the profile's own system prompt leads, and the role card is
+        # appended to it rather than replacing it. Same order the workflow
+        # runtime uses (``_workflow_runtime_session._profile_prompt``), so a
+        # seat and a workflow agent of the same profile read the same base.
+        profile = self._profile_for(role)
+        if profile is not None:
+            sources.append(
+                ContextSource(
+                    name="profile",
+                    layer=ContextLayer.IDENTITY,
+                    position=ContextPosition.SYSTEM,
+                    content=profile.system_prompt,
+                )
+            )
+        sources.append(
             ContextSource(
                 name="identity",
                 layer=ContextLayer.IDENTITY,
                 position=ContextPosition.SYSTEM,
                 content=role.prompt,
             )
-        ]
+        )
         team_section = self._team_section(role_name, role)
         if team_section:
             sources.append(
@@ -209,7 +229,7 @@ class ContextBuilder:
             skill_store=self._skill_store,
             ask_user_available=ask_user_available,
             allow_unisolated_shell=allow_unisolated_shell,
-            tool_limits=self._team.tool_limits,
+            tool_limits=self._tool_limits_for(role),
         )
         cfg = self._cfg
         model = role.model or cfg.model
@@ -258,6 +278,30 @@ class ContextBuilder:
             llm_stream_chat=cfg.llm_stream_chat,
             provider_error_time_budget=cfg.provider_error_time_budget,
         )
+
+    def _profile_for(self, role: RoleConfig) -> SingleAgentProfile | None:
+        """The resolved profile this role is seated under, if it declared one."""
+        return resolve_agent_profile(role.profile)
+
+    def _tool_limits_for(self, role: RoleConfig) -> dict[str, dict[str, int]]:
+        """The team file's output caps over the profile's own defaults.
+
+        A profile ships the caps its agent was evaluated with -- Single2's
+        10,000-character `bash` result among them -- and a seat that took the
+        profile's prompt while keeping OpenCollab's default caps would not be
+        that agent. The team file still wins where it states a cap, matching
+        how an explicit limit beats a profile default on the SDK path.
+        """
+        profile = self._profile_for(role)
+        declared = self._team.tool_limits or {}
+        if profile is None or not profile.tool_limits:
+            return dict(declared)
+        merged = {
+            name: dict(values) for name, values in profile.tool_limits.items()
+        }
+        for name, values in declared.items():
+            merged.setdefault(name, {}).update(values)
+        return merged
 
     def _team_section(self, role_name: str, role: RoleConfig) -> str:
         topo = self._team.topology

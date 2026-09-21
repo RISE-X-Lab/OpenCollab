@@ -25,6 +25,10 @@ renderer glue), and the HTML template parts. Read `template.team.yaml` first.
   - `tools:` — an allowlist from the MENU below. Unknown names fail at startup.
   - `model:` (optional, inherits `OPENCOLLAB_MODEL`), `temperature:` (optional,
     0.0–2.0, inherits 0.2), `thinking:` (optional).
+  - `profile:` (optional) — an agent profile this seat runs under: `single2`, or
+    `default`/omitted for OpenCollab's own agent. The profile supplies the base
+    system prompt, the history shaper, the safety wrapper and the tool output
+    caps; `prompt:`/`prompt_file:` is appended to that base, not instead of it.
 - **`topology:`** — directed graph `src: [dst, …]`. A role may spawn/message
   ONLY the roles listed for it. Coordination is gated by BOTH the tool AND an edge.
 - **`entry:`** — which role is agent 0. Omitted → a role named `lead`, else the
