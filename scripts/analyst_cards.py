@@ -66,7 +66,19 @@ DUAL_CARDS = CardSet(
     directory=CONFIGS_DIR / "dual-candidate",
     entry_role="adopter",
 )
-CARD_SETS: dict[str, CardSet] = {s.name: s for s in (HANDOFF_CARDS, DUAL_CARDS)}
+#: The same roster and the same five blocks as ``DUAL_CARDS``, seated as the
+#: evaluated single agent: every role declares ``profile: single2``, so the
+#: card is appended to that profile's system prompt instead of being the whole
+#: of one. Its own body therefore states only what the profile does not -- the
+#: three team tools, what ends a run here, and where each seat works.
+S2DUAL_CARDS = CardSet(
+    name="s2dual",
+    directory=CONFIGS_DIR / "s2dual",
+    entry_role="adopter",
+)
+CARD_SETS: dict[str, CardSet] = {
+    s.name: s for s in (HANDOFF_CARDS, DUAL_CARDS, S2DUAL_CARDS)
+}
 
 
 @dataclass(frozen=True)

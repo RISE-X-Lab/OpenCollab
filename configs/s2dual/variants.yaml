@@ -1,0 +1,103 @@
+# The registry of assembled Adopter cards for the Single2-seated two-candidate
+# family. One entry per cell.
+#
+# WHAT THIS FAMILY IS, AND WHY IT IS NOT THE ONE NEXT DOOR
+#
+# Same roster as `dual-candidate` -- an `adopter` and two coders over four
+# directed edges -- and the same five treatment blocks, byte for byte. One
+# thing differs, and it is the seat: every role here declares
+# `profile: single2`, so each agent runs the evaluated single agent's system
+# prompt, history shaper, safety wrapper and tool output caps, with its card
+# appended to that prompt rather than replacing it.
+#
+# WHY THE SEAT WAS CHANGED
+#
+# `dual-candidate` seats OpenCollab's own agent. A number off it answers "did
+# this organization help THIS agent", and a team-versus-single comparison built
+# on it cannot separate the organization from the seat: the single-agent arm
+# runs Single2, the team arm did not. Here both arms run the same
+# implementation, so a difference between them is the organization.
+#
+# NOT POOLABLE WITH `dual-candidate`. The blocks are the same text, but the
+# agent under them is a different one -- different base prompt, different
+# shaping, a `bash` result capped at 10,000 characters instead of OpenCollab's
+# default, and `git_diff` in the bundle where the older family had no such
+# tool. Cells of the two families are separate conditions and their rows do not
+# merge.
+#
+# THE CARD IS NOT THE WHOLE SYSTEM PROMPT HERE
+#
+# What a run seats is Single2's prompt, then this card, then the team section.
+# `declared_role_prompt_digests` hashes the card alone, so a row that records
+# the digest must record `declared_role_profiles` beside it or it names only
+# half of what the seat was.
+#
+#     card = shared.md
+#              {{CAPABILITIES}} <- capabilities/<capabilities>.md
+#              {{BLOCK}}        <- blocks/<block>.md
+#
+# `scripts/analyst_cards.py` renders every card set.
+#
+# WHAT THE NUMBER OFF THIS FAMILY IS
+#
+# Unchanged from `dual-candidate`: `summary.alpha` reads "a delegate seat spent
+# tokens and spoke", which is satisfied when ONE coder was used -- under a
+# serial card that is the failure that matters, because a first seat that never
+# answers means the second is never asked. The quantity to read here is BOTH
+# candidate seats spent tokens and spoke. It must carry its own name, and it
+# has to exist before the first launch.
+
+variants:
+
+  s2dual-judge:
+    team_file: team.s2dual-judge.yaml
+    block: judge
+    capabilities: full
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      The reference cell of this family, and the only one that commands
+      nothing. Its block is `dual-judge`'s byte for byte, which is
+      `handoff/facts-v2`'s in turn. Everything the Adopter knows about the two
+      Coders it knows from the shared body; what to do about them is not stated
+      anywhere.
+
+  s2dual-prohibit:
+    team_file: team.s2dual-prohibit.yaml
+    block: prohibit
+    capabilities: full
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      Ladder rung 1, against `dual-prohibit`: the command, the suspension line,
+      and the prohibition on applying the fix oneself.
+
+  s2dual-plain:
+    team_file: team.s2dual-plain.yaml
+    block: plain
+    capabilities: full
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      Ladder rung 2, against `dual-plain`: rung 1 with the prohibition deleted
+      and nothing else changed.
+
+  s2dual-bare:
+    team_file: team.s2dual-bare.yaml
+    block: bare
+    capabilities: full
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      Ladder rung 3, against `dual-bare`: rung 2 with the suspension line
+      deleted too. The command alone.
+
+  s2dual-optout:
+    team_file: team.s2dual-optout.yaml
+    block: optout
+    capabilities: full
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      Ladder rung 4, against `dual-optout`: rung 3 plus explicit permission to
+      depart.
+
+# Adjacent rungs differ by exactly one move. `s2dual-judge` is not a rung of the
+# ladder: it is the reference cell.
+ladders:
+  s2dual_command: [s2dual-prohibit, s2dual-plain, s2dual-bare, s2dual-optout]
