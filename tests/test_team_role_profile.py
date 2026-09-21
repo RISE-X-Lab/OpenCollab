@@ -209,3 +209,53 @@ def test_a_team_file_reports_the_profile_each_seat_declares(tmp_path) -> None:
     assert declared_role_profiles(str(path)) == {
         "adopter": "single2", "coder_a": None,
     }
+
+
+# --- The whole wiring, on the file a batch actually launches -------------------
+
+
+def test_the_shipped_cell_seats_single2_through_the_scheduler(tmp_path, monkeypatch) -> None:
+    """End to end on ``configs/team.s2dual-plain.yaml``, not on a fixture.
+
+    The unit tests above build a plan and a session factory directly. This one
+    goes the way a run goes -- ``build_runtime_context`` then
+    ``build_scheduler``, which is what the SDK's ``team()`` and therefore the
+    evaluation harness reach -- because every step between those two is a place
+    a declaration can be dropped without anything failing: the seat would run,
+    it would read a card, and it would be OpenCollab's agent wearing Single2's
+    words.
+    """
+    from pathlib import Path
+
+    from opencollab.bootstrap import build_runtime_context, build_scheduler
+
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("hi", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    team_file = Path(__file__).resolve().parents[1] / "configs" / "team.s2dual-plain.yaml"
+    ctx = build_runtime_context(
+        str(workspace),
+        {
+            "model": "gpt-4o", "provider": "openai",
+            "api_key": "test-key",  # pragma: allowlist secret
+            "base_url": None, "budget": 100_000,
+        },
+        trace=False,
+    )
+    scheduler = build_scheduler(
+        ctx,
+        use_worktrees=False,
+        interactive=False,
+        auto_save=False,
+        team_config_path=str(team_file),
+    )
+    lead = scheduler.lead_session
+
+    assert lead.agent.name == "adopter"
+    assert lead.agent.system_prompt.startswith(SINGLE2_SYSTEM_PROMPT)
+    assert "## You are on a team" in lead.agent.system_prompt
+    assert [tool.name for tool in lead.agent.tools] == list(SEAT_TOOLS)
+    bash = next(tool for tool in lead.agent.tools if tool.name == "bash")
+    assert bash.max_output_chars == SINGLE2_BASH_OUTPUT_CHARS
