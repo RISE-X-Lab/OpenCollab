@@ -35,7 +35,7 @@ CLOSING_LINE = "Do not report a change as verified unless you have the evidence 
 #: single agent's working tools plus the collaboration channel.
 DEFAULT_TOOLS = [
     "apply_patch", "bash", "file_read", "file_write", "grep",
-    "message_agent", "run_tests", "submit", "team_status",
+    "message_agent", "submit", "team_status",
 ]
 
 

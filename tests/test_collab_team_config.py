@@ -122,7 +122,9 @@ def test_the_analyst_could_do_the_whole_task_alone(team) -> None:
     """Handing work over has to stay a thing the Analyst was told to do, not a
     thing it had no alternative to. A seat without edit tools delegates because
     it cannot do anything else, and the handoff then measures the config."""
-    assert {"apply_patch", "file_write", "bash", "run_tests"} <= set(team.roles["analyst"].tools)
+    # ``bash`` is what runs the tests since the built-in ``run_tests`` tool was
+    # removed upstream; the property under test is unchanged.
+    assert {"apply_patch", "file_write", "bash"} <= set(team.roles["analyst"].tools)
 
 
 def test_the_analysts_claims_about_its_teammates_bundles_are_true(team) -> None:

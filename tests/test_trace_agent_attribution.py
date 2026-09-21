@@ -111,6 +111,7 @@ def test_llm_call_aid_matches_the_steering_nudge_aid(tmp_path):
     nudges = _payloads(path, "steering_nudge")
     calls = _payloads(path, "llm_call")
     assert len(nudges) == 1
-    assert len(calls) == 1
+    assert len(calls) == 2
+    assert all(call["aid"] == SESSION_AID for call in calls)
     assert nudges[0]["aid"] == state.aid
     assert calls[0]["aid"] == nudges[0]["aid"]

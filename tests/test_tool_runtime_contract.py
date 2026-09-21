@@ -12,7 +12,6 @@ from opencollab.adapters.tools.bash import BashTool
 from opencollab.adapters.tools.fs import FileReadTool, FileWriteTool, GrepTool
 from opencollab.adapters.tools.git_diff import GitDiffTool
 from opencollab.adapters.tools.human import AskUserTool
-from opencollab.adapters.tools.run_tests import RunTestsTool
 from opencollab.application.tool_execution import ToolRuntime
 
 # ---------------------------------------------------------------------------
@@ -60,7 +59,6 @@ def test_bash_rejects_invalid_output_limits_at_construction(value):
         (GrepTool, "max_grep_chars"),
         (GitDiffTool, "max_diff_chars"),
         (GitDiffTool, "max_status_chars"),
-        (RunTestsTool, "max_traceback_chars"),
     ],
 )
 @pytest.mark.parametrize("value", [0, -1, False, 1.5])
@@ -232,7 +230,6 @@ def test_built_in_tools_have_native_execute_with_runtime_methods():
     assert AskUserTool.execute_with_runtime is not Tool.execute_with_runtime
     assert ApplyPatchTool.execute_with_runtime is not Tool.execute_with_runtime
     assert GitDiffTool.execute_with_runtime is not Tool.execute_with_runtime
-    assert RunTestsTool.execute_with_runtime is not Tool.execute_with_runtime
 
 
 def test_base_tool_default_execute_with_runtime_raises_not_implemented():
@@ -243,7 +240,7 @@ def test_base_tool_default_execute_with_runtime_raises_not_implemented():
 
 
 def test_no_concrete_tool_defines_legacy_execute():
-    for name in ("bash", "apply_patch", "fs", "git_diff", "human", "run_tests"):
+    for name in ("bash", "apply_patch", "fs", "git_diff", "human"):
         mod = __import__(f"opencollab.adapters.tools.{name}", fromlist=["_"])
         for cls in vars(mod).values():
             if isinstance(cls, type) and issubclass(cls, Tool) and cls is not Tool:
@@ -265,7 +262,6 @@ def test_tool_modules_do_not_import_inner_layers_or_concrete_sandbox():
         package_root / "opencollab/adapters/tools/fs.py",
         package_root / "opencollab/adapters/tools/git_diff.py",
         package_root / "opencollab/adapters/tools/human.py",
-        package_root / "opencollab/adapters/tools/run_tests.py",
     ]
 
     for path in tool_files:

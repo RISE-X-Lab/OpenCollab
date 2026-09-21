@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import contextvars
-from collections.abc import Sequence
+import os
+from collections.abc import Mapping, Sequence
 from typing import Any
 
+from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
 from opencollab.adapters.env import LocalEnvironment
 from opencollab.adapters.llm.providers import RESPONSES
 from opencollab.adapters.llm.retry import RetryTimeBudget
@@ -16,9 +18,11 @@ from opencollab.adapters.llm.types import (
 from opencollab.adapters.working_tree import EnvWorkingTreeProbe
 from opencollab.adapters.worktree_pool import WorktreePool
 from opencollab.application.ports import EventPublisherPort, TracePort
+from opencollab.application.tool_execution_runtime import ToolRuntime
 from opencollab.application.workflow import WorkflowContext
 from opencollab.application.workflow_registry import WorkflowSpec
 from opencollab.bootstrap._workflow_runtime_state import WORKFLOW_AGENT_PROMPT
+from opencollab.bootstrap.agent_profiles import SingleAgentProfile
 from opencollab.bootstrap.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_THINKING,
@@ -60,8 +64,9 @@ class WorkflowSessionFactory:
         tracer: TracePort | None = None,
         event_sink: EventPublisherPort | None = None,
         llm_timeout: float = 600.0,
-        max_steps: int = 100,
+        max_steps: int | None = None,
         system_prompt: str = WORKFLOW_AGENT_PROMPT,
+        agent_profile: SingleAgentProfile | None = None,
         temperature: float = DEFAULT_TEMPERATURE,
         top_p: float | None = DEFAULT_TOP_P,
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
@@ -89,6 +94,7 @@ class WorkflowSessionFactory:
         self._llm_timeout = llm_timeout
         self._max_steps = max_steps
         self._system_prompt = system_prompt
+        self._agent_profile = agent_profile
         self._temperature = temperature
         self._top_p = top_p
         self._max_output_tokens = max_output_tokens
@@ -122,6 +128,10 @@ class WorkflowSessionFactory:
         # and an isolated teammate get the same kind of workspace, so a handoff
         # between two agents means the same thing in either arm.
         self._worktree_pool: WorktreePool | None = None
+
+    @property
+    def environment_revoked(self) -> bool:
+        return self._env is not None and bool(getattr(self._env, "revoked", False))
 
     def _next_aid(self) -> int:
         """Allocate this session's agent id.
@@ -162,30 +172,30 @@ class WorkflowSessionFactory:
         will find them.
 
         ``label`` names the branch, so a leftover tree says which agent made it.
-        A run without a workspace has nothing to branch from, and the pool hands
-        back a plain local environment instead of failing — the same fallback it
-        gives a team told not to use worktrees.
+        The supplied environment owns the source repository. Without one, the
+        explicit workspace or current directory is copied or checked out into
+        a private worktree; an isolation request never shares the source tree.
         """
         if self._worktree_pool is None:
             self._worktree_pool = WorktreePool(
                 self._workspace or ".",
-                use_worktrees=self._workspace is not None,
+                use_worktrees=True,
+                base_environment=self._env,
             )
         return await self._worktree_pool.acquire(label or "workflow-agent")
 
     async def release_isolated_envs(self) -> None:
-        """Tear down every worktree this factory handed out. Safe to call twice."""
+        """Release worktrees while retaining the pool for retry or later use."""
         pool = self._worktree_pool
         if pool is None:
             return
-        self._worktree_pool = None
         await pool.release()
 
     def build_workflow_session(
         self,
         *,
         prompt: str,
-        budget: int,
+        budget: int | None,
         tools: Sequence[Any] | None = None,
         isolation: bool = False,
         label: str | None = None,
@@ -201,7 +211,31 @@ class WorkflowSessionFactory:
             use_thinking = True
             use_reasoning_effort = self._reasoning_effort
             reasoning_effort_policy = "configured"
-        resolved_tools = list(tools or [])
+        # An isolated agent brings its own tree; everyone else shares the run's.
+        session_env = env if env is not None else self._env
+        if session_env is None:
+            session_env = (
+                LocalEnvironment(self._workspace)
+                if self._workspace
+                else LocalEnvironment()
+            )
+        system_prompt = self._system_prompt
+        environment_workspace = getattr(session_env, "workspace", None)
+        if (
+            isinstance(self._workspace, str) and self._workspace
+            and isinstance(environment_workspace, str) and environment_workspace
+            and environment_workspace != self._workspace
+        ):
+            system_prompt = system_prompt.replace(self._workspace, environment_workspace)
+        # The workflow owns role permissions and verification-tool instances.
+        # Profile resolution keeps explicit tools, including evidence wrappers.
+        resolved_tools = list(
+            (tools or [])
+            if self._agent_profile is None
+            else self._agent_profile.resolve_tools(tools)
+        )
+        if self._agent_profile is not None:
+            system_prompt = self._profile_prompt(system_prompt, resolved_tools, label)
         if self._wire_protocol == RESPONSES:
             validate_responses_model_controls(
                 self._model,
@@ -212,7 +246,7 @@ class WorkflowSessionFactory:
             )
         agent = Agent(
             name="workflow_agent",
-            system_prompt=self._system_prompt,
+            system_prompt=system_prompt,
             tools=resolved_tools,
             model=self._model,
             provider=self._provider,
@@ -235,14 +269,6 @@ class WorkflowSessionFactory:
             provider_error_time_budget=self._provider_error_time_budget,
             tool_choice=tool_choice,
         )
-        # An isolated agent brings its own tree; everyone else shares the run's.
-        session_env = env if env is not None else self._env
-        if session_env is None:
-            session_env = (
-                LocalEnvironment(self._workspace)
-                if self._workspace
-                else LocalEnvironment()
-            )
         aid = self._next_aid()
         return build_session(
             agent=agent,
@@ -255,7 +281,82 @@ class WorkflowSessionFactory:
             provider_retry_budget=self._provider_retry_budget,
             aid=aid,
             auto_save_path=self._save_path(aid, label),
+            agent_profile=self._agent_profile,
         )
+
+    def _profile_prompt(
+        self,
+        workflow_prompt: str,
+        tools: Sequence[Any],
+        label: str | None,
+    ) -> str:
+        profile = self._agent_profile
+        assert profile is not None
+        names = [str(tool.name) for tool in tools]
+        available = ", ".join(f"`{name}`" for name in names) or "none"
+        role = label or "workflow agent"
+        permissions = (
+            "\n\n## Workflow role and permissions\n\n"
+            f"The current role is {role!r}. Its available tools are {available}. "
+            "This exact tool list governs the session. Follow the role duties in "
+            "the workflow context and user task. They take precedence over the "
+            "general software-repair duties and submission steps above. "
+            "Use the provided tool interface for this role's allowed operations."
+        )
+        capture_names = [
+            name for name in names if name in {"structured_output", "submit_findings"}
+        ]
+        if capture_names:
+            permissions += (
+                " Complete this role by calling "
+                + " or ".join(f"`{name}`" for name in capture_names)
+                + " with a valid payload matching its schema. This structured "
+                "submission requirement takes precedence over the ordinary-text "
+                "final response described above."
+            )
+        return (
+            profile.system_prompt
+            + "\n\n## Workflow context\n\n"
+            + workflow_prompt
+            + permissions
+        )
+
+    async def execute_verification(
+        self,
+        tool: Any,
+        params: Mapping[str, object],
+        *,
+        environment: Any | None = None,
+    ) -> str:
+        """Execute a verification tool without creating an agent session."""
+        resolved_environment = environment if environment is not None else self._env
+        owned_environment = False
+        if resolved_environment is None:
+            resolved_environment = (
+                LocalEnvironment(self._workspace)
+                if self._workspace
+                else LocalEnvironment()
+            )
+            owned_environment = True
+        if bool(getattr(resolved_environment, "revoked", False)):
+            raise RuntimeError("verification environment is unavailable")
+        if owned_environment:
+            await resolved_environment.setup()
+        try:
+            result = await tool.execute_with_runtime(
+                dict(params),
+                ToolRuntime(
+                    environment=resolved_environment,
+                    safety_policy=None,
+                    permission_policy=None,
+                ),
+            )
+            if not isinstance(result, str):
+                raise TypeError("verification tool must return text")
+            return result
+        finally:
+            if owned_environment:
+                await resolved_environment.cleanup()
 
 
 def build_workflow_context(
@@ -267,8 +368,9 @@ def build_workflow_context(
     budget: int | None = None,
     max_concurrency: int = 4,
     task_concurrency: int | None = None,
-    max_steps: int = 100,
+    max_steps: int | None = None,
     system_prompt: str = WORKFLOW_AGENT_PROMPT,
+    agent_profile: SingleAgentProfile | None = None,
     save_dir: str | None = None,
     env: Any | None = None,
     source_root: str | None = None,
@@ -299,6 +401,7 @@ def build_workflow_context(
         llm_timeout=float(cfg.get("llm_timeout", 600.0)),
         max_steps=max_steps,
         system_prompt=system_prompt,
+        agent_profile=agent_profile,
         temperature=float(cfg.get("temperature", DEFAULT_TEMPERATURE)),
         top_p=cfg.get("top_p", DEFAULT_TOP_P),
         max_output_tokens=int(cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)),
@@ -315,12 +418,23 @@ def build_workflow_context(
         save_dir=save_dir,
         env=environment,
     )
-    budget_total = budget if budget is not None else cfg.get("budget")
+    budget_total = (
+        None
+        if os.environ.get("OPENCOLLAB_UNBOUNDED_LIMITS", "").strip().lower()
+        in {"1", "true"}
+        else budget if budget is not None else cfg.get("budget")
+    )
     # Working-tree probe over the same workspace the sessions edit, so the
     # workflow can verify a real edit landed before declaring success.
     probe_env = environment
     if probe_env is None:
         probe_env = LocalEnvironment(workspace) if workspace else LocalEnvironment()
+    candidate_root = getattr(probe_env, "workspace", None)
+    candidate_workspace = (
+        EnvCandidateWorkspace(probe_env, workspace=candidate_root)
+        if isinstance(candidate_root, str) and candidate_root
+        else None
+    )
     return WorkflowContext(
         factory,
         event_sink=event_sink,
@@ -329,6 +443,7 @@ def build_workflow_context(
         task_concurrency=task_concurrency,
         budget_total=budget_total,
         tree_probe=EnvWorkingTreeProbe(probe_env),
+        candidate_workspace=candidate_workspace,
         workspace_root=source_root if source_root is not None else workspace,
         deadline_monotonic=deadline_monotonic,
         deadline_margin_seconds=deadline_margin_seconds,

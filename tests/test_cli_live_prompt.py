@@ -494,3 +494,94 @@ async def test_agent_policies_read_through_the_shared_input_line():
     assert prompt.pending_question == "[Agent asks] Which one?\n> "
     prompt.deliver("the second")
     assert await asyncio.wait_for(asked, timeout=1) == "the second"
+
+
+@pytest.mark.asyncio
+async def test_console_pipe_preserves_buffered_lines_while_writer_stays_open(monkeypatch):
+    read_fd, write_fd = os.pipe()
+    stream = os.fdopen(read_fd, 'r', encoding='utf-8')
+    monkeypatch.setattr('opencollab.adapters.cli.live_prompt.sys.stdin', stream)
+    try:
+        os.write(write_fd, '\u7b2c\u4e00\u884c\nsecond\n'.encode())
+        console = Console(file=StringIO())
+        assert await asyncio.wait_for(read_console_line(console, '> '), 1) == '\u7b2c\u4e00\u884c'
+        assert await asyncio.wait_for(read_console_line(console, '> '), 1) == 'second'
+    finally:
+        stream.close()
+        os.close(write_fd)
+
+
+@pytest.mark.asyncio
+async def test_noninteractive_questions_share_one_stdin_reader(monkeypatch):
+    read_fd, write_fd = os.pipe()
+    stream = os.fdopen(read_fd, 'r', encoding='utf-8')
+    monkeypatch.setattr('opencollab.adapters.cli.live_prompt.sys.stdin', stream)
+    prompt = LivePrompt(_FakeTUI(None), console=Console(file=StringIO()), interactive=False)
+    first = asyncio.create_task(prompt.ask('first? '))
+    second = asyncio.create_task(prompt.ask('second? '))
+    try:
+        await asyncio.sleep(0)
+        os.write(write_fd, b'one\ntwo\n')
+        os.close(write_fd)
+        write_fd = None
+        assert await asyncio.wait_for(asyncio.gather(first, second), 1) == ['one', 'two']
+    finally:
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(first, second, return_exceptions=True)
+        stream.close()
+        if write_fd is not None:
+            os.close(write_fd)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('encoding', ['utf-8', 'utf-16', 'latin-1'])
+async def test_console_pipe_keeps_decoder_and_newline_state(monkeypatch, encoding):
+    read_fd, write_fd = os.pipe()
+    stream = os.fdopen(read_fd, 'r', encoding=encoding)
+    monkeypatch.setattr('opencollab.adapters.cli.live_prompt.sys.stdin', stream)
+    try:
+        os.write(write_fd, 'café\r\nnext\rlast'.encode(encoding))
+        os.close(write_fd)
+        write_fd = None
+        console = Console(file=StringIO())
+        assert await read_console_line(console, '> ') == 'café'
+        assert await read_console_line(console, '> ') == 'next'
+        assert await read_console_line(console, '> ') == 'last'
+        with pytest.raises(EOFError):
+            await read_console_line(console, '> ')
+    finally:
+        stream.close()
+        if write_fd is not None:
+            os.close(write_fd)
+
+
+@pytest.mark.asyncio
+async def test_regular_stdin_file_does_not_need_selector_support(monkeypatch, tmp_path):
+    source = tmp_path / 'stdin.txt'
+    source.write_text('first\nsecond\n')
+    loop = asyncio.get_running_loop()
+
+    def unsupported(*args):
+        raise PermissionError('regular files cannot be registered with epoll')
+
+    monkeypatch.setattr(loop, 'add_reader', unsupported)
+    with source.open() as stream:
+        monkeypatch.setattr('opencollab.adapters.cli.live_prompt.sys.stdin', stream)
+        console = Console(file=StringIO())
+        assert await read_console_line(console, '> ') == 'first'
+        assert await read_console_line(console, '> ') == 'second'
+
+
+@pytest.mark.asyncio
+async def test_null_stdin_reports_eof_without_selector_registration(monkeypatch):
+    loop = asyncio.get_running_loop()
+
+    def unsupported(*args):
+        raise PermissionError('null input cannot be registered with epoll')
+
+    monkeypatch.setattr(loop, 'add_reader', unsupported)
+    with open(os.devnull) as stream:
+        monkeypatch.setattr('opencollab.adapters.cli.live_prompt.sys.stdin', stream)
+        with pytest.raises(EOFError):
+            await read_console_line(Console(file=StringIO()), '> ')

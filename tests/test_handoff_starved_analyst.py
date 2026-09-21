@@ -71,7 +71,8 @@ def test_the_analyst_keeps_bash_so_a_handoff_can_reach_the_graded_tree(starved) 
 def test_the_coder_can_still_do_the_work_that_was_taken_away(starved) -> None:
     for tool in WRITE_TOOLS:
         assert tool in starved.roles["coder"].tools, tool
-    assert "run_tests" in starved.roles["coder"].tools
+    # The built-in test tool is gone upstream; ``bash`` carries test execution.
+    assert "bash" in starved.roles["coder"].tools
 
 
 def test_the_stance_block_is_primarys_byte_for_byte() -> None:

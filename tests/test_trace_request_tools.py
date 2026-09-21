@@ -62,7 +62,9 @@ def test_llm_call_records_the_hard_write_gate_dropping_message_agent():
     runner = build_runner(
         state=state,
         tracer=tracer,
-        llm=FakeLLM([llm_response(content="done")]),
+        # Two responses: the gated turn is answered with text, which since the
+        # 0.7 merge makes the session nudge once and call again.
+        llm=FakeLLM([llm_response(content="done"), llm_response(content="done")]),
         agent=_agent_with_tool_schemas("file_read", "apply_patch", "message_agent"),
         max_budget_tokens=100_000,
         max_steps=40,
@@ -71,7 +73,7 @@ def test_llm_call_records_the_hard_write_gate_dropping_message_agent():
     run(runner.run_loop())
 
     payloads = _llm_payloads(tracer)
-    assert len(payloads) == 1
+    # The gated request is the first one; the second is the retry.
     assert payloads[0]["request_tool_names"] == ["apply_patch"]
     assert "message_agent" not in payloads[0]["request_tool_names"]
     assert payloads[0]["request_tool_choice"] == "required"
@@ -88,7 +90,7 @@ def test_llm_call_records_a_named_function_tool_choice_verbatim():
     runner = build_runner(
         state=state,
         tracer=tracer,
-        llm=FakeLLM([llm_response(content="done")]),
+        llm=FakeLLM([llm_response(content="done"), llm_response(content="done")]),
         agent=_agent_with_tool_schemas("structured_output", "file_read", "grep"),
         max_budget_tokens=100_000,
         max_steps=40,

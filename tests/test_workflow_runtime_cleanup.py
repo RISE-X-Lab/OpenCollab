@@ -30,6 +30,18 @@ from opencollab.bootstrap.session_factory import build_session
 from opencollab.domain.agent import Agent
 from opencollab.domain.events import SessionRuntimeEvent
 
+# Deadlines on cleanup that must SUCCEED. Every wait below is on pure
+# event-loop bookkeeping with no intrinsic duration, so a sub-second budget
+# does not bound the code — it bounds how starved the machine is, and reports a
+# cleanup that worked as a red build. These exist to fail a genuine hang; the
+# waits that are supposed to EXPIRE keep their own small timeouts, because the
+# cleanup path spends them in full on every run before it escalates: the
+# quiesce in test_cleanup_cancels_tasks_without_aborting_caller_environment
+# before it cancels, and the cleanup_timeout in
+# test_run_workflow_quiesces_late_session_before_manifest_and_tracer_close
+# before it aborts the environment.
+MUST_SETTLE_SECONDS = 10.0
+
 
 @pytest.mark.asyncio
 async def test_cleanup_cancels_tasks_without_aborting_caller_environment():
@@ -91,7 +103,7 @@ async def test_workflow_finalization_closes_session_resources():
     quiesced, succeeded, lingering = (
         await workflow_cleanup._quiesce_and_finalize_workflow_context(
             ctx,
-            timeout=0.1,
+            timeout=MUST_SETTLE_SECONDS,
         )
     )
 
@@ -205,7 +217,7 @@ async def test_run_workflow_quiesces_late_session_before_manifest_and_tracer_clo
 
     async def fn(ctx, args):
         assert await ctx.agent("slow", timeout=0.001) is None
-        await asyncio.wait_for(holder["session"].cancel_seen.wait(), timeout=0.5)
+        await asyncio.wait_for(holder["session"].cancel_seen.wait(), timeout=MUST_SETTLE_SECONDS)
         return "ok"
 
     save_dir = str(tmp_path / "run")
@@ -283,7 +295,7 @@ async def test_workflow_cleanup_marks_cancelled_blocking_autosave_nonquiescent()
     cleanup = asyncio.create_task(
         workflow_cleanup._quiesce_workflow_context(ctx, timeout=0.02)
     )
-    deadline = asyncio.get_running_loop().time() + 0.5
+    deadline = asyncio.get_running_loop().time() + MUST_SETTLE_SECONDS
     while not (
         cleanup.done()
         or all(owner.cancelled() or owner.done() for owner in owners)
@@ -295,7 +307,7 @@ async def test_workflow_cleanup_marks_cancelled_blocking_autosave_nonquiescent()
 
     try:
         release_first.set()
-        assert await asyncio.to_thread(second_started.wait, 0.5)
+        assert await asyncio.to_thread(second_started.wait, MUST_SETTLE_SECONDS)
         quiesced, succeeded, _lingering = await cleanup
         assert quiesced is False
         assert succeeded is False
@@ -306,7 +318,7 @@ async def test_workflow_cleanup_marks_cancelled_blocking_autosave_nonquiescent()
         await asyncio.gather(*owners, return_exceptions=True)
 
     assert calls == ["start-1", "end-1", "start-2", "end-2"]
-    assert await workflow_cleanup._wait_for_context_cleanup(ctx, timeout=0.2)
+    assert await workflow_cleanup._wait_for_context_cleanup(ctx, timeout=MUST_SETTLE_SECONDS)
 
 @pytest.mark.asyncio
 async def test_workflow_cleanup_reports_completed_autosave_failure():
@@ -337,7 +349,7 @@ async def test_workflow_cleanup_reports_completed_autosave_failure():
 
     quiesced, succeeded, _lingering = await workflow_cleanup._quiesce_workflow_context(
         ctx,
-        timeout=0.1,
+        timeout=MUST_SETTLE_SECONDS,
     )
     assert quiesced is True
     assert succeeded is False
@@ -395,7 +407,7 @@ async def test_workflow_cleanup_tracks_abandoned_provider_task_until_exit():
 
     llm.release.set()
     await asyncio.gather(*pending, return_exceptions=True)
-    assert await workflow_cleanup._wait_for_context_cleanup(ctx, timeout=0.2)
+    assert await workflow_cleanup._wait_for_context_cleanup(ctx, timeout=MUST_SETTLE_SECONDS)
 
 @pytest.mark.asyncio
 async def test_run_workflow_reports_technical_cleanup_failure_after_quiescence(
@@ -479,11 +491,11 @@ async def test_run_workflow_cleanup_failure_is_note_on_primary_cancel(monkeypatc
         await asyncio.Event().wait()
 
     run_task = asyncio.create_task(workflow_runtime.run_workflow(fn, {}, cfg=_cfg()))
-    await asyncio.wait_for(started.wait(), timeout=0.5)
+    await asyncio.wait_for(started.wait(), timeout=MUST_SETTLE_SECONDS)
     run_task.cancel("primary cancellation")
 
     with pytest.raises(asyncio.CancelledError) as caught:
-        await asyncio.wait_for(run_task, timeout=0.5)
+        await asyncio.wait_for(run_task, timeout=MUST_SETTLE_SECONDS)
     assert_cancel_reason(caught.value, "primary cancellation")
     assert_cancel_note(
         caught.value,
@@ -528,7 +540,7 @@ async def test_run_workflow_reports_manifest_failure(
             {},
             cfg=_cfg(),
             save_dir=str(tmp_path / "run"),
-            cleanup_timeout=0.2,
+            cleanup_timeout=MUST_SETTLE_SECONDS,
         )
 
 @pytest.mark.asyncio
@@ -570,15 +582,15 @@ async def test_run_workflow_waits_for_orphaned_background_agent(monkeypatch):
             fn,
             {},
             cfg=_cfg(),
-            cleanup_timeout=0.2,
+            cleanup_timeout=MUST_SETTLE_SECONDS,
         )
     )
-    await asyncio.wait_for(started.wait(), timeout=0.5)
+    await asyncio.wait_for(started.wait(), timeout=MUST_SETTLE_SECONDS)
     await asyncio.sleep(0)
     assert run_task.done() is False
 
     release.set()
-    assert await asyncio.wait_for(run_task, timeout=0.5) == "workflow-returned"
+    assert await asyncio.wait_for(run_task, timeout=MUST_SETTLE_SECONDS) == "workflow-returned"
 
 @pytest.mark.asyncio
 async def test_owned_tracer_closes_when_cleanup_fails(
@@ -662,7 +674,7 @@ async def test_owned_tracer_closes_when_cleanup_fails(
 
     async def fn(ctx, args):
         assert await ctx.agent("slow", timeout=0.001) is None
-        await asyncio.wait_for(holder["session"].cancel_seen.wait(), timeout=0.5)
+        await asyncio.wait_for(holder["session"].cancel_seen.wait(), timeout=MUST_SETTLE_SECONDS)
         return "workflow-returned"
 
     with pytest.raises(RuntimeError, match="technical workflow cleanup failed"):
@@ -678,5 +690,5 @@ async def test_owned_tracer_closes_when_cleanup_fails(
     assert tracer.closed is True
     pending = holder["context"].pending_cleanup_tasks
     holder["session"].release.set()
-    await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=0.5)
+    await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=MUST_SETTLE_SECONDS)
     assert order.index("tracer-close") < order.index("session-finished")

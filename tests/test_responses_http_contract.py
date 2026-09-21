@@ -67,6 +67,14 @@ def _completed_event(
     }
 
 
+# These tests assert what the client puts on the wire and what it makes of the
+# reply, never how fast a local server answers. The timeouts are here to fail a
+# hang, so they sit far above the round trip: a five-second round deadline is
+# reachable on a loaded single-core runner, and reports a correct request as a
+# protocol error.
+HANG_GUARD_SECONDS = 60
+
+
 @contextmanager
 def fake_responses_server(
     scripts: list[list[dict[str, Any]]],
@@ -155,9 +163,9 @@ async def test_real_http_stream_replays_reasoning_function_call_and_output(monke
             base_url=base_url,
             wire_protocol="responses",
             max_retries=0,
-            request_timeout=5,
-            first_event_timeout=2,
-            stream_idle_timeout=2,
+            request_timeout=HANG_GUARD_SECONDS,
+            first_event_timeout=HANG_GUARD_SECONDS,
+            stream_idle_timeout=HANG_GUARD_SECONDS,
         )
         first = await client.complete(
             [{"role": "system", "content": "Use tools."}, {"role": "user", "content": "Get it."}],
@@ -255,9 +263,9 @@ async def test_real_http_deepseek_named_tool_uses_json_schema_text_binding():
             base_url=base_url,
             wire_protocol="responses",
             max_retries=0,
-            request_timeout=5,
-            first_event_timeout=2,
-            stream_idle_timeout=2,
+            request_timeout=HANG_GUARD_SECONDS,
+            first_event_timeout=HANG_GUARD_SECONDS,
+            stream_idle_timeout=HANG_GUARD_SECONDS,
         )
         result = await client.complete(
             [{"role": "user", "content": "Return findings."}],

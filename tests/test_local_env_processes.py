@@ -326,6 +326,20 @@ async def test_process_timeout_covers_blocked_stdin_writer(tmp_path) -> None:
         )
 
 
+# ``terminate_process`` may spend a SIGTERM grace and then two kill graces
+# reaping the group, so a deadline below that sum reports a cleanup that worked
+# as a hang. The two spawn tests below wait on cleanup that really runs, so they
+# have to allow what the implementation allows itself.
+CLEANUP_WORST_CASE_SECONDS = (
+    process_module.PROCESS_TERM_GRACE_SECONDS + 2 * process_module.PROCESS_KILL_GRACE_SECONDS
+)
+
+# The gated spawn never completes while the gate is held, so a task that failed
+# to give up would miss any deadline at all; this one only has to sit above a
+# loaded machine's scheduling jitter.
+GATED_TASK_SETTLES_SECONDS = 2.0
+
+
 async def test_process_timeout_covers_subprocess_spawn(monkeypatch, tmp_path) -> None:
     gate = asyncio.Event()
     terminated = asyncio.Event()
@@ -357,7 +371,7 @@ async def test_process_timeout_covers_subprocess_spawn(monkeypatch, tmp_path) ->
     )
 
     try:
-        done, _pending = await asyncio.wait({task}, timeout=0.1)
+        done, _pending = await asyncio.wait({task}, timeout=GATED_TASK_SETTLES_SECONDS)
         assert task in done
         with pytest.raises(asyncio.TimeoutError):
             task.result()
@@ -366,7 +380,7 @@ async def test_process_timeout_covers_subprocess_spawn(monkeypatch, tmp_path) ->
         if not task.done():
             with pytest.raises(asyncio.TimeoutError):
                 await task
-        await asyncio.wait_for(terminated.wait(), timeout=1)
+        await asyncio.wait_for(terminated.wait(), timeout=CLEANUP_WORST_CASE_SECONDS + 1)
 
 
 async def test_process_cancellation_during_spawn_is_bounded(
@@ -405,7 +419,7 @@ async def test_process_cancellation_during_spawn_is_bounded(
     task.cancel()
 
     try:
-        done, _pending = await asyncio.wait({task}, timeout=0.1)
+        done, _pending = await asyncio.wait({task}, timeout=GATED_TASK_SETTLES_SECONDS)
         assert task in done
         with pytest.raises(asyncio.CancelledError):
             task.result()
@@ -414,7 +428,7 @@ async def test_process_cancellation_during_spawn_is_bounded(
         if not task.done():
             with pytest.raises(asyncio.CancelledError):
                 await task
-        await asyncio.wait_for(terminated.wait(), timeout=1)
+        await asyncio.wait_for(terminated.wait(), timeout=CLEANUP_WORST_CASE_SECONDS + 1)
 
 
 async def test_registry_abort_bounds_unfinished_spawn_handoff(monkeypatch) -> None:
@@ -472,7 +486,7 @@ async def test_cancellation_during_timeout_cleanup_is_preserved(monkeypatch) -> 
         run_process(
             (sys.executable, "-c", "import time; time.sleep(5)"),
             shell=False,
-            timeout=0.01,
+            timeout=0.2,
         )
     )
     await cleanup_started.wait()
@@ -611,7 +625,7 @@ async def test_run_process_retains_unquiesced_process_for_registry_retry(
         await run_process(
             (sys.executable, "-c", "import time; time.sleep(5)"),
             shell=False,
-            timeout=0.01,
+            timeout=0.2,
             registry=registry,
         )
     assert len(registry._processes) == 1

@@ -41,16 +41,6 @@ _STRUCTURED_RETRY = (
     "required schema. Do not explore further or answer in prose."
 )
 
-# The corrective session has one tool and no exploration responsibility. Give
-# it enough time for one reasoning turn without letting an endpoint that
-# degrades forced tool choice to ``auto`` consume the caller's full role budget.
-# At or above the provider's own first-event timeout
-# (``openai_provider`` waits 180s for the first streamed event), otherwise the
-# window can expire before a single reasoning turn has emitted anything and the
-# corrective pass is cancelled having made no call at all.
-DEFAULT_STRUCTURED_RETRY_TIMEOUT_SECONDS = 180.0
-
-
 def _named_tool_choice(tool_name: str) -> dict[str, Any]:
     """OpenAI-style named-function ``tool_choice`` forcing exactly ``tool_name``.
 
@@ -85,10 +75,8 @@ def _schema_satisfied(captured: Any, schema: dict[str, Any]) -> bool:
     return all(key in captured for key in required)
 
 
-def _structured_retry_timeout(remaining: float | None) -> float:
-    if remaining is None:
-        return DEFAULT_STRUCTURED_RETRY_TIMEOUT_SECONDS
-    return min(remaining, DEFAULT_STRUCTURED_RETRY_TIMEOUT_SECONDS)
+def _structured_retry_timeout(remaining: float | None) -> float | None:
+    return remaining
 
 
 class WorkflowStructuredMixin:
@@ -289,10 +277,10 @@ class WorkflowStructuredMixin:
 
         The corrective session is built fresh (seeded only with the system
         prompt), so without this it would have none of the first pass's
-        exploration. We copy a *shallow list copy* of the prior messages — the
-        new list is independent (so the corrective turn's own appends don't
-        mutate the first session's history) while the message dicts are shared,
-        which is safe because neither side mutates a message in place.
+        exploration. The fresh session's system messages govern its current
+        role and tool permissions. Keep those messages and append a shallow
+        copy of the prior conversation. The new list is independent while the
+        message dicts are shared, because neither side mutates them in place.
 
         The workflow-session port promises ``state.messages``. A top-level
         ``messages`` property remains a compatibility fallback for older custom
@@ -308,10 +296,18 @@ class WorkflowStructuredMixin:
 
         session_state = getattr(session, "state", None)
         try:
+            current = getattr(session_state, "messages", None)
+            if current is None:
+                current = getattr(session, "messages", None)
+            system = [message for message in current or [] if message.get("role") == "system"]
+            carried = (
+                system + [message for message in prior if message.get("role") != "system"]
+                if system else list(prior)
+            )
             if session_state is not None and hasattr(session_state, "messages"):
-                session_state.messages = list(prior)
+                session_state.messages = carried
             else:
-                session.messages = list(prior)
+                session.messages = carried
         except Exception:  # noqa: BLE001 — carry-over is best-effort, never fatal
             return False
         return True

@@ -169,7 +169,11 @@ print("RESULT:" + repr(value))
         [sys.executable, "-c", script],
         capture_output=True,
         text=True,
-        timeout=1,
+        # Starting an interpreter and importing opencollab measures 0.37-0.52s
+        # on an idle machine here and more under load, so a one-second budget
+        # was bounding Python's startup, not the shutdown being tested. This
+        # only has to fail a subprocess that never exits.
+        timeout=60,
         env=env,
         check=False,
     )

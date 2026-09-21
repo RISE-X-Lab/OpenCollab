@@ -255,7 +255,9 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         context_window=983_616,
         supports_forced_tool_choice=False,
     ),
-    # ``gpt-5.6-luna`` is deliberately absent, and stays absent. Its recorded
+    # ``gpt-5.6-luna`` is deliberately absent, and stays absent. Upstream `main`
+    # added a row for it (1,048,576-token window, workflow thinking override
+    # off); this branch drops that row on merge, deliberately. Its recorded
     # runs were produced under the fallback an unlisted model gets here — no
     # context window, forced tool choice allowed — at OpenCollab commit
     # 9175297ed56be6a0377b38d6f5949e07d34d7073, and that fallback was measured

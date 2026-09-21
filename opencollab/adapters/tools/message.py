@@ -11,6 +11,7 @@ from typing import Any
 from opencollab.adapters.tools.base import Tool
 from opencollab.application.ports import SchedulerPort
 from opencollab.application.tool_execution import ToolRuntime
+from opencollab.domain.identity import role_collision_key
 
 #: Appended to every acknowledgement. The scheduler's own ack says the message
 #: was queued and nothing else, which reads like the end of an exchange -- and
@@ -96,12 +97,18 @@ class MessageAgentTool(Tool):
             return to_aid
         if not isinstance(to_role, str) or not to_role.strip():
             return "Error: to_role must be a role name."
-        wanted = to_role.strip().lower()
-        matches = [
-            entry
-            for entry in self._scheduler.team_snapshot()
-            if str(entry.get("role", "")).lower() == wanted
-        ]
+        try:
+            wanted = role_collision_key(to_role.strip())
+        except ValueError:
+            return "Error: to_role must be a valid role name."
+        matches = []
+        for entry in self._scheduler.team_snapshot():
+            try:
+                key = role_collision_key(entry.get("role"))
+            except ValueError:
+                continue
+            if key == wanted:
+                matches.append(entry)
         if not matches:
             known = sorted(
                 {str(entry.get("role", "?")) for entry in self._scheduler.team_snapshot()}

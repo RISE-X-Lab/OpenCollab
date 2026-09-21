@@ -421,10 +421,11 @@ def test_no_tool_calls_marks_done_and_emits_text_delta():
         # runs under (see test_trace_history_compaction).
         "session.history_compaction",
         "context_shaping",
+        "llm_call_started",
         "llm_call",
         "session_terminal",
     ]
-    assert tracer.steps[2]["payload"]["content"] == "plain answer"
+    assert tracer.steps[3]["payload"]["content"] == "plain answer"
 
 def test_session_accepts_explicit_llm_client():
     fake_llm = FakeLLMClient([
@@ -535,9 +536,11 @@ def test_tool_calls_execute_append_tool_result_and_continue():
     assert [step["step_type"] for step in tracer.steps] == [
         "session.history_compaction",
         "context_shaping",
+        "llm_call_started",
         "llm_call",
         "tool_exec",
         "context_shaping",
+        "llm_call_started",
         "llm_call",
         "session_terminal",
     ]

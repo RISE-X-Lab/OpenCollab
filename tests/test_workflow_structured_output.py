@@ -630,31 +630,30 @@ def test_structured_retry_carries_history_through_declared_state_port():
     assert retry.state.messages is not prior_messages
 
 
-def test_forced_commit_retry_window_is_at_least_the_provider_first_event_timeout():
-    """B4: a 60s window cancelled the corrective pass before it made a call.
+def test_forced_commit_retry_window_is_the_caller_s_remaining_time():
+    """B4, restated after the merge removed the fixed cap.
 
+    A 60s window used to cancel the corrective pass before it made a call:
     ``complete_openai`` waits ``first_event_timeout`` (180s) for the first
     streamed event, so a retry deadline below that can expire while the
     provider is still on its first reasoning turn — observed once as
     sympy-20438, whose forced commit issued zero LLM calls and ended
-    ``cancelled``. The window must not be shorter than what one turn is
-    allowed to take.
+    ``cancelled``. This branch raised the cap to 180s; main removed the cap
+    instead, so the corrective pass now inherits the caller's whole remaining
+    role time and only a caller deadline can shorten it. Both fixes close B4;
+    this pins the one that survived, and keeps the provider number in view so
+    a future cap cannot silently reintroduce a window below it.
     """
     from opencollab.adapters.llm import openai_provider
-    from opencollab.application.workflow_structured import (
-        DEFAULT_STRUCTURED_RETRY_TIMEOUT_SECONDS,
-        _structured_retry_timeout,
-    )
+    from opencollab.application.workflow_structured import _structured_retry_timeout
 
     provider_first_event_timeout = inspect.signature(
         openai_provider.complete_openai
     ).parameters["first_event_timeout"].default
-    assert DEFAULT_STRUCTURED_RETRY_TIMEOUT_SECONDS >= provider_first_event_timeout
-    assert DEFAULT_STRUCTURED_RETRY_TIMEOUT_SECONDS == 180.0
+    assert provider_first_event_timeout == 180.0
 
-    # No caller deadline -> the default window.
-    assert _structured_retry_timeout(None) == 180.0
-    # A caller deadline shorter than the window still wins (the min semantics):
-    # the corrective pass may not outlive the role's own remaining time.
+    # No caller deadline -> no window at all, rather than a fixed default.
+    assert _structured_retry_timeout(None) is None
+    # With a deadline the caller's remaining time is the window, uncapped.
     assert _structured_retry_timeout(90.0) == 90.0
-    assert _structured_retry_timeout(600.0) == 180.0
+    assert _structured_retry_timeout(600.0) == 600.0

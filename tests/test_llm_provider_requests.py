@@ -199,6 +199,12 @@ def test_deepseek_flash_declares_verified_responses_json_schema_support():
     assert capabilities.honors_workflow_thinking_override is False
 
 
+# Upstream `main` also carries a test pinning ``gpt-5.6-luna``'s capability row.
+# This branch drops that row on merge (see ``adapters/llm/types.py``), because a
+# row would change the instrument the already-collected luna runs were produced
+# on, so the test that pins it is dropped with it.
+
+
 @pytest.mark.parametrize(
     "model",
     [

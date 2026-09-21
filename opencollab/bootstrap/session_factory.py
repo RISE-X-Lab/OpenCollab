@@ -196,8 +196,8 @@ def build_session(
     agent: Agent,
     env: Environment | None = None,
     tracer: Tracer | None = None,
-    max_budget_tokens: int = 1_000_000,
-    max_steps: int = 100,
+    max_budget_tokens: int | None = 1_000_000,
+    max_steps: int | None = 100,
     auto_save_path: str | None = None,
     event_sink: EventPublisherPort | None = None,
     permission_policy: PermissionPort | None = None,
@@ -212,6 +212,7 @@ def build_session(
     seed_system_messages: list[dict[str, Any]] | None = None,
     shaper: ShaperPort | None = None,
     team_budget_exhausted: Callable[[], bool] | None = None,
+    agent_profile: Any | None = None,
 ) -> Session:
     """Self-wiring ``Session`` factory.
 
@@ -242,6 +243,7 @@ def build_session(
         seed_system_messages=seed_system_messages,
         shaper=shaper,
         team_budget_exhausted=team_budget_exhausted,
+        agent_profile=agent_profile,
     )
     Session.__init__(
         session,
@@ -419,6 +421,10 @@ class DefaultSessionFactory:
     only thing that separates a teammate from an ad-hoc child here, and it is
     read exclusively by ``_unisolated_shell_allowed``.
 
+    ``allow_unisolated_child_shell`` separately authorizes host commands for
+    dynamically spawned children. It defaults to False and does not alter
+    command confirmation or the entry agent's permissions.
+
     ``allow_unisolated_shell`` answers the shell question directly instead of
     letting ``interactive`` answer it by implication. ``None`` keeps the old
     coupling (a human at the run is what licensed an unsandboxed shell), so a
@@ -438,9 +444,9 @@ class DefaultSessionFactory:
         lead_environment: Environment | None = None,
         interactive: bool = False,
         save_dir: str | None = None,
-        allow_unisolated_child_tests: bool = False,
         prebuilt_roster: bool = False,
         allow_unisolated_shell: bool | None = None,
+        allow_unisolated_child_shell: bool = False,
         max_steps: int = SESSION_MAX_STEPS,
     ):
         self._cfg = cfg
@@ -454,8 +460,8 @@ class DefaultSessionFactory:
         self._validate_responses_tool_support()
         self._lead_workspace = lead_workspace
         self._lead_environment = lead_environment
-        self._allow_unisolated_child_tests = allow_unisolated_child_tests
         self._prebuilt_roster = bool(prebuilt_roster)
+        self._allow_unisolated_child_shell = bool(allow_unisolated_child_shell)
         self._allow_unisolated_shell = (
             interactive if allow_unisolated_shell is None else bool(allow_unisolated_shell)
         )
@@ -531,7 +537,8 @@ class DefaultSessionFactory:
         nodes a human declared in the team file, running where agent 0 runs, so
         both get agent 0's answer. A child a model spawned mid-run is not
         declared anywhere, and keeps the hardened default — it must be handed an
-        OS-sandboxed environment before it can run a command.
+        OS-sandboxed environment before it can run a command, unless the caller
+        explicitly opts into ``allow_unisolated_child_shell``.
 
         The left half is ``allow_unisolated_shell``, which defaults to
         ``interactive`` and so reproduces the old rule unless a caller states
@@ -539,7 +546,9 @@ class DefaultSessionFactory:
         agents must be able to run ``git`` — gets the shell without also
         acquiring a human it could put a question to.
         """
-        return self._allow_unisolated_shell and seated_at_start
+        if not seated_at_start:
+            return self._allow_unisolated_child_shell
+        return self._allow_unisolated_shell
 
     def _lead_workspace_is_readable_by_the_agents(self) -> bool:
         """Whether the lead workspace is the directory the agents actually read.
@@ -609,7 +618,6 @@ class DefaultSessionFactory:
             allow_unisolated_shell=self._unisolated_shell_allowed(
                 seated_at_start=self._prebuilt_roster
             ),
-            allow_unisolated_tests=self._allow_unisolated_child_tests,
             plan=plan,
         )
         auto_save_path = (

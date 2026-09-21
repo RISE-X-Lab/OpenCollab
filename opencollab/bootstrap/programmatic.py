@@ -73,7 +73,6 @@ _TOOL_PRESETS: dict[str, tuple[str, ...]] = {
         "file_read",
         "file_write",
         "apply_patch",
-        "run_tests",
         "git_diff",
         "grep",
     ),
@@ -340,8 +339,8 @@ async def run_agent(
     config: Mapping[str, Any],
     workspace: str,
     tools: str | Sequence[Any] | None,
-    max_tokens: int,
-    max_steps: int,
+    max_tokens: int | None,
+    max_steps: int | None,
     timeout: float | None,
     cleanup_timeout: float,
     artifacts: Path | None,
@@ -350,9 +349,14 @@ async def run_agent(
     name: str = "agent",
     system_prompt: str = DEFAULT_AGENT_SYSTEM_PROMPT,
     llm: Any | None = None,
+    agent_profile: Any | None = None,
 ) -> ProgrammaticResult:
     """Run one directly configured agent behind the hardened lifecycle."""
-    resolved_tools = resolve_tools(tools)
+    resolved_tools = (
+        resolve_tools(tools)
+        if agent_profile is None
+        else agent_profile.resolve_tools(tools)
+    )
     agent = Agent(
         name=name,
         system_prompt=system_prompt,
@@ -407,6 +411,7 @@ async def run_agent(
                 llm=llm,
                 llm_timeout_seconds=config.get("llm_timeout", 600.0),
                 cleanup_environment=owned_environment,
+                agent_profile=agent_profile,
             )
         except AgentRuntimeLifecycleError as exc:
             raise ProgrammaticLifecycleError(str(exc)) from exc
@@ -432,6 +437,11 @@ async def run_agent(
                 "terminal_reason": internal.terminal_reason,
                 "markup_recovered": internal.markup_recovered,
                 **quiescence,
+                **(
+                    {"agent_profile": agent_profile.name}
+                    if agent_profile is not None
+                    else {}
+                ),
             },
         )
     except BaseException as exc:
@@ -464,6 +474,7 @@ def _workflow_metrics(
     environment_owned: bool,
     environment_cleanup_quiesced: bool | None,
     environment_quiesced: bool | None,
+    agent_profile: Any | None = None,
 ) -> dict[str, Any]:
     metrics = {
         "steps": 0 if details is None else details.steps,
@@ -478,6 +489,8 @@ def _workflow_metrics(
             environment_quiesced=environment_quiesced,
         )
     )
+    if agent_profile is not None:
+        metrics["agent_profile"] = agent_profile.name
     return metrics
 
 
@@ -491,12 +504,13 @@ async def run_workflow(
     max_concurrency: int,
     task_concurrency: int | None = None,
     timeout: float | None,
-    max_steps: int,
+    max_steps: int | None,
     system_prompt: str | None,
     cleanup_timeout: float,
     artifacts: Path | None,
     trace: bool,
     environment: Any | None = None,
+    agent_profile: Any | None = None,
 ) -> ProgrammaticResult:
     """Run one workflow and return its live metrics directly."""
     workflow_inputs = dict(inputs)
@@ -537,6 +551,7 @@ async def run_workflow(
                 deadline_monotonic=deadline,
                 max_steps=max_steps,
                 system_prompt=system_prompt or WORKFLOW_AGENT_PROMPT,
+                agent_profile=agent_profile,
                 return_details=True,
                 cleanup_environment=owned_environment,
                 defer_manifest_completion=(
@@ -604,6 +619,7 @@ async def run_workflow(
         details = stopped_error.result
         metrics = _workflow_metrics(
             details,
+            agent_profile=agent_profile,
             environment_owned=owned_environment,
             environment_cleanup_quiesced=(
                 True if owned_environment else environment_cleanup_quiesced
@@ -633,6 +649,7 @@ async def run_workflow(
             error=failed_error,
             metrics=_workflow_metrics(
                 details,
+                agent_profile=agent_profile,
                 environment_owned=owned_environment,
                 environment_cleanup_quiesced=environment_cleanup_quiesced,
                 environment_quiesced=environment_quiesced,
@@ -651,6 +668,7 @@ async def run_workflow(
         artifacts=artifacts,
         metrics=_workflow_metrics(
             details,
+            agent_profile=agent_profile,
             environment_owned=owned_environment,
             environment_cleanup_quiesced=environment_cleanup_quiesced,
             environment_quiesced=environment_quiesced,

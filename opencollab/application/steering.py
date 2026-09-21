@@ -95,9 +95,9 @@ def _crosses_budget_threshold(
 def build_steering_block(
     *,
     used_tokens: int,
-    max_budget_tokens: int,
+    max_budget_tokens: int | None,
     step_count: int,
-    max_steps: int,
+    max_steps: int | None,
     reads: int,
     has_write: bool,
     has_structured_output: bool,
@@ -134,15 +134,32 @@ def build_steering_block(
     both ``None`` and the caller neither forces a tool nor traces a
     ``steering_nudge``.
     """
-    total = max_budget_tokens or 0
-    remaining_k = max(0, total - used_tokens) // 1000
-    total_k = total // 1000
-    steps_left = max(0, max_steps - step_count)
-    status = f"[Budget: ~{remaining_k}k/{total_k}k tokens left, ~{steps_left} steps left.]"
+    if max_budget_tokens is None:
+        token_status = f"~{used_tokens // 1000}k tokens used"
+        if max_steps is None:
+            step_status = f"{step_count} steps completed"
+        else:
+            step_status = f"~{max(0, max_steps - step_count)} steps left"
+        status = f"[Progress: {token_status}, {step_status}.]"
+    else:
+        remaining_k = max(0, max_budget_tokens - used_tokens) // 1000
+        total_k = max_budget_tokens // 1000
+        if max_steps is None:
+            step_status = f"{step_count} steps completed"
+        else:
+            step_status = f"~{max(0, max_steps - step_count)} steps left"
+        status = (
+            f"[Budget: ~{remaining_k}k/{total_k}k tokens left, "
+            f"{step_status}.]"
+        )
+    # Cadence gates the line AFTER it is built, so a bounded run's wording is
+    # byte-for-byte what it was before either side of this merge touched it.
+    # ``thresholds`` needs a denominator: an unbounded run has no bands to
+    # cross, and ``_crosses_budget_threshold`` answers False for 0.
     if budget_nudge_mode == BUDGET_NUDGE_OFF:
         status = ""
     elif budget_nudge_mode == BUDGET_NUDGE_THRESHOLDS and not _crosses_budget_threshold(
-        used_tokens, prev_used_tokens, total
+        used_tokens, prev_used_tokens, max_budget_tokens or 0
     ):
         status = ""
 

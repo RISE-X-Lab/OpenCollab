@@ -71,7 +71,7 @@ EDGES = {
 }
 TEAM_TOOLS = (
     "apply_patch", "bash", "file_read", "file_write", "grep",
-    "message_agent", "run_tests", "submit", "team_status",
+    "message_agent", "submit", "team_status",
 )
 
 VARIANTS, LADDERS = load_registry(DUAL_CARDS)

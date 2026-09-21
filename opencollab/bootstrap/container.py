@@ -49,6 +49,8 @@ from opencollab.application.ports import (
 from opencollab.application.session import SessionRuntime
 from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.shaping import (
+    DEFAULT_HISTORY_KEEP_RECENT_GROUPS,
+    DEFAULT_TOOL_CLEAR_KEEP_RECENT,
     DEFAULT_TOOL_RESULT_BUDGET,
     AutoCompactShaper,
     OldHistorySnipShaper,
@@ -287,7 +289,10 @@ def _trace_history_compaction(
 
 
 def _build_default_shaper(
-    resolved_llm: LLMPort, summarizer: ReadTimeSummarizer
+    resolved_llm: LLMPort,
+    summarizer: ReadTimeSummarizer,
+    *,
+    preserve_tool_result_tail: bool = False,
 ) -> ShaperPort:
     """Assemble the default lazy-degradation shaper pipeline.
 
@@ -328,6 +333,9 @@ def _build_default_shaper(
     settings = _history_compaction_settings(resolved_llm)
     history_trigger = settings["history_trigger_tokens"]
     history_target = settings["history_target_tokens"]
+    # A small input allowance cannot retain the same number of maximum-size
+    # tool exchanges as a large window. Keep the latest location/evidence pair.
+    affordable_groups = max(2, history_target // (DEFAULT_TOOL_RESULT_BUDGET // 4))
 
     # Inject the shaping module's own estimator rather than reaching past it:
     # the layers must size history the way the *request* is sized, provider
@@ -337,11 +345,19 @@ def _build_default_shaper(
         "estimate_tokens": approx_messages_tokens,
         "trigger_tokens": history_trigger,
         "target_tokens": history_target,
+        "keep_recent_groups": min(DEFAULT_HISTORY_KEEP_RECENT_GROUPS, affordable_groups),
     }
     return ShaperPipeline(
         (
-            PerToolResultBudgetShaper(DEFAULT_TOOL_RESULT_BUDGET),
-            ToolOutputClearShaper(compactable_tools=COMPACTABLE_TOOL_NAMES, **history_kwargs),
+            PerToolResultBudgetShaper(
+                DEFAULT_TOOL_RESULT_BUDGET,
+                preserve_tail=preserve_tool_result_tail,
+            ),
+            ToolOutputClearShaper(
+                compactable_tools=COMPACTABLE_TOOL_NAMES,
+                keep_recent=min(DEFAULT_TOOL_CLEAR_KEEP_RECENT, affordable_groups),
+                **history_kwargs,
+            ),
             OldHistorySnipShaper(**history_kwargs),
             AutoCompactShaper(summarizer=summarizer, **history_kwargs),
         )
@@ -369,8 +385,8 @@ def build_session_runtime(
     agent: Agent,
     env: Environment | None = None,
     tracer: TracePort | None = None,
-    max_budget_tokens: int = 1_000_000,
-    max_steps: int = 100,
+    max_budget_tokens: int | None = 1_000_000,
+    max_steps: int | None = 100,
     auto_save_path: str | None = None,
     event_sink: EventPublisherPort | None = None,
     permission_policy: PermissionPort | None = None,
@@ -389,6 +405,7 @@ def build_session_runtime(
     seed_system_messages: list[dict[str, Any]] | None = None,
     shaper: ShaperPort | None = None,
     team_budget_exhausted: Callable[[], bool] | None = None,
+    agent_profile: Any | None = None,
 ) -> SessionRuntime:
     """Build a ``SessionRuntime`` with the same construction order
     ``Session.__init__`` used to perform inline.
@@ -422,6 +439,11 @@ def build_session_runtime(
 
     resolved_llm = _resolve_llm(agent, llm, llm_timeout, provider_retry_budget)
 
+    if agent_profile is not None:
+        safety_policy = agent_profile.wrap_safety(
+            safety_policy,
+            resolved_env.workspace,
+        )
     tool_execution = ToolExecutionUseCase(
         agent=agent,
         environment=resolved_env,
@@ -440,9 +462,17 @@ def build_session_runtime(
         auto_save_path,
         provider_retry_budget,
     )
-    resolved_shaper: ShaperPort = (
-        shaper if shaper is not None else _build_default_shaper(resolved_llm, summarizer)
-    )
+    resolved_shaper: ShaperPort
+    if shaper is not None:
+        resolved_shaper = shaper
+    elif agent_profile is not None:
+        resolved_shaper = agent_profile.build_shaper(resolved_llm, summarizer)
+    else:
+        resolved_shaper = _build_default_shaper(resolved_llm, summarizer)
+    # A profile shaper is NOT an injected one: ``build_shaper`` routes back
+    # through ``_build_default_shaper``, so it runs on the very thresholds
+    # derived above. Only a caller-supplied shaper carries thresholds this
+    # wiring never chose.
     _trace_history_compaction(
         tracer,
         aid=aid,

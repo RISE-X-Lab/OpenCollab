@@ -50,6 +50,15 @@ def _required_positive_timeout(value: object, name: str) -> float:
     return parsed
 
 
+def _unbounded_limits_requested() -> bool:
+    value = os.environ.get("OPENCOLLAB_UNBOUNDED_LIMITS", "").strip().lower()
+    if value in {"", "0", "false"}:
+        return False
+    if value in {"1", "true"}:
+        return True
+    raise ValueError("OPENCOLLAB_UNBOUNDED_LIMITS must be true or false")
+
+
 def _non_empty(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip() or "\x00" in value:
         raise ValueError(f"{name} must be non-empty text")
@@ -145,6 +154,9 @@ class OpenCollab:
             "llm_first_event_timeout",
             "llm_stream_idle_timeout",
             "llm_stream_chat",
+            "context_window",
+            "llm_max_retries",
+            "provider_error_time_budget",
         )
         public = {
             key: copy.deepcopy(self._config[key])
@@ -158,6 +170,19 @@ class OpenCollab:
             else None
         )
         return MappingProxyType(public)
+
+    def create_model_client(self) -> Any:
+        """Create a model transport using effective settings; the caller closes it."""
+        from opencollab.bootstrap.inspection import configured_model_client
+
+        return configured_model_client(self._config)
+
+    @staticmethod
+    def read_session_snapshot(path: str | os.PathLike[str], password: str = "") -> dict[str, Any]:
+        """Read a saved session, including completed journal entries, without running it."""
+        from opencollab.bootstrap.inspection import read_session_snapshot
+
+        return read_session_snapshot(Path(path), password)
 
     async def agent(
         self,
@@ -174,9 +199,13 @@ class OpenCollab:
         name: str = "agent",
         system_prompt: str | None = None,
         llm: Any | None = None,
+        profile: str | None = None,
     ) -> RunResult[str]:
         """Run one directly configured agent."""
         _non_empty(prompt, "prompt")
+        from opencollab.bootstrap.agent_profiles import resolve_agent_profile
+
+        agent_profile = resolve_agent_profile(profile)
         _non_empty(name, "name")
         if system_prompt is not None:
             _non_empty(system_prompt, "system_prompt")
@@ -184,8 +213,19 @@ class OpenCollab:
             raise ValueError("trace must be a boolean")
         if max_steps is not None and steps is not None:
             raise ValueError("max_steps and steps cannot both be set")
+        unbounded_limits = _unbounded_limits_requested()
+        explicit_budget = budget is not None
+        explicit_steps = max_steps is not None or steps is not None
+        resolved_budget = _positive_int(
+            self._config["budget"] if budget is None else budget,
+            "budget",
+        )
         resolved_max_steps = (
-            100
+            (
+                SESSION_MAX_STEPS
+                if agent_profile is None
+                else agent_profile.default_steps
+            )
             if max_steps is None and steps is None
             else _positive_int(
                 max_steps if max_steps is not None else steps,
@@ -198,11 +238,26 @@ class OpenCollab:
                 config=self._config,
                 workspace=self._workspace,
                 tools=tools,
-                max_tokens=_positive_int(
-                    self._config["budget"] if budget is None else budget,
-                    "budget",
+                max_tokens=(
+                    None
+                    if unbounded_limits
+                    and not (
+                        agent_profile is not None
+                        and agent_profile.honor_explicit_limits
+                        and explicit_budget
+                    )
+                    else resolved_budget
                 ),
-                max_steps=resolved_max_steps,
+                max_steps=(
+                    None
+                    if unbounded_limits
+                    and not (
+                        agent_profile is not None
+                        and agent_profile.honor_explicit_limits
+                        and explicit_steps
+                    )
+                    else resolved_max_steps
+                ),
                 timeout=_positive_timeout(timeout, "timeout"),
                 cleanup_timeout=_required_positive_timeout(
                     cleanup_timeout,
@@ -212,12 +267,26 @@ class OpenCollab:
                 trace=trace,
                 environment=self._environment,
                 name=name,
-                system_prompt=system_prompt or DEFAULT_AGENT_SYSTEM_PROMPT,
+                system_prompt=system_prompt or (
+                    DEFAULT_AGENT_SYSTEM_PROMPT
+                    if agent_profile is None
+                    else agent_profile.system_prompt
+                ),
                 llm=llm,
+                agent_profile=agent_profile,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc
         return _public_result(result)
+
+    async def agent2(self, prompt: str, **kwargs: Any) -> RunResult[str]:
+        """Run the isolated OC Single2 standalone-agent profile."""
+        if "profile" in kwargs:
+            raise ValueError(
+                "agent2 selects profile='single2'; use agent to select another profile"
+            )
+        kwargs.setdefault("name", "single2")
+        return await self.agent(prompt, profile="single2", **kwargs)
 
     async def team(
         self,
@@ -330,8 +399,9 @@ class OpenCollab:
         concurrency: int = 4,
         task_concurrency: int | None = None,
         timeout: float | None = None,
-        max_steps: int = 100,
+        max_steps: int | None = 100,
         system_prompt: str | None = None,
+        agent_profile: str | None = None,
         cleanup_timeout: float = 2.0,
         artifacts: str | os.PathLike[str] | None = None,
         trace: bool = True,
@@ -342,7 +412,13 @@ class OpenCollab:
         limits active parallel/pipeline units across the workflow and defaults
         to ``concurrency``. Mixed agent and task work may therefore peak at the
         sum of both limits.
+
+        ``agent_profile`` selects the shared agent configuration for every
+        workflow role while preserving each role's explicit tool permissions.
         """
+        from opencollab.bootstrap.agent_profiles import resolve_agent_profile
+
+        resolved_agent_profile = resolve_agent_profile(agent_profile)
         if not callable(flow) and not callable(getattr(flow, "fn", None)):
             raise TypeError("flow must be a workflow function or spec")
         if inputs is not None and not isinstance(inputs, Mapping):
@@ -354,17 +430,27 @@ class OpenCollab:
             _non_empty(system_prompt, "system_prompt")
         if not isinstance(trace, bool):
             raise ValueError("trace must be a boolean")
+        unbounded_limits = _unbounded_limits_requested()
+        resolved_budget = (
+            None
+            if unbounded_limits
+            else _positive_int(
+                self._config["budget"] if budget is None else budget,
+                "budget",
+            )
+        )
+        resolved_max_steps = (
+            None
+            if unbounded_limits
+            else _positive_int(max_steps, "max_steps")
+        )
         try:
             result = await run_workflow(
                 workflow=flow,
                 inputs=normalized_inputs,
                 config=self._config,
                 workspace=self._workspace,
-                max_tokens=(
-                    self._config["budget"]
-                    if budget is None
-                    else _positive_int(budget, "budget")
-                ),
+                max_tokens=resolved_budget,
                 max_concurrency=_positive_int(concurrency, "concurrency"),
                 task_concurrency=(
                     None
@@ -372,8 +458,9 @@ class OpenCollab:
                     else _positive_int(task_concurrency, "task_concurrency")
                 ),
                 timeout=_positive_timeout(timeout, "timeout"),
-                max_steps=_positive_int(max_steps, "max_steps"),
+                max_steps=resolved_max_steps,
                 system_prompt=system_prompt,
+                agent_profile=resolved_agent_profile,
                 cleanup_timeout=_required_positive_timeout(
                     cleanup_timeout,
                     "cleanup_timeout",

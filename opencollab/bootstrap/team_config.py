@@ -52,8 +52,8 @@ from opencollab.domain.team import Topology
 # they are built non-interactive, so the registry resolver drops it regardless.
 # Sorted for a deterministic, reproducible tool order.
 ANALYST_TOOL_NAMES: tuple[str, ...] = ("ask_user", "file_read", "grep", "spawn_agent", "use_skill")
-CODER_TOOL_NAMES: tuple[str, ...] = ("apply_patch", "bash", "file_read", "grep", "run_tests")
-TESTER_TOOL_NAMES: tuple[str, ...] = ("file_read", "git_diff", "grep", "run_tests")
+CODER_TOOL_NAMES: tuple[str, ...] = ("apply_patch", "bash", "file_read", "grep")
+TESTER_TOOL_NAMES: tuple[str, ...] = ("bash", "file_read", "git_diff", "grep")
 
 # Fallback bundle for a role an ``allow_all`` team file spawns without declaring
 # it. Derived from the registry so it stays the single source of truth — add a

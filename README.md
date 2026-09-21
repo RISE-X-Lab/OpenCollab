@@ -91,6 +91,17 @@ for a complete module.
 application built on OpenCollab's public Python API. It exercises agents, teams,
 workflows, tools, and environments from outside this repository.
 
+The optional [OC Single2 profile](docs/single2.md) is available through the
+same public client for direct-agent evaluation.
+
+For a complete collaborative evaluation, follow the
+[G22 with Single2 quick start](https://github.com/RISE-X-Lab/OpenCollab-Eval#g22-quick-start).
+It covers matching OC/OCE 0.7 installations, benchmark images, a Responses
+model endpoint, and one-task official evaluation with
+`oc-eval g22 --config /path/to/g22.json --indices 1 --workers 1`.
+The same configuration runs a batch and keeps per-task patches, trajectories,
+and official test reports together.
+
 OpenCollab-Eval runs agents on software-engineering benchmarks. It creates an
 isolated workspace for each task and records the Solver's patch. It then runs
 the official tests and keeps the commands and reports needed to inspect the

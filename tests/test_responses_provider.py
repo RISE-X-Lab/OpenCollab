@@ -55,6 +55,57 @@ async def test_stream_text_requires_matching_completed_output():
 
 
 @pytest.mark.asyncio
+async def test_terminal_mismatch_remains_strict_by_default():
+    streamed = message_item("streamed")
+    terminal = message_item("terminal")
+    stream = FakeStream(
+        [
+            ns(type="response.output_item.done", output_index=0, item=streamed),
+            ns(
+                type="response.completed",
+                response=completed_response(output=[terminal]),
+            ),
+        ]
+    )
+
+    state = await _consume_stream(stream, 1, 1)
+
+    with pytest.raises(ResponsesProtocolError, match="terminal Responses output"):
+        _parse_stream(state, [{"role": "user", "content": "answer"}], "gpt-fake")
+
+
+@pytest.mark.asyncio
+async def test_compatibility_mode_keeps_validated_streamed_output_on_terminal_mismatch(
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "OPENCOLLAB_TRUST_STREAMED_OUTPUT_ON_TERMINAL_MISMATCH",
+        "1",
+    )
+    streamed = message_item("streamed")
+    terminal = message_item("terminal")
+    stream = FakeStream(
+        [
+            ns(type="response.output_item.done", output_index=0, item=streamed),
+            ns(
+                type="response.completed",
+                response=completed_response(output=[terminal]),
+            ),
+        ]
+    )
+
+    state = await _consume_stream(stream, 1, 1)
+    parsed = _parse_stream(
+        state,
+        [{"role": "user", "content": "answer"}],
+        "gpt-fake",
+    )
+
+    assert parsed.content == "streamed"
+    assert parsed.provider_items == [streamed]
+
+
+@pytest.mark.asyncio
 async def test_stream_aggregates_multiple_tool_calls_and_validates_arguments():
     first = function_item("call_1", "read_file", '{"path":"a.py"}')
     second = function_item("call_2", "read_file", '{"path":"b.py"}')
@@ -338,9 +389,9 @@ async def test_stream_rejects_invalid_completed_terminal(response, match):
         (
             ns(
                 type="response.incomplete",
-                response=ns(error=None, incomplete_details={"reason": "max_output_tokens"}),
+                response=ns(status="incomplete", error=None, incomplete_details={"reason": "content_filter"}),
             ),
-            "max_output_tokens",
+            "content_filter",
         ),
     ],
 )
@@ -520,15 +571,29 @@ async def test_first_event_timeout_includes_waiting_for_response_headers():
 
 
 @pytest.mark.asyncio
-async def test_response_header_timeout_retries_the_same_request():
+async def test_response_header_timeout_retries_the_same_request(monkeypatch):
     calls = 0
+
+    # The first-event budget is spent by attempt 1 *and* re-imposed on attempt 2,
+    # which has to create its stream and yield its first event inside whatever is
+    # left of it. Keep the budget far above the microseconds that costs: a value
+    # small enough to be interesting on attempt 1 is a coin flip on attempt 2.
+    first_event_timeout = 0.25
+
+    async def skip_delay(_seconds):
+        return None
+
+    # Patching ``retry.asyncio.sleep`` mutates the one shared ``asyncio`` module,
+    # so the stalled attempt below must hang on something other than a sleep.
+    monkeypatch.setattr("opencollab.adapters.llm.retry.asyncio.sleep", skip_delay)
+    never = asyncio.Event()
 
     class Responses:
         async def create(self, **_kwargs):
             nonlocal calls
             calls += 1
             if calls == 1:
-                await asyncio.sleep(10)
+                await never.wait()
             item = message_item("OK")
             return FakeStream(
                 [
@@ -545,9 +610,9 @@ async def test_response_header_timeout_retries_the_same_request():
         None,
         0,
         1,
-        first_event_timeout=0.001,
+        first_event_timeout=first_event_timeout,
         stream_idle_timeout=1,
-        round_timeout=2,
+        round_timeout=5,
     )
 
     assert calls == 2

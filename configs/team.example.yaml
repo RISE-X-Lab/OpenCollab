@@ -31,12 +31,12 @@ roles:
       You are an Analyst agent.
 
   coder:
-    tools: [bash, file_read, file_write, apply_patch, run_tests, grep, message_agent]
+    tools: [bash, file_read, file_write, apply_patch, grep, message_agent]
     prompt: |
       You are a Coder agent.
 
   reviewer:
-    tools: [bash, file_read, run_tests, git_diff, grep]
+    tools: [bash, file_read, git_diff, grep]
     prompt: |
       You are a Reviewer agent.
 
@@ -51,6 +51,5 @@ topology:
 # tool_limits:
 #   bash: { max_output_chars: 8000 }
 #   git_diff: { max_diff_chars: 8000, max_status_chars: 2000 }
-#   run_tests: { max_traceback_chars: 6000 }
 #   file_read: { max_read_chars: 30000 }
 #   grep: { max_grep_chars: 10000 }

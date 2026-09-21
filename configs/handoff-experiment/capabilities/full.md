@@ -1,5 +1,5 @@
 `file_read` and `grep` read the repository; `apply_patch` and `file_write` edit
-it; `bash` runs commands, `git` among them; `run_tests` runs the test suite.
+it; `bash` runs commands, including Git and the project-native test suite.
 
 The Coder and the Tester are already running, each with a budget the size of
 yours and a conversation of its own. The Coder holds the same tools you do, so

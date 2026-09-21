@@ -24,7 +24,7 @@ from opencollab.workflows import WorkflowContext
 
 def test_root_and_sdk_export_one_small_surface() -> None:
     expected = ["OpenCollab", "RunError", "RunResult", "workflow"]
-    assert opencollab.__version__ == "0.5.0"
+    assert opencollab.__version__ == "0.7.0"
     assert opencollab.__all__ == expected
     assert sdk.__all__ == expected
     assert all(getattr(opencollab, name) is getattr(sdk, name) for name in expected)
@@ -64,7 +64,9 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "name",
             "system_prompt",
             "llm",
+            "profile",
         ),
+        sdk.OpenCollab.agent2: ("self", "prompt", "kwargs"),
         sdk.OpenCollab.team: (
             "self",
             "prompt",
@@ -106,6 +108,7 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "timeout",
             "max_steps",
             "system_prompt",
+            "agent_profile",
             "cleanup_timeout",
             "artifacts",
             "trace",
@@ -174,6 +177,7 @@ def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
         "Tool",
         "VerificationTool",
         "builtin_tools",
+        "profile_tool_limits",
     ]
     assert environments.__all__ == [
         "Environment",
@@ -185,7 +189,7 @@ def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
         "local_environment",
         "worktree_environment",
     ]
-    assert workflows.__all__ == ["WorkflowContext", "workflow"]
+    assert workflows.__all__ == ["CandidateRun", "WorkflowContext", "workflow"]
     assert Tool is not None
     assert VerificationTool is not None
     assert builtin_tools is not None
@@ -259,24 +263,17 @@ def test_builtin_tools_are_fresh_ordered_and_headless_safe() -> None:
     first = builtin_tools(
         "bash",
         "file_write",
-        "run_tests",
         allow_file_creation=False,
     )
-    second = builtin_tools("bash", "file_write", "run_tests")
+    second = builtin_tools("bash", "file_write")
 
     assert tuple(tool.name for tool in first) == (
         "bash",
         "file_write",
-        "run_tests",
     )
     assert all(left is not right for left, right in zip(first, second, strict=True))
     assert first[0].require_process_isolation is True
     assert first[1].allow_create is False
-    assert first[2].require_process_isolation is True
-    assert first[2].allow_runner_override is False
-    assert first[2].allow_extra_args is False
-    assert isinstance(first[2], VerificationTool)
-    assert first[2].verified_targets == frozenset()
 
 
 def test_builtin_tools_reject_unsupported_or_ambiguous_requests() -> None:

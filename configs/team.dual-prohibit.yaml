@@ -32,15 +32,15 @@ entry: adopter
 roles:
   adopter:
     prompt_file: dual-candidate/adopter.dual-prohibit.md
-    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, submit, team_status]
 
   coder_a:
     prompt_file: dual-candidate/coder-a.md
-    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, submit, team_status]
 
   coder_b:
     prompt_file: dual-candidate/coder-b.md
-    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, submit, team_status]
 
 # Four directed edges, not six. The Adopter reaches both Coders and both reach
 # it back -- the return edges are what make a prebuilt peer able to deliver at

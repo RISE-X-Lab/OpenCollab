@@ -16,7 +16,9 @@ puts the worktree, and what it concludes from what Git answers.
 
 from __future__ import annotations
 
+import os
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -97,6 +99,24 @@ def _env(repo, tmp_path, branch: str) -> ContainerWorktreeEnvironment:
         worktree_root=str(tmp_path / "worktrees"),
         branch_name=branch,
     )
+
+
+async def test_verified_write_accepts_bsd_wc_padding(local_docker, monkeypatch, tmp_path):
+    """A BSD-style padded ``wc -c`` count still verifies the write."""
+    repo = _repo(tmp_path / "testbed")
+    env = _env(repo, tmp_path, "container-bsd-wc")
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_wc = fake_bin / "wc"
+    fake_wc.write_text("#!/bin/sh\nprintf '      5\\n'\n", encoding="utf-8")
+    fake_wc.chmod(0o755)
+    try:
+        await env.setup()
+        monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
+        await env.write_file("padded.txt", "hello")
+        assert Path(env.workspace, "padded.txt").read_text(encoding="utf-8") == "hello"
+    finally:
+        await env.cleanup()
 
 
 async def test_an_agents_own_commits_stay_in_its_own_diff(local_docker, tmp_path):
@@ -281,4 +301,85 @@ def test_container_paths_must_be_absolute_and_not_the_root(repository_root, work
             container_id=CONTAINER_ID,
             repository_root=repository_root,
             worktree_root=worktree_root,
+        )
+
+
+async def test_workflow_factory_isolates_inside_the_supplied_container(
+    local_docker, tmp_path, monkeypatch
+):
+    from opencollab.adapters import worktree_pool
+    from opencollab.adapters.env import DockerEnvironment
+    from opencollab.bootstrap.workflow_runtime import WorkflowSessionFactory
+
+    repo = _repo(tmp_path / 'testbed')
+    anchor = _repo(tmp_path / 'host')
+    monkeypatch.setattr(worktree_pool, 'CONTAINER_WORKTREE_ROOT', str(tmp_path / 'worktrees'))
+    prefix = 'export WORKFLOW_IMAGE_MARKER=task-image'
+    base = DockerEnvironment(
+        workspace=str(repo), container_id=CONTAINER_ID, command_prefix=prefix
+    )
+    factory = WorkflowSessionFactory(
+        model='test-model', provider='openai', api_key=None, base_url=None,
+        workspace=str(anchor), env=base,
+    )
+    isolated = await factory.acquire_isolated_env(label='coder')
+    try:
+        assert isinstance(isolated, ContainerWorktreeEnvironment)
+        assert isolated.container_reference == CONTAINER_ID
+        assert isolated.source_workspace == str(repo)
+        assert isolated.command_prefix == prefix
+        await isolated.write_file('candidate.txt', 'isolated change')
+        assert not (repo / 'candidate.txt').exists()
+        assert not (anchor / 'candidate.txt').exists()
+        assert (await isolated.exec_cmd('echo "$WORKFLOW_IMAGE_MARKER"')).stdout.strip() == 'task-image'
+    finally:
+        await factory.release_isolated_envs()
+    assert base.revoked is False
+    assert not Path(isolated.workspace).exists()
+
+
+@pytest.mark.parametrize("command", ["git reset --hard HEAD", "git checkout -b fix-topic"])
+async def test_noop_reset_does_not_hide_a_committed_candidate(local_docker, tmp_path, command):
+    repo = _repo(tmp_path / 'testbed')
+    env = _env(repo, tmp_path, 'candidate-reset')
+    try:
+        await env.setup()
+        await env.write_file('fix.txt', 'candidate change')
+        assert (await env.exec_cmd('git add -A && git commit -qm fix')).returncode == 0
+        before = await env.get_diff()
+        assert 'fix.txt' in before
+        assert (await env.exec_cmd(command)).returncode == 0
+        assert await env.get_diff() == before
+    finally:
+        await env.cleanup()
+
+
+async def test_locked_container_worktree_reports_failure_and_can_retry(local_docker, tmp_path):
+    repo = _repo(tmp_path / 'testbed')
+    env = _env(repo, tmp_path, 'candidate-locked')
+    await env.setup()
+    _git(repo, 'worktree', 'lock', env.workspace)
+    try:
+        with pytest.raises(OSError, match='worktree'):
+            await env.cleanup()
+        assert Path(env.workspace).exists()
+    finally:
+        _git(repo, 'worktree', 'unlock', env.workspace)
+        await env.cleanup()
+    assert not Path(env.workspace).exists()
+
+
+@pytest.mark.parametrize('root', ['/app/children', '/app', '/app/../app/worktrees'])
+def test_worktree_root_cannot_contaminate_the_exported_repository(root):
+    with pytest.raises(ValueError, match='outside'):
+        ContainerWorktreeEnvironment(
+            container_id=CONTAINER_ID, repository_root='/app', worktree_root=root,
+        )
+
+
+@pytest.mark.parametrize(('repository', 'worktrees'), [('//', '/tmp/worktrees'), ('//app', '/app/children')])
+def test_redundant_slashes_do_not_bypass_repository_boundaries(repository, worktrees):
+    with pytest.raises(ValueError):
+        ContainerWorktreeEnvironment(
+            container_id=CONTAINER_ID, repository_root=repository, worktree_root=worktrees,
         )

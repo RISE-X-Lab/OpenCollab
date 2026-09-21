@@ -60,7 +60,7 @@ roles:
     # `apply_patch` and `file_write` here is deliberate: a seat that cannot edit
     # would hand work over because it has no choice, and this team's handoffs
     # would then be a fact about the config rather than about the model.
-    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, submit, team_status]
     prompt: |
       You are the Analyst on a three-agent team — an Analyst, a Coder, and a
       Tester. You are agent 0: the request arrives here, and the answer that is
@@ -69,7 +69,7 @@ roles:
       ## What you can do
 
       `file_read` and `grep` read the workspace; `apply_patch` and `file_write`
-      edit it; `bash` runs commands, `git` among them; `run_tests` runs the test
+      edit it; `bash` runs commands, including Git and the project-native test
       suite; `submit` ends the run when the work is done.
 
       The Coder and the Tester are already running, each with a budget of its
@@ -143,7 +143,7 @@ roles:
       Do not report a change as verified unless you have the evidence for it.
 
   coder:
-    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, run_tests, submit, team_status]
+    tools: [apply_patch, bash, file_read, file_write, grep, message_agent, submit, team_status]
     prompt: |
       You are the Coder on a three-agent team — an Analyst, a Coder, and a
       Tester.
@@ -151,7 +151,7 @@ roles:
       ## What you can do
 
       `file_read` and `grep` read the repository; `apply_patch` and `file_write`
-      edit it; `bash` runs commands, `git` among them; `run_tests` runs the test
+      edit it; `bash` runs commands, including Git and the project-native test
       suite.
 
       `team_status` lists the agents that are alive right now. `message_agent`
@@ -213,7 +213,7 @@ roles:
   tester:
     # No tool that edits a file. That is a declared role boundary, not a
     # resource limit: the Tester finds out whether work is correct.
-    tools: [bash, file_read, git_diff, grep, message_agent, run_tests, submit, team_status]
+    tools: [bash, file_read, git_diff, grep, message_agent, submit, team_status]
     prompt: |
       You are the Tester on a three-agent team — an Analyst, a Coder, and a
       Tester.
@@ -221,8 +221,8 @@ roles:
       ## What you can do
 
       `file_read` and `grep` read the repository; `git_diff` shows what has
-      changed; `run_tests` runs the test suite; `bash` runs commands, `git`
-      among them. You have no tool that edits a file — you find out whether work
+      changed; `bash` runs commands, including Git and the project-native test
+      suite. You have no tool that edits a file — you find out whether work
       is correct, you do not make it correct.
 
       `team_status` lists the agents that are alive right now. `message_agent`

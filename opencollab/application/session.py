@@ -81,8 +81,8 @@ class Session:
         runtime: SessionRuntime,
         env: EnvironmentPort | None = None,
         tracer: TracePort | None = None,
-        max_budget_tokens: int = 1_000_000,
-        max_steps: int = 100,
+        max_budget_tokens: int | None = 1_000_000,
+        max_steps: int | None = 100,
         auto_save_path: str | None = None,
         permission_policy: PermissionPort | None = None,
         safety_policy: SafetyPolicyPort | None = None,
@@ -149,21 +149,21 @@ class Session:
             self.runner.tracer = value
 
     @property
-    def max_budget_tokens(self) -> int:
+    def max_budget_tokens(self) -> int | None:
         return self._max_budget_tokens
 
     @max_budget_tokens.setter
-    def max_budget_tokens(self, value: int) -> None:
+    def max_budget_tokens(self, value: int | None) -> None:
         self._max_budget_tokens = value
         if hasattr(self, "runner"):
             self.runner.max_budget_tokens = value
 
     @property
-    def max_steps(self) -> int:
+    def max_steps(self) -> int | None:
         return self._max_steps
 
     @max_steps.setter
-    def max_steps(self, value: int) -> None:
+    def max_steps(self, value: int | None) -> None:
         self._max_steps = value
         if hasattr(self, "runner"):
             self.runner.max_steps = value
