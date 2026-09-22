@@ -406,8 +406,10 @@ class LifecycleMixin:
                     "agent_failed event failed for aid %s: %s", aid, event_exc
                 )
             await self._deliver_to_parent(aid, reason, RowStatus.FAILED, error=reason)
+            await self.notify_unanswered_senders(aid, terminal_reason)
             await self._drain_message_inbox(aid, allow_current_task=True)
             await self._drain_ready_message_inboxes()
+            await self._drain_own_inbox_late(aid)
             return
 
         # A cancellation-resistant provider/session can outlive the scheduler's
@@ -443,9 +445,15 @@ class LifecycleMixin:
                 RowStatus.FAILED,
                 error=terminal_failure,
             )
+            # A prebuilt teammate has no pending row, so the delivery above is a
+            # no-op for it; whoever handed it work is told here instead.
+            await self.notify_unanswered_senders(
+                aid, scb.state.terminal_reason or terminal_failure
+            )
             await self._drain_message_inbox(aid, allow_current_task=True)
             if not self._shutting_down:
                 await self._drain_ready_message_inboxes()
+            await self._drain_own_inbox_late(aid)
             return
 
         # A completed coding task still needs its patch evidence. Tracing and
@@ -467,6 +475,7 @@ class LifecycleMixin:
                 await self._drain_message_inbox(aid, allow_current_task=True)
                 if not self._shutting_down:
                     await self._drain_ready_message_inboxes()
+                await self._drain_own_inbox_late(aid)
                 return
             # Same changes, second destination: a structured, never-truncated
             # per-file record. Observational, so it is deliberately outside the
@@ -511,6 +520,24 @@ class LifecycleMixin:
         await self._drain_message_inbox(aid, allow_current_task=True)
         if not self._shutting_down:
             await self._drain_ready_message_inboxes()
+        await self._drain_own_inbox_late(aid)
+
+    async def _drain_own_inbox_late(self, aid: int) -> None:
+        """Deliver a message that reached ``aid`` while its driver was finishing.
+
+        Every terminal path drains its own inbox and then the other ready
+        inboxes, and that second drain awaits. A message queued for ``aid`` in
+        that window found this driver still running, so its sender left it
+        queued -- and this driver had already passed its own drain, so nothing
+        delivered it: the team never became quiescent and the run ended in
+        ``SchedulerStalledError``. The check is synchronous when the inbox is
+        empty, so once it passes there is no await left before this driver
+        finishes, and any later message sees a finished driver and is
+        delivered by its sender.
+        """
+        if self._shutting_down or not self._message_inbox.get(aid):
+            return
+        await self._drain_message_inbox(aid, allow_current_task=True)
 
     async def _trace_worktree_evidence(self, aid: int, scb: Any, session: Any) -> None:
         """Record what an agent left in its worktree, whatever ended the agent.

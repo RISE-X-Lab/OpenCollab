@@ -215,6 +215,11 @@ class MessagingMixin:
             )
             inbox.append(message)
             self._message_inbox[to_aid] = inbox
+            # The recipient now owes this sender an answer, and the sender has
+            # answered whatever the recipient last asked of it.
+            self._unanswered.setdefault(to_aid, {})[from_aid] = message_id
+            self._unanswered.get(from_aid, {}).pop(to_aid, None)
+            self._first_sender.setdefault(frozenset((from_aid, to_aid)), from_aid)
             self._trace_message_decision(
                 "message_sent",
                 from_aid=from_aid,
@@ -245,6 +250,130 @@ class MessagingMixin:
         for event in delivered_events:
             await self._safe_emit_scheduler_event(event)
         return f"Message queued to aid {to_aid}."
+
+    async def notify_unanswered_senders(self, aid: int, reason: str) -> None:
+        """Tell each agent that handed ``aid`` work it has not answered that
+        ``aid`` was stopped and will not answer.
+
+        Called when a seat reaches STOPPED or ERROR -- a stop it did not choose.
+        ``message_agent`` tells a sender that an answer reopens its turn and
+        that finishing is how to wait. A stopped seat can never send that
+        answer, and a prebuilt teammate has no pending row for
+        ``_deliver_to_parent`` to fill, so without this the waiting sender is
+        never reopened and the run ends with it still waiting.
+
+        The notice states that fact and the runtime's recorded reason, and
+        nothing about what to do next. It goes only to a sender whose latest
+        message this seat had not answered and who sent the first message
+        between the two (the side that handed work over, not the side that
+        answered it); each record is spent by the notice it produces; and a
+        sender that is itself STOPPED or ERROR is skipped, since it could not
+        act on it. It is recorded as its own ``stop_notice`` row, never as
+        ``message_sent``, so it is not counted as traffic on any edge.
+        """
+        waiting = self._unanswered.pop(aid, {})
+        if not waiting or self._shutting_down:
+            return
+        stopped = self.table.get(aid)
+        role = stopped.agent.name if stopped is not None else self._role_of(aid)
+        for to_aid, unanswered_id in waiting.items():
+            if self._first_sender.get(frozenset((aid, to_aid))) != to_aid:
+                continue
+            target = self._sessions.get(to_aid)
+            scb = self.table.get(to_aid)
+            if target is None or scb is None:
+                continue
+            if scb.state.phase in {SessionPhase.STOPPED, SessionPhase.ERROR}:
+                continue
+            lock = self._locks.setdefault(to_aid, asyncio.Lock())
+            async with lock:
+                if self._shutting_down:
+                    return
+                message_id = uuid.uuid4().hex
+                content = (
+                    f"{role} (A{aid}) has stopped and will not answer your last "
+                    f"message. Reason recorded by the runtime: {reason}"
+                )
+                xml = (
+                    f"<team-notice about={quoteattr(f'A{aid}')} "
+                    f"role={quoteattr(role)} message_id={quoteattr(message_id)}>\n"
+                    f"{escape(content)}\n"
+                    "</team-notice>"
+                )
+                to_role = self._role_of(to_aid)
+                target.state.queue_pending_user_message(
+                    {
+                        "role": "user",
+                        "content": xml,
+                        "message_content": content,
+                        "from_aid": aid,
+                        "to_aid": to_aid,
+                        "from_role": role,
+                        "to_role": to_role,
+                        "summary": f"{role} stopped",
+                        "message_id": message_id,
+                        "delivery_status": "pending",
+                        "kind": "stop_notice",
+                    }
+                )
+                inbox = self._message_inbox.get(to_aid, [])
+                inbox.append(
+                    QueuedTeammateMessage(
+                        from_aid=aid,
+                        to_aid=to_aid,
+                        summary=f"{role} stopped",
+                        content=content,
+                        xml=xml,
+                        sent_at=str(target.state.pending_user_messages[-1]["timestamp"]),
+                        message_id=message_id,
+                        from_role=role,
+                        to_role=to_role,
+                        kind="stop_notice",
+                    )
+                )
+                self._message_inbox[to_aid] = inbox
+                self._trace_stop_notice(
+                    aid=aid,
+                    role=role,
+                    to_aid=to_aid,
+                    reason=reason,
+                    message_id=message_id,
+                    unanswered_message_id=unanswered_id,
+                )
+                self._autosave_session(to_aid)
+                events = await self._drain_message_inbox_locked(to_aid)
+            for event in events:
+                await self._safe_emit_scheduler_event(event)
+
+    def _trace_stop_notice(
+        self,
+        *,
+        aid: int,
+        role: str,
+        to_aid: int,
+        reason: str,
+        message_id: str,
+        unanswered_message_id: str,
+    ) -> None:
+        """Record one stop notice. Observation only, guarded like every trace."""
+        tracer = self._tracer
+        if tracer is None:
+            return
+        try:
+            tracer.log_step(
+                step_type="stop_notice",
+                payload={
+                    "aid": aid,
+                    "role": role,
+                    "to_aid": to_aid,
+                    "to_role": self._traced_role(to_aid),
+                    "reason": reason,
+                    "message_id": message_id,
+                    "unanswered_message_id": unanswered_message_id,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — observability is non-authoritative
+            logger.error("stop_notice trace failed for aid %s to aid %s: %s", aid, to_aid, exc)
 
     def _traced_role(self, aid: int) -> str | None:
         """The agent's role for a trace record, or ``None`` when no agent exists.
@@ -429,6 +558,7 @@ class MessagingMixin:
                     from_role=str(item.get("from_role") or ""),
                     to_role=str(item.get("to_role") or ""),
                     restored=True,
+                    kind=str(item.get("kind") or "teammate"),
                 )
             )
         if restored:
@@ -499,6 +629,11 @@ class MessagingMixin:
     def _format_teammate_message_batch(messages: list[QueuedTeammateMessage]) -> str:
         envelopes = []
         for message in messages:
+            if message.kind != "teammate":
+                # A runtime notice already carries its own envelope; wrapping it
+                # as a teammate message would put words in the stopped seat's mouth.
+                envelopes.append(message.xml)
+                continue
             sender = f"A{message.from_aid}"
             envelopes.append(
                 f"<teammate-message teammate_id={quoteattr(sender)} "
@@ -680,6 +815,16 @@ class MessagingMixin:
                 "restored_target_changed",
                 f"restored target aid changed from {message.to_aid} to {aid}",
             )
+        if message.kind == "stop_notice":
+            # Written by the runtime, not sent along an edge: the sender and
+            # topology rules below govern agents, and the seat it is about is by
+            # construction the one that can no longer send anything.
+            if self.table.get(aid) is None or self._sessions.get(aid) is None:
+                return (
+                    "restored_target_gone",
+                    f"restored target aid {aid} no longer exists",
+                )
+            return None
         if message.from_aid == aid:
             return (
                 "restored_self_message",

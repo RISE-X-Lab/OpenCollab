@@ -216,6 +216,15 @@ class Scheduler(
         # aid -> queued teammate messages waiting to be appended as user
         # messages once that session is not running or suspended on pending work.
         self._message_inbox: dict[int, list[QueuedTeammateMessage]] = {}
+        # recipient aid -> {sender aid: message_id of the sender's latest message
+        # the recipient has not answered}. Set when a message is queued, cleared
+        # when the recipient sends one back; read when a seat is stopped, so the
+        # senders still waiting on it can be told it will not answer.
+        self._unanswered: dict[int, dict[int, str]] = {}
+        # {aid, aid} -> the aid that sent the first message between the two: the
+        # one that handed work over. Only that side is told when the other stops;
+        # a seat whose message was an answer is not waiting on anything.
+        self._first_sender: dict[frozenset[int], int] = {}
         # The outer delivery task remains owned while ``add_user_message`` runs.
         # The durable inbox entry is removed only after that call succeeds.
         self._message_delivery_tasks: dict[int, asyncio.Task[Any]] = {}

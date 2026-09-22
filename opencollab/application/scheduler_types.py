@@ -124,6 +124,10 @@ class QueuedTeammateMessage:
     from_role: str = ""
     to_role: str = ""
     restored: bool = False
+    #: ``"teammate"`` for a message an agent wrote; ``"stop_notice"`` for the
+    #: runtime's word that a seat was stopped before answering. A notice carries
+    #: its own envelope in ``xml`` and is never rendered as a teammate's message.
+    kind: str = "teammate"
 
 
 __all__ = [
