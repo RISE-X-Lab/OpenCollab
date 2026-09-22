@@ -113,3 +113,98 @@ def test_luna_is_still_unlisted_and_still_gets_the_fallback():
         "supports_responses_reasoning": True,
         "supports_responses_tools": True,
     }
+
+
+# Read from the endpoint's own `/api/v1/models` payload on 2026-09-21, field
+# `model_info`, for `deepseek-v4.1-flash`:
+#   context_window ................. 1,000,000
+#   max_input_tokens ............... 1,000,000
+#   reasoning_max_input_tokens ..... 1,000,000   <- the mode this adapter runs
+#   max_output_tokens ................ 393,216
+#   max_reasoning_tokens ............. 393,216
+# Unlike qwen, thinking does not lower this model's input ceiling, so the three
+# input numbers agree and `context_window` is the one that belongs here. It is
+# NOT copied from the neighbouring `deepseek-v4-flash` row, whose 1,048,576 is a
+# different number recorded at a different time.
+DSV41_MEASURED_CONTEXT_WINDOW = 1_000_000
+DSV41_FALLBACK_CONTEXT_WINDOW = 64_000
+
+
+def test_deepseek_v41_flash_carries_the_endpoint_context_window():
+    assert (
+        model_capabilities("deepseek-v4.1-flash").context_window
+        == DSV41_MEASURED_CONTEXT_WINDOW
+    )
+
+
+def test_deepseek_v41_flash_no_longer_falls_back_to_the_family_prefix():
+    """The regression this pins, measured on 2026-09-21.
+
+    Without a row, `deepseek-v4.1-flash` matched the `deepseek` family prefix in
+    `MODEL_CONTEXT_WINDOWS` and ran on a 64,000-token window — 15.6x under the
+    endpoint's 1,000,000. That moved the compaction trigger from 967,000 down to
+    31,000, so a history of 44,000-55,000 tokens fired the reactive chain every
+    turn and fell through to `AutoCompactShaper`, whose summariser is an extra
+    model call: 127 of 147 calls in the 2026-09-21 smoke, 73.7 s of blocking per
+    call, 67% of the batch's wall clock. The runs timed out before the adopter
+    could hand work over, so both candidate seats recorded 0 steps.
+    """
+    assert (
+        model_capabilities("deepseek-v4.1-flash").context_window
+        != DSV41_FALLBACK_CONTEXT_WINDOW
+    )
+
+
+def test_deepseek_v41_flash_trigger_clears_the_history_this_roster_produces():
+    """Spelled out as literals so the test fails if the window or reserve moves.
+
+    The 2026-09-21 smoke's pre-compaction histories peaked at 55,009 tokens; the
+    trigger has to sit far above that for the reactive chain to stay dormant.
+    """
+    window = model_capabilities("deepseek-v4.1-flash").context_window
+
+    assert history_trigger_target(window) == (967_000, 725_250)
+
+
+def test_deepseek_v41_flash_leaves_every_unprobed_dimension_at_its_default():
+    """Only the context window was read from the endpoint on 2026-09-21.
+
+    The neighbouring `deepseek-v4-flash` row asserts four more dimensions. None
+    of them was probed for this model, so copying them would read as measurement
+    and be invention.
+    """
+    capabilities = model_capabilities("deepseek-v4.1-flash")
+    default = ModelCapabilities()
+
+    for field in (
+        "supports_forced_tool_choice",
+        "supports_responses_json_schema",
+        "honors_workflow_thinking_override",
+        "supports_responses_reasoning",
+        "supports_responses_tools",
+    ):
+        assert getattr(capabilities, field) == getattr(default, field), field
+
+
+def test_adding_deepseek_v41_leaves_deepseek_v4_flash_byte_for_byte_unchanged():
+    """The v4-flash runs already on disk must still resolve to their own row."""
+    assert dataclasses.asdict(model_capabilities("deepseek-v4-flash")) == {
+        "context_window": 1_048_576,
+        "supports_forced_tool_choice": False,
+        "supports_responses_json_schema": True,
+        "honors_workflow_thinking_override": False,
+        "supports_responses_streaming": True,
+        "supports_responses_sampling": True,
+        "supports_responses_reasoning": True,
+        "supports_responses_tools": True,
+    }
+
+
+def test_deepseek_v4_pro_is_left_on_the_fallback_on_purpose():
+    """`deepseek-v4-pro` has the same 1,000,000 window and the same defect, but
+    40 runs of `dsv4pro-cmdprimary40-tp` were already collected on the 64,000
+    fallback. Giving it a row now would change the instrument those runs were
+    produced on, so the decision was to fix only the model being measured next.
+    This test records that as a choice rather than an oversight.
+    """
+    assert model_capabilities("deepseek-v4-pro").context_window == 64_000

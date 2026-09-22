@@ -190,6 +190,24 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
     ),
     "gpt-4o": ModelCapabilities(context_window=128_000, supports_responses_reasoning=False),
     "gpt-4o-mini": ModelCapabilities(context_window=128_000, supports_responses_reasoning=False),
+    # Read from the endpoint's own ``/api/v1/models`` payload on 2026-09-21
+    # (``model_info``): context_window 1,000,000, max_input_tokens 1,000,000 and
+    # reasoning_max_input_tokens 1,000,000 — thinking does not lower this
+    # model's input ceiling, so the three agree and the window is unambiguous.
+    # Only that one dimension was read, so nothing else is asserted here; the
+    # neighbouring ``deepseek-v4-flash`` row's 1,048,576 and its four capability
+    # flags are a different measurement and are NOT copied down.
+    #
+    # Without this row the identifier fell through to the ``deepseek`` family
+    # prefix in ``MODEL_CONTEXT_WINDOWS`` (64,000), putting the compaction
+    # trigger at 31,000 against histories of 44,000-55,000 — so the reactive
+    # chain fired every turn and reached ``AutoCompactShaper``, whose summariser
+    # is an extra model call. Measured 2026-09-21: 127 of 147 calls, 73.7 s of
+    # blocking each, 67% of the batch's wall clock, and both candidate seats
+    # left at 0 steps because the run timed out before any handover.
+    "deepseek-v4.1-flash": ModelCapabilities(
+        context_window=1_000_000,
+    ),
     "deepseek-v4-flash": ModelCapabilities(
         context_window=1_048_576,
         supports_forced_tool_choice=False,
