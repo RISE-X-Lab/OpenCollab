@@ -58,6 +58,11 @@ class CardSet:
     #: ``analyst.<cell>.md`` is a card nobody can find by the name it uses.
     entry_role: str
     body: str = "shared.md"
+    #: Slots this set's body carries besides ``{{CAPABILITIES}}`` and
+    #: ``{{BLOCK}}``, each filled from ``<slot in lower case>/<value>.md``
+    #: by the value a cell declares under ``slots:``. Every cell of the set
+    #: declares every one, so a card never renders with a slot left in it.
+    extra_slots: tuple[str, ...] = ()
 
 
 HANDOFF_CARDS = CardSet(name="handoff", directory=CARDS_DIR, entry_role="analyst")
@@ -76,9 +81,25 @@ S2DUAL_CARDS = CardSet(
     directory=CONFIGS_DIR / "s2dual",
     entry_role="adopter",
 )
+#: The s2dual roster with the Adopter's tools changed, which makes it a
+#: different team: a cell here differs from ``s2dual-judge`` in the tools the
+#: Adopter holds and in the three places its card says so -- the tools line,
+#: the capabilities pair, and how a Coder's commit is brought over. Those are
+#: this set's slots; everything else is ``s2dual``'s body byte for byte.
+S2TOOLS_CARDS = CardSet(
+    name="s2tools",
+    directory=CONFIGS_DIR / "s2tools",
+    entry_role="adopter",
+    extra_slots=("TOOLS", "ADOPTION"),
+)
 CARD_SETS: dict[str, CardSet] = {
-    s.name: s for s in (HANDOFF_CARDS, DUAL_CARDS, S2DUAL_CARDS)
+    s.name: s for s in (HANDOFF_CARDS, DUAL_CARDS, S2DUAL_CARDS, S2TOOLS_CARDS)
 }
+
+
+def slot_marker(slot: str) -> str:
+    """The line a slot occupies in a body, e.g. ``{{TOOLS}}``."""
+    return "{{" + slot + "}}\n"
 
 
 @dataclass(frozen=True)
@@ -92,6 +113,8 @@ class Variant:
     note: str
     tools: tuple[str, ...]
     card_set: CardSet = HANDOFF_CARDS
+    #: ``(slot, value)`` for each of the card set's ``extra_slots``.
+    slots: tuple[tuple[str, str], ...] = ()
 
     @property
     def card_name(self) -> str:
@@ -109,7 +132,8 @@ def _read(path: Path) -> str:
 def shared_body(card_set: CardSet = HANDOFF_CARDS) -> str:
     """The one copy of everything no cell in this set may vary."""
     body = _read(card_set.directory / card_set.body)
-    if body.count(CAPABILITIES_SLOT) != 1 or body.count(BLOCK_SLOT) != 1:
+    markers = [CAPABILITIES_SLOT, BLOCK_SLOT, *map(slot_marker, card_set.extra_slots)]
+    if any(body.count(marker) != 1 for marker in markers):
         raise ValueError("shared.md must contain each slot exactly once")
     return body
 
@@ -121,6 +145,12 @@ def load_registry(
     raw = yaml.safe_load(_read(card_set.directory / "variants.yaml"))
     variants: dict[str, Variant] = {}
     for name, entry in raw["variants"].items():
+        declared = {str(k).upper(): str(v) for k, v in (entry.get("slots") or {}).items()}
+        if set(declared) != set(card_set.extra_slots):
+            raise ValueError(
+                f"{card_set.name}/{name}: slots {sorted(declared)} do not fill "
+                f"{sorted(card_set.extra_slots)}"
+            )
         variants[name] = Variant(
             name=name,
             team_file=entry["team_file"],
@@ -129,6 +159,7 @@ def load_registry(
             note=entry["note"],
             tools=tuple(entry.get("tools", DEFAULT_TOOLS)),
             card_set=card_set,
+            slots=tuple((slot, declared[slot]) for slot in card_set.extra_slots),
         )
     ladders = {name: tuple(rungs) for name, rungs in raw.get("ladders", {}).items()}
     return variants, ladders
@@ -139,11 +170,10 @@ def render(variant: Variant) -> str:
     directory = variant.card_set.directory
     capabilities = _read(directory / "capabilities" / f"{variant.capabilities}.md")
     block = _read(directory / "blocks" / f"{variant.block}.md")
-    return (
-        shared_body(variant.card_set)
-        .replace(CAPABILITIES_SLOT, capabilities)
-        .replace(BLOCK_SLOT, block)
-    )
+    card = shared_body(variant.card_set)
+    for slot, value in variant.slots:
+        card = card.replace(slot_marker(slot), _read(directory / slot.lower() / f"{value}.md"))
+    return card.replace(CAPABILITIES_SLOT, capabilities).replace(BLOCK_SLOT, block)
 
 
 def main(argv: list[str] | None = None) -> int:

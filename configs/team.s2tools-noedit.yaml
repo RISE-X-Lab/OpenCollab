@@ -1,0 +1,41 @@
+
+# THE s2dual ROSTER WITH THE ADOPTER'S EDIT TOOLS TAKEN AWAY
+#
+# `team.s2dual-judge.yaml` in every respect but the Adopter's line: same three
+# Single2 seats, same Coder cards and tools, same four edges, the same block
+# (`judge`, which commands nothing). The Adopter holds `bash`, `file_read`,
+# `git_diff` and `grep` of Single2's six -- no `file_write`, no `apply_patch` --
+# and the three team tools. Its card says so in the tools line and the
+# capabilities pair; `configs/s2tools/variants.yaml` says why this is a family
+# of its own.
+#
+# `bash` stays, so an Adopter can still write a file; the cell asks whether
+# making that harder moves it to hand the work over, and how often it edits
+# through `bash` anyway.
+entry: adopter
+
+roles:
+  adopter:
+    profile: single2
+    prompt_file: s2tools/adopter.s2tools-noedit.md
+    tools: [bash, file_read, git_diff, grep, message_agent, team_status, submit]
+
+  coder_a:
+    profile: single2
+    prompt_file: s2dual/coder-a.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+  coder_b:
+    profile: single2
+    prompt_file: s2dual/coder-b.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+# Four directed edges, not six. The Adopter reaches both Coders and both reach
+# it back -- the return edges are what make a prebuilt peer able to deliver at
+# all. `coder_a` and `coder_b` are NOT connected: the scheduler refuses a
+# message between them (`_scheduler_team.py:188`), so anything one Coder learns
+# of the other's work is something the Adopter decided to tell it.
+topology:
+  adopter: [coder_a, coder_b]
+  coder_a: [adopter]
+  coder_b: [adopter]

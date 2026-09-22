@@ -1,0 +1,58 @@
+# The registry of assembled Adopter cards for the s2dual roster with the
+# Adopter's tools changed. One entry per cell.
+#
+# WHAT THIS FAMILY IS
+#
+# `s2dual`'s roster, seats and topology, and its reference block (`judge`,
+# which commands nothing) byte for byte. One thing differs, and it is what the
+# Adopter holds: in `s2tools-noedit` it has no `file_write` or `apply_patch`,
+# and in `s2tools-adopt` it has no `bash` either and brings a Coder's commit
+# over with `adopt`, a tool that only checks out an existing commit. The two
+# Coders are `s2dual`'s, card and tools unchanged.
+#
+# WHY A FAMILY OF ITS OWN AND NOT TWO MORE `s2dual` CELLS
+#
+# Every `s2dual` cell seats the same team and differs from the others in its
+# block alone; `tests/test_s2dual_cards.py` holds that. A cell that changes a
+# seat's tools is a different team, and so is its card: the card has to say
+# which tools are there, and for `s2tools-adopt` how a commit is brought over.
+# Those three places are this set's slots, and everything else in the body is
+# `s2dual`'s -- `tests/test_s2tools_cards.py` renders this body with `s2dual`'s
+# own text in the slots and asserts it is `adopter.s2dual-judge.md` exactly.
+#
+#     card = shared.md
+#              {{TOOLS}}        <- tools/<tools>.md
+#              {{CAPABILITIES}} <- capabilities/<capabilities>.md
+#              {{ADOPTION}}     <- adoption/<adoption>.md
+#              {{BLOCK}}        <- blocks/<block>.md
+#
+# WHAT IS COMPARED. Each cell against `s2dual-judge` run at a pin with the
+# stop notice, with `s2dual-bare` alongside. `s2tools-noedit` leaves `bash`,
+# so an Adopter that still edits does it through `bash`; count those calls.
+
+variants:
+
+  s2tools-noedit:
+    team_file: team.s2tools-noedit.yaml
+    block: judge
+    capabilities: noedit
+    slots: {tools: noedit, adoption: checkout}
+    tools: [bash, file_read, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      The Adopter without the two edit tools, `file_write` and `apply_patch`;
+      it keeps `bash`, so editing is harder rather than impossible. Nothing is
+      commanded: the block is `judge`'s. Against `s2dual-judge` this asks
+      whether taking the edit tools away moves the Adopter to hand the work
+      over.
+
+  s2tools-adopt:
+    team_file: team.s2tools-adopt.yaml
+    block: judge
+    capabilities: adopt
+    slots: {tools: adopt, adoption: adopt}
+    tools: [file_read, git_diff, grep, adopt, message_agent, team_status, submit]
+    note: >-
+      The Adopter without `bash`, `file_write` and `apply_patch`, bringing a
+      Coder's commit over with `adopt`. It cannot run the tests, so it chooses
+      between candidates from what `adopt` shows it and from what the Coders
+      report. Nothing is commanded: the block is `judge`'s.
