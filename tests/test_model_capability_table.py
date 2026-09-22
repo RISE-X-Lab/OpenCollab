@@ -96,15 +96,20 @@ def test_adding_qwen_leaves_deepseek_byte_for_byte_unchanged():
     }
 
 
-def test_luna_is_still_unlisted_and_still_gets_the_fallback():
-    """``gpt-5.6-luna`` has no row on purpose; its runs were collected without one.
+def test_luna_has_its_window_and_otherwise_exactly_the_fallback():
+    """``gpt-5.6-luna``'s row states one measured thing: its context window.
 
-    The values below are what an unlisted ``gpt-5``-family identifier falls back
-    to. Giving luna a row would change them, and would change the instrument the
-    already-collected luna runs were produced on.
+    Unlisted, luna got no window, so history compaction never fired on window
+    pressure and a history past the real limit reached the endpoint as an
+    over-long request. The owner gave the window as 272k on 2026-09-22, and a
+    probe that day sent 273,010 input tokens and got 200. Every other field is
+    what an unlisted ``gpt-5``-family identifier falls back to, so the row
+    changes the compaction trigger and nothing else. The luna runs collected
+    before it (OpenCollab 9175297e) were produced without the row and are not
+    pooled with runs made after it.
     """
     assert dataclasses.asdict(model_capabilities("gpt-5.6-luna")) == {
-        "context_window": None,
+        "context_window": 272_000,
         "supports_forced_tool_choice": True,
         "supports_responses_json_schema": False,
         "honors_workflow_thinking_override": True,

@@ -273,16 +273,30 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         context_window=983_616,
         supports_forced_tool_choice=False,
     ),
-    # ``gpt-5.6-luna`` is deliberately absent, and stays absent. Upstream `main`
-    # added a row for it (1,048,576-token window, workflow thinking override
-    # off); this branch drops that row on merge, deliberately. Its recorded
-    # runs were produced under the fallback an unlisted model gets here — no
-    # context window, forced tool choice allowed — at OpenCollab commit
-    # 9175297ed56be6a0377b38d6f5949e07d34d7073, and that fallback was measured
-    # to be inert for them: history compaction fired in 2 of 40 runs and every
-    # first ``message_agent`` came before any compaction in its run. Giving the
-    # model an entry now would change the instrument that data was produced on
-    # in exchange for nothing that was measured.
+    # ``gpt-5.6-luna``: the context window, and nothing else. Unlisted, luna got
+    # no window at all, so history compaction never fired on window pressure
+    # and a history that grew past the real limit reached the endpoint as an
+    # over-long request instead of being compacted first.
+    #
+    # The owner gave the window as 272k (2026-09-22). A probe the same day over
+    # the private gateway sent one request per size with a 16-token output cap:
+    # 262,010 / 271,010 / 273,010 input tokens returned 200; 275,010 and
+    # 300,010 returned the gateway's 502 "Upstream service temporarily
+    # unavailable", which does not say whether the cause was the limit. So the
+    # usable input reaches at least 273,010, and 272,000 sits under it: the
+    # compaction trigger derived from it fires before the real limit does.
+    #
+    # Every other field is set to what an unlisted ``gpt-5``-family identifier
+    # falls back to (``supports_responses_reasoning`` included), so this row
+    # moves the compaction trigger and nothing else. Upstream `main` carries a
+    # different row (a 1,048,576-token window and the workflow thinking override
+    # off); neither value was measured here. The luna runs collected before this
+    # row (OpenCollab 9175297e, e.g. luna-cmdprimary40) were produced without it
+    # and are not pooled with runs made after it.
+    "gpt-5.6-luna": ModelCapabilities(
+        context_window=272_000,
+        supports_responses_reasoning=True,
+    ),
     "kimi-for-coding": ModelCapabilities(
         context_window=262_144,
         supports_forced_tool_choice=False,
