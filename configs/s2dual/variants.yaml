@@ -99,5 +99,45 @@ variants:
 
 # Adjacent rungs differ by exactly one move. `s2dual-judge` is not a rung of the
 # ladder: it is the reference cell.
+
+  s2dual-judgeinfo-1m:
+    team_file: team.s2dual-judgeinfo-1m.yaml
+    block: judge
+    capabilities: informed-1m
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      Experiment 3: the reference cell with the budget stated. Its block
+      is `judge`'s; its capabilities pair adds the run's budget,
+      1,000,000 tokens for each seat, and what a single agent working
+      alone used on these tasks. The budget cells differ from each other
+      only in that number, and from `s2dual-judge` only in the two
+      sentences.
+
+  s2dual-judgeinfo-2m:
+    team_file: team.s2dual-judgeinfo-2m.yaml
+    block: judge
+    capabilities: informed-2m
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      Experiment 3: the reference cell with the budget stated. Its block
+      is `judge`'s; its capabilities pair adds the run's budget,
+      2,000,000 tokens for each seat, and what a single agent working
+      alone used on these tasks. The budget cells differ from each other
+      only in that number, and from `s2dual-judge` only in the two
+      sentences.
+
+  s2dual-judgeinfo-4m:
+    team_file: team.s2dual-judgeinfo-4m.yaml
+    block: judge
+    capabilities: informed-4m
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      Experiment 3: the reference cell with the budget stated. Its block
+      is `judge`'s; its capabilities pair adds the run's budget,
+      4,000,000 tokens for each seat, and what a single agent working
+      alone used on these tasks. The budget cells differ from each other
+      only in that number, and from `s2dual-judge` only in the two
+      sentences.
+
 ladders:
   s2dual_command: [s2dual-prohibit, s2dual-plain, s2dual-bare, s2dual-optout]
