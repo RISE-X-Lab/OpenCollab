@@ -1,4 +1,4 @@
-"""Experiment 3: the reference cell with the budget stated, at three budgets.
+"""Experiment 3: the reference cell with the budget stated, at four budgets.
 
 Each ``s2dual-judgeinfo-<X>`` cell is ``s2dual-judge`` with two sentences added
 to the end of the capabilities pair: the run's budget, the same for every seat,
@@ -37,8 +37,10 @@ def _capabilities(name: str) -> str:
     return (PROMPTS / "capabilities" / f"{VARIANTS[name].capabilities}.md").read_text(encoding="utf-8")
 
 
-def test_the_three_budgets_are_registered() -> None:
-    assert INFORMED == ["s2dual-judgeinfo-1m", "s2dual-judgeinfo-2m", "s2dual-judgeinfo-4m"]
+def test_the_four_budgets_are_registered() -> None:
+    assert INFORMED == [
+        "s2dual-judgeinfo-05m", "s2dual-judgeinfo-1m", "s2dual-judgeinfo-2m", "s2dual-judgeinfo-4m",
+    ]
 
 
 @pytest.mark.parametrize("name", INFORMED)

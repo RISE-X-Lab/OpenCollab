@@ -139,5 +139,18 @@ variants:
       only in that number, and from `s2dual-judge` only in the two
       sentences.
 
+  s2dual-judgeinfo-05m:
+    team_file: team.s2dual-judgeinfo-05m.yaml
+    block: judge
+    capabilities: informed-05m
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+    note: >-
+      Experiment 3: the reference cell with the budget stated. Its block
+      is `judge`'s; its capabilities pair adds the run's budget,
+      500,000 tokens for each seat, and what a single agent working
+      alone used on these tasks. The budget cells differ from each other
+      only in that number, and from `s2dual-judge` only in the two
+      sentences.
+
 ladders:
   s2dual_command: [s2dual-prohibit, s2dual-plain, s2dual-bare, s2dual-optout]
