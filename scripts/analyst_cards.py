@@ -63,6 +63,12 @@ class CardSet:
     #: by the value a cell declares under ``slots:``. Every cell of the set
     #: declares every one, so a card never renders with a slot left in it.
     extra_slots: tuple[str, ...] = ()
+    #: Seats other than the entry one whose cards vary with the cell too.
+    #: Each is rendered from ``<peer>.md`` in the set's directory, which
+    #: carries every one of ``extra_slots`` and neither of the entry card's
+    #: own two, to ``<peer>.<cell>.md``. A set whose peers never vary lists
+    #: none and keeps its peer cards as plain files.
+    peers: tuple[str, ...] = ()
 
 
 HANDOFF_CARDS = CardSet(name="handoff", directory=CARDS_DIR, entry_role="analyst")
@@ -92,8 +98,20 @@ S2TOOLS_CARDS = CardSet(
     entry_role="adopter",
     extra_slots=("TOOLS", "ADOPTION"),
 )
+#: The handoff experiment's Analyst, Coder and Tester, seated as ``s2dual``
+#: seats its roster, over topologies with edges removed. The cells vary the
+#: topology, and every card states it, so the topology is a slot and the
+#: Coder's and Tester's cards are rendered alongside the Analyst's.
+S2SC_CARDS = CardSet(
+    name="s2sc",
+    directory=CONFIGS_DIR / "s2sc",
+    entry_role="analyst",
+    extra_slots=("TOPOLOGY",),
+    peers=("coder", "tester"),
+)
 CARD_SETS: dict[str, CardSet] = {
-    s.name: s for s in (HANDOFF_CARDS, DUAL_CARDS, S2DUAL_CARDS, S2TOOLS_CARDS)
+    s.name: s
+    for s in (HANDOFF_CARDS, DUAL_CARDS, S2DUAL_CARDS, S2TOOLS_CARDS, S2SC_CARDS)
 }
 
 
@@ -123,6 +141,10 @@ class Variant:
     @property
     def card_path(self) -> Path:
         return self.card_set.directory / self.card_name
+
+    def peer_card_path(self, peer: str) -> Path:
+        """Where the rendered card of one of the set's ``peers`` is filed."""
+        return self.card_set.directory / f"{peer}.{self.name}.md"
 
 
 def _read(path: Path) -> str:
@@ -176,6 +198,34 @@ def render(variant: Variant) -> str:
     return card.replace(CAPABILITIES_SLOT, capabilities).replace(BLOCK_SLOT, block)
 
 
+def peer_body(card_set: CardSet, peer: str) -> str:
+    """A peer's card before its slots are filled: every extra slot once, and
+    neither of the entry card's own two."""
+    body = _read(card_set.directory / f"{peer}.md")
+    if any(body.count(slot_marker(slot)) != 1 for slot in card_set.extra_slots):
+        raise ValueError(f"{peer}.md must contain each of {card_set.extra_slots} exactly once")
+    if CAPABILITIES_SLOT in body or BLOCK_SLOT in body:
+        raise ValueError(f"{peer}.md carries a slot only the entry card has")
+    return body
+
+
+def render_peer(variant: Variant, peer: str) -> str:
+    """The card of one of the set's ``peers`` for this cell."""
+    card = peer_body(variant.card_set, peer)
+    directory = variant.card_set.directory
+    for slot, value in variant.slots:
+        card = card.replace(slot_marker(slot), _read(directory / slot.lower() / f"{value}.md"))
+    return card
+
+
+def rendered_cards(variant: Variant) -> list[tuple[Path, str]]:
+    """Every card this cell's declaration renders: the entry card, then each peer's."""
+    cards = [(variant.card_path, render(variant))]
+    for peer in variant.card_set.peers:
+        cards.append((variant.peer_card_path(peer), render_peer(variant, peer)))
+    return cards
+
+
 def main(argv: list[str] | None = None) -> int:
     write = "--write" in (argv if argv is not None else sys.argv[1:])
     variants: dict[str, Variant] = {}
@@ -186,23 +236,23 @@ def main(argv: list[str] | None = None) -> int:
             if key in variants:
                 raise ValueError(f"two card sets register {key!r}")
             variants[key] = variant
-    drifted = 0
+    drifted = checked = 0
     for name in sorted(variants):
-        variant = variants[name]
-        built = render(variant)
-        current = _read(variant.card_path) if variant.card_path.exists() else None
-        if current == built:
-            continue
-        drifted += 1
-        verb = "rewrote" if write else "DRIFTED"
-        print(f"{verb}: {variant.card_name}")
-        if write:
-            variant.card_path.write_text(built, encoding="utf-8")
+        for path, built in rendered_cards(variants[name]):
+            checked += 1
+            current = _read(path) if path.exists() else None
+            if current == built:
+                continue
+            drifted += 1
+            verb = "rewrote" if write else "DRIFTED"
+            print(f"{verb}: {path.name}")
+            if write:
+                path.write_text(built, encoding="utf-8")
     if drifted and not write:
         print(f"\n{drifted} card(s) differ from their assembly. Re-run with --write to update.")
         return 1
-    print(f"{len(variants)} card(s) checked, {drifted} rewritten." if write
-          else f"{len(variants)} card(s) match their assembly.")
+    print(f"{checked} card(s) checked, {drifted} rewritten." if write
+          else f"{checked} card(s) match their assembly.")
     return 0
 
 
