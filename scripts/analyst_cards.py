@@ -101,7 +101,8 @@ S2TOOLS_CARDS = CardSet(
 #: The handoff experiment's Analyst, Coder and Tester, seated as ``s2dual``
 #: seats its roster, over topologies with edges removed. The cells vary the
 #: topology, and every card states it, so the topology is a slot and the
-#: Coder's and Tester's cards are rendered alongside the Analyst's.
+#: Coder's and Tester's cards are rendered alongside the Analyst's. They also
+#: vary the block, which only the Analyst's card carries.
 S2SC_CARDS = CardSet(
     name="s2sc",
     directory=CONFIGS_DIR / "s2sc",

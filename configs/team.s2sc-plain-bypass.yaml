@@ -1,0 +1,56 @@
+# WHAT THIS FAMILY IS
+#
+# Three seats with the handoff experiment's roles -- an Analyst, a Coder and a
+# Tester -- over a topology with edges removed. The Analyst is the entry seat
+# and the only one whose tree is read; the Coder and the Tester each work in a
+# worktree of it and reach it only with a commit sha sent in a message.
+#
+# WHAT THE CELLS VARY: THE TOPOLOGY, UNDER TWO BLOCKS. The two topologies differ
+# in one directed edge, `coder -> analyst`, and in the one line of every card
+# that states it (`configs/s2sc/topology/*.md`). In both, the Analyst cannot
+# address the Tester and the Tester cannot address the Coder, so the Tester is
+# asked anything only if the Coder asks it. Why the family exists, and what
+# number is read off it, is in `configs/s2sc/variants.yaml`.
+#
+# EVERY SEAT IS SINGLE2, AND EVERY SEAT HOLDS THE SAME NINE TOOLS. The seat and
+# the bundle are `s2dual-judge`'s: Single2's six in its evaluated order, then
+# `message_agent`, `team_status` and `submit`. The Tester holds the two edit
+# tools too, so what separates the three roles is what their cards say, not
+# what they can call.
+#
+# THE BLOCK IS `plain`: the handoff ladder's `cmd-plain` with its sentence about
+# the Tester deleted (`configs/s2sc/blocks/plain.md`). The Analyst is asked to
+# hand the implementation to the Coder and told nothing about the Tester, so
+# whether the Tester works is left to the topology. Only the Analyst's card
+# carries a block; the Coder's and the Tester's are the bytes of the `judge`
+# cell with the same topology. Turns are serialized by the harness regardless
+# (`serialize_turns=True`), and that is recorded on every run under
+# `assigned.topology_nodes.turns_serialized`.
+#
+# THIS CELL: the bypass. The Coder can report to the Analyst directly or hand
+# its commit to the Tester first; the Tester reports to the Analyst.
+entry: analyst
+
+roles:
+  analyst:
+    profile: single2
+    prompt_file: s2sc/analyst.s2sc-plain-bypass.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+  coder:
+    profile: single2
+    prompt_file: s2sc/coder.s2sc-plain-bypass.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+  tester:
+    profile: single2
+    prompt_file: s2sc/tester.s2sc-plain-bypass.md
+    tools: [bash, file_read, file_write, apply_patch, git_diff, grep, message_agent, team_status, submit]
+
+# Four directed edges out of the handoff team's six: `analyst -> tester` and
+# `tester -> coder` are removed. The scheduler refuses a message along any pair
+# not listed (`_topology_forbids`, `opencollab/application/_scheduler_team.py`).
+topology:
+  analyst: [coder]
+  coder: [analyst, tester]
+  tester: [analyst]

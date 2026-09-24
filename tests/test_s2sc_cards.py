@@ -1,12 +1,14 @@
 """The Single2-seated self-collaboration family, and what makes it one instrument.
 
 The handoff experiment's Analyst, Coder and Tester, seated the way ``s2dual``
-seats its roster, over two topologies with edges removed. The cells are a claim
-that they differ in one directed edge -- ``coder -> analyst`` -- and in the one
-line of every card that states it, and nowhere else. That claim holds only if
-the edge sets really differ by that edge, every card states the topology the
-scheduler actually enforces, everything outside the topology is the same bytes
-in both cells, and the seat and the bundle are ``s2dual-judge``'s.
+seats its roster, over two topologies with edges removed, each under two
+blocks. The cells are a claim that two cells under one block differ in one
+directed edge -- ``coder -> analyst`` -- and in the one line of every card that
+states it, and that two cells over one topology differ in the Analyst's block
+and nowhere else. That claim holds only if the edge sets really differ by that
+edge, every card states the topology the scheduler actually enforces, no card
+asks for an edge the topology lacks, everything outside the varied part is the
+same bytes, and the seat and the bundle are ``s2dual-judge``'s.
 """
 
 from __future__ import annotations
@@ -49,21 +51,28 @@ TEAM_TOOLS = (
     "bash", "file_read", "file_write", "apply_patch", "git_diff", "grep",
     "message_agent", "team_status", "submit",
 )
-#: The edges each cell is registered to seat. The two differ in one edge.
-EDGES = {
-    "s2sc-judge-bypass": {
+#: The edges each topology seats. The two differ in one edge.
+TOPOLOGY_EDGES = {
+    "bypass": {
         ("analyst", "coder"),
         ("coder", "analyst"),
         ("coder", "tester"),
         ("tester", "analyst"),
     },
-    "s2sc-judge-pipeline": {
+    "pipeline": {
         ("analyst", "coder"),
         ("coder", "tester"),
         ("tester", "analyst"),
     },
 }
 THE_EDGE = ("coder", "analyst")
+BLOCKS = ("judge", "plain")
+#: The one sentence of the handoff ladder's ``cmd-plain`` that ``plain`` drops:
+#: it asks the Analyst to message the Tester, an edge neither topology has.
+TESTER_SENTENCE = (
+    " Verification is the Tester's: send the Tester a message asking for the\n"
+    "tests that should cover the change."
+)
 PROFILE_SENTENCE = "A final response without tool calls ends the agent session."
 CORRECTION = "A response with no tool call ends your turn, not the run."
 
@@ -87,8 +96,20 @@ def _cards_on_disk(name: str) -> dict[str, str]:
     return cards
 
 
+def _topology(name: str) -> str:
+    return dict(VARIANTS[name].slots)["TOPOLOGY"]
+
+
 def _topology_text(name: str) -> str:
-    return _read(PROMPTS / "topology" / f"{dict(VARIANTS[name].slots)['TOPOLOGY']}.md")
+    return _read(PROMPTS / "topology" / f"{_topology(name)}.md")
+
+
+def _block_text(name: str) -> str:
+    return _read(PROMPTS / "blocks" / f"{VARIANTS[name].block}.md")
+
+
+def _cell(block: str, topology: str) -> str:
+    return f"s2sc-{block}-{topology}"
 
 
 _EDGE_LINE = re.compile(r"^- the (Analyst|Coder|Tester) can address (.+?)[;.]$")
@@ -111,8 +132,12 @@ def _edges_stated(text: str) -> set[tuple[str, str]]:
 # --- The seat is Single2 -------------------------------------------------------
 
 
-def test_the_registry_is_the_two_topologies() -> None:
-    assert NAMES == sorted(EDGES)
+def test_the_registry_is_two_blocks_over_two_topologies() -> None:
+    assert NAMES == sorted(_cell(b, t) for b in BLOCKS for t in TOPOLOGY_EDGES)
+    for block in BLOCKS:
+        for topology in TOPOLOGY_EDGES:
+            variant = VARIANTS[_cell(block, topology)]
+            assert (variant.block, _topology(variant.name)) == (block, topology)
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -156,11 +181,11 @@ def test_every_card_corrects_what_the_profile_says_about_ending_a_run(name: str)
 def test_the_scheduler_enforces_the_registered_edges(name: str) -> None:
     team = _team(name)
     walked = {(s, d) for s in ROLES for d in ROLES if s != d and team.topology.allows(s, d)}
-    assert walked == EDGES[name]
+    assert walked == TOPOLOGY_EDGES[_topology(name)]
 
 
-def test_the_two_cells_differ_in_exactly_the_one_edge() -> None:
-    bypass, pipeline = EDGES["s2sc-judge-bypass"], EDGES["s2sc-judge-pipeline"]
+def test_the_two_topologies_differ_in_exactly_the_one_edge() -> None:
+    bypass, pipeline = TOPOLOGY_EDGES["bypass"], TOPOLOGY_EDGES["pipeline"]
     assert bypass - pipeline == {THE_EDGE}
     assert pipeline - bypass == set()
 
@@ -192,6 +217,22 @@ def test_no_card_promises_a_reply_the_topology_may_not_carry() -> None:
             assert "can send one back to you" not in card, (name, role)
 
 
+def test_no_analyst_card_asks_for_an_edge_the_topology_lacks() -> None:
+    """Neither topology lets the Analyst address the Tester, so a card that told
+    it to would order a message the scheduler refuses."""
+    for name in NAMES:
+        assert ("analyst", "tester") not in TOPOLOGY_EDGES[_topology(name)]
+        card = _cards_on_disk(name)[ENTRY]
+        assert "send the Tester" not in card, name
+        assert "message the Tester" not in card, name
+
+
+def test_each_ladder_is_one_block_over_the_two_topologies_in_order() -> None:
+    assert sorted(list(rungs) for rungs in LADDERS.values()) == sorted(
+        [_cell(b, "bypass"), _cell(b, "pipeline")] for b in BLOCKS
+    )
+
+
 def test_the_topology_ladder_is_one_contiguous_deletion() -> None:
     for ladder, rungs in LADDERS.items():
         for upper, lower in zip(rungs, rungs[1:]):
@@ -208,13 +249,21 @@ def test_the_topology_ladder_is_one_contiguous_deletion() -> None:
 # --- Everything else is held fixed ---------------------------------------------
 
 
-@pytest.mark.parametrize("name", NAMES)
-def test_the_block_is_s2dual_judges_byte_for_byte(name: str) -> None:
-    block = VARIANTS[name].block
-    assert block == "judge"
-    ours = _read(PROMPTS / "blocks" / f"{block}.md")
+def test_the_judge_block_is_s2dual_judges_byte_for_byte() -> None:
+    ours = _read(PROMPTS / "blocks" / "judge.md")
     assert ours == _read(CONFIGS / "s2dual" / "blocks" / "judge.md")
     assert ours == _read(CONFIGS / "handoff-experiment" / "blocks" / "judge.md")
+
+
+def test_the_plain_block_is_cmd_plain_without_its_tester_sentence() -> None:
+    """The handoff ladder's plain rung, less the one sentence that asks the
+    Analyst to message the Tester. What is left names no Tester at all, so
+    whether the Tester works is decided by the topology, not by the card."""
+    source = _read(CONFIGS / "handoff-experiment" / "blocks" / "cmd-plain.md")
+    assert source.count(TESTER_SENTENCE) == 1
+    ours = _read(PROMPTS / "blocks" / "plain.md")
+    assert ours == source.replace(TESTER_SENTENCE, "")
+    assert "Tester" not in ours
 
 
 @pytest.mark.parametrize("name", NAMES)
@@ -241,12 +290,28 @@ def test_the_capabilities_pair_states_the_bundle_every_role_holds() -> None:
     assert "minus" not in text
 
 
-def test_the_cells_are_the_same_bytes_outside_the_topology() -> None:
-    a, b = (_cards_on_disk(name) for name in NAMES)
-    ta, tb = (_topology_text(name) for name in NAMES)
+@pytest.mark.parametrize("block", BLOCKS)
+def test_under_one_block_the_cells_are_the_same_bytes_outside_the_topology(block: str) -> None:
+    x, y = _cell(block, "bypass"), _cell(block, "pipeline")
+    a, b = _cards_on_disk(x), _cards_on_disk(y)
+    ta, tb = _topology_text(x), _topology_text(y)
     assert ta != tb
     for role in ROLES:
         assert a[role].replace(ta, TOPOLOGY_SLOT) == b[role].replace(tb, TOPOLOGY_SLOT), role
+
+
+@pytest.mark.parametrize("topology", sorted(TOPOLOGY_EDGES))
+def test_over_one_topology_the_cells_differ_only_in_the_analysts_block(topology: str) -> None:
+    """Only the Analyst's card carries a block, so the Coder's and the Tester's
+    cards are the same bytes under both, and the Analyst's differ in the block
+    and nowhere else."""
+    x, y = _cell("judge", topology), _cell("plain", topology)
+    a, b = _cards_on_disk(x), _cards_on_disk(y)
+    for peer in S2SC_CARDS.peers:
+        assert a[peer] == b[peer], peer
+    bx, by = _block_text(x), _block_text(y)
+    assert bx != by
+    assert a[ENTRY].replace(bx, BLOCK_SLOT) == b[ENTRY].replace(by, BLOCK_SLOT)
 
 
 # --- Assembly ------------------------------------------------------------------
