@@ -208,6 +208,22 @@ class SchedulerTeamMixin:
             )
         return snapshot
 
+    def team_status_rows(self) -> list[dict[str, Any]]:
+        """``team_snapshot`` plus ``turn_queued``, for what an agent is shown.
+
+        Under ``serialize_turns`` a busy driver may only be waiting for the team
+        gate: it cannot run until the agent holding the gate ends its turn.
+        Kept out of ``team_snapshot`` because that roster is also written to the
+        team manifest, which this display fact has no business changing.
+        """
+        rows = []
+        for entry in self.team_snapshot():
+            queued = bool(
+                self._serialize_turns and entry["busy"] and self._turn_holder != entry["aid"]
+            )
+            rows.append({**entry, "turn_queued": queued})
+        return rows
+
     def team_roster(self) -> list[dict[str, Any]]:
         """Full configured team for the prompt toolbar: every live agent plus
         each configured role that has no live agent yet (``aid=None``, phase

@@ -361,17 +361,21 @@ class LifecycleMixin:
         try:
             cancel_event = self._turn_cancel_events.get(aid)
             async with self._turn_gate():
-                # The graded tree as this seat found it. Taken inside the gate
-                # so that under ``serialize_turns`` no other seat can be writing
-                # while it is read: consecutive turn_start rows then bracket
-                # exactly one seat's working period, which is what makes a
-                # delivered line attributable to a seat at all.
-                await self.snapshot_delivery_tree("turn_start", aid=aid)
-                result = (
-                    await session.run_loop(cancel_event)
-                    if cancel_event is not None
-                    else await session.run_loop()
-                )
+                self._turn_holder = aid
+                try:
+                    # The graded tree as this seat found it. Taken inside the gate
+                    # so that under ``serialize_turns`` no other seat can be writing
+                    # while it is read: consecutive turn_start rows then bracket
+                    # exactly one seat's working period, which is what makes a
+                    # delivered line attributable to a seat at all.
+                    await self.snapshot_delivery_tree("turn_start", aid=aid)
+                    result = (
+                        await session.run_loop(cancel_event)
+                        if cancel_event is not None
+                        else await session.run_loop()
+                    )
+                finally:
+                    self._turn_holder = None
         except asyncio.CancelledError:
             self._release_leases(aid)
             scb.state.cancel()

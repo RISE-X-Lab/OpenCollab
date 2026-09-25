@@ -34,6 +34,8 @@ class SubmitTool(Tool):
     name = "submit"
     description = (
         "Declare that your work on this task is finished and end your turn. "
+        "It is also how you wait: if you are waiting for a teammate's answer, "
+        "submit what you have so far -- the answer reopens your turn. "
         "Give a short summary of what you changed and why it answers the task. "
         "Call this instead of trailing off: it records that you stopped on "
         "purpose rather than ran out of things to say. Anything you have "

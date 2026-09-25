@@ -144,6 +144,11 @@ class MessageAgentTool(Tool):
 
 
 def _display_team_state(entry: dict[str, Any]) -> str:
+    # Checked before ``busy``: under serialized turns a messaged teammate's
+    # driver exists (busy) but cannot run until the agent now running ends its
+    # turn, and "busy" read as "working on it" kept a sender waiting in-turn.
+    if entry.get("turn_queued"):
+        return "queued (runs only after the agent now running ends its turn)"
     if entry.get("busy"):
         return "busy"
     phase = entry.get("phase", "?")
@@ -173,7 +178,8 @@ class TeamStatusTool(Tool):
         params: dict[str, Any],
         runtime: ToolRuntime,
     ) -> str:
-        roster = self._scheduler.team_snapshot()
+        rows = getattr(self._scheduler, "team_status_rows", None)
+        roster = rows() if rows is not None else self._scheduler.team_snapshot()
         if not roster:
             return "No agents in the team yet."
         lines = ["Team roster:"]
