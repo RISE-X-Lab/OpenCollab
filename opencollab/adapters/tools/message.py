@@ -37,6 +37,19 @@ _DELIVERY_NOTE = (
     "meanwhile, or use team_status to see whether it is running."
 )
 
+#: Used instead of ``_DELIVERY_NOTE`` when the team runs one turn at a time.
+#: There the teammate cannot start until the sender ends its turn, so "carry on
+#: meanwhile" is the one move that keeps it from ever running. 09-25,
+#: gpt-5.6-luna on the s2dual judge card: shown the teammate as "queued", the
+#: Adopter made its next call itself 11 of 11 times and in 15/36 runs no Coder
+#: ran before its budget was gone. So this note says what to do, not what may.
+_SERIALIZED_DELIVERY_NOTE = (
+    "Turns on this team run one at a time: the teammate cannot start until you "
+    "end your turn, and every call you make before then keeps it waiting. Call "
+    "submit now with what you have so far. If it answers, the answer arrives as "
+    "a message and reopens your turn."
+)
+
 
 class MessageAgentTool(Tool):
     """Queue a message for an existing agent and return immediately."""
@@ -140,7 +153,9 @@ class MessageAgentTool(Tool):
         )
         if ack.startswith("Error"):
             return ack
-        return f"{ack} {_DELIVERY_NOTE}"
+        serialized = bool(getattr(self._scheduler, "turns_serialized", False))
+        note = _SERIALIZED_DELIVERY_NOTE if serialized else _DELIVERY_NOTE
+        return f"{ack} {note}"
 
 
 def _display_team_state(entry: dict[str, Any]) -> str:

@@ -208,6 +208,11 @@ class SchedulerTeamMixin:
             )
         return snapshot
 
+    @property
+    def turns_serialized(self) -> bool:
+        """Whether one agent runs at a time; ``message_agent`` words its ack by it."""
+        return bool(self._serialize_turns)
+
     def team_status_rows(self) -> list[dict[str, Any]]:
         """``team_snapshot`` plus ``turn_queued``, for what an agent is shown.
 
