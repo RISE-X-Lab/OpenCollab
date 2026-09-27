@@ -15,6 +15,8 @@ silently force-compacted.
 
 from __future__ import annotations
 
+import re
+
 
 class TransientProviderError(RuntimeError):
     """A provider failure for which repeating the same request can succeed."""
@@ -40,8 +42,31 @@ _OVERFLOW_MESSAGE_FRAGMENTS = (
     "too many tokens",
     "reduce the length",
     "reduce the number of tokens",
-    "string too long",  # some proxies phrase the oversize prompt this way
 )
+
+_INPUT_STRING_PARAM = re.compile(
+    r"(?:input(?:\[(?:\d+|\*)\])?(?:\.(?:content(?:\[(?:\d+|\*)\])?"
+    r"(?:\.(?:text|input_text))?|arguments|output))?"
+    r"|messages\[(?:\d+|\*)\]\.content(?:\[(?:\d+|\*)\])?(?:\.(?:text|input_text))?)"
+)
+
+
+def _oversized_input_string(error: Exception) -> bool:
+    param = getattr(error, "param", None)
+    body = getattr(error, "body", None)
+    if not isinstance(param, str) and isinstance(body, dict):
+        inner = body.get("error")
+        source = inner if isinstance(inner, dict) else body
+        param = source.get("param")
+    if isinstance(param, str):
+        return _INPUT_STRING_PARAM.fullmatch(param.lower()) is not None
+    # Some proxies omit the selector but include its exact path in the message.
+    message = str(error).lower()
+    paths = re.findall(
+        r"(?<![\w.\[\]])(?:input|messages)(?:\[[\d*]+\])?(?:\.[a-z_]+(?:\[[\d*]+\])?)*(?![\w.\[\]])",
+        message,
+    )
+    return any(_INPUT_STRING_PARAM.fullmatch(path) for path in paths)
 
 
 def _status_of(error: Exception) -> int | None:
@@ -89,8 +114,12 @@ def is_context_overflow_error(error: Exception) -> bool:
         return False
 
     code = _error_code_of(error)
+    if code == "string_above_max_length":
+        return _oversized_input_string(error)
     if "context_length_exceeded" in code or "context length" in code:
         return True
 
     message = str(error).lower()
+    if "string too long" in message and _oversized_input_string(error):
+        return True
     return any(fragment in message for fragment in _OVERFLOW_MESSAGE_FRAGMENTS)

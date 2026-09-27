@@ -28,6 +28,10 @@ from opencollab.bootstrap._workflow_runtime_state import (
     WORKFLOW_AGENT_PROMPT,
     WorkflowRuntimeResult,
 )
+from opencollab.bootstrap.agent_profiles import (
+    _PROFILE_TOOL_LIMITS,
+    resolve_agent_profile,
+)
 from opencollab.bootstrap.agent_runtime import revoke_and_abort_environment
 from opencollab.bootstrap.session_factory import build_session
 
@@ -78,6 +82,7 @@ async def run_workflow(
     task_concurrency: int | None = None,
     max_steps: int | None = None,
     system_prompt: str = WORKFLOW_AGENT_PROMPT,
+    agent_profile: Any | None = None,
     save_dir: str | None = None,
     trace: bool = True,
     env: Any | None = None,
@@ -88,8 +93,11 @@ async def run_workflow(
     return_details: bool = False,
     cleanup_environment: bool | None = None,
     defer_manifest_completion: bool = False,
+    candidate_workspace: Any | None = None,
 ) -> Any:
     """Run through one owned lifecycle with an optional wall-clock deadline."""
+    if isinstance(agent_profile, str):
+        agent_profile = resolve_agent_profile(agent_profile)
     if cleanup_environment is None:
         cleanup_environment = env is None
     token = _WORKFLOW_ENV_OVERRIDE.set(env)
@@ -98,6 +106,9 @@ async def run_workflow(
 
     async def run_owner() -> Any:
         nonlocal cancelled_result, cancelled_notes
+        tools_token = _PROFILE_TOOL_LIMITS.set(
+            None if agent_profile is None else agent_profile.tool_limits
+        )
         try:
             return await _run_workflow_with_integrity(
                 spec_or_fn,
@@ -111,6 +122,8 @@ async def run_workflow(
                 task_concurrency=task_concurrency,
                 max_steps=max_steps,
                 system_prompt=system_prompt,
+                agent_profile=agent_profile,
+                candidate_workspace=candidate_workspace,
                 save_dir=save_dir,
                 trace=trace,
                 cleanup_timeout=cleanup_timeout,
@@ -128,6 +141,8 @@ async def run_workflow(
                 cancelled_result = attached
             cancelled_notes = tuple(getattr(cancellation, "__notes__", ()))
             raise
+        finally:
+            _PROFILE_TOOL_LIMITS.reset(tools_token)
 
     owner = asyncio.create_task(run_owner())
     stop_task: asyncio.Task[tuple[bool, bool]] | None = None

@@ -23,10 +23,18 @@ class PerToolResultBudgetShaper:
     #: Frozen trajectory label for this rung (see ``ShaperPipeline``).
     rung = "per_tool_budget"
 
-    def __init__(self, max_chars: int = DEFAULT_TOOL_RESULT_BUDGET):
+    def __init__(
+        self,
+        max_chars: int = DEFAULT_TOOL_RESULT_BUDGET,
+        *,
+        preserve_tail: bool = False,
+    ):
         if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars <= 0:
             raise ValueError("max_chars must be a positive integer")
+        if not isinstance(preserve_tail, bool):
+            raise ValueError("preserve_tail must be a boolean")
         self.max_chars = max_chars
+        self.preserve_tail = preserve_tail
 
     def shape(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         shaped: list[dict[str, Any]] = []
@@ -100,7 +108,19 @@ class PerToolResultBudgetShaper:
         head_len = 0
         for _ in range(3):
             marker = notice(len(content) - head_len)
-            head_len = max(0, self.max_chars - len(marker))
+            source_budget = max(0, self.max_chars - len(marker))
+            head_len = (
+                (source_budget * 3) // 8
+                if self.preserve_tail
+                else source_budget
+            )
         marker = notice(len(content) - head_len)
-        shaped_content = content[:head_len] + marker
+        if self.preserve_tail:
+            source_budget = max(0, self.max_chars - len(marker))
+            head_len = (source_budget * 3) // 8
+            tail_len = source_budget - head_len
+            tail = content[-tail_len:] if tail_len else ""
+            shaped_content = content[:head_len] + marker + tail
+        else:
+            shaped_content = content[:head_len] + marker
         return {**message, "content": shaped_content[: self.max_chars]}

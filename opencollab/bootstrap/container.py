@@ -111,7 +111,7 @@ def _build_initial_state(
 def _resolve_llm(
     agent: Agent,
     llm: LLMPort | None,
-    llm_timeout: float,
+    llm_timeout: float | None,
     provider_retry_budget: Any | None = None,
 ) -> LLMPort:
     """The injected ``llm`` if given, else a fresh ``LLMClient`` for the agent."""
@@ -138,7 +138,7 @@ def _build_summarizer(
     agent: Agent,
     llm: LLMPort | None,
     resolved_llm: LLMPort,
-    llm_timeout: float,
+    llm_timeout: float | None,
     auto_save_path: str | None,
     provider_retry_budget: Any | None = None,
 ) -> ReadTimeSummarizer:
@@ -211,7 +211,10 @@ def _build_summarizer(
 
 
 def _build_default_shaper(
-    resolved_llm: LLMPort, summarizer: ReadTimeSummarizer
+    resolved_llm: LLMPort,
+    summarizer: ReadTimeSummarizer,
+    *,
+    preserve_tool_result_tail: bool = False,
 ) -> ShaperPort:
     """Assemble the default lazy-degradation shaper pipeline.
 
@@ -265,7 +268,10 @@ def _build_default_shaper(
     }
     return ShaperPipeline(
         (
-            PerToolResultBudgetShaper(DEFAULT_TOOL_RESULT_BUDGET),
+            PerToolResultBudgetShaper(
+                DEFAULT_TOOL_RESULT_BUDGET,
+                preserve_tail=preserve_tool_result_tail,
+            ),
             ToolOutputClearShaper(
                 compactable_tools=COMPACTABLE_TOOL_NAMES,
                 keep_recent=min(DEFAULT_TOOL_CLEAR_KEEP_RECENT, affordable_groups),
@@ -306,7 +312,7 @@ def build_session_runtime(
     ask_policy: AskUserPort | None = None,
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
-    llm_timeout: float = 600.0,
+    llm_timeout: float | None = 600.0,
     provider_retry_budget: Any | None = None,
     store: SessionStorePort | None = None,
     auto_save_callback: Callable[[], None] | None = None,
@@ -318,6 +324,7 @@ def build_session_runtime(
     seed_system_messages: list[dict[str, Any]] | None = None,
     shaper: ShaperPort | None = None,
     team_budget_exhausted: Callable[[], bool] | None = None,
+    agent_profile: Any | None = None,
 ) -> SessionRuntime:
     """Build a ``SessionRuntime`` with the same construction order
     ``Session.__init__`` used to perform inline.
@@ -351,6 +358,11 @@ def build_session_runtime(
 
     resolved_llm = _resolve_llm(agent, llm, llm_timeout, provider_retry_budget)
 
+    if agent_profile is not None:
+        safety_policy = agent_profile.wrap_safety(
+            safety_policy,
+            resolved_env.workspace,
+        )
     tool_execution = ToolExecutionUseCase(
         agent=agent,
         environment=resolved_env,
@@ -369,9 +381,12 @@ def build_session_runtime(
         auto_save_path,
         provider_retry_budget,
     )
-    resolved_shaper: ShaperPort = (
-        shaper if shaper is not None else _build_default_shaper(resolved_llm, summarizer)
-    )
+    if shaper is not None:
+        resolved_shaper = shaper
+    elif agent_profile is not None:
+        resolved_shaper = agent_profile.build_shaper(resolved_llm, summarizer)
+    else:
+        resolved_shaper = _build_default_shaper(resolved_llm, summarizer)
     runner = SessionRunUseCase(
         agent=agent,
         state=state,

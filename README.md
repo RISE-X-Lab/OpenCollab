@@ -76,20 +76,39 @@ cp configs/team.example.yaml configs/team.yaml
 uv run opencollab --team-config configs/team.yaml --workspace .
 ```
 
-For repeatable pipelines, author a Python workflow and run it by name.
+Run [Duo](docs/duo.md), the built-in dual-coder workflow, in a local Git
+repository. Its two isolated coders compare public evidence and apply a
+selected patch. Local shell execution is an explicit workflow input.
 
 ```bash
-uv run opencollab workflow run NAME --args '{"task": "..."}'
+uv run opencollab workflow list --workspace /path/to/repository
+uv run opencollab workflow run duo --workspace /path/to/repository \
+  --args '{"goal":"Fix the public issue described here.","allow_unisolated_shell":true}'
 ```
 
+The [Duo guide](docs/duo.md) covers SDK calls, the Single2 profile, the explicit
+complete file evidence, and task-oriented role instructions.
+The [Chinese guide](docs/duo/README.zh-CN.md) is available alongside the canonical guide.
 See [Workflow authoring](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md#workflow-authoring)
-for a complete module.
+to define another collaboration protocol as a Python module.
 
 ## Evaluate with OpenCollab-Eval
 
 [OpenCollab-Eval](https://github.com/RISE-X-Lab/OpenCollab-Eval) is a downstream
 application built on OpenCollab's public Python API. It exercises agents, teams,
 workflows, tools, and environments from outside this repository.
+
+The default [OC Base agent](docs/single2.md) maps to Single2 through the public
+`agent(...)` entry. Named profiles remain available for explicit selection.
+
+Duo's role execution, public test evidence, candidate selection, and patch
+adoption are part of OpenCollab. For a complete collaborative evaluation, follow the
+[Duo with Single2 quick start](https://github.com/RISE-X-Lab/OpenCollab-Eval#duo-quick-start).
+It covers matching OC/OCE 0.8 installations, benchmark images, a Responses
+model endpoint, and one-task official evaluation with
+`oc-eval g22 --config /path/to/g22.json --indices 1 --workers 1`.
+The same configuration runs a batch and keeps per-task patches, trajectories,
+and official test reports together.
 
 OpenCollab-Eval runs agents on software-engineering benchmarks. It creates an
 isolated workspace for each task and records the Solver's patch. It then runs
@@ -119,6 +138,8 @@ documents on-demand instructions. The [scripts guide](https://github.com/RISE-X-
 documents launchers and provider diagnostics.
 
 Repository development is documented in [CONTRIBUTING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md).
+The [testing guide](docs/testing.md) covers suite commands and the
+[test directory guide](tests/README.md) maps behavior to test topics.
 Maintainers can follow [RELEASING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/main/RELEASING.md)
 when preparing a release.
 The [documentation index](https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/README.md)

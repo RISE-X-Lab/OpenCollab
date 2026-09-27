@@ -5,6 +5,50 @@ All notable changes to OpenCollab are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.1] - 2026-09-27
+
+### Changed
+
+Tests are organized by agents, workflows, tools, runtime, interfaces, and
+packaging. Shared preparation uses explicit test-support imports. Source-tree,
+installed-package, CI, and documentation paths follow the same directory layout.
+Repeated preparation code is shared by the behavior area that owns it.
+
+Source distributions retain the complete tests. Wheel validation checks that
+only runtime distribution content is shipped, with test and cache trees kept
+outside the wheel. Test workspaces and reports use temporary or external paths.
+
+## [0.8.0] - 2026-09-27
+
+### Changed
+
+The default standalone agent is Base, currently mapped to Single2. The former
+standalone Single prompt and execution path have been removed. The `default`
+and `single` profile spellings select Base, while `single2` and `agent2` select
+Single2 explicitly. Explicit token and step limits follow Single2 behavior.
+
+### Added
+
+A named profile factory registry keeps single-agent implementations extensible.
+The public `opencollab.profiles` module exposes `BASE_PROFILE` and
+`resolve_profile_name`, and standalone result metrics record the concrete
+implementation name.
+
+## [0.7.1] - Unreleased
+
+### Added
+
+Duo is the single installed dual-candidate workflow available through the CLI
+and SDK. Its task-oriented prompts use complete, paged candidate evidence. Public native Bash evidence
+observation and Git patch path parsing now belong to OpenCollab, so downstream
+evaluators can use the same execution and selection implementation.
+
+### Changed
+
+Named SDK workflow calls discover installed and caller-defined workflows.
+Local Duo shell execution has an explicit caller opt-in while the default
+continues to require process isolation.
+
 ## [0.7.0] - 2026-09-14
 
 ### Added

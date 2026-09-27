@@ -204,7 +204,7 @@ def build_session(
     ask_policy: AskUserPort | None = None,
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
-    llm_timeout: float = 600.0,
+    llm_timeout: float | None = 600.0,
     provider_retry_budget: RetryTimeBudget | None = None,
     store: SessionStorePort | None = None,
     aid: int = -1,
@@ -212,6 +212,7 @@ def build_session(
     seed_system_messages: list[dict[str, Any]] | None = None,
     shaper: ShaperPort | None = None,
     team_budget_exhausted: Callable[[], bool] | None = None,
+    agent_profile: Any | None = None,
 ) -> Session:
     """Self-wiring ``Session`` factory.
 
@@ -242,6 +243,7 @@ def build_session(
         seed_system_messages=seed_system_messages,
         shaper=shaper,
         team_budget_exhausted=team_budget_exhausted,
+        agent_profile=agent_profile,
     )
     Session.__init__(
         session,

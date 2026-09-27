@@ -80,6 +80,7 @@ async def run_workflow(
     task_concurrency: int | None = None,
     max_steps: int | None = None,
     system_prompt: str = WORKFLOW_AGENT_PROMPT,
+    agent_profile: Any | None = None,
     save_dir: str | None = None,
     trace: bool = True,
     cleanup_timeout: float = DEFAULT_WORKFLOW_CLEANUP_TIMEOUT_SECONDS,
@@ -90,6 +91,7 @@ async def run_workflow(
     return_details: bool = False,
     cleanup_environment: bool = True,
     defer_manifest_completion: bool = False,
+    candidate_workspace: Any | None = None,
 ) -> Any:
     """Run one workflow and return only after cleanup and evidence persistence."""
     cleanup_timeout = _positive_cleanup_timeout(cleanup_timeout)
@@ -119,6 +121,8 @@ async def run_workflow(
             task_concurrency=task_concurrency,
             max_steps=max_steps,
             system_prompt=system_prompt,
+            agent_profile=agent_profile,
+            candidate_workspace=candidate_workspace,
             save_dir=save_dir,
             env=env,
             source_root=source_root,

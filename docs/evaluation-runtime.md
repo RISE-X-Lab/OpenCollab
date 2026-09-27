@@ -10,9 +10,10 @@ Request lifecycle traces contain start, complete, and cancellation events with t
 
 These public methods let the companion evaluator collect model and role observations through the supported facade. Candidate workspaces, request parsing, finite budgets, cancellation, and snapshot replay have regression coverage. Install this development version with the paired OCE revision described in its evaluation suite guide.
 
-The explicit unbounded switch also applies to native Single calls through
-`OpenCollab.agent()`. Numeric token and step arguments are still validated,
-then the configured switch carries `None` into the actual session limits.
+The default standalone `OpenCollab.agent()` uses Base, currently mapped to
+Single2. With the unbounded switch enabled, omitted token and step limits
+carry `None` into the session. Explicit positive `budget`, `max_steps`, or
+`steps` values retain their limits.
 Provider output size, context capacity, cancellation, and cleanup remain explicit.
 
 A revoked execution environment stops its current session before another model
@@ -31,3 +32,44 @@ If a role already requires a write or structured submission and the model return
 only prose, the session retries that requirement once with the same tool set. A
 second prose-only response stops the session instead of declaring the requirement
 complete. Both responses remain in its usage and transcript.
+
+Native Responses adapter
+calls accept explicitly unbounded stream waits and retain transport timeout causes
+when those local waits have no deadline.
+
+Responses errors with `string_above_max_length` trigger context compaction when
+the provider identifies input content, tool output, or history arguments.
+Errors for instruction, metadata, tool description, and name fields retain their
+ordinary request-error classification. Structured roles whose input still
+exceeds the provider limit after compaction finish without issuing the same
+oversized corrective request.
+
+A caller may set `OPENCOLLAB_REQUIRE_INSTRUCTIONS_ECHO=1` for endpoints that echo
+submitted Responses instructions. Each completed response is compared with the
+submitted instruction text before its tool calls are delivered. Requests with
+no system instructions explicitly send an empty string in this mode. Setting
+`OPENCOLLAB_INSTRUCTIONS_AUDIT_DIR` stores each response's requested and returned
+instructions, model controls, and usage under its response identifier. This
+opt-in check detects a gateway replacing the submitted role instructions during
+a remote model call. Repository revisions, database identifiers, transactions,
+uniqueness, type checks, and local request tests cannot observe that remote
+response rewrite. The check remains at the provider delivery boundary.
+
+Workflows can supply `candidate_workspace` to `OpenCollab.workflow()`. The
+backend creates isolated candidate leases and reports source evidence through
+`source_diff(exclude_paths)`. Source change detection uses this same evidence,
+including for environments outside Git repositories. A backend with `adopt_run`
+receives the complete selected `CandidateRun`, so equal file patches can still
+identify different candidate environments. Existing patch backends keep their
+`adopt(diff, preserve_paths)` path. Candidate execution continues to compare the
+source before and after each lease, restore unintended source edits, and retain
+the workflow's executable verification tools.
+
+`git_diff` can display observed filesystem changes when a non-Git environment
+provides `get_filesystem_diff(path, stat_only)`. The displayed evidence is limited
+to the requested path and the tool's normal output allowance.
+
+Unbounded workflow roles retain the caller's configured request, first-event,
+stream-idle, and connection timeouts. Caller cancellation, provider retry settings,
+and owned cleanup remain configured. Terminal traces record null token and step
+limits without losing the final usage or stop reason.

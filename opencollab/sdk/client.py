@@ -13,7 +13,6 @@ from typing import Any
 
 from opencollab.bootstrap.config import build_config
 from opencollab.bootstrap.programmatic import (
-    DEFAULT_AGENT_SYSTEM_PROMPT,
     DEFAULT_TEAM_CLEANUP_TIMEOUT_SECONDS,
     ProgrammaticLifecycleError,
     ProgrammaticResult,
@@ -198,9 +197,17 @@ class OpenCollab:
         name: str = "agent",
         system_prompt: str | None = None,
         llm: Any | None = None,
+        profile: str | None = None,
     ) -> RunResult[str]:
-        """Run one directly configured agent."""
+        """Run a single agent using Base or an explicitly named profile.
+
+        Base currently selects Single2. Explicit tools and system prompts
+        customize the selected implementation for this run.
+        """
         _non_empty(prompt, "prompt")
+        from opencollab.bootstrap.agent_profiles import resolve_agent_profile
+
+        agent_profile = resolve_agent_profile(profile)
         _non_empty(name, "name")
         if system_prompt is not None:
             _non_empty(system_prompt, "system_prompt")
@@ -209,12 +216,14 @@ class OpenCollab:
         if max_steps is not None and steps is not None:
             raise ValueError("max_steps and steps cannot both be set")
         unbounded_limits = _unbounded_limits_requested()
+        explicit_budget = budget is not None
+        explicit_steps = max_steps is not None or steps is not None
         resolved_budget = _positive_int(
             self._config["budget"] if budget is None else budget,
             "budget",
         )
         resolved_max_steps = (
-            100
+            agent_profile.default_steps
             if max_steps is None and steps is None
             else _positive_int(
                 max_steps if max_steps is not None else steps,
@@ -227,8 +236,24 @@ class OpenCollab:
                 config=self._config,
                 workspace=self._workspace,
                 tools=tools,
-                max_tokens=None if unbounded_limits else resolved_budget,
-                max_steps=None if unbounded_limits else resolved_max_steps,
+                max_tokens=(
+                    None
+                    if unbounded_limits
+                    and not (
+                        agent_profile.honor_explicit_limits
+                        and explicit_budget
+                    )
+                    else resolved_budget
+                ),
+                max_steps=(
+                    None
+                    if unbounded_limits
+                    and not (
+                        agent_profile.honor_explicit_limits
+                        and explicit_steps
+                    )
+                    else resolved_max_steps
+                ),
                 timeout=_positive_timeout(timeout, "timeout"),
                 cleanup_timeout=_required_positive_timeout(
                     cleanup_timeout,
@@ -238,12 +263,22 @@ class OpenCollab:
                 trace=trace,
                 environment=self._environment,
                 name=name,
-                system_prompt=system_prompt or DEFAULT_AGENT_SYSTEM_PROMPT,
+                system_prompt=system_prompt or agent_profile.system_prompt,
                 llm=llm,
+                agent_profile=agent_profile,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc
         return _public_result(result)
+
+    async def agent2(self, prompt: str, **kwargs: Any) -> RunResult[str]:
+        """Run the isolated OC Single2 standalone-agent profile."""
+        if "profile" in kwargs:
+            raise ValueError(
+                "agent2 selects profile='single2'; use agent to select another profile"
+            )
+        kwargs.setdefault("name", "single2")
+        return await self.agent(prompt, profile="single2", **kwargs)
 
     async def team(
         self,
@@ -345,19 +380,51 @@ class OpenCollab:
         timeout: float | None = None,
         max_steps: int | None = 100,
         system_prompt: str | None = None,
+        agent_profile: str | None = None,
         cleanup_timeout: float = 2.0,
         artifacts: str | os.PathLike[str] | None = None,
         trace: bool = True,
+        candidate_workspace: Any | None = None,
     ) -> RunResult[Any]:
-        """Run a decorated or plain async workflow function.
+        """Run a workflow name, decorated function, or plain async function.
+
+        Names resolve installed built-ins and caller-authored modules from the
+        workspace's ``workflows/`` directory or ``OPENCOLLAB_WORKFLOWS_DIR``.
+        A caller module using an installed name raises a duplicate-name error.
 
         ``concurrency`` limits agent sessions. ``task_concurrency`` separately
         limits active parallel/pipeline units across the workflow and defaults
         to ``concurrency``. Mixed agent and task work may therefore peak at the
         sum of both limits.
+
+        ``agent_profile`` selects the shared agent configuration for every
+        workflow role while preserving each role's explicit tool permissions.
+        Omitting it retains each role's own configuration. Explicit Base,
+        default, or single selects the default single-agent implementation.
+
+        ``candidate_workspace`` injects an existing candidate workspace port,
+        for environments whose result is more than a repository patch.
         """
+        from opencollab.bootstrap.agent_profiles import resolve_agent_profile
+
+        resolved_agent_profile = (
+            None if agent_profile is None else resolve_agent_profile(agent_profile)
+        )
+        if isinstance(flow, str):
+            from opencollab.bootstrap.workflow_runtime import discover_workflows
+
+            name = _non_empty(flow, "flow")
+            directory = os.environ.get("OPENCOLLAB_WORKFLOWS_DIR", "workflows")
+            if not os.path.isabs(directory):
+                directory = os.path.join(self._workspace, directory)
+            registry = discover_workflows(directory, include_builtin=True)
+            try:
+                flow = registry.get(name)
+            except KeyError:
+                available = ", ".join(spec.name for spec in registry.list_specs())
+                raise ValueError(f"unknown workflow {name!r}. Available workflows {available}") from None
         if not callable(flow) and not callable(getattr(flow, "fn", None)):
-            raise TypeError("flow must be a workflow function or spec")
+            raise TypeError("flow must be a workflow name, function, or spec")
         if inputs is not None and not isinstance(inputs, Mapping):
             raise TypeError("inputs must be a mapping")
         normalized_inputs = dict(inputs or {})
@@ -397,6 +464,7 @@ class OpenCollab:
                 timeout=_positive_timeout(timeout, "timeout"),
                 max_steps=resolved_max_steps,
                 system_prompt=system_prompt,
+                agent_profile=resolved_agent_profile,
                 cleanup_timeout=_required_positive_timeout(
                     cleanup_timeout,
                     "cleanup_timeout",
@@ -404,6 +472,7 @@ class OpenCollab:
                 artifacts=_path(artifacts, "artifacts"),
                 trace=trace,
                 environment=self._environment,
+                candidate_workspace=candidate_workspace,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc

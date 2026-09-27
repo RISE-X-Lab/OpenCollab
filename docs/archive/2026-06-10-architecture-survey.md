@@ -327,7 +327,7 @@ existing tests that prove behavior unchanged (plus targeted additions).
 | 2.2 | Fix host-side FileLock: skip the host lock whenever `runtime.environment` is set (or move locking behind the env port / out-of-tree lock dir) in `fs.py` AND `apply_patch.py` | Med | `test_tool_runtime_contract.py`, `test_edit_tool.py`; update the None-env contract tests deliberately |
 | 2.3 | Rewrite `swebench/gen_prediction.py` on the attach-mode env; delete its `ContainerEnv`, `ExecResult` copy, and the `_fs.FileLock` monkeypatch (enabled by 2.2) | Med (live eval path) | One-instance smoke run per the SWE-bench eval workflow; diff predictions JSONL format unchanged |
 | 2.4 | Parameterize `harness/evaluator.py` (prompt, tools, env factory, max_steps) and rename/document `EvalResult.success` → `patch_produced` (CLI wording + results.jsonl key) | Low (single consumer: `cli/eval.py`) | `adapters/cli/eval.py` compile + a tiny EvalTask smoke; no core tests touch harness |
-| 2.5 | Move env-file key precedence into `bootstrap/config.py` (same-name file-first option for provider keys), with tests; delete the copies in `check_dashscope.py` / `gen_prediction.py` | Med (key resolution is a known footgun) | Extend `tests/test_config.py` (pattern: `test_dashscope_file_key_beats_generic_export`); `scripts/check_dashscope.py` smoke |
+| 2.5 | Move env-file key precedence into `bootstrap/config.py` (same-name file-first option for provider keys), with tests; delete the copies in `check_dashscope.py` / `gen_prediction.py` | Med (key resolution is a known footgun) | Extend `tests/runtime/test_config.py` (pattern: `test_dashscope_file_key_beats_generic_export`); `scripts/check_dashscope.py` smoke |
 
 **Phase 3 — contract hardening (typing, ports, small seams)**
 

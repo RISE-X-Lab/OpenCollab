@@ -17,7 +17,7 @@ publishing is not currently part of the OpenCollab release process.
 
 ## 1. Finalize the release
 
-Use a focused pull request with an English Conventional Commit title. In that
+Use a focused pull request with a Conventional Commit title using an English type and Chinese description. In that
 pull request:
 
 1. Move the intended entries from `Unreleased` into a dated version section in
@@ -60,7 +60,7 @@ distribution just as CI does:
 
 ```bash
 set -euo pipefail
-release_version=0.6.0
+release_version=0.8.1
 artifact_root="$(mktemp -d -t "opencollab-${release_version}.XXXXXX")"
 mkdir -p "$artifact_root/sdist" "$artifact_root/wheel" "$artifact_root/assets"
 
@@ -72,7 +72,7 @@ uv build --wheel --no-sources "${sdists[0]}" --out-dir "$artifact_root/wheel"
 wheels=("$artifact_root"/wheel/*.whl)
 test "${#wheels[@]}" -eq 1
 
-uvx --from twine==6.2.0 twine check "${sdists[0]}" "${wheels[0]}"
+uvx --from twine==7.0.0 twine check "${sdists[0]}" "${wheels[0]}"
 cp "${sdists[0]}" "${wheels[0]}" "$artifact_root/assets/"
 (
   cd "$artifact_root/assets"

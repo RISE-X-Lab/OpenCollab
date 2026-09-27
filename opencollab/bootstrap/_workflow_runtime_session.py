@@ -22,6 +22,7 @@ from opencollab.application.tool_execution_runtime import ToolRuntime
 from opencollab.application.workflow import WorkflowContext
 from opencollab.application.workflow_registry import WorkflowSpec
 from opencollab.bootstrap._workflow_runtime_state import WORKFLOW_AGENT_PROMPT
+from opencollab.bootstrap.agent_profiles import SingleAgentProfile
 from opencollab.bootstrap.config import (
     DEFAULT_TEMPERATURE,
     DEFAULT_THINKING,
@@ -39,6 +40,22 @@ _WORKFLOW_ENV_OVERRIDE: contextvars.ContextVar[Any | None] = contextvars.Context
     "workflow_environment_override",
     default=None,
 )
+
+
+class _CandidateSourceTreeProbe:
+    """Read source evidence through the supplied candidate workspace port."""
+
+    def __init__(self, workspace: Any) -> None:
+        self._workspace = workspace
+
+    async def diff(self) -> str:
+        return await self._workspace.source_diff()
+
+    async def changed(self) -> bool:
+        return bool(await self._workspace.source_diff())
+
+    async def changed_excluding(self, paths: Sequence[str]) -> bool:
+        return bool(await self._workspace.source_diff(paths))
 
 
 class WorkflowSessionFactory:
@@ -62,9 +79,10 @@ class WorkflowSessionFactory:
         workspace: str | None = None,
         tracer: TracePort | None = None,
         event_sink: EventPublisherPort | None = None,
-        llm_timeout: float = 600.0,
+        llm_timeout: float | None = 600.0,
         max_steps: int | None = None,
         system_prompt: str = WORKFLOW_AGENT_PROMPT,
+        agent_profile: SingleAgentProfile | None = None,
         temperature: float = DEFAULT_TEMPERATURE,
         top_p: float | None = DEFAULT_TOP_P,
         max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
@@ -74,8 +92,8 @@ class WorkflowSessionFactory:
         reasoning_effort: str | None = None,
         llm_max_retries: int = 3,
         llm_connect_timeout: float = 30.0,
-        llm_first_event_timeout: float = 180.0,
-        llm_stream_idle_timeout: float = 180.0,
+        llm_first_event_timeout: float | None = 180.0,
+        llm_stream_idle_timeout: float | None = 180.0,
         provider_error_time_budget: float = 0.0,
         save_dir: str | None = None,
         env: Any | None = None,
@@ -91,6 +109,7 @@ class WorkflowSessionFactory:
         self._llm_timeout = llm_timeout
         self._max_steps = max_steps
         self._system_prompt = system_prompt
+        self._agent_profile = agent_profile
         self._temperature = temperature
         self._top_p = top_p
         self._max_output_tokens = max_output_tokens
@@ -222,7 +241,15 @@ class WorkflowSessionFactory:
             and environment_workspace != self._workspace
         ):
             system_prompt = system_prompt.replace(self._workspace, environment_workspace)
-        resolved_tools = list(tools or [])
+        # The workflow owns role permissions and verification-tool instances.
+        # Profile resolution keeps explicit tools, including evidence wrappers.
+        resolved_tools = list(
+            (tools or [])
+            if self._agent_profile is None
+            else self._agent_profile.resolve_tools(tools)
+        )
+        if self._agent_profile is not None:
+            system_prompt = self._profile_prompt(system_prompt, resolved_tools, label)
         if self._wire_protocol == RESPONSES:
             validate_responses_model_controls(
                 self._model,
@@ -267,6 +294,44 @@ class WorkflowSessionFactory:
             provider_retry_budget=self._provider_retry_budget,
             aid=aid,
             auto_save_path=self._save_path(aid, label),
+            agent_profile=self._agent_profile,
+        )
+
+    def _profile_prompt(
+        self,
+        workflow_prompt: str,
+        tools: Sequence[Any],
+        label: str | None,
+    ) -> str:
+        profile = self._agent_profile
+        assert profile is not None
+        names = [str(tool.name) for tool in tools]
+        available = ", ".join(f"`{name}`" for name in names) or "none"
+        role = label or "workflow agent"
+        permissions = (
+            "\n\n## Workflow role and permissions\n\n"
+            f"The current role is {role!r}. Its available tools are {available}. "
+            "This exact tool list governs the session. Follow the role duties in "
+            "the workflow context and user task. They take precedence over the "
+            "general software-repair duties and submission steps above. "
+            "Use the provided tool interface for this role's allowed operations."
+        )
+        capture_names = [
+            name for name in names if name in {"structured_output", "submit_findings"}
+        ]
+        if capture_names:
+            permissions += (
+                " Complete this role by calling "
+                + " or ".join(f"`{name}`" for name in capture_names)
+                + " with a valid payload matching its schema. This structured "
+                "submission requirement takes precedence over the ordinary-text "
+                "final response described above."
+            )
+        return (
+            profile.system_prompt
+            + "\n\n## Workflow context\n\n"
+            + workflow_prompt
+            + permissions
         )
 
     async def execute_verification(
@@ -318,11 +383,13 @@ def build_workflow_context(
     task_concurrency: int | None = None,
     max_steps: int | None = None,
     system_prompt: str = WORKFLOW_AGENT_PROMPT,
+    agent_profile: SingleAgentProfile | None = None,
     save_dir: str | None = None,
     env: Any | None = None,
     source_root: str | None = None,
     deadline_monotonic: float | None = None,
     deadline_margin_seconds: float = 120.0,
+    candidate_workspace: Any | None = None,
 ) -> WorkflowContext:
     """Build a :class:`WorkflowContext` wired to the concrete session factory.
 
@@ -348,6 +415,7 @@ def build_workflow_context(
         llm_timeout=float(cfg.get("llm_timeout", 600.0)),
         max_steps=max_steps,
         system_prompt=system_prompt,
+        agent_profile=agent_profile,
         temperature=float(cfg.get("temperature", DEFAULT_TEMPERATURE)),
         top_p=cfg.get("top_p", DEFAULT_TOP_P),
         max_output_tokens=int(cfg.get("max_output_tokens", DEFAULT_MAX_OUTPUT_TOKENS)),
@@ -375,11 +443,17 @@ def build_workflow_context(
     if probe_env is None:
         probe_env = LocalEnvironment(workspace) if workspace else LocalEnvironment()
     candidate_root = getattr(probe_env, "workspace", None)
-    candidate_workspace = (
-        EnvCandidateWorkspace(probe_env, workspace=candidate_root)
-        if isinstance(candidate_root, str) and candidate_root
-        else None
+    tree_probe = (
+        _CandidateSourceTreeProbe(candidate_workspace)
+        if candidate_workspace is not None
+        else EnvWorkingTreeProbe(probe_env)
     )
+    if candidate_workspace is None:
+        candidate_workspace = (
+            EnvCandidateWorkspace(probe_env, workspace=candidate_root)
+            if isinstance(candidate_root, str) and candidate_root
+            else None
+        )
     return WorkflowContext(
         factory,
         event_sink=event_sink,
@@ -387,7 +461,7 @@ def build_workflow_context(
         max_concurrency=max_concurrency,
         task_concurrency=task_concurrency,
         budget_total=budget_total,
-        tree_probe=EnvWorkingTreeProbe(probe_env),
+        tree_probe=tree_probe,
         candidate_workspace=candidate_workspace,
         workspace_root=source_root if source_root is not None else workspace,
         deadline_monotonic=deadline_monotonic,

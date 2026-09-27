@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from typing import Any
 
 MAX_WORKING_TREE_DIFF_CHARS = 1_000_000
+WORKING_TREE_GIT_TIMEOUT_SECONDS = 900.0
 
 
 def _require_complete_result(
@@ -57,7 +58,10 @@ class EnvWorkingTreeProbe:
 
     async def changed(self) -> bool:
         cmd = f"git -C {shlex.quote(self._workspace)} status --porcelain"
-        result = await self._env.exec_cmd(cmd, timeout=30)
+        result = await self._env.exec_cmd(
+            cmd,
+            timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
+        )
         _require_complete_result(result, "working-tree status")
         return bool(result.stdout.strip())
 
@@ -78,7 +82,10 @@ class EnvWorkingTreeProbe:
             f"git -C {shlex.quote(self._workspace)} status --porcelain "
             f"--untracked-files=all -- . {excludes}"
         )
-        result = await self._env.exec_cmd(cmd, timeout=30)
+        result = await self._env.exec_cmd(
+            cmd,
+            timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
+        )
         _require_complete_result(result, "working-tree status")
         return bool(result.stdout.strip())
 
@@ -86,19 +93,19 @@ class EnvWorkingTreeProbe:
         workspace = shlex.quote(self._workspace)
         status_result = await self._env.exec_cmd(
             f"git -C {workspace} status --porcelain=v1 --untracked-files=all",
-            timeout=30,
+            timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
         )
         _require_complete_result(status_result, "working-tree status")
 
         tracked_result = await self._env.exec_cmd(
             f"git -C {workspace} --no-pager diff HEAD --binary --no-ext-diff --",
-            timeout=30,
+            timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
         )
         _require_complete_result(tracked_result, "tracked diff")
 
         untracked_result = await self._env.exec_cmd(
             f"git -C {workspace} ls-files --others --exclude-standard -z --",
-            timeout=30,
+            timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
         )
         _require_complete_result(untracked_result, "untracked file listing")
         untracked_paths = [
@@ -132,7 +139,7 @@ class EnvWorkingTreeProbe:
                 "git -C "
                 f"{workspace} --no-pager diff --no-index --binary --no-ext-diff "
                 f"-- /dev/null {shlex.quote(path)}",
-                timeout=30,
+                timeout=WORKING_TREE_GIT_TIMEOUT_SECONDS,
             )
             _require_complete_result(
                 result,

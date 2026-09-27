@@ -15,6 +15,8 @@ from opencollab.adapters._env_docker import DockerEnvironment
 from opencollab.adapters._env_local import LocalEnvironment
 from opencollab.adapters.env import DockerWorkspaceEnvironment
 
+CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS = 900.0
+
 
 def _complete(result: Any, operation: str, allowed: tuple[int, ...] = (0,)) -> str:
     if (
@@ -59,7 +61,7 @@ async def _raw_diff_at(
             "git -C "
             f"{shlex.quote(workspace)} --no-pager diff HEAD --binary --no-ext-diff"
             + pathspec,
-            timeout=60,
+            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
         "candidate tracked diff",
     )
@@ -68,7 +70,7 @@ async def _raw_diff_at(
             "git -C "
             f"{shlex.quote(workspace)} ls-files --others --exclude-standard -z"
             + pathspec,
-            timeout=30,
+            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         ),
         "candidate untracked listing",
     )
@@ -79,7 +81,7 @@ async def _raw_diff_at(
                 "git -C "
                 f"{shlex.quote(workspace)} --no-pager diff --no-index --binary "
                 f"--no-ext-diff -- /dev/null {shlex.quote(path)}",
-                timeout=60,
+                timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
             ),
             f"candidate untracked diff for {path}",
             allowed=(0, 1),
@@ -153,7 +155,7 @@ class EnvCandidateWorkspace:
             "git -C "
             f"{shlex.quote(self._workspace)} worktree add --detach -- "
             f"{shlex.quote(path)} HEAD",
-            timeout=120,
+            timeout=CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
         )
         _complete(result, f"candidate worktree setup for {label}")
         environment = await self._candidate_environment(path)

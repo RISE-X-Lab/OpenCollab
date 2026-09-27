@@ -111,6 +111,12 @@ class GitDiffTool(Tool):
                     timeout=30,
                 )
                 if inside.returncode != 0 or inside.stdout.strip() != "true":
+                    capture = getattr(env, "get_filesystem_diff", None)
+                    if callable(capture):
+                        observed = await capture(path=path, stat_only=stat_only)
+                        return "Observed container filesystem changes:\n" + truncate(
+                            observed, self.max_diff_chars
+                        )
                     return "Error: not a git repository."
                 empty_tree = await env.exec_cmd(
                     "git hash-object -t tree /dev/null",

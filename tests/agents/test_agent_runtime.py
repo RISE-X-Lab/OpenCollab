@@ -1,0 +1,441 @@
+"""Lifecycle tests for the shared bootstrap Agent runtime."""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+
+import pytest
+
+from opencollab.bootstrap import agent_runtime
+from opencollab.bootstrap.agent_runtime import AgentRuntimeLifecycleError
+from opencollab.domain.agent import Agent
+from tests.support.structured_output_test_support import NamedTool
+
+
+class Environment:
+    def __init__(
+        self,
+        *,
+        abort_fails: bool = False,
+        revoke_fails: bool = False,
+        block_abort: bool = False,
+        block_cleanup: bool = False,
+    ) -> None:
+        self.revoked = False
+        self.abort_fails = abort_fails
+        self.revoke_fails = revoke_fails
+        self.abort_calls = 0
+        self.cleanup_calls = 0
+        self.block_abort = block_abort
+        self.abort_started = asyncio.Event()
+        self.abort_release = asyncio.Event()
+        self.block_cleanup = block_cleanup
+        self.cleanup_started = asyncio.Event()
+        self.cleanup_release = asyncio.Event()
+        self.cleanup_done = asyncio.Event()
+
+    def revoke(self) -> None:
+        if self.revoke_fails:
+            raise RuntimeError("revoke failed")
+        self.revoked = True
+
+    async def abort(self) -> None:
+        self.abort_calls += 1
+        self.revoked = True
+        self.abort_started.set()
+        if self.block_abort:
+            await self.abort_release.wait()
+        if self.abort_fails:
+            raise RuntimeError("abort failed")
+
+    async def cleanup(self) -> None:
+        self.cleanup_calls += 1
+        self.cleanup_started.set()
+        if self.block_cleanup:
+            await self.cleanup_release.wait()
+        self.cleanup_done.set()
+
+
+class Session:
+    def __init__(self, *, outcome: str = "complete", auto_save_path: str | None = None) -> None:
+        self.outcome = outcome
+        self.auto_save_path = auto_save_path
+        self.persistence_errors: tuple[str, ...] = ()
+        self.pending_cleanup_tasks: tuple[asyncio.Task, ...] = ()
+        self.phase = SimpleNamespace(value="done")
+        self.state = SimpleNamespace(terminal_reason="completed")
+        self.used_tokens = 7
+        self.step_count = 2
+        self.started = asyncio.Event()
+        self.save_calls = 0
+        self.close_calls = 0
+
+    async def add_user_message(self, _prompt: str) -> None:
+        return None
+
+    async def run_loop(self) -> str:
+        self.started.set()
+        if self.outcome == "block":
+            await asyncio.Event().wait()
+        if self.outcome == "fail":
+            self.phase.value = "error"
+            self.state.terminal_reason = "provider failed"
+            raise RuntimeError("provider failed")
+        return "done"
+
+    def enqueue_auto_save(self):
+        self.save_calls += 1
+        if self.auto_save_path is None:
+            return None
+        return asyncio.create_task(asyncio.sleep(0))
+
+    async def aclose(self) -> None:
+        self.close_calls += 1
+
+
+def _agent() -> Agent:
+    return Agent(name="agent", system_prompt="prompt", model="model", provider="provider")
+
+
+def _patch_session(monkeypatch, session: Session) -> None:
+    monkeypatch.setattr(agent_runtime, "build_session", lambda **_kwargs: session)
+
+
+def test_agent_rejects_duplicate_normalized_tool_names() -> None:
+    with pytest.raises(ValueError, match="duplicate tool names"):
+        Agent(
+            name="agent",
+            system_prompt="prompt",
+            tools=[NamedTool("reader"), NamedTool("ＲＥＡＤＥＲ")],
+        )
+
+
+def test_agent_lookup_uses_same_normalization_as_uniqueness_check() -> None:
+    tool = NamedTool("ＲＥＡＤＥＲ")
+    agent = Agent(name="agent", system_prompt="prompt", tools=[tool])
+
+    assert agent.find_tool("reader") is tool
+
+
+def test_agent_revalidates_tool_names_before_provider_schema_build() -> None:
+    agent = Agent(
+        name="agent",
+        system_prompt="prompt",
+        tools=[NamedTool("reader")],
+    )
+    agent.tools.append(NamedTool("READER"))
+
+    with pytest.raises(ValueError, match="duplicate tool names"):
+        agent.tool_schemas()
+
+
+async def test_agent_runtime_returns_metrics_after_final_save(monkeypatch) -> None:
+    session = Session(auto_save_path="agent.json")
+    _patch_session(monkeypatch, session)
+    environment = Environment()
+    result = await agent_runtime.run_agent(
+        agent=_agent(),
+        environment=environment,
+        prompt="run",
+        max_tokens=100,
+        max_steps=5,
+        timeout_seconds=None,
+        cleanup_timeout_seconds=0.1,
+        transcript_path="agent.json",
+        cleanup_environment=True,
+    )
+    assert result.output == "done"
+    assert result.outcome == "completed"
+    assert result.tokens_spent == 7
+    assert result.step_count == 2
+    assert result.cleanup_quiesced
+    assert result.environment_cleanup_quiesced is True
+    assert result.environment_quiesced is True
+    assert environment.cleanup_calls == 1
+    assert session.close_calls == 1
+
+
+async def test_agent_runtime_returns_quiescent_execution_failure(monkeypatch) -> None:
+    session = Session(outcome="fail")
+    _patch_session(monkeypatch, session)
+    result = await agent_runtime.run_agent(
+        agent=_agent(),
+        environment=Environment(),
+        prompt="run",
+        max_tokens=100,
+        max_steps=5,
+        timeout_seconds=None,
+        cleanup_timeout_seconds=0.1,
+        transcript_path=None,
+    )
+    assert result.outcome == "failed"
+    assert isinstance(result.error, RuntimeError)
+    assert result.phase == "error"
+    assert result.environment_cleanup_quiesced is None
+    assert result.environment_quiesced is None
+
+
+async def test_agent_runtime_timeout_leaves_caller_environment_active(monkeypatch) -> None:
+    session = Session(outcome="block")
+    _patch_session(monkeypatch, session)
+    environment = Environment()
+    result = await agent_runtime.run_agent(
+        agent=_agent(),
+        environment=environment,
+        prompt="run",
+        max_tokens=100,
+        max_steps=5,
+        timeout_seconds=0.01,
+        cleanup_timeout_seconds=0.1,
+        transcript_path=None,
+    )
+    assert result.outcome == "timed_out"
+    assert result.cleanup_quiesced
+    assert not environment.revoked
+    assert environment.abort_calls == 0
+
+
+async def test_agent_runtime_timeout_fails_when_abort_fails(monkeypatch) -> None:
+    session = Session(outcome="block")
+    _patch_session(monkeypatch, session)
+    with pytest.raises(AgentRuntimeLifecycleError, match="quiescent"):
+        await agent_runtime.run_agent(
+            agent=_agent(),
+            environment=Environment(abort_fails=True),
+            prompt="run",
+            max_tokens=100,
+            max_steps=5,
+            timeout_seconds=0.01,
+            cleanup_timeout_seconds=0.1,
+            transcript_path=None,
+            cleanup_environment=True,
+        )
+
+
+async def test_agent_runtime_timeout_still_aborts_when_revoke_fails(monkeypatch) -> None:
+    session = Session(outcome="block")
+    _patch_session(monkeypatch, session)
+    environment = Environment(revoke_fails=True)
+    with pytest.raises(AgentRuntimeLifecycleError, match="quiescent"):
+        await agent_runtime.run_agent(
+            agent=_agent(),
+            environment=environment,
+            prompt="run",
+            max_tokens=100,
+            max_steps=5,
+            timeout_seconds=0.01,
+            cleanup_timeout_seconds=0.1,
+            transcript_path=None,
+            cleanup_environment=True,
+        )
+    assert environment.abort_calls == 1
+
+
+async def test_agent_runtime_caller_cancellation_leaves_caller_environment_active(monkeypatch) -> None:
+    session = Session(outcome="block")
+    _patch_session(monkeypatch, session)
+    environment = Environment()
+    owner = asyncio.create_task(
+        agent_runtime.run_agent(
+            agent=_agent(),
+            environment=environment,
+            prompt="run",
+            max_tokens=100,
+            max_steps=5,
+            timeout_seconds=None,
+            cleanup_timeout_seconds=0.1,
+            transcript_path=None,
+        )
+    )
+    await session.started.wait()
+    owner.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    assert not environment.revoked
+    assert environment.abort_calls == 0
+
+
+async def test_agent_runtime_caller_cancellation_rejects_lingering_owner(monkeypatch) -> None:
+    class StubbornSession(Session):
+        def __init__(self):
+            super().__init__(outcome="block")
+            self.cancel_seen = asyncio.Event()
+            self.release = asyncio.Event()
+            self.finished = asyncio.Event()
+
+        async def run_loop(self) -> str:
+            self.started.set()
+            while not self.release.is_set():
+                try:
+                    await self.release.wait()
+                except asyncio.CancelledError:
+                    self.cancel_seen.set()
+            self.finished.set()
+            return "late"
+
+    session = StubbornSession()
+    _patch_session(monkeypatch, session)
+    task = asyncio.create_task(
+        agent_runtime.run_agent(
+            agent=_agent(),
+            environment=Environment(),
+            prompt="run",
+            max_tokens=100,
+            max_steps=5,
+            timeout_seconds=None,
+            cleanup_timeout_seconds=0.01,
+            transcript_path=None,
+        )
+    )
+    await session.started.wait()
+    task.cancel()
+    try:
+        with pytest.raises(AgentRuntimeLifecycleError, match="cancelled agent"):
+            await task
+        assert session.cancel_seen.is_set()
+        assert not session.finished.is_set()
+    finally:
+        session.release.set()
+        await asyncio.wait_for(session.finished.wait(), timeout=0.2)
+
+
+async def test_agent_runtime_double_cancellation_finishes_abort_and_save(monkeypatch) -> None:
+    session = Session(outcome="block")
+    _patch_session(monkeypatch, session)
+    environment = Environment(block_abort=True)
+    owner = asyncio.create_task(
+        agent_runtime.run_agent(
+            agent=_agent(),
+            environment=environment,
+            prompt="run",
+            max_tokens=100,
+            max_steps=5,
+            timeout_seconds=None,
+            cleanup_timeout_seconds=0.1,
+            transcript_path=None,
+            cleanup_environment=True,
+        )
+    )
+    await session.started.wait()
+    owner.cancel()
+    await environment.abort_started.wait()
+    owner.cancel()
+    environment.abort_release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    assert environment.abort_calls == 1
+    assert session.save_calls == 1
+
+
+async def test_agent_runtime_cancellation_during_finalization_keeps_cleanup_owned(monkeypatch) -> None:
+    session = Session()
+    _patch_session(monkeypatch, session)
+    environment = Environment(block_cleanup=True)
+    owner = asyncio.create_task(
+        agent_runtime.run_agent(
+            agent=_agent(),
+            environment=environment,
+            prompt="run",
+            max_tokens=100,
+            max_steps=5,
+            timeout_seconds=None,
+            cleanup_timeout_seconds=0.1,
+            transcript_path=None,
+            cleanup_environment=True,
+        )
+    )
+
+    await environment.cleanup_started.wait()
+    owner.cancel()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    await asyncio.sleep(0.01)
+    assert not owner.done()
+    assert not environment.abort_started.is_set()
+    environment.cleanup_release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await owner
+    assert environment.cleanup_done.is_set()
+    assert environment.cleanup_calls == 1
+    assert session.save_calls == 1
+
+
+async def test_agent_runtime_retries_transient_finalization_failure(monkeypatch) -> None:
+    session = Session()
+    _patch_session(monkeypatch, session)
+    attempts = 0
+
+    async def flaky_finalize(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        return attempts > 1
+
+    monkeypatch.setattr(agent_runtime, "_finalize_session", flaky_finalize)
+
+    result = await agent_runtime.run_agent(
+        agent=_agent(),
+        environment=Environment(),
+        prompt="run",
+        max_tokens=100,
+        max_steps=5,
+        timeout_seconds=None,
+        cleanup_timeout_seconds=0.1,
+        transcript_path=None,
+        cleanup_environment=True,
+    )
+
+    assert result.outcome == "completed"
+    assert attempts == 2
+
+
+async def test_agent_runtime_rejects_missing_final_save_owner(monkeypatch) -> None:
+    session = Session(auto_save_path="agent.json")
+    original_enqueue = session.enqueue_auto_save
+
+    def missing_owner():
+        session.save_calls += 1
+        return None
+
+    session.enqueue_auto_save = missing_owner
+    _patch_session(monkeypatch, session)
+    environment = Environment()
+    with pytest.raises(AgentRuntimeLifecycleError, match="persistence"):
+        await agent_runtime.run_agent(
+            agent=_agent(),
+            environment=environment,
+            prompt="run",
+            max_tokens=100,
+            max_steps=5,
+            timeout_seconds=None,
+            cleanup_timeout_seconds=0.1,
+            transcript_path="agent.json",
+            cleanup_environment=True,
+        )
+    assert session.save_calls == 2
+    assert environment.cleanup_calls == 2
+    assert original_enqueue is not None
+
+
+async def test_agent_runtime_attempts_cleanup_after_pending_task_timeout(monkeypatch) -> None:
+    session = Session()
+    pending = asyncio.create_task(asyncio.Event().wait())
+    session.pending_cleanup_tasks = (pending,)
+    _patch_session(monkeypatch, session)
+    environment = Environment()
+    with pytest.raises(AgentRuntimeLifecycleError, match="cleanup or persistence"):
+        await agent_runtime.run_agent(
+            agent=_agent(),
+            environment=environment,
+            prompt="run",
+            max_tokens=100,
+            max_steps=5,
+            timeout_seconds=None,
+            cleanup_timeout_seconds=0.01,
+            transcript_path=None,
+            cleanup_environment=True,
+        )
+    assert environment.cleanup_calls == 2
+    assert session.save_calls == 2
+    assert pending.done()

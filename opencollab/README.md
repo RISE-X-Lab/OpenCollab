@@ -46,13 +46,16 @@ After installation, invoke the CLI directly from the active environment.
 ```bash
 opencollab --workspace .
 opencollab --team-config configs/team.yaml --workspace .
+opencollab workflow list --workspace .
 OPENCOLLAB_WORKFLOWS_DIR=path/to/workflows \
   opencollab workflow run NAME --args '{"goal": "..."}'
 ```
 
 A workflow directory contains caller-authored Python modules tagged with
-`@workflow`. `OPENCOLLAB_WORKFLOWS_DIR` applies to both `workflow list` and
-`workflow run`.
+`@workflow`. Both `workflow list` and `workflow run` combine them with installed
+workflows, including [Duo](../docs/duo.md). `OPENCOLLAB_WORKFLOWS_DIR` selects the
+caller directory. Relative paths resolve from the workspace, and duplicate
+names raise the registry's existing error.
 
 The following flags control tracing, isolation, team selection, and approvals.
 
@@ -88,11 +91,24 @@ asyncio.run(main())
 The same client exposes `agent(...)`, `team(...)`, and `workflow(...)`. All
 three return `RunResult`. Import optional authoring contracts from
 `opencollab.tools`, `opencollab.environments`, and `opencollab.workflows`.
+Installed collaboration protocols are public through
+`opencollab.builtin_workflows`, and Git patch parsing is public through
+`opencollab.patches`. Named agent profile resolution is public through
+`opencollab.profiles`.
 Treat other package paths as internal. An `artifacts` directory, when supplied,
 must be new or empty because each run claims it for executable evidence.
 `team(...)` uses the built-in Self-Collaboration team unless its `config=`
 argument names a team YAML file. Its `cleanup_timeout` bounds scheduler
 shutdown and must be a finite positive number.
+
+`agent(...)` uses Base, which currently maps to the
+[Single2 profile](../docs/single2.md). `agent(..., profile="base")` follows the
+same mapping. `agent(..., profile="single2")` and the `agent2(...)` convenience
+method select Single2 explicitly. The `default` and `single` spellings are
+compatibility aliases for Base. Run metrics record the concrete profile name.
+`opencollab.profiles.resolve_profile_name(...)` exposes this resolution to
+integrations. Team configuration and workflow role configuration keep their
+own selection paths.
 
 `OpenCollab.configuration` is a read-only snapshot of effective model,
 provider, budget, timeout, sampling, output-token, and thinking settings.
@@ -102,6 +118,9 @@ fingerprint without exposing credentials embedded in a URL. Agent runs accept
 `max_steps` and `cleanup_timeout`. The older `steps` spelling remains a supported
 alias.
 Workflow runs accept `max_steps`, `system_prompt`, and `cleanup_timeout`.
+Their first argument accepts an installed workflow name such as `"duo"`, a
+caller-authored name, or a workflow function or spec. Names use the same
+workspace directory resolution as the CLI. Functions and specs run directly.
 Their `concurrency` option limits agent sessions only. `task_concurrency`
 separately limits active `parallel` and `pipeline` units across the workflow;
 omitting it inherits `concurrency`. The two limits are independent, so mixed
@@ -126,8 +145,11 @@ tools = builtin_tools(
 The helper returns fresh tools in caller order. Headless shell tools require
 process-isolated environments, and limits for unselected tools are rejected.
 Use `bash` to run the repository's native test command and inspect its exit code
-and output. The `VerificationTool` protocol remains available for custom tools
-that provide parser-backed test evidence; no built-in tool implements it.
+and output. The `VerificationTool` protocol remains available for tools that
+provide parser-backed test evidence. `evidence_tools` composes native tools
+with a Bash observer for workflows such as Duo. See
+[native test evidence](../docs/test-evidence.md) for record collection and
+supported runners.
 See [test-runner migration](../docs/migrations/remove-run-tests.md) for existing
 team files, saved runs, and verifier integrations.
 
@@ -186,7 +208,8 @@ async def implement_and_review(
     )
 ```
 
-OpenCollab discovers top-level `*.py` modules in `workflows/` by default. Run
+OpenCollab discovers top-level `*.py` modules in `workflows/` by default and
+combines them with installed workflows in the CLI and SDK name lookup. Run
 the decorated function through the CLI.
 
 ```bash
@@ -196,7 +219,9 @@ uv run opencollab workflow run implement-and-review \
 
 Set `OPENCOLLAB_WORKFLOWS_DIR` to use another directory. The same decorated
 function can be passed directly to `await OpenCollab(".").workflow(...)` when
-embedding OpenCollab in Python.
+embedding OpenCollab in Python. The [Duo guide](../docs/duo.md) shows built-in
+workflow calls and the [Chinese guide](../docs/duo/README.zh-CN.md) gives the same
+usage examples.
 
 Evidence-preserving workflows can call `ctx.draft_findings(...)` to capture a
 structured cite-or-abstain draft before exploration. OpenCollab owns this
@@ -206,7 +231,8 @@ datasets, and runners.
 For a visual architecture walkthrough, open the
 [SDK 0.4 research architecture](../docs/sdk-0.4-explainer.html).
 
-OpenCollab-Eval contains evaluation runners and benchmark workflows. Topology
+OpenCollab owns built-in collaboration protocols such as Duo. OpenCollab-Eval
+contains evaluation runners and benchmark-specific workflows. Topology
 research uses `team(...)` and `workflow(...)`. External harnesses define
 ablations, and Bootstrap binds each treatment through the Clean Architecture
 ports.

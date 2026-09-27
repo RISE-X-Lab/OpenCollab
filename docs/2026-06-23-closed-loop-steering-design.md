@@ -163,7 +163,7 @@ Composition rules:
 
 ## Tests
 
-Mirror `tests/test_session_run_loop.py` / `test_eager_tool_clear_shaper.py`:
+Mirror `tests/agents/test_session_run_loop.py` / `tests/runtime/test_eager_tool_clear_shaper.py`:
 - steering block built with correct budget/steps numbers;
 - steering folded into the trailing `user` turn (persisted, in place) when the
   turn starts there; ephemeral (shaped copy only) on a continuation step;

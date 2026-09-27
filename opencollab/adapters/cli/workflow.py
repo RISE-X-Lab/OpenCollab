@@ -4,8 +4,8 @@
 ``opencollab workflow run <name>``  — run a workflow, printing phase/log
 progress lines followed by the final result as a JSON block on stdout.
 
-Workflows are discovered from a ``workflows/`` directory (override with
-``OPENCOLLAB_WORKFLOWS_DIR``). Config resolution reuses the same file-first
+Installed workflows and modules in a ``workflows/`` directory are available
+(override the directory with ``OPENCOLLAB_WORKFLOWS_DIR``). Config resolution reuses the same file-first
 machinery as the rest of the CLI, so a stale shell ``ANTHROPIC_API_KEY`` cannot
 shadow the configured provider key.
 """
@@ -38,7 +38,7 @@ DEFAULT_WORKFLOWS_DIR = "workflows"
 
 
 def load_registry(workspace: str = ".") -> Registry:
-    """Discover workflows from the workflows directory.
+    """Combine installed workflows with the workspace's workflow directory.
 
     Relative paths, including the default ``workflows/``, are resolved from
     ``workspace``. An absolute ``OPENCOLLAB_WORKFLOWS_DIR`` remains absolute.
@@ -46,7 +46,7 @@ def load_registry(workspace: str = ".") -> Registry:
     directory = os.environ.get("OPENCOLLAB_WORKFLOWS_DIR", DEFAULT_WORKFLOWS_DIR)
     if not os.path.isabs(directory):
         directory = os.path.join(workspace, directory)
-    return discover_workflows(directory)
+    return discover_workflows(directory, include_builtin=True)
 
 
 class _ConsoleEventSink:
@@ -95,6 +95,11 @@ def run_cmd(
         None,
         "--task-concurrency",
         help="Max active parallel/pipeline units (defaults to --concurrency)",
+    ),
+    agent_profile: Optional[str] = typer.Option(
+        None,
+        "--agent-profile",
+        help="Agent profile for every workflow role (base or a concrete profile such as single2)",
     ),
     save: bool = typer.Option(
         True,
@@ -151,6 +156,7 @@ def run_cmd(
             budget=budget,
             max_concurrency=concurrency,
             task_concurrency=task_concurrency,
+            agent_profile=agent_profile,
             save_dir=save_dir,
             trace=trace,
         )
