@@ -104,7 +104,7 @@ The default [OC Base agent](docs/single2.md) maps to Single2 through the public
 Duo's role execution, public test evidence, candidate selection, and patch
 adoption are part of OpenCollab. For a complete collaborative evaluation, follow the
 [Duo with Single2 quick start](https://github.com/RISE-X-Lab/OpenCollab-Eval#duo-quick-start).
-It covers matching OC/OCE 0.7 installations, benchmark images, a Responses
+It covers matching OC/OCE 0.8 installations, benchmark images, a Responses
 model endpoint, and one-task official evaluation with
 `oc-eval g22 --config /path/to/g22.json --indices 1 --workers 1`.
 The same configuration runs a batch and keeps per-task patches, trajectories,
