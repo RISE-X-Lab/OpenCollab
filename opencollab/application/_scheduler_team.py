@@ -165,6 +165,11 @@ def _parse_worktree_diff(diff: str) -> list[tuple[str, str]]:
 
 class SchedulerTeamMixin:
     @property
+    def turns_serialized(self) -> bool:
+        """Whether teammate turns must wait for the current turn to end."""
+        return self._serialize_turns
+
+    @property
     def lead_session(self) -> Any:
         """Agent 0's session (the interactive entry)."""
         return self._lead_session
@@ -207,6 +212,13 @@ class SchedulerTeamMixin:
                 }
             )
         return snapshot
+
+    def team_status_rows(self) -> list[dict[str, Any]]:
+        """Add turn-lock wait state to the live roster shown by team_status."""
+        return [
+            {**entry, "turn_queued": entry["aid"] in self._turn_waiters}
+            for entry in self.team_snapshot()
+        ]
 
     def team_roster(self) -> list[dict[str, Any]]:
         """Full configured team for the prompt toolbar: every live agent plus

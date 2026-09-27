@@ -37,6 +37,12 @@ _DELIVERY_NOTE = (
     "meanwhile, or use team_status to see whether it is running."
 )
 
+_SERIALIZED_DELIVERY_NOTE = (
+    "Turns on this team run one at a time. The teammate cannot start until you "
+    "end your turn. Call submit now with what you have so far. If it answers, "
+    "the answer arrives as a message and reopens your turn."
+)
+
 
 class MessageAgentTool(Tool):
     """Queue a message for an existing agent and return immediately."""
@@ -140,10 +146,14 @@ class MessageAgentTool(Tool):
         )
         if ack.startswith("Error"):
             return ack
-        return f"{ack} {_DELIVERY_NOTE}"
+        serialized = bool(getattr(self._scheduler, "turns_serialized", False))
+        note = _SERIALIZED_DELIVERY_NOTE if serialized else _DELIVERY_NOTE
+        return f"{ack} {note}"
 
 
 def _display_team_state(entry: dict[str, Any]) -> str:
+    if entry.get("turn_queued"):
+        return "queued (runs after the agent now running ends its turn)"
     if entry.get("busy"):
         return "busy"
     phase = entry.get("phase", "?")
@@ -173,7 +183,8 @@ class TeamStatusTool(Tool):
         params: dict[str, Any],
         runtime: ToolRuntime,
     ) -> str:
-        roster = self._scheduler.team_snapshot()
+        status_rows = getattr(self._scheduler, "team_status_rows", None)
+        roster = status_rows() if callable(status_rows) else self._scheduler.team_snapshot()
         if not roster:
             return "No agents in the team yet."
         lines = ["Team roster:"]

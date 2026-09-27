@@ -62,6 +62,15 @@ _TRANSIENT_TRANSPORT_MESSAGE_FRAGMENTS = (
     "remote protocol error",
 )
 
+# Gateways may reject a request before an upstream HTTP response exists.
+# Restrict their retry hints to statusless provider SDK errors.
+_STATUSLESS_PROVIDER_ERROR_CLASS_NAMES = frozenset({"apierror", "openaierror", "anthropicerror"})
+_TRANSIENT_GATEWAY_MESSAGE_FRAGMENTS = (
+    "concurrency limit",
+    "too many concurrent",
+    "stream failed",
+)
+
 # Small random jitter (seconds) added to each backoff to reduce thundering herd.
 RETRY_JITTER_MAX_SECONDS = 0.25
 MAX_RETRY_AFTER_SECONDS = 300.0
@@ -132,6 +141,18 @@ async def with_retry(
             attempt += 1
 
 
+def _http_status_of(error: BaseException) -> int | None:
+    """Read an SDK HTTP status from its direct attribute or response."""
+    status = getattr(error, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        return status
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int) and not isinstance(status, bool):
+        return status
+    return None
+
+
 def is_retryable_error(error: Exception) -> bool:
     """Whether ``error`` looks transient (retryable status code or message)."""
     if isinstance(error, TransientProviderError):
@@ -163,12 +184,19 @@ def is_retryable_error(error: Exception) -> bool:
     # preserve the useful transport error only as ``__cause__``.
     current: BaseException | None = error
     seen: set[int] = set()
+    gateway_refusal = False
+    has_http_status = False
     while current is not None and id(current) not in seen:
         seen.add(id(current))
+        has_http_status = has_http_status or _http_status_of(current) is not None
         class_name = type(current).__name__.lower()
         if class_name in _TRANSIENT_TRANSPORT_CLASS_NAMES:
             return True
         message = str(current).lower()
+        if class_name in _STATUSLESS_PROVIDER_ERROR_CLASS_NAMES and any(
+            fragment in message for fragment in _TRANSIENT_GATEWAY_MESSAGE_FRAGMENTS
+        ):
+            gateway_refusal = True
         if any(
             fragment in message
             for fragment in _TRANSIENT_TRANSPORT_MESSAGE_FRAGMENTS
@@ -183,7 +211,8 @@ def is_retryable_error(error: Exception) -> bool:
         }:
             return True
         current = current.__cause__ or current.__context__
-    return False
+    # A wrapper or cause carrying a status also excludes the gateway rule.
+    return gateway_refusal and not has_http_status
 
 
 def extract_retry_after_seconds(

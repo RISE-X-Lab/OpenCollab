@@ -137,6 +137,8 @@ class Scheduler(
         # Created on first use: ``__init__`` may run without a running loop.
         self._prebuild_lock: asyncio.Lock | None = None
         self._turn_gate_lock: asyncio.Lock | None = None
+        # Drivers waiting to enter the existing serialized turn lock.
+        self._turn_waiters: set[int] = set()
         # Configured role names (from the team config), in declaration order.
         # Used by ``team_roster`` to surface the team before anything spawns.
         normalized_roles: list[str] = []

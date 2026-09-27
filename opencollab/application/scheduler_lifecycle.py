@@ -322,18 +322,9 @@ class LifecycleMixin:
     def _turn_gate(self) -> Any:
         """The team-wide turn gate every driver runs its loop inside.
 
-        Under ``serialize_turns`` this is one lock shared by every agent, so
-        exactly one turn is in flight at a time. Off, it is a no-op and
-        independent aids proceed concurrently, which is what ``_run_locks``
-        (one per aid) has always allowed.
-
-        Holding it across ``run_loop`` cannot deadlock, and not because of any
-        one team's configuration: ``run_loop`` *returns* when a session suspends
-        on ``AWAITING_EVENTS`` instead of blocking on its children, so the gate
-        is released at every suspension point and no driver ever holds it while
-        waiting for another agent to finish.
-
-        Created on first use: ``__init__`` may run without a running loop.
+        Serialized teams share one lock across ``run_loop``. A session releases
+        it when suspending on ``AWAITING_EVENTS``, allowing its children to run.
+        Concurrent teams retain per-aid ordering. The lock is created on first use.
         """
         if not self._serialize_turns:
             return contextlib.nullcontext()
@@ -360,12 +351,18 @@ class LifecycleMixin:
 
         try:
             cancel_event = self._turn_cancel_events.get(aid)
-            async with self._turn_gate():
-                result = (
-                    await session.run_loop(cancel_event)
-                    if cancel_event is not None
-                    else await session.run_loop()
-                )
+            if self._serialize_turns:
+                self._turn_waiters.add(aid)
+            try:
+                async with self._turn_gate():
+                    self._turn_waiters.discard(aid)
+                    result = (
+                        await session.run_loop(cancel_event)
+                        if cancel_event is not None
+                        else await session.run_loop()
+                    )
+            finally:
+                self._turn_waiters.discard(aid)
         except asyncio.CancelledError:
             self._release_leases(aid)
             scb.state.cancel()
@@ -383,6 +380,7 @@ class LifecycleMixin:
             if not self._shutting_down:
                 await self._drain_message_inbox(aid, allow_current_task=True)
                 await self._drain_ready_message_inboxes()
+                await self._drain_own_inbox_late(aid)
             raise
         except Exception as exc:
             self._release_leases(aid)
@@ -402,6 +400,7 @@ class LifecycleMixin:
             await self._deliver_to_parent(aid, reason, RowStatus.FAILED, error=reason)
             await self._drain_message_inbox(aid, allow_current_task=True)
             await self._drain_ready_message_inboxes()
+            await self._drain_own_inbox_late(aid)
             return
 
         # A cancellation-resistant provider/session can outlive the scheduler's
@@ -440,6 +439,7 @@ class LifecycleMixin:
             await self._drain_message_inbox(aid, allow_current_task=True)
             if not self._shutting_down:
                 await self._drain_ready_message_inboxes()
+            await self._drain_own_inbox_late(aid)
             return
 
         # A completed coding task still needs its patch evidence. Tracing and
@@ -461,6 +461,7 @@ class LifecycleMixin:
                 await self._drain_message_inbox(aid, allow_current_task=True)
                 if not self._shutting_down:
                     await self._drain_ready_message_inboxes()
+                await self._drain_own_inbox_late(aid)
                 return
             # Same changes, second destination: a structured, never-truncated
             # per-file record. Observational, so it is deliberately outside the
@@ -505,6 +506,17 @@ class LifecycleMixin:
         await self._drain_message_inbox(aid, allow_current_task=True)
         if not self._shutting_down:
             await self._drain_ready_message_inboxes()
+        await self._drain_own_inbox_late(aid)
+
+    async def _drain_own_inbox_late(self, aid: int) -> None:
+        """Deliver messages received while the driver awaited other inboxes.
+
+        A sender leaves messages queued while this driver still runs. A final
+        check after draining other agents starts the recipient's next turn.
+        """
+        if self._shutting_down or not self._message_inbox.get(aid):
+            return
+        await self._drain_message_inbox(aid, allow_current_task=True)
 
     async def _trace_worktree_evidence(self, aid: int, scb: Any, session: Any) -> None:
         """Record what an agent left in its worktree, whatever ended the agent.

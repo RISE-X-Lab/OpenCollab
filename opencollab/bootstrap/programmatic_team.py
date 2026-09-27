@@ -19,7 +19,6 @@ from opencollab.application.scheduler_types import SchedulerTurnError
 from opencollab.bootstrap import programmatic as _programmatic
 from opencollab.bootstrap.programmatic import (
     DEFAULT_TEAM_CLEANUP_TIMEOUT_SECONDS,
-    ProgrammaticLifecycleError,
     ProgrammaticResult,
 )
 from opencollab.bootstrap.runtime_context import build_runtime_context
@@ -105,6 +104,7 @@ async def run_team(
     reason: str | None = None
     failure: BaseException | None = None
     cancellation: asyncio.CancelledError | None = None
+    wind_down_failure: BaseException | None = None
     try:
         try:
             if timeout is None:
@@ -147,25 +147,34 @@ async def run_team(
         except BaseException as exc:
             cleanup_failure = exc
         tracer_failure = _programmatic._close_tracer(context.tracer)
+        if cancellation is None:
+            cancellation = next(
+                (
+                    exc for exc in (cleanup_failure, tracer_failure)
+                    if isinstance(exc, asyncio.CancelledError)
+                ),
+                None,
+            )
         if cancellation is not None:
-            if cleanup_failure is not None:
+            if cleanup_failure is not None and cleanup_failure is not cancellation:
                 add_exception_note(
                     cancellation,
                     "team cleanup also failed: "
                     f"{type(cleanup_failure).__name__}: {cleanup_failure}"
                 )
-            if tracer_failure is not None:
+            if tracer_failure is not None and tracer_failure is not cancellation:
                 add_exception_note(
                     cancellation,
                     "team trace also failed: "
                     f"{type(tracer_failure).__name__}: {tracer_failure}"
                 )
             raise cancellation
+        for exc in (cleanup_failure, tracer_failure):
+            if exc is not None and not isinstance(exc, Exception):
+                raise exc
         lifecycle_failure = cleanup_failure or tracer_failure
         if lifecycle_failure is not None:
-            cause = lifecycle_failure
             if failure is not None:
-                cause = failure
                 if cleanup_failure is not None:
                     add_exception_note(
                         failure,
@@ -184,9 +193,16 @@ async def run_team(
                     "team trace also failed: "
                     f"{type(tracer_failure).__name__}: {tracer_failure}",
                 )
-            raise ProgrammaticLifecycleError(
-                "team cleanup or trajectory persistence failed"
-            ) from cause
+            # Keep the execution result and its cost when wind-down fails.
+            # Settlement remains unverified until cleanup and tracing succeed.
+            wind_down_failure = lifecycle_failure
+
+    if wind_down_failure is not None and failure is None:
+        status = "failed"
+        reason = (
+            "team cleanup or trajectory persistence failed: "
+            f"{type(wind_down_failure).__name__}: {wind_down_failure}"
+        )
 
     _programmatic._verify_artifact_claim(artifacts)
     if artifacts is not None:
@@ -198,28 +214,21 @@ async def run_team(
         reason=reason,
         tokens=scheduler.used_tokens,
         artifacts=artifacts,
-        error=failure,
+        error=failure or wind_down_failure,
         metrics={
             "steps": int(getattr(lead, "step_count", 0)),
             "sessions": len(scheduler.table.entries),
-            # A team run reports the same wind-down evidence a solo agent and a
-            # workflow already do. Without it a caller cannot tell a team that
-            # finished from one abandoned mid-flight, and one that reads the
-            # absence as "not settled" treats every completed team run as a
-            # failure -- which is what a harness deciding whether to trust the
-            # workspace does.
-            #
-            # Reaching this line is the evidence: ``scheduler.cleanup`` returned,
-            # which means every scheduler-owned task stopped and the terminal
-            # snapshot persisted, and each failure above raises rather than
-            # falling through. Worktrees are released inside that same call, so
-            # a run that owns its environments has cleaned them up by now; one
-            # handed an environment never cleans it and says nothing about it.
+            # Cleanup also persists the terminal snapshot and releases owned
+            # worktrees. Any wind-down failure leaves settlement unverified.
             **_programmatic._quiescence_metrics(
-                session_quiesced=True,
+                session_quiesced=wind_down_failure is None,
                 environment_owned=environment is None,
-                environment_cleanup_quiesced=None if environment is not None else True,
-                environment_quiesced=None if environment is not None else True,
+                environment_cleanup_quiesced=(
+                    None if environment is not None else wind_down_failure is None
+                ),
+                environment_quiesced=(
+                    None if environment is not None else wind_down_failure is None
+                ),
             ),
         },
         agent_failures=_programmatic._team_agent_failures(scheduler),

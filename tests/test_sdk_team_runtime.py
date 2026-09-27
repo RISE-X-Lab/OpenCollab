@@ -8,7 +8,6 @@ from types import SimpleNamespace
 import pytest
 from test_sdk_runtime import (
     OpenCollab,
-    ProgrammaticLifecycleError,
     ProgrammaticResult,
     programmatic,
     sdk_client,
@@ -433,6 +432,10 @@ async def test_team_lifecycle_failure_preserves_execution_root_cause(
     trace_failure = RuntimeError("trace-secondary")
 
     class FakeScheduler:
+        used_tokens = 8
+        table = SimpleNamespace(entries={0: object()})
+        lead_session = SimpleNamespace(step_count=2)
+
         async def run(self, _prompt: str) -> str:
             raise primary
 
@@ -452,20 +455,24 @@ async def test_team_lifecycle_failure_preserves_execution_root_cause(
         lambda _tracer: trace_failure if trace_fails else None,
     )
 
-    with pytest.raises(ProgrammaticLifecycleError) as caught:
-        await programmatic.run_team(
-            prompt="solve",
-            config={"model": "model", "provider": "openai", "budget": 50},
-            workspace=str(tmp_path),
-            team_config_path=None,
-            max_tokens=50,
-            timeout=None,
-            artifacts=None,
-            trace=False,
-            use_worktrees=False,
-        )
+    result = await programmatic.run_team(
+        prompt="solve",
+        config={"model": "model", "provider": "openai", "budget": 50},
+        workspace=str(tmp_path),
+        team_config_path=None,
+        max_tokens=50,
+        timeout=None,
+        artifacts=None,
+        trace=False,
+        use_worktrees=False,
+    )
 
-    assert caught.value.__cause__ is primary
+    assert result.error is primary
+    assert result.tokens == 8
+    assert result.metrics["steps"] == 2
+    assert result.status == "failed"
+    assert result.reason == "run-root-cause"
+    assert result.metrics["execution_quiesced"] is False
     notes = getattr(primary, "__notes__", ())
     if cleanup_fails:
         assert any("cleanup-secondary" in note for note in notes)
