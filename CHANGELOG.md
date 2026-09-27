@@ -5,6 +5,21 @@ All notable changes to OpenCollab are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] - Unreleased
+
+### Added
+
+Duo and Duo v3 are installed workflows available through the CLI and SDK.
+The original G22 v2/v3 names remain compatible. Public native Bash evidence
+observation and Git patch path parsing now belong to OpenCollab, so downstream
+evaluators can use the same execution and selection implementation.
+
+### Changed
+
+Named SDK workflow calls discover installed and caller-defined workflows.
+Local Duo shell execution has an explicit caller opt-in while the default
+continues to require process isolation.
+
 ## [0.7.0] - 2026-09-14
 
 ### Added
