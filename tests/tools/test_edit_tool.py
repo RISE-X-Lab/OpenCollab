@@ -110,6 +110,72 @@ def test_line_replace_guard_accepts_a_range_that_ends_in_a_blank_line(tmp_path):
     assert target.read_text(encoding="utf-8") == "X\nc\n"
 
 
+@pytest.mark.parametrize(
+    ("source", "end_line", "expected_str", "updated"),
+    [
+        ("\n", 1, "", "X\n"),
+        ("\n", 1, "\n", "X\n"),
+        ("a\nb\n\nc\n", 3, "a\nb\n", "X\nc\n"),
+        ("a\nb\n\n\nc\n", 4, "a\nb\n\n", "X\nc\n"),
+        ("a\nb\n\n\nc\n", 4, "a\nb\n\n\n", "X\nc\n"),
+    ],
+)
+def test_line_replace_guard_accepts_exact_range_with_optional_line_terminator(
+    tmp_path, source, end_line, expected_str, updated
+):
+    target = tmp_path / "f.py"
+    target.write_text(source, encoding="utf-8")
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "line_replace",
+                "start_line": 1,
+                "end_line": end_line,
+                "new_str": "X",
+                "expected_str": expected_str,
+            },
+            _runtime(tmp_path),
+        )
+    )
+
+    assert "Applied line_replace" in result
+    assert target.read_text(encoding="utf-8") == updated
+
+
+@pytest.mark.parametrize(
+    ("source", "end_line", "expected_str"),
+    [
+        ("\n", 1, "\n\n"),
+        ("a\nb\n", 1, "a\n\n"),
+        ("a\nb\n\nc\n", 3, "a\nb"),
+        ("a\nb\n\nc\n", 3, "a\nb\n\n\n"),
+        ("a\nb\n", 0, "\n"),
+    ],
+)
+def test_line_replace_guard_rejects_missing_or_extra_blank_lines(tmp_path, source, end_line, expected_str):
+    target = tmp_path / "f.py"
+    target.write_text(source, encoding="utf-8")
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {
+                "path": "f.py",
+                "mode": "line_replace",
+                "start_line": 1,
+                "end_line": end_line,
+                "new_str": "X",
+                "expected_str": expected_str,
+            },
+            _runtime(tmp_path),
+        )
+    )
+
+    assert "expected_str does not match" in result
+    assert target.read_text(encoding="utf-8") == source
+
+
 def test_unified_diff_matches_by_content_despite_line_drift(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()
