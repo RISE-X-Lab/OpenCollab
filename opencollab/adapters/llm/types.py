@@ -189,6 +189,20 @@ _EXACT_MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
         supports_responses_reasoning=True,
         honors_workflow_thinking_override=False,
     ),
+    # DashScope input ceilings recorded on 2026-09-06: 983,616 with thinking
+    # and 991,808 without thinking. The adapter's reasoning_effort=max path
+    # uses the former. The separate output limit is 131,072. Endpoint probes
+    # also refused both required and named tool_choice in this thinking mode.
+    "qwen3.8-flash": ModelCapabilities(
+        context_window=983_616,
+        supports_forced_tool_choice=False,
+    ),
+    # The endpoint's model_info payload on 2026-09-21 reported 1,000,000 for
+    # context_window, max_input_tokens and reasoning_max_input_tokens. This
+    # entry records that input window; other dimensions retain their defaults.
+    "deepseek-v4.1-flash": ModelCapabilities(
+        context_window=1_000_000,
+    ),
     "deepseek-v4-flash": ModelCapabilities(
         context_window=1_048_576,
         supports_forced_tool_choice=False,
