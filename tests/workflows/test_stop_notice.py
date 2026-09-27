@@ -342,7 +342,7 @@ def test_notice_route_preserves_roster_identity_checks_and_regular_topology():
 
 @pytest.mark.parametrize(
     ("role", "reason"),
-    [("coder_a", "<&>" * 20_000), ("编" * 42 + "ab", "<中😀&>" * 20_000)],
+    [("coder_a", "<&>" * 20_000), ("\u7f16" * 42 + "ab", "<\u4e2d\U0001f600&>" * 20_000)],
 )
 def test_long_stop_reason_fits_the_existing_delivery_bounds(role, reason):
     from opencollab.application._scheduler_constants import MAX_TEAMMATE_MESSAGE_BYTES
