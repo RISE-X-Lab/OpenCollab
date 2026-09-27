@@ -138,6 +138,8 @@ documents on-demand instructions. The [scripts guide](https://github.com/RISE-X-
 documents launchers and provider diagnostics.
 
 Repository development is documented in [CONTRIBUTING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md).
+The [testing guide](docs/testing.md) covers suite commands and the
+[test directory guide](tests/README.md) maps behavior to test topics.
 Maintainers can follow [RELEASING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/main/RELEASING.md)
 when preparing a release.
 The [documentation index](https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/README.md)

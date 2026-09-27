@@ -14,7 +14,7 @@ team / task, ``priority >= PIN_FLOOR``) and non-compactable messages are never
 touched, and the assistant ``tool_call`` <-> ``tool``-result pairing skeleton is
 preserved (the message and its ``tool_call_id`` survive — only the content shrinks).
 
-CACHE-READY PROPERTIES (unit-tested in ``tests/test_eager_tool_clear_shaper.py``):
+CACHE-READY PROPERTIES (unit-tested in ``tests/runtime/test_eager_tool_clear_shaper.py``):
 
 * **Deterministic** — ``shape(x)`` is byte-identical across repeated calls and
   does NOT read any running token estimate / context-size measurement.
