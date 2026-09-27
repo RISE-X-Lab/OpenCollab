@@ -36,6 +36,7 @@ from opencollab.adapters.trace import Tracer
 from opencollab.application.async_timeout import await_owned_operation
 from opencollab.application.exception_notes import add_exception_note
 from opencollab.application.ports import EnvironmentPort
+from opencollab.bootstrap.agent_profiles import SingleAgentProfile, resolve_agent_profile
 from opencollab.bootstrap.agent_runtime import (
     AgentRuntimeLifecycleError,
     AgentRuntimeResult,
@@ -59,10 +60,6 @@ from opencollab.bootstrap.workflow_runtime import (
 )
 from opencollab.domain.agent import Agent
 
-DEFAULT_AGENT_SYSTEM_PROMPT = (
-    "You are an autonomous software-engineering agent. Complete the user task, "
-    "use the available tools when needed, and report the verified result."
-)
 DEFAULT_TEAM_CLEANUP_TIMEOUT_SECONDS = 10.0
 
 _ARTIFACT_CLAIM_FILENAME = ".opencollab-run"
@@ -347,19 +344,16 @@ async def run_agent(
     trace: bool,
     environment: Any | None = None,
     name: str = "agent",
-    system_prompt: str = DEFAULT_AGENT_SYSTEM_PROMPT,
+    system_prompt: str | None = None,
     llm: Any | None = None,
-    agent_profile: Any | None = None,
+    agent_profile: SingleAgentProfile | None = None,
 ) -> ProgrammaticResult:
-    """Run one directly configured agent behind the hardened lifecycle."""
-    resolved_tools = (
-        resolve_tools(tools)
-        if agent_profile is None
-        else agent_profile.resolve_tools(tools)
-    )
+    """Run the selected single-agent implementation behind the owned lifecycle."""
+    resolved_profile = agent_profile if agent_profile is not None else resolve_agent_profile(None)
+    resolved_tools = resolved_profile.resolve_tools(tools)
     agent = Agent(
         name=name,
-        system_prompt=system_prompt,
+        system_prompt=system_prompt if system_prompt is not None else resolved_profile.system_prompt,
         tools=list(resolved_tools),
         model=config["model"],
         provider=config["provider"],
@@ -410,7 +404,7 @@ async def run_agent(
                 llm=llm,
                 llm_timeout_seconds=config.get("llm_timeout", 600.0),
                 cleanup_environment=owned_environment,
-                agent_profile=agent_profile,
+                agent_profile=resolved_profile,
             )
         except AgentRuntimeLifecycleError as exc:
             raise ProgrammaticLifecycleError(str(exc)) from exc
@@ -436,11 +430,7 @@ async def run_agent(
                 "terminal_reason": internal.terminal_reason,
                 "markup_recovered": internal.markup_recovered,
                 **quiescence,
-                **(
-                    {"agent_profile": agent_profile.name}
-                    if agent_profile is not None
-                    else {}
-                ),
+                "agent_profile": resolved_profile.name,
             },
         )
     except BaseException as exc:
@@ -770,7 +760,6 @@ async def run_team(
 
 
 __all__ = [
-    "DEFAULT_AGENT_SYSTEM_PROMPT",
     "DEFAULT_TEAM_CLEANUP_TIMEOUT_SECONDS",
     "ProgrammaticLifecycleError",
     "ProgrammaticResult",

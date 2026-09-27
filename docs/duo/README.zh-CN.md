@@ -41,7 +41,7 @@ asyncio.run(main())
 
 公共函数通过 `from opencollab.builtin_workflows import duo` 导入，SDK 也接受该函数。`get_builtin_workflows()` 返回只含 `duo` 的新注册表。CLI 与 SDK 名称查找同时读取工作区的 `workflows/` 或 `OPENCOLLAB_WORKFLOWS_DIR`，同名冲突沿用现有错误处理。
 
-显式指定 `agent_profile` 会选择相应的基础系统提示、历史整形、工具限制与安全行为。例如 `agent_profile="single2"` 保留 Single2 的工具与安全行为。既有角色权限说明让工作流职责优先于通用修复与提交指引。省略该参数时使用默认 Agent。
+显式指定 `agent_profile` 会选择相应的基础系统提示、历史整形、工具限制与安全行为。其中 `agent_profile="base"` 跟随 Base 映射，当前为 Single2，`agent_profile="single2"` 则直接选择该实现。既有角色权限说明让工作流职责优先于通用修复与提交指引。省略该参数时使用工作流自身的角色配置。
 
 ## 面向任务的角色
 

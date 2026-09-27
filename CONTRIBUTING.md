@@ -42,6 +42,8 @@ uv run pytest -q      # test suite
 ```
 
 New behavior needs tests, and the suite must stay green.
+The [testing guide](docs/testing.md) covers focused runs and temporary reports.
+The [test directory guide](tests/README.md) maps runtime behavior to test topics.
 
 ### Enforced automatically in CI
 

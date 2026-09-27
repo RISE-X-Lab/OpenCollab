@@ -98,13 +98,13 @@ to define another collaboration protocol as a Python module.
 application built on OpenCollab's public Python API. It exercises agents, teams,
 workflows, tools, and environments from outside this repository.
 
-The optional [OC Single2 profile](docs/single2.md) is available through the
-same public client for direct-agent evaluation.
+The default [OC Base agent](docs/single2.md) maps to Single2 through the public
+`agent(...)` entry. Named profiles remain available for explicit selection.
 
 Duo's role execution, public test evidence, candidate selection, and patch
 adoption are part of OpenCollab. For a complete collaborative evaluation, follow the
 [Duo with Single2 quick start](https://github.com/RISE-X-Lab/OpenCollab-Eval#duo-quick-start).
-It covers matching OC/OCE 0.7 installations, benchmark images, a Responses
+It covers matching OC/OCE 0.8 installations, benchmark images, a Responses
 model endpoint, and one-task official evaluation with
 `oc-eval g22 --config /path/to/g22.json --indices 1 --workers 1`.
 The same configuration runs a batch and keeps per-task patches, trajectories,
@@ -138,6 +138,8 @@ documents on-demand instructions. The [scripts guide](https://github.com/RISE-X-
 documents launchers and provider diagnostics.
 
 Repository development is documented in [CONTRIBUTING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/main/CONTRIBUTING.md).
+The [testing guide](docs/testing.md) covers suite commands and the
+[test directory guide](tests/README.md) maps behavior to test topics.
 Maintainers can follow [RELEASING.md](https://github.com/RISE-X-Lab/OpenCollab/blob/main/RELEASING.md)
 when preparing a release.
 The [documentation index](https://github.com/RISE-X-Lab/OpenCollab/blob/main/docs/README.md)

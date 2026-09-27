@@ -82,7 +82,7 @@ jobs:
           wheels=("$artifact_root"/wheel/*.whl)
           test "${#sdists[@]}" -eq 1
           test "${#wheels[@]}" -eq 1
-          uvx --from twine==6.2.0 twine check "${sdists[0]}" "${wheels[0]}"
+          uvx --from twine==7.0.0 twine check "${sdists[0]}" "${wheels[0]}"
       - name: Inspect artifact contents
         shell: bash
         run: |
@@ -101,6 +101,7 @@ jobs:
             opencollab/bootstrap/prompts/role.md <<'PY'
           from __future__ import annotations
 
+          import subprocess
           import sys
           import tarfile
           import tomllib
@@ -135,8 +136,22 @@ jobs:
           def matching_names(names: list[str], basename: str) -> list[str]:
               return [name for name in names if PurePosixPath(name).name == basename]
 
+          tracked_tests = [
+              Path(name)
+              for name in subprocess.check_output(
+                  ["git", "ls-files", "-z", "tests"]
+              ).decode().split("\0")
+              if name
+          ]
+          assert tracked_tests, "source checkout contains no tracked tests"
+
           with tarfile.open(sdist_path, "r:gz") as archive:
               names = archive.getnames()
+              for path in tracked_tests:
+                  matches = [name for name in names if name.endswith("/" + path.as_posix())]
+                  assert len(matches) == 1, ("sdist test source", str(path), matches)
+                  member = archive.extractfile(matches[0])
+                  assert member is not None and member.read() == path.read_bytes(), str(path)
               for basename, expected in expected_license_files.items():
                   licenses = matching_names(names, basename)
                   assert len(licenses) == 1, ("sdist license file", basename, licenses)
@@ -162,6 +177,13 @@ jobs:
 
           with zipfile.ZipFile(wheel_path) as archive:
               names = archive.namelist()
+              unwanted = [
+                  name for name in names
+                  if {"tests", "__pycache__", ".pytest_cache", ".ruff_cache"}
+                  & set(PurePosixPath(name).parts)
+                  or name.endswith((".pyc", ".pyo"))
+              ]
+              assert not unwanted, ("wheel development artifacts", unwanted)
               for basename, expected in expected_license_files.items():
                   licenses = matching_names(names, basename)
                   assert len(licenses) == 1, ("wheel license file", basename, licenses)
@@ -281,11 +303,11 @@ jobs:
       - name: Execute the macOS path and terminal integrity proof
         run: |
           uv run pytest -q -p no:cacheprovider --junitxml="$RUNNER_TEMP/h68.xml" \
-            tests/test_safe_files.py::test_read_rejects_final_symlink_and_symlink_parent \
-            tests/test_safe_files.py::test_write_rejects_nested_ancestor_symlink \
-            tests/test_safe_files.py::test_read_rejects_fifo_without_blocking \
-            tests/test_local_env_processes.py::test_local_file_operations_reject_symlink_and_escape \
-            tests/test_cli_live_prompt.py::test_prompt_tab_reprints_agent_into_scrollback_without_erasing_it
+            tests/tools/test_safe_files.py::test_read_rejects_final_symlink_and_symlink_parent \
+            tests/tools/test_safe_files.py::test_write_rejects_nested_ancestor_symlink \
+            tests/tools/test_safe_files.py::test_read_rejects_fifo_without_blocking \
+            tests/runtime/test_local_env_processes.py::test_local_file_operations_reject_symlink_and_escape \
+            tests/interfaces/test_cli_live_prompt.py::test_prompt_tab_reprints_agent_into_scrollback_without_erasing_it
           uv run python - "$RUNNER_TEMP/h68.xml" <<'PY'
           import sys
           import xml.etree.ElementTree as ET

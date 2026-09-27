@@ -1,4 +1,4 @@
-"""Explicit agent profiles resolved by the SDK composition root."""
+"""Named single-agent profiles resolved by the SDK composition root."""
 
 from __future__ import annotations
 
@@ -12,6 +12,8 @@ from opencollab.application.ports import LLMPort, SafetyPolicyPort, ShaperPort
 
 from .single2_prompt import SINGLE2_SYSTEM_PROMPT
 
+BASE_PROFILE = "single2"
+
 _PROFILE_TOOL_LIMITS: contextvars.ContextVar[Mapping[str, Mapping[str, int]] | None] = (
     contextvars.ContextVar("agent_profile_tool_limits", default=None)
 )
@@ -19,7 +21,7 @@ _PROFILE_TOOL_LIMITS: contextvars.ContextVar[Mapping[str, Mapping[str, int]] | N
 
 @dataclass(frozen=True, slots=True)
 class SingleAgentProfile:
-    """Per-session choices that must not alter teams or the default agent."""
+    """Fresh per-session configuration for one named agent implementation."""
 
     name: str
     system_prompt: str
@@ -56,13 +58,7 @@ def _single2_shaper(llm: LLMPort, summarizer: Any) -> ShaperPort:
     )
 
 
-def resolve_agent_profile(name: str | None) -> SingleAgentProfile | None:
-    """Resolve an opt-in profile without constructing shared mutable tools."""
-    if name is None or name == "default":
-        return None
-    if name != "single2":
-        raise ValueError("profile must be 'default' or 'single2'")
-
+def _build_single2_profile() -> SingleAgentProfile:
     from opencollab.adapters.single2_safety import wrap_single2_safety
     from opencollab.adapters.tools.single2 import SINGLE2_BASH_OUTPUT_CHARS
 
@@ -80,4 +76,27 @@ def resolve_agent_profile(name: str | None) -> SingleAgentProfile | None:
     )
 
 
-__all__ = ["SingleAgentProfile", "resolve_agent_profile"]
+_PROFILE_FACTORIES: dict[str, Callable[[], SingleAgentProfile]] = {
+    "single2": _build_single2_profile,
+}
+
+
+def resolve_profile_name(name: str | None) -> str:
+    """Return the implementation selected by Base or an explicit profile name."""
+    if name is not None and not isinstance(name, str):
+        raise ValueError("profile must be a name or None")
+    normalized = "base" if name is None else name.strip().lower()
+    resolved = BASE_PROFILE if normalized in {"base", "default", "single"} else normalized
+    if resolved not in _PROFILE_FACTORIES:
+        raise ValueError(
+            f"unknown agent profile {name!r}. Choose Base or one of {sorted(_PROFILE_FACTORIES)}"
+        )
+    return resolved
+
+
+def resolve_agent_profile(name: str | None) -> SingleAgentProfile:
+    """Build an independent session profile using the selected named factory."""
+    return _PROFILE_FACTORIES[resolve_profile_name(name)]()
+
+
+__all__ = ["BASE_PROFILE", "SingleAgentProfile", "resolve_agent_profile", "resolve_profile_name"]

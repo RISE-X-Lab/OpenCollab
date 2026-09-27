@@ -10,9 +10,10 @@ Request lifecycle traces contain start, complete, and cancellation events with t
 
 These public methods let the companion evaluator collect model and role observations through the supported facade. Candidate workspaces, request parsing, finite budgets, cancellation, and snapshot replay have regression coverage. Install this development version with the paired OCE revision described in its evaluation suite guide.
 
-The explicit unbounded switch also applies to native Single calls through
-`OpenCollab.agent()`. Numeric token and step arguments are still validated,
-then the configured switch carries `None` into the actual session limits.
+The default standalone `OpenCollab.agent()` uses Base, currently mapped to
+Single2. With the unbounded switch enabled, omitted token and step limits
+carry `None` into the session. Explicit positive `budget`, `max_steps`, or
+`steps` values retain their limits.
 Provider output size, context capacity, cancellation, and cleanup remain explicit.
 
 A revoked execution environment stops its current session before another model

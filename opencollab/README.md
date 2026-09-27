@@ -93,16 +93,22 @@ three return `RunResult`. Import optional authoring contracts from
 `opencollab.tools`, `opencollab.environments`, and `opencollab.workflows`.
 Installed collaboration protocols are public through
 `opencollab.builtin_workflows`, and Git patch parsing is public through
-`opencollab.patches`.
+`opencollab.patches`. Named agent profile resolution is public through
+`opencollab.profiles`.
 Treat other package paths as internal. An `artifacts` directory, when supplied,
 must be new or empty because each run claims it for executable evidence.
 `team(...)` uses the built-in Self-Collaboration team unless its `config=`
 argument names a team YAML file. Its `cleanup_timeout` bounds scheduler
 shutdown and must be a finite positive number.
 
-Use `agent2(...)`, or `agent(..., profile="single2")`, to select the isolated
-[OC Single2 profile](../docs/single2.md). The ordinary `agent(...)` behavior and
-all team and workflow construction remain the defaults.
+`agent(...)` uses Base, which currently maps to the
+[Single2 profile](../docs/single2.md). `agent(..., profile="base")` follows the
+same mapping. `agent(..., profile="single2")` and the `agent2(...)` convenience
+method select Single2 explicitly. The `default` and `single` spellings are
+compatibility aliases for Base. Run metrics record the concrete profile name.
+`opencollab.profiles.resolve_profile_name(...)` exposes this resolution to
+integrations. Team configuration and workflow role configuration keep their
+own selection paths.
 
 `OpenCollab.configuration` is a read-only snapshot of effective model,
 provider, budget, timeout, sampling, output-token, and thinking settings.
