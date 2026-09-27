@@ -1,26 +1,48 @@
-# OC Single2
+# Base and Single2
 
-OC Single2 is an opt-in agent profile extracted from the evaluated
-SWE-Mix-80 direct-agent configuration. It runs on the OpenCollab 0.7 runtime
-alongside the existing agent, team, and workflow APIs.
+Base is the default standalone-agent entry. In OpenCollab 0.8 it maps to
+Single2, the profile extracted from the evaluated SWE-Mix-80 direct-agent
+configuration. Named profiles share the same standalone API.
 
 ```python
 from opencollab import OpenCollab
 
 client = OpenCollab(workspace, model=model, provider=provider, config=config,
                     environment=environment)
-result = await client.agent2(task, artifacts=artifact_directory)
+# Follow the current Base mapping
+result = await client.agent(task, artifacts=artifact_directory)
+result = await client.agent(task, profile="base")
 
-# Equivalent explicit selection
-result = await client.agent(task, profile="single2",
-                            artifacts=another_artifact_directory)
+# Select a concrete implementation
+result = await client.agent(task, profile="single2")
 
-# The existing standalone agent remains the default
-result = await client.agent(task)
+# Existing Single2 convenience entry
+result = await client.agent2(task)
 ```
 
-`agent2` accepts the existing `agent` options and defaults its name to
-`single2`. It uses the evaluated static repair prompt, 200 steps by default,
+The omitted profile and the compatibility spellings `default` and `single`
+resolve through Base. The old standalone Single implementation has been removed.
+`agent2` selects Single2 explicitly and defaults its run name to `single2`.
+The public resolver exposes the concrete name for configuration and run records.
+
+```python
+from opencollab.profiles import BASE_PROFILE, resolve_profile_name
+
+assert BASE_PROFILE == "single2"
+assert resolve_profile_name("base") == "single2"
+```
+
+A new implementation can be added to the named profile factories in
+`opencollab/bootstrap/agent_profiles.py`. Each factory supplies its prompt,
+tool resolver, shaper, safety wrapper, and default limits. `BASE_PROFILE` in
+that composition module selects the default factory and is re-exported by
+`opencollab.profiles`. Explicit implementation
+names continue to select their own factory after the Base mapping changes.
+Factories create fresh profile instances, and tool resolution creates fresh
+built-in tools for each run. Completed runs record the concrete name in
+`metrics["agent_profile"]`.
+
+Single2 uses the evaluated static repair prompt, 200 steps by default,
 and the ordered tool set `bash`, `file_read`, `file_write`, `apply_patch`,
 `git_diff`, and `grep`. Its Bash tool requires process isolation and retains up
 to 10,000 characters per stream. Oversized tool results keep both their head
@@ -28,7 +50,13 @@ and tail within the existing 16,000-character context cap. Container-root
 recursive searches are rejected while workspace-scoped searches remain
 available.
 
-OpenCollab 0.7 already supplies the remaining behavior used by the profile.
+Bash execution uses an environment that advertises OS process isolation,
+such as a Docker environment. A local environment continues to support the
+filesystem tools. For deliberate local shell execution, pass explicit tools
+built with `builtin_tools(..., headless=False, limits=profile_tool_limits("base"))`.
+Caller-supplied tool instances retain their configuration.
+
+The runtime supplies the remaining behavior used by the profile.
 It keeps low-pressure history intact, accounts for provider state in context
 pressure, uses the ASCII/CJK-aware request estimator, identifies discarded
 shell streams correctly, reports omitted Grep matches, and directs tests
@@ -36,8 +64,7 @@ through each repository's native Bash commands.
 
 Model, provider, sampling, token, and timeout settings remain caller-owned.
 When `OPENCOLLAB_UNBOUNDED_LIMITS=true`, an explicit `budget` or `max_steps`
-passed to standalone Single2 remains effective. An omitted limit keeps OpenCollab 0.7's
-unbounded behavior. This lets an evaluation adapter pass an audited finite
+passed to Base or standalone Single2 remains effective. An omitted limit uses the unbounded setting. This lets an evaluation adapter pass an audited finite
 allowance such as `1_000_000_000_000` without silently replacing it with the
 profile default.
 
@@ -50,10 +77,12 @@ async def flow(ctx, inputs):
     tools = builtin_tools("bash", "file_read", "grep")
     return await ctx.agent(inputs["task"], tools=tools, label="coder")
 
-result = await client.workflow(flow, {"task": task}, agent_profile="single2")
+result = await client.workflow(flow, {"task": task}, agent_profile="base")
 ```
 
-Each workflow session receives Single2's base prompt, shaper, and safety policy.
+Workflows that omit `agent_profile` retain their role-defined configuration.
+An explicit `base` selects the current Base mapping, and `single2` selects
+Single2 directly. With either selection today, each workflow session receives Single2's base prompt, shaper, and safety policy.
 Workflow role duties and the actual tool permissions take precedence over the
 base repair instructions. Structured roles finish through their capture tool,
 including the single-tool corrective submission session. A judge created with

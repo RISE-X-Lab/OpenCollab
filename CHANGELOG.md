@@ -5,6 +5,22 @@ All notable changes to OpenCollab are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - Unreleased
+
+### Changed
+
+The default standalone agent is Base, currently mapped to Single2. The former
+standalone Single prompt and execution path have been removed. The `default`
+and `single` profile spellings select Base, while `single2` and `agent2` select
+Single2 explicitly. Explicit token and step limits follow Single2 behavior.
+
+### Added
+
+A named profile factory registry keeps single-agent implementations extensible.
+The public `opencollab.profiles` module exposes `BASE_PROFILE` and
+`resolve_profile_name`, and standalone result metrics record the concrete
+implementation name.
+
 ## [0.7.1] - Unreleased
 
 ### Added

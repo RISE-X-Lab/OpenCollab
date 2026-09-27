@@ -99,7 +99,7 @@ def run_cmd(
     agent_profile: Optional[str] = typer.Option(
         None,
         "--agent-profile",
-        help="Agent profile for every workflow role (default or single2)",
+        help="Agent profile for every workflow role (base or a concrete profile such as single2)",
     ),
     save: bool = typer.Option(
         True,

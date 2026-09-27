@@ -55,7 +55,7 @@ async def test_agent_configuration_reaches_real_session(monkeypatch, tmp_path, u
             "llm_max_retries": 30,
             "provider_error_time_budget": 7200.0,
         },
-    ).agent("finish once", budget=100_000, max_steps=4, tools=(), llm=llm)
+    ).agent("finish once", tools=(), llm=llm, **({} if unbounded else {"budget": 100_000, "max_steps": 4}))
 
     assert result.ok
     assert len(sessions) == len(llm.calls) == 1

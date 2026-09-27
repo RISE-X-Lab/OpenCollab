@@ -48,10 +48,7 @@ class VerificationTool(Tool, Protocol):
 def profile_tool_limits(profile: str | None) -> dict[str, dict[str, int]]:
     """Return an independent copy of a profile's built-in tool defaults."""
     resolved = resolve_agent_profile(profile)
-    return (
-        {} if resolved is None
-        else {name: dict(values) for name, values in resolved.tool_limits.items()}
-    )
+    return {name: dict(values) for name, values in resolved.tool_limits.items()}
 
 
 def builtin_tools(

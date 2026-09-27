@@ -95,7 +95,8 @@ def _capture_sessions(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_public_workflow_profiles_both_coders_and_structured_judge(tmp_path, monkeypatch):
+@pytest.mark.parametrize("profile", ["single2", "base", "default", "single"])
+async def test_public_workflow_profiles_both_coders_and_structured_judge(tmp_path, monkeypatch, profile):
     monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
     (tmp_path / "test_probe.py").write_text("def test_probe():\n    assert 2 + 2 == 4\n")
     sessions = _capture_sessions(monkeypatch)
@@ -112,7 +113,7 @@ async def test_public_workflow_profiles_both_coders_and_structured_judge(tmp_pat
         return await ctx.agent("Choose candidate A or B", tools=[], schema=SCHEMA, label="judge")
 
     result = await OpenCollab(tmp_path, model="unit-model", provider="openai").workflow(
-        flow, agent_profile="single2", system_prompt="Evaluation role context", trace=False,
+        flow, agent_profile=profile, system_prompt="Evaluation role context", trace=False,
     )
 
     assert result.ok and result.output == {"choice": "A"}
@@ -285,4 +286,7 @@ def test_public_profile_tool_defaults_are_independent():
     assert defaults == {"bash": {"max_output_chars": 10_000}}
     defaults["bash"]["max_output_chars"] = 1
     assert profile_tool_limits("single2") == {"bash": {"max_output_chars": 10_000}}
-    assert profile_tool_limits(None) == profile_tool_limits("default") == {}
+    assert all(
+        profile_tool_limits(profile) == {"bash": {"max_output_chars": 10_000}}
+        for profile in (None, "base", "default", "single")
+    )

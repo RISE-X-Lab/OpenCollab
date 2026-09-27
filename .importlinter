@@ -39,6 +39,7 @@ name = Public modules never reach into adapters or domain
 type = forbidden
 source_modules =
     opencollab.sdk
+    opencollab.profiles
     opencollab.tools
     opencollab.environments
     opencollab.workflows

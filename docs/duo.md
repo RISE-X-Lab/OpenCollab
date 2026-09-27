@@ -54,10 +54,11 @@ combine installed workflows with the workspace's `workflows/` directory or
 
 An explicit `agent_profile` selects the base agent implementation and its system
 instructions, shaping, tool limits, and safety behavior. For example,
-`agent_profile="single2"` retains the profile's tools and safety behavior.
+`agent_profile="base"` follows the Base mapping, currently Single2.
+`agent_profile="single2"` selects that implementation directly.
 Workflow-role instructions take precedence over its general repair and
-submission guidance through the existing role-permission block. The default
-agent is used when no profile is selected.
+submission guidance through the existing role-permission block. Omitting
+`agent_profile` retains the workflow's role-defined configuration.
 
 ## Task-oriented roles
 

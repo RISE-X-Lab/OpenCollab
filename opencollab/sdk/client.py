@@ -13,7 +13,6 @@ from typing import Any
 
 from opencollab.bootstrap.config import build_config
 from opencollab.bootstrap.programmatic import (
-    DEFAULT_AGENT_SYSTEM_PROMPT,
     DEFAULT_TEAM_CLEANUP_TIMEOUT_SECONDS,
     ProgrammaticLifecycleError,
     ProgrammaticResult,
@@ -200,7 +199,11 @@ class OpenCollab:
         llm: Any | None = None,
         profile: str | None = None,
     ) -> RunResult[str]:
-        """Run one directly configured agent."""
+        """Run a single agent using Base or an explicitly named profile.
+
+        Base currently selects Single2. Explicit tools and system prompts
+        customize the selected implementation for this run.
+        """
         _non_empty(prompt, "prompt")
         from opencollab.bootstrap.agent_profiles import resolve_agent_profile
 
@@ -220,11 +223,7 @@ class OpenCollab:
             "budget",
         )
         resolved_max_steps = (
-            (
-                SESSION_MAX_STEPS
-                if agent_profile is None
-                else agent_profile.default_steps
-            )
+            agent_profile.default_steps
             if max_steps is None and steps is None
             else _positive_int(
                 max_steps if max_steps is not None else steps,
@@ -241,8 +240,7 @@ class OpenCollab:
                     None
                     if unbounded_limits
                     and not (
-                        agent_profile is not None
-                        and agent_profile.honor_explicit_limits
+                        agent_profile.honor_explicit_limits
                         and explicit_budget
                     )
                     else resolved_budget
@@ -251,8 +249,7 @@ class OpenCollab:
                     None
                     if unbounded_limits
                     and not (
-                        agent_profile is not None
-                        and agent_profile.honor_explicit_limits
+                        agent_profile.honor_explicit_limits
                         and explicit_steps
                     )
                     else resolved_max_steps
@@ -266,11 +263,7 @@ class OpenCollab:
                 trace=trace,
                 environment=self._environment,
                 name=name,
-                system_prompt=system_prompt or (
-                    DEFAULT_AGENT_SYSTEM_PROMPT
-                    if agent_profile is None
-                    else agent_profile.system_prompt
-                ),
+                system_prompt=system_prompt or agent_profile.system_prompt,
                 llm=llm,
                 agent_profile=agent_profile,
             )
@@ -406,13 +399,17 @@ class OpenCollab:
 
         ``agent_profile`` selects the shared agent configuration for every
         workflow role while preserving each role's explicit tool permissions.
+        Omitting it retains each role's own configuration. Explicit Base,
+        default, or single selects the default single-agent implementation.
 
         ``candidate_workspace`` injects an existing candidate workspace port,
         for environments whose result is more than a repository patch.
         """
         from opencollab.bootstrap.agent_profiles import resolve_agent_profile
 
-        resolved_agent_profile = resolve_agent_profile(agent_profile)
+        resolved_agent_profile = (
+            None if agent_profile is None else resolve_agent_profile(agent_profile)
+        )
         if isinstance(flow, str):
             from opencollab.bootstrap.workflow_runtime import discover_workflows
 

@@ -169,6 +169,7 @@ def _completed_agent_metrics() -> dict[str, object]:
         "environment_quiesced": True,
         "cleanup_quiesced": True,
         "execution_quiesced": True,
+        "agent_profile": "single2",
     }
 
 
