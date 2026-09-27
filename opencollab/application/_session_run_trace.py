@@ -141,6 +141,10 @@ class _SessionRunTraceMixin:
             reasoning = getattr(response, "reasoning", None)
             if reasoning:
                 payload["reasoning"] = reasoning
+            elif payload.get("usage", {}).get("reasoning_tokens"):
+                # Mark the gap between billed reasoning and returned content
+                # so trajectory readers can identify withheld reasoning.
+                payload["reasoning_withheld"] = True
             payload["thinking"] = bool(getattr(self.agent, "thinking", False))
             wire_protocol = getattr(self.agent, "wire_protocol", "chat_completions")
             if wire_protocol != "chat_completions":
