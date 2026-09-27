@@ -121,3 +121,25 @@ def build_use_case(
         **use_case_kwargs,
     )
     return use_case, publisher
+
+
+def tool_call(
+    name: str = "fake_tool",
+    arguments: object = "{}",
+    call_id: str = "call-1",
+) -> dict:
+    return {
+        "id": call_id,
+        "function": {
+            "name": name,
+            "arguments": arguments,
+        },
+    }
+
+
+class FakeTracer:
+    def __init__(self):
+        self.steps = []
+
+    def log_step(self, **kwargs):
+        self.steps.append(kwargs)

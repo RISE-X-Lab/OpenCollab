@@ -37,3 +37,17 @@ Shared test preparation uses explicit `tests.support` imports. Keep local
 preparation with its topic until another topic needs it. Use
 `tests.support.paths` when accessing repository files or starting a subprocess
 that imports the installed package.
+
+## Source archives
+
+The source distribution includes the test suite and repository-check inputs.
+After unpacking a source archive, initialize local Git metadata for the checks
+that enumerate source files, then use the same development commands.
+
+```bash
+git init --quiet
+uv sync --locked --extra dev
+uv run pytest -q
+```
+
+A source checkout already has the Git metadata used by these checks.

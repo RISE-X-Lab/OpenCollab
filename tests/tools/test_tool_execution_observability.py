@@ -3,87 +3,19 @@
 import asyncio
 import hashlib
 import json
-from types import SimpleNamespace
 
 import opencollab.application.tool_execution_runtime as tool_execution_runtime
-from opencollab.application.events import SessionEventFactory, default_session_event_factory
-from opencollab.application.tool_execution import ToolExecutionUseCase
-from opencollab.domain.session import SessionState
-from tests.support.tool_execution_test_support import FakeAgent
-from tests.support.tool_execution_test_support import RecordingEventPublisher as FakeEventPublisher
+from tests.support.tool_execution_test_support import (
+    FakeAgent,
+    FakeTracer,
+    RuntimeNativeTool,
+    build_use_case,
+    tool_call,
+)
 
 
 def run(coro):
     return asyncio.run(coro)
-
-
-def tool_call(
-    name: str = "fake_tool",
-    arguments: object = "{}",
-    call_id: str = "call-1",
-) -> dict:
-    return {
-        "id": call_id,
-        "function": {
-            "name": name,
-            "arguments": arguments,
-        },
-    }
-
-
-class FakeTracer:
-    def __init__(self):
-        self.steps = []
-
-    def log_step(self, **kwargs):
-        self.steps.append(kwargs)
-
-
-class RuntimeNativeTool:
-    name = "fake_tool"
-
-    def __init__(self, output: str = "runtime result"):
-        self.output = output
-        self.runtime_calls = []
-
-    async def execute_with_runtime(self, args, runtime):
-        self.runtime_calls.append((args, runtime))
-        return self.output
-
-
-def event_factory() -> SessionEventFactory:
-    factory = default_session_event_factory(aid=-1)
-    return SessionEventFactory(
-        step_start=factory.step_start,
-        step_end=factory.step_end,
-        text_delta=factory.text_delta,
-        error=factory.error,
-        loop_detected=lambda tool, count: SimpleNamespace(
-            type="loop_detected",
-            data={"tool": tool, "count": count},
-        ),
-        tool_start=lambda tool, args, tool_call_id: SimpleNamespace(
-            type="tool_start",
-            data={"tool": tool, "args": args, "tool_call_id": tool_call_id},
-        ),
-        tool_end=lambda tool, latency, tool_call_id: SimpleNamespace(
-            type="tool_end",
-            data={"tool": tool, "latency": latency, "tool_call_id": tool_call_id},
-        ),
-    )
-
-
-def build_use_case(*, agent=None, state=None, event_publisher=None, tracer=None):
-    publisher = event_publisher or FakeEventPublisher()
-    use_case = ToolExecutionUseCase(
-        agent=agent or FakeAgent(),
-        environment=None,
-        state=state or SessionState(messages=[]),
-        event_publisher=publisher,
-        event_factory=event_factory(),
-        tracer=tracer,
-    )
-    return use_case, publisher
 
 
 def test_tool_trace_failure_does_not_discard_executed_result():

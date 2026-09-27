@@ -7,36 +7,11 @@ import pytest
 from opencollab.application.events import default_session_event_factory
 from opencollab.application.tool_execution import ToolExecutionUseCase
 from opencollab.domain.session import SessionState
-from tests.support.tool_execution_test_support import FakeAgent, RecordingEventPublisher
+from tests.support.tool_execution_test_support import FakeAgent, RecordingEventPublisher, RuntimeNativeTool, tool_call
 
 
 def run(coro):
     return asyncio.run(coro)
-
-
-def tool_call(
-    *,
-    arguments: str = "{}",
-    call_id: str = "call-1",
-) -> dict:
-    return {
-        "id": call_id,
-        "function": {
-            "name": "fake_tool",
-            "arguments": arguments,
-        },
-    }
-
-
-class RuntimeNativeTool:
-    name = "fake_tool"
-
-    def __init__(self) -> None:
-        self.runtime_calls = []
-
-    async def execute_with_runtime(self, args, runtime):
-        self.runtime_calls.append((args, runtime))
-        return "runtime result"
 
 
 def build_use_case(tool: RuntimeNativeTool) -> ToolExecutionUseCase:

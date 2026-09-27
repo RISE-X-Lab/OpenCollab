@@ -5,7 +5,20 @@ All notable changes to OpenCollab are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project aims to follow [Semantic Versioning](https://semver.org/).
 
-## [0.8.0] - Unreleased
+## [0.8.1] - 2026-09-27
+
+### Changed
+
+Tests are organized by agents, workflows, tools, runtime, interfaces, and
+packaging. Shared preparation uses explicit test-support imports. Source-tree,
+installed-package, CI, and documentation paths follow the same directory layout.
+Repeated preparation code is shared by the behavior area that owns it.
+
+Source distributions retain the complete tests. Wheel validation checks that
+only runtime distribution content is shipped, with test and cache trees kept
+outside the wheel. Test workspaces and reports use temporary or external paths.
+
+## [0.8.0] - 2026-09-27
 
 ### Changed
 

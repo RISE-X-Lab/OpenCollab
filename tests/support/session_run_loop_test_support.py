@@ -16,6 +16,9 @@ from opencollab.domain.session import (
     TurnEnforcementState,
 )
 from opencollab.domain.tools import ToolProcessingResult
+from tests.support.session_runtime_test_support import FakeToolExecution as FakeToolExecution
+from tests.support.session_runtime_test_support import FakeTracer as FakeTracer
+from tests.support.session_runtime_test_support import tool_call as tool_call
 
 
 def run(coro):
@@ -45,12 +48,6 @@ def llm_response(
         provider_state=provider_state,
     )
 
-def tool_call(call_id="call-1", name="fake_tool", arguments='{"value": 1}'):
-    return {
-        "id": call_id,
-        "type": "function",
-        "function": {"name": name, "arguments": arguments},
-    }
 
 class FakeAgent:
     model = "fake-model"
@@ -80,14 +77,6 @@ class FakeLLM:
             raise AssertionError("unexpected LLM call")
         return self.responses.pop(0)
 
-class FakeToolExecution:
-    def __init__(self, result=None):
-        self.calls = []
-        self.result = result if result is not None else ToolProcessingResult()
-
-    async def process(self, tool_calls):
-        self.calls.append(copy.deepcopy(tool_calls))
-        return self.result
 
 class FakeToolExecutionDeferred:
     """Tool executor that also handles deferrable tools via ``execute_deferred``.
@@ -125,23 +114,6 @@ class CompletingBeforeReturnToolExecution(FakeToolExecutionDeferred):
         self.state.pending_events.fill(tc["id"], result="fast child result")
         return self.deferred_outcomes[tc["id"]]
 
-class FakeTracer:
-    def __init__(self):
-        self.steps = []
-        self.flush_count = 0
-
-    def log_step(self, step_type, payload, tokens=0, latency=0.0):
-        self.steps.append(
-            {
-                "step_type": step_type,
-                "payload": copy.deepcopy(payload),
-                "tokens": tokens,
-                "latency": latency,
-            }
-        )
-
-    def flush(self):
-        self.flush_count += 1
 
 def collect_events():
     events = []

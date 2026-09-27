@@ -22,6 +22,7 @@ from opencollab.bootstrap.container import (
 )
 from opencollab.domain.identity import role_storage_slug
 from opencollab.domain.session import SessionState
+from tests.support.bootstrap_test_support import spawn_config
 
 
 def test_store_round_trip_preserves_metadata_and_messages(tmp_path) -> None:
@@ -476,16 +477,7 @@ def test_message_timestamp_sidecar_keeps_runtime_messages_clean() -> None:
 
 
 def _spawn_cfg() -> SpawnConfig:
-    return SpawnConfig(
-        model="gpt-4o",
-        provider="openai",
-        api_key="test-key",
-        base_url=None,
-        llm_timeout=600.0,
-        tracer=None,
-        event_bus=EventBus(),
-        permission_policy=None,
-    )
+    return spawn_config(api_key="test-key")
 
 
 def test_factory_assigns_structured_child_save_path(tmp_path) -> None:

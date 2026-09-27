@@ -26,8 +26,9 @@ from opencollab.application.submit_findings import (
     build_dead_scout_synthesis_prompt,
     harvest_findings,
 )
-from opencollab.domain.session import SessionState, TurnEnforcementState
+from opencollab.domain.session import SessionState
 from tests.support.tool_execution_test_support import build_sensor_use_case as _use_case
+from tests.tools.scout_test_support import _FakeState, _ReadStub
 
 
 def run(coro):
@@ -174,13 +175,6 @@ def _insufficient_payload():
     }
 
 
-class _ReadStub:
-    name = "file_read"
-
-    def to_openai_schema(self):
-        return {"type": "function", "function": {"name": self.name, "parameters": {}}}
-
-
 class _FakeTracer:
     def __init__(self):
         self.steps = []
@@ -195,17 +189,6 @@ class _FakeRunner:
 
     def configure_enforcement(self, *, enforcement_strength, commit_reserve):
         self.configured = (enforcement_strength, commit_reserve)
-
-
-class _FakeState:
-    def __init__(self, used_tokens=0, scout_ledger=None, messages=None):
-        self.used_tokens = used_tokens
-        self.wind_down_done = False
-        self.wind_down_token_mark = 0
-        self.messages = messages if messages is not None else []
-        self.turn = TurnEnforcementState(
-            scout_ledger=scout_ledger if scout_ledger is not None else []
-        )
 
 
 class _FakeSession:

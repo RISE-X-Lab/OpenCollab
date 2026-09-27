@@ -23,6 +23,7 @@ from tests.support.tool_execution_test_support import (
 from tests.support.tool_execution_test_support import (
     FakeAgent,
     RecordingEventPublisher,
+    RuntimeNativeTool,
 )
 from tests.support.tool_execution_test_support import (
     NullEventPublisher as FakeEventPublisher,
@@ -39,17 +40,6 @@ class FakeEnv:
 
 class FakeSafetyPolicy:
     pass
-
-
-class RuntimeNativeTool:
-    name = "fake_tool"
-
-    def __init__(self):
-        self.runtime_calls = []
-
-    async def execute_with_runtime(self, params, runtime):
-        self.runtime_calls.append((params, runtime))
-        return "runtime result"
 
 
 class HangingTool(RuntimeNativeTool):

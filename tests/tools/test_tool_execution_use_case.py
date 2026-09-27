@@ -16,35 +16,15 @@ from tests.support.tool_execution_test_support import (
 )
 from tests.support.tool_execution_test_support import (
     FakeAgent,
+    FakeTracer,
     RuntimeNativeTool,
     build_use_case,
+    tool_call,
 )
 
 
 def run(coro):
     return asyncio.run(coro)
-
-
-def tool_call(
-    name: str = "fake_tool",
-    arguments: object = "{}",
-    call_id: str = "call-1",
-) -> dict:
-    return {
-        "id": call_id,
-        "function": {
-            "name": name,
-            "arguments": arguments,
-        },
-    }
-
-
-class FakeTracer:
-    def __init__(self):
-        self.steps = []
-
-    def log_step(self, **kwargs):
-        self.steps.append(kwargs)
 
 
 class FakeSafetyPolicy:

@@ -9,20 +9,13 @@ from rich.text import Text
 
 from opencollab.adapters.tui import TUI
 from opencollab.domain.events import SchedulerEvent, SessionRuntimeEvent
+from tests.interfaces.tui_style_support import (
+    assert_visible_text_has_non_white_style as _assert_visible_text_has_non_white_style,
+)
 
 
 def _make_tui() -> TUI:
     return TUI()
-
-
-def _assert_visible_text_has_non_white_style(text: Text) -> None:
-    console = Console(color_system="truecolor")
-    for offset, char in enumerate(text.plain):
-        if char.isspace():
-            continue
-        style = text.get_style_at_offset(console, offset)
-        assert style.color is not None
-        assert style.color.name != "white"
 
 
 # ---------------------------------------------------------------------------

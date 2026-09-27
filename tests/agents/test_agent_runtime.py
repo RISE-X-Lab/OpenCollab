@@ -10,24 +10,7 @@ import pytest
 from opencollab.bootstrap import agent_runtime
 from opencollab.bootstrap.agent_runtime import AgentRuntimeLifecycleError
 from opencollab.domain.agent import Agent
-
-
-class NamedTool:
-    description = "test"
-    parameters = {"type": "object", "properties": {}}
-
-    def __init__(self, name: str) -> None:
-        self.name = name
-
-    def to_openai_schema(self):
-        return {
-            "type": "function",
-            "function": {
-                "name": self.name,
-                "description": self.description,
-                "parameters": self.parameters,
-            },
-        }
+from tests.support.structured_output_test_support import NamedTool
 
 
 class Environment:

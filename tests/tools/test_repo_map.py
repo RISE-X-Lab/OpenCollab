@@ -19,12 +19,12 @@ from opencollab.adapters.repo_map import (
     build_repo_map,
     build_repo_map_via_env,
 )
-from opencollab.application.event_bus import EventBus
 from opencollab.bootstrap.context_builder import ContextBuilder, SpawnConfig
 from opencollab.bootstrap.session_factory import DefaultSessionFactory
 from opencollab.bootstrap.team_config import RoleConfig, TeamConfig
 from opencollab.domain.context import ContextPosition
 from opencollab.domain.team import Topology
+from tests.support.bootstrap_test_support import spawn_config
 
 
 def run(coro):
@@ -436,16 +436,7 @@ def test_build_repo_map_via_env_preserves_a_silent_find_failure(
 
 
 def _spawn_cfg() -> SpawnConfig:
-    return SpawnConfig(
-        model="gpt-4o",
-        provider="openai",
-        api_key="test-key",
-        base_url=None,
-        llm_timeout=600.0,
-        tracer=None,
-        event_bus=EventBus(),
-        permission_policy=None,
-    )
+    return spawn_config(api_key="test-key")
 
 
 def _team() -> TeamConfig:

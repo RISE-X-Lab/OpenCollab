@@ -22,5 +22,13 @@ paths come from `tests.support.paths.REPO_ROOT`, which anchors to the test tree
 in a checkout or unpacked source distribution. Its `PACKAGE_ROOT` locates the
 actual imported package when a test starts a Python subprocess.
 
+Session call envelopes and recording doubles share
+`tests.support.session_runtime_test_support`. Tool execution uses the common
+builders in `tests.support.tool_execution_test_support`. A scenario constructs
+its own objects with explicit inputs, which also supports several independent
+sessions or tools in one test. Fixtures own resources whose setup and cleanup
+follow the test lifetime. Preparation shared within one directory stays in a
+module next to that directory's topic tests.
+
 The [testing guide](../docs/testing.md) covers focused runs and the existing
 repository checks. Example-specific tests remain next to their examples.

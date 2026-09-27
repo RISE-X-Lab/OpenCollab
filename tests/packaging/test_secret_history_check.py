@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+from tests.packaging.git_support import git as _git
 from tests.support.paths import REPO_ROOT
 
 _REPO_ROOT = REPO_ROOT
@@ -21,17 +22,6 @@ def _script_module() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def _git(repository: Path, *args: str) -> str:
-    completed = subprocess.run(
-        ["git", *args],
-        cwd=repository,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return completed.stdout.strip()
 
 
 def _repository(tmp_path: Path) -> tuple[Path, str, Path]:

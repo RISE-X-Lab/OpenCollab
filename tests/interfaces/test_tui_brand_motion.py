@@ -7,25 +7,13 @@ TUI's per-glyph chrome walk stays satisfied.
 
 from __future__ import annotations
 
-from rich.console import Console
-from rich.text import Text
-
 from opencollab.adapters.tui.brand_motion import (
     DOT_GLYPH,
     PulseDot,
     dot_color,
     pulse_brightness,
 )
-
-
-def _assert_all_non_white(text: Text) -> None:
-    console = Console(color_system="truecolor")
-    for offset, char in enumerate(text.plain):
-        if char.isspace():
-            continue
-        style = text.get_style_at_offset(console, offset)
-        assert style.color is not None
-        assert style.color.name != "white"
+from tests.interfaces.tui_style_support import assert_visible_text_has_non_white_style as _assert_all_non_white
 
 
 def test_pulse_breathes_between_trough_and_peak():

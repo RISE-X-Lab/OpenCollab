@@ -10,6 +10,7 @@ from opencollab.application.session_run import SessionRunUseCase
 from opencollab.application.submit_findings import SubmitFindingsTool
 from opencollab.domain.agent import Agent
 from opencollab.domain.tools import ToolProcessingResult
+from tests.support.session_runtime_test_support import FakeToolExecution as FakeToolExecution
 
 
 def run(coro):
@@ -46,16 +47,6 @@ class FakeLLM:
         if not self.responses:
             raise AssertionError("unexpected LLM call")
         return self.responses.pop(0)
-
-
-class FakeToolExecution:
-    def __init__(self, result=None):
-        self.calls = []
-        self.result = result if result is not None else ToolProcessingResult()
-
-    async def process(self, tool_calls):
-        self.calls.append(copy.deepcopy(tool_calls))
-        return self.result
 
 
 class CapturingToolExecution:

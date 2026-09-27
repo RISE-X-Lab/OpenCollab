@@ -23,7 +23,7 @@ from opencollab.application.submit_findings import (
     SUBMIT_TOOL_NAME,
 )
 from opencollab.application.workflow import WorkflowContext
-from opencollab.domain.session import TurnEnforcementState
+from tests.tools.scout_test_support import _FakeState, _ReadStub
 
 
 def run(coro):
@@ -49,24 +49,6 @@ def _cited(summary="root cause located", anchor="fs.py:42"):
         "summary": summary,
         "insufficient_evidence": False,
     }
-
-
-class _ReadStub:
-    name = "file_read"
-
-    def to_openai_schema(self):
-        return {"type": "function", "function": {"name": self.name, "parameters": {}}}
-
-
-class _FakeState:
-    def __init__(self, used_tokens=0, scout_ledger=None, messages=None):
-        self.used_tokens = used_tokens
-        self.wind_down_done = False
-        self.wind_down_token_mark = 0
-        self.messages = messages if messages is not None else []
-        self.turn = TurnEnforcementState(
-            scout_ledger=scout_ledger if scout_ledger is not None else []
-        )
 
 
 class _FakeRunner:
