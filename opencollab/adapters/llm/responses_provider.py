@@ -9,6 +9,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Any
 
+from opencollab.adapters.llm._responses_instructions import _check_instructions_echo
 from opencollab.adapters.llm.errors import TransientProviderError
 from opencollab.adapters.llm.responses_errors import (
     _TRANSIENT_RESPONSE_CODES,
@@ -183,6 +184,10 @@ def _build_request_kwargs(
         raise ResponsesProtocolError(f"model {model!r} does not support explicit reasoning_effort")
     if instructions:
         kwargs["instructions"] = instructions
+    elif os.environ.get("OPENCOLLAB_REQUIRE_INSTRUCTIONS_ECHO") == "1":
+        # Native summarization requests can intentionally have no system text.
+        # Make that absence explicit instead of inviting a gateway default.
+        kwargs["instructions"] = ""
     converted_tools = _responses_tools(tools)
     if converted_tools and not capabilities.supports_responses_tools:
         raise ResponsesProtocolError(f"model {model!r} does not support function tools")
@@ -214,12 +219,15 @@ def _build_request_kwargs(
     return kwargs
 
 
-async def _next_event(iterator: Any, timeout: float, *, stage: str) -> Any:
+async def _next_event(iterator: Any, timeout: float | None, *, stage: str) -> Any:
     try:
+        if timeout is None:
+            return await iterator.__anext__()
         return await asyncio.wait_for(iterator.__anext__(), timeout=timeout)
     except asyncio.TimeoutError as exc:
+        detail = "from the provider transport" if timeout is None else f"after {timeout:g}s"
         raise ResponsesStreamInterruptedError(
-            f"Responses {stage} timeout after {timeout:g}s"
+            f"Responses {stage} timeout {detail}"
         ) from exc
     except StopAsyncIteration as exc:
         raise ResponsesStreamInterruptedError("Responses stream ended before response.completed") from exc
@@ -240,6 +248,7 @@ def _event_error_data(event: Any) -> Any:
             error = {
                 "code": plain_event.get("code"),
                 "message": plain_event.get("message"),
+                "param": plain_event.get("param"),
             }
     if error is None:
         response = getattr(event, "response", None)
@@ -323,11 +332,12 @@ def _handle_event(event: Any, state: _StreamState, expected_model: str | None = 
                 code=code,
                 status_code=status_code,
             )
-        status_code = 400 if code == "context_length_exceeded" else None
+        status_code = 400 if code in {"context_length_exceeded", "string_above_max_length"} else None
         raise ResponsesTerminalEventError(
             message,
             code=code,
             status_code=status_code,
+            param=error.get("param") if isinstance(error, dict) else None,
         )
     if event_type == "response.incomplete":
         response = getattr(event, "response", None)
@@ -368,8 +378,8 @@ def _handle_event(event: Any, state: _StreamState, expected_model: str | None = 
 
 async def _consume_stream(
     stream: Any,
-    first_event_timeout: float,
-    idle_timeout: float,
+    first_event_timeout: float | None,
+    idle_timeout: float | None,
     expected_model: str | None = None,
 ) -> _StreamState:
     state = _StreamState()
@@ -403,24 +413,28 @@ async def _consume_stream(
 async def _create_and_consume_stream(
     client: Any,
     kwargs: dict[str, Any],
-    first_event_timeout: float,
-    idle_timeout: float,
+    first_event_timeout: float | None,
+    idle_timeout: float | None,
     expected_model: str,
 ) -> _StreamState:
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + first_event_timeout
+    deadline = None if first_event_timeout is None else loop.time() + first_event_timeout
     try:
-        event_stream = await asyncio.wait_for(
-            client.responses.create(**kwargs),
-            timeout=first_event_timeout,
-        )
+        if first_event_timeout is None:
+            event_stream = await client.responses.create(**kwargs)
+        else:
+            event_stream = await asyncio.wait_for(
+                client.responses.create(**kwargs),
+                timeout=first_event_timeout,
+            )
     except asyncio.TimeoutError as exc:
+        detail = "from the provider transport" if first_event_timeout is None else f"after {first_event_timeout:g}s"
         raise ResponsesStreamInterruptedError(
-            f"Responses first-event timeout after {first_event_timeout:g}s"
+            f"Responses first-event timeout {detail}"
         ) from exc
 
-    remaining = deadline - loop.time()
-    if remaining <= 0:
+    remaining = None if deadline is None else deadline - loop.time()
+    if remaining is not None and remaining <= 0:
         close = getattr(event_stream, "close", None)
         if close is not None:
             result = close()
@@ -674,8 +688,8 @@ async def complete_responses(
     reasoning_effort: str | None = None,
     prompt_cache_namespace: str | None = None,
     response_session_id: str | None = None,
-    first_event_timeout: float = 180.0,
-    stream_idle_timeout: float = 180.0,
+    first_event_timeout: float | None = 180.0,
+    stream_idle_timeout: float | None = 180.0,
     round_timeout: float | None = None,
     provider_error_time_budget: RetryTimeBudget | None = None,
     stream: bool = True,
@@ -705,6 +719,7 @@ async def complete_responses(
         if not stream:
             kwargs["stream"] = False
             response = await client.responses.create(**kwargs)
+            _check_instructions_echo(response, kwargs)
             return parse_responses_response(
                 response,
                 messages,
@@ -720,6 +735,7 @@ async def complete_responses(
             stream_idle_timeout,
             model,
         )
+        _check_instructions_echo(state.completed_response, kwargs)
         return _parse_stream(
             state,
             messages,

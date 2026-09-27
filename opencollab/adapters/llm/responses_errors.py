@@ -39,11 +39,13 @@ class ResponsesTerminalEventError(ResponsesProtocolError):
         *,
         code: str | None = None,
         status_code: int | None = None,
+        param: str | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.status_code = status_code
-        self.body = {"error": {"code": code, "message": message}}
+        self.param = param
+        self.body = {"error": {"code": code, "message": message, "param": param}}
 
 
 class ResponsesEmptyOutputError(ResponsesProtocolError, TransientEmptyOutputError):

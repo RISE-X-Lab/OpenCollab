@@ -488,6 +488,43 @@ async def test_responses_typed_context_overflow_keeps_machine_identity():
 
 
 @pytest.mark.asyncio
+async def test_responses_typed_string_limit_stops_as_context_overflow():
+    event = ns(
+        type="response.failed",
+        response=ns(
+            error={
+                "code": "string_above_max_length",
+                "message": (
+                    "Invalid 'input[0].content': string too long. "
+                    "Expected a string with maximum length 10485760"
+                ),
+            }
+        ),
+    )
+
+    with pytest.raises(ResponsesProtocolError) as captured:
+        await _consume_stream(FakeStream([event]), 1, 1, "gpt-fake")
+
+    assert captured.value.code == "string_above_max_length"
+    assert captured.value.status_code == 400
+    assert is_context_overflow_error(captured.value) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "param,overflow", [("input[0].content", True), ("metadata.name", False), ("instructions", False)],
+)
+async def test_responses_string_limit_preserves_original_field(param, overflow):
+    event = ns(type="response.failed", response=ns(error={
+        "code": "string_above_max_length", "message": "field exceeded its limit", "param": param,
+    }))
+    with pytest.raises(ResponsesProtocolError) as captured:
+        await _consume_stream(FakeStream([event]), 1, 1, "gpt-fake")
+    assert captured.value.param == param
+    assert is_context_overflow_error(captured.value) is overflow
+
+
+@pytest.mark.asyncio
 async def test_responses_max_token_terminal_preserves_partial_output():
     item = message_item("partial answer")
     response = completed_response(

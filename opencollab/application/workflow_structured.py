@@ -152,6 +152,10 @@ class WorkflowStructuredMixin:
             )
             if _schema_satisfied(capture_tool.captured, schema):
                 return capture_tool.captured
+            terminal_reason = str(getattr(getattr(session, "state", None), "terminal_reason", "") or "")
+            if terminal_reason.startswith("context overflow:"):
+                await self.log(f"structured agent input exceeded provider limits ({label or 'agent'})")
+                return None
         except CallerTimeoutError:
             await self.log(f"structured agent timed out ({label or 'agent'}) after {timeout}s")
             return None

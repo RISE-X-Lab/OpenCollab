@@ -13,6 +13,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 
+import pytest
+
 from opencollab.adapters.llm.errors import is_context_overflow_error
 from opencollab.adapters.llm.retry import extract_retry_after_seconds, is_retryable_error
 
@@ -23,7 +25,7 @@ class FakeProviderError(Exception):
     human message. No real SDK / network involved.
     """
 
-    def __init__(self, message="", *, status_code=None, code=None, body=None):
+    def __init__(self, message="", *, status_code=None, code=None, body=None, param=None):
         super().__init__(message)
         if status_code is not None:
             self.status_code = status_code
@@ -31,6 +33,8 @@ class FakeProviderError(Exception):
             self.code = code
         if body is not None:
             self.body = body
+        if param is not None:
+            self.param = param
 
 
 class FakeResponse:
@@ -76,6 +80,52 @@ def test_openai_context_length_exceeded_code_is_overflow():
         code="context_length_exceeded",
     )
     assert is_context_overflow_error(err) is True
+
+
+def test_provider_string_above_max_length_code_is_overflow():
+    err = FakeProviderError(
+        "Invalid input[0].content: string too long",
+        status_code=400,
+        code="string_above_max_length",
+    )
+    assert is_context_overflow_error(err) is True
+    assert is_retryable_error(err) is False
+
+
+@pytest.mark.parametrize(
+    "param", ["input[0].content", "input[*].output", "input[2].content[0].text", "messages[3].content"],
+)
+def test_input_string_limit_uses_structured_selector(param):
+    err = FakeProviderError("field exceeded its limit", status_code=400, code="string_above_max_length", param=param)
+    assert is_context_overflow_error(err) is True
+
+
+def test_input_string_limit_reads_nested_selector():
+    err = FakeProviderError(
+        "field exceeded its limit", status_code=400,
+        body={"error": {"code": "string_above_max_length", "param": "input[0].content"}},
+    )
+    assert is_context_overflow_error(err) is True
+
+
+@pytest.mark.parametrize("param", ["metadata.name", "input[0].name", "tools[0].description", "instructions"])
+def test_non_history_string_limit_is_not_context_overflow(param):
+    err = FakeProviderError(
+        f"Invalid '{param}': string too long", status_code=400, code="string_above_max_length", param=param,
+    )
+    assert is_context_overflow_error(err) is False
+    assert is_retryable_error(err) is False
+
+
+@pytest.mark.parametrize("message", [
+    "string too long",
+    "Invalid 'input[0].name': string too long",
+    "Invalid 'metadata.input_alias': string too long",
+    "Invalid 'input_alias': string too long",
+])
+def test_string_limit_without_input_evidence_is_not_context_overflow(message):
+    error = FakeProviderError(message, status_code=400, code="string_above_max_length")
+    assert is_context_overflow_error(error) is False
 
 
 def test_overflow_code_in_nested_body_is_overflow():

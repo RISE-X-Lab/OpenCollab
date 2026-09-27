@@ -256,6 +256,30 @@ async def test_agent_schema_returns_none_after_failed_retry():
 
 
 @pytest.mark.asyncio
+async def test_structured_context_overflow_returns_without_second_request():
+    class OverflowFactory(ScriptedFactory):
+        def build_workflow_session(self, **kwargs):
+            session = super().build_workflow_session(**kwargs)
+
+            async def stopped_by_provider(cancel_event=None):
+                session.state.terminal_reason = (
+                    "context overflow: prompt exceeds the model context window even after compaction"
+                )
+                return None
+
+            session.run_loop = stopped_by_provider
+            return session
+
+    factory = OverflowFactory(payloads=[])
+    ctx = WorkflowContext(factory)
+
+    result = await ctx.agent("oversized evidence", schema=SCHEMA, label="judge")
+
+    assert result is None
+    assert len(factory.sessions) == 1
+
+
+@pytest.mark.asyncio
 async def test_agent_schema_no_call_at_all_returns_none():
     # model never calls structured_output on either pass -> None after retry
     factory = ScriptedFactory(payloads=[_NO_CALL, _NO_CALL])

@@ -31,3 +31,25 @@ If a role already requires a write or structured submission and the model return
 only prose, the session retries that requirement once with the same tool set. A
 second prose-only response stops the session instead of declaring the requirement
 complete. Both responses remain in its usage and transcript.
+
+Native Responses adapter
+calls accept explicitly unbounded stream waits and retain transport timeout causes
+when those local waits have no deadline.
+
+Responses errors with `string_above_max_length` trigger context compaction when
+the provider identifies input content, tool output, or history arguments.
+Errors for instruction, metadata, tool description, and name fields retain their
+ordinary request-error classification. Structured roles whose input still
+exceeds the provider limit after compaction finish without issuing the same
+oversized corrective request.
+
+A caller may set `OPENCOLLAB_REQUIRE_INSTRUCTIONS_ECHO=1` for endpoints that echo
+submitted Responses instructions. Each completed response is compared with the
+submitted instruction text before its tool calls are delivered. Requests with
+no system instructions explicitly send an empty string in this mode. Setting
+`OPENCOLLAB_INSTRUCTIONS_AUDIT_DIR` stores each response's requested and returned
+instructions, model controls, and usage under its response identifier. This
+opt-in check detects a gateway replacing the submitted role instructions during
+a remote model call. Repository revisions, database identifiers, transactions,
+uniqueness, type checks, and local request tests cannot observe that remote
+response rewrite. The check remains at the provider delivery boundary.
