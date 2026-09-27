@@ -59,8 +59,8 @@ class Agent:
     thinking_params: dict = field(default_factory=dict)
     reasoning_effort: str | None = None
     llm_connect_timeout: float = 30.0
-    llm_first_event_timeout: float = 180.0
-    llm_stream_idle_timeout: float = 180.0
+    llm_first_event_timeout: float | None = 180.0
+    llm_stream_idle_timeout: float | None = 180.0
     tool_choice: Any = None
     llm_max_retries: int = 3
     provider_error_time_budget: float = 0.0

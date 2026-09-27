@@ -204,7 +204,7 @@ def build_session(
     ask_policy: AskUserPort | None = None,
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
-    llm_timeout: float = 600.0,
+    llm_timeout: float | None = 600.0,
     provider_retry_budget: RetryTimeBudget | None = None,
     store: SessionStorePort | None = None,
     aid: int = -1,

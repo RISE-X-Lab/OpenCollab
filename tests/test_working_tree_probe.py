@@ -21,7 +21,7 @@ from types import SimpleNamespace
 import pytest
 
 from opencollab.adapters._env_base import ExecResult
-from opencollab.adapters.working_tree import EnvWorkingTreeProbe
+from opencollab.adapters.working_tree import WORKING_TREE_GIT_TIMEOUT_SECONDS, EnvWorkingTreeProbe
 
 
 def run(coro):
@@ -46,10 +46,27 @@ class ScriptedEnv:
         self.workspace = workspace
         self._results = list(results)
         self.commands: list[str] = []
+        self.timeouts: list[float] = []
 
     async def exec_cmd(self, cmd: str, timeout: float = 120.0):
         self.commands.append(cmd)
+        self.timeouts.append(timeout)
         return self._results.pop(0)
+
+
+def test_diff_uses_pre_model_workspace_timeout():
+    env = ScriptedEnv(
+        [
+            ExecResult(0, "", ""),
+            ExecResult(0, "", ""),
+            ExecResult(0, "", ""),
+        ]
+    )
+
+    assert run(EnvWorkingTreeProbe(env, workspace="/ws").diff()) == (
+        "[Working tree status]\n(clean)"
+    )
+    assert env.timeouts == [WORKING_TREE_GIT_TIMEOUT_SECONDS] * 3
 
 
 def test_changed_excluding_issues_exclude_pathspec_and_returns_bool():

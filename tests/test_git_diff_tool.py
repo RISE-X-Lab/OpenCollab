@@ -132,3 +132,25 @@ def test_git_diff_reports_environment_errors(tmp_path):
 
     assert no_env == "Error: no execution environment available."
     assert non_git == "Error: not a git repository."
+
+
+@pytest.mark.parametrize("stat_only", [False, True])
+def test_non_git_environment_reports_observed_filesystem_diff(stat_only):
+    from opencollab.adapters._env_base import ExecResult
+
+    class FilesystemEnvironment:
+        calls = []
+
+        async def exec_cmd(self, _cmd, timeout):
+            return ExecResult(128, "", "fatal: not a git repository")
+
+        async def get_filesystem_diff(self, *, path, stat_only):
+            self.calls.append((path, stat_only))
+            return "service.conf changed" if stat_only else "diff --git a/service.conf b/service.conf\n+enabled=true"
+
+    env = FilesystemEnvironment()
+    runtime = ToolRuntime(environment=env, safety_policy=None, permission_policy=None)
+    result = run(GitDiffTool().execute_with_runtime({"path": "service.conf", "stat_only": stat_only}, runtime))
+    assert result.startswith("Observed container filesystem changes:\n")
+    assert env.calls == [("service.conf", stat_only)]
+    assert ("enabled=true" in result) is not stat_only

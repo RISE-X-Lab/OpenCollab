@@ -42,6 +42,22 @@ _WORKFLOW_ENV_OVERRIDE: contextvars.ContextVar[Any | None] = contextvars.Context
 )
 
 
+class _CandidateSourceTreeProbe:
+    """Read source evidence through the supplied candidate workspace port."""
+
+    def __init__(self, workspace: Any) -> None:
+        self._workspace = workspace
+
+    async def diff(self) -> str:
+        return await self._workspace.source_diff()
+
+    async def changed(self) -> bool:
+        return bool(await self._workspace.source_diff())
+
+    async def changed_excluding(self, paths: Sequence[str]) -> bool:
+        return bool(await self._workspace.source_diff(paths))
+
+
 class WorkflowSessionFactory:
     """``WorkflowSessionFactoryPort`` bound to the concrete ``build_session``.
 
@@ -63,7 +79,7 @@ class WorkflowSessionFactory:
         workspace: str | None = None,
         tracer: TracePort | None = None,
         event_sink: EventPublisherPort | None = None,
-        llm_timeout: float = 600.0,
+        llm_timeout: float | None = 600.0,
         max_steps: int | None = None,
         system_prompt: str = WORKFLOW_AGENT_PROMPT,
         agent_profile: SingleAgentProfile | None = None,
@@ -76,8 +92,8 @@ class WorkflowSessionFactory:
         reasoning_effort: str | None = None,
         llm_max_retries: int = 3,
         llm_connect_timeout: float = 30.0,
-        llm_first_event_timeout: float = 180.0,
-        llm_stream_idle_timeout: float = 180.0,
+        llm_first_event_timeout: float | None = 180.0,
+        llm_stream_idle_timeout: float | None = 180.0,
         provider_error_time_budget: float = 0.0,
         save_dir: str | None = None,
         env: Any | None = None,
@@ -373,6 +389,7 @@ def build_workflow_context(
     source_root: str | None = None,
     deadline_monotonic: float | None = None,
     deadline_margin_seconds: float = 120.0,
+    candidate_workspace: Any | None = None,
 ) -> WorkflowContext:
     """Build a :class:`WorkflowContext` wired to the concrete session factory.
 
@@ -426,11 +443,17 @@ def build_workflow_context(
     if probe_env is None:
         probe_env = LocalEnvironment(workspace) if workspace else LocalEnvironment()
     candidate_root = getattr(probe_env, "workspace", None)
-    candidate_workspace = (
-        EnvCandidateWorkspace(probe_env, workspace=candidate_root)
-        if isinstance(candidate_root, str) and candidate_root
-        else None
+    tree_probe = (
+        _CandidateSourceTreeProbe(candidate_workspace)
+        if candidate_workspace is not None
+        else EnvWorkingTreeProbe(probe_env)
     )
+    if candidate_workspace is None:
+        candidate_workspace = (
+            EnvCandidateWorkspace(probe_env, workspace=candidate_root)
+            if isinstance(candidate_root, str) and candidate_root
+            else None
+        )
     return WorkflowContext(
         factory,
         event_sink=event_sink,
@@ -438,7 +461,7 @@ def build_workflow_context(
         max_concurrency=max_concurrency,
         task_concurrency=task_concurrency,
         budget_total=budget_total,
-        tree_probe=EnvWorkingTreeProbe(probe_env),
+        tree_probe=tree_probe,
         candidate_workspace=candidate_workspace,
         workspace_root=source_root if source_root is not None else workspace,
         deadline_monotonic=deadline_monotonic,

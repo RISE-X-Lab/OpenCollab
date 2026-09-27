@@ -106,6 +106,7 @@ def test_public_class_and_method_shapes_stay_lean() -> None:
             "cleanup_timeout",
             "artifacts",
             "trace",
+            "candidate_workspace",
         ),
     }
     for target, expected in expected_parameters.items():

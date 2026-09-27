@@ -6,8 +6,13 @@ from typing import Any
 
 import pytest
 
+from opencollab.adapters._env_base import ExecResult
 from opencollab.adapters._env_local import LocalEnvironment
-from opencollab.adapters.candidate_workspace import EnvCandidateWorkspace
+from opencollab.adapters.candidate_workspace import (
+    CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS,
+    EnvCandidateWorkspace,
+    _raw_diff_at,
+)
 from opencollab.application.workflow import WorkflowContext
 from opencollab.application.workflow_candidates import (
     CandidateWorkspaceTrackingError,
@@ -33,6 +38,27 @@ def _repository(tmp_path: Path) -> Path:
     _git(repo, "add", "source.py")
     _git(repo, "commit", "-m", "initial")
     return repo
+
+
+class _RecordingDiffEnvironment:
+    def __init__(self) -> None:
+        self.timeouts: list[float] = []
+        self.results = [
+            ExecResult(0, "", ""),
+            ExecResult(0, "", ""),
+        ]
+
+    async def exec_cmd(self, _command: str, timeout: float = 120.0) -> ExecResult:
+        self.timeouts.append(timeout)
+        return self.results.pop(0)
+
+
+@pytest.mark.asyncio
+async def test_candidate_source_diff_uses_pre_model_workspace_timeout() -> None:
+    environment = _RecordingDiffEnvironment()
+
+    assert await _raw_diff_at(environment, "/app") == ""
+    assert environment.timeouts == [CANDIDATE_WORKSPACE_GIT_TIMEOUT_SECONDS] * 2
 
 
 class _EditingSession:

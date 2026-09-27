@@ -391,6 +391,7 @@ class OpenCollab:
         cleanup_timeout: float = 2.0,
         artifacts: str | os.PathLike[str] | None = None,
         trace: bool = True,
+        candidate_workspace: Any | None = None,
     ) -> RunResult[Any]:
         """Run a decorated or plain async workflow function.
 
@@ -401,6 +402,9 @@ class OpenCollab:
 
         ``agent_profile`` selects the shared agent configuration for every
         workflow role while preserving each role's explicit tool permissions.
+
+        ``candidate_workspace`` injects an existing candidate workspace port,
+        for environments whose result is more than a repository patch.
         """
         from opencollab.bootstrap.agent_profiles import resolve_agent_profile
 
@@ -454,6 +458,7 @@ class OpenCollab:
                 artifacts=_path(artifacts, "artifacts"),
                 trace=trace,
                 environment=self._environment,
+                candidate_workspace=candidate_workspace,
             )
         except ProgrammaticLifecycleError as exc:
             raise RunError(str(exc)) from exc

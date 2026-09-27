@@ -53,3 +53,22 @@ opt-in check detects a gateway replacing the submitted role instructions during
 a remote model call. Repository revisions, database identifiers, transactions,
 uniqueness, type checks, and local request tests cannot observe that remote
 response rewrite. The check remains at the provider delivery boundary.
+
+Workflows can supply `candidate_workspace` to `OpenCollab.workflow()`. The
+backend creates isolated candidate leases and reports source evidence through
+`source_diff(exclude_paths)`. Source change detection uses this same evidence,
+including for environments outside Git repositories. A backend with `adopt_run`
+receives the complete selected `CandidateRun`, so equal file patches can still
+identify different candidate environments. Existing patch backends keep their
+`adopt(diff, preserve_paths)` path. Candidate execution continues to compare the
+source before and after each lease, restore unintended source edits, and retain
+the workflow's executable verification tools.
+
+`git_diff` can display observed filesystem changes when a non-Git environment
+provides `get_filesystem_diff(path, stat_only)`. The displayed evidence is limited
+to the requested path and the tool's normal output allowance.
+
+Unbounded workflow roles retain the caller's configured request, first-event,
+stream-idle, and connection timeouts. Caller cancellation, provider retry settings,
+and owned cleanup remain configured. Terminal traces record null token and step
+limits without losing the final usage or stop reason.

@@ -5,18 +5,19 @@ import asyncio
 import pytest
 from test_docker_env import CONTAINER_ID, FakeDocker, _patch, _result
 
+from opencollab.adapters._env_docker import DOCKER_CONTROL_TIMEOUT_SECONDS
 from opencollab.adapters.env import DockerEnvironment
 
 
-def test_disposal_after_twenty_seconds_does_not_lose_container_ownership(monkeypatch):
+def test_disposal_after_two_minutes_does_not_lose_container_ownership(monkeypatch):
     def respond(command, kwargs):
         if command[1] == "run":
             return _result(stdout=f"{CONTAINER_ID}\n".encode())
         assert command[1:] == ("rm", "-f", "--", CONTAINER_ID)
-        # Simulate a daemon whose filesystem cleanup takes twenty seconds.
-        if kwargs["timeout"] <= 20:
+        # Simulate a daemon whose filesystem cleanup takes two minutes.
+        if kwargs["timeout"] <= 120:
             raise asyncio.TimeoutError("daemon is still disposing filesystem resources")
-        assert kwargs["timeout"] == 60
+        assert kwargs["timeout"] == DOCKER_CONTROL_TIMEOUT_SECONDS
         return _result()
 
     fake = FakeDocker(respond)

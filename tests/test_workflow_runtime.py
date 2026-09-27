@@ -644,3 +644,20 @@ def test_slug_sanitizes_and_caps_labels():
     assert slug_label(None) == ""
     assert slug_label("") == ""
     assert len(slug_label("x" * 100)) == 40
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unbounded", [False, True])
+async def test_unbounded_workflow_retains_caller_request_and_stream_timeouts(monkeypatch, unbounded):
+    monkeypatch.setenv("OPENCOLLAB_UNBOUNDED_LIMITS", str(unbounded).lower())
+    calls = _patch_build_session(monkeypatch)
+    config = _cfg()
+    config.update(llm_timeout=5.0, llm_first_event_timeout=6.0, llm_stream_idle_timeout=7.0)
+    context = workflow_runtime.build_workflow_context(cfg=config)
+    assert await context.agent("return once", tools=[]) == "fake-reply"
+    assert context.budget.total == (None if unbounded else config["budget"])
+    assert calls[0]["max_budget_tokens"] == (None if unbounded else config["budget"])
+    assert calls[0]["llm_timeout"] == 5.0
+    assert calls[0]["agent"].llm_first_event_timeout == 6.0
+    assert calls[0]["agent"].llm_stream_idle_timeout == 7.0
+    assert calls[0]["agent"].llm_connect_timeout == 30.0

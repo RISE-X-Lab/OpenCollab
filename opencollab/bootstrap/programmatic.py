@@ -510,6 +510,7 @@ async def run_workflow(
     trace: bool,
     environment: Any | None = None,
     agent_profile: Any | None = None,
+    candidate_workspace: Any | None = None,
 ) -> ProgrammaticResult:
     """Run one workflow and return its live metrics directly."""
     workflow_inputs = dict(inputs)
@@ -551,6 +552,7 @@ async def run_workflow(
                 max_steps=max_steps,
                 system_prompt=system_prompt or WORKFLOW_AGENT_PROMPT,
                 agent_profile=agent_profile,
+                candidate_workspace=candidate_workspace,
                 return_details=True,
                 cleanup_environment=owned_environment,
                 defer_manifest_completion=(

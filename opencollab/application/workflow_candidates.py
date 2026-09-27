@@ -372,7 +372,13 @@ class WorkflowCandidatesMixin:
             raise RuntimeError("candidate workspaces are not available")
         if not isinstance(candidate, CandidateRun):
             raise TypeError("candidate must be a CandidateRun")
-        await self._candidate_workspace.adopt(candidate.diff, preserve_paths)
+        adopt_run = getattr(self._candidate_workspace, "adopt_run", None)
+        if callable(adopt_run):
+            # Full-environment backends must retain the chosen candidate's
+            # identity even when two candidates have identical file diffs.
+            await adopt_run(candidate, preserve_paths)
+        else:
+            await self._candidate_workspace.adopt(candidate.diff, preserve_paths)
 
 
 __all__ = [

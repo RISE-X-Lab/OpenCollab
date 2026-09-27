@@ -90,6 +90,7 @@ async def run_workflow(
     return_details: bool = False,
     cleanup_environment: bool | None = None,
     defer_manifest_completion: bool = False,
+    candidate_workspace: Any | None = None,
 ) -> Any:
     """Run through one owned lifecycle with an optional wall-clock deadline."""
     if cleanup_environment is None:
@@ -117,6 +118,7 @@ async def run_workflow(
                 max_steps=max_steps,
                 system_prompt=system_prompt,
                 agent_profile=agent_profile,
+                candidate_workspace=candidate_workspace,
                 save_dir=save_dir,
                 trace=trace,
                 cleanup_timeout=cleanup_timeout,

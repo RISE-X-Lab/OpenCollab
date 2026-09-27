@@ -111,7 +111,7 @@ def _build_initial_state(
 def _resolve_llm(
     agent: Agent,
     llm: LLMPort | None,
-    llm_timeout: float,
+    llm_timeout: float | None,
     provider_retry_budget: Any | None = None,
 ) -> LLMPort:
     """The injected ``llm`` if given, else a fresh ``LLMClient`` for the agent."""
@@ -138,7 +138,7 @@ def _build_summarizer(
     agent: Agent,
     llm: LLMPort | None,
     resolved_llm: LLMPort,
-    llm_timeout: float,
+    llm_timeout: float | None,
     auto_save_path: str | None,
     provider_retry_budget: Any | None = None,
 ) -> ReadTimeSummarizer:
@@ -312,7 +312,7 @@ def build_session_runtime(
     ask_policy: AskUserPort | None = None,
     safety_policy: SafetyPolicyPort | None = None,
     llm: LLMPort | None = None,
-    llm_timeout: float = 600.0,
+    llm_timeout: float | None = 600.0,
     provider_retry_budget: Any | None = None,
     store: SessionStorePort | None = None,
     auto_save_callback: Callable[[], None] | None = None,

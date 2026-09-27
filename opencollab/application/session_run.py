@@ -363,7 +363,7 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
         self._session_terminal_traced = True
         try:
             step_count = int(self.state.step_count)
-            max_steps = int(self.max_steps)
+            max_steps = None if self.max_steps is None else int(self.max_steps)
             self.tracer.log_step(
                 step_type="session_terminal",
                 payload={
@@ -373,9 +373,11 @@ class SessionRunUseCase(_SessionRunCompletionMixin):
                     "terminal_reason": self.state.terminal_reason,
                     "step_count": step_count,
                     "max_steps": max_steps,
-                    "step_ceiling_reached": step_count >= max_steps,
+                    "step_ceiling_reached": max_steps is not None and step_count >= max_steps,
                     "used_tokens": int(self.state.used_tokens),
-                    "max_budget_tokens": int(self.max_budget_tokens),
+                    "max_budget_tokens": (
+                        None if self.max_budget_tokens is None else int(self.max_budget_tokens)
+                    ),
                 },
             )
         except Exception as exc:  # noqa: BLE001 — observability is non-authoritative
