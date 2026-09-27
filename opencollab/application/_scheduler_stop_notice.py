@@ -35,7 +35,7 @@ class SchedulerStopNoticeMixin:
         if stopped is None or stopped.state.phase not in _FAILED_PHASES:
             return
         reason = stopped.state.terminal_reason or reason
-        waiting = self._unanswered.pop(aid, {})
+        waiting = self._unanswered.get(aid, {})
         if not waiting or self._shutting_down:
             return
         try:
@@ -43,14 +43,23 @@ class SchedulerStopNoticeMixin:
         except ValueError as exc:
             logger.error("stop notice role is invalid for aid %s: %s", aid, exc)
             return
-        for to_aid, unanswered_id in waiting.items():
+        for to_aid, unanswered_id in tuple(waiting.items()):
             lock = self._locks.setdefault(to_aid, asyncio.Lock())
             async with lock:
+                # Spend an exchange only after its notice is in the pending sidecar.
+                # Cancellation while waiting for this lock leaves it retryable;
+                # another notifier or a reply may have settled it meanwhile.
+                outstanding = self._unanswered.get(aid, {})
+                if outstanding.get(to_aid) != unanswered_id:
+                    continue
+                if stopped.state.phase not in _FAILED_PHASES:
+                    return
                 target = self._sessions.get(to_aid)
                 scb = self.table.get(to_aid)
                 if self._shutting_down:
                     return
                 if target is None or scb is None or scb.state.phase in _FAILED_PHASES:
+                    outstanding.pop(to_aid, None)
                     continue
                 message_id = uuid.uuid4().hex
                 displayed_reason = reason[:MAX_TEAMMATE_MESSAGE_BYTES // 16]
@@ -71,7 +80,6 @@ class SchedulerStopNoticeMixin:
                 ):
                     # Retry after existing messages drain, using the same
                     # outstanding exchange rather than exceeding inbox bounds.
-                    self._unanswered.setdefault(aid, {})[to_aid] = unanswered_id
                     continue
                 to_role = self._role_of(to_aid)
                 target.state.queue_pending_user_message({
@@ -86,6 +94,7 @@ class SchedulerStopNoticeMixin:
                     sent_at=str(target.state.pending_user_messages[-1]["timestamp"]),
                     message_id=message_id, from_role=role, to_role=to_role, kind="stop_notice",
                 ))
+                outstanding.pop(to_aid, None)
                 self._trace_stop_notice(aid, to_aid, reason, message_id, unanswered_id)
                 self._autosave_session(to_aid)
                 events = await self._drain_message_inbox_locked(to_aid)
