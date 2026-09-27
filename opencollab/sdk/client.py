@@ -393,7 +393,11 @@ class OpenCollab:
         trace: bool = True,
         candidate_workspace: Any | None = None,
     ) -> RunResult[Any]:
-        """Run a decorated or plain async workflow function.
+        """Run a workflow name, decorated function, or plain async function.
+
+        Names resolve installed built-ins and caller-authored modules from the
+        workspace's ``workflows/`` directory or ``OPENCOLLAB_WORKFLOWS_DIR``.
+        A caller module using an installed name raises a duplicate-name error.
 
         ``concurrency`` limits agent sessions. ``task_concurrency`` separately
         limits active parallel/pipeline units across the workflow and defaults
@@ -409,8 +413,21 @@ class OpenCollab:
         from opencollab.bootstrap.agent_profiles import resolve_agent_profile
 
         resolved_agent_profile = resolve_agent_profile(agent_profile)
+        if isinstance(flow, str):
+            from opencollab.bootstrap.workflow_runtime import discover_workflows
+
+            name = _non_empty(flow, "flow")
+            directory = os.environ.get("OPENCOLLAB_WORKFLOWS_DIR", "workflows")
+            if not os.path.isabs(directory):
+                directory = os.path.join(self._workspace, directory)
+            registry = discover_workflows(directory, include_builtin=True)
+            try:
+                flow = registry.get(name)
+            except KeyError:
+                available = ", ".join(spec.name for spec in registry.list_specs())
+                raise ValueError(f"unknown workflow {name!r}. Available workflows {available}") from None
         if not callable(flow) and not callable(getattr(flow, "fn", None)):
-            raise TypeError("flow must be a workflow function or spec")
+            raise TypeError("flow must be a workflow name, function, or spec")
         if inputs is not None and not isinstance(inputs, Mapping):
             raise TypeError("inputs must be a mapping")
         normalized_inputs = dict(inputs or {})

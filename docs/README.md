@@ -11,6 +11,11 @@ interfaces. The [configuration guide](../configs/README.md) covers providers,
 models, and team files. The [skills guide](../skills/README.md) explains
 on-demand agent skills. Contribution checks and vulnerability reporting are in
 [CONTRIBUTING.md](../CONTRIBUTING.md) and [SECURITY.md](../SECURITY.md).
+The [Duo guide](duo.md) covers built-in dual-coder execution, public evidence,
+candidate selection, and patch adoption through the CLI and SDK.
+The [Chinese guide](duo/README.zh-CN.md) provides the same instructions in Chinese.
+The [native test evidence guide](test-evidence.md) explains Bash observation
+and the public Git patch parser.
 The [0.6.0 migration guide](migrations/0.6.0.md) lists the public API,
 team/workflow, evidence, lifecycle, and budget-contract changes in the current
 release candidate. The [0.5.0 migration guide](migrations/0.5.0.md) remains

@@ -24,7 +24,7 @@ from opencollab.workflows import WorkflowContext
 
 def test_root_and_sdk_export_one_small_surface() -> None:
     expected = ["OpenCollab", "RunError", "RunResult", "workflow"]
-    assert opencollab.__version__ == "0.7.0"
+    assert opencollab.__version__ == "0.7.1"
     assert opencollab.__all__ == expected
     assert sdk.__all__ == expected
     assert all(getattr(opencollab, name) is getattr(sdk, name) for name in expected)
@@ -168,10 +168,13 @@ def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
     import opencollab.workflows as workflows
 
     assert tools.__all__ == [
+        "BashEvidence",
         "BuiltinToolName",
         "Tool",
         "VerificationTool",
         "builtin_tools",
+        "evidence_tools",
+        "has_pass_evidence",
         "profile_tool_limits",
     ]
     assert environments.__all__ == [

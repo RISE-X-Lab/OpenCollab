@@ -181,14 +181,21 @@ def _bind_runtime_package(spec: WorkflowSpec, owner: _WorkflowModuleOwner) -> Wo
     return bound
 
 
-def discover_workflows(directory: str) -> Registry:
+def discover_workflows(directory: str, *, include_builtin: bool = False) -> Registry:
     """Load every ``@workflow``-decorated function under ``directory``.
 
     Imports each top-level ``*.py`` file (skipping dunder/private names) via
     importlib and registers every function carrying a ``__workflow_spec__``. A
-    missing directory yields an empty registry.
+    missing directory yields an empty registry. ``include_builtin`` starts with
+    the installed built-in workflows and rejects caller-defined name conflicts
+    through the registry's ordinary duplicate-registration rule.
     """
-    registry = Registry()
+    if include_builtin:
+        from opencollab.builtin_workflows import get_builtin_workflows
+
+        registry = get_builtin_workflows()
+    else:
+        registry = Registry()
     directory = os.path.abspath(directory)
     try:
         inspected = os.lstat(directory)

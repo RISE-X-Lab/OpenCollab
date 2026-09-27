@@ -76,14 +76,21 @@ cp configs/team.example.yaml configs/team.yaml
 uv run opencollab --team-config configs/team.yaml --workspace .
 ```
 
-For repeatable pipelines, author a Python workflow and run it by name.
+Run [Duo](docs/duo.md), the built-in dual-coder workflow, in a local Git
+repository. Its two isolated coders compare public evidence and apply a
+selected patch. Local shell execution is an explicit workflow input.
 
 ```bash
-uv run opencollab workflow run NAME --args '{"task": "..."}'
+uv run opencollab workflow list --workspace /path/to/repository
+uv run opencollab workflow run duo --workspace /path/to/repository \
+  --args '{"goal":"Fix the public issue described here.","allow_unisolated_shell":true}'
 ```
 
+The [Duo guide](docs/duo.md) covers SDK calls, the Single2 profile, the explicit
+complete file evidence, and task-oriented role instructions.
+The [Chinese guide](docs/duo/README.zh-CN.md) is available alongside the canonical guide.
 See [Workflow authoring](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md#workflow-authoring)
-for a complete module.
+to define another collaboration protocol as a Python module.
 
 ## Evaluate with OpenCollab-Eval
 
@@ -94,8 +101,9 @@ workflows, tools, and environments from outside this repository.
 The optional [OC Single2 profile](docs/single2.md) is available through the
 same public client for direct-agent evaluation.
 
-For a complete collaborative evaluation, follow the
-[G22 with Single2 quick start](https://github.com/RISE-X-Lab/OpenCollab-Eval#g22-quick-start).
+Duo's role execution, public test evidence, candidate selection, and patch
+adoption are part of OpenCollab. For a complete collaborative evaluation, follow the
+[Duo with Single2 quick start](https://github.com/RISE-X-Lab/OpenCollab-Eval#duo-quick-start).
 It covers matching OC/OCE 0.7 installations, benchmark images, a Responses
 model endpoint, and one-task official evaluation with
 `oc-eval g22 --config /path/to/g22.json --indices 1 --workers 1`.
