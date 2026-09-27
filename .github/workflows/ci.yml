@@ -254,7 +254,16 @@ jobs:
           workflow_env["OPENCOLLAB_WORKFLOWS_DIR"] = str(Path.cwd() / "workflows")
           workflow_list = run_cli("workflow", "list", env=workflow_env)
           plain_workflow_list = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", workflow_list.stdout)
-          assert "No workflows found." in plain_workflow_list, workflow_list.stdout
+          from opencollab.builtin_workflows import get_builtin_workflows
+
+          expected_names = {
+              "duo", "duo-v3",
+              "validation-council-dual-coder-selection-v2",
+              "validation-council-dual-coder-selection-v3",
+          }
+          assert {spec.name for spec in get_builtin_workflows().list_specs()} == expected_names
+          listed_names = {line.split()[0] for line in plain_workflow_list.splitlines() if line.strip()}
+          assert expected_names <= listed_names, workflow_list.stdout
           print("Installed package and SDK probes passed.")
           PY
 
