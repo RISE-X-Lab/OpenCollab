@@ -72,7 +72,7 @@ uv build --wheel --no-sources "${sdists[0]}" --out-dir "$artifact_root/wheel"
 wheels=("$artifact_root"/wheel/*.whl)
 test "${#wheels[@]}" -eq 1
 
-uvx --from twine==6.2.0 twine check "${sdists[0]}" "${wheels[0]}"
+uvx --from twine==7.0.0 twine check "${sdists[0]}" "${wheels[0]}"
 cp "${sdists[0]}" "${wheels[0]}" "$artifact_root/assets/"
 (
   cd "$artifact_root/assets"

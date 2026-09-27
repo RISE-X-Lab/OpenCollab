@@ -82,7 +82,7 @@ jobs:
           wheels=("$artifact_root"/wheel/*.whl)
           test "${#sdists[@]}" -eq 1
           test "${#wheels[@]}" -eq 1
-          uvx --from twine==6.2.0 twine check "${sdists[0]}" "${wheels[0]}"
+          uvx --from twine==7.0.0 twine check "${sdists[0]}" "${wheels[0]}"
       - name: Inspect artifact contents
         shell: bash
         run: |
