@@ -9,8 +9,8 @@ and the project aims to follow [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-Duo and Duo v3 are installed workflows available through the CLI and SDK.
-The original G22 v2/v3 names remain compatible. Public native Bash evidence
+Duo is the single installed dual-candidate workflow available through the CLI
+and SDK. Its task-oriented prompts use complete, paged candidate evidence. Public native Bash evidence
 observation and Git patch path parsing now belong to OpenCollab, so downstream
 evaluators can use the same execution and selection implementation.
 

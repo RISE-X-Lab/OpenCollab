@@ -15,11 +15,7 @@ from opencollab.builtin_workflows import duo, get_builtin_workflows
 from opencollab.sdk import client as sdk_client
 from opencollab.workflows import workflow
 
-_BUILTIN_NAMES = {
-    "duo", "duo-v3",
-    "validation-council-dual-coder-selection-v2",
-    "validation-council-dual-coder-selection-v3",
-}
+_BUILTIN_NAMES = {"duo"}
 
 
 def _write_workflow(directory, *, name="local-flow"):
@@ -33,7 +29,7 @@ def _write_workflow(directory, *, name="local-flow"):
     )
 
 
-def test_builtin_registry_is_fresh_and_contains_both_compatibility_names():
+def test_builtin_registry_is_fresh_and_exposes_one_duo():
     first = get_builtin_workflows()
     second = get_builtin_workflows()
     assert {spec.name for spec in first.list_specs()} == _BUILTIN_NAMES
@@ -73,7 +69,8 @@ def test_cli_lists_installed_duo_in_workspace_without_workflow_directory(tmp_pat
     result = CliRunner().invoke(workflow_cli.app, ["list", "--workspace", str(tmp_path)])
     assert result.exit_code == 0
     assert "duo" in result.stdout
-    assert "duo-v3" in result.stdout
+    assert "duo-v3" not in result.stdout
+    assert "validation-council-dual-coder-selection" not in result.stdout
 
 
 def test_cli_runs_installed_duo_and_forwards_agent_profile(tmp_path, monkeypatch):

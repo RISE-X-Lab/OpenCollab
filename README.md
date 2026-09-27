@@ -87,7 +87,7 @@ uv run opencollab workflow run duo --workspace /path/to/repository \
 ```
 
 The [Duo guide](docs/duo.md) covers SDK calls, the Single2 profile, the explicit
-`duo-v3` file-evidence variant, and existing G22 compatibility names.
+complete file evidence, and task-oriented role instructions.
 The [Chinese guide](docs/duo/README.zh-CN.md) is available alongside the canonical guide.
 See [Workflow authoring](https://github.com/RISE-X-Lab/OpenCollab/blob/main/opencollab/README.md#workflow-authoring)
 to define another collaboration protocol as a Python module.

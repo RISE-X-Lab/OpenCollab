@@ -60,7 +60,15 @@ class CandidateEvidenceFiles:
             "public_command": dual._candidate_command(candidate),
             "public_test_records": dual._candidate_records(candidate),
         })
+        result_path = self._json(f"{label}/result.json", {
+            "candidate_report": (
+                dual._candidate_output(candidate).get("coder_output")
+                if isinstance(candidate.output, dict) else candidate.output
+            ),
+            "report_is_model_supplied": True,
+        })
         return {
+            "result_path": result_path,
             "index_path": index_path,
             "diff_path": diff_path,
             "public_evidence_path": records_path,

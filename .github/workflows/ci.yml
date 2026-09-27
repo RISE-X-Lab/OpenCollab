@@ -256,11 +256,7 @@ jobs:
           plain_workflow_list = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", workflow_list.stdout)
           from opencollab.builtin_workflows import get_builtin_workflows
 
-          expected_names = {
-              "duo", "duo-v3",
-              "validation-council-dual-coder-selection-v2",
-              "validation-council-dual-coder-selection-v3",
-          }
+          expected_names = {"duo"}
           assert {spec.name for spec in get_builtin_workflows().list_specs()} == expected_names
           listed_names = {line.split()[0] for line in plain_workflow_list.splitlines() if line.strip()}
           assert expected_names <= listed_names, workflow_list.stdout

@@ -2,118 +2,69 @@
 
 [English guide](../duo.md)
 
-Duo 是 OpenCollab 内置的双 coder 工作流，原名为 OpenCollab-Eval 中的 G22。
-安装 OpenCollab 后即可通过 CLI 或 Python SDK 调用。默认 Agent 与 Single2
-均可驱动同一个 Duo 工作流。
+Duo 为同一任务生成两个隔离候选，比较证据后采用一个结果。通用角色提示覆盖源码修改、配置、数据和任务要求的其他产物。运行时提供候选环境与实际交付方式。
 
 ## 运行 Duo
 
-按[配置说明](../../configs/README.md)设置模型服务，将工作目录指向待修复的 Git 仓库。
-仓库缺少 `workflows/` 目录时，CLI 和 SDK 仍能发现内置 Duo。
+按[配置说明](../../configs/README.md)设置模型入口，再指定工作目录。安装 OpenCollab 后即可发现 Duo。
 
 ```bash
-opencollab workflow list --workspace /path/to/repository
+opencollab workflow list --workspace /path/to/workspace
+opencollab workflow run duo --workspace /path/to/workspace \
+  --args '{"goal":"Complete the task described here.","allow_unisolated_shell":true}'
 ```
 
-Duo 默认要求 Bash 在具备进程隔离能力的环境中执行。在本地 Git 仓库运行可信任务时，
-调用者可通过工作流输入显式允许本地 shell 执行。
-
-```bash
-opencollab workflow run duo --workspace /path/to/repository \
-  --args '{"goal":"修复这里完整描述的公开问题。","allow_unisolated_shell":true}'
-```
-
-添加 `--agent-profile single2` 即可让所有角色使用 Single2。
-
-```bash
-opencollab workflow run duo --workspace /path/to/repository \
-  --agent-profile single2 \
-  --args '{"goal":"修复这里完整描述的公开问题。","allow_unisolated_shell":true}'
-```
-
-Python SDK 接受内置名称，也接受公开工作流函数。模型、额度、执行环境和产物目录沿用
-其他工作流的调用参数。
+上例显式允许在可信本地工作区执行 shell。默认设置要求进程隔离。容器调用方可以保留默认设置，并通过 SDK 传入执行环境。
 
 ```python
+import asyncio
+
 from opencollab import OpenCollab
 
-client = OpenCollab("/path/to/repository")
-inputs = {"goal": "修复完整描述的公开问题。", "allow_unisolated_shell": True}
-result = await client.workflow("duo", inputs, budget=1_000_000)
-print(result.raise_for_status().output)
 
+async def main():
+    client = OpenCollab("/path/to/workspace")
+    result = await client.workflow(
+        "duo",
+        {
+            "goal": "Produce the requested data files and update their configuration.",
+            "candidate_evidence_dir": "artifacts/duo-evidence",
+            "allow_unisolated_shell": True,
+        },
+        budget=1_000_000,
+        artifacts="artifacts/duo-run",
+    )
+    print(result.raise_for_status().output)
+
+asyncio.run(main())
 ```
 
-从 `opencollab.builtin_workflows` 导入 `duo` 后，可将该函数作为第一个参数直接传入。
-在工作流调用中添加 `agent_profile="single2"` 即可让所有角色使用 Single2。
+公共函数通过 `from opencollab.builtin_workflows import duo` 导入，SDK 也接受该函数。`get_builtin_workflows()` 返回只含 `duo` 的新注册表。CLI 与 SDK 名称查找同时读取工作区的 `workflows/` 或 `OPENCOLLAB_WORKFLOWS_DIR`，同名冲突沿用现有错误处理。
 
-容器任务通过 `OpenCollab(..., environment=environment)` 传入公开环境对象，保留默认
-shell 设置。候选工作区由该环境提供。集成方也可以通过 `candidate_workspace=` 传入
-自己的候选工作区接口实现。
+显式指定 `agent_profile` 会选择相应的基础系统提示、历史整形、工具限制与安全行为。例如 `agent_profile="single2"` 保留 Single2 的工具与安全行为。既有角色权限说明让工作流职责优先于通用修复与提交指引。省略该参数时使用默认 Agent。
 
-## 候选生成与选择
+## 面向任务的角色
 
-A 在独立候选工作区内寻找最小完整修复。B 从相同源状态建立另一工作区，沿生产者、
-消费者、公开接口和生命周期检查需求，并收到 A 实际执行过的公开测试命令。
-两个角色分别保存完整 diff 和[原生测试证据](../test-evidence.md)。
+共同提示要求遵循任务和运行时的交付说明，保留无关用户工作，以及任务需要的产物和服务。任务涉及配置、依赖、构建、资源或公开测试更新时，角色可以完成相应修改。独立评测材料和未公开参考答案继续受到保护。Git 提交与其他提交机制按任务或运行时要求执行。
 
-空候选和相同 diff 优先机械处理。公开测试记录在目标、runner 和命令相同时才能比较。
-相同命令下一方有通过证据、另一方执行失败时，可直接选择候选。
-其他情况交由结构化裁决者根据完整公开任务和候选证据逐项比较。
+A 寻找最简单、完整的解决办法。B 检查依赖、交互和边界条件，确保结果整体可用。B 收到 A 实际观察到的公开验证命令，在相关且可用时执行同一检查。角色报告实际完成的工作、执行过的检查与剩余限制。
 
-证据能证明 B 覆盖了 A 缺失的需求，并且保留 A 更好覆盖的其他需求时，裁决才选择 B。
-裁决结构错误、证据不足或角色调用失败时回退 A。采用首先尝试选中候选，失败后再尝试
-另一非空候选。
+裁决者依据任务的明确要求比较结果与验证证据。模型撰写的结果报告标为候选陈述。测试记录在目标、runner 和命令一致时参与比较。证据不足的要求保持 unclear，原有保守选择与回退规则继续生效。
 
-`goal` 承载公开任务，`description` 保留为兼容参数。评测集成通过
-`injected_test_paths` 保留预先准备的测试文件。额度、步数、模型超时和 Agent profile
-由调用方设置，角色的 `budget=None` 沿用现有工作流共享额度行为。
+提示集中放在 [`_prompts.py`](../../opencollab/builtin_workflows/_prompts.py)。内部修订号为 4，结果中的 `prompt_revision` 记录该值，对外统一使用 `duo`。
 
-## Duo v3 与旧名称
+## 完整证据读取
 
-`duo` 保留原 G22 v2 行为，裁决者通过提示接收完整候选 diff 和公开证据，工具为结构化
-提交工具。`duo-v3` 对应原 G22 v3，保存完整候选证据文件，并提供
-`read_candidate_evidence` 供裁决者分页读取索引、公开记录和精确 diff 范围。
+机械选择仍未确定候选时，Duo 保存完整证据，并向只读裁决者提供 `read_candidate_evidence`。索引记录原始变更路径和字符范围，完整文本或二进制 diff 保持可读。公开测试证据与模型结果报告分别存放。工具通过 `next_offset` 和 `eof` 支持继续读取，并限定在当次登记的证据文件内。
 
-```python
-from opencollab.builtin_workflows import duo_v3
+`candidate_evidence_dir` 指定宿主侧父目录，每次裁决创建独立子目录并记录位置。调用方负责文件保留。候选运行在其他环境中时，裁决者仍可读取这些文件。
 
-result = await client.workflow(
-    duo_v3,
-    {
-        "goal": task,
-        "candidate_evidence_dir": "artifacts/candidate-evidence",
-        "allow_unisolated_shell": True,
-    },
-    agent_profile="single2",
-)
-```
+## 候选交付与结果
 
-`candidate_evidence_dir` 指定运行主机上的父目录。每次 v3 裁决新建独立子目录，并将路径
-写入工作流日志，文件由调用方保存。
+Duo 通过现有候选工作区接口完成隔离、变更捕获与采用。默认 Git 后端交付仓库改动。完整环境集成提供对应候选后端，按候选身份采用实际环境，并保留必要文件和服务。运行时继续检查候选有效性与采用结果，现有补丁选择规则把空改动记为未完成。
 
-| CLI 与 SDK 名称 | 公开函数 | 行为 |
-| --- | --- | --- |
-| `duo` | `duo` | 原 G22 v2 选择策略 |
-| `duo-v3` | `duo_v3` | 原 G22 v3 完整文件证据策略 |
-| `validation-council-dual-coder-selection-v2` | `validation_council_dual_coder_selection_v2` | `duo` 兼容名称 |
-| `validation-council-dual-coder-selection-v3` | `validation_council_dual_coder_selection_v3` | `duo-v3` 兼容名称 |
+`goal` 或 `description` 提供任务。评测集成可通过 `injected_test_paths` 保留受保护测试。预算、模型设置和角色截止时间沿调用方配置传递。
 
-表中的函数均由 `opencollab.builtin_workflows` 导出。
-`get_builtin_workflows()` 每次返回包含这些名称的新注册表。
-CLI 和 SDK 名称查找会合并内置注册表与工作目录下 `workflows/` 内的用户模块。
-`OPENCOLLAB_WORKFLOWS_DIR` 可选择其他目录，相对路径从工作目录解析。
-用户模块与内置名称冲突时，沿用注册表的重复名称错误。直接传入函数或 spec 时执行指定对象。
+结果分别记录 `winner` 与 `adopted`，采用失败时可能回退另一候选。成功采用后 `status` 为 `done`，没有候选被采用时为 `incomplete`，缺少任务时为 `error`。结果同时保留选择理由、证据、采用尝试和 token 消耗。正确性由实际检查及评测器的正式评分确定。
 
-## 阅读结果
-
-`RunResult` 描述框架运行状态，Duo 输出单独保存任务状态。
-采用成功时 `status` 为 `done`，未采用补丁时为 `incomplete`，缺少任务时为 `error`。
-`winner` 表示选择结果，`adopted` 表示实际采用的候选，采用回退时二者可能不同。
-`selection_reason`、`judge_used`、`judge_result`、`adoption_attempts`、
-`shared_public_command` 和逐候选 diff 路径与公开测试记录共同说明选择依据。
-
-OpenCollab-Eval 负责题面与环境准备、隐藏测试隔离、最终补丁捕获和正式评分。
-现有 `oc-eval g22` 命令继续调用由 OpenCollab 拥有的工作流。
-[评测快速开始](https://github.com/RISE-X-Lab/OpenCollab-Eval#duo-quick-start)
-说明 benchmark 配置与正式测试报告的运行方式。
+OpenCollab-Eval 负责题面、环境准备、隐藏测试隔离、候选捕获和正式评分，运行方式见[评测快速开始](https://github.com/RISE-X-Lab/OpenCollab-Eval#duo-quick-start)。

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import json
 from pathlib import Path
 
@@ -11,10 +10,9 @@ import pytest
 from test_duo_selector import Context, candidate, decision
 
 from opencollab.builtin_workflows import _file_selection as new
+from opencollab.builtin_workflows import duo
 from opencollab.builtin_workflows._candidate_evidence_files import CandidateEvidenceFiles, ReadCandidateEvidence
 from opencollab.workflows import CandidateRun
-
-old = importlib.import_module("opencollab.builtin_workflows.duo")
 
 
 def with_diff(value):
@@ -112,29 +110,25 @@ async def test_real_oversize_trigger_is_moved_to_files_and_remains_readable(tmp_
 
 
 @pytest.mark.asyncio
-async def test_v3_keeps_coder_prompts_adoption_and_validated_choice(tmp_path, monkeypatch):
+async def test_duo_uses_file_evidence_and_retains_the_actual_selected_candidate(tmp_path, monkeypatch):
     monkeypatch.setenv("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION", "1")
-    old_ctx, new_ctx = Context(), ReadingContext()
-    args = {"goal": "Preserve the public return value", "candidate_evidence_dir": str(tmp_path)}
-    expected = await old.duo(old_ctx, args)
-    actual = await new.duo_v3(new_ctx, args)
-    assert actual == expected
-    assert new_ctx.phases == old_ctx.phases
-    assert new_ctx.adoptions == old_ctx.adoptions
-    for old_call, new_call in zip(old_ctx.coder_calls, new_ctx.coder_calls, strict=True):
-        assert old_call[0] == new_call[0]
-        assert {k: v for k, v in old_call[1].items() if k != "tools"} == {
-            k: v for k, v in new_call[1].items() if k != "tools"
-        }
-    assert old_ctx.selector_calls[0][1]["tools"] == []
-    assert new_ctx.selector_calls[0][1]["budget"] is None
-    assert new_ctx.evidence_directories[0].parent == tmp_path
+    ctx = ReadingContext()
+    result = await duo(ctx, {"goal": "Preserve behavior", "candidate_evidence_dir": str(tmp_path)})
+    assert result["winner"] == result["adopted"] == "B"
+    assert ctx.adoptions[0][0].label == "dual-coder-contract-b"
+    assert [tool.name for tool in ctx.selector_calls[0][1]["tools"]] == ["read_candidate_evidence"]
+    assert ctx.selector_calls[0][1]["budget"] is None
+    assert ctx.evidence_directories[0].parent == tmp_path
+    result_file = ctx.evidence_directories[0] / "B/result.json"
+    report = json.loads(result_file.read_text())
+    assert report["candidate_report"] == "Public repair completed"
+    assert report["report_is_model_supplied"] is True
 
 
 @pytest.mark.asyncio
-async def test_v3_keeps_default_a_when_original_evidence_validation_fails(tmp_path):
+async def test_duo_keeps_default_a_when_original_evidence_validation_fails(tmp_path):
     ctx = ReadingContext(result=decision("unsupported claim without original changed path"))
-    result = await new.duo_v3(
+    result = await duo(
         ctx, {"goal": "Public behavior", "candidate_evidence_dir": str(tmp_path)},
     )
     assert result["winner"] == "A"
@@ -144,13 +138,13 @@ async def test_v3_keeps_default_a_when_original_evidence_validation_fails(tmp_pa
 @pytest.mark.asyncio
 async def test_identical_candidates_skip_judge_and_concurrent_runs_keep_separate_files(tmp_path):
     identical = ReadingContext(identical=True)
-    await new.duo_v3(
+    await duo(
         identical, {"goal": "Public behavior", "candidate_evidence_dir": str(tmp_path)},
     )
     assert not identical.selector_calls and not list(tmp_path.iterdir())
     left, right = ReadingContext(), ReadingContext()
     await asyncio.gather(*[
-        new.duo_v3(
+        duo(
             ctx, {"goal": "Public behavior", "candidate_evidence_dir": str(tmp_path)},
         ) for ctx in [left, right]
     ])

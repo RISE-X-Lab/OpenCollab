@@ -7,12 +7,12 @@ import importlib
 
 import pytest
 
-from opencollab.builtin_workflows import _dual_coder as g21
+from opencollab.builtin_workflows import _prompts
 from opencollab.workflows import CandidateRun
 
 g22 = importlib.import_module("opencollab.builtin_workflows.duo")
 
-WORKFLOW = "validation-council-dual-coder-selection-v2"
+WORKFLOW = "duo"
 
 
 def candidate(label, value):
@@ -81,46 +81,6 @@ class Context:
 
 
 
-@pytest.mark.asyncio
-async def test_parallel_g21_g22_keep_their_selector_prompts_and_role_options(monkeypatch):
-    monkeypatch.setenv("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION", "1")
-    ready = asyncio.Event()
-    entered = 0
-
-    async def barrier():
-        nonlocal entered
-        entered += 1
-        if entered == 2:
-            ready.set()
-        await ready.wait()
-
-    original = g21.CONTRACT_PROMPT
-    ctx21, ctx22 = Context(barrier=barrier), Context(barrier=barrier)
-    inputs = {"description": "Preserve the public return value", "injected_test_paths": ["test_hidden.py"]}
-    result22, result21 = await asyncio.wait_for(asyncio.gather(
-        g22.duo(ctx22, inputs),
-        g21.run_dual_coder(ctx21, inputs),
-    ), timeout=2)
-    assert g21.CONTRACT_PROMPT == original
-    assert result21 == result22
-    assert result22["winner"] == "B" and result22["adopted"] == "B"
-    assert ctx21.coder_calls[0][0] == ctx22.coder_calls[0][0]
-    assert ctx21.coder_calls[1][0] == ctx22.coder_calls[1][0]
-    for (_, options21), (_, options22) in zip(ctx21.coder_calls, ctx22.coder_calls, strict=True):
-        assert {k: v for k, v in options21.items() if k != "tools"} == {
-            k: v for k, v in options22.items() if k != "tools"}
-        assert [tool.name for tool in options21["tools"]] == [tool.name for tool in options22["tools"]]
-        assert options21["budget"] is None
-    prompt21, options21 = ctx21.selector_calls[0]
-    prompt22, options22 = ctx22.selector_calls[0]
-    assert prompt22.startswith(prompt21)
-    assert "that entry's own a_evidence and b_evidence arrays" in prompt22
-    assert "that entry's own a_evidence and b_evidence arrays" not in prompt21
-    assert options21 == options22
-    assert options22["schema"] is g21.contract.CONTRACT_SCHEMA
-    assert options22["tools"] == [] and options22["budget"] is None
-    assert ctx21.adoptions[0][1] == ctx22.adoptions[0][1] == ["test_hidden.py"]
-    assert ctx21.phases == ctx22.phases
 
 
 @pytest.mark.asyncio
@@ -132,6 +92,7 @@ async def test_g22_preserves_original_rejection_and_default_a(monkeypatch):
         ctx, {"goal": "Preserve the public return value"},
     )
     assert outcome["judge_result"] == result
+    assert outcome["prompt_revision"] == 4
     assert outcome["winner"] == outcome["adopted"] == "A"
     assert outcome["selection_reason"] == "contract-evidence-insufficient-default-a"
 
@@ -140,6 +101,58 @@ async def test_g22_preserves_original_rejection_and_default_a(monkeypatch):
 async def test_g22_identical_candidates_keep_mechanical_selection():
     ctx = Context(identical=True)
     outcome = await g22.duo(ctx, {"goal": "Repair public behavior"})
+    assert outcome["prompt_revision"] == 4
     assert outcome["winner"] == outcome["adopted"] == "A"
     assert outcome["selection_reason"] == "identical-diff"
     assert outcome["judge_used"] is False and not ctx.selector_calls
+
+
+async def test_parallel_duo_calls_keep_task_and_evidence_isolated(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENCOLLAB_EXTERNAL_PROVIDER_ISOLATION", "1")
+    ready = asyncio.Event()
+    entered = 0
+
+    async def barrier():
+        nonlocal entered
+        entered += 1
+        if entered == 2:
+            ready.set()
+        await ready.wait()
+
+    contexts = [Context(barrier=barrier), Context(barrier=barrier)]
+    goals = ["Write a CSV report", "Configure a service"]
+    results = await asyncio.wait_for(asyncio.gather(*[
+        g22.duo(ctx, {"goal": goal, "candidate_evidence_dir": str(tmp_path)})
+        for ctx, goal in zip(contexts, goals)
+    ]), timeout=2)
+    directories = []
+    for ctx, goal, other, result in zip(contexts, goals, reversed(goals), results):
+        assert result["winner"] == result["adopted"] == "B"
+        assert all(goal in prompt and other not in prompt for prompt, _ in ctx.coder_calls)
+        assert all(options["budget"] is None for _, options in ctx.coder_calls)
+        prompt, options = ctx.selector_calls[0]
+        assert goal in prompt and other not in prompt
+        assert options["budget"] is None
+        tool, = options["tools"]
+        assert tool.name == "read_candidate_evidence"
+        directories.append(tool.files.directory)
+    assert directories[0] != directories[1]
+
+
+@pytest.mark.parametrize("task", [
+    "Update the package configuration and requested snapshots",
+    "Produce the requested CSV and image files",
+    "Configure the application and leave its service running",
+])
+async def test_task_oriented_prompts_preserve_the_complete_delivery_scope(task):
+    ctx = Context()
+    await g22.duo(ctx, {"goal": task})
+    for prompt, _ in ctx.coder_calls:
+        assert task in prompt
+        assert "configuration, dependencies" in prompt
+        assert "artifacts and services" in prompt
+        assert "Update public" in prompt
+        assert "non-empty source diff" not in prompt
+        assert "Do not run git commit" not in prompt
+        assert "withheld reference answers" in prompt
+    assert _prompts._PROMPT_REVISION == 4

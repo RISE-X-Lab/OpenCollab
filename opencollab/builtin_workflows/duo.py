@@ -1,4 +1,4 @@
-"""Duo solves a public task with two isolated coder strategies."""
+"""Duo solves a task through two isolated candidates and evidence-based selection."""
 
 from __future__ import annotations
 
@@ -6,42 +6,32 @@ from typing import Any
 
 from opencollab.workflows import workflow
 
-from . import _dual_coder as dual_coder
-
-SELECTION_PROMPT = dual_coder.CONTRACT_PROMPT + """
-
-Read the public requirements and interface declarations item by item before
-choosing a candidate. Check call argument positions and types, return values,
-error types, and any explicitly required wording against each actual diff.
-Separate successful compilation, candidate-written self-checks, and execution
-of the relevant public target behavior. Check a self-check's expected values
-against the public requirement before treating its success as evidence.
-
-For every requirement entry, put the exact candidate changed file path and
-supporting diff details in that entry's own a_evidence and b_evidence arrays.
-A path in another entry or in the overall rationale does not support this
-entry. For a claimed winner advantage, cite the exact changed path in the
-winner's evidence and explain the behavior it adds or preserves. Verify that
-the advantage leaves all other requirements intact. Use unclear when concrete
-evidence is unavailable. Never invent coverage or an advantage.
-"""
+from ._dual_coder import run_dual_coder
+from ._file_selection import adjudicate_candidate_files
+from ._prompts import _PROMPT_REVISION, SELECTION_PROMPT
 
 
 @workflow(
     name="duo",
-    description="Duo dual coder with explicit public-requirement selector evidence",
-    phases=["minimal-coder", "cross-component-coder", "mechanical-selection", "contract-adjudication", "adoption"],
+    description="Two focused solutions with complete evidence and read-only selection",
+    phases=["candidate-a", "candidate-b", "mechanical-selection", "adjudication", "adoption"],
 )
-async def duo(
-    ctx: Any,
-    args: dict[str, Any],
-) -> dict[str, Any]:
-    """Apply the Duo selector prompt to the unchanged dual-coder sequence."""
-    return await dual_coder.run_dual_coder(
-        ctx,
-        args,
-        selector_prompt=SELECTION_PROMPT,
+async def duo(ctx: Any, args: dict[str, Any]) -> dict[str, Any]:
+    """Run Duo using task-oriented prompts and paged candidate evidence.
+
+    ``candidate_evidence_dir`` optionally supplies a host-side parent directory.
+    Each adjudication creates its own retained evidence directory.
+    """
+    async def adjudicator(context: Any, **options: Any) -> tuple[str, Any, str]:
+        return await adjudicate_candidate_files(
+            context, **options, evidence_parent=args.get("candidate_evidence_dir"),
+        )
+
+    result = await run_dual_coder(
+        ctx, args, selector_prompt=SELECTION_PROMPT, adjudicator=adjudicator,
     )
+    result["prompt_revision"] = _PROMPT_REVISION
+    return result
 
 
 __all__ = ["duo"]

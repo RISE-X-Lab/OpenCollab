@@ -130,7 +130,7 @@ def _script_sessions(monkeypatch, source, command):
 
 
 @pytest.mark.parametrize("profile", [None, "single2"])
-@pytest.mark.parametrize("flow_name,both_pass", [("duo", False), ("duo", True), ("duo-v3", True)])
+@pytest.mark.parametrize("flow_name,both_pass", [("duo", False), ("duo", True)])
 async def test_duo_named_sdk_executes_candidates_and_adopts_verified_patch(
     tmp_path, monkeypatch, profile, flow_name, both_pass,
 ):
@@ -176,19 +176,16 @@ async def test_duo_named_sdk_executes_candidates_and_adopts_verified_patch(
         assert (None if actual_profile is None else actual_profile.name) == profile
         if profile == "single2":
             assert session.agent.system_prompt.startswith(SINGLE2_SYSTEM_PROMPT)
+            assert "They take precedence over the general software-repair duties" in session.agent.system_prompt
     if both_pass:
         judge, _, scripted = sessions[2]
         names = [tool.name for tool in judge.agent.tools]
-        if flow_name == "duo-v3":
-            assert set(names) == {"read_candidate_evidence", "structured_output"}
-            assert "return 2" in _last_tool_result(scripted.calls[1])
-            assert "return 3" in _last_tool_result(scripted.calls[2])
-            directories = list(evidence.glob("duo-evidence-*"))
-            assert len(directories) == 1
-            assert "return 3" in (directories[0] / "B/candidate.diff").read_text()
-        else:
-            assert names == ["structured_output"]
-            assert "source.py" in str(scripted.calls[0])
+        assert set(names) == {"read_candidate_evidence", "structured_output"}
+        assert "return 2" in _last_tool_result(scripted.calls[1])
+        assert "return 3" in _last_tool_result(scripted.calls[2])
+        directories = list(evidence.glob("duo-evidence-*"))
+        assert len(directories) == 1
+        assert "return 3" in (directories[0] / "B/candidate.diff").read_text()
     completed = subprocess.run(shlex.split(command), cwd=repo, capture_output=True, text=True)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "1 passed" in completed.stdout
@@ -214,3 +211,65 @@ async def test_runtime_resolves_cli_profile_name_in_composition_root(tmp_path, m
     )
     assert result == {"profile": "single2"}
     assert [profile.name for profile in observed] == ["single2"]
+
+
+@pytest.mark.parametrize(("filename", "desired"), [
+    ("app.conf", "enabled=true\n"),
+    ("report.csv", "item,count\nready,3\n"),
+])
+async def test_duo_delivers_task_configuration_and_data_artifacts(tmp_path, monkeypatch, filename, desired):
+    monkeypatch.delenv("OPENCOLLAB_UNBOUNDED_LIMITS", raising=False)
+    repo = tmp_path / "artifacts"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Test")
+    _git(repo, "config", "user.email", "test@example.invalid")
+    (repo / filename).write_text("initial\n")
+    (repo / "test_delivery.py").write_text(
+        "from pathlib import Path\n\ndef test_delivery():\n"
+        f"    assert Path({filename!r}).read_text() == {desired!r}\n"
+    )
+    (repo / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "\u521d\u59cb\u4ea4\u4ed8\u6837\u4f8b")
+    command = f"{shlex.quote(sys.executable)} -m pytest -q -rA -p no:cacheprovider test_delivery.py"
+    original = workflow_session.build_session
+    calls = []
+
+    class Solver:
+        def __init__(self, role):
+            self.role = role
+            self.step = 0
+
+        def context_window(self):
+            return 1_048_576
+
+        async def complete(self, messages, tools=None, **kwargs):
+            assert (repo / filename).read_text() == "initial\n"
+            self.step += 1
+            if self.step == 1:
+                assert "configuration, dependencies" in str(messages)
+                return _tool_response("file_write", {
+                    "path": filename, "mode": "create",
+                    "content": "partial\n" if self.role == "A" else desired,
+                }, self.step)
+            if self.step == 2:
+                return _tool_response("bash", {"command": command}, self.step)
+            return LLMResponse(content="Requested artifact retained", usage=Usage(5, 3))
+
+    def build(**kwargs):
+        role = "A" if not calls else "B"
+        calls.append(role)
+        return original(**kwargs, llm=Solver(role))
+
+    monkeypatch.setattr(workflow_session, "build_session", build)
+    result = await OpenCollab(repo, provider="openai", model="scripted-model").workflow(
+        "duo", {"goal": f"Produce {filename} with the requested content", "allow_unisolated_shell": True},
+        budget=10_000, max_steps=5, trace=False,
+    )
+    assert result.ok and result.output["status"] == "done"
+    assert result.output["selection_reason"] == "same-command-public-red"
+    assert result.output["adopted"] == "B"
+    assert calls == ["A", "B"]
+    assert (repo / filename).read_text() == desired
+    assert _git(repo, "diff", "--name-only").strip() == filename

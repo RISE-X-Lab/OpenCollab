@@ -2,41 +2,26 @@
 
 [Chinese guide](duo/README.zh-CN.md)
 
-Duo is OpenCollab's built-in dual-coder workflow, previously named G22 in
-OpenCollab-Eval. Install OpenCollab to run it through the CLI or Python SDK.
-The ordinary agent and the optional Single2 profile can drive the same Duo
-workflow.
+Duo produces two isolated solutions to a task, compares their evidence, and
+adopts one result. Its task-oriented role prompts cover source changes,
+configuration, data and other required artifacts. The runtime supplies the
+candidate environments and delivery mechanism.
 
 ## Run Duo
 
-Configure a model endpoint using [the configuration guide](../configs/README.md).
-Point the workspace at the Git repository to repair. Installed workflows are
-available even when that repository has no `workflows/` directory.
+Configure a model endpoint using [the configuration guide](../configs/README.md)
+and choose the workspace to work in. Duo is installed with OpenCollab and is
+available without a caller-defined `workflows/` directory.
 
 ```bash
-opencollab workflow list --workspace /path/to/repository
+opencollab workflow list --workspace /path/to/workspace
+opencollab workflow run duo --workspace /path/to/workspace \
+  --args '{"goal":"Complete the task described here.","allow_unisolated_shell":true}'
 ```
 
-Duo's shell tools require a process-isolated environment by default. A caller
-running trusted tasks in a local Git workspace can explicitly permit local
-shell execution through the workflow input.
-
-```bash
-opencollab workflow run duo --workspace /path/to/repository \
-  --args '{"goal":"Fix the public issue described here.","allow_unisolated_shell":true}'
-```
-
-Select Single2 for every role using the CLI option.
-
-```bash
-opencollab workflow run duo --workspace /path/to/repository \
-  --agent-profile single2 \
-  --args '{"goal":"Fix the public issue described here.","allow_unisolated_shell":true}'
-```
-
-The Python SDK accepts the installed name or public workflow function. The
-caller chooses model configuration, workspace, limits, and artifacts using
-the same SDK options as other workflows.
+The example explicitly permits shell execution in a trusted local workspace.
+The default shell setting requires process isolation. Container-backed callers
+can retain that default and supply their environment through the public SDK.
 
 ```python
 import asyncio
@@ -45,13 +30,14 @@ from opencollab import OpenCollab
 
 
 async def main():
-    client = OpenCollab("/path/to/repository")
-    inputs = {
-        "goal": "Fix the public issue described here.",
-        "allow_unisolated_shell": True,
-    }
+    client = OpenCollab("/path/to/workspace")
     result = await client.workflow(
-        "duo", inputs,
+        "duo",
+        {
+            "goal": "Produce the requested data files and update their configuration.",
+            "candidate_evidence_dir": "artifacts/duo-evidence",
+            "allow_unisolated_shell": True,
+        },
         budget=1_000_000,
         artifacts="artifacts/duo-run",
     )
@@ -60,93 +46,80 @@ async def main():
 asyncio.run(main())
 ```
 
-Import `duo` from `opencollab.builtin_workflows` to pass the function directly
-as the first argument. Add `agent_profile="single2"` to the workflow call to
-select Single2 for all roles.
+The public function is `from opencollab.builtin_workflows import duo`. Pass it
+instead of the name to use an explicit callable. `get_builtin_workflows()`
+returns a fresh registry with one workflow, `duo`. CLI and SDK name lookup
+combine installed workflows with the workspace's `workflows/` directory or
+`OPENCOLLAB_WORKFLOWS_DIR`. Duplicate names retain the ordinary registry error.
 
-For container-backed tasks, pass the public environment object to
-`OpenCollab(..., environment=environment)` and keep the default shell setting.
-The candidate workspace comes from that environment. Integrations can supply
-their own candidate workspace port through `candidate_workspace=`.
+An explicit `agent_profile` selects the base agent implementation and its system
+instructions, shaping, tool limits, and safety behavior. For example,
+`agent_profile="single2"` retains the profile's tools and safety behavior.
+Workflow-role instructions take precedence over its general repair and
+submission guidance through the existing role-permission block. The default
+agent is used when no profile is selected.
 
-## Candidate generation and selection
+## Task-oriented roles
 
-Coder A implements a minimal repair in an isolated candidate workspace. Coder
-B starts from the same source state in another isolated workspace and checks
-the issue across producers, consumers, APIs, and lifecycle boundaries. B
-receives the public test command observed from A. Each role keeps its own
-complete diff and [native test evidence](test-evidence.md).
+The shared instructions ask each role to follow the task and runtime delivery
+requirements, preserve unrelated user work, and retain required artifacts and
+services. They permit configuration, dependency, build, resource and public-check
+updates when those changes belong to the task. They protect independent
+validation and withheld reference answers. Commits and other submission
+mechanisms follow the task or runtime's requirements.
 
-Duo handles empty candidates and identical diffs mechanically. Comparable
-public test records require the same target, runner, and command. A passing
-record against a failing record can select a candidate directly. When those
-rules leave the choice open, a structured adjudicator compares the complete
-public task and candidate evidence against each explicit requirement.
+Candidate A pursues the simplest complete solution. Candidate B checks the
+outcome end to end, including dependencies, interactions and boundary cases.
+B receives the public verification command observed from A and is asked to run
+it when relevant and available. Each role reports its actual work, executed
+checks and remaining limitations.
 
-The adjudicator selects B when supported evidence establishes an advantage
-without losing a requirement better covered by A. Invalid, incomplete, or
-unavailable adjudication falls back to A. Adoption first tries the selected
-candidate, then the other nonempty candidate if the first adoption fails.
+The adjudicator compares the explicit task requirements with the results and
+verification evidence. Model-written reports are identified as claims. Test
+records are comparable when their target, runner and command agree. Unclear or
+unsupported coverage remains unclear. The existing conservative choice and
+fallback rules continue to apply.
 
-`goal` supplies the public task. `description` remains an accepted alternative.
-`injected_test_paths` lets evaluation integrations preserve their prepared
-test files while applying a candidate. Budgets, steps, model timeouts, and
-agent profiles remain caller settings. A role's `budget=None` participates in
-the existing shared workflow budget.
+The current prompt text is kept together in
+[`_prompts.py`](../opencollab/builtin_workflows/_prompts.py). Its internal revision
+is 4 and is recorded as `prompt_revision` in the result. Callers use `duo`
+without a prompt-version suffix.
 
-## Duo v3 and existing identifiers
+## Complete evidence for selection
 
-The short name `duo` retains the former G22 v2 behavior. Its adjudicator receives
-candidate diffs and public evidence in the prompt and has only the structured
-submission tool. Select `duo-v3` for the file-evidence variant. It retains
-complete candidate files and adds `read_candidate_evidence` so the adjudicator
-can page through indexes, public records, and exact diff ranges.
+When mechanical selection leaves a choice open, Duo saves the complete candidate
+evidence and gives the read-only adjudicator `read_candidate_evidence`.
+Indexes describe original changed paths and character ranges. Text and binary
+diffs remain complete. Public test evidence and model-supplied result reports
+are separate files. The tool returns `next_offset` and `eof` for continued reads
+and exposes only files registered for the current adjudication.
 
-```python
-from opencollab.builtin_workflows import duo_v3
+`candidate_evidence_dir` selects a host-side parent directory. Every adjudication
+creates an independent child and records its location in workflow logs. The
+caller owns retention of these files. Evidence can be read even when the candidate
+executes in another environment.
 
-result = await client.workflow(
-    duo_v3,
-    {
-        "goal": task,
-        "candidate_evidence_dir": "artifacts/candidate-evidence",
-        "allow_unisolated_shell": True,
-    },
-    agent_profile="single2",
-)
-```
+## Candidate delivery and results
 
-`candidate_evidence_dir` chooses a host-side parent directory. Each v3
-adjudication creates a separate child directory and records its location in
-workflow logs. The caller owns retention of these files.
+Duo uses the existing candidate workspace port for isolation, change capture and
+adoption. The default Git backend delivers repository changes. A full-environment
+integration supplies its own candidate backend and adopts the selected candidate
+by identity. Required files and live services are retained by that backend.
+Candidate validity and adoption are enforced by the runtime. Empty changes remain
+an incomplete result under the existing patch-based selection rules.
 
-| CLI and SDK name | Public function | Behavior |
-| --- | --- | --- |
-| `duo` | `duo` | Original G22 v2 selector |
-| `duo-v3` | `duo_v3` | G22 v3 selector with complete file evidence |
-| `validation-council-dual-coder-selection-v2` | `validation_council_dual_coder_selection_v2` | Compatibility name for `duo` |
-| `validation-council-dual-coder-selection-v3` | `validation_council_dual_coder_selection_v3` | Compatibility name for `duo-v3` |
+`goal` supplies the task and `description` is an accepted alternative.
+`injected_test_paths` lets an evaluation integration preserve its protected test
+files during adoption. Budgets, model settings and role deadlines follow the
+caller's runtime configuration.
 
-All functions in the table are exported from `opencollab.builtin_workflows`.
-`get_builtin_workflows()` returns a fresh registry of these installed names.
-The CLI and SDK name lookup merge that registry with caller modules in the
-workspace's `workflows/` directory. `OPENCOLLAB_WORKFLOWS_DIR` selects another
-directory, with relative paths resolved from the workspace. A caller module
-using an installed name raises the existing duplicate-registration error.
-Passing a workflow function or spec directly uses the supplied object.
+Duo's output records `winner` and `adopted` separately, because a failed adoption
+may fall back to the other candidate. `status` is `done` after successful adoption,
+`incomplete` when no candidate is adopted, or `error` when the task is missing.
+The output also retains selection reasons, candidate evidence, adoption attempts
+and token consumption. Task correctness is established by the caller's actual
+checks and, when applicable, the evaluator's formal scoring.
 
-## Inspect the result
-
-`RunResult` describes completion of the framework runtime. Duo's output records
-its task outcome separately. Its `status` is `done` after a candidate is adopted,
-`incomplete` when adoption produces no patch, or `error` for a missing task.
-`winner` is the selected candidate and `adopted` is the candidate actually applied.
-They can differ when adoption falls back. `selection_reason`, `judge_used`,
-`judge_result`, `adoption_attempts`, `shared_public_command`, and the per-candidate
-diff paths and public records explain the decision.
-
-OpenCollab-Eval prepares benchmark tasks and environments, isolates hidden
-tests, captures final patches, and performs official scoring. Its existing
-`oc-eval g22` command remains available and calls the OpenCollab-owned workflow.
-See the [evaluation quick start](https://github.com/RISE-X-Lab/OpenCollab-Eval#duo-quick-start)
-for benchmark setup and official reports.
+OpenCollab-Eval owns benchmark inputs, environment preparation, hidden-test
+isolation, candidate capture and official grading. See its
+[evaluation quick start](https://github.com/RISE-X-Lab/OpenCollab-Eval#duo-quick-start).

@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 import os
 
+from ._prompts import SHARED_RULES as SHARED_RULES
+
 STRUCTURED_ROLE_TIMEOUT_SECONDS = 900
 
 
@@ -40,15 +42,6 @@ def coder_role_timeout_seconds() -> float | None:
     return _llm_aware_role_timeout(CODER_ROLE_TIMEOUT_SECONDS)
 
 
-SHARED_RULES = """\
-Rules:
-- Use public issue, repository, test, and documentation evidence only.
-- Never use hidden grader data, official hidden tests, grader patches, or FAIL_TO_PASS IDs.
-- Obey this role and its tools.
-- Keep probes under /tmp/opencollab-validation-* and out of the patch.
-- Report unavailable probes as not_run. Make the smallest source fix.
-- Read-only roles do not search for write tools.
-- Do not run git commit."""
 
 
 def _complete_goal(goal: str) -> str:
