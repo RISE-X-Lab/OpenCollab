@@ -41,6 +41,24 @@ def test_apply_patch_requires_environment():
     assert result == "Error: no execution environment available."
 
 
+def test_apply_patch_explains_which_tool_has_str_replace_mode():
+    assert "str_replace is a mode of the `file_write` tool" in ApplyPatchTool.description
+
+
+def test_apply_patch_unknown_mode_points_to_file_write(tmp_path):
+    target = tmp_path / "f.py"
+    target.write_text("a\n", encoding="utf-8")
+
+    result = run(
+        ApplyPatchTool().execute_with_runtime(
+            {"path": "f.py", "mode": "str_replace"}, _runtime(tmp_path)
+        )
+    )
+
+    assert "file_write" in result
+    assert target.read_text(encoding="utf-8") == "a\n"
+
+
 def test_line_replace_applies_range_and_stale_guard_keeps_file_unchanged(tmp_path):
     ws = tmp_path / "ws"
     ws.mkdir()

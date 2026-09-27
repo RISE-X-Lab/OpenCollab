@@ -48,11 +48,13 @@ class ApplyPatchTool(Tool):
         "Apply a robust, all-or-nothing edit to ONE file. Modes:\n"
         "- 'unified_diff': apply a standard unified diff (`@@ -a,b +c,d @@` hunks). "
         "Hunks are matched by content, so small line-number drift is tolerated. "
-        "Use this when an edit spans multiple places or str_replace keeps failing.\n"
+        "Use this when an edit spans multiple places or file_write's str_replace keeps failing.\n"
         "- 'line_replace': replace the inclusive 1-based line range "
         "[start_line, end_line] with new_str. Set end_line = start_line - 1 to "
         "insert before start_line without deleting anything. Pass expected_str to "
         "verify the current range before replacing.\n"
+        "str_replace is a mode of the `file_write` tool. This tool accepts "
+        "'unified_diff' and 'line_replace'.\n"
         "If the patch/range does not apply cleanly, NOTHING is written and an error "
         "is returned — it never partially applies."
     )
@@ -124,7 +126,10 @@ class ApplyPatchTool(Tool):
                 elif mode == "line_replace":
                     updated, err = _apply_line_replace(current, params)
                 else:
-                    return f"Error: unknown mode '{mode}'. Use 'unified_diff' or 'line_replace'."
+                    return (
+                        f"Error: unknown mode '{mode}'. Use 'unified_diff' or 'line_replace'. "
+                        "str_replace is a mode of the file_write tool."
+                    )
 
                 if err:
                     return f"Error applying patch to {path}: {err}"

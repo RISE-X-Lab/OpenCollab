@@ -99,6 +99,15 @@ def test_each_role_prompt_is_loaded_from_its_own_file(team) -> None:
         assert "git checkout <sha>" in body
 
 
+def test_analyst_prompt_describes_the_testers_editing_boundary(team) -> None:
+    editing_tools = {"apply_patch", "file_write"}
+    assert editing_tools <= set(team.roles["analyst"].tools)
+    assert editing_tools.isdisjoint(team.roles["tester"].tools)
+    card = " ".join(team.roles["analyst"].prompt.split())
+
+    assert "The Coder and the Tester hold the same working tools you do" not in card
+
+
 def test_the_shipped_default_team_is_not_this_team() -> None:
     """This file must never become the product default.
 
