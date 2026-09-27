@@ -11,6 +11,7 @@ from typing import Literal, Protocol, TypeAlias, runtime_checkable
 
 from opencollab.application.ports import ToolPort as Tool
 from opencollab.bootstrap.agent_profiles import _PROFILE_TOOL_LIMITS, resolve_agent_profile
+from opencollab.bootstrap.evidence_tools import BashEvidence, has_pass_evidence, observe_test_evidence
 from opencollab.bootstrap.tool_registry import build_tools_for_role
 
 BuiltinToolName: TypeAlias = Literal[
@@ -105,4 +106,36 @@ def builtin_tools(
     )
 
 
-__all__ = ["BuiltinToolName", "Tool", "VerificationTool", "builtin_tools", "profile_tool_limits"]
+def evidence_tools(
+    *names: BuiltinToolName,
+    headless: bool = True,
+    allow_file_creation: bool = True,
+    limits: Mapping[str, Mapping[str, int]] | None = None,
+) -> tuple[Tool, ...]:
+    """Build native tools whose Bash observes executed pytest, Go and Django tests.
+
+    Commands and formatted output follow the native Bash API. The Bash tool
+    retains ``verification_records`` for every recognized target and
+    ``verified_targets`` for targets with current passing execution evidence.
+    The composition inherits workflow profile defaults and explicit ``limits``.
+    """
+    return observe_test_evidence(
+        builtin_tools(
+            *names,
+            headless=headless,
+            allow_file_creation=allow_file_creation,
+            limits=limits,
+        )
+    )
+
+
+__all__ = [
+    "BashEvidence",
+    "BuiltinToolName",
+    "Tool",
+    "VerificationTool",
+    "builtin_tools",
+    "evidence_tools",
+    "has_pass_evidence",
+    "profile_tool_limits",
+]

@@ -28,7 +28,10 @@ from opencollab.bootstrap._workflow_runtime_state import (
     WORKFLOW_AGENT_PROMPT,
     WorkflowRuntimeResult,
 )
-from opencollab.bootstrap.agent_profiles import _PROFILE_TOOL_LIMITS
+from opencollab.bootstrap.agent_profiles import (
+    _PROFILE_TOOL_LIMITS,
+    resolve_agent_profile,
+)
 from opencollab.bootstrap.agent_runtime import revoke_and_abort_environment
 from opencollab.bootstrap.session_factory import build_session
 
@@ -93,6 +96,8 @@ async def run_workflow(
     candidate_workspace: Any | None = None,
 ) -> Any:
     """Run through one owned lifecycle with an optional wall-clock deadline."""
+    if isinstance(agent_profile, str):
+        agent_profile = resolve_agent_profile(agent_profile)
     if cleanup_environment is None:
         cleanup_environment = env is None
     token = _WORKFLOW_ENV_OVERRIDE.set(env)

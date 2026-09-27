@@ -168,10 +168,13 @@ def test_advanced_capabilities_live_in_small_opt_in_modules() -> None:
     import opencollab.workflows as workflows
 
     assert tools.__all__ == [
+        "BashEvidence",
         "BuiltinToolName",
         "Tool",
         "VerificationTool",
         "builtin_tools",
+        "evidence_tools",
+        "has_pass_evidence",
         "profile_tool_limits",
     ]
     assert environments.__all__ == [
