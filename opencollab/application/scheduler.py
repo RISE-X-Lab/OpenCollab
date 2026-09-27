@@ -25,6 +25,7 @@ from opencollab.application._scheduler_cleanup import SchedulerCleanupMixin
 from opencollab.application._scheduler_persistence import SchedulerPersistenceMixin
 from opencollab.application._scheduler_review import SchedulerReviewMixin
 from opencollab.application._scheduler_run import SchedulerRunMixin
+from opencollab.application._scheduler_stop_notice import SchedulerStopNoticeMixin
 from opencollab.application._scheduler_team import SchedulerTeamMixin
 from opencollab.application.autosave import AutoSaveSubscriber
 from opencollab.application.events import (
@@ -57,6 +58,7 @@ class Scheduler(
     SchedulerRunMixin,
     SchedulerCleanupMixin,
     SchedulerReviewMixin,
+    SchedulerStopNoticeMixin,
     LifecycleMixin,
     MessagingMixin,
     InflightDedupMixin,
@@ -202,6 +204,8 @@ class Scheduler(
         # aid -> queued teammate messages waiting to be appended as user
         # messages once that session is not running or suspended on pending work.
         self._message_inbox: dict[int, list[QueuedTeammateMessage]] = {}
+        # recipient -> sender -> latest unanswered teammate message id
+        self._unanswered: dict[int, dict[int, str]] = {}
         # The outer delivery task remains owned while ``add_user_message`` runs.
         # The durable inbox entry is removed only after that call succeeds.
         self._message_delivery_tasks: dict[int, asyncio.Task[Any]] = {}

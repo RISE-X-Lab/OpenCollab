@@ -562,6 +562,8 @@ class LifecycleMixin:
         """Route a finished child's result to the pending row that suspended its
         parent, then re-activate the parent. No-op for fire-and-forget spawns.
         """
+        if status is RowStatus.FAILED:
+            await self.notify_unanswered_senders(child_aid, error or result)
         origin = self._spawn_origin.get(child_aid)
         if origin is None:
             return

@@ -124,6 +124,7 @@ class QueuedTeammateMessage:
     from_role: str = ""
     to_role: str = ""
     restored: bool = False
+    kind: str = "teammate"
 
 
 __all__ = [

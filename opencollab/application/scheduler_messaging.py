@@ -215,6 +215,7 @@ class MessagingMixin:
             )
             inbox.append(message)
             self._message_inbox[to_aid] = inbox
+            self._record_teammate_exchange(from_aid, to_aid, message_id)
             self._trace_message_decision(
                 "message_sent",
                 from_aid=from_aid,
@@ -420,6 +421,7 @@ class MessagingMixin:
                     from_role=str(item.get("from_role") or ""),
                     to_role=str(item.get("to_role") or ""),
                     restored=True,
+                    kind=str(item.get("kind") or "teammate"),
                 )
             )
         if restored:
@@ -490,6 +492,9 @@ class MessagingMixin:
     def _format_teammate_message_batch(messages: list[QueuedTeammateMessage]) -> str:
         envelopes = []
         for message in messages:
+            if message.kind == "stop_notice":
+                envelopes.append(message.xml)
+                continue
             sender = f"A{message.from_aid}"
             envelopes.append(
                 f"<teammate-message teammate_id={quoteattr(sender)} "
@@ -548,6 +553,10 @@ class MessagingMixin:
         await asyncio.gather(
             *(self._drain_message_inbox(aid) for aid in ready_aids)
         )
+        for aid in tuple(self._unanswered):
+            stopped = self.table.get(aid)
+            if stopped is not None and stopped.state.phase in {SessionPhase.STOPPED, SessionPhase.ERROR}:
+                await self.notify_unanswered_senders(aid, stopped.state.terminal_reason or stopped.state.phase.value)
 
     async def _drain_message_inbox_locked(
         self,
@@ -573,6 +582,9 @@ class MessagingMixin:
             reason, detail = route_error
             rejected = True
             self._mark_message_rejected(session.state, message, detail)
+            waiting = self._unanswered.get(aid, {})
+            if waiting.get(message.from_aid) == message.message_id:
+                waiting.pop(message.from_aid, None)
             # The scheduler event alone was invisible: it goes to events.jsonl,
             # which a run writes only when OPENCOLLAB_EVENTS_FILE is set, so a
             # default run dropped the message and recorded nothing a reader
@@ -719,6 +731,18 @@ class MessagingMixin:
                 "restored_target_role_missing",
                 "restored message has no durable target role identity",
             )
+        if message.kind == "stop_notice":
+            if sender.state.phase not in {SessionPhase.STOPPED, SessionPhase.ERROR}:
+                return ("restored_notice_sender_active", "notice refers to an active teammate")
+            try:
+                envelope = ET.fromstring(message.xml)
+            except ET.ParseError:
+                return ("restored_notice_invalid", "notice envelope is malformed")
+            if envelope.tag != "team-notice" or envelope.attrib.get("about") != f"A{message.from_aid}":
+                return ("restored_notice_invalid", "notice envelope has a different subject")
+            return None
+        if message.kind != "teammate":
+            return ("restored_message_kind_invalid", "message kind is unknown")
         if self._topology_forbids(current_from_role, current_to_role):
             return (
                 "restored_topology_forbidden",
